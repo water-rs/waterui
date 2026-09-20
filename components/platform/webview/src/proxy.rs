@@ -14,10 +14,10 @@
 use std::any::type_name;
 use std::pin::Pin;
 
+use suiteki::Str;
 use waterui_core::extract::{ExtractionState, Extractor};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, Error, impl_debug};
-use waterui_str::Str;
 
 use crate::Cookie;
 use crate::handler::{AnyWebViewHandle, ScriptInjectionTime};

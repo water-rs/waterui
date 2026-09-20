@@ -40,9 +40,10 @@ than reaching for `watch`.
 array index, or regenerated per render. The id is the diffing key and must identify the same
 logical row across updates.
 
-**A handler receives the wrong binding.** Multiple `State<T>` of the same type bind
-positionally: the first `.state()` call feeds the first `State<T>` parameter. Reorder, or
-switch to the app-state-struct pattern where one injected struct replaces all of them.
+**A handler receives the wrong binding.** Multiple parameters of the same state type bind
+positionally: the first `.state()` call feeds the first parameter of that type — bare
+`#[state]` types and `State<T>` share the sequence. Reorder, or switch to the
+app-state-struct pattern where one injected struct replaces all of them.
 
 **Rounded corners come out as a capsule.** `RoundedRectangle::new(r)` takes a fraction of
 the shorter side, not points — `new(12.0)` saturates at fully-rounded. Use `new(0.1)`-scale
@@ -98,7 +99,7 @@ Use `app.pump_for(duration)`.
 | `.title("Inbox")` — "this method takes 0 arguments" | `Text::title()` (font size) shadows the navigation title | put the nav title on the container, or use `NavigationView::new(title, content)` |
 | `borrowed data escapes outside of function` on a view helper | views are `'static` | take `&'static str` / `Str` / `impl IntoText`; a helper that only *reads* a `&T` during construction can return `impl View + use<>` |
 | `no method named 'map'` on a signal (outside the prelude) | `SignalExt` not in scope | `use waterui::reactive::SignalExt;` |
-| `use of undeclared crate 'tracing'` | logging goes through the re-export | `waterui::log::debug!(..)` — no extra dependency |
+| `use of undeclared crate 'tracing'` | logging goes through the re-export | `use waterui::log::debug;` then `debug!(..)` — no extra dependency |
 | clippy `future_not_send` on an async helper | UI futures legitimately hold non-`Send` state | item-level `#[expect(clippy::future_not_send, reason = "…")]` |
 | `could not find 'webview' in 'waterui'` | behind a cargo feature | enable it (`features = ["webview"]`) |
 | `could not find 'chart' / 'map' / 'barcode' / 'particle' in 'waterui'` | these are crates, not modules — there is no such feature | add `waterui-chart` (etc.) to `Cargo.toml` and import `waterui_chart::…` |
@@ -112,8 +113,9 @@ genuinely a false positive, use a narrowly scoped item-level `expect` with a rea
 
 ## Runtime panics
 
-**"Environment state `T` not found".** A handler asked for `State<T>` that nothing injected.
-Add `.state(&value)` on the button, or on an ancestor container if several handlers need it.
+**"Environment state `T` not found".** A handler asked for a `State<T>` or a
+`#[state]`-marked `T` that nothing injected. Add `.state(&value)` on the button, or on an
+ancestor container if several handlers need it.
 
 **"Environment value `T` not found".** Same, but for `Use<T>` — the value must be installed
 in the environment (typically in `app(env)`), not passed via `.state()`.
@@ -171,7 +173,9 @@ permission failure.
 `references/project.md`.
 
 **A change to the CLI has no effect.** The `water` on `PATH` is a previously installed
-binary. Reinstall with `cargo install --path cli`, or invoke the freshly built one directly.
+binary. Reinstall it (`cargo install waterui-cli`, or `cargo install --locked --git
+https://github.com/water-rs/cli waterui-cli` for the integration branch), or invoke the
+freshly built one directly.
 
 **Scrolling or interaction is janky in a dev build only.** Check that the build has a
 release-ish profile; a full stack compiled at `-O0` with debug info is slow in a way that

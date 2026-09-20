@@ -1,6 +1,9 @@
 use std::path::Path;
+use std::rc::Rc;
 
-use hydrolysis::{HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow};
+use hydrolysis::{
+    HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow, Style, WidgetTheme,
+};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui_core::{AnyView, Environment, View};
 
@@ -39,7 +42,11 @@ impl Snapshot {
 }
 
 /// Headless host that renders `WaterUI` views into an offscreen texture.
-#[derive(Debug)]
+///
+/// The host renders with a style — the same `hydrolysis::Style` a rendered
+/// mount takes — because a frame is a product of the view tree *and* the
+/// style package's widget theme; a style-free render exists only on the
+/// semantic pipeline, which produces no pixels.
 pub struct TestHost {
     env: Environment,
     /// Requested once and shared by every render this host performs. A wgpu
@@ -49,17 +56,32 @@ pub struct TestHost {
     gpu: OffscreenGpuContext,
     width: u32,
     height: u32,
+    theme: Rc<dyn WidgetTheme>,
+}
+
+impl core::fmt::Debug for TestHost {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TestHost")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TestHost {
-    /// Creates a test host with a fixed render size.
+    /// Creates a test host with a fixed render size, installing the style's
+    /// tokens into `env` the way a rendered runtime does.
     #[must_use]
-    pub fn new(env: Environment, width: u32, height: u32) -> Self {
+    pub fn new(env: Environment, width: u32, height: u32, style: impl Style) -> Self {
+        let mut env = env;
+        hydrolysis::theme::install_default_tokens(&mut env);
+        style.install_tokens(&mut env);
         Self {
             env,
             gpu: OffscreenGpuContext::new_for_tests_blocking(),
             width,
             height,
+            theme: Rc::new(style),
         }
     }
 
@@ -77,7 +99,7 @@ impl TestHost {
         );
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device())
+            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
         };
         let bounds = vello::kurbo::Rect::new(
             0.0,
@@ -87,7 +109,12 @@ impl TestHost {
         );
 
         let surface = platform.surface();
-        renderer.set_frame_resources(surface.adapter(), surface.device(), surface.queue());
+        renderer.set_frame_resources(
+            surface.adapter(),
+            surface.device(),
+            surface.queue(),
+            surface.device_loss(),
+        );
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
         let env = self.env.clone().extending(SceneViewMergeToParent);
@@ -107,6 +134,7 @@ impl TestHost {
             adapter: surface.adapter(),
             device: surface.device(),
             queue: surface.queue(),
+            device_loss: surface.device_loss().clone(),
             texture: Some(frame.texture()),
             view: frame.view(),
             format: surface.format(),

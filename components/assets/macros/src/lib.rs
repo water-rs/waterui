@@ -3,6 +3,7 @@
 //! Provides `asset!`, `assets!`, and `include_bundle!`.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use proc_macro::TokenStream;
 use proc_macro_crate::{FoundCrate, crate_name};
@@ -13,8 +14,8 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
-use waterui_assets::{AssetKind, is_loopback_http_url, is_remote_url};
-use waterui_assets_planner::{BundleManifest, PlannedAsset, plan_bundle, read_assets_path};
+use waterui_assets_core::{AssetKind, is_loopback_http_url, is_remote_url};
+use waterui_assets_planner::{BundleMountMeta, PlannedAsset, plan_mount, read_assets_path};
 
 fn waterui_crate_path() -> syn::Result<TokenStream2> {
     match crate_name("waterui") {
@@ -61,9 +62,27 @@ impl Parse for AssetInput {
     }
 }
 
-#[derive(Default, Clone)]
+/// Parsed arguments of an `include_bundle!("path", as = mount)` invocation.
+struct IncludeBundleArgs {
+    /// Bundle directory path relative to the crate root.
+    path: LitStr,
+    /// Module name the bundle is mounted under.
+    mount: Ident,
+}
+
+impl Parse for IncludeBundleArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let path: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+        input.parse::<Token![as]>()?;
+        input.parse::<Token![=]>()?;
+        let mount: Ident = input.parse()?;
+        Ok(Self { path, mount })
+    }
+}
+
+#[derive(Default)]
 struct ModuleNode {
-    mount: Option<String>,
     children: BTreeMap<String, Self>,
     assets: Vec<PlannedAsset>,
 }
@@ -81,46 +100,23 @@ fn compile_error(message: impl AsRef<str>, span: Span) -> TokenStream {
         .into()
 }
 
-fn crate_root() -> std::path::PathBuf {
+fn crate_root() -> PathBuf {
     std::env::var_os("CARGO_MANIFEST_DIR")
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .expect("CARGO_MANIFEST_DIR must be set for WaterUI asset macros")
 }
 
-fn build_manifest() -> Result<BundleManifest, String> {
-    let crate_root = crate_root();
-    let assets_path = read_assets_path(&crate_root).map_err(|error| error.to_string())?;
-    plan_bundle(&crate_root, &assets_path).map_err(|error| error.to_string())
-}
-
-fn syn_ident(name: &str) -> syn::Ident {
+fn syn_ident(name: &str) -> Ident {
     syn::parse_str(name)
         .unwrap_or_else(|error| panic!("invalid generated identifier '{name}': {error}"))
 }
 
 fn insert_asset(node: &mut ModuleNode, asset: PlannedAsset) {
     let mut current = node;
-    let mount_ident =
-        (!asset.mount.is_empty()).then(|| waterui_assets_planner::rust_identifier(&asset.mount));
     for segment in asset.module_segments() {
-        let is_mount_root = mount_ident
-            .as_deref()
-            .is_some_and(|mount| mount == segment.as_str());
         current = current.children.entry(segment).or_default();
-        if current.mount.is_none() && is_mount_root {
-            current.mount = Some(asset.mount.clone());
-        }
     }
     current.assets.push(asset);
-}
-
-fn bundle_tokens(waterui: &TokenStream2, mount: Option<&str>) -> TokenStream2 {
-    match mount {
-        Some(mount_name) if !mount_name.is_empty() => {
-            quote! { #waterui::Bundle::new(#mount_name) }
-        }
-        _ => quote! { #waterui::Bundle::main() },
-    }
 }
 
 fn asset_type_tokens(waterui: &TokenStream2, kind: AssetKind) -> TokenStream2 {
@@ -134,11 +130,11 @@ fn asset_type_tokens(waterui: &TokenStream2, kind: AssetKind) -> TokenStream2 {
     }
 }
 
-fn asset_constructor_tokens(waterui: &TokenStream2, asset: &PlannedAsset) -> TokenStream2 {
-    let bundle = bundle_tokens(
-        waterui,
-        (!asset.mount.is_empty()).then_some(asset.mount.as_str()),
-    );
+fn asset_constructor_tokens(
+    waterui: &TokenStream2,
+    bundle: &TokenStream2,
+    asset: &PlannedAsset,
+) -> TokenStream2 {
     let relative = asset.relative_path.to_string_lossy().replace('\\', "/");
     match asset.kind {
         AssetKind::Font => quote! { #waterui::FontAsset::new(#bundle, #relative) },
@@ -152,27 +148,23 @@ fn asset_constructor_tokens(waterui: &TokenStream2, asset: &PlannedAsset) -> Tok
 
 fn emit_module(
     waterui: &TokenStream2,
+    bundle: &TokenStream2,
     node: &ModuleNode,
-    current_mount: Option<&str>,
     root: bool,
 ) -> TokenStream2 {
-    let bundle = bundle_tokens(waterui, node.mount.as_deref().or(current_mount));
-    let bundle_const = if root || node.mount.is_some() {
-        quote! { pub const BUNDLE: #waterui::Bundle = #bundle; }
-    } else {
-        quote! {}
-    };
+    let bundle_const = root.then(|| {
+        quote! {
+            /// The asset bundle this module's accessors resolve against.
+            pub const BUNDLE: #waterui::Bundle = #bundle;
+        }
+    });
 
     let mut child_tokens = Vec::new();
     for (name, child) in &node.children {
         let ident = syn_ident(name);
-        let body = emit_module(
-            waterui,
-            child,
-            node.mount.as_deref().or(current_mount),
-            false,
-        );
+        let body = emit_module(waterui, bundle, child, false);
         child_tokens.push(quote! {
+            #[doc = "Bundle assets under this directory."]
             pub mod #ident {
                 #body
             }
@@ -183,8 +175,10 @@ fn emit_module(
     for asset in &node.assets {
         let ident = syn_ident(&asset.item_name());
         let ty = asset_type_tokens(waterui, asset.kind);
-        let ctor = asset_constructor_tokens(waterui, asset);
+        let ctor = asset_constructor_tokens(waterui, bundle, asset);
+        let doc = format!("Returns the `{}` asset.", asset.logical_path.display());
         asset_tokens.push(quote! {
+            #[doc = #doc]
             pub fn #ident() -> #ty {
                 #ctor
             }
@@ -198,46 +192,330 @@ fn emit_module(
     }
 }
 
+/// Expand one mounted directory into `pub mod <mount> { ... }`.
+///
+/// `mount` is `""` for the main application asset root, which is emitted as
+/// `pub mod assets` over `Bundle::main`. Every mount also emits:
+///
+/// - one `const _: &[u8] = include_bytes!(<abs file>);` per planned asset, so
+///   adding or editing a file retriggers expansion (a proc macro's own reads
+///   are invisible to Cargo's dependency graph otherwise);
+/// - one `#[used]` metadata static named `waterui_meta_bundle_<mount>` whose
+///   NUL-terminated [`BundleMountMeta`] payload the CLI reads back from the
+///   compiled artifact's symbol table. Debug builds only: the CLI reads a
+///   dev-profile host rlib, and `#[used]` is linker-retained, so the gate is
+///   what keeps release binaries free of it.
+fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
+    if !root.is_dir() {
+        return syn::Error::new(
+            span,
+            format!("bundle directory '{}' does not exist", root.display()),
+        )
+        .to_compile_error();
+    }
+    let waterui = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.into_compile_error(),
+    };
+    let planned = match plan_mount(&root, mount) {
+        Ok(planned) => planned,
+        Err(error) => return syn::Error::new(span, error.to_string()).to_compile_error(),
+    };
+
+    let main = mount.is_empty() || mount == "assets";
+    let module_ident = syn_ident(if main { "assets" } else { mount });
+    let bundle = if main {
+        quote! { #waterui::Bundle::main() }
+    } else {
+        quote! { #waterui::Bundle::new(#mount) }
+    };
+
+    let mut node = ModuleNode::default();
+    let mut tracking = Vec::with_capacity(planned.len());
+    for asset in planned {
+        let file = LitStr::new(asset.source_path.to_string_lossy().as_ref(), span);
+        tracking.push(quote! {
+            const _: &[u8] = include_bytes!(#file);
+        });
+        insert_asset(&mut node, asset);
+    }
+    let body = emit_module(&waterui, &bundle, &node, true);
+
+    let meta = BundleMountMeta {
+        mount: if main {
+            "assets".to_string()
+        } else {
+            mount.to_string()
+        },
+        path: root,
+        project: None,
+    };
+    let meta_ident = syn_ident(&meta.symbol_leaf());
+    let payload = meta.to_payload();
+    let payload_len = payload.len();
+    let payload_lit = syn::LitByteStr::new(&payload, span);
+    let module_doc = format!("Bundle assets mounted at `{mount}`.");
+
+    quote! {
+        #[doc = #module_doc]
+        pub mod #module_ident {
+            #body
+
+            #(#tracking)*
+
+            #[cfg(debug_assertions)]
+            #[used]
+            #[allow(non_upper_case_globals)]
+            #[doc(hidden)]
+            pub static #meta_ident: [u8; #payload_len] = *#payload_lit;
+        }
+    }
+}
+
 #[proc_macro]
 /// Generates the `assets` module for the current crate.
+///
+/// `assets!()` is sugar for `include_bundle!(<assets_path>, as = assets)` where
+/// the path comes from `Water.toml`'s `[package].assets_path` (default
+/// `assets/`). The generated `assets` module is the main bundle: it keeps an
+/// empty path prefix and is the only mount that can claim the `AppIcon` role.
 pub fn assets(input: TokenStream) -> TokenStream {
     if !proc_macro2::TokenStream::from(input).is_empty() {
         return compile_error("assets!() does not accept arguments", Span::call_site());
     }
-    let manifest = match build_manifest() {
-        Ok(manifest) => manifest,
-        Err(error) => return compile_error(error, Span::call_site()),
+    let crate_root = crate_root();
+    let assets_path = match read_assets_path(&crate_root) {
+        Ok(path) => path,
+        Err(error) => return compile_error(error.to_string(), Span::call_site()),
     };
+    expand_mount("", crate_root.join(assets_path), Span::call_site()).into()
+}
+
+#[proc_macro]
+/// Mounts a directory as a named asset bundle.
+///
+/// Expands to `pub mod <mount> { ... }` with a `BUNDLE` constant and one
+/// accessor per file, and emits a `waterui_meta_bundle_<mount>` metadata
+/// static so the CLI stages the directory at package time without scanning
+/// sources. The path is resolved against `CARGO_MANIFEST_DIR` at expansion
+/// time.
+pub fn include_bundle(input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(input as IncludeBundleArgs);
+    let path_span = args.path.span();
+    let root = match crate_root().join(args.path.value()).canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return compile_error(
+                format!(
+                    "include_bundle! path '{}' cannot be resolved: {}",
+                    args.path.value(),
+                    error.kind()
+                ),
+                path_span,
+            );
+        }
+    };
+    expand_mount(&args.mount.to_string(), root, path_span).into()
+}
+
+/// Parsed arguments of an `include_web!("web", out_dir = "…", …)` invocation.
+struct IncludeWebArgs {
+    /// Web project root relative to `CARGO_MANIFEST_DIR`.
+    root: LitStr,
+    /// Build output directory inside the root (`dist` by default).
+    out_dir: Option<LitStr>,
+    /// Entry document (`index.html` by default).
+    entry: Option<LitStr>,
+    /// SPA fallback flag.
+    spa: Option<LitBool>,
+    /// Content-Security-Policy override.
+    csp: Option<LitStr>,
+}
+
+impl Parse for IncludeWebArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let root: LitStr = input.parse()?;
+        let mut args = Self {
+            root,
+            out_dir: None,
+            entry: None,
+            spa: None,
+            csp: None,
+        };
+        while input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if key == "out_dir" {
+                args.out_dir = Some(input.parse()?);
+            } else if key == "entry" {
+                args.entry = Some(input.parse()?);
+            } else if key == "spa" {
+                args.spa = Some(input.parse()?);
+            } else if key == "csp" {
+                args.csp = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!(
+                        "unknown include_web! option `{key}`, expected one of \
+                         `out_dir`, `entry`, `spa`, `csp`"
+                    ),
+                ));
+            }
+        }
+        Ok(args)
+    }
+}
+
+/// One application has one web frontend: the mount is always `web`, which is
+/// also what makes a second `include_web!` an error — two statics with the
+/// same leaf and different payloads fail artifact enumeration.
+const WEB_MOUNT: &str = "web";
+
+#[proc_macro]
+/// Embeds a web frontend into a view: `include_web!("web")` expands to the
+/// `WebViewOpen` that serves the project's staged build output over the
+/// engine's asset origin.
+///
+/// The first argument is the web project root, required, resolved against
+/// `CARGO_MANIFEST_DIR`; it must contain a `package.json` (the macro points at
+/// the project, not its build output). Named arguments are the complete
+/// configuration surface:
+///
+/// - `out_dir = "build"` — the build output inside the root (`dist` default);
+///   it need not exist at expansion time: the macro embeds nothing.
+/// - `entry = "app.html"` — the entry document (`index.html` default).
+/// - `spa = true` — unresolved extensionless paths fall back to `index.html`.
+/// - `csp = "…"` — widen the strict default `Content-Security-Policy`.
+///
+/// Building the frontend and staging `<root>/<out_dir>` into the platform
+/// bundle are the CLI's job (`water package` / `water run`); the macro records
+/// the resolved paths in a `waterui_meta_bundle_web` artifact-channel symbol
+/// the CLI reads back from the compiled artifact's symbol table — debug
+/// builds only, since `#[used]` is linker-retained and the CLI reads a
+/// dev-profile host rlib rather than the target build. The macro never runs a
+/// bundler, never reads `Water.toml`, and embeds no frontend bytes in the
+/// binary. In a debug build the expansion first consults the dev-server
+/// handoff
+/// (`WATERUI_DEV_URL` or a `--waterui-dev-url=` argument) and serves the
+/// bundler's URL instead when one was handed over; release always serves the
+/// staged bundle.
+///
+/// One `include_web!` per application: a second invocation emits a metadata
+/// symbol with the same leaf and a different payload, which the CLI's artifact
+/// enumeration reports as an error.
+///
+/// The expansion is an ordinary [`WebViewOpen`](waterui_webview::WebViewOpen),
+/// so everything chains as usual:
+/// `include_web!("web").serve(MyApi).inject(..).on_event(..)`.
+///
+/// Requires the `webview` and `assets` features of the `waterui` crate.
+pub fn include_web(input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(input as IncludeWebArgs);
+    let root_span = args.root.span();
+
+    let root = match crate_root().join(args.root.value()).canonicalize() {
+        Ok(root) => root,
+        Err(error) => {
+            return compile_error(
+                format!(
+                    "include_web! root '{}' cannot be resolved: {}",
+                    args.root.value(),
+                    error.kind()
+                ),
+                root_span,
+            );
+        }
+    };
+    if !root.join("package.json").is_file() {
+        return compile_error(
+            format!(
+                "'{}' has no package.json — include_web! points at the web \
+                 project root, not its build output",
+                args.root.value()
+            ),
+            root_span,
+        );
+    }
+
+    let out = root.join(
+        args.out_dir
+            .as_ref()
+            .map_or_else(|| "dist".to_string(), LitStr::value),
+    );
+    let entry = args
+        .entry
+        .as_ref()
+        .map_or_else(|| "index.html".to_string(), LitStr::value);
+    let spa = args.spa.as_ref().is_some_and(LitBool::value);
+    let csp = args.csp.as_ref().map(|csp| {
+        let value = csp.value();
+        quote! { .csp(#value) }
+    });
+
     let waterui = match waterui_crate_path() {
         Ok(path) => path,
         Err(error) => return error.into_compile_error().into(),
     };
-    let mut root = ModuleNode::default();
-    for asset in manifest.assets {
-        insert_asset(&mut root, asset);
-    }
-    let body = emit_module(&waterui, &root, None, true);
+
+    let meta = BundleMountMeta {
+        mount: WEB_MOUNT.to_string(),
+        path: out,
+        project: Some(root.clone()),
+    };
+    let meta_ident = syn_ident(&meta.symbol_leaf());
+    let payload = meta.to_payload();
+    let payload_len = payload.len();
+    let payload_lit = syn::LitByteStr::new(&payload, root_span);
+    let package_json = LitStr::new(
+        root.join("package.json").to_string_lossy().as_ref(),
+        root_span,
+    );
+    let entry_lit = LitStr::new(&entry, root_span);
+    let web_root = LitStr::new(WEB_MOUNT, root_span);
+
     quote! {
-        pub mod assets {
-            #body
+        {
+            #[cfg(debug_assertions)]
+            #[used]
+            #[allow(non_upper_case_globals)]
+            #[doc(hidden)]
+            static #meta_ident: [u8; #payload_len] = *#payload_lit;
+
+            // Cargo does not see a proc macro's filesystem reads, so the
+            // package.json the expansion checked is tracked explicitly: the
+            // macro re-expands when it appears or changes.
+            const _: &[u8] = ::core::include_bytes!(#package_json);
+
+            let dev: ::core::option::Option<#waterui::Url> = {
+                #[cfg(debug_assertions)]
+                {
+                    #waterui::webview::dev_url()
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    ::core::option::Option::None
+                }
+            };
+            match dev {
+                ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
+                ::core::option::Option::None => #waterui::webview::WebView::open_assets(
+                    #waterui::webview::DirectoryServer::new(
+                        #waterui::Bundle::new(#web_root).path("")
+                    )
+                    .spa(#spa)
+                    #csp
+                    .into_server_fn(),
+                    #entry_lit,
+                ),
+            }
         }
     }
     .into()
-}
-
-#[proc_macro]
-/// Registers an additional bundle mount for generated asset planning.
-///
-/// The expansion is deliberately inert (`const _: () = ();`): mounts take
-/// effect through `assets!()`, whose planner scans the crate's sources for
-/// `include_bundle!` invocations. Errors about a missing bundle directory
-/// therefore surface at the `assets!()` call site, not here — this macro only
-/// validates the syntax.
-pub fn include_bundle(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as waterui_assets_planner::IncludeBundleArgs);
-    let _ = input.path;
-    let _ = input.mount;
-    quote! { const _: () = (); }.into()
 }
 
 #[proc_macro]

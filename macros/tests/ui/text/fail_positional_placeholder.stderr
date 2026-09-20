@@ -1,0 +1,7 @@
+error: invalid placeholder `{0}` in `text!` format string: placeholders are bare identifiers (`{count}`), optionally with a format spec (`{blur:.1}`) or a plural marker (`{#count}`), and an expression is bound with `name = expr`
+ --> tests/ui/text/fail_positional_placeholder.rs:2:13
+  |
+2 |     let _ = waterui::text!("{0} items");
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `waterui::text` (in Nightly builds, run with -Z macro-backtrace for more info)

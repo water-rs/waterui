@@ -18,7 +18,7 @@ fn secure_view() -> impl View {
     ))
 }
 
-#[waterui::test(secure_view, theme = hydrolysis_m3::install)]
+#[waterui::test(secure_view)]
 fn secure_field_set_text_updates_value(app: &mut SemanticApp) {
     let selector = Selector::default()
         .role(Role::PASSWORD_INPUT)

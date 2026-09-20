@@ -3,4 +3,5 @@ pub mod browser_cef;
 /// FFI bindings for dynamically-typed, backend-supplied platform views.
 pub mod dynamic;
 pub mod icon;
+#[cfg(feature = "webview")]
 pub mod webview;

@@ -1,0 +1,35 @@
+error[E0277]: this handler's parameters cannot be extracted from the environment
+ --> tests/ui/first_contact/handler.rs:8:32
+  |
+8 |     button("Increment").action(|count: Binding<i32>| *count.get_mut() += 1)
+  |                         ------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a handler whose parameters implement `Extractor`
+  |                         |
+  |                         required by a bound introduced by this call
+  |
+  = help: the trait `Handler<_>` is not implemented for closure `{closure@$DIR/tests/ui/first_contact/handler.rs:8:32: 8:53}`
+  = note: A WaterUI handler takes no parameters or parameters implementing `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, and `impl_extractor!` marks a `Clone` type installed as an environment value. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type.
+note: required by a bound in `waterui::component::Button::<Action>::action`
+ --> $WORKSPACE/components/foundation/controls/src/button.rs
+  |
+  |     pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+  |            ------ required by a bound in this associated function
+  |     where
+  |         F: Handler<Args, ()> + 'static,
+  |            ^^^^^^^^^^^^^^^^^ required by this bound in `Button::<Action>::action`
+
+error[E0277]: this handler's parameters cannot be extracted from the environment
+ --> tests/ui/first_contact/handler.rs:7:16
+  |
+7 | fn broken() -> impl View {
+  |                ^^^^^^^^^ expected a handler whose parameters implement `Extractor`
+  |
+  = help: the trait `Handler<_>` is not implemented for closure `{closure@$DIR/tests/ui/first_contact/handler.rs:8:32: 8:53}`
+  = note: A WaterUI handler takes no parameters or parameters implementing `Extractor`: `#[state]` makes an owned `Clone` type extractable from `.state(&value)` injections, `State<T>` wraps an injected value of a foreign type, `Use<T>` reads an environment value, `Option<E>` tolerates a missing one, and `impl_extractor!` marks a `Clone` type installed as an environment value. Repeated parameters of the same state type bind positionally — the first `.state()` call feeds the first parameter of that type.
+note: required by a bound in `waterui::component::Button::<Action>::action`
+ --> $WORKSPACE/components/foundation/controls/src/button.rs
+  |
+  |     pub fn action<F, Args>(self, action: F) -> Button<impl FnMut(&Environment)>
+  |            ------ required by a bound in this associated function
+  |     where
+  |         F: Handler<Args, ()> + 'static,
+  |            ^^^^^^^^^^^^^^^^^ required by this bound in `Button::<Action>::action`

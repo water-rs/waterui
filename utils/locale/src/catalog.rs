@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::string::String;
 
 use icu_locale::LanguageIdentifier;
+use suiteki::Str;
 use waterui_core::plugin::Plugin;
-use waterui_str::Str;
 
 use crate::locale::{Locale, find_in_fallback_chain, locales};
 use crate::parser::{TranslationFile, TranslationValue};

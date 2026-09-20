@@ -1,0 +1,24 @@
+error[E0277]: `std::option::Option<&str>` cannot be used as a control label
+ --> tests/ui/first_contact/into_label.rs:8:12
+  |
+8 |     button(maybe_title)
+  |     ------ ^^^^^^^^^^^ expected a label
+  |     |
+  |     required by a bound introduced by this call
+  |
+  = help: the trait `IntoLabel` is not implemented for `std::option::Option<&str>`
+  = note: `IntoLabel` is implemented by `&'static str`, `String`, `Str`, `StyledStr`, `Text`, `Label`, and `Binding<T>` / `Computed<T>` whose `T` is `IntoText`. For a label rendered as an arbitrary view, use `Label::new(semantic_text, || view)`.
+  = help: the following other types implement trait `IntoLabel`:
+            &'static str
+            Computed<T>
+            Label
+            StyledStr
+            std::string::String
+            waterui::Binding<T>
+            waterui::Str
+            waterui::component::Text
+note: required by a bound in `waterui::component::button`
+ --> $WORKSPACE/components/foundation/controls/src/button.rs
+  |
+  | pub fn button(label: impl IntoLabel) -> Button<fn(&Environment)> {
+  |                           ^^^^^^^^^ required by this bound in `button`

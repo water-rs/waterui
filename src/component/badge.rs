@@ -57,6 +57,9 @@ configurable!(
 impl Badge {
     /// Creates a new Badge with the specified value and content
     ///
+    /// The badge color defaults to the theme's [`Error`](crate::theme::color::Error)
+    /// slot; backends render the platform error color unless `.color(..)` overrides it.
+    ///
     /// # Arguments
     /// * `value` - The numeric value to display on the badge
     /// * `content` - The content that the badge will be attached to
@@ -64,7 +67,7 @@ impl Badge {
         Self(BadgeConfig {
             value: value.into_computed(),
             content: AnyViewBuilder::new(move || content.clone().anyview()),
-            color: Color::default().into_computed(),
+            color: Color::new(crate::theme::color::Error).into_computed(),
         })
     }
 

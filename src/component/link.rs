@@ -10,6 +10,7 @@ use waterui_controls::{
     IntoLabel,
     button::{ButtonStyle, button},
 };
+use waterui_core::env::with;
 use waterui_core::{Environment, Str, View};
 
 /// Opens a URL in the system's default browser/handler.
@@ -61,17 +62,29 @@ where
     }
 }
 
+/// The URL a [`link`] points at, published into the subtree's environment.
+///
+/// Backends read it to surface the target natively — an OSC 8 hyperlink
+/// escape on terminal backends, a status-bar preview, an accessibility
+/// description — without intercepting the button's action.
+#[derive(Debug, Clone)]
+pub struct LinkTarget(pub Computed<Str>);
+
 impl<Label> View for Link<Label>
 where
     Label: IntoLabel + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
         let url = self.url;
+        let target = url.clone();
 
-        button(self.label).style(ButtonStyle::Link).action(move || {
-            let url_str = url.get();
-            open_url(&url_str);
-        })
+        with(
+            button(self.label).style(ButtonStyle::Link).action(move || {
+                let url_str = url.get();
+                open_url(&url_str);
+            }),
+            LinkTarget(target),
+        )
     }
 }
 

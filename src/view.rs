@@ -17,7 +17,7 @@ use waterui_core::{
     AnyView, Environment, IgnorableMetadata, Retain,
     env::{With, use_env},
     extract::State,
-    handler::{Handler, HandlerOnce},
+    handler::{EventHandler, Handler, HandlerOnce},
     layout::{HorizontalAlignment, VerticalAlignment, ViewDimensions},
     metadata::MetadataKey,
     plugin::Plugin,
@@ -31,6 +31,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::filter_view::FilterViewExt;
 
+use suiteki::Str;
 use waterui_layout::{
     AspectRatio, ContentMode, EdgeSet, HorizontalAlignmentGuide, IgnoreSafeArea, LayoutPriority,
     Overlay, VerticalAlignmentGuide,
@@ -39,12 +40,11 @@ use waterui_layout::{
     stack::Alignment,
 };
 use waterui_navigation::NavigationView;
-use waterui_str::Str;
 
 use crate::{
     accessibility::{
         self, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
-        AccessibilityLabel, AccessibilityRole, AccessibilityState,
+        AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityValue,
     },
     background::IntoBackground,
     border::Border,
@@ -187,16 +187,38 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Focused::new(value, equals))
     }
 
-    /// Monitors a signal for changes and triggers a handler when the signal's value changes.
+    /// Runs `handler` whenever `source`'s value changes, for as long as this
+    /// view is mounted.
     ///
-    /// Compare to manual watching, this method automatically manages the watcher lifecycle.
-    fn on_change<C, F>(self, source: &C, handler: F) -> OnChange<Self, C::Guard>
+    /// The handler is an [`EventHandler`]: the new value comes first, then any
+    /// extractor arguments — `State<T>`, `Environment`, … — resolved from the
+    /// environment this view is rendered in. A `Binding` the handler writes
+    /// is injected with [`ViewExt::state`] and read back as a
+    /// `State<Binding<T>>` parameter rather than captured, so the handler can
+    /// be a named function and the data flow stays visible at the call site.
+    ///
+    /// Compared to watching the signal by hand, the watcher's lifetime is
+    /// tied to the view and consecutive equal values are collapsed.
+    ///
+    /// ```
+    /// use waterui::prelude::*;
+    ///
+    /// let selection = Binding::i32(0);
+    /// let last_seen = Binding::i32(0);
+    ///
+    /// let view = text!("{selection}")
+    ///     .on_change(&selection, |value: i32, State(last_seen): State<Binding<i32>>| {
+    ///         last_seen.set(value);
+    ///     })
+    ///     .state(&last_seen);
+    /// ```
+    fn on_change<C, H, A>(self, source: &C, handler: H) -> OnChange<Self, C>
     where
         C: Signal,
         C::Output: PartialEq + Clone,
-        F: Fn(C::Output) + 'static,
+        H: EventHandler<C::Output, A>,
     {
-        OnChange::<Self, C::Guard>::new(self, source, handler)
+        OnChange::new(self, source, handler)
     }
 
     /// Spawns an asynchronous task tied to the lifecycle of this view.
@@ -269,6 +291,27 @@ pub trait ViewExt: View + Sized {
         self.install(theme::ForegroundOverride::new(color))
     }
 
+    /// Renders this view and its subtree in the theme's muted foreground —
+    /// `self.foreground(MutedForeground)`, the color captions, secondary
+    /// labels and inactive icons share.
+    ///
+    /// `.foreground(Foreground)` restores the primary foreground below a
+    /// muted subtree.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// vstack((
+    ///     text!("Sync"),
+    ///     text!("Last run: never").caption().muted(),
+    /// ));
+    /// ```
+    fn muted(self) -> impl View {
+        self.foreground(theme::color::MutedForeground)
+    }
+
     /// Adds an overlay to this view.
     ///
     /// Unlike `ZStack`, `Overlay` will not affect the size of the base view.
@@ -283,7 +326,7 @@ pub trait ViewExt: View + Sized {
     ///
     /// text("Hello").overlay(Color::red().with_opacity(0.5));
     /// ```
-    fn overlay<V>(self, overlay: V) -> Overlay<Self, V> {
+    fn overlay<V: View>(self, overlay: V) -> Overlay<Self, V> {
         Overlay::new(self, overlay)
     }
 
@@ -501,10 +544,42 @@ pub trait ViewExt: View + Sized {
 
     /// Adds padding to this view with custom edge insets.
     ///
+    /// `EdgeInsets` converts from a single `f32` (every edge), a
+    /// `(vertical, horizontal)` pair and a `[top, bottom, leading, trailing]`
+    /// array, so the common shapes need no constructor:
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    ///
+    /// text!("a").padding_with(16.0);
+    /// text!("b").padding_with((8.0, 16.0));
+    /// text!("c").padding_with([4.0, 12.0, 16.0, 16.0]);
+    /// ```
+    ///
     /// # Arguments
     /// * `edge` - The edge insets to apply as padding
     fn padding_with(self, edge: impl IntoComputed<EdgeInsets>) -> Padding {
         Padding::new(edge, self)
+    }
+
+    /// Adds padding on the leading and trailing edges only.
+    fn padding_horizontal(self, value: impl IntoSignalF32) -> Padding {
+        Padding::new(
+            value
+                .into_signal_f32()
+                .map(|value| EdgeInsets::symmetric(0.0, value)),
+            self,
+        )
+    }
+
+    /// Adds padding on the top and bottom edges only.
+    fn padding_vertical(self, value: impl IntoSignalF32) -> Padding {
+        Padding::new(
+            value
+                .into_signal_f32()
+                .map(|value| EdgeInsets::symmetric(value, 0.0)),
+            self,
+        )
     }
 
     /// Adds default padding to this view.
@@ -549,6 +624,23 @@ pub trait ViewExt: View + Sized {
     /// * `label` - The accessibility label to apply, constant or reactive
     fn a11y_label(self, label: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityLabel> {
         IgnorableMetadata::new(self, accessibility::AccessibilityLabel::new(label))
+    }
+
+    /// Sets the accessibility value for this view.
+    ///
+    /// The value is the node's own semantic content, announced by assistive
+    /// technologies after the label — a formula's spoken mathematics, a chart's
+    /// summary, a document's description. It exists beside the label, so
+    /// applying a human-readable `.a11y_label(...)` no longer discards the
+    /// content a component publishes about itself.
+    ///
+    /// The value is reactive: pass a signal and it stays current without
+    /// rebuilding the subtree.
+    ///
+    /// # Arguments
+    /// * `value` - The accessibility value to apply, constant or reactive
+    fn a11y_value(self, value: impl IntoComputed<Str>) -> IgnorableMetadata<AccessibilityValue> {
+        IgnorableMetadata::new(self, accessibility::AccessibilityValue::new(value))
     }
 
     /// Sets the accessibility role for this view.
@@ -1188,7 +1280,8 @@ pub trait ViewExt: View + Sized {
     /// Injects cloneable state into this view subtree's environment.
     ///
     /// Actions and event handlers can later extract the injected value using
-    /// [`waterui_core::extract::State`] in their handler parameters.
+    /// [`waterui_core::extract::State`] in their handler parameters — or bare,
+    /// as `value: T`, when `T` is an owned type marked `#[state]`.
     ///
     /// # Example
     ///

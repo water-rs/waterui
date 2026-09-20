@@ -1,0 +1,5 @@
+error: unknown include_web! option `bogus`, expected one of `out_dir`, `entry`, `spa`, `csp`
+ --> tests/ui/include_web/fail_unknown_option.rs:2:56
+  |
+2 |     let _ = waterui_assets_macros::include_web!("web", bogus = true);
+  |                                                        ^^^^^

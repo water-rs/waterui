@@ -46,6 +46,23 @@ fn set_f64_button(label: &'static str, value: f64, binding: &Binding<f64>) -> im
         .state(binding)
 }
 
+/// The two axes of the translation demo, injected as one state value.
+#[state]
+#[derive(Clone)]
+struct TranslationAxes {
+    x: Binding<f32>,
+    y: Binding<f32>,
+}
+
+/// The scale and rotation of the combined-transform demo, injected as one
+/// state value.
+#[state]
+#[derive(Clone)]
+struct ScaleRotation {
+    scale: Binding<f32>,
+    rotation: Binding<f32>,
+}
+
 /// Demo: Scale animation - visual transform on colored boxes
 fn scale_animation_section(scale: &Binding<f32>) -> impl View {
     let animated_scale = scale.with(Animation::spring(300.0, 15.0));
@@ -108,8 +125,10 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
 fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32>) -> impl View {
     let animated_x = offset_x.with(Animation::spring(200.0, 20.0));
     let animated_y = offset_y.with(Animation::spring(200.0, 20.0));
-    let center_x = offset_x.clone();
-    let center_y = offset_y.clone();
+    let axes = TranslationAxes {
+        x: offset_x.clone(),
+        y: offset_y.clone(),
+    };
 
     vstack((
         text("Translation Animation").headline(),
@@ -122,10 +141,12 @@ fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32
         ),
         vstack((
             hstack((
-                button("Center").action(move || {
-                    center_x.set(0.0);
-                    center_y.set(0.0);
-                }),
+                button("Center")
+                    .action(|a: TranslationAxes| {
+                        a.x.set(0.0);
+                        a.y.set(0.0);
+                    })
+                    .state(&axes),
                 set_f32_button("Left", -50.0, offset_x),
                 set_f32_button("Right", 50.0, offset_x),
             )),
@@ -146,10 +167,10 @@ fn combined_transform_section(
     let animated_scale = combined_scale.with(Animation::spring(250.0, 18.0));
     let animated_rotation =
         combined_rotation.with(Animation::ease_in_out(Duration::from_millis(400)));
-    let reset_scale = combined_scale.clone();
-    let reset_rotation = combined_rotation.clone();
-    let grow_scale = combined_scale.clone();
-    let grow_rotation = combined_rotation.clone();
+    let transform = ScaleRotation {
+        scale: combined_scale.clone(),
+        rotation: combined_rotation.clone(),
+    };
 
     vstack((
         text("Combined Transforms").headline(),
@@ -162,14 +183,18 @@ fn combined_transform_section(
             COMBINED_STAGE_SIDE,
         ),
         hstack((
-            button("Reset").action(move || {
-                reset_scale.set(1.0);
-                reset_rotation.set(0.0);
-            }),
-            button("Grow + Spin").action(move || {
-                grow_scale.set(1.8);
-                *grow_rotation.get_mut() += 180.0;
-            }),
+            button("Reset")
+                .action(|t: ScaleRotation| {
+                    t.scale.set(1.0);
+                    t.rotation.set(0.0);
+                })
+                .state(&transform),
+            button("Grow + Spin")
+                .action(|t: ScaleRotation| {
+                    t.scale.set(1.8);
+                    *t.rotation.get_mut() += 180.0;
+                })
+                .state(&transform),
             button("Pulse")
                 .action(|State(s): State<Binding<f32>>| {
                     if s.get() > 1.2 {
@@ -358,7 +383,7 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View {
                 .min_width(60.0),
         )),
         button("Toggle Bars")
-            .action(|State(e): State<Binding<bool>>| e.set(!e.get()))
+            .action(|State(e): State<Binding<bool>>| e.toggle())
             .state(expanded),
     ))
     .padding()

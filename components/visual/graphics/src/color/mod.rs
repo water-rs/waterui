@@ -134,6 +134,11 @@ where
     fn body(self, _env: &Environment) -> impl View {
         Color::new(self)
     }
+
+    /// Resolves to `Color`, which fills both axes.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        waterui_core::layout::StretchAxis::Both
+    }
 }
 
 impl<T> WithOpacity<T> {
@@ -730,6 +735,11 @@ environment_color!(
 environment_color!(
     SelectionForegroundColor,
     "Selection-foreground color key for environment queries."
+);
+environment_color!(ErrorColor, "Error color key for environment queries.");
+environment_color!(
+    ErrorForegroundColor,
+    "Error-foreground color key for environment queries."
 );
 
 /// The light or dark appearance the application is drawn in.

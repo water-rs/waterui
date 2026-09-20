@@ -81,10 +81,12 @@ pub fn project_block_03() -> impl View {
 // project.md § "## Logging and debugging" — rust block 4/4
 // ---------------------------------------------------------------------------
 pub fn project_block_04() {
+    use waterui::log::{debug, info};
+
     let value = 42_i32;
 
-    waterui::log::debug!(?value, "recomputed layout");
-    waterui::log::info!("saved");
+    debug!(?value, "recomputed layout");
+    info!("saved");
 }
 
 // ---------------------------------------------------------------------------

@@ -12,13 +12,9 @@ categories = ["gui"]
 
 [dependencies]
 waterui-core.workspace = true
-waterui-str.workspace = true
+suiteki.workspace = true
 waterkit-location.workspace = true
 nami.workspace = true
-
-[dev-dependencies]
-waterui = { path = "../../.." }
-waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true

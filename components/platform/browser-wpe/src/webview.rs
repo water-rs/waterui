@@ -6,7 +6,10 @@ use nami::watcher::BoxWatcherGuard;
 use serde::Deserialize;
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
-use waterui_webview::{CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle};
+use waterui_webview::{
+    ASSET_ORIGIN, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewConfig,
+    WebViewHandle,
+};
 
 use crate::{WpePage, WpeRuntime, WpeRuntimePaths};
 
@@ -97,8 +100,15 @@ impl WpeController {
 }
 
 impl CustomWebViewController for WpeController {
-    fn open(&self) -> impl WebViewHandle {
-        WpeWebViewHandle::new(WpePage::new(self.runtime()))
+    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+        let page = WpePage::new(self.runtime());
+        // Interception goes on the page's web context before any asset URL can
+        // navigate — the page still sits blank here.
+        let asset_origin = config.asset_server.map(|server| {
+            page.set_asset_server(server);
+            Url::new(ASSET_ORIGIN)
+        });
+        WpeWebViewHandle::new(page, asset_origin)
     }
 }
 
@@ -121,6 +131,9 @@ type RedirectSubscription = Option<(Computed<bool>, BoxWatcherGuard)>;
 #[derive(Clone)]
 pub struct WpeWebViewHandle {
     page: WpePage,
+    /// The `waterui://localhost` origin this view serves, when it was opened
+    /// with an asset server.
+    asset_origin: Option<Url>,
     redirects: Rc<RefCell<RedirectSubscription>>,
 }
 
@@ -134,8 +147,11 @@ impl core::fmt::Debug for WpeWebViewHandle {
 
 impl WpeWebViewHandle {
     /// Creates a standard handle around `page`.
+    ///
+    /// `asset_origin` is `Some` when the page was armed with an asset server —
+    /// see [`WpeController::open`](crate::WpeController#impl-CustomWebViewController).
     #[must_use]
-    pub fn new(page: WpePage) -> Self {
+    pub fn new(page: WpePage, asset_origin: Option<Url>) -> Self {
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WPE's single WebKit message handler has to exist before it runs.
         page.add_script(TRANSPORT_SCRIPT_KEY, TRANSPORT_SCRIPT, false);
@@ -146,6 +162,7 @@ impl WpeWebViewHandle {
         );
         Self {
             page,
+            asset_origin,
             redirects: Rc::new(RefCell::new(None)),
         }
     }
@@ -158,6 +175,10 @@ impl WpeWebViewHandle {
 }
 
 impl WebViewHandle for WpeWebViewHandle {
+    fn asset_origin(&self) -> Option<Url> {
+        self.asset_origin.clone()
+    }
+
     fn go_back(&self) {
         self.page.go_back();
     }
@@ -248,7 +269,7 @@ impl WebViewHandle for WpeWebViewHandle {
         clippy::future_not_send,
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
-    async fn run_javascript(&self, script: &str) -> Result<waterui_str::Str, waterui_str::Str> {
+    async fn run_javascript(&self, script: &str) -> Result<suiteki::Str, suiteki::Str> {
         self.page.run_javascript(script).await
     }
 
@@ -256,10 +277,7 @@ impl WebViewHandle for WpeWebViewHandle {
         clippy::future_not_send,
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
-    async fn call_async_javascript(
-        &self,
-        body: &str,
-    ) -> Result<waterui_str::Str, waterui_str::Str> {
+    async fn call_async_javascript(&self, body: &str) -> Result<suiteki::Str, suiteki::Str> {
         self.page.call_async_javascript(body).await
     }
 }

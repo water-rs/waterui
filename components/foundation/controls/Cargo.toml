@@ -26,7 +26,6 @@ executor-core.workspace = true
 default = []
 
 [dev-dependencies]
-hydrolysis-m3.workspace = true
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
 

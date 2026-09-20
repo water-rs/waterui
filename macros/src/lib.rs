@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use syn::{Data, DeriveInput, Fields, ItemFn, Meta, parse_macro_input};
 mod identifiable;
 mod locale;
+mod state;
 mod view_builder;
 
 fn waterui_crate_path() -> syn::Result<TokenStream2> {
@@ -241,6 +242,49 @@ pub fn view(input: TokenStream) -> TokenStream {
 /// can return different concrete `View` types under a shared `impl View`.
 pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
+}
+
+/// Marks an owned `Clone` type as an [`Extractor`](waterui::extract::Extractor)
+/// over the `.state(&value)` injection channel.
+///
+/// `State<T>` is the wrapper for a type the app cannot implement traits for —
+/// `Binding<Str>`, a third-party value. Naming it for a type the app *does*
+/// own reads as an anti-pattern: mark the type `#[state]` once and handlers
+/// take the value bare.
+///
+/// ```rust
+/// use waterui::prelude::*;
+///
+/// #[state]
+/// #[derive(Clone)]
+/// struct Editor {
+///     doc: Binding<Str>,
+/// }
+/// # impl Editor {
+/// #     fn save(&self) {}
+/// # }
+///
+/// # fn view(editor: &Editor) -> impl View {
+/// button("Save")
+///     .action(|editor: Editor| editor.save())
+///     .state(editor)
+/// # }
+/// ```
+///
+/// The generated `Extractor` implementation delegates to
+/// [`State<Self>`](waterui::extract::State), so `.state(&value)` remains the
+/// injection mechanism and a bare `T` parameter shares extraction positions
+/// with `State<T>` parameters of the same type — the first `.state()` call
+/// feeds the first parameter of that type.
+///
+/// The type must be `Clone + 'static`; the requirement is enforced at the
+/// attribute so a missing `Clone` reports here rather than inside the
+/// expansion. For an owned type that should read a value installed directly in
+/// the environment instead of through `.state()`, use
+/// [`impl_extractor!`](waterui::impl_extractor).
+#[proc_macro_attribute]
+pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
+    state::expand(args, input)
 }
 
 /// Derives `Identifiable` using a struct field as the stable identifier.
@@ -894,6 +938,7 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
+        #[cfg_attr(not(debug_assertions), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview
@@ -978,7 +1023,7 @@ impl WateruiTestArgs {
         }
         Err(syn::Error::new_spanned(
             name,
-            "`#[waterui::test(...)]` accepts an optional view function path followed by `theme = <installer>`, `viewport = (width, height)`, and `offscreen`",
+            "`#[waterui::test(...)]` accepts an optional view function path followed by `theme = <style>`, `viewport = (width, height)`, and `offscreen`",
         ))
     }
 
@@ -1018,6 +1063,12 @@ impl Parse for WateruiTestArgs {
                 args.parse_named(input)?;
             }
             first = false;
+        }
+        if args.offscreen && args.theme.is_none() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "`offscreen` mounts the rendered runtime, which needs a style — pass `theme = <style>`",
+            ));
         }
         if args.offscreen && args.view.is_none() {
             return Err(syn::Error::new(
@@ -1185,11 +1236,14 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///
 /// # Mounting form
 ///
-/// A no-arg view function path mounts before the test body runs; the test
-/// function receives the app session by `&mut`. `theme = <installer>` swaps
-/// the theme package, `viewport = (width, height)` sizes the window, and the
-/// bare `offscreen` flag mounts the GPU-backed offscreen runtime (the test
-/// then takes `&mut OffscreenApp`).
+/// A no-arg view function path mounts the semantic runtime before the test
+/// body runs; the test function receives `&mut SemanticApp`. `theme = <style>`
+/// carries a [`hydrolysis::Style`](https://docs.rs/hydrolysis) value (for
+/// example `hydrolysis_m3::Material3::defaults()`), `viewport = (width,
+/// height)` sizes the window, and the bare `offscreen` flag mounts the
+/// rendered offscreen runtime instead — the test then takes `&mut
+/// OffscreenApp`. `offscreen` requires `theme =`: the rendered runtime is
+/// styled by construction.
 ///
 /// ```rust
 /// # use waterui::prelude::*;
@@ -1198,9 +1252,21 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// #   button("Login").action(|| {})
 /// }
 ///
-/// #[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+/// #[waterui::test(login_view, viewport = (360, 320))]
 /// fn login_flow(app: &mut waterui_testing::SemanticApp) {
 ///     app.query().role(waterui_testing::Role::BUTTON).label("Login").tap();
+/// }
+/// # fn main() {}
+/// ```
+///
+/// The styled form mounts pixels through the same harness:
+///
+/// ```ignore
+/// # use waterui::prelude::*;
+/// # fn login_view() -> impl View { button("Login").action(|| {}) }
+/// #[waterui::test(login_view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
+/// fn login_pixels(app: &mut waterui_testing::OffscreenApp) {
+///     app.capture_snapshot();
 /// }
 /// # fn main() {}
 /// ```
@@ -1210,10 +1276,11 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 /// Without a view path the test function receives the configured
 /// [`UiBuilder`](https://docs.rs/waterui-testing) by value and mounts in its
 /// own body — the form for tests that own `Binding`s the view closes over.
+/// A styled manual mount names the style in the parameter type.
 ///
 /// ```rust
 /// # use waterui::prelude::*;
-/// #[waterui::test(theme = hydrolysis_m3::install)]
+/// #[waterui::test]
 /// fn stepper_updates_binding(ui: waterui_testing::UiBuilder) {
 ///     let value = Binding::i32(2);
 ///     let value_for_view = value.clone();
@@ -1242,6 +1309,11 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
+    let waterui_path = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let fn_name = &input_fn.sig.ident;
@@ -1250,7 +1322,15 @@ pub fn ui_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_type = &typed_arg.ty;
     let async_wrapper = input_fn.sig.asyncness.is_some();
 
-    let mut builder = quote! { #testing_path::ui() };
+    // `catalog!` must expand in the test's own crate — that is where `i18n/`
+    // lives — so the configured environment comes from the expansion here
+    // rather than from inside `waterui-testing`.
+    let mut builder = quote! {
+        #testing_path::ui()
+            .environment(
+                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
+            )
+    };
     if let Some((width, height)) = &test_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
     }
@@ -1351,7 +1431,7 @@ impl WateruiBenchArgs {
         }
         Err(syn::Error::new_spanned(
             name,
-            "`#[waterui::bench(...)]` accepts an optional view function path followed by `theme = <installer>`, `viewport = (width, height)`, and the budgets `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`, `max_gpu_surface_layers`, `max_clip_layers`",
+            "`#[waterui::bench(...)]` accepts an optional view function path followed by `theme = <style>`, `viewport = (width, height)`, and the budgets `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`, `max_gpu_surface_layers`, `max_clip_layers`",
         ))
     }
 
@@ -1388,6 +1468,12 @@ impl Parse for WateruiBenchArgs {
                 args.parse_named(input)?;
             }
             first = false;
+        }
+        if args.theme.is_none() {
+            return Err(syn::Error::new(
+                Span::call_site(),
+                "`#[waterui::bench(...)]` measures rendered frames, which need a style — pass `theme = <style>`",
+            ));
         }
         Ok(args)
     }
@@ -1441,19 +1527,21 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 ///
 /// # Mounting form
 ///
-/// A no-arg view function path mounts offscreen before the bench body runs;
-/// the bench function receives `&mut PerfApp` and records scenarios with
-/// `measure`. `theme = <installer>` swaps the theme package and
+/// A no-arg view function path mounts the rendered offscreen runtime before
+/// the bench body runs; the bench function receives `&mut PerfApp` and records
+/// scenarios with `measure`. Benches measure rendered frames, so a
+/// `theme = <style>` argument — a [`hydrolysis::Style`](https://docs.rs/hydrolysis)
+/// value such as `hydrolysis_m3::Material3::defaults()` — is required.
 /// `viewport = (width, height)` sizes the window.
 ///
-/// ```rust
+/// ```ignore
 /// # use waterui::prelude::*;
 /// fn dashboard() -> impl View {
 ///     // ...
 /// #   text("Dashboard")
 /// }
 ///
-/// #[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+/// #[waterui::bench(dashboard, theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844), max_p95_us = 8_000)]
 /// fn dashboard_redraw(perf: &mut waterui_testing::PerfApp) {
 ///     perf.measure("steady-redraw", |run| run.redraw());
 /// }
@@ -1462,19 +1550,21 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 ///
 /// # Manual form
 ///
-/// Without a view path the bench function receives the configured
-/// `UiBuilder` by value, drives `perf_with` itself, and returns the
-/// `PerfReport` — the form for benches that own `Binding`s the view closes
-/// over.
+/// Without a view path the bench function receives the configured `UiBuilder`
+/// — typed `UiBuilder<Styled<S>>` by the `theme =` argument — by value, drives
+/// `perf_with` itself, and returns the `PerfReport` — the form for benches
+/// that own `Binding`s the view closes over.
 ///
-/// ```rust
+/// ```ignore
 /// # use waterui::prelude::*;
 /// # fn counter(value: &Binding<i32>) -> impl View {
 /// #     let value = value.clone();
 /// #     button("Increment").action(move || *value.get_mut() += 1)
 /// # }
-/// #[waterui::bench(theme = hydrolysis_m3::install, max_rebuild_ratio = 0.2)]
-/// fn counter_updates(ui: waterui_testing::UiBuilder) -> waterui_testing::PerfReport {
+/// #[waterui::bench(theme = hydrolysis_m3::Material3::defaults(), max_rebuild_ratio = 0.2)]
+/// fn counter_updates(
+///     ui: waterui_testing::UiBuilder<waterui_testing::Styled<hydrolysis_m3::Material3>>,
+/// ) -> waterui_testing::PerfReport {
 ///     let value = Binding::i32(0);
 ///     let value_for_view = value.clone();
 ///     ui.perf_with(move || counter(&value_for_view), |perf| {
@@ -1510,6 +1600,11 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
         Err(error) => return error.to_compile_error().into(),
     };
 
+    let waterui_path = match waterui_crate_path() {
+        Ok(path) => path,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     let attrs = &input_fn.attrs;
     let visibility = &input_fn.vis;
     let bench_name = input_fn.sig.ident.to_string();
@@ -1521,7 +1616,12 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     let arg_pattern = &typed_arg.pat;
     let arg_type = &typed_arg.ty;
 
-    let mut builder = quote! { #testing_path::ui() };
+    let mut builder = quote! {
+        #testing_path::ui()
+            .environment(
+                #waterui_path::configure_environment!(#waterui_path::env::Environment::new())
+            )
+    };
     if let Some((width, height)) = &bench_args.viewport {
         builder = quote! { #builder.viewport(#width, #height) };
     }

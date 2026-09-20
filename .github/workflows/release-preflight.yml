@@ -18,6 +18,13 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+
 jobs:
   semver:
     name: Local API vs published baseline
@@ -26,8 +33,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
       # cargo-semver-checks builds rustdoc for the real crate, so this job needs
       # the same native libraries a normal build does — without them it dies in
       # `khronos-egl`'s build script and reports nothing about the API at all.
@@ -41,8 +49,16 @@ jobs:
       - id: baseline
         run: |
           set -euo pipefail
-          if curl -sfL https://index.crates.io/wa/te/waterui \
-               | grep -q '"yanked":false'; then
+          index="$RUNNER_TEMP/waterui-index"
+          code="$(curl -sL --retry 10 -o "$index" -w '%{http_code}' https://index.crates.io/wa/te/waterui)"
+          # 404 is a real answer (nothing published yet); a transport or
+          # CDN failure must fail the job rather than silently skip the
+          # baseline check.
+          if [[ "$code" != 2* && "$code" != 404 ]]; then
+            echo "::error::the crates.io index probe failed with HTTP $code"
+            exit 1
+          fi
+          if [[ "$code" == 2* ]] && grep -q '"yanked":false' "$index"; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -52,3 +68,181 @@ jobs:
         uses: ./.github/actions/cargo-semver-checks
       - if: steps.baseline.outputs.exists == 'true'
         run: cargo semver-checks check-release
+
+  resolve-gate:
+    name: Consumer resolve and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-linux-deps
+      - name: Install cargo-local-registry
+        uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-local-registry@0.2.12
+          path: ~/.cargo/bin/cargo-local-registry*
+      # margo is not on crates.io; upstream publishes it to its own sparse
+      # index, which install-action's fallback cannot reach. Installing
+      # from the repo is not an option either: its manifest's
+      # dev-dependencies name a registry that only exists in that repo's
+      # config, so `cargo install --git` cannot read the package at all.
+      - uses: actions/cache@v4
+        id: margo
+        with:
+          path: ~/.cargo/bin/margo*
+          key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-margo@0.1.7
+      - name: Install margo
+        if: steps.margo.outputs.cache-hit != 'true'
+        run: cargo install margo --version 0.1.7 --index sparse+https://integer32llc.github.io/margo/
+      - name: Package the publishable set
+        run: |
+          set -euo pipefail
+          # Only crates that would actually reach crates.io belong in the
+          # registry: `publish = false` members carry git and path-only
+          # dependencies that can never be packaged, and `cargo package
+          # --workspace` does not skip them.
+          mapfile -t specs < <(
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r '.packages[] | select(.publish != []) | "-p\n" + .name'
+          )
+          cargo package --no-verify "${specs[@]}"
+      - name: Build a local registry that replaces crates.io
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/resolve-gate"
+          reg="$scratch/registry"
+          staged="$scratch/staged"
+          mkdir -p "$staged" "$scratch/probe/src"
+          touch "$scratch/probe/src/lib.rs"
+          # The closure has to come from the packaged manifests, not the
+          # workspace: in-workspace deps resolve through `path` entries that
+          # `sync` skips, while the .crate manifests name registry versions —
+          # e.g. `waterui-media` declares `waterkit-dialog`, which the kit
+          # checkout satisfies by path here but a consumer must fetch.
+          for crate in "$GITHUB_WORKSPACE"/target/package/*.crate; do
+            tar -xzf "$crate" -C "$staged"
+          done
+          {
+            printf '[package]\nname = "probe"\nversion = "0.0.0"\nedition = "2024"\npublish = false\n\n[workspace]\n\n[patch.crates-io]\n'
+            for dir in "$staged"/*/; do
+              base=$(basename "$dir")
+              name=$(sed -E 's/-[0-9]+\.[0-9]+\.[0-9]+.*//' <<< "$base")
+              printf '%s = { path = "%s" }\n' "$name" "${dir%/}"
+            done
+            printf '\n[dependencies]\n'
+            # Exact pins keep every staged name unified on its packaged
+            # version; without them a newer published minor would win each
+            # transitive `^` requirement and the staged crate would go
+            # unresolved.
+            for dir in "$staged"/*/; do
+              base=$(basename "$dir")
+              name=$(sed -E 's/-[0-9]+\.[0-9]+\.[0-9]+.*//' <<< "$base")
+              printf '%s = "=%s"\n' "$name" "${base#"$name"-}"
+            done
+            # A lockfile only records the deps a feature set enables, but the
+            # registry index demands every name a staged manifest declares —
+            # optional ones like `pulldown-cmark` included. Re-declare each
+            # non-dev dep with its requested features so the locked closure
+            # covers them all.
+            for dir in "$staged"/*/; do
+              cargo metadata --format-version 1 --no-deps \
+                --manifest-path "${dir%/}/Cargo.toml"
+            done | jq -rs '
+              [ .[].packages[0].dependencies[]
+                | select(.kind != "dev")
+                | select(.source == "registry+https://github.com/rust-lang/crates.io-index")
+                | {name, req, features, uses_default_features} ]
+              | unique | to_entries[]
+              | "gate_dep_\(.key) = { package = \(.value.name | @json)"
+                + ", version = \(.value.req | @json)"
+                + ", features = \(.value.features | @json)"
+                + (if .value.uses_default_features then "" else ", default-features = false" end)
+                + " }"'
+          } > "$scratch/probe/Cargo.toml"
+          cargo generate-lockfile --manifest-path "$scratch/probe/Cargo.toml"
+          # `margo add` writes index entries for the packaged set first, into
+          # the `index/` layout a local-registry source uses. The staged
+          # entries must go in before `sync`: margo parses each existing index
+          # file before extending it, and its strict schema rejects the
+          # `"kind": null` fields `sync` emits — while `sync --no-delete`
+          # happily keeps margo's lines when it adds its own entries after.
+          margo init "$reg/index" --defaults --base-url "file://$reg/index/"
+          margo add --registry "$reg/index" target/package/*.crate
+          cargo local-registry "$reg" sync --no-delete "$scratch/probe/Cargo.lock"
+          # `margo` stores archives under `index/crates/`; a local-registry
+          # source expects `<name>-<version>.crate` at the registry root.
+          while IFS= read -r crate; do
+            cp "$crate" "$reg/$(basename "$(dirname "$crate")")-$(basename "$crate")"
+          done < <(find "$reg/index/crates" -name '*.crate')
+      # The stable channel resolves a `framework.json` published on the
+      # framework's GitHub release — which does not exist yet. The gate
+      # certifies the candidate with the same generator the release job runs
+      # and hands it to `water create` directly; this is also the generator's
+      # own end-to-end test.
+      - name: Certify the candidate framework manifest
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          tag="v$(cargo metadata --format-version 1 --no-deps \
+            --manifest-path Cargo.toml \
+            | jq -r '.packages[] | select(.name == "waterui") | .version')"
+          python3 .github/scripts/framework_manifest.py stable \
+            --tag "$tag" --revision "$GITHUB_SHA"
+      # `water create gate` certifies the release the way users meet it: with
+      # the newest published `waterui-cli` on crates.io satisfying this tree's
+      # `minimum-cli-version`. The CLI lives in water-rs/cli and releases on
+      # its own cadence — a `waterui-cli` version identical to this
+      # workspace's no longer exists to install.
+      - name: Install the published CLI and scaffold a project
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/resolve-gate"
+          consumer="$scratch/consumer"
+          # The install must resolve the real crates.io, so it runs before the
+          # local-registry replacement below exists — and the replacement
+          # must not live in $CARGO_HOME either, where every cargo invocation
+          # (including this install) would see it.
+          floor="$(cargo metadata --format-version 1 --no-deps \
+            --manifest-path "$GITHUB_WORKSPACE/Cargo.toml" \
+            | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["minimum-cli-version"]')"
+          if [[ -z "$floor" || "$floor" == "null" ]]; then
+            echo "::error file=Cargo.toml::package.metadata.waterui.minimum-cli-version is missing"
+            exit 1
+          fi
+          if ! cargo install waterui-cli --version ">=$floor"; then
+            echo "::error::no published waterui-cli satisfies the framework's minimum-cli-version (>=$floor)"
+            exit 1
+          fi
+          mkdir -p "$consumer/.cargo"
+          cat > "$consumer/.cargo/config.toml" <<-EOF
+          [source.crates-io]
+          replace-with = "local-registry"
+
+          [source.local-registry]
+          local-registry = "$scratch/registry"
+          EOF
+          cd "$consumer"
+          water create gate --mode playground \
+            --framework-manifest "$GITHUB_WORKSPACE/framework.json"
+      - name: Resolve and build the scaffolded project
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/resolve-gate/consumer/gate"
+          # A stable-channel scaffold must resolve the framework from the
+          # registry alone: any `waterui_path` or `path =` pin would hide the
+          # very resolution this gate exists to test.
+          if grep -q waterui_path Water.toml || grep -q 'path =' Cargo.toml; then
+            echo "Scaffold pins a local waterui checkout; the registry was not exercised."
+            exit 1
+          fi
+          cargo build
+          # --duplicates prints each repeated package flush-left with its
+          # dependents indented beneath; anchoring on the first column keeps
+          # a third-party duplicate that merely has a framework dependent
+          # from tripping the check.
+          if cargo tree --duplicates | grep -E '^(waterui|hydrolysis|waterkit|nami)'; then
+            echo "The consumer graph carries two versions of a framework crate."
+            exit 1
+          fi

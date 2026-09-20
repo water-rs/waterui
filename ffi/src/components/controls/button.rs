@@ -10,6 +10,8 @@ into_ffi! {ButtonStyle, non_exhaustive,
         Borderless,
         Bordered,
         BorderedProminent,
+        Glass,
+        GlassProminent,
     }
 }
 

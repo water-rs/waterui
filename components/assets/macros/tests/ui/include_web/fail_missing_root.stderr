@@ -1,0 +1,5 @@
+error: include_web! root 'definitely/not/a/web/root' cannot be resolved: entity not found
+ --> tests/ui/include_web/fail_missing_root.rs:2:49
+  |
+2 |     let _ = waterui_assets_macros::include_web!("definitely/not/a/web/root");
+  |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

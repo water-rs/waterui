@@ -9,6 +9,13 @@ inputs:
   command:
     description: "`release-pr` or `release`."
     required: true
+outputs:
+  report:
+    description: >-
+      release-plz's own JSON report of what it just did: `releases`, one entry
+      per published package carrying the tag it created, for `release`; `prs`
+      for `release-pr`.
+    value: ${{ steps.run.outputs.report }}
 runs:
   using: composite
   steps:
@@ -23,10 +30,22 @@ runs:
         rev: cc554a52e97e0ee359e45c7801d770895247cf27
         locked: true
     - uses: release-plz/git-config@v0.1.2
+    # `-o json` puts the report on stdout and leaves the progress log on
+    # stderr, so the report is captured without swallowing anything a failure
+    # would print. Asking release-plz what it tagged is the only reliable way
+    # to know: the tags do not land on the commit this job checked out, and a
+    # `git tag --points-at HEAD` guess is what skipped the CLI binary build
+    # for 0.2.1 (#540).
     - name: Run release-plz ${{ inputs.command }}
+      id: run
       shell: bash
-      run: >-
-        release-plz ${{ inputs.command }}
-        --git-token "${GITHUB_TOKEN}"
-        --repo-url "https://github.com/${GITHUB_REPOSITORY}"
-        --forge github
+      run: |
+        set -euo pipefail
+        report="${RUNNER_TEMP}/release-plz-${{ inputs.command }}.json"
+        release-plz ${{ inputs.command }} \
+          --git-token "${GITHUB_TOKEN}" \
+          --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
+          --forge github \
+          -o json > "$report"
+        printf 'report=%s\n' "$(jq -c '.' "$report")" >> "$GITHUB_OUTPUT"
+        jq '.' "$report"

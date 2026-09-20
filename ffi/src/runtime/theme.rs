@@ -182,6 +182,10 @@ pub enum WuiColorSlot {
     SelectionContainer = 11,
     /// Foreground drawn on the selection container.
     SelectionForeground = 12,
+    /// Destructive / error emphasis: badges, destructive buttons, validation.
+    Error = 13,
+    /// Foreground drawn on the error color.
+    ErrorForeground = 14,
 }
 
 /// Installs a color signal for a specific slot.
@@ -231,6 +235,10 @@ pub unsafe extern "C" fn waterui_theme_install_color(
         WuiColorSlot::SelectionForeground => {
             install_color_signal::<color::SelectionForeground>(env, computed);
         }
+        WuiColorSlot::Error => install_color_signal::<color::Error>(env, computed),
+        WuiColorSlot::ErrorForeground => {
+            install_color_signal::<color::ErrorForeground>(env, computed);
+        }
     }
 }
 
@@ -263,6 +271,8 @@ pub unsafe extern "C" fn waterui_theme_color(
         WuiColorSlot::TertiaryContainer => color::TertiaryContainer.resolve(env).computed(),
         WuiColorSlot::SelectionContainer => color::SelectionContainer.resolve(env).computed(),
         WuiColorSlot::SelectionForeground => color::SelectionForeground.resolve(env).computed(),
+        WuiColorSlot::Error => color::Error.resolve(env).computed(),
+        WuiColorSlot::ErrorForeground => color::ErrorForeground.resolve(env).computed(),
     };
 
     computed.into_ffi()

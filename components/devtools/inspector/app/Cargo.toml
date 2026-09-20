@@ -22,9 +22,5 @@ futures-lite = "2.6"
 async-channel.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-waterui-testing = { path = "../../../../testing" }
-hydrolysis-m3.workspace = true
-
 [lints]
 workspace = true

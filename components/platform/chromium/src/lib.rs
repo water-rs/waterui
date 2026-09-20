@@ -4,6 +4,7 @@
 //! Chromium views, headless pages, raw CDP, and generated strongly typed CDP without
 //! making Chromium part of the standard `WebView` dependency graph.
 
+mod assets;
 mod cdp_session;
 mod controller;
 mod page;

@@ -26,8 +26,12 @@ released="$(configuration_value released)"
 maximum_glibc="$(configuration_value maximum_glibc)"
 minimum_gcc="$(configuration_value minimum_gcc)"
 smoke_timeout_seconds="$(configuration_value smoke_timeout_seconds)"
+# The runtime this script builds must be the version the `water` CLI
+# downloads; that expectation lives in the CLI's own repository now.
 cli_wpe_version="$(
-    sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p' "$repo_root/cli/src/browser_runtime.toml"
+    curl --fail --location --retry 3 \
+        https://raw.githubusercontent.com/water-rs/cli/dev/src/browser_runtime.toml \
+        | sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p'
 )"
 
 if [[ -z "$version" || -z "$source_url" || -z "$source_sha256" || -z "$glib_dependencies_url" || -z "$glib_dependencies_sha256" || -z "$released" || -z "$maximum_glibc" || -z "$minimum_gcc" || -z "$smoke_timeout_seconds" ]]; then
@@ -140,6 +144,14 @@ sudo apt-get install -y --no-install-recommends \
 # Debian or Ubuntu release packages libbacktrace, so configuring fails on every
 # apt-based host. It only symbolizes WebKit's own crash logs, which a shipped
 # runtime does not print.
+# `USE_JPEGXL` defaults on the same way, but jammy has no `libjxl-dev` — the
+# package entered Ubuntu at 23.04 — so the flag fails the one image the
+# artifact's glibc floor allows. JPEG XL decoding is optional for the embedded
+# runtime.
+# `ENABLE_WPE_PLATFORM_DRM` defaults on too, and WPEPlatform's DRM display
+# calls `drmModeCreateDumbBuffer`, which entered libdrm at 2.4.114 — jammy
+# ships 2.4.113. The embedded runtime only ever creates the headless display
+# (`wpe_display_headless_new`), so the DRM display is dead code here.
 cmake \
     -S "$source_directory" \
     -B "$build_directory" \
@@ -162,6 +174,8 @@ cmake \
     -DENABLE_MINIBROWSER=OFF \
     -DENABLE_WPE_LEGACY_API=OFF \
     -DENABLE_WPE_PLATFORM=ON \
+    -DENABLE_WPE_PLATFORM_DRM=OFF \
+    -DUSE_JPEGXL=OFF \
     -DUSE_LIBBACKTRACE=OFF
 cmake --build "$build_directory" --parallel "${WATERUI_WPE_BUILD_JOBS:-$(nproc)}"
 cmake --install "$build_directory"

@@ -27,7 +27,7 @@ fn picker_items() -> Vec<PickerItem<&'static str>> {
     ]
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn picker_selection_flow(ui: UiBuilder) {
     let selection = Binding::container("Alpha");
     let selection_for_view = selection.clone();
@@ -75,7 +75,7 @@ fn picker_selection_flow(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
     let selection = Binding::container("Beta");
     let selection_for_view = selection.clone();
@@ -98,7 +98,7 @@ fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn date_picker_accessibility(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let selected_date_for_view = selected_date.clone();
@@ -137,7 +137,7 @@ fn date_picker_accessibility(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
     let selected_color = Binding::container(Color::srgb(0, 0, 0));
     let selected_color_for_view = selected_color;
@@ -152,7 +152,7 @@ fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
     app.query().role(Role::BUTTON).label("Accent Color").tap();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let visible_month = Binding::container(Date::new(2025, 1, 1).unwrap());

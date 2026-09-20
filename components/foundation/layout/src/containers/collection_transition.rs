@@ -51,4 +51,10 @@ impl<V: View> View for CollectionTransitionScope<V> {
             env.extending(CollectionTransition::new(self.animation)),
         )
     }
+
+    /// Transparent wrapper: resolves to `Metadata` around the content, which
+    /// forwards the content's axis.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.content.stretch_axis()
+    }
 }

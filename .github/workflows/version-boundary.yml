@@ -1,0 +1,43 @@
+name: Version boundary
+
+# Every merge to `main` publishes to crates.io immediately, so a pull request
+# that carries breaking changes is a minor-version boundary whether it was
+# meant to be one or not. The `release` label is the recorded human decision
+# that this merge is that boundary; without it, the merge is blocked.
+
+on:
+  pull_request:
+    branches: [main]
+    # `labeled`/`unlabeled` are not in the default trigger set; they must be
+    # listed so that applying the `release` label re-runs this check.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  breaking-gate:
+    name: Breaking changes need the release label
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan pull-request commits for breaking markers
+        id: scan
+        run: |
+          set -euo pipefail
+          range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          if git log --format='%s%n%b' "$range" | grep -qE '^[a-zA-Z]+(\([^)]*\))?!:|^BREAKING[ -]CHANGE:'; then
+            echo "breaking=true" >> "$GITHUB_OUTPUT"
+            git log --format='::warning::%h %s' "$range" | grep -E '!:' || true
+          else
+            echo "breaking=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Block the merge without the release label
+        if: steps.scan.outputs.breaking == 'true' && !contains(github.event.pull_request.labels.*.name, 'release')
+        run: |
+          echo "::error title=Version boundary::This pull request carries breaking changes, and merging it to main publishes a new minor release. Add the 'release' label to record that this merge is the intended version boundary."
+          exit 1

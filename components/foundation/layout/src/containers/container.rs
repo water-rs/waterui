@@ -10,7 +10,7 @@ use waterui_core::{
     AnyView, Native, NativeView, View,
     layout::{
         HorizontalAlignment, LayoutDirection, LayoutInvalidationCallback, PlacedSubview,
-        ProposalSize, Rect, Size, SubView, VerticalAlignment,
+        ProposalSize, Rect, Size, SubView, SubviewPlacement, VerticalAlignment,
     },
     view::TupleViews,
     views::{AnyViews, Views, ViewsExt},
@@ -57,11 +57,18 @@ impl Layout for DirectionalLayout {
         self.inner.size_that_fits(proposal, children)
     }
 
-    fn place(&self, bounds: Rect, children: &[&dyn SubView]) -> Vec<Rect> {
+    fn place(
+        &self,
+        bounds: Rect,
+        proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
         self.inner
-            .place(bounds, children)
+            .place(bounds, proposal, children)
             .into_iter()
-            .map(|frame| self.mirror(bounds, frame))
+            .map(|placement| {
+                SubviewPlacement::new(self.mirror(bounds, placement.frame), placement.proposal)
+            })
             .collect()
     }
 
@@ -76,7 +83,12 @@ impl Layout for DirectionalLayout {
         }
         let unmirrored = children
             .iter()
-            .map(|child| PlacedSubview::new(child.view, self.mirror(bounds, child.frame)))
+            .map(|child| {
+                PlacedSubview::new(
+                    child.view,
+                    SubviewPlacement::new(self.mirror(bounds, child.frame), child.proposal),
+                )
+            })
             .collect::<Vec<_>>();
         self.inner
             .explicit_horizontal(alignment, bounds, &unmirrored)
@@ -94,7 +106,12 @@ impl Layout for DirectionalLayout {
         }
         let unmirrored = children
             .iter()
-            .map(|child| PlacedSubview::new(child.view, self.mirror(bounds, child.frame)))
+            .map(|child| {
+                PlacedSubview::new(
+                    child.view,
+                    SubviewPlacement::new(self.mirror(bounds, child.frame), child.proposal),
+                )
+            })
             .collect::<Vec<_>>();
         self.inner.explicit_vertical(alignment, bounds, &unmirrored)
     }
@@ -282,22 +299,35 @@ mod tests {
             Size::new(100.0, 40.0)
         }
 
-        fn place(&self, _bounds: Rect, _children: &[&dyn SubView]) -> Vec<Rect> {
-            vec![Rect::new(Point::new(10.0, 4.0), Size::new(20.0, 12.0))]
+        fn place(
+            &self,
+            _bounds: Rect,
+            proposal: ProposalSize,
+            _children: &[&dyn SubView],
+        ) -> Vec<SubviewPlacement> {
+            vec![SubviewPlacement::new(
+                Rect::new(Point::new(10.0, 4.0), Size::new(20.0, 12.0)),
+                proposal,
+            )]
         }
     }
 
     #[test]
-    fn right_to_left_direction_mirrors_horizontal_placement() {
+    fn right_to_left_direction_mirrors_horizontal_placement_bounded_proposal() {
         let layout = DirectionalLayout::new(
             Box::new(OffsetLayout),
             Computed::constant(LayoutDirection::RightToLeft),
         );
-        let frames = layout.place(Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 40.0)), &[]);
+        let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(100.0, 40.0));
+        let proposal = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
+        let placements = layout.place(bounds, proposal, &[]);
 
         assert_eq!(
-            frames,
-            vec![Rect::new(Point::new(70.0, 4.0), Size::new(20.0, 12.0))]
+            placements,
+            vec![SubviewPlacement::new(
+                Rect::new(Point::new(70.0, 4.0), Size::new(20.0, 12.0)),
+                proposal,
+            )]
         );
     }
 }

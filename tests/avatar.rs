@@ -1,23 +1,16 @@
-//! Semantic and visual acceptance for the `Avatar` composer.
+//! Semantic acceptance for the `Avatar` composer.
 //!
 //! Avatar is a Rust-side composition (Framework Design Principle #2) — a
 //! stack, a frame, a clip and theme tokens, with no FFI type of its own — so
-//! its contract is exactly what the accessibility tree exposes plus what the
-//! renderer draws. The PNG-producing test is ignored by default and reviewed
-//! by eye.
+//! its contract is exactly what the accessibility tree exposes.
 
-use core::cell::Cell;
 use core::time::Duration;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
-use hydrolysis_m3::install as install_m3;
 use waterui::Str;
-use waterui::media::photo::Event as PhotoEvent;
+use waterui::Url;
 use waterui::prelude::*;
-use waterui::shape::RoundedRectangle;
-use waterui::widget::avatar::Avatar;
-use waterui_testing::{OffscreenApp, Role, UiBuilder};
+use waterui_testing::{Role, UiBuilder};
 
 /// A 240×240 test portrait: four saturated quadrants.
 ///
@@ -62,7 +55,7 @@ fn portrait_url() -> Url {
     Url::from_file_path_str(write_test_portrait(&dir).to_string_lossy().into_owned())
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn an_initials_avatar_publishes_one_node_carrying_the_name(ui: UiBuilder) {
     let mut app = ui.viewport(120, 120).mount(|| avatar("Ada Lovelace"));
 
@@ -82,7 +75,7 @@ fn an_initials_avatar_publishes_one_node_carrying_the_name(ui: UiBuilder) {
         .assert_not_exists();
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn a_pictured_avatar_publishes_the_same_single_node(ui: UiBuilder) {
     let url = portrait_url();
     let mut app = ui
@@ -101,7 +94,7 @@ fn a_pictured_avatar_publishes_the_same_single_node(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn renaming_relabels_the_node_it_already_published(ui: UiBuilder) {
     let name = Binding::container(Str::from("Ada Lovelace"));
     let name_for_view = name.clone();
@@ -141,7 +134,7 @@ fn renaming_relabels_the_node_it_already_published(ui: UiBuilder) {
         .assert_not_exists();
 }
 
-#[waterui::test(theme = install_m3)]
+#[waterui::test]
 fn the_monogram_follows_the_name_without_a_second_node(ui: UiBuilder) {
     let name = Binding::container(Str::from("Ada Lovelace"));
     let name_for_view = name.clone();
@@ -161,85 +154,5 @@ fn the_monogram_follows_the_name_without_a_second_node(ui: UiBuilder) {
         app.query().role(Role::IMAGE).all().len(),
         1,
         "the monogram redraw must not publish a node of its own"
-    );
-}
-
-/// One row of the gallery a reviewer reads: every silhouette, the ring, the
-/// monogram and a real picture.
-///
-/// `observed` is the picture whose load the capture waits on; it is attached to
-/// one avatar per gallery so the wait is on a real completion event rather than
-/// a guessed duration.
-fn row(url: Url, side: f32, observed: Option<Rc<Cell<bool>>>) -> impl View {
-    let watched = url.clone();
-    hstack((
-        avatar("Ada Lovelace").size(side),
-        avatar("山田 太郎")
-            .size(side)
-            .shape(RoundedRectangle::new(0.25)),
-        avatar("Katherine Johnson")
-            .size(side)
-            .ring(Color::new(theme_color::Accent), side / 20.0),
-        avatar("Grace Hopper").image(url).size(side),
-        observed.map(|observed| {
-            Avatar::new("Grace Hopper", move || {
-                let observed = Rc::clone(&observed);
-                Photo::new(watched.clone())
-                    .resizable()
-                    .content_mode(ContentMode::Fill)
-                    .on_event(move |event: PhotoEvent| {
-                        if matches!(event, PhotoEvent::Loaded) {
-                            observed.set(true);
-                        }
-                    })
-            })
-            .size(side)
-            .ring(Color::new(theme_color::Accent), side / 20.0)
-        }),
-    ))
-    .spacing(16.0)
-}
-
-/// The gallery: a realistic list-row size on top, and the same avatars at a
-/// size where the clip's edge, the ring's concentricity and the monogram's
-/// optical centring can be judged by eye.
-fn gallery(url: Url, loaded: Rc<Cell<bool>>) -> impl View {
-    vstack((row(url.clone(), 40.0, None), row(url, 128.0, Some(loaded))))
-        .spacing(20.0)
-        .padding_with(16.0)
-}
-
-fn capture(ui: UiBuilder, stage: &str) {
-    let url = portrait_url();
-    let loaded = Rc::new(Cell::new(false));
-    let observer = Rc::clone(&loaded);
-    let mut app: OffscreenApp = ui
-        .viewport(820, 236)
-        .mount_offscreen(move || gallery(url.clone(), Rc::clone(&observer)));
-
-    assert!(
-        app.pump_until(Duration::from_secs(5), || loaded.get()),
-        "the test portrait must decode before the gallery is captured"
-    );
-    let _ = app.capture_snapshot("avatar-preview", "gallery", stage);
-}
-
-#[ignore = "writes a visual acceptance PNG for direct image review"]
-#[waterui::test(theme = install_m3)]
-fn avatar_gallery_light(ui: UiBuilder) {
-    capture(ui, "light");
-}
-
-#[ignore = "writes a visual acceptance PNG for direct image review"]
-#[waterui::test]
-fn avatar_gallery_dark(ui: UiBuilder) {
-    capture(
-        ui.theme(|env: &mut Environment| {
-            hydrolysis_m3::install_with_colors(
-                env,
-                hydrolysis_m3::MaterialColorScheme::baseline_dark(),
-            );
-        }),
-        "dark",
     );
 }

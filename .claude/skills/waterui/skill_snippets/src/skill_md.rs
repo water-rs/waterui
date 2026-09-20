@@ -42,6 +42,9 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 // SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
+// `fade.get()` is SKILL.md's deliberate broken line — the section teaches that
+// passing a snapshot freezes the view while still compiling.
+#[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
     let fade = Binding::f32(1.0);
     let blur = Binding::f64(4.0);
@@ -122,14 +125,15 @@ pub mod skill_block_05 {
     use super::{GlueRow as Row, ReactiveList, glue_row_view as row_view};
     use waterui::prelude::*;
 
+    #[state]
     #[derive(Clone)]
     pub struct Editor {
         rows: ReactiveList<Row>,
         editing: Binding<bool>,
     }
 
-    fn toggle_editing(State(state): State<Editor>) {
-        state.editing.set(!state.editing.get());
+    fn toggle_editing(state: Editor) {
+        state.editing.toggle();
     }
 
     fn content(state: Editor) -> impl View {
@@ -296,6 +300,9 @@ pub fn skill_block_12() {
     let _ = {
         text!("Blur: {blur:.1}") // format specs work
     };
+    let _ = {
+        text("0x1F60").monospaced() // the platform's fixed-pitch face, same size
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -314,11 +321,7 @@ pub fn skill_block_13() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
     let _ = { hstack((a, b, c)).spacing(8.0) };
     let (a, b) = (text("a"), text("b"));
-    let _ = {
-        vstack((a, b))
-            .alignment(HorizontalAlignment::Leading)
-            .padding()
-    };
+    let _ = { vstack((a, b)).leading().padding() };
     let _ = { zstack((background, content)) };
     let content = text("content");
     let _ = { scroll(content) };
@@ -411,14 +414,17 @@ pub fn skill_block_15() {
     let (x, y) = (1.5_f32, 2.5_f32);
     let degrees = 30.0_f32;
     let width = 2.0_f32;
-    let shape = waterui::shape::Circle;
+    use waterui::shape::Circle;
+    let shape = Circle;
 
     let view = Divider;
     let _ = { view.padding() };
     let view = Divider;
     let _ = { view.padding_with(16.0) };
     let view = Divider;
-    let _ = { view.padding_with(EdgeInsets::all(16.0)) };
+    let _ = { view.padding_with((8.0, 16.0)) };
+    let view = Divider;
+    let _ = { view.padding_horizontal(16.0) };
 
     let color = Color::srgb_hex("#3B82F6");
     let view = Divider;
@@ -554,12 +560,13 @@ pub mod skill_block_16 {
     use waterui::prelude::*;
 
     use waterui::env::{use_env, with};
+    use waterui::impl_extractor;
 
     #[derive(Clone)]
     pub struct ApiClient {
         base_url: Str,
     }
-    waterui::impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
+    impl_extractor!(ApiClient); // makes it a handler/`use_env` parameter
 
     fn send(_client: &ApiClient) {}
 

@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Edge Text"
+bundle_identifier = "dev.waterui.edge_text"

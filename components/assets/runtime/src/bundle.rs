@@ -104,6 +104,11 @@ impl View for ImageAsset {
     fn body(self, _env: &Environment) -> impl View {
         Photo::new(self.url())
     }
+
+    /// Resolves to `Photo`; forwards its axis.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        Photo::new(self.url()).stretch_axis()
+    }
 }
 
 /// Video asset resolved from a `WaterUI` asset bundle.
@@ -145,6 +150,11 @@ impl VideoAsset {
 impl View for VideoAsset {
     fn body(self, _env: &Environment) -> impl View {
         self.raw()
+    }
+
+    /// Resolves to `Video`; forwards its axis.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.raw().stretch_axis()
     }
 }
 
@@ -273,11 +283,6 @@ impl FontAsset {
         self.logical_path
     }
 }
-
-/// File name of the window icon the CLI stages into the bundle root for
-/// self-drawn desktop backends. Dot-prefixed so it can never collide with a
-/// project asset's logical path.
-pub const WINDOW_ICON_FILE: &str = ".window-icon.png";
 
 /// Resolves the root directory of the staged asset bundle.
 ///

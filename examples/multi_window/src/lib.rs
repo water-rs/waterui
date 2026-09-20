@@ -78,14 +78,14 @@ pub fn demo() -> impl View {
                         &ultra_thin_state,
                     ),
                 ))
-                .padding_with(EdgeInsets::all(12.0)),
+                .padding_with(12.0),
                 spacer(),
                 Divider,
                 spacer().height(12.0),
                 text("Built with WaterUI Multi-Window Support").caption(),
                 spacer().height(12.0),
             ))
-            .padding_with(EdgeInsets::all(20.0)),
+            .padding_with(20.0),
         ),
         // Conditionally render windows based on state (invisible triggers)
         conditional_window(&standard_window, create_standard_window),
@@ -116,7 +116,7 @@ fn window_section(
                 .state(state),
         )),
     ))
-    .padding_with(EdgeInsets::all(16.0))
+    .padding_with(16.0)
     .background(SurfaceVariant)
 }
 
@@ -196,7 +196,7 @@ fn window_content(title: &'static str, description: &'static str) -> impl View {
         spacer().height(16.0),
         material_showcase(),
     ))
-    .padding_with(EdgeInsets::all(24.0))
+    .padding_with(24.0)
 }
 
 /// Content for transparent window with colored boxes
@@ -217,13 +217,13 @@ fn transparent_window_content() -> impl View {
             colored_box(Color::srgb_f32(0.3, 0.3, 1.0).with_opacity(0.8), "Blue"),
         )),
     ))
-    .padding_with(EdgeInsets::all(24.0))
+    .padding_with(24.0)
 }
 
 /// Helper to create a colored box
 fn colored_box(color: Color, label: &'static str) -> impl View {
     vstack((spacer(), text(label).bold().body(), spacer()))
-        .padding_with(EdgeInsets::all(32.0))
+        .padding_with(32.0)
         .background(color)
 }
 
@@ -246,7 +246,7 @@ fn material_item(name: &'static str, description: &'static str) -> impl View {
         text(name).bold().body().width(100.0),
         text(description).caption(),
     ))
-    .padding_with(EdgeInsets::symmetric(4.0, 0.0))
+    .padding_vertical(4.0)
 }
 
 pub fn app(env: Environment) -> App {

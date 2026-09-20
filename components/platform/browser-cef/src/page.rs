@@ -5,6 +5,7 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "chromium")]
 use base64::Engine as _;
@@ -15,12 +16,13 @@ use cef::{
     AcceleratedPaintInfo, Browser, BrowserHost, BrowserSettings, CefString, Client,
     CompositionUnderline, DisplayHandler, Frame, ImplBrowser, ImplBrowserHost, ImplClient,
     ImplDictionaryValue, ImplDisplayHandler, ImplFrame, ImplLifeSpanHandler, ImplLoadHandler,
-    ImplPreferenceManager, ImplRenderHandler, ImplRequestHandler, ImplValue, KeyEvent,
-    KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent, PaintElementType,
-    Range, Rect, RenderHandler, Request, RequestContext, RequestContextSettings, RequestHandler,
-    ScreenInfo, TerminationStatus, WindowInfo, WrapClient, WrapDisplayHandler, WrapLifeSpanHandler,
-    WrapLoadHandler, WrapRenderHandler, WrapRequestHandler, browser_host_create_browser_sync,
-    dictionary_value_create, request_context_create_context, value_create,
+    ImplPreferenceManager, ImplRenderHandler, ImplRequestContextHandler, ImplRequestHandler,
+    ImplValue, KeyEvent, KeyEventType, LifeSpanHandler, LoadHandler, MouseButtonType, MouseEvent,
+    PaintElementType, Range, Rect, RenderHandler, Request, RequestContext, RequestContextHandler,
+    RequestContextSettings, RequestHandler, ScreenInfo, TerminationStatus, WindowInfo, WrapClient,
+    WrapDisplayHandler, WrapLifeSpanHandler, WrapLoadHandler, WrapRenderHandler,
+    WrapRequestContextHandler, WrapRequestHandler, browser_host_create_browser_sync,
+    dictionary_value_create, do_message_loop_work, request_context_create_context, value_create,
 };
 #[cfg(feature = "chromium")]
 use futures::channel::oneshot;
@@ -427,6 +429,38 @@ fn new_render_handler(state: Rc<PageState>) -> RenderHandler {
     WaterRenderHandler::new(state)
 }
 
+/// Observes request-context readiness so page creation can wait for it.
+///
+/// The browser context behind a non-incognito request context is built
+/// asynchronously: `CefRequestContext::CreateContext` hands Chromium's
+/// `ProfileManager::CreateProfileAsync` the profile directory, and the
+/// profile-finished callback is posted back onto the CEF UI thread. Until it
+/// runs, `browser_host_create_browser_sync` rejects the context and returns
+/// null. `OnRequestContextInitialized` is CEF's own completion signal, so this
+/// handler only has to record it; the caller then pumps the CEF loop until the
+/// flag lands.
+#[allow(
+    clippy::transmute_ptr_to_ptr,
+    reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
+)]
+fn new_request_context_handler(initialized: Rc<Cell<bool>>) -> RequestContextHandler {
+    cef::wrap_request_context_handler! {
+        struct WaterRequestContextHandler {
+            initialized: Rc<Cell<bool>>,
+        }
+
+        impl RequestContextHandler {
+            fn on_request_context_initialized(
+                &self,
+                _request_context: Option<&mut RequestContext>,
+            ) {
+                self.initialized.set(true);
+            }
+        }
+    }
+    WaterRequestContextHandler::new(initialized)
+}
+
 #[allow(
     clippy::transmute_ptr_to_ptr,
     reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
@@ -768,7 +802,6 @@ fn new_client(
 pub struct CefPageHandle {
     browser: Browser,
     host: BrowserHost,
-    _request_context: RequestContext,
     cdp: CefCdpSession,
     state: Rc<PageState>,
 }
@@ -796,7 +829,24 @@ impl CefPageHandle {
             new_request_handler(Rc::clone(&state)),
             new_display_handler(Rc::clone(&state)),
         );
-        let mut request_context = create_request_context(runtime, &configuration);
+        let (mut request_context, request_context_ready) =
+            create_request_context(runtime, &configuration);
+        // A fresh request context's browser context is initialized
+        // asynchronously (`ProfileManager::CreateProfileAsync` posts its
+        // completion onto the CEF UI thread). `browser_host_create_browser_sync`
+        // rejects a context whose browser context has not finished — returning
+        // null rather than an error — so the pending initialization is pumped
+        // to completion here before the browser is created. Blocking the UI
+        // thread directly would deadlock the very callback being awaited.
+        let ready_deadline = Instant::now() + Duration::from_secs(10);
+        while !request_context_ready.get() {
+            do_message_loop_work();
+            std::thread::sleep(Duration::from_millis(1));
+            assert!(
+                Instant::now() < ready_deadline,
+                "CEF request context did not finish initializing"
+            );
+        }
         let initial_url = configuration
             .url
             .as_ref()
@@ -832,7 +882,6 @@ impl CefPageHandle {
         let handle = Self {
             browser,
             host,
-            _request_context: request_context,
             cdp,
             state,
         };
@@ -1111,6 +1160,14 @@ impl CefPageHandle {
         self.cdp.clone()
     }
 
+    /// Returns the request context this page's browser runs on.
+    #[cfg(feature = "webview")]
+    pub(crate) fn request_context(&self) -> RequestContext {
+        self.host
+            .request_context()
+            .expect("CEF browser host must expose its request context")
+    }
+
     pub(crate) fn navigate(&self, url: &Url) {
         self.browser
             .main_frame()
@@ -1370,6 +1427,9 @@ impl From<ChromiumConfiguration> for CefPageConfiguration {
             proxy,
             language,
             user_agent,
+            // CEF's `waterui` scheme handler serves the asset origin; the
+            // Chromium CDP `Fetch` path does not apply.
+            asset_server: _,
         } = configuration;
         Self {
             url,
@@ -1388,7 +1448,7 @@ impl From<ChromiumConfiguration> for CefPageConfiguration {
 fn create_request_context(
     runtime: &CefRuntime,
     configuration: &CefPageConfiguration,
-) -> RequestContext {
+) -> (RequestContext, Rc<Cell<bool>>) {
     let cache_path = if configuration.profile.incognito {
         assert!(
             configuration.profile.name.is_none() && configuration.profile.data_directory.is_none(),
@@ -1423,6 +1483,8 @@ fn create_request_context(
             .to_string_lossy()
             .into_owned()
     };
+    let initialized = Rc::new(Cell::new(false));
+    let mut handler = new_request_context_handler(Rc::clone(&initialized));
     let context = request_context_create_context(
         Some(&RequestContextSettings {
             cache_path: cache_path.as_str().into(),
@@ -1430,7 +1492,7 @@ fn create_request_context(
             accept_language_list: configuration.language.as_deref().unwrap_or_default().into(),
             ..Default::default()
         }),
-        None,
+        Some(&mut handler),
     )
     .expect("CEF failed to create an isolated request context");
     if let Some(proxy) = configuration.proxy.as_deref() {
@@ -1459,13 +1521,13 @@ fn create_request_context(
             "CEF rejected proxy preference: {error}"
         );
     }
-    context
+    (context, initialized)
 }
 
 /// Describes a Chromium certificate error code for the `WebViewError::Ssl` message.
 #[cfg(feature = "webview")]
-fn alloc_error_text(code: cef::Errorcode) -> waterui_str::Str {
-    waterui_str::Str::from(format!("certificate error {code:?}"))
+fn alloc_error_text(code: cef::Errorcode) -> suiteki::Str {
+    suiteki::Str::from(format!("certificate error {code:?}"))
 }
 
 fn frame_url(frame: &Frame) -> Url {

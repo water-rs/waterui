@@ -6,11 +6,12 @@ use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
 use cookie::{Expiration, SameSite, time::OffsetDateTime};
 use num_traits::ToPrimitive as _;
 use serde_json::Value;
+use suiteki::Str;
 use waterui_core::{Computed, Signal};
-use waterui_str::Str;
 use waterui_url::Url;
 use waterui_webview::{
-    Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard, WebViewHandle, bridge,
+    ASSET_ORIGIN, Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard,
+    WebViewConfig, WebViewHandle, bridge,
 };
 
 use crate::cdp::{CefCdpSession, protocol};
@@ -22,6 +23,9 @@ type MessageHandler = waterui_webview::ScriptMessageHandler;
 /// Standard `WaterUI` `WebView` handle backed by a CEF page.
 pub struct CefWebViewHandle {
     page: CefPageHandle,
+    /// The `waterui://localhost` origin this view serves, when it was opened
+    /// with an asset server.
+    asset_origin: Option<Url>,
     handlers: Rc<RefCell<HashMap<String, Rc<MessageHandler>>>>,
     /// Which documents may reach the bridge. Checked on every call, because the
     /// CDP binding is installed for every execution context and any frame in
@@ -67,7 +71,7 @@ impl core::fmt::Debug for CefWebViewHandle {
 }
 
 impl CefWebViewHandle {
-    fn new(page: CefPageHandle) -> Self {
+    fn new(page: CefPageHandle, asset_origin: Option<Url>) -> Self {
         let handlers = Rc::new(RefCell::new(HashMap::<String, Rc<MessageHandler>>::new()));
         let origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>> =
             Rc::new(RefCell::new(None));
@@ -104,6 +108,7 @@ impl CefWebViewHandle {
         Self {
             _close: Rc::new(CloseBrowserOnDrop { page: page.clone() }),
             page,
+            asset_origin,
             handlers,
             origins,
             scripts,
@@ -123,6 +128,10 @@ impl CefWebViewHandle {
 }
 
 impl WebViewHandle for CefWebViewHandle {
+    fn asset_origin(&self) -> Option<Url> {
+        self.asset_origin.clone()
+    }
+
     fn go_back(&self) {
         self.page
             .host()
@@ -351,8 +360,15 @@ impl CefWebViewHandle {
 }
 
 impl CustomWebViewController for CefController {
-    fn open(&self) -> impl WebViewHandle {
-        CefWebViewHandle::new(self.open_page(CefPageConfiguration::default(), CefPageMode::Visible))
+    fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
+        let page = self.open_page(CefPageConfiguration::default(), CefPageMode::Visible);
+        // The factory goes onto the page's private request context before any
+        // asset URL can navigate — the view still sits on `about:blank` here.
+        let asset_origin = config.asset_server.map(|server| {
+            crate::assets::register_scheme_handler(&page.request_context(), server);
+            Url::new(ASSET_ORIGIN)
+        });
+        CefWebViewHandle::new(page, asset_origin)
     }
 }
 

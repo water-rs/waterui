@@ -12,7 +12,14 @@
 //! This library aims to minimize the unsafe code needed when working with FFI while
 //! maintaining performance and flexibility.
 
-#![cfg_attr(not(feature = "std"), no_std)]
+// The `Send` obligation on the GPU runtime handed across the C ABI (the
+// runtime, its shared context, the shared scene renderer and the hybrid
+// renderer's texture-format table) runs deeper than rustc's default limit of
+// 128 when an Apple app links the crate; rustc warns today
+// (`recursion_depth_exceeding_limit`, rust-lang/rust#159228) and will refuse
+// the crate outright.
+#![recursion_limit = "256"]
+
 #[cfg(not(feature = "std"))]
 compile_error!("waterui-ffi requires the `std` feature.");
 #[cfg(all(feature = "c-api", feature = "android-jni"))]
@@ -27,6 +34,10 @@ mod macros;
 #[cfg(feature = "android-jni")]
 pub mod jni;
 
+/// Logcat output for `tracing` records. The formatter is exercised by tests
+/// on every platform, so the module compiles under `cfg(test)` off Android.
+#[cfg(any(test, target_os = "android"))]
+mod android_log;
 mod bridge;
 mod drawing;
 mod events;
@@ -41,15 +52,16 @@ use core::ptr::null_mut;
 pub use drawing::{color, gradient, shape};
 pub use events::{animation, cursor, drag_drop, event, gesture};
 pub use reactivity::reactive;
-pub use runtime::{app, id, safe_area, theme, views, window};
+pub use runtime::{app, id, theme, views, window};
 pub use ty::WuiTypeId;
 
 use alloc::boxed::Box;
 use executor_core::{init_global_executor, init_local_executor};
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", feature = "media"))]
 use waterkit_audio as _;
 use waterui::{AnyView, Str, View};
 use waterui_core::{Metadata, Native};
+#[cfg(feature = "media")]
 pub use waterui_video;
 
 use waterui_core::metadata::MetadataKey;
@@ -345,18 +357,31 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
         .with(env_filter(
             "wgpu_core=error,wgpu_hal=error,naga=error,jni=error",
         ))
-        .with(tracing_android::layer("WaterUI").expect("Failed to create Android log layer"))
+        .with(android_log::AndroidLogLayer::new("WaterUI"))
         .with(inspector)
         .init();
 
     #[cfg(target_vendor = "apple")]
-    tracing_subscriber::registry()
-        .with(env_filter(
-            "wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
-        ))
-        .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
-        .with(inspector)
-        .init();
+    {
+        // A physical iOS device's unified log is unreachable from the host —
+        // `devicectl --console` only carries the process's stderr. When
+        // `water run --logs` asked for a level, records are therefore also
+        // written to stderr; simulators ignore the copy (their stream comes
+        // from `log stream`).
+        let console_layer = std::env::var_os(LOG_LEVEL_ENV).map(|_| {
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .without_time()
+        });
+        tracing_subscriber::registry()
+            .with(env_filter(
+                "wgpu_core=error,wgpu_hal=error,naga=error,metal=error",
+            ))
+            .with(tracing_oslog::OsLogger::new("dev.waterui", "default"))
+            .with(console_layer)
+            .with(inspector)
+            .init();
+    }
 
     #[cfg(not(any(target_os = "android", target_vendor = "apple")))]
     tracing_subscriber::registry()
@@ -793,6 +818,21 @@ pub type WuiMetadataEnv = WuiMetadata<*mut WuiEnv>;
 // Generate waterui_metadata_env_id() and waterui_force_as_metadata_env()
 ffi_metadata!(waterui::Environment, WuiMetadataEnv, env);
 
+use waterui_core::layout::LayoutPriority;
+
+impl IntoFFI for LayoutPriority {
+    type FFI = i32;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.get()
+    }
+}
+
+/// Layout priority metadata paired with the view whose allocation it controls.
+pub type WuiMetadataLayoutPriority = WuiMetadata<i32>;
+
+ffi_metadata!(LayoutPriority, WuiMetadataLayoutPriority, layout_priority);
+
 // ========== Navigation transition metadata FFI ==========
 
 use crate::id::WuiId;
@@ -960,6 +1000,7 @@ use nami::{Computed, SignalExt as _};
 use waterui::accessibility::{
     AccessibilityChecked, AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier,
     AccessibilityLabel, AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityValue,
 };
 
 /// FFI-safe representation of `IgnorableMetadata<AccessibilityIdentifier>`
@@ -1019,6 +1060,34 @@ ffi_ignorable_metadata!(
     accessibility_label
 );
 
+/// Reactive accessibility value metadata.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiIgnorableMetadataAccessibilityValue {
+    /// Wrapped view content.
+    pub content: *mut WuiAnyView,
+    /// Resolved semantic value.
+    pub value: *mut WuiComputed<StyledStr>,
+}
+
+impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityValue> {
+    type FFI = WuiIgnorableMetadataAccessibilityValue;
+
+    fn into_ffi(self) -> Self::FFI {
+        let value = self.value.signal().clone().map(StyledStr::from).computed();
+        WuiIgnorableMetadataAccessibilityValue {
+            content: self.content.into_ffi(),
+            value: value.into_ffi(),
+        }
+    }
+}
+
+ffi_ignorable_metadata!(
+    AccessibilityValue,
+    WuiIgnorableMetadataAccessibilityValue,
+    accessibility_value
+);
+
 fn accessibility_role_code(role: &AccessibilityRole) -> i32 {
     match role {
         AccessibilityRole::Button => 0,
@@ -1050,25 +1119,26 @@ fn accessibility_role_code(role: &AccessibilityRole) -> i32 {
         AccessibilityRole::Combobox => 26,
         AccessibilityRole::Option => 27,
         AccessibilityRole::Group => 28,
+        AccessibilityRole::Dialog => 29,
         _ => panic!("unsupported accessibility role in native FFI"),
     }
 }
 
-/// Accessibility metadata containing a static integer value.
+/// Accessibility metadata containing a static integer payload.
 #[repr(C)]
 #[derive(Debug)]
-pub struct WuiIgnorableMetadataAccessibilityValue {
+pub struct WuiIgnorableMetadataAccessibilityInt {
     /// Wrapped view content.
     pub content: *mut WuiAnyView,
-    /// Backend-independent semantic value.
+    /// Backend-independent semantic payload.
     pub value: i32,
 }
 
 impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityRole> {
-    type FFI = WuiIgnorableMetadataAccessibilityValue;
+    type FFI = WuiIgnorableMetadataAccessibilityInt;
 
     fn into_ffi(self) -> Self::FFI {
-        WuiIgnorableMetadataAccessibilityValue {
+        WuiIgnorableMetadataAccessibilityInt {
             content: self.content.into_ffi(),
             value: accessibility_role_code(&self.value),
         }
@@ -1076,10 +1146,10 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityRole> {
 }
 
 impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityHidden> {
-    type FFI = WuiIgnorableMetadataAccessibilityValue;
+    type FFI = WuiIgnorableMetadataAccessibilityInt;
 
     fn into_ffi(self) -> Self::FFI {
-        WuiIgnorableMetadataAccessibilityValue {
+        WuiIgnorableMetadataAccessibilityInt {
             content: self.content.into_ffi(),
             value: i32::from(self.value.is_hidden()),
         }
@@ -1087,10 +1157,10 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityHidden> {
 }
 
 impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityChildren> {
-    type FFI = WuiIgnorableMetadataAccessibilityValue;
+    type FFI = WuiIgnorableMetadataAccessibilityInt;
 
     fn into_ffi(self) -> Self::FFI {
-        WuiIgnorableMetadataAccessibilityValue {
+        WuiIgnorableMetadataAccessibilityInt {
             content: self.content.into_ffi(),
             value: i32::from(self.value.excludes_descendants()),
         }
@@ -1099,17 +1169,17 @@ impl IntoFFI for waterui_core::IgnorableMetadata<AccessibilityChildren> {
 
 ffi_ignorable_metadata!(
     AccessibilityRole,
-    WuiIgnorableMetadataAccessibilityValue,
+    WuiIgnorableMetadataAccessibilityInt,
     accessibility_role
 );
 ffi_ignorable_metadata!(
     AccessibilityHidden,
-    WuiIgnorableMetadataAccessibilityValue,
+    WuiIgnorableMetadataAccessibilityInt,
     accessibility_hidden
 );
 ffi_ignorable_metadata!(
     AccessibilityChildren,
-    WuiIgnorableMetadataAccessibilityValue,
+    WuiIgnorableMetadataAccessibilityInt,
     accessibility_children
 );
 
@@ -1253,6 +1323,8 @@ pub struct WuiShadow {
     pub offset_y: f32,
     /// Blur radius.
     pub radius: f32,
+    /// Corner radius of the element casting the shadow.
+    pub corner_radius: f32,
 }
 
 impl IntoFFI for Shadow {
@@ -1263,6 +1335,7 @@ impl IntoFFI for Shadow {
             offset_x: self.offset.x,
             offset_y: self.offset.y,
             radius: self.radius,
+            corner_radius: self.corner_radius,
         }
     }
 }
@@ -2058,21 +2131,20 @@ ffi_view!(ResolvedMenu, WuiMenu, menu);
 // Used to make views draggable or drop destinations
 
 use crate::drag_drop::{WuiDraggable, WuiDropDestination};
-#[cfg(feature = "c-api")]
 use waterui::drag_drop::{Draggable, DropDestination};
 
 /// Type alias for `Metadata<Draggable>` FFI struct
 pub type WuiMetadataDraggable = WuiMetadata<WuiDraggable>;
 
 // Generate waterui_metadata_draggable_id() and waterui_force_as_metadata_draggable()
-#[cfg(feature = "c-api")]
+// Ungated at the call site: the macro emits the c-api and android-jni halves
+// under their own cfgs, and Android consumes both exports.
 ffi_metadata!(Draggable, WuiMetadataDraggable, draggable);
 
 /// Type alias for `Metadata<DropDestination>` FFI struct
 pub type WuiMetadataDropDestination = WuiMetadata<WuiDropDestination>;
 
 // Generate waterui_metadata_drop_destination_id() and waterui_force_as_metadata_drop_destination()
-#[cfg(feature = "c-api")]
 ffi_metadata!(
     DropDestination,
     WuiMetadataDropDestination,
@@ -2115,6 +2187,76 @@ ffi_ignorable_metadata!(
     MaterialBackground,
     WuiIgnorableMetadataMaterialBackground,
     material_background
+);
+
+// ========== IgnorableMetadata<GlassBackground> FFI ==========
+// Used to put Liquid Glass behind content on platforms that have it (Apple)
+
+#[cfg(feature = "c-api")]
+use waterui::background::{GlassBackground, GlassStyle};
+
+/// FFI-safe representation of a Liquid Glass style.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+#[cfg(feature = "c-api")]
+pub enum WuiGlassStyle {
+    /// Regular glass, legible over anything.
+    Regular = 0,
+    /// Clear glass, for surfaces over media.
+    Clear = 1,
+}
+
+#[cfg(feature = "c-api")]
+impl IntoFFI for GlassStyle {
+    type FFI = WuiGlassStyle;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Regular => WuiGlassStyle::Regular,
+            Self::Clear => WuiGlassStyle::Clear,
+        }
+    }
+}
+
+/// FFI-safe representation of `IgnorableMetadata<GlassBackground>`
+#[repr(C)]
+#[derive(Debug)]
+#[cfg(feature = "c-api")]
+pub struct WuiIgnorableMetadataGlassBackground {
+    /// The view content wrapped by this metadata
+    pub content: *mut WuiAnyView,
+    /// The glass style
+    pub style: WuiGlassStyle,
+    /// Whether the glass reacts to touch and pointer interaction
+    pub interactive: bool,
+    /// Tint color (as opaque pointer - needs environment to resolve); null when untinted
+    pub tint: *mut WuiColor,
+    /// The outline of the glass surface, drawn by the effect itself rather than a mask
+    pub shape: crate::shape::WuiShapeKind,
+}
+
+#[cfg(feature = "c-api")]
+impl IntoFFI for waterui_core::IgnorableMetadata<GlassBackground> {
+    type FFI = WuiIgnorableMetadataGlassBackground;
+
+    fn into_ffi(self) -> Self::FFI {
+        let glass = self.value.0;
+        WuiIgnorableMetadataGlassBackground {
+            content: self.content.into_ffi(),
+            style: glass.style().into_ffi(),
+            interactive: glass.is_interactive(),
+            tint: glass.tint_color().cloned().into_ffi(),
+            shape: glass.shape_kind().into_ffi(),
+        }
+    }
+}
+
+// Generate waterui_ignorable_metadata_glass_background_id() and
+// waterui_force_as_ignorable_metadata_glass_background()
+#[cfg(feature = "c-api")]
+ffi_ignorable_metadata!(
+    GlassBackground,
+    WuiIgnorableMetadataGlassBackground,
+    glass_background
 );
 
 // ========== Metadata<Hittable> FFI ==========

@@ -31,10 +31,10 @@ over by hardcoding a color in the view.
 ## Theme color tokens
 
 ```rust
-use waterui::prelude::theme_color::{Accent, Foreground, MutedForeground, Surface};
+use waterui::prelude::theme_color::{Accent, Foreground, Surface};
 
 text("Title").foreground(Foreground)
-text("Caption").caption().foreground(MutedForeground)
+text("Caption").caption().muted()   // `.muted()` is `.foreground(MutedForeground)`
 card.background(Surface)
 ```
 
@@ -55,6 +55,8 @@ The complete set:
 | `TertiaryContainer` | Container associated with the tertiary accent |
 | `SelectionContainer` | Fill painted behind a selected item |
 | `SelectionForeground` | Foreground drawn on the selection container |
+| `Error` | Destructive / error emphasis — badges, destructive buttons, validation |
+| `ErrorForeground` | Foreground drawn on the error color |
 
 Each token is a zero-sized unit struct that is *also* a `View`, so `Surface.size(80.0, 40.0)`
 paints a themed rectangle. To use a token as a *value* — say, one arm of a `.select` —
@@ -153,6 +155,21 @@ view.background(Surface)                  // a color or token
 view.background(Material::Regular)        // platform blur material
 // Material::UltraThin | Thin | Regular | Thick | UltraThick
 view.background(RoundedRectangle::new(0.18).fill(Surface))   // any view is a valid background
+```
+
+`Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`); Liquid Glass
+is a separate type, `Glass`, because it is a different surface with its own parameters,
+not a sixth thickness. Glass carries its own outline — a capsule unless you say
+otherwise — because a mask over glass would destroy its refraction; do not `.clip()` it.
+Apple backends project it onto `UIGlassEffect` / `NSGlassEffectView`; other backends
+approximate or ignore it.
+
+```rust
+use waterui::background::Glass;
+
+view.background(Glass::regular())                       // capsule pill, the default
+view.background(Glass::clear().interactive(true))       // over media; reacts to touch
+view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(0.2)))
 ```
 
 Gradients come in **two families that share names — pick the import deliberately**:
@@ -280,27 +297,43 @@ use waterui_icons_sf_symbol as sf;
 
 ## Material 3 with the Hydrolysis renderer
 
-Hydrolysis (the self-drawn GPU renderer) gets widget chrome from a backend-neutral
-`WidgetTheme`. For Material 3 output, install the theme package before running:
+Hydrolysis (the self-drawn GPU renderer) is styled by construction: every entry point
+takes a `hydrolysis::Style` value, and `Material3` is the Material Design 3 one:
 
 ```rust
-hydrolysis_m3::install(&mut env);        // light baseline
-hydrolysis_m3::install_dark(&mut env);
+hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults());   // light+dark baseline
+hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
 ```
 
-Seed-based Material You theming takes an `Argb` seed (a tuple struct over `0xAARRGGBB`,
+Tests take the same style through `theme =` — see `references/testing.md`:
+
+```rust
+#[waterui::test(view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
+```
+
+To install a scheme into a scoped environment instead of running the whole app under
+it — a themed subtree like `examples/reply`'s `ReplyTheme` — call the `Style` trait's
+`install_tokens` directly:
+
+```rust
+use hydrolysis::Style;
+
+Material3::with_colors(my_scheme).install_tokens(&mut scoped_env);
+```
+
+Seed-based Material You styles take an `Argb` seed (a tuple struct over `0xAARRGGBB`,
 re-exported by `hydrolysis_m3`) and a `MaterialColorMode`:
 
 ```rust
-use hydrolysis_m3::{Argb, MaterialColorMode, MaterialColorSource, install_with_color_schemes};
+use hydrolysis_m3::{Argb, Material3, MaterialColorMode, MaterialColorSource};
 
-hydrolysis_m3::install_with_seed(&mut env, Argb(0xFF6750A4));                       // light
-hydrolysis_m3::install_with_seed_mode(&mut env, Argb(0xFF6750A4), MaterialColorMode::Dark);
+Material3::with_seed(Argb(0xFF6750A4));                               // light
+Material3::with_seed_mode(Argb(0xFF6750A4), MaterialColorMode::Dark); // dark
 
-// Full control: build paired schemes from a source, install one by reference.
+// Full control: build paired schemes from a source, pick one mode.
 let source = MaterialColorSource::new(Argb(0xFF6750A4));   // variant, contrast, spec version
-let schemes = source.schemes();                            // paired light/dark
-install_with_color_schemes(&mut env, &schemes, MaterialColorMode::Light);
+let schemes = source.schemes();                          // paired light/dark
+Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
 ```
 
 Material-specific role tokens live in `hydrolysis_m3::color::*` (`Primary`, `OnPrimary`,

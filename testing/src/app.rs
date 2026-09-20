@@ -5,78 +5,132 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
-use hydrolysis::{KeyCode, Modifiers};
+use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
+use waterui::app::App;
+use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
-use crate::driver::{A11yDriver, DriverPumpResult, HydrolysisA11yDriver};
+use crate::driver::{
+    self, DriverPumpResult, FrameTiming, ResourceSampler, RuntimeDriver, VIRTUAL_FRAME,
+};
 use crate::perf::{PerfApp, PerfConfig, PerfReport};
 use crate::query::Query;
-use crate::selector::{ElementRef, ElementSet, Selector};
+use crate::selector::{ElementAnchor, ElementRef, ElementSet, Selector};
 use crate::semantics::{NodeId, TreeSnapshot};
 use crate::snapshot::Snapshot;
 use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 
-/// Installs a theme package into a test environment before mounting a view.
-pub trait ThemeInstaller: 'static {
-    /// Installs theme tokens, renderers, and package-specific hooks into the environment.
-    fn install(&self, env: &mut Environment);
+/// The style state of a [`UiBuilder`] that carries none: `ui()`'s starting
+/// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
+/// pointer and capture belong to the styled builder.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoStyle;
+
+/// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
+///
+/// The styled builder's mounts stay semantic — `mount` runs the same
+/// GPU-free [`SemanticRuntime`], only with the style's tokens installed into
+/// the mounted view's environment — while `mount_offscreen`, `mount_app` and
+/// the `perf` entry points hand the style to the rendered headless runtime.
+#[derive(Clone, Debug)]
+pub struct Styled<S: Style> {
+    pub(crate) style: S,
 }
 
-impl<F> ThemeInstaller for F
-where
-    F: Fn(&mut Environment) + 'static,
-{
-    fn install(&self, env: &mut Environment) {
-        self(env);
-    }
-}
-
-/// Creates a typed UI test builder.
+/// Creates a semantic UI test builder.
+///
+/// The returned `UiBuilder<NoStyle>` mounts views on `hydrolysis`'s semantic
+/// runtime through [`UiBuilder::mount`] — no style package is involved, so a
+/// test cannot read geometry, dispatch pointer gestures or capture snapshots.
+/// [`UiBuilder::theme`] carries a [`Style`] into the builder and unlocks the
+/// rendered mount points.
 #[must_use]
 pub fn ui() -> UiBuilder {
     UiBuilder::new()
 }
 
-/// Installs the theme a test runs under when it names none.
+/// Mounts a whole [`App`] on the rendered runtime and returns the offscreen
+/// session, taking `style` the way `hydrolysis::run(app, style)` does.
 ///
-/// This is the complete Hydrolysis theme: the backend's own test installer
-/// supplies the component bridges it realizes natively (the map), and
-/// Material 3 supplies everything a view can draw with — colour and font
-/// tokens, typography, and the widget theme that every Hydrolysis control
-/// reads its chrome from. Material 3 is what a generated project installs, so
-/// a test sees what the application's window shows, and a scroll view, a
-/// button or a toggle mounts under `ui()` without the test binary opting into
-/// a theme package first. Its tokens replace the backend installer's, which
-/// exist for renderer tests that run without a theme package.
-pub fn install_default_theme(env: &mut Environment) {
-    hydrolysis::testing::install_theme(env);
-    hydrolysis_m3::install_defaults(env);
+/// The session mounts at the window's declared frame on the default builder
+/// configuration — [`RuntimeFlavor::Test`] and scale factor 1. When the
+/// session needs its own viewport, runtime flavor or scale factor, mount
+/// through the styled builder instead:
+/// `ui().theme(style).viewport(w, h).mount_app(app)`.
+///
+/// Only the main window's content is mounted: the headless runtime hosts a
+/// single window, so the app's menu bar and any additional windows are not
+/// mounted. Popup windows the app opens at runtime (context menus, pickers)
+/// are still merged into the accessibility tree by Hydrolysis.
+///
+/// # Panics
+///
+/// Panics if the app declares no window, or if the initial Hydrolysis
+/// offscreen frame does not produce an accessibility tree.
+#[must_use]
+pub fn mount_app(app: App, style: impl Style) -> OffscreenApp {
+    let size = *app.main_window().frame.get().size();
+    ui().theme(style)
+        .viewport(
+            frame_points_as_u32(size.width),
+            frame_points_as_u32(size.height),
+        )
+        .mount_app(app)
+}
+
+/// Converts a window's declared frame extent — positive logical points —
+/// into the pixel count the headless runtime takes.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a window frame is a small positive logical size; the clamp keeps the value inside u32 range"
+)]
+fn frame_points_as_u32(points: f32) -> u32 {
+    u32::try_from(points.max(1.0).round() as i32).expect("clamped frame size is positive")
+}
+
+/// Which Hydrolysis headless runtime backs a session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RuntimeFlavor {
+    /// Deterministic bundled fonts, software adapters permitted (the default for tests).
+    #[default]
+    Test,
+    /// The application's resource fonts and production adapter selection — what `water run` shows.
+    Application,
 }
 
 /// Runtime test host and configuration.
 ///
-/// Theme and render mode are orthogonal: [`Self::theme`] swaps the installed
-/// theme package (defaulting to [`install_default_theme`]), while
-/// [`Self::mount`] / [`Self::mount_offscreen`] pick between the fast semantic
-/// runtime and the GPU-backed offscreen runtime. Any theme works in either
-/// mode.
+/// `S` is the builder's style state: [`NoStyle`] for the semantic builder
+/// `ui()` returns, or [`Styled<S>`] once [`UiBuilder::theme`] carries a
+/// style. Both states mount the GPU-free [`SemanticRuntime`] — the styled
+/// builder's `mount` additionally applies `Style::install_tokens` to the
+/// mounted view's environment — while `mount_offscreen`, `mount_app` and the
+/// performance entry points exist only on the styled builder and run the
+/// rendered [`HeadlessRuntime`].
+///
+/// Framework tokens are installed by the runtimes themselves; the builder's
+/// environment carries only what the test installs into it.
 #[derive(Clone)]
-pub struct UiBuilder {
+pub struct UiBuilder<S = NoStyle> {
     env: Environment,
     width: u32,
     height: u32,
-    theme: Rc<dyn Fn(&mut Environment)>,
+    style: S,
     perf_config: PerfConfig,
+    flavor: RuntimeFlavor,
+    scale_factor: f64,
 }
 
-impl core::fmt::Debug for UiBuilder {
+impl<S> core::fmt::Debug for UiBuilder<S> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("UiBuilder")
             .field("width", &self.width)
             .field("height", &self.height)
             .field("perf_config", &self.perf_config)
+            .field("flavor", &self.flavor)
+            .field("scale_factor", &self.scale_factor)
             .finish_non_exhaustive()
     }
 }
@@ -87,22 +141,73 @@ impl Default for UiBuilder {
     }
 }
 
-impl UiBuilder {
-    /// Creates a default semantic UI test runtime (390x844 viewport).
+impl UiBuilder<NoStyle> {
+    /// Creates a default semantic UI test builder (390x844 viewport).
     #[must_use]
     pub fn new() -> Self {
         Self {
             env: Environment::new(),
             width: 390,
             height: 844,
-            theme: Rc::new(install_default_theme),
+            style: NoStyle,
             perf_config: PerfConfig::default(),
+            flavor: RuntimeFlavor::Test,
+            scale_factor: 1.0,
         }
     }
 
+    /// Carries a `hydrolysis` style into the builder.
+    ///
+    /// The returned `UiBuilder<Styled<S>>` keeps `mount` on the semantic
+    /// runtime — still semantic, but with the style's tokens installed into
+    /// the mounted view's environment — and unlocks `mount_offscreen`,
+    /// `mount_app`, `perf` and `perf_with`, which mount the rendered runtime
+    /// constructed with `style`.
+    #[must_use]
+    pub fn theme<S: Style>(self, style: S) -> UiBuilder<Styled<S>> {
+        UiBuilder {
+            env: self.env,
+            width: self.width,
+            height: self.height,
+            style: Styled { style },
+            perf_config: self.perf_config,
+            flavor: self.flavor,
+            scale_factor: self.scale_factor,
+        }
+    }
+
+    /// Mounts a no-arg view builder on the semantic runtime.
+    ///
+    /// The semantic pipeline carries no style: the accessibility tree is a
+    /// product of the view tree and the widgets' semantics, so the returned
+    /// [`SemanticApp`] answers role, label, value, description, state,
+    /// structure and focus queries and dispatches accessibility actions —
+    /// taps, focus, text entry, increment/decrement, scroll, expand/collapse
+    /// and key events — without a style package. The mounted view's
+    /// environment resolves only the framework default tokens the runtime
+    /// installs; a view whose body reads a style package's tokens mounts
+    /// through [`UiBuilder::theme`] instead. Geometry, pointer gestures and
+    /// capture live on the styled builder's [`UiBuilder::mount_offscreen`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial Hydrolysis semantic pass does not produce an
+    /// accessibility tree.
+    pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
+    where
+        V: View + 'static,
+        F: Fn() -> V + 'static,
+    {
+        self.mount_semantic(AnyViewBuilder::new(move || AnyView::new(view_fn())))
+    }
+}
+
+impl<S> UiBuilder<S> {
     /// Overrides the environment used by the mounted app.
     ///
-    /// The configured theme is still installed on top at mount time.
+    /// The runtime still installs its framework tokens on top at mount time
+    /// — and a styled builder's `mount` applies the style's tokens above
+    /// them.
     #[must_use]
     pub fn environment(mut self, env: Environment) -> Self {
         self.env = env;
@@ -117,14 +222,6 @@ impl UiBuilder {
         self
     }
 
-    /// Replaces the default theme ([`install_default_theme`]) with a theme
-    /// package.
-    #[must_use]
-    pub fn theme<U: ThemeInstaller>(mut self, theme: U) -> Self {
-        self.theme = Rc::new(move |env| theme.install(env));
-        self
-    }
-
     /// Configures repeated offscreen performance measurement defaults.
     #[must_use]
     pub const fn perf_config(mut self, config: PerfConfig) -> Self {
@@ -132,9 +229,36 @@ impl UiBuilder {
         self
     }
 
-    fn themed_env(&self) -> Environment {
+    /// Selects which Hydrolysis headless runtime backs the session.
+    ///
+    /// [`RuntimeFlavor::Test`] (the default) mounts on deterministic bundled
+    /// fonts and permits software adapters; [`RuntimeFlavor::Application`]
+    /// mounts the application's resource fonts under production adapter
+    /// selection — the runtime `water run` hosts.
+    #[must_use]
+    pub const fn runtime(mut self, flavor: RuntimeFlavor) -> Self {
+        self.flavor = flavor;
+        self
+    }
+
+    /// Renders captures at `scale_factor` physical pixels per logical pixel.
+    ///
+    /// Layout stays in logical units — a `200x100` viewport captured at `2.0`
+    /// produces a `400x200` snapshot. Defaults to `1.0`. Applies only to the
+    /// rendered mounts.
+    ///
+    /// # Panics
+    ///
+    /// Panics at render-mount time if `scale_factor` is not finite or not
+    /// positive.
+    #[must_use]
+    pub const fn scale_factor(mut self, scale_factor: f64) -> Self {
+        self.scale_factor = scale_factor;
+        self
+    }
+
+    fn mount_env(&self) -> Environment {
         let mut env = self.env.clone();
-        (self.theme)(&mut env);
         // The harness mounts views without going through `App::new`, which is
         // where a real app installs the self-drawn realizations the facade
         // carries. Install them here so a test binary that enables
@@ -143,54 +267,197 @@ impl UiBuilder {
         // is installed by the test itself, into the environment it passes here,
         // exactly as an application installs it in `app(env)`.
         waterui::realization::install(&mut env);
+        // Hydrolysis owns no platform media bridge, so the self-drawn video
+        // realization applies on every host OS, including the ones
+        // `realization::install` skips because their system backend would
+        // bridge a native player.
+        waterui::realization::install_video(&mut env);
         env
     }
 
-    /// Mounts a no-arg view builder and returns a semantic testing session.
+    /// Mounts `content` on the semantic runtime — the construction shared by
+    /// both builders' `mount`, whose difference is only how the view builder
+    /// is assembled.
+    fn mount_semantic(self, content: AnyViewBuilder<AnyView>) -> SemanticApp {
+        let env = self.mount_env();
+        let runtime = match self.flavor {
+            RuntimeFlavor::Test => {
+                SemanticRuntime::new_for_tests(env, content, self.width, self.height)
+            }
+            RuntimeFlavor::Application => {
+                SemanticRuntime::new(env, content, self.width, self.height)
+            }
+        };
+        SemanticApp::new(runtime, (self.width, self.height))
+    }
+}
+
+/// Applies a style's environment tokens to a mounted view's environment
+/// scope.
+///
+/// [`SemanticRuntime`] installs the framework default tokens into an
+/// environment layered on top of the one it is constructed with, so tokens
+/// written into the builder environment beforehand would lose to the
+/// defaults on every slot they carry. Scoping the install to the mounted
+/// view reproduces the rendered runtime's ordering — framework defaults
+/// first, then [`Style::install_tokens`] — on the environment the view tree
+/// actually resolves.
+struct StyleTokens<S: Style>(Rc<S>);
+
+impl<S: Style> Plugin for StyleTokens<S> {
+    fn install(self, env: &mut Environment) {
+        self.0.install_tokens(env);
+    }
+}
+
+impl<S: Style> UiBuilder<Styled<S>> {
+    /// Splits the style out of the builder, leaving a `UiBuilder<NoStyle>`
+    /// with the same environment, viewport, and runtime configuration.
+    fn untheme(self) -> (UiBuilder<NoStyle>, S) {
+        let Self {
+            env,
+            width,
+            height,
+            style: Styled { style },
+            perf_config,
+            flavor,
+            scale_factor,
+        } = self;
+        (
+            UiBuilder {
+                env,
+                width,
+                height,
+                style: NoStyle,
+                perf_config,
+                flavor,
+                scale_factor,
+            },
+            style,
+        )
+    }
+
+    /// Mounts a no-arg view builder on the semantic runtime with the
+    /// builder's style tokens installed over the framework defaults.
+    ///
+    /// The mount is still semantic — the runtime is [`SemanticRuntime`] and
+    /// the style is never handed to it, so there is no widget theme,
+    /// geometry, pointer gestures or capture (those stay on
+    /// [`UiBuilder::mount_offscreen`]). What the style contributes is its
+    /// [`Style::install_tokens`] step, applied to the mounted view's
+    /// environment after the runtime's framework defaults — the ordering the
+    /// rendered runtime uses — so components whose bodies resolve their
+    /// style package's tokens from the environment see them in a semantic
+    /// test.
     ///
     /// # Panics
     ///
-    /// Panics if the initial Hydrolysis semantic pass does not produce an accessibility tree.
+    /// Panics if the initial Hydrolysis semantic pass does not produce an
+    /// accessibility tree.
     pub fn mount<V, F>(self, view_fn: F) -> SemanticApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        mount_app(
-            self.themed_env(),
-            self.width,
-            self.height,
-            view_fn,
-            DriverMode::Semantic,
-        )
+        let (builder, style) = self.untheme();
+        let style = Rc::new(style);
+        builder.mount_semantic(AnyViewBuilder::new(move || {
+            AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
+        }))
     }
 
-    /// Mounts a no-arg view builder and returns an offscreen GPU-backed testing session.
+    /// Mounts a no-arg view builder on the rendered runtime and returns the
+    /// offscreen session, constructed with the builder's style.
     ///
     /// # Panics
     ///
-    /// Panics if the initial Hydrolysis offscreen frame does not produce an accessibility tree.
+    /// Panics if [`UiBuilder::scale_factor`] was configured with a non-finite
+    /// or non-positive value, or if the initial Hydrolysis offscreen frame
+    /// does not produce an accessibility tree.
     pub fn mount_offscreen<V, F>(self, view_fn: F) -> OffscreenApp
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        OffscreenApp {
-            app: mount_app(
-                self.themed_env(),
+        let env = self.mount_env();
+        self.mount_rendered(env, AnyViewBuilder::new(move || AnyView::new(view_fn())))
+    }
+
+    /// Mounts a whole [`App`] on the rendered runtime and returns the
+    /// offscreen session, constructed with the builder's style.
+    ///
+    /// This is the application path: the session runs the app's own
+    /// [`Environment`] — the composition root [`App::new`] configured,
+    /// realizations included — layered over the builder's, so the values the
+    /// app carries win while what the test installed still applies
+    /// underneath. The builder's [`Self::viewport`], [`Self::runtime`] and
+    /// [`Self::scale_factor`] apply; [`mount_app`](crate::mount_app) is this
+    /// method with the viewport sized from the window's declared frame.
+    ///
+    /// Only the main window's content is mounted: the headless runtime hosts
+    /// a single window, so the app's menu bar and any additional windows are
+    /// not mounted. Popup windows the app opens at runtime (context menus,
+    /// pickers) are still merged into the accessibility tree by Hydrolysis.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the app declares no window, if [`UiBuilder::scale_factor`]
+    /// was configured with a non-finite or non-positive value, or if the
+    /// initial Hydrolysis offscreen frame does not produce an accessibility
+    /// tree.
+    #[must_use]
+    pub fn mount_app(self, app: App) -> OffscreenApp {
+        let (windows, _menu_bar, app_env) = app.into_parts();
+        let window = windows
+            .into_iter()
+            .next()
+            .expect("App::into_parts yields the main window first");
+        // The app's environment is the composition root, so it layers over
+        // the builder's — what the test installed applies underneath it.
+        let mut env = app_env.layered_on(&self.env);
+        // As on `mount_env`, Hydrolysis owns no platform media bridge, so the
+        // self-drawn video realization applies even where `App::new`'s
+        // `realization::install` skipped it.
+        waterui::realization::install_video(&mut env);
+        self.mount_rendered(env, window.content)
+    }
+
+    /// Mounts `content` on the rendered runtime — the construction shared by
+    /// `mount_offscreen` and `mount_app`, which differ only in where the
+    /// environment and the view builder come from.
+    fn mount_rendered(self, env: Environment, content: AnyViewBuilder<AnyView>) -> OffscreenApp {
+        assert!(
+            self.scale_factor.is_finite() && self.scale_factor > 0.0,
+            "waterui-testing scale_factor must be finite and greater than zero, got {}",
+            self.scale_factor
+        );
+        let runtime = match self.flavor {
+            RuntimeFlavor::Test => HeadlessRuntime::new_for_tests(
+                env,
+                content,
                 self.width,
                 self.height,
-                view_fn,
-                DriverMode::Offscreen,
+                self.style.style,
+            ),
+            RuntimeFlavor::Application => {
+                HeadlessRuntime::new(env, content, self.width, self.height, self.style.style)
+            }
+        };
+        OffscreenApp {
+            app: SemanticApp::new(
+                runtime.with_scale_factor(self.scale_factor),
+                (self.width, self.height),
             ),
         }
     }
 
-    /// Measures steady-state offscreen frames for a view with the default `steady` scenario.
+    /// Measures steady-state offscreen frames for a view with the default
+    /// `steady-redraw` scenario.
     pub fn perf<V, F>(self, view_fn: F) -> PerfReport
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
+        S: Clone,
     {
         self.perf_with(view_fn, |perf| {
             perf.measure("steady-redraw", |run| {
@@ -199,12 +466,14 @@ impl UiBuilder {
         })
     }
 
-    /// Measures custom offscreen scenarios using a closure-driven automation API.
+    /// Measures custom offscreen scenarios using a closure-driven automation
+    /// API.
     pub fn perf_with<V, F, A>(self, view_fn: F, automation: A) -> PerfReport
     where
         V: View + 'static,
         F: Fn() -> V + 'static,
         A: FnOnce(&mut PerfApp),
+        S: Clone,
     {
         let config = self.perf_config;
         let mut app = PerfApp::new(self, view_fn, config);
@@ -233,60 +502,28 @@ impl Default for DragOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DriverMode {
-    Semantic,
-    Offscreen,
-}
-
-fn mount_app<V, F>(
-    env: Environment,
-    width: u32,
-    height: u32,
-    view_fn: F,
-    mode: DriverMode,
-) -> SemanticApp
-where
-    V: View + 'static,
-    F: Fn() -> V + 'static,
-{
-    let builder = AnyViewBuilder::new(move || AnyView::new(view_fn()));
-    let mut app = SemanticApp {
-        env,
-        content: builder,
-        driver: Box::new(HydrolysisA11yDriver::new(width, height, mode)),
-        tree: TreeSnapshot::empty(),
-        ui_focus: None,
-        revision: 1,
-    };
-    let rebuilt = app.pump_once();
-    assert!(
-        rebuilt,
-        "waterui-testing initial mount did not produce a semantic tree"
-    );
-    // Settle to quiescence so async-mounted content (spawned setup tasks,
-    // chrome that appears once a controller reports ready) is part of the
-    // initial tree, mirroring XCUITest's launch-waits-for-idle semantics.
-    app.settle();
-    app
-}
-
 /// Offscreen GPU-backed app session with snapshot and performance hooks.
+///
+/// Wraps the [`SemanticApp`] mounted on [`HeadlessRuntime`]: the semantic
+/// surface (queries, assertions, accessibility actions, waits, key and text
+/// input) is shared with the style-free session, and this wrapper adds what
+/// only a rendered runtime can answer — geometry queries, pointer gestures,
+/// magnification, and framebuffer snapshots.
 #[derive(Debug)]
 pub struct OffscreenApp {
-    pub(crate) app: SemanticApp,
+    pub(crate) app: SemanticApp<HeadlessRuntime>,
 }
 
 impl OffscreenApp {
     /// Returns the semantic app API shared with non-rendering tests.
     #[must_use]
-    pub const fn semantic(&self) -> &SemanticApp {
+    pub const fn semantic(&self) -> &SemanticApp<HeadlessRuntime> {
         &self.app
     }
 
     /// Returns the mutable semantic app API shared with non-rendering tests.
     #[must_use]
-    pub const fn semantic_mut(&mut self) -> &mut SemanticApp {
+    pub const fn semantic_mut(&mut self) -> &mut SemanticApp<HeadlessRuntime> {
         &mut self.app
     }
 
@@ -301,13 +538,9 @@ impl OffscreenApp {
     pub fn pump_for(&mut self, duration: Duration) {
         let mut remaining = duration;
         while !remaining.is_zero() {
-            let step = crate::driver::VIRTUAL_FRAME.min(remaining);
+            let step = VIRTUAL_FRAME.min(remaining);
             remaining -= step;
-            let outcome = self
-                .app
-                .driver
-                .pump_step(step, &self.app.content, &self.app.env);
-            let _ = self.app.apply_pump_result(outcome);
+            self.app.pump_step(step);
         }
     }
 
@@ -324,15 +557,7 @@ impl OffscreenApp {
     pub fn pump_until(&mut self, timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            // Between frames is the one point where draining cannot re-enter
-            // the call that spawned the work.
-            let _ = crate::executor::drain_parked_local_work();
-            let outcome = self.app.driver.pump_step(
-                crate::driver::VIRTUAL_FRAME,
-                &self.app.content,
-                &self.app.env,
-            );
-            let _ = self.app.apply_pump_result(outcome);
+            self.app.pump_step(VIRTUAL_FRAME);
 
             if ready() {
                 return true;
@@ -342,7 +567,7 @@ impl OffscreenApp {
             }
             // Per-frame pacing inside a pump loop: this is what lets real I/O
             // make progress between frames.
-            std::thread::sleep(crate::driver::VIRTUAL_FRAME);
+            std::thread::sleep(VIRTUAL_FRAME);
         }
     }
 
@@ -352,8 +577,9 @@ impl OffscreenApp {
     ///
     /// Panics if the offscreen driver does not produce a snapshot.
     pub fn snapshot(&mut self) -> Snapshot {
-        let outcome = self.app.driver.pump(&self.app.content, &self.app.env, true);
-
+        let _ = crate::executor::drain_parked_local_work();
+        let at = self.app.tick(VIRTUAL_FRAME);
+        let outcome = RuntimeDriver::pump_at(&mut self.app.runtime, at, true);
         self.app
             .apply_pump_result(outcome)
             .unwrap_or_else(|| panic!("waterui-testing driver did not produce a snapshot"))
@@ -377,25 +603,27 @@ impl OffscreenApp {
     /// pump frames for its full timeout and skip past short transients such
     /// as the Material ripple growth.
     pub fn queue_pointer_down(&mut self, x: f32, y: f32) {
-        self.app.driver.pointer_down(x, y, &self.app.env);
+        self.app.queue_pointer_down_at(x, y);
     }
 
     /// Queues a primary pointer-up without the semantic settle; see
     /// [`Self::queue_pointer_down`].
     pub fn queue_pointer_up(&mut self, x: f32, y: f32) {
-        self.app.driver.pointer_up(x, y, &self.app.env);
+        self.app.queue_pointer_up_at(x, y);
     }
 
     /// Queues a pointer move without the semantic settle; see
     /// [`Self::queue_pointer_down`]. Visual stage tests use this to park the
     /// pointer away from a widget so idle captures are free of hover state.
     pub fn queue_pointer_move(&mut self, x: f32, y: f32) {
-        self.app.driver.pointer_move(x, y, &self.app.env);
+        self.app
+            .runtime
+            .push_input_event(driver::pointer_move_event(x, y));
     }
 }
 
 impl core::ops::Deref for OffscreenApp {
-    type Target = SemanticApp;
+    type Target = SemanticApp<HeadlessRuntime>;
 
     fn deref(&self) -> &Self::Target {
         &self.app
@@ -409,16 +637,28 @@ impl core::ops::DerefMut for OffscreenApp {
 }
 
 /// Mounted semantic app session used in `#[waterui::test(...)]`.
-pub struct SemanticApp {
-    pub(crate) env: Environment,
-    pub(crate) content: AnyViewBuilder<AnyView>,
-    pub(crate) driver: Box<dyn A11yDriver>,
+///
+/// `R` is the mounted runtime: [`SemanticRuntime`] for the style-free
+/// pipeline `UiBuilder::mount` returns (the default parameter), or
+/// [`HeadlessRuntime`] underneath [`OffscreenApp`]. The parameter is what
+/// carries the split — a semantic query has no `bounds()` method because the
+/// semantic session's element handles and pointer entry points exist only on
+/// `SemanticApp<HeadlessRuntime>`.
+pub struct SemanticApp<R = SemanticRuntime> {
+    pub(crate) runtime: R,
     pub(crate) tree: TreeSnapshot,
     pub(crate) ui_focus: Option<NodeId>,
     pub(crate) revision: u64,
+    pub(crate) viewport: (u32, u32),
+    /// Virtual frame clock: starts at the first pump's wall time and advances
+    /// by a fixed step per pump, decoupling animation sampling from host
+    /// scheduling. Perf pumps overwrite it so interleaved clocks stay
+    /// monotone.
+    pub(crate) clock: Option<Instant>,
+    pub(crate) resources: ResourceSampler,
 }
 
-impl core::fmt::Debug for SemanticApp {
+impl<R> core::fmt::Debug for SemanticApp<R> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SemanticApp")
             .field("revision", &self.tree.revision())
@@ -427,11 +667,8 @@ impl core::fmt::Debug for SemanticApp {
     }
 }
 
-#[allow(
-    clippy::missing_panics_doc,
-    reason = "assertion helpers intentionally panic with WaterUI-specific diagnostics"
-)]
-impl SemanticApp {
+/// Snapshot reads every session exposes, whatever its runtime.
+impl<R> SemanticApp<R> {
     /// Returns the latest accessibility tree snapshot.
     #[must_use]
     pub const fn tree(&self) -> &TreeSnapshot {
@@ -450,9 +687,47 @@ impl SemanticApp {
         TestArtifacts::new(suite.as_ref())
     }
 
-    /// Starts a chainable semantic query.
+    /// The viewport size this session was mounted with, in logical pixels.
     #[must_use]
-    pub fn query(&mut self) -> Query<'_> {
+    pub const fn viewport(&self) -> (u32, u32) {
+        self.viewport
+    }
+}
+
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "assertion helpers intentionally panic with WaterUI-specific diagnostics"
+)]
+impl<R: RuntimeDriver> SemanticApp<R> {
+    /// Mounts `runtime` and settles to quiescence so async-mounted content
+    /// (spawned setup tasks, chrome that appears once a controller reports
+    /// ready) is part of the initial tree, mirroring `XCUITest`'s
+    /// launch-waits-for-idle semantics.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial pump does not produce a semantic tree.
+    pub(crate) fn new(runtime: R, viewport: (u32, u32)) -> Self {
+        let mut app = Self {
+            runtime,
+            tree: TreeSnapshot::empty(),
+            ui_focus: None,
+            revision: 1,
+            viewport,
+            clock: None,
+            resources: ResourceSampler::new(),
+        };
+        let rebuilt = app.pump_once();
+        assert!(
+            rebuilt,
+            "waterui-testing initial mount did not produce a semantic tree"
+        );
+        app.settle();
+        app
+    }
+
+    /// Starts a chainable semantic query.
+    pub fn query(&mut self) -> Query<'_, R> {
         Query {
             app: self,
             selector: Selector::default(),
@@ -495,12 +770,7 @@ impl SemanticApp {
                 self.tree.node(id).map_or_else(
                     || format!("id={} (no longer in tree)", id.as_u64()),
                     |node| {
-                        ElementRef {
-                            node_id: id,
-                            node: node.clone(),
-                            revision: self.tree.revision(),
-                        }
-                        .debug_summary()
+                        ElementAnchor::new(id, node.clone(), self.tree.revision()).debug_summary()
                     },
                 )
             },
@@ -551,6 +821,29 @@ impl SemanticApp {
             },
             inverted: false,
         }
+    }
+
+    /// Creates a UI-focus expectation: fulfilled once the selector resolves to
+    /// the element holding Hydrolysis UI focus.
+    #[must_use]
+    pub const fn expect_ui_focus(&self, selector: Selector) -> Expectation {
+        Expectation {
+            kind: ExpectationKind::UiFocus(selector),
+            inverted: false,
+        }
+    }
+
+    /// Resolves a node id to an [`ElementRef`] bound to the current tree, or
+    /// `None` when the id is absent.
+    ///
+    /// External drivers hold node ids rather than query results; this is the
+    /// entry point that turns one into a handle usable for scoped queries
+    /// ([`Selector::within`], [`Selector::children_of`]) and element-relative
+    /// pointer work.
+    pub fn element(&mut self, id: NodeId) -> Option<ElementRef<R>> {
+        self.sync_tree();
+        let node = self.tree.node(id)?.clone();
+        Some(ElementRef::new(id, node, self.tree.revision()))
     }
 
     /// Waits for expectations using XCTest-like semantics.
@@ -633,7 +926,7 @@ impl SemanticApp {
             }
 
             let _ = self.pump_once();
-            if !self.driver.is_settled() {
+            if !self.runtime.is_settled() {
                 // Scheduled work remains (animations, patches, queued input):
                 // keep pumping virtual frames without wall-clock sleeps.
                 idle_backoff = Duration::ZERO;
@@ -702,7 +995,7 @@ impl SemanticApp {
             }
 
             let _ = self.pump_once();
-            if !self.driver.is_settled() {
+            if !self.runtime.is_settled() {
                 idle_backoff = Duration::ZERO;
                 continue;
             }
@@ -730,6 +1023,7 @@ impl SemanticApp {
                 }
                 self.tree[ids[0]].value() == Some(value.as_str())
             }
+            ExpectationKind::UiFocus(selector) => self.matches_ui_focus(selector),
         }
     }
 
@@ -754,7 +1048,7 @@ impl SemanticApp {
         const MAX_SYNC_PUMPS: usize = 8;
 
         for _ in 0..MAX_SYNC_PUMPS {
-            if !self.driver.has_pending_semantic_update() {
+            if !self.runtime.has_pending_semantic_update() {
                 return;
             }
             self.pump_once();
@@ -767,20 +1061,20 @@ impl SemanticApp {
         self.tree.matching(selector)
     }
 
-    pub(crate) fn resolve_elements(&mut self, selector: &Selector) -> ElementSet {
+    /// Resolves every element matching `selector` against the current tree.
+    pub fn resolve_elements(&mut self, selector: &Selector) -> ElementSet<R> {
         let ids = self.matching_ids(selector);
+        // The sync inside `matching_ids` can apply a newer tree; the handles'
+        // revision must be read after it so they are not born stale.
+        let revision = self.tree.revision();
         let elements = ids
             .into_iter()
-            .map(|id| ElementRef {
-                node_id: id,
-                node: self.tree[id].clone(),
-                revision: self.tree.revision(),
-            })
+            .map(|id| ElementRef::new(id, self.tree[id].clone(), revision))
             .collect();
-        ElementSet::new(elements, self.tree.revision())
+        ElementSet::new(elements)
     }
 
-    pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef {
+    pub(crate) fn resolve_single(&mut self, selector: &Selector) -> ElementRef<R> {
         let results = self.resolve_elements(selector);
         match results.len() {
             1 => results[0].clone(),
@@ -797,124 +1091,97 @@ impl SemanticApp {
         }
     }
 
-    pub(crate) fn perform_action(
+    /// Performs an accessibility action on a node, then settles the resulting
+    /// updates.
+    ///
+    /// Returns whether the runtime handled the action. Unknown node ids and
+    /// actions the node does not support report `false` — they never panic,
+    /// which makes this the entry point for external drivers that must surface
+    /// failures as data rather than aborting the session. [`Query`] and
+    /// [`ElementRef`] use the same path through `perform_action_expect`, which
+    /// keeps the panicking test semantics.
+    pub fn perform_action(
         &mut self,
         node_id: NodeId,
         action: AccessibilityAction,
         data: Option<AccessibilityActionData>,
-    ) {
+    ) -> bool {
+        let handled = self.queue_action(node_id, action, data);
+        self.settle();
+        handled
+    }
+
+    /// Performs an accessibility action on a node without the semantic settle
+    /// used by [`Self::perform_action`].
+    ///
+    /// The request is processed by the next pump, so a caller stepping the
+    /// virtual clock frame by frame — [`OffscreenApp::pump_for`] followed by
+    /// [`OffscreenApp::snapshot`] — observes the transient the action
+    /// triggers. Returns whether the runtime handled the action, with the
+    /// same failure semantics as [`Self::perform_action`].
+    pub fn queue_action(
+        &mut self,
+        node_id: NodeId,
+        action: AccessibilityAction,
+        data: Option<AccessibilityActionData>,
+    ) -> bool {
         let request = AccessibilityActionRequest {
             target_tree: AccessibilityTreeId::ROOT,
             target_node: node_id.as_accesskit(),
             action,
             data,
         };
-        let handled = self.driver.perform_action(request, &self.env);
+        self.runtime.perform_accessibility_action(request)
+    }
+
+    pub(crate) fn perform_action_expect(
+        &mut self,
+        node_id: NodeId,
+        action: AccessibilityAction,
+        data: Option<AccessibilityActionData>,
+    ) {
         assert!(
-            handled,
+            self.perform_action(node_id, action, data),
             "waterui-testing: accessibility action {action:?} on {} was not handled by the runtime — the target does not support this action",
             self.describe_node(node_id),
         );
-        self.settle();
     }
 
     fn describe_node(&self, node_id: NodeId) -> String {
         self.tree.node(node_id).map_or_else(
             || format!("node id={} (no longer in tree)", node_id.as_u64()),
-            |node| {
-                ElementRef {
-                    node_id,
-                    node: node.clone(),
-                    revision: self.tree.revision(),
-                }
-                .debug_summary()
-            },
+            |node| ElementAnchor::new(node_id, node.clone(), self.tree.revision()).debug_summary(),
         )
     }
 
-    /// Clears the latest Hydrolysis-managed UI focus target.
+    /// Clears the latest Hydrolysis-managed UI focus target, then settles
+    /// resulting updates.
     ///
     /// A no-op when nothing holds UI focus.
     pub fn clear_ui_focus(&mut self) {
-        if self.driver.clear_ui_focus(&self.env) {
+        if self.queue_clear_ui_focus() {
             self.settle();
         }
     }
 
-    pub(crate) fn hover_at(&mut self, x: f32, y: f32) {
-        self.driver.hover_at(x, y, &self.env);
-        self.settle();
-    }
-
-    /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
-    pub fn tap_at(&mut self, x: f32, y: f32) {
-        self.driver.pointer_down(x, y, &self.env);
-        self.driver.pointer_up(x, y, &self.env);
-        self.settle();
-    }
-
-    /// Dispatches a primary pointer-down event at viewport coordinates.
-    pub fn pointer_down_at(&mut self, x: f32, y: f32) {
-        self.driver.pointer_down(x, y, &self.env);
-        self.settle();
-    }
-
-    /// Right-clicks at viewport coordinates, opening a context menu if there is
-    /// one there.
-    pub fn secondary_click_at(&mut self, x: f32, y: f32) {
-        self.driver.secondary_click(x, y, &self.env);
-        self.settle();
-    }
-
-    /// Dispatches a primary pointer-up event at viewport coordinates.
-    pub fn pointer_up_at(&mut self, x: f32, y: f32) {
-        self.driver.pointer_up(x, y, &self.env);
-        self.settle();
-    }
-
-    pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
-        self.drag_from_to_with(from_x, from_y, to_x, to_y, DragOptions::default());
-    }
-
-    /// Dispatches a drag between viewport coordinates with explicit step and
-    /// timing control, then settles resulting updates.
-    pub fn drag_from_to_with(
-        &mut self,
-        from_x: f32,
-        from_y: f32,
-        to_x: f32,
-        to_y: f32,
-        options: DragOptions,
-    ) {
-        let steps = options.steps.max(1);
-        self.driver.pointer_down(from_x, from_y, &self.env);
-        for step in 1..=steps {
-            let t = f32::from(step) / f32::from(steps);
-            let x = (to_x - from_x).mul_add(t, from_x);
-            let y = (to_y - from_y).mul_add(t, from_y);
-            self.driver.pointer_move(x, y, &self.env);
-            if options.frame_per_step {
-                let outcome =
-                    self.driver
-                        .pump_step(crate::driver::VIRTUAL_FRAME, &self.content, &self.env);
-                let _ = self.apply_pump_result(outcome);
-            }
-        }
-        self.driver.pointer_up(to_x, to_y, &self.env);
-        self.settle();
-    }
-
-    /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles resulting updates.
-    pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
-        self.driver
-            .scroll_at(x, y, dx, dy, is_line_delta, &self.env);
-        self.settle();
+    /// Clears the latest Hydrolysis-managed UI focus target without the
+    /// semantic settle used by [`Self::clear_ui_focus`]. Returns whether a
+    /// focus target was released.
+    pub fn queue_clear_ui_focus(&mut self) -> bool {
+        self.runtime.clear_ui_focus()
     }
 
     /// Dispatches committed text through the Hydrolysis text input path.
     pub fn text_input(&mut self, text: impl Into<String>) {
-        self.driver.text_input(text.into(), &self.env);
+        self.queue_text_input(text);
         self.settle();
+    }
+
+    /// Dispatches committed text through the Hydrolysis text input path
+    /// without the semantic settle used by [`Self::text_input`].
+    pub fn queue_text_input(&mut self, text: impl Into<String>) {
+        self.runtime
+            .push_input_event(driver::text_input_event(text.into()));
     }
 
     /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
@@ -924,8 +1191,7 @@ impl SemanticApp {
 
     /// Dispatches a named keyboard key with explicit modifiers held.
     pub fn press_named_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.driver
-            .key_press(KeyCode::Named(key.into()), modifiers, &self.env);
+        self.queue_key_press(KeyCode::Named(key.into()), modifiers);
         self.settle();
     }
 
@@ -936,24 +1202,53 @@ impl SemanticApp {
 
     /// Dispatches a character keyboard key with explicit modifiers held.
     pub fn press_character_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.driver
-            .key_press(KeyCode::Character(key.into()), modifiers, &self.env);
+        self.queue_key_press(KeyCode::Character(key.into()), modifiers);
         self.settle();
     }
 
-    pub(crate) fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
-        self.driver.magnify_at(x, y, factor, &self.env);
-        self.settle();
+    /// Dispatches a keyboard key with explicit modifiers held, without the
+    /// semantic settle used by [`Self::press_named_key_with`] and
+    /// [`Self::press_character_key_with`]. The event is processed by the next
+    /// pump, so a key-triggered transient — a focus ring appearing on `Tab`,
+    /// a sheet dismissing on `Escape` — stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_key_press(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.runtime
+            .push_input_event(driver::key_press_event(key, modifiers));
     }
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued
     /// input, no spawned work awaiting a drain, and no renderer-scheduled
     /// semantic work — or until the virtual cap elapses.
     ///
-    /// The cap exists solely for perpetual animations (an indeterminate
-    /// progress spinner keeps the animation controller active forever); every
-    /// finite transition ends well before it. Each pump advances the virtual
-    /// clock one frame, so the cap costs pump work, never wall-clock sleeps.
+    /// Quiescence alone is not the whole story: a `spawn_local` task parked on
+    /// a wall-clock timer or in-flight I/O holds no queued runnable, so the
+    /// runtime cannot see it. While [`waterui::task::outstanding_local_tasks`]
+    /// reports such work, settling paces real time — each pump runs whatever
+    /// the last wake re-queued — until the task publishes its result or the
+    /// wall-clock cap elapses. This is what lets a `Photo` fetch or an
+    /// `avatar` image that completes after real I/O reach the tree.
+    ///
+    /// Pacing holds the virtual clock still. The scene is quiescent at that
+    /// point, so nothing it schedules needs a frame, and moving the clock
+    /// while a test waits on the outside world would run gestures, timers and
+    /// playback ahead of the assertions that follow: a long press held while
+    /// an image decodes would activate, play, and finish inside one settle.
+    /// Once a paced pump changes the tree, settling returns to advancing
+    /// frames so whatever the change scheduled can run.
+    ///
+    /// In-flight work is waited for, whatever its length: a playback task
+    /// or a stream keeps settling busy until it ends or the wall-clock cap
+    /// elapses. A test that has to observe such a transient — motion that
+    /// plays while a press is held — dispatches the press with
+    /// [`Self::queue_pointer_down_at`] and waits on the tree instead of
+    /// settling.
+    ///
+    /// The virtual cap exists solely for perpetual animations (an
+    /// indeterminate progress spinner keeps the animation controller active
+    /// forever); every finite transition ends well before it. Each pump
+    /// advances the virtual clock one frame, so the cap costs pump work, never
+    /// wall-clock sleeps.
     ///
     /// Public because a test that drives non-visual work — a handler that spawns
     /// onto the local executor, a coalesced push that lands on the next tick —
@@ -962,18 +1257,78 @@ impl SemanticApp {
     pub fn settle(&mut self) {
         /// Virtual time budget for perpetual animations; ~62 pumps at 16ms.
         const SETTLE_CAP: Duration = Duration::from_secs(1);
+        /// Wall-clock budget for local tasks parked on real I/O or timers.
+        /// Long enough for a remote fetch on a slow link; bounded so a
+        /// permanently parked task cannot hang the caller forever.
+        const SETTLE_WALL_CAP: Duration = Duration::from_secs(5);
 
         let mut remaining = SETTLE_CAP;
+        let wall_deadline = Instant::now() + SETTLE_WALL_CAP;
         loop {
             let _ = self.pump_once();
-            if self.driver.is_settled() {
-                return;
+            if !self.runtime.is_settled() {
+                remaining = remaining.saturating_sub(VIRTUAL_FRAME);
+                if remaining.is_zero() {
+                    return;
+                }
+                continue;
             }
-            remaining = remaining.saturating_sub(crate::driver::VIRTUAL_FRAME);
-            if remaining.is_zero() {
-                return;
+            // Quiescent but a local task may be parked on a wall-clock wake:
+            // give it real time, then run what it re-queued at the same
+            // virtual instant.
+            loop {
+                if waterui::task::outstanding_local_tasks() == 0 || Instant::now() >= wall_deadline
+                {
+                    return;
+                }
+                std::thread::sleep(VIRTUAL_FRAME);
+                if self.pump_held() || !self.runtime.is_settled() {
+                    break;
+                }
             }
         }
+    }
+
+    /// Pumps one frame without advancing the virtual clock, returning whether
+    /// the tree changed.
+    fn pump_held(&mut self) -> bool {
+        self.pump_step(Duration::ZERO)
+    }
+
+    /// Whether the runtime is quiescent: no queued input, no spawned work
+    /// awaiting a drain, and no renderer-scheduled semantic work.
+    ///
+    /// A running animation counts as scheduled work — an app that never comes
+    /// to rest never reports settled, which is what lets a caller stepping
+    /// [`OffscreenApp::pump_for`] tell "still animating" apart from "idle".
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        self.runtime.is_settled()
+    }
+
+    /// Advances the virtual clock by `step` and returns the new frame instant.
+    fn tick(&mut self, step: Duration) -> Instant {
+        let next = self
+            .clock
+            .map_or_else(Instant::now, |current| current + step);
+        self.clock = Some(next);
+        next
+    }
+
+    fn pump_once(&mut self) -> bool {
+        self.pump_step(VIRTUAL_FRAME)
+    }
+
+    /// Advances the virtual clock by `step`, pumps one frame at the landed
+    /// instant, and applies the produced tree update. Returns whether the
+    /// frame rebuilt the tree.
+    fn pump_step(&mut self, step: Duration) -> bool {
+        let _ = crate::executor::drain_parked_local_work();
+        let at = self.tick(step);
+        let outcome = self.runtime.pump_at(at, false);
+        let rebuilt = outcome.rebuilt;
+        let _ = self.apply_pump_result(outcome);
+        rebuilt
     }
 
     fn apply_pump_result(&mut self, outcome: DriverPumpResult) -> Option<Snapshot> {
@@ -993,52 +1348,47 @@ impl SemanticApp {
         outcome.snapshot
     }
 
-    fn pump_once(&mut self) -> bool {
-        let outcome = self.driver.pump(&self.content, &self.env, false);
-        let rebuilt = outcome.rebuilt;
-        let _ = self.apply_pump_result(outcome);
-        rebuilt
-    }
-
     fn matches_ui_focus(&mut self, selector: &Selector) -> bool {
         let ids = self.matching_ids(selector);
         ids.len() == 1 && self.ui_focus == Some(ids[0])
     }
 
-    pub(crate) fn assert_current_element(&self, element: &ElementRef, context: &str) {
+    pub(crate) fn assert_current_element(&self, element: &ElementRef<R>, context: &str) {
+        self.assert_current_anchor(&element.anchor(), context);
+    }
+
+    pub(crate) fn assert_current_anchor(&self, anchor: &ElementAnchor, context: &str) {
         assert!(
-            element.revision() == self.tree.revision(),
+            anchor.revision() == self.tree.revision(),
             "waterui-testing stale element handle during {context}: handle revision {} does not match current tree revision {}; re-query the element before interacting. handle={}",
-            element.revision(),
+            anchor.revision(),
             self.tree.revision(),
-            element.debug_summary()
+            anchor.debug_summary()
         );
         assert!(
-            self.tree.node(element.id()).is_some(),
+            self.tree.node(anchor.id()).is_some(),
             "waterui-testing missing current node for handle during {context}: handle={} is not present in revision {}",
-            element.debug_summary(),
+            anchor.debug_summary(),
             self.tree.revision()
         );
     }
 
     fn validate_selector_scope(&self, selector: &Selector) {
         if let Some(scope) = selector.scope() {
-            self.assert_current_element(scope.handle(), "scoped query");
+            self.assert_current_anchor(scope.handle(), "scoped query");
         }
     }
-}
 
-impl SemanticApp {
     pub(crate) fn tap_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Click, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Click, None);
     }
 
     pub(crate) fn focus_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Focus, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Focus, None);
     }
 
     pub(crate) fn set_text_node(&mut self, node_id: NodeId, value: impl Into<String>) {
-        self.perform_action(
+        self.perform_action_expect(
             node_id,
             AccessibilityAction::SetValue,
             Some(AccessibilityActionData::Value(
@@ -1048,14 +1398,218 @@ impl SemanticApp {
     }
 
     pub(crate) fn increment_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Increment, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Increment, None);
     }
 
     pub(crate) fn decrement_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::Decrement, None);
+        self.perform_action_expect(node_id, AccessibilityAction::Decrement, None);
     }
 
     pub(crate) fn scroll_down_node(&mut self, node_id: NodeId) {
-        self.perform_action(node_id, AccessibilityAction::ScrollDown, None);
+        self.perform_action_expect(node_id, AccessibilityAction::ScrollDown, None);
+    }
+
+    pub(crate) fn expand_node(&mut self, node_id: NodeId) {
+        self.perform_action_expect(node_id, AccessibilityAction::Expand, None);
+    }
+
+    pub(crate) fn collapse_node(&mut self, node_id: NodeId) {
+        self.perform_action_expect(node_id, AccessibilityAction::Collapse, None);
+    }
+}
+
+/// Geometry and pointer surface, available only on the rendered runtime: the
+/// semantic pipeline's accessibility tree is a product of the view tree and
+/// widgets' semantics and carries no layout, so none of this exists on
+/// `SemanticApp<SemanticRuntime>`.
+#[allow(
+    clippy::missing_panics_doc,
+    reason = "assertion helpers intentionally panic with WaterUI-specific diagnostics"
+)]
+impl SemanticApp<HeadlessRuntime> {
+    /// Moves the pointer to viewport coordinates without pressing a button,
+    /// then settles resulting updates.
+    pub fn hover_at(&mut self, x: f32, y: f32) {
+        self.queue_hover_at(x, y);
+        self.settle();
+    }
+
+    /// Moves the pointer to viewport coordinates without the semantic settle
+    /// used by [`Self::hover_at`]. The event is processed by the next pump,
+    /// so a hover-triggered transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_hover_at(&mut self, x: f32, y: f32) {
+        self.runtime
+            .push_input_event(driver::pointer_move_event(x, y));
+    }
+
+    /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
+    pub fn tap_at(&mut self, x: f32, y: f32) {
+        self.runtime
+            .push_input_event(driver::pointer_down_event(x, y));
+        self.runtime
+            .push_input_event(driver::pointer_up_event(x, y));
+        self.settle();
+    }
+
+    /// Dispatches a primary pointer-down event at viewport coordinates.
+    pub fn pointer_down_at(&mut self, x: f32, y: f32) {
+        self.queue_pointer_down_at(x, y);
+        self.settle();
+    }
+
+    /// Dispatches a primary pointer-down event at viewport coordinates
+    /// without the settle used by [`Self::pointer_down_at`]. The event is
+    /// processed by the next pump, so work the press starts — a long press's
+    /// motion, a drag preview — stays observable to [`Self::wait_for`] rather
+    /// than being waited out.
+    pub fn queue_pointer_down_at(&mut self, x: f32, y: f32) {
+        self.runtime
+            .push_input_event(driver::pointer_down_event(x, y));
+    }
+
+    /// Right-clicks at viewport coordinates, opening a context menu if there is
+    /// one there.
+    pub fn secondary_click_at(&mut self, x: f32, y: f32) {
+        self.queue_secondary_click(x, y);
+        self.settle();
+    }
+
+    /// Right-clicks at viewport coordinates without the semantic settle used
+    /// by [`Self::secondary_click_at`]. The event is processed by the next
+    /// pump, so a menu's opening transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_secondary_click(&mut self, x: f32, y: f32) {
+        for event in driver::secondary_click_events(x, y) {
+            self.runtime.push_input_event(event);
+        }
+    }
+
+    /// Dispatches a primary pointer-up event at viewport coordinates.
+    pub fn pointer_up_at(&mut self, x: f32, y: f32) {
+        self.queue_pointer_up_at(x, y);
+        self.settle();
+    }
+
+    /// Dispatches a primary pointer-up event at viewport coordinates without
+    /// the settle used by [`Self::pointer_up_at`]; the release is processed
+    /// by the next pump.
+    pub fn queue_pointer_up_at(&mut self, x: f32, y: f32) {
+        self.runtime
+            .push_input_event(driver::pointer_up_event(x, y));
+    }
+
+    pub(crate) fn drag_from_to(&mut self, from_x: f32, from_y: f32, to_x: f32, to_y: f32) {
+        self.drag_from_to_with(from_x, from_y, to_x, to_y, DragOptions::default());
+    }
+
+    /// Dispatches a drag between viewport coordinates with explicit step and
+    /// timing control, then settles resulting updates.
+    pub fn drag_from_to_with(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
+        self.dispatch_drag(from_x, from_y, to_x, to_y, options);
+        self.settle();
+    }
+
+    /// Dispatches a drag between viewport coordinates without the semantic
+    /// settle used by [`Self::drag_from_to_with`]. The events — and the
+    /// per-step pumps when [`DragOptions::frame_per_step`] is set — are
+    /// processed immediately; only the final settle is skipped, so a
+    /// release-triggered transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_drag_from_to_with(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
+        self.dispatch_drag(from_x, from_y, to_x, to_y, options);
+    }
+
+    fn dispatch_drag(
+        &mut self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        options: DragOptions,
+    ) {
+        let steps = options.steps.max(1);
+        self.runtime
+            .push_input_event(driver::pointer_down_event(from_x, from_y));
+        for step in 1..=steps {
+            let t = f32::from(step) / f32::from(steps);
+            let x = (to_x - from_x).mul_add(t, from_x);
+            let y = (to_y - from_y).mul_add(t, from_y);
+            self.runtime
+                .push_input_event(driver::pointer_move_event(x, y));
+            if options.frame_per_step {
+                let _ = self.pump_step(VIRTUAL_FRAME);
+            }
+        }
+        self.runtime
+            .push_input_event(driver::pointer_up_event(to_x, to_y));
+    }
+
+    /// Dispatches a wheel/trackpad scroll at viewport coordinates and settles
+    /// resulting updates.
+    pub fn scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
+        self.queue_scroll_at(x, y, dx, dy, is_line_delta);
+        self.settle();
+    }
+
+    /// Dispatches a wheel/trackpad scroll at viewport coordinates without the
+    /// semantic settle used by [`Self::scroll_at`]. The event is processed by
+    /// the next pump, so a scroll's glide transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_scroll_at(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) {
+        self.runtime
+            .push_input_event(driver::scroll_event(x, y, dx, dy, is_line_delta));
+    }
+
+    /// Dispatches a magnification (pinch) gesture centered at viewport
+    /// coordinates and settles resulting updates.
+    pub fn magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        self.queue_magnify_at(x, y, factor);
+        self.settle();
+    }
+
+    /// Dispatches a magnification (pinch) gesture without the semantic settle
+    /// used by [`Self::magnify_at`]. The events are processed by the next
+    /// pump, so a zoom transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_magnify_at(&mut self, x: f32, y: f32, factor: f32) {
+        for event in driver::magnification_events(x, y, factor) {
+            self.runtime.push_input_event(event);
+        }
+    }
+
+    /// Pumps one complete offscreen frame at `at`, adopting the instant as the
+    /// session's virtual clock so interleaved semantic pumps stay monotone,
+    /// and reports the frame's timing and a process resource sample.
+    ///
+    /// Perf runs drive this directly; the produced tree update is applied so a
+    /// mid-run semantic query reads the state the frame landed on.
+    pub(crate) fn pump_frame_at(&mut self, at: Instant) -> FrameTiming {
+        self.clock = Some(at);
+        let _ = crate::executor::drain_parked_local_work();
+        let started_at = Instant::now();
+        let outcome = RuntimeDriver::pump_at(&mut self.runtime, at, false);
+        let timing = FrameTiming {
+            total: outcome.profile.total.max(started_at.elapsed()),
+            rebuilt: outcome.rebuilt,
+            profile: outcome.profile,
+            resources: self.resources.sample(),
+        };
+        let _ = self.apply_pump_result(outcome);
+        timing
     }
 }

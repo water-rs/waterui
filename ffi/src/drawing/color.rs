@@ -1,5 +1,6 @@
 use crate::{IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, reactive::WuiComputed};
 
+use nami::SignalExt;
 use waterui::{Color, Signal};
 use waterui_core::{Environment, resolve::Resolvable};
 use waterui_graphics::color::ResolvedColor;
@@ -187,6 +188,29 @@ pub unsafe extern "C" fn waterui_resolve_color(
         let color = &*color;
         let env = &*env;
         let resolved = color.resolve(env);
+        resolved.into_ffi()
+    }
+}
+
+/// Resolves a reactive color signal in the given environment, yielding a
+/// signal of concrete colors. Consumes `color`.
+///
+/// # Safety
+///
+/// `color` must be a valid, owning `WuiComputed<Color>` handle that is consumed
+/// by this call and must not be used afterwards; `env` must be a valid,
+/// non-null `WuiEnv` borrowed for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_resolve_computed_color(
+    color: *mut WuiComputed<Color>,
+    env: *const WuiEnv,
+) -> *mut WuiComputed<ResolvedColor> {
+    // SAFETY: the caller contract above makes `color` an owning handle reclaimed
+    // exactly once here, and `env` a valid borrow for the call.
+    unsafe {
+        let color = Box::from_raw(color).0;
+        let env = &*env;
+        let resolved = waterui_core::flatten_signal(color.map(move |c| c.resolve(env)));
         resolved.into_ffi()
     }
 }

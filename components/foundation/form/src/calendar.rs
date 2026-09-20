@@ -219,6 +219,13 @@ impl<Content: View> View for CalendarBody<Content> {
             .spacing(8.0),
         )
     }
+
+    /// Resolves to `Padding` around a `vstack` of `[header, weekdays,
+    /// content]`; the two headers are content-sized text, so the stack's —
+    /// and the padding's — axis is the content's own.
+    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
+        self.content.stretch_axis()
+    }
 }
 
 pub(crate) fn calendar_rows<V, F>(

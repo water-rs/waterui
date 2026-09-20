@@ -26,6 +26,8 @@ pub enum ExpectationKind {
     NotExists(Selector),
     /// Wait for selector value equality.
     ValueEquals { selector: Selector, value: String },
+    /// Wait for the selector to resolve to the UI-focused element.
+    UiFocus(Selector),
 }
 
 /// Wait behavior configuration.

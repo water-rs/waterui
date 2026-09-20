@@ -29,6 +29,7 @@ pub struct Picture {
     recording: Computed<Arc<SceneRecording>>,
     size: Size,
     label: Option<Str>,
+    value: Option<Str>,
 }
 
 impl fmt::Debug for Picture {
@@ -36,6 +37,7 @@ impl fmt::Debug for Picture {
         f.debug_struct("Picture")
             .field("size", &self.size)
             .field("label", &self.label)
+            .field("value", &self.value)
             .finish_non_exhaustive()
     }
 }
@@ -62,6 +64,7 @@ impl Picture {
             recording: recording.into_computed(),
             size,
             label: None,
+            value: None,
         }
     }
 
@@ -82,6 +85,25 @@ impl Picture {
     #[must_use]
     pub const fn label(&self) -> Option<&Str> {
         self.label.as_ref()
+    }
+
+    /// Describes the drawing's content for a screen reader.
+    ///
+    /// This is the semantic payload the picture *offers* — an SVG's `<desc>`,
+    /// a diagram's summary — announced after its name. It lives on the value
+    /// channel, so an `.a11y_label(…)` that names the view does not have to
+    /// stand in for what the drawing says, and an `.a11y_value(…)` the
+    /// application sets wins over it wherever both exist.
+    #[must_use]
+    pub fn described(mut self, value: impl Into<Str>) -> Self {
+        self.value = Some(value.into());
+        self
+    }
+
+    /// The semantic content the drawing offers a screen reader, if it has any.
+    #[must_use]
+    pub const fn value(&self) -> Option<&Str> {
+        self.value.as_ref()
     }
 
     /// Records `draw` into a fresh recording.
@@ -188,6 +210,13 @@ impl SceneContent for RecordedScene {
             .as_ref()
             .map(|label| label.as_str().to_owned())
     }
+
+    fn accessibility_value(&self) -> Option<String> {
+        self.picture
+            .value
+            .as_ref()
+            .map(|value| value.as_str().to_owned())
+    }
 }
 
 #[cfg(test)]
@@ -232,11 +261,13 @@ mod tests {
     fn a_labeled_picture_offers_its_name_and_an_unlabeled_one_stays_quiet() {
         let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
         assert_eq!(picture.label(), None);
+        assert_eq!(picture.value(), None);
         let quiet = RecordedScene {
             picture,
             watcher: None,
         };
         assert_eq!(quiet.accessibility_label(), None);
+        assert_eq!(quiet.accessibility_value(), None);
 
         let picture =
             Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK))).labeled("Warning");
@@ -246,6 +277,27 @@ mod tests {
             watcher: None,
         };
         assert_eq!(named.accessibility_label().as_deref(), Some("Warning"));
+    }
+
+    #[test]
+    fn a_described_picture_keeps_its_content_on_the_value_channel() {
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)))
+            .labeled("Warning")
+            .described("A triangle with an exclamation mark");
+        assert_eq!(
+            picture.value().map(Str::as_str),
+            Some("A triangle with an exclamation mark")
+        );
+        let described = RecordedScene {
+            picture,
+            watcher: None,
+        };
+        assert_eq!(described.accessibility_label().as_deref(), Some("Warning"));
+        assert_eq!(
+            described.accessibility_value().as_deref(),
+            Some("A triangle with an exclamation mark"),
+            "the description reaches the scene's value channel, not its name"
+        );
     }
 
     #[test]

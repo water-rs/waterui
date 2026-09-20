@@ -24,19 +24,41 @@ use waterui_core::Environment;
 /// building an `App` — an offscreen preview harness, for one — calls this
 /// itself.
 #[cfg_attr(
-    not(feature = "video-gpu"),
+    target_vendor = "apple",
     expect(
         clippy::missing_const_for_fn,
-        reason = "the body is empty only in the feature configuration being linted; selecting a realization makes it install one"
+        reason = "the body is empty only on Apple, where the native player owns the realization; elsewhere it calls the non-const install_video"
     )
 )]
 pub fn install(env: &mut Environment) {
+    // Apple bridges AVPlayer: even if the application enabled `video-gpu`
+    // unconditionally, the self-drawn player must not shadow the native
+    // realization there.
+    #[cfg(not(target_vendor = "apple"))]
+    install_video(env);
+    let _ = env;
+}
+
+/// Installs the self-drawn video realization without consulting the platform.
+///
+/// [`install`] skips this on Apple because the platform backend bridges a
+/// native player. A host that renders through a self-drawn backend on every
+/// host OS — the semantic/offscreen test harness — has no such bridge and
+/// installs this unconditionally.
+#[cfg_attr(
+    not(feature = "video-gpu"),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the body is empty only in the configuration being linted; selecting the video-gpu feature makes it install a realization"
+    )
+)]
+pub fn install_video(env: &mut Environment) {
     #[cfg(feature = "video-gpu")]
     waterui_video_gpu::install(env);
     let _ = env;
 }
 
-#[cfg(all(test, feature = "video-gpu"))]
+#[cfg(all(test, feature = "video-gpu", not(target_vendor = "apple")))]
 mod tests {
     use waterui_core::{Environment, view::Hook};
 

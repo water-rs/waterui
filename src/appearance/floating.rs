@@ -34,7 +34,7 @@ pub struct Floating<Content> {
     style: Option<FloatingStyle>,
 }
 
-impl<Content> Floating<Content> {
+impl<Content: View> Floating<Content> {
     /// Creates a floating view that reads its style from the environment.
     #[must_use]
     pub const fn new(content: Content) -> Self {
@@ -72,11 +72,13 @@ where
             style.ambient_shadow_color.clone(),
             Vector::new(0.0, style.ambient_shadow_offset_y),
             style.ambient_shadow_radius,
+            style.clip_radius,
         );
         let key_shadow = Shadow::new(
             style.key_shadow_color.clone(),
             Vector::new(0.0, style.key_shadow_offset_y),
             style.key_shadow_radius,
+            style.clip_radius,
         );
 
         self.content

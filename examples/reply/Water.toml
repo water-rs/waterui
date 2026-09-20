@@ -1,0 +1,9 @@
+waterui_path = "../.."
+[package]
+type = "playground"
+name = "Reply"
+bundle_identifier = "cool.lexo.reply"
+
+[permissions.internet]
+enable = true
+description = "Avatars and message photos load from the published sample's repository assets"

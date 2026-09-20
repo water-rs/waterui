@@ -65,15 +65,20 @@ Add the dev-dependencies:
 ```toml
 [dev-dependencies]
 waterui-testing = "…"
-hydrolysis-m3 = "…"
+hydrolysis-m3 = "…"     # styled mounts only — a style-free semantic test needs none
 ```
+
+The default mount is the *semantic* runtime: a GPU-free pipeline whose accessibility
+tree is a product of the view tree and the widgets' semantics. It carries no style
+package and answers no geometry — `bounds()`, pointer gestures and snapshots exist
+only on the rendered form below.
 
 **Mounting form** — the macro mounts a no-argument view function and hands you the session:
 
 ```rust
 use waterui_testing::{Role, SemanticApp};
 
-#[waterui::test(login_view, theme = hydrolysis_m3::install, viewport = (360, 320))]
+#[waterui::test(login_view, viewport = (360, 320))]
 fn login_flow(app: &mut SemanticApp) {
     app.query().role(Role::BUTTON).label("Login").tap();
     app.query().label("Welcome").assert_exists();
@@ -85,7 +90,7 @@ fn login_flow(app: &mut SemanticApp) {
 ```rust
 use waterui_testing::UiBuilder;
 
-#[waterui::test(theme = hydrolysis_m3::install)]
+#[waterui::test]
 fn stepper_updates(ui: UiBuilder) {
     let value = Binding::i32(2);
     let for_view = value.clone();
@@ -96,10 +101,16 @@ fn stepper_updates(ui: UiBuilder) {
 }
 ```
 
-Attribute arguments: `theme = <installer>`, `viewport = (w, h)`, and the bare `offscreen`
-flag (which switches the parameter to `&mut OffscreenApp`). The macro expands to a plain
-`#[test]`, so do not also write `#[test]`, and the function must take exactly one
-parameter and return `()`.
+Attribute arguments: `theme = <style>` carries a `hydrolysis::Style` value (for
+example `hydrolysis_m3::Material3::defaults()`), `viewport = (w, h)` sizes the window,
+and the bare `offscreen` flag mounts the rendered runtime and switches the parameter
+to `&mut OffscreenApp`. `offscreen` and `#[waterui::bench]` require `theme =` — the
+rendered runtime is styled by construction; without `theme =` the test is semantic.
+`ui().theme(style).mount(..)` is still semantic; it adds the style's tokens for
+components whose bodies read them.
+The macro expands to a plain `#[test]`, so do not also write `#[test]`, and the
+function must take exactly one parameter and return `()`. A styled manual mount names
+the style in its parameter type: `ui: UiBuilder<Styled<hydrolysis_m3::Material3>>`.
 
 ## Querying the accessibility tree
 
@@ -133,9 +144,19 @@ visually (`.hide_label()`) still queries by its label text.
 
 ## Interacting
 
+Semantic actions exist on every session — they dispatch accessibility actions, not
+pointer events:
+
 ```rust
-.tap()   .tap_at(nx, ny)   .focus()   .hover()   .hover_at(nx, ny)
-.set_text("hello")   .increment()   .decrement()   .scroll_down()
+.tap()   .focus()   .set_text("hello")   .increment()   .decrement()
+.scroll_down()   .expand()   .collapse()
+```
+
+Pointer gestures resolve coordinates against the element's rendered bounds, so they
+exist only on a rendered (`offscreen`) session's elements:
+
+```rust
+.tap_at(nx, ny)   .hover()   .hover_at(nx, ny)
 .drag_by(dx, dy)   .drag_by_with(dx, dy, DragOptions { steps: 12, frame_per_step: true })
 .drag_between(fx, fy, tx, ty)   .magnify(1.5)
 ```
@@ -145,13 +166,19 @@ is the assertion.** A `tap()` on a disabled or missing element fails the test on
 so there is nothing to check afterwards. After each interaction the session settles to
 quiescence automatically.
 
-Session-level input, for cases with no element to address:
+Session-level input, for cases with no element to address — keyboard and text input are
+semantic:
 
 ```rust
-app.tap_at(x, y);   app.scroll_at(x, y, dx, dy, is_line_delta);
 app.text_input("hello");
 app.press_named_key("Tab");   app.press_named_key_with("Tab", modifiers);
 app.press_character_key_with("a", modifiers);
+```
+
+Pointer input exists only on a rendered session:
+
+```rust
+app.tap_at(x, y);   app.scroll_at(x, y, dx, dy, is_line_delta);   app.hover_at(x, y);
 ```
 
 ## Waiting
@@ -180,11 +207,11 @@ pump (offscreen tests): `app.pump_for(Duration::from_millis(120))`.
 
 ## Visual tests and snapshots
 
-Add the `offscreen` flag (the parameter becomes `&mut OffscreenApp`) or call
-`ui.mount_offscreen(..)`:
+Name a style with `theme =` and add the `offscreen` flag (the parameter becomes `&mut
+OffscreenApp`) — or call `ui.theme(..).mount_offscreen(..)` in the manual-mount form:
 
 ```rust
-#[waterui::test(demo, theme = hydrolysis_m3::install, offscreen, viewport = (390, 844))]
+#[waterui::test(demo, theme = hydrolysis_m3::Material3::defaults(), offscreen, viewport = (390, 844))]
 fn renders(app: &mut OffscreenApp) {
     app.pump_for(Duration::from_millis(120));       // advance the virtual clock exactly
     app.capture_snapshot("gallery", "cards", "settled");
@@ -204,16 +231,21 @@ shot.save_png("/tmp/my_view.png").expect("snapshot must be writable");
 thresholds, bbox approximations, dominant-color checks, and similar proxies do not verify
 appearance and should not be written.
 
+A whole `App` mounts through `waterui_testing::mount_app(app, style)`, which sizes the
+session from the window's declared frame; a host that owns the viewport and DPI — `water
+mcp` is one — uses the builder form `ui().theme(style).viewport(w,
+h).runtime(RuntimeFlavor::Application).scale_factor(dpi).mount_app(app)` instead.
+
 ## `#[waterui::bench]` and `water bench`
 
 Frame benchmarks live next to the tests and use the same dev-dependencies. Each mounts
-the view in the offscreen GPU runtime and records whole-frame timings plus renderer
-counters.
+the view in the offscreen GPU runtime — `theme = <style>` is required — and records
+whole-frame timings plus renderer counters.
 
 ```rust
 use waterui_testing::PerfApp;
 
-#[waterui::bench(dashboard, theme = hydrolysis_m3::install, viewport = (390, 844), max_p95_us = 8_000)]
+#[waterui::bench(dashboard, theme = hydrolysis_m3::Material3::defaults(), viewport = (390, 844), max_p95_us = 8_000)]
 fn dashboard_redraw(perf: &mut PerfApp) {
     perf.measure("steady-redraw", |run| run.redraw());
     perf.measure("wheel-scroll", |run| {

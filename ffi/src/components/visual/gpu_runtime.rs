@@ -117,9 +117,10 @@ pub unsafe extern "C" fn waterui_gpu_runtime_metal_device(
     // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let runtime = gpu_runtime(&env.0);
+    let gpu = runtime.context();
     // SAFETY: this entry point is Metal-only, so the runtime's device has `MetalApi`
     // as its HAL type.
-    let device = unsafe { runtime.context().device.as_hal::<MetalApi>() }
+    let device = unsafe { gpu.device.as_hal::<MetalApi>() }
         .expect("WaterUI GPU runtime did not create a Metal device");
     Retained::as_ptr(device.raw_device()).cast_mut().cast()
 }

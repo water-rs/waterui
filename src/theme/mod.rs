@@ -77,6 +77,8 @@
 //! - `TertiaryContainer` - Container backgrounds associated with the tertiary color
 //! - `SelectionContainer` - Fill painted behind a selected item
 //! - `SelectionForeground` - Content drawn on the selection container
+//! - `Error` - Destructive / error emphasis (badges, destructive buttons, validation)
+//! - `ErrorForeground` - Content drawn on the error color
 //!
 //! **Fonts**: Use standard font tokens from `waterui::text::font`:
 //! - `Body`, `Title`, `Headline`, `Subheadline`, `Caption`, `Footnote`
@@ -168,6 +170,8 @@ pub struct ColorSettings {
     tertiary_container: Option<Computed<ResolvedColor>>,
     selection_container: Option<Computed<ResolvedColor>>,
     selection_foreground: Option<Computed<ResolvedColor>>,
+    error: Option<Computed<ResolvedColor>>,
+    error_foreground: Option<Computed<ResolvedColor>>,
 }
 
 impl ColorSettings {
@@ -268,6 +272,20 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the error color (destructive / error emphasis).
+    #[must_use]
+    pub fn error(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.error = Some(color.into_signal().computed());
+        self
+    }
+
+    /// Sets the foreground drawn on the error color.
+    #[must_use]
+    pub fn error_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+        self.error_foreground = Some(color.into_signal().computed());
+        self
+    }
+
     /// Installs the color settings into the environment.
     /// Only non-None fields are installed.
     fn install(self, env: &mut Environment) {
@@ -309,6 +327,12 @@ impl ColorSettings {
         }
         if let Some(signal) = self.selection_foreground {
             install_color_signal::<color::SelectionForeground>(env, signal);
+        }
+        if let Some(signal) = self.error {
+            install_color_signal::<color::Error>(env, signal);
+        }
+        if let Some(signal) = self.error_foreground {
+            install_color_signal::<color::ErrorForeground>(env, signal);
         }
     }
 }
@@ -589,6 +613,11 @@ pub mod color {
         SelectionForeground,
         "Foreground drawn on the selection container."
     );
+    define_color_token!(
+        Error,
+        "Destructive / error emphasis: badges, destructive buttons, validation."
+    );
+    define_color_token!(ErrorForeground, "Foreground drawn on the error color.");
 }
 
 // ============================================================================
@@ -713,6 +742,11 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
     mirror_graphics_color!(
         color::SelectionForeground,
         waterui_graphics::color::SelectionForegroundColor
+    );
+    mirror_graphics_color!(color::Error, waterui_graphics::color::ErrorColor);
+    mirror_graphics_color!(
+        color::ErrorForeground,
+        waterui_graphics::color::ErrorForegroundColor
     );
 }
 

@@ -17,6 +17,7 @@ use waterui::reactive::binding;
 use waterui::webview::{
     Json, ScriptInjectionTime, Url, WebView, WebViewController, WebViewEvent, WebViewProxy,
 };
+use waterui::widget::condition::when;
 
 /// What the `greet` handler answers with.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -57,7 +58,7 @@ impl PageApi {
     ///
     /// `async` is how `#[js_api]` tells a handler from mirrored state.
     async fn greet(&self, name: String) -> Json<Greeting> {
-        self.greetings.set(self.greetings.get() + 1);
+        self.greetings.with_mut(|v| *v += 1);
         Json(Greeting {
             text: format!("Hi {name}"),
         })
@@ -101,6 +102,14 @@ fn handle_webview_event(
     }
 }
 
+/// The bindings the "Go" action reads and writes.
+#[state]
+#[derive(Clone)]
+struct NavigateState {
+    address: Binding<Str>,
+    status: Binding<Str>,
+}
+
 /// The controls beside the page. Every action takes a [`WebViewProxy`], which the
 /// surrounding `with_proxy` scope supplies.
 fn toolbar(
@@ -118,20 +127,18 @@ fn toolbar(
             TextField::new("Address", &address).hide_label(),
             button("Go")
                 .style(ButtonStyle::Bordered)
-                .action(
-                    |proxy: WebViewProxy,
-                     State(addr): State<Binding<Str>>,
-                     State(status): State<Binding<Str>>| {
-                        if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
-                            addr.set(Str::from(url.as_str().to_owned()));
-                            proxy.go_to(url);
-                        } else {
-                            status.set(Str::from_static("Invalid URL"));
-                        }
-                    },
-                )
-                .state(&address)
-                .state(&status),
+                .action(|proxy: WebViewProxy, nav: NavigateState| {
+                    if let Some(url) = Url::parse_user_input(nav.address.get().as_str()) {
+                        nav.address.set(Str::from(url.as_str().to_owned()));
+                        proxy.go_to(url);
+                    } else {
+                        nav.status.set(Str::from_static("Invalid URL"));
+                    }
+                })
+                .state(&NavigateState {
+                    address: address.clone(),
+                    status: status.clone(),
+                }),
         ))
         .spacing(8.0),
         hstack((
@@ -185,58 +192,51 @@ fn missing_controller_view() -> impl View {
     .padding()
 }
 
+fn webview_playground() -> impl View {
+    let status: Binding<Str> = binding("Idle");
+    let progress_value = Binding::f64(0.0);
+    let address: Binding<Str> = binding("https://waterui.dev");
+    let allow_redirects = Binding::bool(false);
+    let js_result: Binding<Str> = binding("");
+    let greetings: Binding<u32> = binding(0_u32);
+
+    let open = WebView::open("https://waterui.dev")
+        .redirects_enabled(allow_redirects.clone())
+        // Runs on every page load; the page can call back with
+        // `waterui.invoke("logTitle", document.title)`.
+        .inject(
+            "ready-marker",
+            "document.documentElement.dataset.waterui = 'ready';",
+            ScriptInjectionTime::DocumentEnd,
+        )
+        // Hands the page the whole surface at once: `greet` as a handler,
+        // `address` and `greetings` as mirrored state. `.handler(...)` and
+        // `.expose(...)` still exist for one-off cases — this is what they
+        // look like collected onto a type.
+        .serve(PageApi {
+            address: address.clone(),
+            greetings: greetings.clone(),
+        })
+        .on_event({
+            let status = status.clone();
+            let progress_value = progress_value.clone();
+            let address = address.clone();
+            let allow_redirects = allow_redirects.clone();
+            move |event| {
+                handle_webview_event(event, &status, &progress_value, &address, &allow_redirects)
+            }
+        });
+
+    open.with_proxy(move || toolbar(status, progress_value, address, allow_redirects, js_result))
+}
+
 #[derive(Debug)]
 struct WebViewDemo;
 
 impl View for WebViewDemo {
     fn body(self, env: &Environment) -> impl View {
-        if env.get::<WebViewController>().is_none() {
-            return AnyView::new(missing_controller_view());
-        }
-
-        let status: Binding<Str> = binding("Idle");
-        let progress_value = Binding::f64(0.0);
-        let address: Binding<Str> = binding("https://waterui.dev");
-        let allow_redirects = Binding::bool(false);
-        let js_result: Binding<Str> = binding("");
-        let greetings: Binding<u32> = binding(0_u32);
-
-        let open = WebView::open("https://waterui.dev")
-            .redirects_enabled(allow_redirects.clone())
-            // Runs on every page load; the page can call back with
-            // `waterui.invoke("logTitle", document.title)`.
-            .inject(
-                "ready-marker",
-                "document.documentElement.dataset.waterui = 'ready';",
-                ScriptInjectionTime::DocumentEnd,
-            )
-            // Hands the page the whole surface at once: `greet` as a handler,
-            // `address` and `greetings` as mirrored state. `.handler(...)` and
-            // `.expose(...)` still exist for one-off cases — this is what they
-            // look like collected onto a type.
-            .serve(PageApi {
-                address: address.clone(),
-                greetings: greetings.clone(),
-            })
-            .on_event({
-                let status = status.clone();
-                let progress_value = progress_value.clone();
-                let address = address.clone();
-                let allow_redirects = allow_redirects.clone();
-                move |event| {
-                    handle_webview_event(
-                        event,
-                        &status,
-                        &progress_value,
-                        &address,
-                        &allow_redirects,
-                    )
-                }
-            });
-
-        AnyView::new(open.with_proxy(move || {
-            toolbar(status, progress_value, address, allow_redirects, js_result)
-        }))
+        when(env.get::<WebViewController>().is_some(), webview_playground)
+            .otherwise(missing_controller_view)
     }
 }
 

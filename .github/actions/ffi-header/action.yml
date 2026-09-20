@@ -1,9 +1,9 @@
 name: ffi-header
 description: >-
-  Regenerates `ffi/waterui.h` with cbindgen and checks the three committed
-  copies against it. Both callers — the pull-request gate and the dev-push
-  cache warmer — go through here so they share one toolchain pin and one cache
-  key; only the warmer passes `save: 'true'`.
+  Regenerates `ffi/waterui.h` with cbindgen and checks the committed copies
+  against it. Both callers — the pull-request gate and the dev-push cache
+  warmer — go through here so they share one toolchain pin and one cache key;
+  only the warmer passes `save: 'true'`.
 
 inputs:
   save:
@@ -55,7 +55,7 @@ runs:
             status=1
           fi
         }
+        # Both native backends left the tree; each syncs its copy from
+        # `ffi/waterui.h` in its own CI.
         check . ffi/waterui.h
-        check backends/apple Sources/CWaterUI/include/waterui.h
-        check backends/android runtime/src/main/cpp/waterui.h
         exit "$status"

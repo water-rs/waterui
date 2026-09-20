@@ -26,8 +26,7 @@ use waterui_text::Text;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PickerStyle {
     /// The default picker style, determined by the platform and context.
-    /// On iOS, this typically renders as a segmented control.
-    /// On macOS, this typically renders as a popup button.
+    /// On iOS this renders as a menu button; on macOS as a popup button.
     #[default]
     Automatic,
     /// A dropdown menu style picker.
@@ -35,6 +34,13 @@ pub enum PickerStyle {
     Menu,
     /// A radio button group style picker.
     /// Displays all options vertically with radio button indicators.
+    ///
+    /// Platforms without a radio group render their inline picker instead:
+    /// iOS has no radio group in `UIKit` or `SwiftUI`, so the Apple backend
+    /// renders this style as the inline wheel picker there, exactly as
+    /// `SwiftUI`'s `.inline` style does in the same place, while macOS keeps
+    /// its native radio buttons. The asymmetry is documented rather than
+    /// faked with a self-drawn list.
     Radio,
     /// A segmented button style picker.
     /// Displays all options horizontally as mutually exclusive segments.

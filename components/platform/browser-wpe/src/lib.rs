@@ -13,14 +13,6 @@
 //! in a crate that knows nothing about WPE or `WaterUI`. What is WPE's is the
 //! buffer lease ([`WpeFrameLease`]) and the compositing view built on top
 //! ([`DmaBufGpuView`]).
-//!
-//! # Testing against the real engine
-//!
-//! `tests/real_engine.rs` drives an actual WPE `WebKit` runtime — navigation,
-//! history, and the `waterui` bridge in both directions. Running it needs a
-//! staged runtime, so it sits behind the `real-engine` feature and its module
-//! documentation carries the commands. `.github/workflows/browser-wpe.yml` runs
-//! it on the paths it guards; nothing else in CI does.
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 mod abi;

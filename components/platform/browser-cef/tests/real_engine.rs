@@ -217,6 +217,28 @@ impl Engine {
         while self.executor.0.try_tick() {}
     }
 
+    /// Drives a future to completion on this loop.
+    ///
+    /// The engine's events only flow while it is pumped, so a future that waits
+    /// on one — the asset-origin conformance case waits on `Loaded` — has to be
+    /// polled from the pump loop rather than blocked on.
+    fn block_on<F: Future>(&self, what: &str, future: F) -> F::Output {
+        let mut future = pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
+                return value;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out after {TIMEOUT:?} waiting for {what}"
+            );
+            self.step();
+            std::thread::yield_now();
+        }
+    }
+
     fn url(&self, path: &str) -> Url {
         format!("{}{path}", self.base)
             .parse()
@@ -608,10 +630,127 @@ fn the_installed_realization_draws_a_live_page(engine: &Engine) {
     );
 }
 
+/// The engine's asset origin serves the bundled site the shared conformance
+/// case drives — module script, stylesheet and WASM — as a secure context.
+fn the_asset_origin_serves_bundled_content(engine: &Engine) {
+    engine.block_on(
+        "the asset-origin conformance case",
+        waterui_webview::conformance::asset_origin_serves_bundled_content(&engine.controller),
+    );
+}
+
+/// `include_web!`'s serving layer — a `DirectoryServer` over the site written
+/// to disk the way a staged bundle carries it — serves the same conformance
+/// site through the engine's native interception.
+fn the_directory_server_serves_the_staged_bundle(engine: &Engine) {
+    let directory = tempfile::tempdir().expect("staged bundle tempdir");
+    waterui_webview::conformance::write_bundled_site(directory.path());
+    // The strict default policy is what `include_web!` ships — including
+    // `'wasm-unsafe-eval'`, so the conformance site's WASM module compiles.
+    let server = waterui_webview::DirectoryServer::new(directory.path()).into_server();
+    engine.block_on("the DirectoryServer bundled-site case", async move {
+        waterui_webview::conformance::asset_origin_serves_bundled_content_with(
+            &engine.controller,
+            server,
+        )
+        .await;
+    });
+}
+
+/// A headless Chromium page serves the same bundled site through CDP `Fetch`
+/// interception, under `https://waterui.localhost`.
+///
+/// `WebView` answers the asset origin through CEF's native scheme handler; a
+/// `ChromiumPage` answers it through the `DevTools` agent, which is the only
+/// interception a headless page has. The site and the assertions are the
+/// shared ones — only the evaluator differs: `Runtime.evaluate` over the
+/// page's CDP session.
+fn the_chromium_cdp_asset_origin_serves_bundled_content(engine: &Engine) {
+    engine.block_on("the Chromium CDP asset-origin case", async {
+        let page = engine
+            .runtime
+            .chromium_controller()
+            .headless(waterui_chromium::ChromiumConfiguration {
+                asset_server: Some(waterui_webview::conformance::bundled_site_server()),
+                ..waterui_chromium::ChromiumConfiguration::default()
+            })
+            .await
+            .expect("a headless Chromium page attaches its DevTools agent");
+
+        let origin = page
+            .asset_origin()
+            .expect("a Chromium page opened with an asset server reports its origin")
+            .clone();
+        assert_eq!(
+            origin.as_str(),
+            waterui_webview::assets::ASSET_HTTPS_ORIGIN,
+            "the Chromium asset origin is the https spelling"
+        );
+
+        let cdp = page.cdp().clone();
+        // A round trip answered before navigation orders this check's commands
+        // after the `Fetch.enable` `intercept` queued when the page was
+        // created: the DevTools agent applies commands in the order they were
+        // issued.
+        cdp_eval(&cdp, "'installed'").await;
+
+        let entry: Url = format!("{origin}/index.html")
+            .parse()
+            .expect("the entry URL");
+        page.navigate(&entry);
+        loop {
+            let href = cdp_eval(&cdp, "location.href").await;
+            if href == Value::String(entry.as_str().to_string()) {
+                break;
+            }
+        }
+
+        waterui_webview::conformance::assert_bundled_site(origin.as_str(), async |source| {
+            cdp_eval(&cdp, source).await
+        })
+        .await;
+
+        page.close()
+            .await
+            .expect("the headless Chromium page closes");
+    });
+}
+
+/// Evaluates `source` on a page's CDP session and returns the JSON value.
+///
+/// `awaitPromise` + `returnByValue` make an async expression answer its
+/// resolved value, so the page-side probes read exactly like the ones the web
+/// view path evaluates.
+#[expect(
+    clippy::future_not_send,
+    reason = "CEF DevTools sessions are bound to the browser UI thread"
+)]
+async fn cdp_eval(cdp: &waterui_chromium::CdpSession, source: &str) -> Value {
+    let reply = cdp
+        .execute_raw(
+            "Runtime.evaluate",
+            serde_json::json!({
+                "expression": source,
+                "awaitPromise": true,
+                "returnByValue": true,
+            }),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("`{source}` failed to run: {error}"));
+    if let Some(details) = reply.get("exceptionDetails") {
+        panic!("`{source}` threw: {details}");
+    }
+    reply
+        .get("result")
+        .and_then(|result| result.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 5] = [
+const CHECKS: [Check; 8] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -631,6 +770,18 @@ const CHECKS: [Check; 5] = [
     (
         "the_installed_realization_draws_a_live_page",
         the_installed_realization_draws_a_live_page,
+    ),
+    (
+        "the_asset_origin_serves_bundled_content",
+        the_asset_origin_serves_bundled_content,
+    ),
+    (
+        "the_directory_server_serves_the_staged_bundle",
+        the_directory_server_serves_the_staged_bundle,
+    ),
+    (
+        "the_chromium_cdp_asset_origin_serves_bundled_content",
+        the_chromium_cdp_asset_origin_serves_bundled_content,
     ),
 ];
 

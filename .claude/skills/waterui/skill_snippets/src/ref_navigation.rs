@@ -1,11 +1,15 @@
 //! Snippets from `.claude/skills/waterui/references/navigation.md`, in file
 //! order. Transcription conventions are documented in the crate README.
 
+use waterui::app::App;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
 
 /// Glue: the app model navigation.md's snippets thread through their views.
+/// `#[state]` marks it an extractor, which `send_draft`'s bare `mail: Mail`
+/// parameter relies on.
+#[state]
 #[derive(Clone)]
 pub struct Mail;
 
@@ -13,7 +17,6 @@ impl Mail {
     fn send_draft(&self) {}
     fn mark_read(&self, _id: u64) {}
 }
-waterui::impl_extractor!(Mail);
 
 /// Glue: the settings route navigation.md refers to.
 #[derive(Clone, PartialEq, Eq)]
@@ -51,10 +54,18 @@ fn library_split() -> impl View {
 fn settings_stack() -> impl View {
     text("settings")
 }
+fn search_stack() -> impl View {
+    text("search")
+}
+fn now_playing_bar() -> impl View {
+    text("now playing")
+}
 
 // ---------------------------------------------------------------------------
 // navigation.md § "## Tabs" — rust block 1/13
 // ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_01() -> impl View {
     use waterui::navigation::tab_style;
 
@@ -68,6 +79,7 @@ pub fn navigation_block_01() -> impl View {
         Inbox,
         Library,
         Settings,
+        Search,
     }
 
     let pane = binding(Pane::Inbox);
@@ -87,9 +99,17 @@ pub fn navigation_block_01() -> impl View {
                 label("Settings").icon(mdi::cog()),
                 settings_stack,
             ),
+            Tab::container(
+                Pane::Search,
+                label("Search").icon(mdi::magnify()),
+                search_stack,
+            )
+            .role(TabRole::Search), // iOS: the trailing system search tab; elsewhere a regular tab
         ],
     )
     .style(tab_style::automatic())
+    .minimize_behavior(TabBarMinimizeBehavior::OnScrollDown) // iOS 26 collapses the bar while scrolling; ignored elsewhere
+    .bottom_accessory(now_playing_bar()) // iOS 26 glass bar above the tab bar (mini-player slot); not shown elsewhere
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +179,7 @@ pub fn navigation_extractor_spellings_prose() {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Going back, and destination lifecycle" — rust block 4/13
 // ---------------------------------------------------------------------------
-pub fn send_draft(State(mail): State<Mail>, navigator: Navigator<MailRoute>) {
+pub fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
     mail.send_draft();
     let _ = navigator.pop(); // returns Option<T> and is #[must_use] — bind it
 }
@@ -195,7 +215,7 @@ pub fn navigation_block_06() -> NavigationView {
             .navigation_subtitle(text!("{unread} unread"))
             .searchable(&query, "Search mail") // a field inside the bar, not above the content
             .navigation_pop_enabled(can_leave) // refuse a back gesture reactively
-            .on_navigation_pop_attempted(|State(m): State<SnackbarManager>| {
+            .on_navigation_pop_attempted(|m: SnackbarManager| {
                 m.show(Snackbar::new("Finish the draft first"));
             })
     }
@@ -217,6 +237,8 @@ pub fn navigation_view_new_prose() {
 // navigation.md § "## Toolbars" — rust block 7/13
 // A bare method fragment; applied to a navigation destination receiver.
 // ---------------------------------------------------------------------------
+// navigation.md writes `mdi::` qualified so the icon set stays visible.
+#[allow(unknown_lints, qualified_waterui_path)]
 pub fn navigation_block_07() -> NavigationView {
     use waterui::navigation::{
         NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
@@ -342,9 +364,7 @@ pub fn navigation_block_10() -> impl View {
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn navigation_block_11(env: Environment) -> waterui::app::App {
-    use waterui::app::App;
-
+pub fn navigation_block_11(env: Environment) -> App {
     fn scene() -> impl View {
         text("scene")
     }

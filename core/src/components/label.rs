@@ -2,7 +2,7 @@
 //! allowing them to be used directly as views in the UI system.
 
 use alloc::{borrow::Cow, string::String};
-use waterui_str::Str;
+use suiteki::Str;
 
 use crate::View;
 

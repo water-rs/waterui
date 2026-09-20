@@ -20,7 +20,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # rust-cache is the only cache layer (see the note in ci.yml).
+  # cargo/rustup retry network failures three times by default; ten
+  # matches the budget install-action sets for its own downloads.
+  CARGO_NET_RETRY: "10"
+  RUSTUP_MAX_RETRIES: "10"
+  # rust-cache and the install-tool binary caches are the only cache
+  # layers (see the note in ci.yml).
   CARGO_INCREMENTAL: 0
   WATERUI_TEST_ARTIFACTS_DIR: ${{ github.workspace }}/test-artifacts
 
@@ -39,25 +44,23 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install DirectX Shader Compiler
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        run: dxc --version
-      - uses: Swatinem/rust-cache@v2
+      # Only the integration branches write the shared Cargo source cache.
+      # The Windows target archive no longer competes with the fast lint
+      # gate for the repository's 10 GB budget (#458). Tests still run in
+      # every supported shape below; only their cache allocation changes.
+      # Other Windows jobs restore the same source cache without saving.
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
-          # Only the integration branches write the shared Cargo source cache.
-          # The Windows target archive no longer competes with the fast lint
-          # gate for the repository's 10 GB budget (#458). Tests still run in
-          # every supported shape below; only their cache allocation changes.
-          # Other Windows jobs restore the same source cache without saving.
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - uses: taiki-e/install-action@nextest
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
@@ -100,7 +103,7 @@ jobs:
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
-  # (#362): this job stores only `~/.cargo`, like macos-suites.
+  # (#362): this job stores only `~/.cargo`, like the macOS jobs.
   #
   # Two passes, because the root crate cannot join a workspace-wide
   # `--all-features` here: that turns on `dynamic_linking`, which pulls in
@@ -122,22 +125,23 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install DirectX Shader Compiler
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        run: dxc --version
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: false
           cache-on-failure: true
-      - uses: taiki-e/install-action@nextest
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
+      # The `trybuild_*` binaries each drive a cold fixture build that is
+      # independent of the outer feature set; they already ran once in the
+      # `test` job on this OS, so this pass skips them (see test.yml).
       - name: Test (all features, workspace)
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci `
@@ -147,7 +151,8 @@ jobs:
             --exclude waterui-core `
             --exclude waterui-ffi `
             --exclude waterui-browser-cef `
-            --exclude skill_snippets
+            --exclude skill_snippets `
+            -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
       - name: Upload Test Snapshots
@@ -165,32 +170,26 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      # Build scripts run under `cargo check` too, so the shader compiler has
-      # to be present here as well as in the test job.
-      - name: Install DirectX Shader Compiler
-        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
-      - name: Verify DirectX Shader Compiler
-        run: dxc --version
       # Writes the Windows `~/.cargo` tarball (see the cache budget note in
       # ci.yml); the target directory belongs to the test job above. This
       # block used to save a 2.2 GB target tarball on every pull request
       # fingerprint, ungated.
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
+          components: clippy
           shared-key: cargo-home-${{ runner.os }}
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      # Build scripts run under `cargo check` too, so the shader compiler has
+      # to be present here as well as in the test job.
+      - name: Install DirectX Shader Compiler
+        uses: ./.github/actions/install-dxc
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here).
-      - run: cargo check --locked -p waterui-browser-cef --features compile-only
+      - run: cargo check --locked --profile ci-check -p waterui-browser-cef --features compile-only
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings

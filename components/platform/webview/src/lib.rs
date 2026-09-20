@@ -22,8 +22,15 @@
 //! let can_go_back = webview.can_go_back();  // Computed<bool>
 //! ```
 
+pub mod assets;
+mod bundled;
 mod controller;
 
+pub use assets::{
+    ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME, AssetMethod,
+    AssetRequest, AssetResponse, AssetServer, WebViewConfig,
+};
+pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
 pub use controller::*;
 pub use cookie::Cookie;
 use std::{cell::Cell, fmt, rc::Rc};
@@ -33,7 +40,6 @@ mod handler;
 pub use handler::*;
 #[cfg(feature = "conformance")]
 pub mod conformance;
-mod no_engine;
 mod proxy;
 pub use proxy::WebViewProxy;
 
@@ -172,6 +178,7 @@ pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};
 mod state;
 pub use state::{FieldEntry, JsField, StateWriteError};
 
+use suiteki::Str;
 use waterui_core::{
     AnyView, Binding, Computed, Environment, Native, Signal, View, binding,
     layout::StretchAxis,
@@ -180,7 +187,6 @@ use waterui_core::{
 };
 use waterui_layout::spacer;
 use waterui_layout::stack::vstack;
-use waterui_str::Str;
 
 /// Something that happened in a `WebView`.
 ///
@@ -375,7 +381,44 @@ impl WebView {
     /// ```
     pub fn open(url: impl IntoUrlSignal) -> WebViewOpen {
         WebViewOpen {
-            url: url.into_url_signal(),
+            target: WebViewTarget::Url(url.into_url_signal()),
+            redirects_enabled: None,
+            user_agent: None,
+            scripts: Vec::new(),
+            handlers: Vec::new(),
+            event_watchers: Vec::new(),
+            state: Vec::new(),
+            bridge_origins: BridgeOrigins::default(),
+        }
+    }
+
+    /// Opens a new `WebView` serving `server` under the engine's local asset
+    /// origin, and navigates it to `entry`.
+    ///
+    /// The engine answers requests on that origin by calling `server` rather
+    /// than the network: `waterui://localhost` on `WKWebView`, `WebKitGTK`, WPE and
+    /// CEF, `https://waterui.localhost` on Android's `WebView` and CDP-driven
+    /// Chromium. The page it produces is a secure context on every engine, so
+    /// bundled web content keeps `isSecureContext`, module scripts, `fetch`
+    /// and WASM without touching `file://`.
+    ///
+    /// `server` is [`AssetServer`]: GET and HEAD only, paths handed over still
+    /// percent-encoded, traversal refused before the server is consulted. See
+    /// [`assets`](crate::assets) for the contract every engine routes through.
+    ///
+    /// # Panics
+    ///
+    /// At render time, when the installed [`WebViewController`]'s engine has no
+    /// interception facility to stand an asset origin on.
+    pub fn open_assets(
+        server: impl Fn(&AssetRequest) -> AssetResponse + Send + Sync + 'static,
+        entry: impl Into<Str>,
+    ) -> WebViewOpen {
+        WebViewOpen {
+            target: WebViewTarget::Assets {
+                server: std::sync::Arc::new(server),
+                entry: entry.into(),
+            },
             redirects_enabled: None,
             user_agent: None,
             scripts: Vec::new(),
@@ -660,6 +703,31 @@ where
 /// environment is known, so its extractors resolve against the right scope.
 type BoxedMessageHandler = Box<dyn FnOnce(Environment) -> Box<ScriptMessageHandler>>;
 
+/// Where a [`WebViewOpen`] points the native view once it exists.
+enum WebViewTarget {
+    /// A reactive URL — writing a new one navigates the live view.
+    Url(Computed<Url>),
+    /// A bundled asset set served through the engine's local asset origin.
+    Assets {
+        /// The serving function behind the origin.
+        server: AssetServer,
+        /// The path inside the asset set the view navigates to.
+        entry: Str,
+    },
+}
+
+impl fmt::Debug for WebViewTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Url(url) => f.debug_tuple("Url").field(url).finish(),
+            Self::Assets { entry, .. } => f
+                .debug_struct("Assets")
+                .field("entry", entry)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 /// A deferred web view created by [`WebView::open`].
 ///
 /// The native handle is created when this view is rendered, once its
@@ -668,7 +736,7 @@ type BoxedMessageHandler = Box<dyn FnOnce(Environment) -> Box<ScriptMessageHandl
 /// can be fully described before a backend is anywhere in sight.
 #[must_use = "a WebViewOpen must be rendered to create its native web view"]
 pub struct WebViewOpen {
-    url: Computed<Url>,
+    target: WebViewTarget,
     redirects_enabled: Option<Computed<bool>>,
     user_agent: Option<Computed<Str>>,
     scripts: Vec<(Str, Str, ScriptInjectionTime)>,
@@ -681,7 +749,7 @@ pub struct WebViewOpen {
 impl fmt::Debug for WebViewOpen {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebViewOpen")
-            .field("url", &self.url)
+            .field("target", &self.target)
             .field("redirects_enabled", &self.redirects_enabled)
             .field("user_agent", &self.user_agent)
             .field("scripts", &self.scripts.len())
@@ -832,7 +900,7 @@ impl WebViewOpen {
 
     fn create(self, controller: &WebViewController, environment: &Environment) -> WebView {
         let Self {
-            url,
+            target,
             redirects_enabled,
             user_agent,
             scripts,
@@ -841,15 +909,43 @@ impl WebViewOpen {
             state,
             bridge_origins,
         } = self;
-        let webview = controller.open();
+        let (webview, initial, url) = match target {
+            WebViewTarget::Url(url) => {
+                let webview = controller.open();
+                (webview, url.get(), Some(url))
+            }
+            WebViewTarget::Assets { server, entry } => {
+                let webview = controller.open_with(WebViewConfig {
+                    asset_server: Some(server),
+                });
+                // The origin is the engine's answer, not a constant the shared
+                // layer guesses: it differs across engines by design.
+                let origin = webview.handle().asset_origin().expect(
+                    "WebView::open_assets requires an engine that exposes an \
+                     interceptable local asset origin; this WebViewController \
+                     produced none",
+                );
+                let entry: Url = format!(
+                    "{}/{}",
+                    origin.as_str().trim_end_matches('/'),
+                    entry.trim_start_matches('/')
+                )
+                .parse()
+                .unwrap_or_else(|_| {
+                    panic!("the asset entry `{entry}` did not form a URL under {origin}")
+                });
+                (webview, entry, None)
+            }
+        };
         // The policy is resolved against the URL the view opens at, and it goes
         // in before the first handler exists, so no handler is ever reachable
         // unguarded. It used to be installed last, after every handler was
         // already registered; nothing had navigated yet, so it was only ever
-        // safe by accident.
+        // safe by accident. For an asset-origin view `initial` is the resolved
+        // entry URL, so `BridgeOrigins::Initial` narrows to the asset origin.
         webview
             .handle()
-            .set_bridge_origins(OriginPolicy::new(bridge_origins, &url.get()));
+            .set_bridge_origins(OriginPolicy::new(bridge_origins, &initial));
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
         }
@@ -878,7 +974,15 @@ impl WebViewOpen {
         if !state.is_empty() {
             state::install(&webview, state);
         }
-        let webview = webview.bind_navigation(url);
+        let webview = if let Some(url) = url {
+            webview.bind_navigation(url)
+        } else {
+            // An asset-origin view has no reactive URL; everything is
+            // installed before the first navigation, then it goes to the entry
+            // once.
+            webview.handle().go_to(&initial);
+            webview
+        };
         if let Some(user_agent) = user_agent {
             webview.bind_user_agent(user_agent)
         } else {
@@ -912,20 +1016,19 @@ impl waterui_core::NativeView for WebView {
     }
 }
 
-/// The web view a backend with no bridged engine draws.
+/// The view a backend sees when nothing realized the component.
 ///
 /// It is what `View::body` produces when the environment carries no
 /// [`Hook<WebView>`], and — because [`Hook`] strips its own type from the
 /// environment before calling the closure — it is also the recursion floor
-/// under one.
+/// under one, which is why it must produce a view rather than abort.
 impl ViewConfiguration for WebView {
     type View = Native<Self>;
 
     fn render(self) -> Self::View {
-        // Reaching this means neither a native bridge nor an engine realization
-        // is present. Render an empty, still-accessible leaf rather than
-        // panicking: every component owes the accessibility tree a node, and a
-        // build without an engine is a missing feature, not a crash.
+        // `Native` keeps the component available to a backend that consumes it
+        // by type; the `spacer` fallback exists only so this stays a view in
+        // the stripped-hook recursion described above.
         Native::new(self).with_fallback(spacer())
     }
 }
