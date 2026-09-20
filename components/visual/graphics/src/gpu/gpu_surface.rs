@@ -1335,6 +1335,11 @@ impl GpuSurface {
     /// This is intended for visual regression checks and snapshot generation
     /// without launching a full app window.
     ///
+    /// This entry point takes a `GpuView`. To capture a `View` tree instead,
+    /// use the `waterui-testing` crate, whose `UiBuilder::mount_offscreen`
+    /// lowers a view through the rendering pipeline and hands back an
+    /// `OffscreenApp` with `snapshot` and `capture_snapshot`.
+    ///
     /// # Errors
     ///
     /// Returns format validation, MSAA validation, or readback errors.
