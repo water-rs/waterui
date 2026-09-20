@@ -59,28 +59,49 @@ jobs:
       # finds nothing even when a release published perfectly well (#540).
       # The `v<version>` tag release-plz published for the `waterui` facade
       # names the framework release `water create --channel stable` resolves.
-      # No facade release this run means no framework manifest to publish.
+      #
+      # The report is only the fast path. release-plz stops at the first
+      # package that fails, and a run that published the facade and then
+      # failed on a later package exits 1 with the facade's release created
+      # and no manifest on it; on the rerun the facade is already published
+      # and absent from the report. So the step also runs after a failed
+      # release-plz, and when the report names no facade release it asks the
+      # release itself: the facade's version from the checked-out tree (the
+      # tree this run publishes) names the `v<version>` release, and one that
+      # exists without a `framework.json` asset is the one to certify (#1153).
       - name: Detect framework release tag
         id: framework_tag
+        if: ${{ !cancelled() }}
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           REPORT: ${{ steps.release_plz.outputs.report }}
         run: |
           set -euo pipefail
 
-          FRAMEWORK_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui") | .tag] | last // ""' <<< "$REPORT")"
-
-          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
+          FRAMEWORK_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui") | .tag] | last // ""' <<< "${REPORT:-}")"
           if [[ -n "${FRAMEWORK_TAG}" ]]; then
             echo "release-plz released the framework as ${FRAMEWORK_TAG}."
           else
-            echo "release-plz released no waterui facade this run."
+            VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "waterui") | .version')"
+            CANDIDATE="v${VERSION}"
+            if ASSETS="$(gh release view "${CANDIDATE}" --json assets --jq '[.assets[].name] | join(" ")' 2>/dev/null)"; then
+              if [[ " ${ASSETS} " == *" framework.json "* ]]; then
+                echo "${CANDIDATE} already carries framework.json."
+              else
+                FRAMEWORK_TAG="${CANDIDATE}"
+                echo "${CANDIDATE} exists without framework.json; certifying it."
+              fi
+            else
+              echo "release-plz released no waterui facade this run and ${CANDIDATE} does not exist."
+            fi
           fi
+          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
 
       # The manifest is built from the tagged tree itself: the script checks
       # the tag out and records that revision's scaffold table and lock.
       - name: Publish the stable framework manifest
-        if: steps.framework_tag.outputs.framework_tag != ''
+        if: ${{ !cancelled() && steps.framework_tag.outputs.framework_tag != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           FRAMEWORK_TAG: ${{ steps.framework_tag.outputs.framework_tag }}
