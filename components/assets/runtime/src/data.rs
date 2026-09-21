@@ -9,7 +9,7 @@ use core::ops::Deref;
 use std::path::Path;
 
 use crate::AssetError;
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 use crate::download_remote_bytes;
 
 /// Small binary data, fully loaded into memory.
@@ -89,7 +89,7 @@ impl Data {
     ///
     /// Returns `AssetError::Network` for network errors.
     /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
         Ok(Self::from_bytes(download_remote_bytes(url).await?))
     }

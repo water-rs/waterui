@@ -16,20 +16,30 @@ waterui-core.workspace = true
 waterui-url = { workspace = true, features = ["std"] }
 waterui-media.workspace = true
 waterui-video.workspace = true
-tracing.workspace = true
+tracing = { workspace = true, optional = true }
 blocking = "1.7.0"
 
 # Caching
-sha2 = "0.11"
-hex = "0.4"
+sha2 = { version = "0.11", optional = true }
+hex = { version = "0.4", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 memmap2 = "0.9"
-dirs.workspace = true
+dirs = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
 std = ["waterui-core/std"]
+# `Data::from_remote` / `LargeFile::from_remote` download over HTTP via
+# `waterui-assets-core`; off by default so local assets carry no HTTP client.
+remote = [
+    "std",
+    "waterui-assets-core/remote",
+    "dep:sha2",
+    "dep:hex",
+    "dep:dirs",
+    "dep:tracing",
+]
 
 [lints]
 workspace = true
