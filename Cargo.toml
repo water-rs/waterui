@@ -224,12 +224,12 @@ waterui-winui = "0.1.0"
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.0", path = "utils/dylib", default-features = false }
-hydrolysis = { version = "0.3.0", default-features = false }
+hydrolysis = { version = "0.3.1", default-features = false }
 waterui-dew = "0.3.0"
 waterui = { version = "0.5.0", path = "." }
 waterui-icons-codegen = { version = "0.5.0", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = "0.3.0"
+hydrolysis-m3 = "0.3.1"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.5.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -502,14 +502,6 @@ waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
-# `hydrolysis-m3` 0.3.0 declares Material's typeface by name alone, so the
-# build resolves it through the CLI's font registry to a remote archive.
-# Once the CLI stops reaching the network during a build (water-rs/cli#124),
-# that declaration cannot be satisfied on a machine whose font cache has
-# never seen Roboto. This revision is the theme's `dev` tip, where the font
-# ships in the crate itself (water-rs/hydrolysis-m3#76); drop the entry when
-# a release carries it.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "457e78ff7b60d4b0b259bb84d2dfb474ff99265b" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
