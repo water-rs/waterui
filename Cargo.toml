@@ -34,6 +34,7 @@ resolver = "2"
 name = "waterui"
 version = "0.5.0"
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 readme.workspace = true
