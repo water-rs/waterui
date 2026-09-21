@@ -228,12 +228,12 @@ waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "3601
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.0", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.0", path = "utils/dylib", default-features = false }
-hydrolysis = { version = "0.3.0", default-features = false }
+hydrolysis = { version = "0.3.1", default-features = false }
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "96713f93d4ee8cf7125a4905a5d5b5677997b37a", version = "0.3.0" }
 waterui = { version = "0.5.0", path = "." }
 waterui-icons-codegen = { version = "0.5.0", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
-hydrolysis-m3 = "0.3.0"
+hydrolysis-m3 = "0.3.1"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.5.0", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
@@ -485,8 +485,6 @@ waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "3a047f33
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "cc338ec4250ef7300e8125bfd5cde665dc38613e" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "274cc650de51061c03009ea50b0feb65d55601d1" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "9ed3abb6378eec26fd8c442c35cb18905b018795" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "1c943a9b555f9567595ef3dd6877f7e0d37ba1da" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "26945db156f8e21a20c06d6d5fdcef3027273ace" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "f1078b62d88c2d9652d191e89da290b862cad640" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
