@@ -369,8 +369,29 @@ jobs:
       - name: Require a certified line
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+
+          # A hotfix is cut from `main` and carries only what the current
+          # release line needs, so the nightly's certification of `dev` says
+          # nothing about it: `dev` is not what it publishes, and it can never
+          # descend from a certification recorded on that line. What it
+          # publishes is `main` — already certified when it was released —
+          # plus its own delta, which its own checks gate. Require instead
+          # that it really is cut from `main`, so this exit cannot be used to
+          # route code onto the release line around `dev`.
+          case "${HEAD_REF}" in
+            hotfix/*)
+              if ! git merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
+                echo "::error::${HEAD_SHA} is a hotfix that does not descend from main (${BASE_SHA}); cut it from main"
+                exit 1
+              fi
+              echo "hotfix line: ${HEAD_SHA} descends from main (${BASE_SHA}); dev's certification does not gate it"
+              exit 0
+              ;;
+          esac
 
           # The newest certification, selected the way promote records it in
           # .github/scripts/framework_manifest.py: among published non-draft
