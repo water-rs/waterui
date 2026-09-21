@@ -22,11 +22,13 @@ error[E0277]: the trait bound `MissingClone: std::clone::Clone` is not satisfied
 6 | #[state]
   | ^^^^^^^^ the trait `std::clone::Clone` is not implemented for `MissingClone`
   |
-help: the trait `Extractor` is implemented for `waterui::State<T>`
+help: the trait `Extractor` is conditionally implemented for `waterui::State<T>`
  --> $WORKSPACE/core/src/foundation/extract.rs
   |
   | impl<T: 'static + Clone> Extractor for State<T> {
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  | ^^^^^^^^^^^^^^^^^^-----^^^^^^^^^^^^^^^^^^^^^^^^
+  |                   |
+  |                   unsatisfied requirement introduced here: `MissingClone: std::clone::Clone`
   = note: required for `waterui::State<MissingClone>` to implement `Extractor`
   = note: this error originates in the attribute macro `state` (in Nightly builds, run with -Z macro-backtrace for more info)
 help: consider annotating `MissingClone` with `#[derive(Clone)]`
