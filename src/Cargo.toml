@@ -126,6 +126,15 @@ gpu = [
 assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
 media = ["dep:waterui-media", "video"]
 video = ["dep:waterui-video"]
+# Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
+# links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
+# default so an application that never names a remote URL carries no HTTP
+# client — framework principle 5.
+remote = [
+    "waterui-url/remote",
+    "waterui-media?/remote",
+    "waterui-assets?/remote",
+]
 # `WaterUI`'s own GPU video player, installed as the video realization. Not
 # implied by `video`: Apple bridges AVPlayer, so an Apple application would
 # otherwise link and pay for a player it never runs. The backend that has no
@@ -179,6 +188,7 @@ all = [
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "remote",
 ]
 
 [dev-dependencies]

@@ -28,16 +28,16 @@ futures.workspace = true
 blocking = "1.7.0"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-zenwave = { workspace = true, features = ["native-tls"] }
+zenwave = { workspace = true, features = ["native-tls"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
+zenwave = { workspace = true, features = ["rustls"], optional = true }
 
 [target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple", target_os = "android")))'.dependencies]
-zenwave = { workspace = true, features = ["rustls"] }
+zenwave = { workspace = true, features = ["rustls"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-zenwave.workspace = true
+zenwave = { workspace = true, optional = true }
 # The browser has no `std::fs`, so a local photo URL is read back through the
 # kit's IndexedDB-backed file system instead of `blocking::unblock`.
 waterkit-fs.workspace = true
@@ -45,6 +45,10 @@ waterkit-fs.workspace = true
 [features]
 default = ["std"]
 std = ["waterui-core/std", "dep:waterkit-dialog"]
+# Remote media sources (`Photo`/`video` pointed at web URLs) link the `zenwave`
+# HTTP client. Off by default so an application showing only bundled media
+# carries no HTTP client.
+remote = ["dep:zenwave", "waterui-url/remote"]
 
 [dev-dependencies]
 futures-lite.workspace = true

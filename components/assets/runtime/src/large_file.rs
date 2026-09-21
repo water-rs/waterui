@@ -1,11 +1,15 @@
 //! Large files using memory-mapping.
 
-use alloc::{format, string::ToString};
+#[cfg(feature = "remote")]
+use alloc::format;
+use alloc::string::ToString;
 use core::ops::Deref;
 
 use std::path::Path;
 
-use crate::{AssetError, AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+use crate::AssetError;
+#[cfg(feature = "remote")]
+use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 
 /// Large file, memory-mapped for efficient access.
 ///
@@ -100,6 +104,7 @@ impl LargeFile {
     /// Returns `AssetError::Network` for network errors.
     /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
     /// Returns `AssetError::Mmap` if memory mapping fails.
+    #[cfg(feature = "remote")]
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
         // Download to temp file
         let cache_path = download_to_cache(url).await?;
@@ -188,6 +193,7 @@ impl AsRef<[u8]> for LargeFile {
 }
 
 /// Download a remote URL to the cache directory.
+#[cfg(feature = "remote")]
 async fn download_to_cache(url: &str) -> Result<std::path::PathBuf, AssetError> {
     use sha2::{Digest, Sha256};
 

@@ -1,10 +1,14 @@
-use alloc::{format, string::String, string::ToString, vec::Vec};
+#[cfg(feature = "remote")]
+use alloc::vec::Vec;
+use alloc::{format, string::String, string::ToString};
 use std::{
     io::{ErrorKind, Write},
     path::Path,
 };
 
-use crate::{AssetError, ensure_http_allowed};
+use crate::AssetError;
+#[cfg(feature = "remote")]
+use crate::ensure_http_allowed;
 
 /// Outcome of an atomic asset write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +24,7 @@ pub enum AtomicWriteOutcome {
 /// # Errors
 ///
 /// Returns [`AssetError`] when the URL is disallowed or the network request fails.
+#[cfg(feature = "remote")]
 pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, AssetError> {
     ensure_http_allowed(url)?;
     waterui_url::download_remote_bytes(url)

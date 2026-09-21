@@ -372,6 +372,11 @@ snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
 media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
 video = ["waterui-internal/video", "waterui-dylib?/video"]
+# Remote fetching (`Url::fetch`, `Data::from_remote`/`LargeFile::from_remote`,
+# `Photo` pointed at a web URL) links the `zenwave` HTTP client through
+# `waterui-url`/`waterui-media`. Deliberately not in `default`: an application
+# that never names a remote URL must carry no HTTP client — principle 5.
+remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # WaterUI's own GPU video player as the video realization. Deliberately not
 # implied by `video`/`media`: a platform that bridges a native player must not
 # link it. The backend without one selects this.
@@ -418,6 +423,7 @@ all = [
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "remote",
 ]
 
 
