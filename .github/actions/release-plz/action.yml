@@ -40,12 +40,21 @@ runs:
       id: run
       shell: bash
       run: |
-        set -euo pipefail
+        set -uo pipefail
         report="${RUNNER_TEMP}/release-plz-${{ inputs.command }}.json"
+        # A partial release now writes its report and *then* exits non-zero,
+        # naming the packages that failed and the ones skipped behind them.
+        # That is exactly the run whose report the steps after this one need,
+        # so the exit status is carried by hand instead of by `set -e`, which
+        # would abort before the report ever reached this step's outputs.
+        status=0
         release-plz ${{ inputs.command }} \
           --git-token "${GITHUB_TOKEN}" \
           --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
           --forge github \
-          -o json > "$report"
-        printf 'report=%s\n' "$(jq -c '.' "$report")" >> "$GITHUB_OUTPUT"
-        jq '.' "$report"
+          -o json > "$report" || status=$?
+        if [ -s "$report" ] && jq -e '.' "$report" >/dev/null 2>&1; then
+          printf 'report=%s\n' "$(jq -c '.' "$report")" >> "$GITHUB_OUTPUT"
+          jq '.' "$report"
+        fi
+        exit "$status"
