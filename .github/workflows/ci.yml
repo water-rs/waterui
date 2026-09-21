@@ -217,6 +217,67 @@ jobs:
         run: |
           cargo machete --with-metadata
 
+  # `rust-version` is a promise that the whole workspace compiles on that
+  # toolchain, and nothing else in this gate keeps it true: every other leg
+  # installs `stable` or a newer pin. `clippy::incompatible_msrv` only knows
+  # std API stabilization versions — language features, syntax, and a
+  # dependency that raised its own MSRV in a patch release are invisible to
+  # it. Only compiling on the declared toolchain catches those, which is what
+  # this leg does.
+  msrv:
+    name: MSRV
+    needs: changes
+    # Any non-prose file can introduce a construct the declared toolchain
+    # cannot compile; a dependency bump reaches the same check through the
+    # committed lockfile.
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # `stable` here only resolves the manifest and installs tools; the
+      # compile below runs on the declared toolchain.
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      # The version comes from the manifest, not a literal in this file —
+      # two sources of truth drift apart, which is the defect this leg exists
+      # to close. `cargo msrv verify` reads `rust-version` out of the
+      # manifest again on its own before compiling, so both ends agree on
+      # what is being verified.
+      - name: Install and pin the declared toolchain
+        run: |
+          set -euo pipefail
+          msrv="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .rust_version')"
+          if ! [[ "$msrv" =~ ^[0-9]+\.[0-9]+ ]]; then
+            echo "::error file=Cargo.toml::the waterui package must declare a major.minor rust-version (got '$msrv')"
+            exit 1
+          fi
+          rustup toolchain install "$msrv" --profile minimal
+          # rust-toolchain.toml sets channel = "stable", and the file wins
+          # over `rustup default` — which is all dtolnay/rust-toolchain sets,
+          # so pinning through it would compile on stable and verify nothing.
+          # The environment variable is the override that beats the file.
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+      # Proof, not assumption: the log records the compiler this leg actually
+      # uses, and it must equal the declared version.
+      - name: Show the pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+      - uses: ./.github/actions/setup-linux-deps
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-msrv@0.19.3
+          path: ~/.cargo/bin/cargo-msrv*
+      - name: Verify the workspace builds on the declared MSRV
+        run: |
+          set -o pipefail
+          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example'; then
+            echo "::error::the workspace does not compile on the declared rust-version — either avoid the newer feature, or raise rust-version in [workspace.package] in Cargo.toml in the same pull request"
+            exit 1
+          fi
+
   ffi-header:
     name: FFI Header
     needs: changes
