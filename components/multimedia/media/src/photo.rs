@@ -13,6 +13,7 @@
 //! let photo = Photo::new(url);
 //! ```
 
+#[cfg(feature = "remote")]
 use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
@@ -20,6 +21,7 @@ use core::cell::{Cell, RefCell};
 
 use crate::Url;
 use executor_core::spawn_local;
+#[cfg(feature = "remote")]
 use futures::StreamExt;
 #[cfg(target_arch = "wasm32")]
 use std::path::Path;
@@ -29,6 +31,7 @@ use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{ContentMode, Image, ReactiveImage, ReactiveImageHandle, reactive_image};
+#[cfg(feature = "remote")]
 use zenwave::{Client, Method};
 
 /// A photo component that displays an image from a URL.
@@ -337,36 +340,47 @@ async fn fetch_and_decode_streaming(
         return Ok(());
     }
 
-    let mut client = zenwave::client();
-    let response = client
-        .method(Method::GET, &url)
-        .map_err(|e| e.to_string())?
-        .await
-        .map_err(|e| e.to_string())?;
+    #[cfg(feature = "remote")]
+    {
+        let mut client = zenwave::client();
+        let response = client
+            .method(Method::GET, &url)
+            .map_err(|e| e.to_string())?
+            .await
+            .map_err(|e| e.to_string())?;
 
-    if !response.status().is_success() {
-        return Err(alloc::format!("HTTP error: {}", response.status()));
-    }
-
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .map(ToOwned::to_owned);
-
-    let mut body = response.into_body();
-    let mut decoder = Image::stream_decoder(content_type.as_deref());
-
-    while let Some(chunk) = body.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        if let Some(progressive_image) = decoder.push_chunk(&chunk) {
-            on_decoded_frame(progressive_image);
+        if !response.status().is_success() {
+            return Err(alloc::format!("HTTP error: {}", response.status()));
         }
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+
+        let mut body = response.into_body();
+        let mut decoder = Image::stream_decoder(content_type.as_deref());
+
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            if let Some(progressive_image) = decoder.push_chunk(&chunk) {
+                on_decoded_frame(progressive_image);
+            }
+        }
+
+        let final_image = decoder.finish()?;
+        on_decoded_frame(final_image);
+        Ok(())
     }
 
-    let final_image = decoder.finish()?;
-    on_decoded_frame(final_image);
-    Ok(())
+    #[cfg(not(feature = "remote"))]
+    {
+        let _ = on_decoded_frame;
+        Err(alloc::format!(
+            "'{url}' is a remote source; enable the `remote` feature of `waterui-media` (or `waterui/remote`) to fetch it"
+        ))
+    }
 }
 
 fn publish_decoded_frame(handler: &ReactiveImageHandle, image: Image) {
@@ -383,7 +397,9 @@ pub fn photo(source: impl IntoComputed<Url>) -> Photo {
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use super::{PhotoLoadState, appear_photo, fetch_and_decode_streaming, subscribe_photo_source};
+    #[cfg(feature = "remote")]
+    use super::fetch_and_decode_streaming;
+    use super::{PhotoLoadState, appear_photo, subscribe_photo_source};
     use crate::Url;
     use image::ImageEncoder as _;
     use waterui_core::{Binding, Signal, reactive::watcher::Context};
@@ -464,6 +480,7 @@ mod tests {
         assert!(image.width() > 0 && image.height() > 0);
     }
 
+    #[cfg(feature = "remote")]
     #[test]
     #[ignore = "requires network access to real image URLs"]
     #[allow(
@@ -509,7 +526,10 @@ mod tests {
         });
     }
 
-    #[cfg(any(target_vendor = "apple", target_os = "android"))]
+    #[cfg(all(
+        feature = "remote",
+        any(target_vendor = "apple", target_os = "android")
+    ))]
     #[test]
     #[ignore = "requires network access and platform HDR AVIF decode support"]
     fn hdr_avif_decode_real_image_smoke() {
@@ -566,7 +586,7 @@ mod tests {
         });
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(feature = "remote", target_vendor = "apple"))]
     #[test]
     #[ignore = "requires network access and Apple HEIC platform decode support"]
     fn heic_h265_decode_real_image_smoke() {
@@ -599,6 +619,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "remote")]
     #[test]
     #[ignore = "requires network access and AV1/AVIF decode support"]
     fn av1_decode_fallback_probe_smoke() {

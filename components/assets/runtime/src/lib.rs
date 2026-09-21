@@ -54,11 +54,13 @@ pub use bundle::{
 pub use data::Data;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use large_file::LargeFile;
-#[cfg(all(feature = "std", target_arch = "wasm32"))]
+#[cfg(all(feature = "remote", target_arch = "wasm32"))]
+pub use waterui_assets_core::download_remote_bytes;
+#[cfg(all(feature = "remote", not(target_arch = "wasm32")))]
 pub use waterui_assets_core::download_remote_bytes;
 pub use waterui_assets_core::{AssetError, AssetKind, WINDOW_ICON_FILE};
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub use waterui_assets_core::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
+pub use waterui_assets_core::{AtomicWriteOutcome, write_bytes_atomically};
 #[cfg(feature = "std")]
 pub use waterui_assets_core::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
 
