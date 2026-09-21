@@ -27,7 +27,7 @@ runs:
       with:
         tool: release-plz
         git: https://github.com/water-rs/release-plz
-        rev: cc554a52e97e0ee359e45c7801d770895247cf27
+        rev: 38c0d7ca8d741f023f713b70be5e480e3822c3c2
         locked: true
     - uses: release-plz/git-config@v0.1.2
     # `-o json` puts the report on stdout and leaves the progress log on
@@ -40,12 +40,21 @@ runs:
       id: run
       shell: bash
       run: |
-        set -euo pipefail
+        set -uo pipefail
         report="${RUNNER_TEMP}/release-plz-${{ inputs.command }}.json"
+        # A partial release now writes its report and *then* exits non-zero,
+        # naming the packages that failed and the ones skipped behind them.
+        # That is exactly the run whose report the steps after this one need,
+        # so the exit status is carried by hand instead of by `set -e`, which
+        # would abort before the report ever reached this step's outputs.
+        status=0
         release-plz ${{ inputs.command }} \
           --git-token "${GITHUB_TOKEN}" \
           --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
           --forge github \
-          -o json > "$report"
-        printf 'report=%s\n' "$(jq -c '.' "$report")" >> "$GITHUB_OUTPUT"
-        jq '.' "$report"
+          -o json > "$report" || status=$?
+        if [ -s "$report" ] && jq -e '.' "$report" >/dev/null 2>&1; then
+          printf 'report=%s\n' "$(jq -c '.' "$report")" >> "$GITHUB_OUTPUT"
+          jq '.' "$report"
+        fi
+        exit "$status"
