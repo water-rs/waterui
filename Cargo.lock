@@ -3634,9 +3634,9 @@ dependencies = [
 
 [[package]]
 name = "hydrolysis"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b59e8f7d1c4f361c740c94c1d08022411fffa384f73d61d0dfecd93f7ae701d"
+checksum = "a9ec2c17a85029c20e9ca0a9f57731819aca2f9f58d79acd136e50d1fb861c2d"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3680,8 +3680,9 @@ dependencies = [
 
 [[package]]
 name = "hydrolysis-m3"
-version = "0.3.0"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=457e78ff7b60d4b0b259bb84d2dfb474ff99265b#457e78ff7b60d4b0b259bb84d2dfb474ff99265b"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ec6d1526dd3a3998aeb073835c70efe1511f2d457bc2451696d60c3b1840102"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
