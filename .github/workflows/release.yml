@@ -59,23 +59,44 @@ jobs:
       # finds nothing even when a release published perfectly well (#540).
       # The `v<version>` tag release-plz published for the `waterui` facade
       # names the framework release `water create --channel stable` resolves.
-      # No facade release this run means no framework manifest to publish.
+      #
+      # The report is only the first place to look. A release that publishes
+      # the facade and then fails before this step leaves the tag standing
+      # with no manifest attached, and every later run reports the facade as
+      # already published — so keying the manifest solely on this run's
+      # report makes that hole permanent (0.5.1 lost its manifest exactly
+      # this way). When the report names no facade release, fall back to the
+      # tag of the version this tree declares, and publish for it only while
+      # its release is still missing `framework.json`.
       - name: Detect framework release tag
         id: framework_tag
         shell: bash
         env:
           REPORT: ${{ steps.release_plz.outputs.report }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           FRAMEWORK_TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui") | .tag] | last // ""' <<< "$REPORT")"
 
-          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
           if [[ -n "${FRAMEWORK_TAG}" ]]; then
             echo "release-plz released the framework as ${FRAMEWORK_TAG}."
           else
-            echo "release-plz released no waterui facade this run."
+            VERSION="$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name == "waterui") | .version')"
+            TAG="v${VERSION}"
+            if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+              echo "release-plz released no waterui facade this run and ${TAG} does not exist yet."
+            elif gh release view "${TAG}" --json assets \
+              --jq '.assets[].name' 2>/dev/null | grep -qx 'framework.json'; then
+              echo "${TAG} already carries its framework manifest."
+            else
+              FRAMEWORK_TAG="${TAG}"
+              echo "${TAG} was released without a framework manifest; publishing it now."
+            fi
           fi
+
+          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
 
       # The manifest is built from the tagged tree itself: the script checks
       # the tag out and records that revision's scaffold table and lock.
