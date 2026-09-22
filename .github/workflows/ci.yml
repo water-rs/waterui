@@ -430,8 +430,29 @@ jobs:
       - name: Require a certified line
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+
+          # Which line is being published decides what certifies it. `dev` is
+          # certified by the nightly, and that is what the rest of this step
+          # checks. The release line is not: a `hotfix/*` branch cut from
+          # `main`, and the release-plz bump that follows it, publish `main` —
+          # already certified when it was released — plus their own delta,
+          # which their own checks gate. They can never descend from a
+          # certification recorded on `dev`, so holding them to one does not
+          # make them safer, it makes them impossible. Hold them to descending
+          # from `main` instead, which is what stops this exit from being used
+          # to route code onto the release line around `dev`.
+          if [ "${HEAD_REF}" != "dev" ]; then
+            if ! git merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
+              echo "::error::${HEAD_SHA} publishes the release line but does not descend from main (${BASE_SHA}); cut it from main"
+              exit 1
+            fi
+            echo "release line: ${HEAD_SHA} descends from main (${BASE_SHA}); the nightly certifies dev, not this"
+            exit 0
+          fi
 
           # The newest certification, selected the way promote records it in
           # .github/scripts/framework_manifest.py: among published non-draft
