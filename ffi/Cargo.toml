@@ -79,6 +79,8 @@ objc2 = "0.6"
 objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"], optional = true }
 wgpu-hal = { workspace = true, features = ["metal"], optional = true }
 waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"], optional = true }
+# The one display query a native host makes, for the executor's frame budget.
+waterkit-screen = { workspace = true, optional = true }
 
 
 [lints]
@@ -116,6 +118,7 @@ gpu = [
     "dep:pollster",
     "dep:kurbo",
     "dep:futures",
+    "dep:waterkit-screen",
 ]
 # The self-drawn video player and its surface-host bridge. Off by default:
 # selecting it links decoders (rav1d, symphonia, hyper) into every package,
