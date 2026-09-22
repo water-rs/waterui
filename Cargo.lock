@@ -10020,7 +10020,7 @@ dependencies = [
 
 [[package]]
 name = "waterui"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "image",
  "waterui-dylib",
@@ -10083,7 +10083,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-backend-core"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "kurbo",
  "nami",
@@ -10271,7 +10271,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-ffi"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "ash",
  "async-channel",
@@ -10486,7 +10486,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-inspector-app"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-channel",
  "futures-lite",
