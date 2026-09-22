@@ -17,6 +17,7 @@ mod gpu;
 mod gradients;
 #[cfg(feature = "gpu")]
 mod image;
+pub mod input;
 mod scene;
 #[cfg(feature = "gpu")]
 pub mod shader_types;
@@ -26,8 +27,7 @@ pub use color::{Color, Colorspace, ResolvedColor};
 pub use effects::{filter_view, view_effect};
 #[cfg(feature = "gpu")]
 pub use gpu::{
-    gpu_surface, input, pipeline, reactive_color, shader_source, shader_surface, shared_context,
-    texture,
+    gpu_surface, pipeline, reactive_color, shader_source, shader_surface, shared_context, texture,
 };
 pub use gradients::gradient::{
     Gradient, GradientConfig, GradientType, ResolvedGradient, ResolvedGradientStop,
@@ -57,7 +57,6 @@ pub use gpu_surface::{
     OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSession, OffscreenSize, PointerState,
     RedrawHandle,
 };
-#[cfg(feature = "gpu")]
 pub use input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
