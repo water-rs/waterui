@@ -172,10 +172,12 @@ permission failure.
 `dev = ["waterui/dynamic_linking"]` feature stanza generated projects carry — see
 `references/project.md`.
 
-**A change to the CLI has no effect.** The `water` on `PATH` is a previously installed
-binary. Reinstall it (`cargo install waterui-cli`, or `cargo install --locked --git
-https://github.com/water-rs/cli waterui-cli` for the integration branch), or invoke the
-freshly built one directly.
+**The CLI is out of date, or a change to it has no effect.** The `water` on `PATH` is a
+previously installed binary. `water update` replaces it with the newest release, and
+`water update --check` reports what is available without installing. When you are
+working on the CLI itself, `cargo install --path .` from that checkout replaces the
+binary, or invoke the freshly built one directly — that is the only case that compiles
+the CLI from source.
 
 **Scrolling or interaction is janky in a dev build only.** Check that the build has a
 release-ish profile; a full stack compiled at `-O0` with debug info is slow in a way that

@@ -268,10 +268,13 @@ Keep the change set strictly scoped to the task.
 
 ```bash
 # Install the `water` CLI (required for `water run` to work). It lives in
-# water-rs/cli; a change to it is a pull request there, not here.
-cargo install waterui-cli
-# …or its integration branch:
-cargo install --locked --git https://github.com/water-rs/cli waterui-cli
+# water-rs/cli; a change to it is a pull request there, not here. The installer
+# downloads a prebuilt binary, so this is seconds rather than a full compile,
+# and `water update` replaces it with the newest release afterwards.
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+# An unreleased CLI has no prebuilt artifact, so testing one does mean building
+# it — from a checkout of water-rs/cli:
+cargo install --path . --locked
 
 # Build entire workspace
 cargo build --workspace
