@@ -10910,7 +10910,9 @@ dependencies = [
 name = "waterui-url"
 version = "0.5.1"
 dependencies = [
+ "async-io",
  "base64 0.23.1",
+ "blocking",
  "dirs 7.0.0",
  "executor-core",
  "futures-lite",
