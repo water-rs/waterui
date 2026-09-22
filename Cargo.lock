@@ -10264,7 +10264,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-dylib"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "waterui-internal",
 ]
@@ -10515,7 +10515,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-internal"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-channel",
  "cpu-time",
@@ -10696,7 +10696,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-mcp"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "accesskit",
  "aither-core",
@@ -10851,7 +10851,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-testing"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "accesskit",
  "async-io",
