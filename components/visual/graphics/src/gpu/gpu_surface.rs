@@ -25,8 +25,8 @@ use std::time::Duration;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_core::{Environment, MainThreadBound, Native, NativeView, View};
 
-use crate::gpu::input::SurfaceInputEvent;
 use crate::gpu::texture::TextureRowLayout;
+use crate::input::SurfaceInputEvent;
 use crate::scene_view::SceneInvalidator;
 use crate::shared_context::{DeviceLoss, GpuRuntime, SceneEngine, SharedSceneRenderer};
 

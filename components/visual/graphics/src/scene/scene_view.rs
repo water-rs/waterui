@@ -11,6 +11,7 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 #[cfg(feature = "gpu")]
 use crate::gpu_surface::GpuSurface;
+use crate::input::SurfaceInputEvent;
 #[cfg(feature = "gpu")]
 use crate::scene::scene_surface::SceneSurfaceRenderer;
 use crate::scene2d::Scene2D;
@@ -107,6 +108,48 @@ pub trait SceneContent: 'static {
     /// read on every emission, so content whose drawing follows a signal
     /// answers with what it currently draws.
     fn accessibility_value(&self) -> Option<String> {
+        None
+    }
+
+    /// Whether this content handles its own keyboard, IME, pointer and scroll
+    /// input.
+    ///
+    /// Content that is interactive in itself — a terminal, a text editor, a
+    /// game board — returns `true`, and whichever realization draws it then
+    /// routes the events landing on it to [`SceneContent::input`]: a backend
+    /// that merges the scene into its own tree registers the content as an
+    /// input target, and the `GpuSurface` realization forwards its surface's
+    /// events. Content that only draws — the common case — leaves this
+    /// `false`, claims no focus, and every event keeps going to the widgets
+    /// around it.
+    ///
+    /// Read when the content is placed, so the answer is a property of the
+    /// content rather than of its current state.
+    fn wants_input_events(&self) -> bool {
+        false
+    }
+
+    /// Handles one input event.
+    ///
+    /// Only called when [`SceneContent::wants_input_events`] returns `true`.
+    /// Every position is logical and local to the content: its own top-left is
+    /// `(0, 0)`, in the same space [`SceneContent::build_scene`] draws in. See
+    /// [`SurfaceInputEvent`] for the vocabulary.
+    ///
+    /// An event that changes what the content draws is followed by a call to
+    /// the invalidator from [`SceneContent::set_invalidator`]: delivering an
+    /// event does not itself schedule a frame.
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        let _ = event;
+    }
+
+    /// Where this content's text caret is, in logical content-local
+    /// coordinates.
+    ///
+    /// Backends place the input-method candidate window against it, so
+    /// content that accepts composed text reports its caret. `None` — the
+    /// default — means there is no caret to place the panel against.
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
         None
     }
 }
