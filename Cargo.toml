@@ -216,14 +216,14 @@ waterui-inspector-app = { version = "0.5.1", path = "components/devtools/inspect
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 # Nothing in this workspace links the GTK or Dew backends: the `water` CLI reads
-# these two entries to scaffold a launcher crate, so until the 0.5.0 wave is on
-# crates.io they carry the adopted `dev` revision as well as the version
-# `cargo publish` keeps (a patch entry would go unused and warn on every cargo
-# command). The release commit that drops the patch table below drops the
-# `git` halves too.
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "b170b35bee0ef815ebc8dc559a2bbc4d96562e34", version = "0.2.0" }
-# `waterui-winui` is unpublished and Windows-only; the `water` CLI reads this
-# entry to scaffold a generated launcher crate pinned to the same revision.
+# these entries to scaffold a launcher crate. A `git` half here is not inert —
+# the CLI's stable channel refuses to distribute a scaffold package that carries
+# one — so an entry moves to a plain registry pin as soon as a published version
+# contains the revision this tree was adopted against.
+waterui-gtk = "0.2.1"
+# `waterui-winui` is Windows-only. Its published 0.1.0 does not contain the
+# revision adopted here, so this entry keeps its `git` half until a release
+# does; the `water` CLI reads it to scaffold a generated launcher crate.
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "3601e745aa51a070a71df1aa98bb7faa6b3895a9", version = "0.1.0" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
