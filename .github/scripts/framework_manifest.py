@@ -2,10 +2,10 @@
 
 The manifest records the worktree's lockfile hash, the scaffold table the root manifest's `[package.metadata.waterui]` declares, and
 that metadata table verbatim. A scaffold package whose
-`[workspace.dependencies]` requirement is a git pin (`git` + `rev`) has no
-registry release the stable channel could resolve, so a `stable` manifest
-withholds its entries from `scaffold` and records the pin under
-`experimental-packages` instead; `nightly` carries it in `scaffold` like any
+`[workspace.dependencies]` requirement is a git pin (`git` + `rev`) is not one
+the stable channel distributes, whatever the registry holds for that name, so
+a `stable` manifest withholds its entries from `scaffold` and records the pin
+under `experimental-packages` instead; `nightly` carries it in `scaffold` like any
 other package. The Rust side derives exactly the same tables for a tree
 (`framework_scaffold` in
 https://github.com/water-rs/cli/blob/dev/src/project_model/framework.rs) — the
@@ -87,9 +87,9 @@ def framework_scaffold(framework):
 def channel_scaffold(framework, channel):
     """The `(scaffold, experimental)` tables `channel`'s manifest records.
 
-    A scaffold package pinned to a git revision has no registry release the
-    stable channel could resolve, so `stable` withholds its `{name}-*`
-    entries from the scaffold table and records the pin — name, git URL,
+    A scaffold package pinned to a git revision is not one the stable channel
+    distributes, since it distributes only registry requirements, so `stable`
+    withholds its `{name}-*` entries from the scaffold table and records the pin — name, git URL,
     revision and declared version — under `experimental-packages`; `dev` and
     `nightly` distribute it through `scaffold` as always. The split derives
     from the dependency's shape alone: `framework_scaffold` already marks a
