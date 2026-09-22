@@ -98,6 +98,8 @@ jobs:
           fi
           echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
 
+          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
+
       # The manifest is built from the tagged tree itself: the script checks
       # the tag out and records that revision's scaffold table and lock.
       - name: Publish the stable framework manifest
