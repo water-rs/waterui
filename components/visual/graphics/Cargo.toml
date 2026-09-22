@@ -32,7 +32,6 @@ vello-scene = [
 cpu-scene = ["dep:vello_cpu"]
 gpu = [
     "vello-scene",
-    "dep:keyboard-types",
     "dep:filtrate",
     "dep:filtrate-core",
     "dep:futures",
@@ -72,7 +71,7 @@ vello_cpu = { workspace = true, optional = true, features = [
     "f32_pipeline",
 ] }
 kurbo.workspace = true
-keyboard-types = { workspace = true, optional = true }
+keyboard-types.workspace = true
 peniko.workspace = true
 bytemuck = { version = "1.25", optional = true }
 encase = { workspace = true, optional = true }

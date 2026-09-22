@@ -1,5 +1,4 @@
 pub mod gpu_surface;
-pub mod input;
 pub mod pipeline;
 pub mod reactive_color;
 pub mod shader_source;

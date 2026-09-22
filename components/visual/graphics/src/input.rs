@@ -1,13 +1,17 @@
-//! Backend-neutral input vocabulary for GPU surfaces.
+//! Backend-neutral input vocabulary for self-drawn views.
 //!
-//! A [`GpuView`](super::gpu_surface::GpuView) that draws its own interactive
-//! content — a browser engine, a terminal, a text editor, a game — needs the
-//! keyboard, IME, pointer and scroll events that reach its layer, not just the
-//! pointer state a [`GpuFrame`](super::gpu_surface::GpuFrame) exposes. Every
-//! backend used to invent its own adapter for that, so an engine had to be
-//! ported once per backend. This module is the single vocabulary they all
+//! A view that draws its own interactive content — a browser engine, a
+//! terminal, a text editor, a game — needs the keyboard, IME, pointer and
+//! scroll events that reach it, not just the pointer state a frame exposes.
+//!
+//! Two kinds of view receive them: a
+//! [`GpuView`](crate::gpu_surface::GpuView), which owns a GPU surface, and a
+//! [`SceneContent`](crate::scene_view::SceneContent), which draws through
+//! `Scene2D` and lets the backend decide how the scene reaches the screen.
+//! Every backend used to invent its own adapter for this, so an engine had to
+//! be ported once per backend. This module is the single vocabulary they all
 //! speak: a backend translates its platform events into
-//! [`SurfaceInputEvent`] once, and every input-hungry GPU view works on every
+//! [`SurfaceInputEvent`] once, and every input-hungry view works on every
 //! backend that does.
 //!
 //! The keyboard half is the W3C UI Events model, taken wholesale from the
@@ -61,9 +65,11 @@ pub enum ScrollUnit {
     Pixel,
 }
 
-/// One input event delivered to a [`GpuView`](super::gpu_surface::GpuView)
-/// that asked for input with
-/// [`wants_input_events`](super::gpu_surface::GpuView::wants_input_events).
+/// One input event delivered to a view that asked for input.
+///
+/// The receiver is a [`GpuView`](crate::gpu_surface::GpuView) or a
+/// [`SceneContent`](crate::scene_view::SceneContent) returning `true` from its
+/// `wants_input_events`.
 ///
 /// Positions are logical and surface-local (see the [module
 /// docs](self)).

@@ -12,6 +12,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 
 use crate::gpu::shared_context::SceneEngine;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuView};
+use crate::input::SurfaceInputEvent;
 use crate::scene_view::{SceneContent, resolve_scene_proposal, scene_stretch_axis};
 use crate::scene2d_hybrid::{HybridScene2D, HybridUpload};
 use crate::scene2d_vello::VelloScene2D;
@@ -204,6 +205,23 @@ impl GpuView for SceneSurfaceRenderer {
     /// so an application label never silences it.
     fn accessibility_value(&self) -> Option<alloc::string::String> {
         self.content.accessibility_value()
+    }
+
+    /// Whatever the content answers: interactive content makes its surface
+    /// interactive, and the surface claims no input on behalf of content that
+    /// only draws.
+    fn wants_input_events(&self) -> bool {
+        self.content.wants_input_events()
+    }
+
+    /// Surface-local and content-local coordinates coincide — the content
+    /// draws into the whole surface — so an event passes through unchanged.
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        self.content.input(event);
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.content.ime_caret()
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
