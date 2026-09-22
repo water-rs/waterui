@@ -6,6 +6,20 @@ publish = true
 release_always = true
 git_tag_enable = true
 changelog_update = true
+# A commit that changes nothing a user consumes must not propose republishing
+# the whole workspace. The root package's manifest directory is the repository
+# root, so any file landing there — a workflow, a README, this config — makes
+# release-plz consider the facade changed, and the version group drags all 41
+# crates with it: the `release.yml` fix in #1170 proposed 0.5.2 for every one
+# of them with no code behind it (#1174). Publishing that would hand each new
+# project, which pins exact versions, a release that fixes nothing.
+#
+# This gates the proposal only — `release-plz update` and `release-pr`.
+# `release-plz release`, the publish path, ignores it, so nothing here can
+# stop a real release from shipping. The alternation keeps a breaking change
+# matching however it is typed: `feat!:`, `refactor(x)!:`, or a
+# `BREAKING CHANGE` footer.
+release_commits = "^(feat|fix|perf)[(:!]|^[a-z]+(\\(.+\\))?!:|BREAKING CHANGE"
 
 # Facade
 
