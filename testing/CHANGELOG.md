@@ -4,6 +4,12 @@ All notable changes to `waterui-testing` are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/water-rs/waterui/compare/waterui-testing-v0.5.1...waterui-testing-v0.5.2) - 2026-09-22
+
+### Other
+
+- updated the following local packages: waterui
+
 ## [0.5.1](https://github.com/water-rs/waterui/compare/waterui-testing-v0.5.0...waterui-testing-v0.5.1) - 2026-09-22
 
 ### Other

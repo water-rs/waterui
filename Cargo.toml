@@ -32,7 +32,7 @@ resolver = "2"
 
 [package]
 name = "waterui"
-version = "0.5.1"
+version = "0.5.2"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -169,7 +169,7 @@ waterui-canvas = "0.2.0"
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
-waterui-ffi = { version = "0.5.1", path = "ffi" }
+waterui-ffi = { version = "0.5.2", path = "ffi" }
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.5.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
@@ -200,7 +200,7 @@ waterkit-camera = "0.1.4"
 waterkit-codec = { version = "0.1.4", default-features = false }
 waterkit-video = { version = "0.1.4", features = ["streaming"] }
 waterkit-build = "0.1.4"
-waterui-backend-core = { version = "0.5.1", path = "backends/core", default-features = false }
+waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 filtrate = "0.2.0"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
@@ -213,20 +213,21 @@ waterui-assets-core = { version = "0.5.1", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.5.1", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.5.1", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/inspector/protocol" }
-waterui-inspector-app = { version = "0.5.1", path = "components/devtools/inspector/app" }
+waterui-inspector-app = { version = "0.5.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 # Nothing in this workspace links the GTK, WinUI or Dew backends: the `water`
 # CLI reads these entries to scaffold a launcher crate against the published
-# versions.
-waterui-gtk = "0.2.0"
+# versions. A `git` half here would not be inert — the CLI's stable channel
+# refuses to distribute a scaffold package that carries one.
+waterui-gtk = "0.2.1"
 waterui-winui = "0.1.0"
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", default-features = false }
 waterui-dew = "0.3.0"
-waterui = { version = "0.5.1", path = "." }
+waterui = { version = "0.5.2", path = "." }
 waterui-icons-codegen = { version = "0.5.1", path = "components/icon/codegen" }
 shaderloom = "0.1.2"
 hydrolysis-m3 = "0.3.1"
