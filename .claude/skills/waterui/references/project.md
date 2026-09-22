@@ -2,6 +2,7 @@
 
 ## Contents
 
+- Installing the CLI
 - Creating a project
 - Project shape
 - `Cargo.toml`: features that matter
@@ -12,6 +13,26 @@
 - Platforms and backends
 - Logging and debugging
 - Embedded targets (Dew)
+
+## Installing the CLI
+
+Install the prebuilt binary; do not build the CLI from source. `cargo install
+waterui-cli` compiles the CLI and its whole dependency graph, which takes minutes and
+is never what a user of the framework wants.
+
+```bash
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+```
+
+`water update` replaces the binary with the newest release; `water update --check`
+only reports what is available. A project pins its framework version separately from
+the CLI — see `water channel`.
 
 ## Creating a project
 

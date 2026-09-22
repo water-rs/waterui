@@ -16,12 +16,29 @@ State is plain values. Put mutable state in a `Binding`, derive from it with `Co
 
 ## Getting started
 
+Install the `water` CLI. The installer downloads a prebuilt binary; nothing is
+compiled:
+
 ```bash
-cargo install waterui-cli
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+```
+
+Then create and run a project:
+
+```bash
 water create counter --mode playground
 cd counter
 water run
 ```
+
+`water update` upgrades the CLI in place, and `water update --check` reports the
+newest release without installing it.
 
 A playground is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
