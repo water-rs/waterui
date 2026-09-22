@@ -113,12 +113,17 @@ genuinely a false positive, use a narrowly scoped item-level `expect` with a rea
 
 ## Runtime panics
 
-**"Environment state `T` not found".** A handler asked for a `State<T>` or a
+**"Environment state `T` not found at position N".** A handler asked for a `State<T>` or a
 `#[state]`-marked `T` that nothing injected. Add `.state(&value)` on the button, or on an
 ancestor container if several handlers need it.
 
 **"Environment value `T` not found".** Same, but for `Use<T>` — the value must be installed
 in the environment (typically in `app(env)`), not passed via `.state()`.
+
+**"Local executor not set".** `spawn_local` ran before the backend installed the
+thread-local executor — before it mounted the app's view, while `main` or a
+`Store::new` was still running. Move the call into `.task(..)`, `.on_appear`, or
+a handler body.
 
 **A panic under `LabelDisplayMode::IconOnly`.** Some label in that subtree has no
 `.icon(..)`. Scope the install more narrowly or give every label an icon.
