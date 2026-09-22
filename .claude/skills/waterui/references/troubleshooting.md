@@ -113,7 +113,7 @@ genuinely a false positive, use a narrowly scoped item-level `expect` with a rea
 
 ## Runtime panics
 
-**"Environment state `T` not found".** A handler asked for a `State<T>` or a
+**"Environment state `T` not found at position N".** A handler asked for a `State<T>` or a
 `#[state]`-marked `T` that nothing injected. Add `.state(&value)` on the button, or on an
 ancestor container if several handlers need it.
 
