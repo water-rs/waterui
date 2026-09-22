@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/water-rs/waterui/compare/v0.5.0...v0.5.1) - 2026-09-22
+
+### Fixed
+
+- *(scaffold)* name the theme releases a first build can actually use
+
+### Other
+
+- the nightly certification gates dev, not a hotfix off the release line
+- let main accept a hotfix branch cut from the release line
+
 ## [0.5.0](https://github.com/water-rs/waterui/compare/v0.4.1...v0.5.0) - 2026-09-20
 
 ### Added

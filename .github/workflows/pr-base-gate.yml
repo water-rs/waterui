@@ -15,10 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      # Two sources may land on main: the integration branch, and the release
+      # Three sources may land on main: the integration branch, the release
       # pull request release-plz opens from its own `release-plz-*` branch
-      # after a dev merge (the version bump and changelog that publish).
-      - name: main only accepts merges from dev or a release-plz branch
+      # after a dev merge (the version bump and changelog that publish), and a
+      # `hotfix/*` branch cut from `main` itself. The last one is what AGENTS.md
+      # requires for a fix that belongs to the current release line — release
+      # plumbing, backend pins, scaffold versions — precisely so that landing
+      # it does not drag everything `dev` has accumulated, breaking changes
+      # included, over the version boundary.
+      - name: main only accepts merges from dev, a release-plz branch or a hotfix
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -29,9 +34,9 @@ jobs:
             exit 1
           fi
           case "${HEAD_REF}" in
-            dev|release-plz-*) ;;
+            dev|release-plz-*|hotfix/*) ;;
             *)
-              echo "::error::Pull requests into 'main' are only allowed from 'dev' or a release-plz release branch ('release-plz-*'). Retarget this pull request at 'dev' instead."
+              echo "::error::Pull requests into 'main' are only allowed from 'dev', a release-plz release branch ('release-plz-*'), or a hotfix branch cut from 'main' ('hotfix/*'). Retarget this pull request at 'dev' instead."
               exit 1
               ;;
           esac
