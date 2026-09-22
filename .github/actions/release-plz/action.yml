@@ -27,7 +27,7 @@ runs:
       with:
         tool: release-plz
         git: https://github.com/water-rs/release-plz
-        rev: 38c0d7ca8d741f023f713b70be5e480e3822c3c2
+        rev: a3866aac4bce3aeca968b06ff133cbc62057fc1e
         locked: true
     - uses: release-plz/git-config@v0.1.2
     # `-o json` puts the report on stdout and leaves the progress log on
