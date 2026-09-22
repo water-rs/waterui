@@ -156,7 +156,8 @@ impl<T: 'static + Clone> Extractor for State<T> {
         env.get::<Self>().map_or_else(
             || {
                 Err(Error::msg(format!(
-                    "Environment state `{}` not found",
+                    "Environment state `{}` not found; install the value with \
+                     `.state(&value)` on an ancestor of the handler's view",
                     type_name::<T>()
                 )))
             },
@@ -169,7 +170,9 @@ impl<T: 'static + Clone> Extractor for State<T> {
         env.get_nth::<Self>(position).map_or_else(
             || {
                 Err(Error::msg(format!(
-                    "Environment state `{}` not found at position {}",
+                    "Environment state `{}` not found at position {}; install \
+                     the value with `.state(&value)` on an ancestor of the \
+                     handler's view",
                     type_name::<T>(),
                     position
                 )))
