@@ -322,6 +322,7 @@ mod token_probe {
             _draw: &mut dyn DrawContext,
             _bounds: Rect,
             _style: ButtonStyle,
+            _icon_only: bool,
             _state: WidgetInteractionState,
         ) {
         }
