@@ -1,0 +1,85 @@
+[package]
+name = "waterui-ffi"
+build = "build.rs"
+version = "0.2.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+rust-version.workspace = true
+description = "FFI bindings for the WaterUI cross-platform UI framework"
+keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
+categories = ["gui", "api-bindings"]
+
+[dependencies]
+waterui.workspace = true
+waterui-core.workspace = true
+waterui-text.workspace = true
+waterui-controls.workspace = true
+waterui-form.workspace = true
+waterui-navigation.workspace = true
+waterui-media.workspace = true
+waterui-video.workspace = true
+native-executor.workspace = true
+waterui-layout.workspace = true
+nami.workspace = true
+executor-core.workspace = true
+cbindgen = { version = "0.29.4", optional = true }
+# JNI crate - optional, enabled by android-jni feature for Android builds
+jni = { version = "0.22.4", optional = true }
+bytemuck = { version = "1.25", optional = true }
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-svg.workspace = true
+waterui-icon.workspace = true
+waterui-webview.workspace = true
+cookie = "0.18.1"
+waterui-map.workspace = true
+waterui-str.workspace = true
+waterui-locale.workspace = true
+wgpu.workspace = true
+async-channel = "2.5"
+base64 = "0.22.1"
+pastey.workspace = true
+tracing.workspace = true
+tracing-panic.workspace = true
+jiff.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(target_os = "android")'.dependencies]
+waterui-video-gpu.workspace = true
+tracing-android = "0.2"
+ndk-context = "0.1.1"
+jni = "0.22.4"
+ndk = { version = "0.9", features = ["api-level-26"] }
+ndk-sys = "0.6"
+ash = "0.38"
+wgpu-hal = { workspace = true, features = ["vulkan"] }
+
+[target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
+tracing-oslog = "0.3"
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"] }
+wgpu-hal = { workspace = true, features = ["metal"] }
+waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"] }
+
+[target.'cfg(all(not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+waterui-video-gpu.workspace = true
+
+
+[[bin]]
+name = "generate_header"
+path = "generate_header.rs"
+required-features = ["cbindgen"]
+
+[features]
+default = ["std", "c-api"]
+std = []
+# C FFI for Apple/GTK backends (default)
+c-api = ["std"]
+# JNI for Android backend - mutually exclusive with c-api
+# Note: android-jni requires std because jni crate uses std
+android-jni = ["dep:jni", "dep:bytemuck", "std"]
+[package.metadata.cargo-machete]
+ignored = ["bytemuck", "waterui-media", "waterui-svg"]

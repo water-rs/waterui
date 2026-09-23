@@ -1,0 +1,36 @@
+[package]
+name = "waterui-particle"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "High-performance GPU particle system for WaterUI"
+keywords = ["particle", "gpu", "wgpu", "waterui", "effects"]
+categories = ["gui", "graphics"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
+wgpu.workspace = true
+bytemuck = { version = "1.25", features = ["derive"] }
+encase.workspace = true
+glam = { version = "0.33", features = ["bytemuck"] }
+tracing.workspace = true
+fastrand = "2.5"
+num-traits = { version = "0.2", default-features = false }
+
+[build-dependencies]
+waterui-build-support.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
+waterui.workspace = true
+waterui-testing.workspace = true
+
+[lints]
+workspace = true
+[package.metadata.cargo-machete]
+ignored = ["tracing"]

@@ -1,0 +1,35 @@
+[package]
+name = "waterui-testing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Headless testing helpers for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+hydrolysis = { path = "../backends/hydrolysis", features = ["accessibility", "testing"] }
+waterui-canvas.workspace = true
+waterui-core.workspace = true
+waterui.workspace = true
+wgpu.workspace = true
+vello.workspace = true
+accesskit = "0.24"
+pollster.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+executor-core.workspace = true
+sysinfo.workspace = true
+waterui-preview-protocol.workspace = true
+
+[dev-dependencies]
+bitflags.workspace = true
+hydrolysis-m3 = { path = "../backends/hydrolysis_m3" }
+
+[lints]
+workspace = true
+[package.metadata.cargo-machete]
+ignored = ["bitflags", "executor-core"]

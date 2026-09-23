@@ -1,0 +1,36 @@
+[package]
+name = "waterui-dylib"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Dynamic-link anchor crate for WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+waterui-internal = { path = "../../src", default-features = false }
+
+[features]
+default = ["gpu", "assets", "media", "webview", "flow-markdown"]
+gpu = ["waterui-internal/gpu"]
+assets = ["waterui-internal/assets"]
+media = ["waterui-internal/media", "video"]
+video = ["waterui-internal/video"]
+webview = ["waterui-internal/webview"]
+chart = ["waterui-internal/chart"]
+barcode = ["waterui-internal/barcode"]
+map = ["waterui-internal/map"]
+particle = ["waterui-internal/particle"]
+navigation-restoration = ["waterui-internal/navigation-restoration"]
+flow-markdown = ["waterui-internal/flow-markdown"]
+std = ["waterui-internal/std"]
+all = ["waterui-internal/all", "navigation-restoration"]
+
+[lints]
+workspace = true

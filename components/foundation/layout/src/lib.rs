@@ -1,0 +1,80 @@
+#![no_std]
+#![cfg_attr(
+    test,
+    allow(clippy::float_cmp, reason = "tests assert exact layout geometry values")
+)]
+//! Layout building blocks for `WaterUI`.
+//!
+//! This crate bridges the declarative [`View`](waterui_core::View) system with
+//! the imperative, backend-driven layout pass. It contains:
+//!
+//! - the low-level [`Layout`] trait and its geometry helpers,
+//! - reusable containers such as [`spacer()`], [`padding::Padding`], and stacks,
+//! - thin wrappers (for example [`scroll()`]) that signal backend-specific
+//!   behaviour.
+//!
+//! # Logical Pixels (Points)
+//!
+//! All layout values use **logical pixels** (points/dp) - the same unit as design
+//! tools like Figma, Sketch, and Adobe XD. Native backends handle conversion to
+//! physical pixels based on screen density:
+//!
+//! - iOS/macOS: Uses points natively
+//! - Android: Converts dp → pixels via `displayMetrics.density`
+//!
+//! This ensures `spacing(8.0)` or `width(100.0)` renders at the same physical
+//! size across all platforms, matching your design specifications exactly.
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use waterui_layout::{stack, spacer};
+//! use waterui_text::text;
+//!
+//! pub fn toolbar() -> impl waterui_core::View {
+//!     stack::hstack((
+//!         text("WaterUI"),
+//!         spacer(),
+//!         stack::vstack((text("Docs"), text("Blog"))),
+//!     ))
+//!     .spacing(8.0)  // 8pt spacing - same as Figma/Sketch
+//! }
+//! ```
+//!
+//! For a broader tour see the crate README.
+
+extern crate alloc;
+
+pub use waterui_core::layout::*;
+
+mod collections;
+mod containers;
+pub mod measure;
+mod modifiers;
+
+pub use collections::{grid, scroll};
+pub use measure::measure_children;
+pub use containers::{absolute, collection_transition, container, divider, frame, spacer};
+pub use modifiers::{alignment_guide, background, overlay, padding, safe_area};
+
+pub use divider::Divider;
+pub use spacer::{Spacer, spacer};
+pub mod stack;
+
+pub use scroll::{ScrollView, scroll};
+
+pub use alignment_guide::{HorizontalAlignmentGuide, VerticalAlignmentGuide};
+pub use collection_transition::{CollectionTransition, collection_transition};
+pub use container::LazyContainer;
+
+pub use background::{BackgroundLayout, BackgroundView, background};
+pub use overlay::{Overlay, OverlayLayout, overlay};
+pub use safe_area::{EdgeSet, IgnoreSafeArea};
+
+pub use absolute::{
+    Absolute, AbsoluteLayout, PinConstraints, PositionExt, PositionTarget, PositionedChild,
+    PositionedLayout, absolute,
+};
+
+#[cfg(test)]
+mod tests;

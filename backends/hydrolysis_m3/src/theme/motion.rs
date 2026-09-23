@@ -1,0 +1,209 @@
+use core::time::Duration;
+
+use waterui::animation::Animation;
+use waterui_backend_core::widget::{
+    InteractionMotion, NavigationMotion, ProgressMotion, RadioSelectionMotion, TextCaretMotion,
+};
+
+const MATERIAL_STANDARD: (f32, f32, f32, f32) = (0.2, 0.0, 0.0, 1.0);
+
+/// The MD3 standard easing curve over `duration`.
+const fn material_standard(duration: Duration) -> Animation {
+    Animation::bezier(
+        duration,
+        MATERIAL_STANDARD.0,
+        MATERIAL_STANDARD.1,
+        MATERIAL_STANDARD.2,
+        MATERIAL_STANDARD.3,
+    )
+}
+
+/// MD3 interaction state-layer motion, matching the mdui reference
+/// implementation: the ripple grows from the press point over 225ms with
+/// standard easing while fading in linearly over 75ms; a release never plays
+/// the growth backwards — the wave holds its expanded shape and only fades out
+/// linearly over 150ms once the expansion has completed
+/// (`minimum_press_duration` equals the grow duration for exactly that
+/// gating). Hover/focus state layers cross-fade over 280ms with standard
+/// easing.
+pub const fn interaction() -> InteractionMotion {
+    InteractionMotion {
+        hover_opacity: 0.08,
+        focus_opacity: 0.12,
+        pressed_opacity: 0.12,
+        dragged_opacity: 0.16,
+        hover_enter: material_standard(Duration::from_millis(280)),
+        hover_exit: material_standard(Duration::from_millis(280)),
+        focus_enter: material_standard(Duration::from_millis(280)),
+        focus_exit: material_standard(Duration::from_millis(280)),
+        press_fade_in: Animation::linear(Duration::from_millis(75)),
+        press_fade_out: Animation::linear(Duration::from_millis(150)),
+        press_grow: material_standard(Duration::from_millis(225)),
+        minimum_press_duration: Duration::from_millis(225),
+        touch_delay: Duration::from_millis(70),
+    }
+}
+
+pub const fn progress() -> ProgressMotion {
+    ProgressMotion {
+        linear_determinate: Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0),
+        circular_determinate: Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0),
+        linear_indeterminate_cycle: Duration::from_secs(2),
+        circular_indeterminate_cycle: Duration::from_millis(5_332),
+    }
+}
+
+pub const fn text_caret() -> TextCaretMotion {
+    TextCaretMotion {
+        fade_cycle_duration: Duration::from_millis(1_060),
+        frame_interval: Duration::from_millis(530),
+        min_opacity: 0.2,
+    }
+}
+
+pub const fn navigation() -> NavigationMotion {
+    NavigationMotion {
+        transition_duration: Duration::from_millis(250),
+        pushpop_parallax_factor: 0.35,
+    }
+}
+
+pub const fn navigation_drawer() -> Animation {
+    material_standard(Duration::from_millis(250))
+}
+
+/// Switch value motion, matching the mdui reference: thumb slide, thumb size,
+/// track color, and outline width all transition together over 200ms with the
+/// MD3 standard easing (mdui `transition-duration(short4)` + standard curve).
+pub const fn toggle_value() -> Animation {
+    material_standard(Duration::from_millis(200))
+}
+
+pub const fn radio_selection() -> RadioSelectionMotion {
+    RadioSelectionMotion {
+        inner_grow: Animation::bezier(Duration::from_millis(300), 0.05, 0.7, 0.1, 1.0),
+        inner_opacity: Animation::linear(Duration::from_millis(50)),
+        outer_color: Animation::linear(Duration::from_millis(50)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        interaction, navigation, navigation_drawer, progress, radio_selection, text_caret,
+        toggle_value,
+    };
+    use core::time::Duration;
+    use waterui::animation::Animation;
+
+    #[test]
+    fn material_state_layer_motion_matches_mdui_reference() {
+        let motion = interaction();
+        assert_eq!(motion.hover_opacity, 0.08);
+        assert_eq!(motion.focus_opacity, 0.12);
+        assert_eq!(motion.pressed_opacity, 0.12);
+        assert_eq!(motion.dragged_opacity, 0.16);
+        assert_eq!(
+            motion.hover_enter,
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            motion.hover_exit,
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            motion.focus_enter,
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            motion.focus_exit,
+            Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0)
+        );
+        assert_eq!(
+            motion.press_fade_in,
+            Animation::linear(Duration::from_millis(75))
+        );
+        assert_eq!(
+            motion.press_fade_out,
+            Animation::linear(Duration::from_millis(150))
+        );
+        assert_eq!(
+            motion.press_grow,
+            Animation::bezier(Duration::from_millis(225), 0.2, 0.0, 0.0, 1.0)
+        );
+        // The deferred fade-out gate equals the grow duration: a quick tap's
+        // ripple finishes expanding before it starts to fade (mdui waits for
+        // the radius-in animation to end before applying the fade-out).
+        assert_eq!(motion.minimum_press_duration, Duration::from_millis(225));
+        assert_eq!(motion.touch_delay, Duration::from_millis(70));
+    }
+
+    #[test]
+    fn material_progress_motion_matches_material_web() {
+        let motion = progress();
+        assert_eq!(
+            motion.linear_determinate,
+            Animation::bezier(Duration::from_millis(250), 0.4, 0.0, 0.6, 1.0)
+        );
+        assert_eq!(
+            motion.circular_determinate,
+            Animation::bezier(Duration::from_millis(500), 0.0, 0.0, 0.2, 1.0)
+        );
+        assert_eq!(motion.linear_indeterminate_cycle, Duration::from_secs(2));
+        assert_eq!(
+            motion.circular_indeterminate_cycle,
+            Duration::from_millis(5_332)
+        );
+    }
+
+    #[test]
+    fn material_text_caret_motion_is_theme_owned() {
+        let motion = text_caret();
+
+        assert_eq!(motion.fade_cycle_duration, Duration::from_millis(1_060));
+        assert_eq!(motion.frame_interval, Duration::from_millis(530));
+        assert_eq!(motion.min_opacity, 0.2);
+    }
+
+    #[test]
+    fn material_navigation_motion_uses_hydrolysis_transition_engine_policy() {
+        let motion = navigation();
+
+        assert_eq!(motion.transition_duration, Duration::from_millis(250));
+        assert_eq!(motion.pushpop_parallax_factor, 0.35);
+    }
+
+    #[test]
+    fn material_navigation_drawer_motion_matches_material_web_labs() {
+        assert_eq!(
+            navigation_drawer(),
+            Animation::bezier(Duration::from_millis(250), 0.2, 0.0, 0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn material_toggle_motion_matches_mdui_reference() {
+        assert_eq!(
+            toggle_value(),
+            Animation::bezier(Duration::from_millis(200), 0.2, 0.0, 0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn material_radio_selection_motion_matches_material_web() {
+        let motion = radio_selection();
+
+        assert_eq!(
+            motion.inner_grow,
+            Animation::bezier(Duration::from_millis(300), 0.05, 0.7, 0.1, 1.0)
+        );
+        assert_eq!(
+            motion.inner_opacity,
+            Animation::linear(Duration::from_millis(50))
+        );
+        assert_eq!(
+            motion.outer_color,
+            Animation::linear(Duration::from_millis(50))
+        );
+    }
+}

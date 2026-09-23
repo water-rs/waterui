@@ -1,0 +1,119 @@
+//! Metadata components for attaching arbitrary data to views.
+//!
+//! This module provides two types of metadata components:
+//! - `Metadata<T>`: Strict metadata that must be handled by renderers
+//! - `IgnorableMetadata<T>`: Optional metadata that can be safely ignored
+//!
+//! Metadata can be used to attach arbitrary data to views that will be processed
+//! by renderers, such as accessibility attributes, transition effects, or custom
+//! rendering instructions.
+
+use alloc::boxed::Box;
+use core::any::Any;
+use core::any::type_name;
+
+use crate::{AnyView, Environment, View};
+
+/// Represents a view that carries additional metadata of type `T`.
+///
+/// This struct allows attaching arbitrary data to a view component. The metadata
+/// is expected to be handled by a renderer, and will panic if not properly caught.
+///
+/// Metadata is transparent for layout system, it is not a native view.
+#[derive(Debug)]
+#[must_use]
+pub struct Metadata<T: MetadataKey> {
+    /// The view content wrapped by this metadata.
+    pub content: AnyView,
+    /// The metadata value associated with the content.
+    pub value: T,
+}
+
+/// A marker trait for metadata keys.
+pub trait MetadataKey: 'static {}
+
+impl<T: MetadataKey> Metadata<T> {
+    /// Creates a new `Metadata` instance with the specified content and value.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The view to be wrapped with metadata.
+    /// * `value` - The metadata value to associate with the content.
+    pub fn new(content: impl View, value: T) -> Self {
+        Self {
+            content: AnyView::new(content),
+            value,
+        }
+    }
+
+    #[cold]
+    fn panic_not_caught() {
+        panic!(
+            "The metadata `{}` is not caught by your renderer. If the metadata is not essential, use `IgnorableMetadata<T>`.",
+            type_name::<Self>()
+        );
+    }
+}
+
+impl<T: MetadataKey> View for Metadata<T> {
+    fn body(self, _env: &Environment) -> impl View {
+        Self::panic_not_caught();
+    }
+}
+
+/// A metadata wrapper that can be safely ignored by renderers if not handled explicitly.
+///
+/// Unlike `Metadata<T>`, this type won't panic if not caught by a renderer.
+#[derive(Debug)]
+pub struct IgnorableMetadata<T: MetadataKey> {
+    /// The view content wrapped by this ignorable metadata.
+    pub content: AnyView,
+    /// The metadata value associated with the content.
+    pub value: T,
+}
+
+impl<T: MetadataKey> IgnorableMetadata<T> {
+    /// Creates a new `IgnorableMetadata` instance with the specified content and value.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The view to be wrapped with ignorable metadata.
+    /// * `value` - The metadata value to associate with the content.
+    pub fn new(content: impl View, value: T) -> Self {
+        Self {
+            content: AnyView::new(content),
+            value,
+        }
+    }
+}
+
+impl<T: MetadataKey> View for IgnorableMetadata<T> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.content
+    }
+}
+
+/// A metadata key that retains a value for its lifetime.
+///
+/// This is useful for keeping watcher guards, subscriptions, or other values
+/// alive as long as the view exists. The retained value is dropped when the
+/// view is dropped.
+///
+/// This type implements `MetadataKey` and is used with `Metadata`,
+/// so renderers must handle it (by extracting content and keeping the value alive).
+#[derive(Debug)]
+pub struct Retain {
+    /// The retained value (not read, only kept alive).
+    _value: Box<dyn Any>,
+}
+
+impl MetadataKey for Retain {}
+
+impl Retain {
+    /// Creates a new `Retain` from a value.
+    pub fn new<T: 'static>(value: T) -> Self {
+        Self {
+            _value: Box::new(value),
+        }
+    }
+}

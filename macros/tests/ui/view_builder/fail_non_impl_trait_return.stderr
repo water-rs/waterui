@@ -1,0 +1,5 @@
+error: #[view_builder] requires a `-> impl View` return type
+ --> tests/ui/view_builder/fail_non_impl_trait_return.rs:2:23
+  |
+2 | fn bad(flag: bool) -> waterui::AnyView {
+  |                       ^^^^^^^^^^^^^^^^

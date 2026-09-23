@@ -1,0 +1,51 @@
+# German translations
+
+# Title and description
+"WaterUI World Fair" = "WaterUI Weltmesse"
+"Locale is injected from native side via FFI" = "Locale wird von der nativen Seite via FFI injiziert"
+"Live translations for a tiny world-fair kiosk" = "Live-Uebersetzungen fuer einen kleinen Weltmesse-Kiosk"
+
+# Section headers
+"Welcome Desk" = "Willkommensschalter"
+"Festival Date (2006-03-20)" = "Festivaldatum (2006-03-20)"
+"Passport Stamps" = "Passstempel"
+"Distance Guide" = "Entfernungsuebersicht"
+"Local Flavor" = "Lokalkolorit"
+"Language Booth" = "Sprachstand"
+"Human Rights - Article 1" = "Menschenrechte - Artikel 1"
+
+# Greeting
+"Welcome to the World Fair!" = "Willkommen auf der Weltmesse!"
+
+# Labels
+"Color" = "Farbe"
+"Favorite" = "Favorit"
+"Language:" = "Sprache:"
+"Detected Locale:" = "Erkannte Locale:"
+"Chosen Language:" = "Ausgewaehlte Sprache:"
+"Short:" = "Kurz:"
+"Long:" = "Lang:"
+"City Walk:" = "Stadtspaziergang:"
+"Marathon Route:" = "Marathonstrecke:"
+"Computer:" = "Computer:"
+"Software:" = "Software:"
+
+# Language names
+"en" = "Englisch"
+"zh" = "Chinesisch"
+"ja" = "Japanisch"
+"ko" = "Koreanisch"
+"de" = "Deutsch"
+"fr" = "Franzoesisch"
+"es" = "Spanisch"
+"ru" = "Russisch"
+
+# Regional vocabulary
+"computer" = "Computer"
+"software" = "Software"
+
+# Human rights paragraph - UDHR Article 1
+"$udhr_article_1" = "Alle Menschen sind frei und gleich an Wuerde und Rechten geboren. Sie sind mit Vernunft und Gewissen begabt und sollen einander im Geist der Bruederlichkeit begegnen."
+
+# Plural forms - German has one/other
+"I have {#count} passport stamp" = { one = "Ich habe {count} Passstempel", other = "Ich habe {count} Passstempel" }

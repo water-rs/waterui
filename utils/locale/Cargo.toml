@@ -1,0 +1,46 @@
+[package]
+name = "waterui-locale"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Localization support for WaterUI"
+keywords = ["i18n", "internationalization", "localization", "waterui"]
+categories = ["internationalization", "localization"]
+
+[dependencies]
+# Core dependencies
+waterui-core.workspace = true
+waterui-str.workspace = true
+nami.workspace = true
+anyhow = "1.0"
+
+# ICU4X for locale handling
+icu_locale = "2.2"
+icu_plurals = "2.2"
+icu_decimal = "2.2"
+icu_datetime = "2.2"
+icu_time = { version = "2.2", features = ["unstable_jiff_0_2"] }
+icu_calendar = "2.2"
+icu_list = "2.2"
+icu_provider = "2.2"
+fixed_decimal = "0.7"
+jiff.workspace = true
+
+# Other dependencies
+num = "0.4"
+serde = { workspace = true, features = ["derive"] }
+toml = "1.1"
+tracing.workspace = true
+sys-locale.workspace = true
+
+[target.'cfg(not(target_os = "espidf"))'.dependencies]
+iana-time-zone.workspace = true
+
+[features]
+default = []
+
+[lints]
+workspace = true

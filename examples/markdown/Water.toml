@@ -1,0 +1,6 @@
+waterui_path = "../.."
+
+[package]
+type = "playground"
+name = "Markdown Example"
+bundle_identifier = "com.waterui.example.markdown"

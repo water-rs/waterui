@@ -1,0 +1,37 @@
+[package]
+name = "waterui-visualizer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Real-time audio visualization components for WaterUI"
+keywords = ["audio", "visualizer", "waveform", "wgpu"]
+categories = ["multimedia", "gui", "visualization"]
+
+[lints]
+workspace = true
+
+[dependencies]
+waterui-core.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+shaderloom.workspace = true
+waterkit-audio = { workspace = true, features = ["recording"] }
+wgpu.workspace = true
+bytemuck = { version = "1.25", features = ["derive"] }
+async-channel.workspace = true
+blocking.workspace = true
+encase.workspace = true
+executor-core.workspace = true
+glam = "0.33"
+num-traits = { version = "0.2", default-features = false }
+futures.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+waterui-build-support.workspace = true
+
+[dev-dependencies]
+waterui.workspace = true
+waterui-testing.workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "filtrate"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.87"
+readme = "../../README.md"
+repository = "https://github.com/water-rs/waterui"
+description = "GPU texture filter library: built-in filters (blur, brightness, color matrix, ...) and runtime, built on filtrate-core."
+keywords = ["gpu", "filter", "wgpu", "image", "video"]
+categories = ["graphics", "multimedia::images", "rendering"]
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+filtrate-core.workspace = true
+filtrate-derive.workspace = true
+wgpu.workspace = true
+shaderloom.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+num-traits = { version = "0.2", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+tracing.workspace = true
+parking_lot = "0.12"
+
+[build-dependencies]
+waterui-build-support.workspace = true
+
+[dev-dependencies]
+divan = "0.1"
+pollster.workspace = true
+
+[[bench]]
+name = "filter_trait"
+harness = false
+
+[[bench]]
+name = "gpu_runtime"
+harness = false

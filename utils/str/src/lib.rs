@@ -1,0 +1,925 @@
+#![doc = include_str!("../README.md")]
+extern crate alloc;
+
+mod impls;
+mod shared;
+use alloc::{
+    borrow::Cow,
+    boxed::Box,
+    string::{FromUtf8Error, String, ToString},
+    vec::Vec,
+};
+use shared::Shared;
+
+use core::{
+    borrow::Borrow,
+    mem::{ManuallyDrop, take},
+    ops::Deref,
+    ptr::NonNull,
+    slice,
+};
+
+nami_core::impl_constant!(Str);
+
+/// A string type that can be either a static reference or a ref-counted owned string.
+///
+/// `Str` combines the benefits of both `&'static str` and `String` with efficient
+/// cloning and passing, automatically using the most appropriate representation
+/// based on the source.
+#[derive(Debug)]
+pub struct Str {
+    /// Pointer to the string data.
+    ptr: NonNull<()>,
+
+    /// Length of the string in bytes.
+    /// If len >= 0, it points to a static string.
+    /// otherwise, it points to a Shared structure containing a reference-counted String,
+    len: isize,
+}
+
+impl Drop for Str {
+    /// Decrements the reference count for owned strings and frees the memory
+    /// when the reference count reaches zero.
+    ///
+    /// For static strings, this is a no-op.
+    fn drop(&mut self) {
+        if let Ok(shared) = self.as_shared() {
+            unsafe {
+                if shared.is_unique() {
+                    let ptr = self.ptr.cast::<Shared>().as_ptr();
+                    let _ = Box::from_raw(ptr);
+                } else {
+                    shared.decrement_count();
+                }
+            }
+        }
+    }
+}
+
+impl Clone for Str {
+    /// Creates a clone of the string.
+    ///
+    /// For static strings, this is a simple pointer copy.
+    /// For owned strings, this increments the reference count.
+    fn clone(&self) -> Self {
+        if let Ok(shared) = self.as_shared() {
+            unsafe {
+                shared.increment_count();
+            }
+        }
+
+        Self {
+            ptr: self.ptr,
+            len: self.len,
+        }
+    }
+}
+
+impl Deref for Str {
+    type Target = str;
+
+    /// Provides access to the underlying string slice.
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl Borrow<str> for Str {
+    /// Allows borrowing a `Str` as a string slice.
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for Str {
+    /// Converts `Str` to a string slice reference.
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<[u8]> for Str {
+    /// Converts `Str` to a byte slice reference.
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl Default for Str {
+    /// Creates a new empty `Str`.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<Cow<'static, str>> for Str {
+    /// Creates a `Str` from a `Cow<'static, str>`.
+    ///
+    /// This will borrow from static strings and own dynamic strings.
+    fn from(value: Cow<'static, str>) -> Self {
+        match value {
+            Cow::Borrowed(s) => s.into(),
+            Cow::Owned(s) => s.into(),
+        }
+    }
+}
+
+/// Implementations available when the `std` library is available.
+mod std_on {
+    use alloc::{string::FromUtf8Error, vec::IntoIter};
+
+    use crate::Str;
+
+    extern crate std;
+
+    use core::{net::SocketAddr, ops::Deref};
+    use std::{
+        ffi::{OsStr, OsString},
+        io,
+        net::ToSocketAddrs,
+        path::Path,
+    };
+
+    impl AsRef<OsStr> for Str {
+        /// Converts `Str` to an OS string slice reference.
+        fn as_ref(&self) -> &OsStr {
+            self.deref().as_ref()
+        }
+    }
+
+    impl AsRef<Path> for Str {
+        /// Converts `Str` to a path reference.
+        fn as_ref(&self) -> &Path {
+            self.deref().as_ref()
+        }
+    }
+
+    impl TryFrom<OsString> for Str {
+        type Error = FromUtf8Error;
+
+        /// Attempts to create a `Str` from an `OsString`.
+        ///
+        /// This will fail if the `OsString` contains invalid UTF-8 data.
+        fn try_from(value: OsString) -> Result<Self, Self::Error> {
+            Self::from_utf8(value.into_encoded_bytes())
+        }
+    }
+
+    impl ToSocketAddrs for Str {
+        type Iter = IntoIter<SocketAddr>;
+
+        /// Converts a string to a socket address.
+        fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
+            self.deref().to_socket_addrs()
+        }
+    }
+}
+
+impl Str {
+    /// Creates a `Str` from a static string slice.
+    ///
+    /// This method allows creating a `Str` from a string with a static lifetime,
+    /// which will be stored as a pointer to the static data without any allocation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s = Str::from_static("hello");
+    /// assert_eq!(s, "hello");
+    /// // Reference count is intentionally not exposed
+    /// ```
+    #[must_use]
+    pub const fn from_static(s: &'static str) -> Self {
+        unsafe {
+            Self {
+                ptr: NonNull::new_unchecked(s.as_ptr().cast_mut().cast::<()>()),
+                len: s.len().cast_signed(),
+            }
+        }
+    }
+
+    fn from_string(string: String) -> Self {
+        let len = string.len();
+        if len == 0 {
+            // use static empty string
+            return Self::new();
+        }
+
+        unsafe {
+            Self {
+                ptr: NonNull::new_unchecked(Box::into_raw(Box::new(Shared::new(string))))
+                    .cast::<()>(),
+                len: -len.cast_signed(),
+            }
+        }
+    }
+
+    const fn is_shared(&self) -> bool {
+        self.len < 0
+    }
+
+    const fn as_shared(&self) -> Result<&Shared, &'static str> {
+        if !self.is_shared() {
+            return Err(unsafe {
+                core::str::from_utf8_unchecked(slice::from_raw_parts(
+                    self.ptr.as_ptr().cast(),
+                    self.len(),
+                ))
+            });
+        }
+
+        unsafe { Ok(self.ptr.cast::<Shared>().as_ref()) }
+    }
+
+    /// Returns a string slice of this `Str`.
+    ///
+    /// This method works for both static and owned strings.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s1 = Str::from("hello");
+    /// assert_eq!(s1.as_str(), "hello");
+    ///
+    /// let s2 = Str::from(String::from("world"));
+    /// assert_eq!(s2.as_str(), "world");
+    /// ```
+    #[must_use]
+    pub const fn as_str(&self) -> &str {
+        match self.as_shared() {
+            Ok(shared) => unsafe { shared.as_str() },
+            Err(str) => str,
+        }
+    }
+
+    /// Returns the length of the string, in bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    /// let s = Str::from("hello");
+    /// assert_eq!(s.len(), 5);
+    /// ```
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len.unsigned_abs()
+    }
+
+    /// Returns `true` if the string has a length of zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    /// let s = Str::new();
+    /// assert!(s.is_empty());
+    /// let s2 = Str::from("not empty");
+    /// assert!(!s2.is_empty());
+    /// ```
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    // Intentionally no public API exposing reference counts.
+
+    /// Converts this `Str` into a `String`.
+    ///
+    /// For static strings, this will allocate a new string and copy the contents.
+    /// For owned strings, this will attempt to take ownership of the string if the reference
+    /// count is 1, or create a new copy otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s1 = Str::from("static");
+    /// let s1_string = s1.into_string();
+    /// assert_eq!(s1_string, "static");
+    ///
+    /// let s2 = Str::from(String::from("owned"));
+    /// let s2_string = s2.into_string();
+    /// assert_eq!(s2_string, "owned");
+    /// ```
+    #[must_use]
+    pub fn into_string(self) -> String {
+        let this = ManuallyDrop::new(self);
+        match this.as_shared() {
+            Ok(shared) => unsafe {
+                if shared.is_unique() {
+                    let shared = Box::from_raw(this.ptr.cast::<Shared>().as_ptr());
+
+                    shared.take()
+                } else {
+                    shared.decrement_count();
+                    shared.as_str().to_string()
+                }
+            },
+            Err(str) => str.to_string(),
+        }
+    }
+}
+
+impl Str {
+    /// Creates a new empty `Str`.
+    ///
+    /// This returns a static empty string reference.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s = Str::new();
+    /// assert_eq!(s, "");
+    /// // Reference count is intentionally not exposed
+    /// ```
+    #[must_use]
+    pub const fn new() -> Self {
+        Self::from_static("")
+    }
+
+    /// Creates a `Str` from a vector of bytes.
+    ///
+    /// This function will attempt to convert the vector to a UTF-8 string and
+    /// wrap it in a `Str`. If the vector does not contain valid UTF-8, an error
+    /// is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provided byte vector does not contain valid UTF-8 data.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let bytes = vec![104, 101, 108, 108, 111]; // "hello" in UTF-8
+    /// let s = Str::from_utf8(bytes).unwrap();
+    /// assert_eq!(s, "hello");
+    /// // Reference count is intentionally not exposed
+    ///
+    /// // Invalid UTF-8 sequence
+    /// let invalid = vec![0xFF, 0xFF];
+    /// assert!(Str::from_utf8(invalid).is_err());
+    /// ```
+    pub fn from_utf8(bytes: Vec<u8>) -> Result<Self, FromUtf8Error> {
+        String::from_utf8(bytes).map(Self::from)
+    }
+
+    /// # Safety
+    ///
+    /// This function is unsafe because it does not check that the bytes passed
+    /// to it are valid UTF-8. If this constraint is violated, it may cause
+    /// memory unsafety issues with future users of the `Str`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// // SAFETY: We know these bytes form valid UTF-8
+    /// let bytes = vec![104, 101, 108, 108, 111]; // "hello" in UTF-8
+    /// let s = unsafe { Str::from_utf8_unchecked(bytes) };
+    /// assert_eq!(s, "hello");
+    /// ```
+    #[must_use]
+    pub unsafe fn from_utf8_unchecked(bytes: Vec<u8>) -> Self {
+        unsafe { Self::from(String::from_utf8_unchecked(bytes)) }
+    }
+
+    /// Applies a function to the owned string representation of this `Str`.
+    ///
+    /// This is an internal utility method used for operations that need to modify
+    /// the string contents.
+    fn handle(&mut self, f: impl FnOnce(&mut String)) {
+        let mut string = take(self).into_string();
+        f(&mut string);
+        *self = Self::from(string);
+    }
+
+    /// Appends a string to this `Str`.
+    ///
+    /// This method will convert the `Str` to an owned string if it's a static reference.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let mut s = Str::from("hello");
+    /// s.append(" world");
+    /// assert_eq!(s, "hello world");
+    /// ```
+    pub fn append(&mut self, s: impl AsRef<str>) {
+        let mut string = take(self).into_string();
+        string.push_str(s.as_ref());
+        *self = Self::from(string);
+    }
+}
+impl From<&'static str> for Str {
+    /// Creates a `Str` from a static string slice.
+    ///
+    /// This stores a reference to the original string without any allocation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s = Str::from("hello");
+    /// assert_eq!(s, "hello");
+    /// // Reference count is intentionally not exposed
+    /// ```
+    fn from(value: &'static str) -> Self {
+        Self::from_static(value)
+    }
+}
+
+impl From<String> for Str {
+    /// Creates a `Str` from an owned `String`.
+    ///
+    /// This will store the string in a reference-counted container.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use waterui_str::Str;
+    ///
+    /// let s = Str::from(String::from("hello"));
+    /// assert_eq!(s, "hello");
+    /// // Reference count is intentionally not exposed
+    /// ```
+    fn from(value: String) -> Self {
+        Self::from_string(value)
+    }
+}
+
+impl From<Str> for String {
+    fn from(value: Str) -> Self {
+        value.into_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn test_static_string_creation() {
+        let s = Str::from_static("hello");
+        assert_eq!(s.as_str(), "hello");
+        assert_eq!(s.len(), 5);
+        assert!(!s.is_empty());
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_owned_string_creation() {
+        let s = Str::from(String::from("hello"));
+        assert_eq!(s.as_str(), "hello");
+        assert_eq!(s.len(), 5);
+        assert!(!s.is_empty());
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let s = Str::new();
+        assert_eq!(s.as_str(), "");
+        assert_eq!(s.len(), 0);
+        assert!(s.is_empty());
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_static_string_clone() {
+        let s1 = Str::from_static("hello");
+        let s2 = s1.clone();
+
+        assert_eq!(s1.as_str(), "hello");
+        assert_eq!(s2.as_str(), "hello");
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_owned_string_clone() {
+        let s1 = Str::from(String::from("hello"));
+        let s2 = s1.clone();
+
+        assert_eq!(s1.as_str(), "hello");
+        assert_eq!(s2.as_str(), "hello");
+    }
+
+    #[test]
+    fn test_multiple_clones() {
+        let s1 = Str::from(String::from("test"));
+        let s2 = s1.clone();
+        let s3 = s1;
+        let s4 = s2.clone();
+
+        // no reference count exposed
+
+        drop(s4);
+        // no reference count exposed
+
+        drop(s3);
+        drop(s2);
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_reference_counting_drop() {
+        let s1 = Str::from(String::from("hello"));
+
+        {
+            let _s2 = s1;
+        } // s2 is dropped here
+
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_into_string_unique() {
+        let s = Str::from(String::from("hello"));
+        // no reference count exposed
+
+        let string = s.into_string();
+        assert_eq!(string, "hello");
+    }
+
+    #[test]
+    fn test_into_string_shared() {
+        let s1 = Str::from(String::from("hello"));
+        let _s2 = s1.clone();
+
+        let string = s1.into_string();
+        assert_eq!(string, "hello");
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_into_string_static() {
+        let s = Str::from_static("hello");
+        let string = s.into_string();
+        assert_eq!(string, "hello");
+    }
+
+    #[test]
+    fn test_from_utf8_valid() {
+        let bytes = vec![104, 101, 108, 108, 111]; // "hello"
+        let s = Str::from_utf8(bytes).unwrap();
+        assert_eq!(s.as_str(), "hello");
+    }
+
+    #[test]
+    fn test_from_utf8_invalid() {
+        let bytes = vec![0xFF, 0xFF];
+        assert!(Str::from_utf8(bytes).is_err());
+    }
+
+    #[test]
+    fn test_from_utf8_unchecked() {
+        let bytes = vec![104, 101, 108, 108, 111]; // "hello"
+        let s = unsafe { Str::from_utf8_unchecked(bytes) };
+        assert_eq!(s.as_str(), "hello");
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_append() {
+        let mut s = Str::from("hello");
+        s.append(" world");
+        assert_eq!(s.as_str(), "hello world");
+    }
+
+    #[test]
+    fn test_append_static_to_owned() {
+        let mut s = Str::from_static("hello");
+
+        s.append(" world");
+        assert_eq!(s.as_str(), "hello world");
+    }
+
+    #[test]
+    fn test_as_bytes() {
+        let s = Str::from("hello");
+        assert_eq!(s.as_bytes(), b"hello");
+    }
+
+    #[test]
+    fn test_deref() {
+        let s = Str::from("hello");
+        assert_eq!(&*s, "hello");
+        assert_eq!(s.chars().count(), 5);
+    }
+
+    #[test]
+    fn test_empty_string_from_string() {
+        let s = Str::from(String::new());
+        assert_eq!(s.as_str(), "");
+        assert!(s.is_empty());
+        // no reference count exposed
+    }
+
+    // Memory safety tests designed for Miri
+    #[test]
+    fn test_memory_safety_clone_drop_cycles() {
+        // Test multiple clone/drop cycles to ensure no memory leaks or double-frees
+        for _ in 0..100 {
+            let s1 = Str::from(String::from("test"));
+            let s2 = s1.clone();
+            let s3 = s2.clone();
+
+            drop(s1);
+            drop(s3);
+            drop(s2);
+        }
+    }
+
+    #[test]
+    fn test_memory_safety_interleaved_operations() {
+        let mut strings = vec![];
+
+        // Create multiple strings with shared references
+        for i in 0..10 {
+            let mut content = String::from("string_");
+            content.push_str(&(i.to_string()));
+            let s = Str::from(content);
+            strings.push(s.clone());
+            strings.push(s);
+        }
+
+        // Randomly drop some strings
+        for i in (0..strings.len()).step_by(3) {
+            if i < strings.len() {
+                strings.remove(i);
+            }
+        }
+
+        // Verify remaining strings are still valid
+        for s in &strings {
+            assert!(!s.as_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_memory_safety_reference_counting() {
+        let original = Str::from(String::from("reference test"));
+        let mut clones = vec![];
+
+        // Create many clones
+        for _ in 0..50 {
+            clones.push(original.clone());
+        }
+        assert_eq!(clones.len(), 50);
+
+        // no reference count exposed
+
+        // Drop half the clones
+        clones.truncate(25);
+        assert_eq!(clones.len(), 25);
+        // no reference count exposed
+
+        // Drop all clones
+        clones.clear();
+        assert!(clones.is_empty());
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_memory_safety_into_string_with_clones() {
+        let s1 = Str::from(String::from("unique test"));
+        let _s2 = s1.clone();
+        let _s3 = s1.clone();
+
+        // no reference count exposed
+
+        // Converting to string should not affect other references
+        let string = s1.into_string();
+        assert_eq!(string, "unique test");
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_memory_safety_unique_into_string() {
+        // Test that unique references properly transfer ownership
+        let s = Str::from(String::from("unique"));
+        // no reference count exposed
+
+        let string = s.into_string();
+        assert_eq!(string, "unique");
+        // s is consumed, can't check reference count
+    }
+
+    #[test]
+    fn test_memory_safety_static_vs_owned() {
+        let static_str = Str::from_static("static");
+        let owned_str = Str::from(String::from("owned"));
+
+        // Clone both types many times
+        let mut static_clones = vec![];
+        let mut owned_clones = vec![];
+
+        for _ in 0..100 {
+            static_clones.push(static_str.clone());
+            owned_clones.push(owned_str.clone());
+        }
+
+        // no reference count exposed
+
+        // Verify all clones work correctly
+        for clone in &static_clones {
+            assert_eq!(clone.as_str(), "static");
+            // no reference count exposed
+        }
+
+        for clone in &owned_clones {
+            assert_eq!(clone.as_str(), "owned");
+            // no reference count exposed
+        }
+    }
+
+    #[test]
+    fn test_memory_safety_mixed_operations() {
+        let mut s = Str::from_static("hello");
+        // no reference count exposed
+
+        // Convert to owned by appending
+        s.append(" world");
+        // no reference count exposed
+
+        // Clone the owned string
+        let _s2 = s.clone();
+        // no reference count exposed
+
+        // Convert back to string
+        let string = s.into_string();
+        assert_eq!(string, "hello world");
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_memory_safety_zero_length_edge_cases() {
+        // Test various ways to create empty strings
+        let empty1 = Str::new();
+        let empty2 = Str::from("");
+        let empty3 = Str::from(String::new());
+        let empty4 = Str::from_utf8(vec![]).unwrap();
+
+        assert!(empty1.is_empty());
+        assert!(empty2.is_empty());
+        assert!(empty3.is_empty());
+        assert!(empty4.is_empty());
+
+        // All empty strings should be static references
+        // no reference count exposed
+    }
+
+    #[test]
+    fn test_memory_safety_large_strings() {
+        // Test with larger strings to ensure proper memory handling
+        let large_content = "x".repeat(10000);
+        let s1 = Str::from(large_content.clone());
+        // no reference count exposed
+
+        let s2 = s1.clone();
+        // no reference count exposed
+
+        assert_eq!(s1.len(), 10000);
+        assert_eq!(s2.len(), 10000);
+        assert_eq!(s1.as_str(), large_content);
+        assert_eq!(s2.as_str(), large_content);
+    }
+
+    #[test]
+    fn test_memory_safety_concurrent_like_pattern() {
+        // Simulate concurrent-like access patterns (single-threaded but similar stress)
+        let base = Str::from(String::from("base"));
+        let mut handles = vec![];
+
+        // Create many references
+        for _ in 0..1000 {
+            handles.push(base.clone());
+        }
+
+        // no reference count exposed
+
+        // Process in chunks, dropping some while keeping others
+        for chunk in handles.chunks_mut(100) {
+            for (i, handle) in chunk.iter().enumerate() {
+                assert_eq!(handle.as_str(), "base");
+                if i.is_multiple_of(2) {
+                    // Mark for keeping (we'll drop the others)
+                }
+            }
+        }
+
+        // Keep only every 3rd element
+        let mut i = 0;
+        handles.retain(|_| {
+            i += 1;
+            i % 3 == 0
+        });
+
+        // Verify reference count updated correctly
+        let _expected_count = handles.len() + 1; // +1 for base
+
+        // Verify all remaining handles are valid
+        for handle in &handles {
+            assert_eq!(handle.as_str(), "base");
+        }
+    }
+
+    #[test]
+    fn test_memory_safety_drop_order_stress() {
+        // Test various drop orders to ensure no use-after-free
+        let s1 = Str::from(String::from("original"));
+        let s2 = s1.clone();
+        let s3 = s1.clone();
+        let s4 = s2.clone();
+        let s5 = s3.clone();
+
+        // no reference count exposed
+
+        // Drop in different orders across multiple test runs
+        {
+            let temp1 = s1.clone();
+            let temp2 = s2.clone();
+            drop(temp2);
+            drop(temp1);
+            // temp1 and temp2 dropped first
+        }
+
+        // no reference count exposed
+
+        drop(s5); // Drop s5 first
+        // no reference count exposed
+
+        drop(s2); // Drop s2 (middle)
+        // no reference count exposed
+
+        drop(s1); // Drop original
+        // no reference count exposed
+
+        drop(s4); // Drop s4
+        // no reference count exposed
+
+        // s3 is the last one standing
+        assert_eq!(s3.as_str(), "original");
+    }
+
+    #[test]
+    fn test_memory_safety_ptr_stability() {
+        // Ensure string content pointer remains stable across clones
+        let s1 = Str::from(String::from("stable"));
+        let ptr1 = s1.as_str().as_ptr();
+
+        let s2 = s1.clone();
+        let ptr2 = s2.as_str().as_ptr();
+
+        // Clones should point to the same underlying data
+        assert_eq!(ptr1, ptr2);
+
+        let s3 = s2.clone();
+        let ptr3 = s3.as_str().as_ptr();
+
+        assert_eq!(ptr1, ptr3);
+        assert_eq!(ptr2, ptr3);
+
+        // Even after dropping some references, remaining should still be valid
+        drop(s1);
+        assert_eq!(s2.as_str().as_ptr(), ptr2);
+        assert_eq!(s3.as_str().as_ptr(), ptr3);
+    }
+
+    #[test]
+    fn test_memory_safety_alternating_clone_drop() {
+        let original = Str::from(String::from("alternating"));
+        let mut refs = vec![original];
+
+        // Alternating pattern: clone, clone, drop, clone, drop, etc.
+        for i in 0..100 {
+            if i % 4 == 0 || i % 4 == 1 {
+                // Clone phase
+                let new_ref = refs[0].clone();
+                refs.push(new_ref);
+            } else if i % 4 == 2 && refs.len() > 1 {
+                // Drop phase
+                refs.pop();
+            }
+
+            // Verify all remaining references are valid
+            for r in &refs {
+                assert_eq!(r.as_str(), "alternating");
+            }
+        }
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "gallery-example"
+version = "0.1.0"
+edition = "2024"
+authors = ["Lexo Liu"]
+description = "Material 3 control catalog for WaterUI"
+license.workspace = true
+repository.workspace = true
+keywords = ["ui", "framework", "example", "gallery"]
+categories = ["gui"]
+publish = false
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui.workspace = true
+waterui-icons-material-icon.workspace = true
+
+[dev-dependencies]
+waterui-testing.workspace = true
+hydrolysis-m3.workspace = true
