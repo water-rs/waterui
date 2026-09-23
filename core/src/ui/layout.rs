@@ -710,6 +710,21 @@ pub trait SubView {
     ///
     /// Higher priority views are measured first and get space preference.
     fn priority(&self) -> i32;
+
+    /// Whether this child renders nothing — `WaterUI`'s empty view (`()`),
+    /// possibly under layout-transparent wrappers.
+    ///
+    /// This is a semantic question, not a size answer: a child that measured
+    /// zero — a `Color` or `Spacer` compressed to nothing — still renders and
+    /// still answers `false`. Only a child whose whole subtree draws nothing
+    /// answers `true`, and a stack treats such a child as a non-member: it
+    /// takes no slot and no spacing. A child whose answer changes over time
+    /// (a conditional flipping between `()` and content) is a membership
+    /// change, and every such flip must invalidate the layout the same way a
+    /// view swap does.
+    fn is_empty(&self) -> bool {
+        false
+    }
 }
 
 /// A [`SubView`] that remembers what each proposal measured.
@@ -798,6 +813,10 @@ impl SubView for MemoizedSubView<'_> {
 
     fn priority(&self) -> i32 {
         self.inner.priority()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 

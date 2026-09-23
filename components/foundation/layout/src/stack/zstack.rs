@@ -10,7 +10,7 @@ use crate::{
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
-        distribute::{LineAnchor, container_line, cross_envelope},
+        distribute::{LineAnchor, container_line, cross_envelope, empty_placement, stack_members},
     },
 };
 
@@ -96,12 +96,13 @@ impl Layout for ZStackLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
-        // Measure each child with the parent's proposal
-        let measurements: Vec<ChildMeasurement> = children
+        // Measure each member with the parent's proposal
+        let measurements: Vec<ChildMeasurement> = members
             .iter()
             .map(|child| ChildMeasurement {
                 dimensions: child.measure(proposal),
@@ -143,7 +144,8 @@ impl Layout for ZStackLayout {
         // placed in: every layer is proposed the resolved extent, so what it
         // lays out under is the space it actually has.
         let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let measurements: Vec<ChildMeasurement> = children
+        let members = stack_members(children);
+        let measurements: Vec<ChildMeasurement> = members
             .iter()
             .map(|child| ChildMeasurement {
                 dimensions: child.measure(placement),
@@ -169,9 +171,21 @@ impl Layout for ZStackLayout {
                 max_below,
             );
 
+        // One placement per child: members claim a layer each; a non-member
+        // is answered with a zero-size frame on the stack's line so the
+        // returned placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let mut measurements = measurements.iter();
 
-        for measurement in &measurements {
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(Point::new(line_x, line_y), placement));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
             // A layer that answers an unbounded extent fills the bounds; every
             // other layer keeps its answer, overflowing the bounds when it is
             // larger, and sits with its guide on the stack's line.

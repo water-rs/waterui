@@ -207,6 +207,8 @@ struct JniSubView {
     stretch_axis: StretchAxis,
     /// Layout priority
     priority: i32,
+    /// Whether the child renders nothing (§4.4 stack membership)
+    is_empty: bool,
 }
 
 impl SubView for JniSubView {
@@ -235,6 +237,10 @@ impl SubView for JniSubView {
 
     fn priority(&self) -> i32 {
         self.priority
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty
     }
 }
 
@@ -621,6 +627,13 @@ fn extract_subviews(env: &mut Env, subviews_array: jobjectArray) -> Vec<JniSubVi
             .i()
             .expect("priority is int");
 
+        // Get isEmpty
+        let is_empty = env
+            .get_field(&subview_obj, jni_str!("isEmpty"), jni_sig!("Z"))
+            .expect("SubViewStruct.isEmpty")
+            .z()
+            .expect("isEmpty is boolean");
+
         // Create global ref to keep the object alive
         let global_ref = env.new_global_ref(&subview_obj).expect("create global ref");
 
@@ -629,6 +642,7 @@ fn extract_subviews(env: &mut Env, subviews_array: jobjectArray) -> Vec<JniSubVi
             subview_ref: global_ref,
             stretch_axis: stretch_axis_from_ordinal(stretch_ordinal),
             priority,
+            is_empty,
         });
     }
 
