@@ -505,13 +505,14 @@ waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
 # The executor now takes its refresh rate from the host (#1201), and the
 # registry hydrolysis still calls the removed display probe. This is the
-# hydrolysis revision that supplies the rate from winit's monitors; drop it
-# when a hydrolysis release carries that change.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "a93f3b4453a745961d988fa6814a6493387f8bf1" }
+# hydrolysis revision that supplies the rate from winit's monitors and
+# implements the icon-button contract (water-rs/hydrolysis#115); drop it
+# when a hydrolysis release carries both changes.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "e2678d7b040268547ca0089294601844b050faef" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "1a268277573fa00d68c016e72d0803738c120926" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "0aa601378730d7a99e56b8727ea4f99dc8b62e1d" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
