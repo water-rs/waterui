@@ -1135,6 +1135,18 @@ pub trait WidgetTheme {
 
     /// Return metrics for a button style.
     fn button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics;
+    /// Return metrics for a button whose label presents only its icon.
+    ///
+    /// Resolved by the backend when the label's own configuration — its
+    /// display-mode preference resolved against the environment — is
+    /// `IconOnly`. A theme's icon button lays out at its minimum touch
+    /// target with no text padding, so its bounds are also its hit area;
+    /// the chrome draws the smaller icon-button container centred inside
+    /// them. The default returns the text-button metrics, so a theme with
+    /// no icon-button presentation is unchanged.
+    fn icon_button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics {
+        self.button_metrics(style, size)
+    }
     /// Optional button label foreground override. `disabled` selects the
     /// inactive label color (e.g. Material's on-surface at 38%).
     fn button_label_color(&self, _style: ButtonStyle, _disabled: bool) -> Option<Color> {
@@ -1151,20 +1163,27 @@ pub trait WidgetTheme {
         0.38
     }
     /// Draw button chrome for a style. `state` carries the disabled flag so
-    /// themes can render the inactive container.
+    /// themes can render the inactive container. `icon_only` marks a button
+    /// whose label resolved to `IconOnly`: the bounds are the theme's touch
+    /// target and the chrome draws the icon-button container centred inside
+    /// them rather than filling them.
     fn draw_button_chrome(
         &self,
         draw: &mut dyn DrawContext,
         bounds: Rect,
         style: ButtonStyle,
+        icon_only: bool,
         state: WidgetInteractionState,
     );
-    /// Draw the button state layer for a style.
+    /// Draw the button state layer for a style. `icon_only` selects the
+    /// icon-button layer geometry — centred inside the touch-target bounds —
+    /// for a button whose label resolved to `IconOnly`.
     fn draw_button_state_layer(
         &self,
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _style: ButtonStyle,
+        _icon_only: bool,
         _state: WidgetInteractionState,
     ) {
     }
