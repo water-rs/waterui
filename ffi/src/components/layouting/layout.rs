@@ -355,6 +355,9 @@ pub struct WuiSubView {
     pub stretch_axis: WuiStretchAxis,
     /// Layout priority (higher = measured first, gets space preference)
     pub priority: i32,
+    /// Whether this child renders nothing — a semantic answer, not a measured
+    /// size. `true` excludes the child from stack membership (§4.4).
+    pub is_empty: bool,
 }
 
 impl Drop for WuiSubView {
@@ -381,6 +384,10 @@ impl SubView for WuiSubView {
 
     fn priority(&self) -> i32 {
         self.priority
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty
     }
 }
 
@@ -1176,6 +1183,7 @@ mod tests {
             },
             stretch_axis: WuiStretchAxis::Both,
             priority: 7,
+            is_empty: false,
         }
     }
 

@@ -718,3 +718,147 @@ const fn cross_extent(axis: Axis, size: Size) -> f32 {
         size.width
     }
 }
+
+/// A stack child that toggles between rendering a view and rendering
+/// nothing — the shape a `when(condition, ..)` presents to its stack.
+struct ConditionalChild {
+    renders_nothing: bool,
+    size: Size,
+}
+
+impl SubView for ConditionalChild {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.renders_nothing
+    }
+}
+
+/// §4.4 — a child that renders nothing is not a stack member: it takes no
+/// slot and no spacing, and a conditional switching between rendering
+/// nothing and rendering a view is a membership change.
+#[test]
+fn a_child_that_renders_nothing_is_not_a_stack_member() {
+    let spacing = 10.0f32;
+    let layout = VStackLayout {
+        spacing: Computed::constant(spacing),
+        ..VStackLayout::default()
+    };
+    let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(80.0, 400.0));
+    let sibling = Size::new(40.0, 20.0);
+
+    // Hidden: two siblings and a conditional that renders nothing between
+    // them — the siblings sit exactly one spacing apart.
+    let first = ConditionalChild {
+        renders_nothing: false,
+        size: sibling,
+    };
+    let hidden = ConditionalChild {
+        renders_nothing: true,
+        size: sibling,
+    };
+    let last = ConditionalChild {
+        renders_nothing: false,
+        size: sibling,
+    };
+    let children: [&dyn SubView; 3] = [&first, &hidden, &last];
+
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_extent(
+        size.height,
+        sibling.height * 2.0 + spacing,
+        "hidden conditional: stack height is the two members and one gap",
+    );
+    let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    assert_eq!(
+        placements.len(),
+        children.len(),
+        "place answers one placement per child, members or not"
+    );
+    assert_extent(placements[0].frame.y(), 0.0, "first member at the top");
+    assert_extent(
+        placements[1].frame.height(),
+        0.0,
+        "the hidden child is placed with no slot",
+    );
+    assert_extent(
+        placements[2].frame.y(),
+        sibling.height + spacing,
+        "second member one spacing below the first",
+    );
+
+    // Shown: the conditional is a member again — the stack returns to three
+    // children and two gaps.
+    let first = ConditionalChild {
+        renders_nothing: false,
+        size: sibling,
+    };
+    let shown = ConditionalChild {
+        renders_nothing: false,
+        size: sibling,
+    };
+    let last = ConditionalChild {
+        renders_nothing: false,
+        size: sibling,
+    };
+    let children: [&dyn SubView; 3] = [&first, &shown, &last];
+
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_extent(
+        size.height,
+        sibling.height * 3.0 + spacing * 2.0,
+        "shown conditional: stack height is three members and two gaps",
+    );
+    let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    assert_extent(
+        placements[2].frame.y(),
+        sibling.height * 2.0 + spacing * 2.0,
+        "second member two spacings below the first",
+    );
+}
+
+/// A zero measured size is not emptiness: a member that happens to measure
+/// nothing — a collapsed `Spacer` — still claims its slot and the gaps
+/// around it.
+#[test]
+fn a_zero_sized_child_is_still_a_member() {
+    let spacing = 10.0f32;
+    let layout = VStackLayout {
+        spacing: Computed::constant(spacing),
+        ..VStackLayout::default()
+    };
+    let bounds = Rect::new(Point::new(0.0, 0.0), Size::new(80.0, 400.0));
+
+    let collapsed = ConditionalChild {
+        renders_nothing: false,
+        size: Size::zero(),
+    };
+    let leaf = ConditionalChild {
+        renders_nothing: false,
+        size: Size::new(40.0, 20.0),
+    };
+    let children: [&dyn SubView; 3] = [&leaf, &collapsed, &leaf];
+
+    let size = layout.size_that_fits(ProposalSize::UNSPECIFIED, &children);
+    assert_extent(
+        size.height,
+        20.0 * 2.0 + spacing * 2.0,
+        "a zero-size member still counts for spacing",
+    );
+    let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
+    assert_extent(
+        placements[2].frame.y(),
+        20.0 + spacing * 2.0,
+        "the last member keeps both gaps around the zero-size one",
+    );
+}

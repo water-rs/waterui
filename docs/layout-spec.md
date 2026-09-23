@@ -199,7 +199,12 @@ grants space beyond a child's ideal.
 ### 4.4 Spacing and membership
 
 Spacing is reactive; a spacing or membership change invalidates the stack and
-returns the original geometry when reverted.
+returns the original geometry when reverted. A child that renders nothing is
+not a stack member: it takes no slot and no spacing — which is a semantic
+question, not a size answer, since a zero-size `Color` or `Spacer` is still a
+member — and a conditional switching between rendering nothing and rendering
+a view is a membership change, so it invalidates the stack the same way a
+view swap does.
 
 ## 5. Other containers
 
