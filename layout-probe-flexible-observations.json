@@ -1,0 +1,1182 @@
+[
+  {
+    "axis" : "horizontal",
+    "events" : [
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 40,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 40,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 120,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 120,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 160,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 160,
+        "x" : 120,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 40,
+        "x" : 120,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "unspecified",
+        "width" : 120,
+        "x" : 160,
+        "y" : 290
+      }
+    ],
+    "mainProposal" : "unspecified"
+  },
+  {
+    "axis" : "horizontal",
+    "events" : [
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 60,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "40.0",
+        "width" : 60,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "40.0",
+        "width" : 60,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "20.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "20.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 160,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "20.0",
+        "width" : 20,
+        "x" : 160,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "40.0",
+        "width" : 60,
+        "x" : 180,
+        "y" : 290
+      }
+    ],
+    "mainProposal" : "80.0"
+  },
+  {
+    "axis" : "horizontal",
+    "events" : [
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 60,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 120,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 120,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "80.0",
+        "width" : 80,
+        "x" : 200,
+        "y" : 290
+      }
+    ],
+    "mainProposal" : "160.0"
+  },
+  {
+    "axis" : "horizontal",
+    "events" : [
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 60,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "120.0",
+        "width" : 120,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "120.0",
+        "width" : 120,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "120.0",
+        "width" : 120,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "120.0",
+        "width" : 120,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "240.0",
+        "width" : 240,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "240.0",
+        "width" : 240,
+        "x" : 80,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "120.0",
+        "width" : 120,
+        "x" : 80,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "120.0",
+        "width" : 120,
+        "x" : 200,
+        "y" : 290
+      }
+    ],
+    "mainProposal" : "240.0"
+  },
+  {
+    "axis" : "horizontal",
+    "events" : [
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 60,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "0.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "inf",
+        "width" : "+infinity",
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "320.0",
+        "width" : 320,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "320.0",
+        "width" : 320,
+        "x" : 40,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 40,
+        "y" : 290
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "100.0",
+        "proposalWidth" : "160.0",
+        "width" : 160,
+        "x" : 200,
+        "y" : 290
+      }
+    ],
+    "mainProposal" : "320.0"
+  },
+  {
+    "axis" : "vertical",
+    "events" : [
+      {
+        "height" : 40,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 40,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 120,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 120,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 220
+      },
+      {
+        "height" : 40,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 220
+      },
+      {
+        "height" : 120,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "unspecified",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 260
+      }
+    ],
+    "mainProposal" : "unspecified"
+  },
+  {
+    "axis" : "vertical",
+    "events" : [
+      {
+        "height" : 60,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 60,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "40.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 60,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "40.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "20.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "20.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 80,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 80,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 260
+      },
+      {
+        "height" : 20,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "20.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 260
+      },
+      {
+        "height" : 60,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "40.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 280
+      }
+    ],
+    "mainProposal" : "80.0"
+  },
+  {
+    "axis" : "vertical",
+    "events" : [
+      {
+        "height" : 60,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 80,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 80,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 80,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 80,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 220
+      },
+      {
+        "height" : 80,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 220
+      },
+      {
+        "height" : 80,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "80.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 300
+      }
+    ],
+    "mainProposal" : "160.0"
+  },
+  {
+    "axis" : "vertical",
+    "events" : [
+      {
+        "height" : 60,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 120,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "120.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 120,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "120.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 120,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "120.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 120,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "120.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 240,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "240.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 240,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "240.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 180
+      },
+      {
+        "height" : 120,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "120.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 180
+      },
+      {
+        "height" : 120,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "120.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 300
+      }
+    ],
+    "mainProposal" : "240.0"
+  },
+  {
+    "axis" : "vertical",
+    "events" : [
+      {
+        "height" : 60,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 20,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "0.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : "+infinity",
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "inf",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "measure",
+        "name" : "long",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "measure",
+        "name" : "short",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 160,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 320,
+        "kind" : "root-measure",
+        "name" : "root",
+        "proposalHeight" : "320.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 0,
+        "y" : 0
+      },
+      {
+        "height" : 320,
+        "kind" : "root-place",
+        "name" : "root",
+        "proposalHeight" : "320.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 140
+      },
+      {
+        "height" : 160,
+        "kind" : "place",
+        "name" : "short",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 140
+      },
+      {
+        "height" : 160,
+        "kind" : "place",
+        "name" : "long",
+        "proposalHeight" : "160.0",
+        "proposalWidth" : "100.0",
+        "width" : 20,
+        "x" : 190,
+        "y" : 300
+      }
+    ],
+    "mainProposal" : "320.0"
+  }
+]
