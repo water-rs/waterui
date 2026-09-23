@@ -9659,8 +9659,7 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b275ec3204cc1551deba30364fdb3cf16c96eb2d590ed2531834901ac96e0286"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "async-channel",
  "cpal 0.18.2",
@@ -9686,7 +9685,7 @@ dependencies = [
  "tracing",
  "url",
  "wasm-bindgen",
- "waterkit-build",
+ "waterkit-build 0.1.4 (git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5)",
  "web-sys",
  "windows 0.62.2",
  "zbus",
@@ -9698,6 +9697,17 @@ name = "waterkit-build"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1720f57319c50ffab073232fe1d2e6a00bb6c80f1018c20664c05dde4b62381d"
+dependencies = [
+ "jni 0.22.4",
+ "ndk-context",
+ "swift-bridge-build",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "waterkit-build"
+version = "0.1.4"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -9721,7 +9731,7 @@ dependencies = [
  "objc",
  "swift-bridge",
  "thiserror 2.0.20",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-core",
  "wgpu",
 ]
@@ -9756,17 +9766,17 @@ dependencies = [
  "thiserror 2.0.20",
  "tracing",
  "wasm-bindgen-futures",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "web-sys",
 ]
 
 [[package]]
 name = "waterkit-codec"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6dd8f7978180deac475239d4bc55c57e469fec9f1d8e6c4a202edc16156641b"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "avif-parse",
+ "cfg_aliases 0.2.2",
  "cros-codecs",
  "half",
  "image",
@@ -9789,7 +9799,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "waterkit-build",
+ "waterkit-build 0.1.4 (git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5)",
  "waterkit-video-core",
  "wgpu",
  "wgpu-hal",
@@ -9800,8 +9810,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "530a10568c18424f4e85d36c4c26ba4563b221e4f560916c484ff573f372e4e9"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "executor-core",
  "jiff",
@@ -9823,7 +9832,7 @@ dependencies = [
  "roxmltree",
  "swift-bridge",
  "thiserror 2.0.20",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-fs",
 ]
 
@@ -9842,7 +9851,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "windows 0.62.2",
 ]
 
@@ -9857,7 +9866,7 @@ dependencies = [
  "ndk-context",
  "swift-bridge",
  "thiserror 2.0.20",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-core",
  "windows 0.62.2",
  "zbus",
@@ -9878,7 +9887,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "wasm-bindgen",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-core",
  "waterkit-permission",
  "web-sys",
@@ -9900,7 +9909,7 @@ dependencies = [
  "swift-bridge",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-core",
  "web-sys",
  "windows 0.62.2",
@@ -9925,7 +9934,7 @@ dependencies = [
  "swift-bridge",
  "thiserror 2.0.20",
  "tracing",
- "waterkit-build",
+ "waterkit-build 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "waterkit-core",
  "wayland-sys",
  "wgpu",
@@ -9935,8 +9944,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0eaaef5e96ab255d8d17acee706bd35d743c1d8f553c373fa25a51c08b0cbc0"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -9947,8 +9955,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e92245463f9d04235d450c5393b798dd5acd6483176e6228da20a3a241f47eff"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -9963,8 +9970,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ece65f95d9e50117a14bcd2596ca4a2d8a45e83fa1c07d6a78640d0ece6b9622"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -9972,8 +9978,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2ec31a1615fc9b1d1380cebf6728a68b61f95da9ae36c34b42ba3fa55d3e274"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "aes",
  "async-channel",
@@ -9986,7 +9991,7 @@ dependencies = [
  "swift-bridge",
  "tracing",
  "waterkit-audio",
- "waterkit-build",
+ "waterkit-build 0.1.4 (git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5)",
  "waterkit-codec",
  "waterkit-video-container",
  "waterkit-video-core",
@@ -9996,8 +10001,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "269c06184c4f4cdb42fd2b4633c03102c60efb0d1bf7bb441d04358aea369ce6"
+source = "git+https://github.com/water-rs/waterkit?rev=b6113f8b3aa09402f5fafa95d160d7f6dc0715e5#b6113f8b3aa09402f5fafa95d160d7f6dc0715e5"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -10472,8 +10476,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e84f2a881f3c90380b44ee7211326f3a1af58ae6d66c65900ecf6a652c5f190"
+source = "git+https://github.com/water-rs/image?rev=8cdb00b27d5efff47082e1c30ee8463197ed8184#8cdb00b27d5efff47082e1c30ee8463197ed8184"
 dependencies = [
  "half",
  "image",
