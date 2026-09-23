@@ -508,6 +508,25 @@ waterui-webview = { path = "components/platform/webview" }
 # hydrolysis revision that supplies the rate from winit's monitors; drop it
 # when a hydrolysis release carries that change.
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "fbc8ee9f512e1828a214a4bf19335b4c6150fffb" }
+# `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
+# turning on `assets` (still images) built `cros-libva` against the system
+# libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
+# These revs carry the fix: the codec gates VA-API behind a `vaapi` feature
+# that the player requests, and `waterui-image` asks for the codec with its
+# defaults off. Every waterkit crate the video/audio graph shares types
+# across rides the same rev — a registry `waterkit-audio` beside the pinned
+# `waterkit-video` gives two `DecodedAudioFrame` types — and `waterkit-core`
+# keeps the whole waterkit graph on one source; drop these entries once
+# registry releases carry the change.
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "8cdb00b27d5efff47082e1c30ee8463197ed8184" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
