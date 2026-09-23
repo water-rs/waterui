@@ -552,7 +552,20 @@ impl Label {
         self.display_mode(LabelDisplayMode::Hidden)
     }
 
-    fn effective_display_mode(&self, env: &Environment) -> LabelDisplayMode {
+    /// Resolves which presentation this label takes under `env`.
+    ///
+    /// An [`LabelDisplayMode::Automatic`] preference first consults the
+    /// environment's `LabelDisplayMode`, then falls back through what the
+    /// label can actually draw: a hidden label stays hidden, a label with an
+    /// icon renders its icon (`TitleAndIcon`, or `IconOnly` when requested),
+    /// and anything else renders its title. The resolved mode is never
+    /// `Automatic` once [`Self::resolve`] has run.
+    ///
+    /// A backend choosing chrome for a label-driven control reads this rather
+    /// than re-deriving the same resolution, so its presentation always
+    /// agrees with what the label draws.
+    #[must_use]
+    pub fn effective_display_mode(&self, env: &Environment) -> LabelDisplayMode {
         let requested = if matches!(self.display_mode, LabelDisplayMode::Automatic) {
             env.get::<LabelDisplayMode>()
                 .copied()
