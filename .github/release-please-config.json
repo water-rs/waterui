@@ -1,0 +1,11 @@
+{
+  "packages": {
+    "backends/apple": {
+      "component": "apple-backend",
+      "release-type": "simple",
+      "changelog-path": "backends/apple/CHANGELOG.md",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true
+    }
+  }
+}

@@ -1,0 +1,80 @@
+//! Badge component for displaying numeric indicators attached to content.
+//!
+//! The Badge component displays a small numeric indicator attached to another view,
+//! commonly used to show counts of items, notifications, or other numeric values
+//! that require attention.
+//!
+//! # Example
+//!
+//! ```
+//! use waterui::prelude::*;
+//!
+//! let badge = badge::Badge::new(5, button("Messages"));
+//! ```
+
+use crate::ViewExt;
+use nami::{Computed, Signal, signal::IntoComputed};
+use waterui_core::View;
+use waterui_core::configurable;
+use waterui_core::handler::AnyViewBuilder;
+use waterui_graphics::color::Color;
+
+/// Configuration for the Badge component
+#[derive(Debug)]
+pub struct BadgeConfig {
+    /// The numeric value to display on the badge
+    pub value: Computed<i32>,
+    /// The content that the badge will be attached to
+    pub content: AnyViewBuilder,
+    /// The color of the badge
+    pub color: Computed<Color>,
+}
+
+configurable!(
+    /// A small indicator that displays a count on top of another view.
+    ///
+    /// Badge is typically used to show notification counts or item quantities
+    /// overlaid on icons or buttons.
+    ///
+    /// # Layout Behavior
+    ///
+    /// Badge sizes itself to fit the content it wraps, plus the badge indicator.
+    /// It never stretches to fill extra space.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    // INTERNAL: Layout Contract for Backend Implementers
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+
+    // Size: Determined by wrapped content + badge indicator overlay
+    //
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    Badge,
+    BadgeConfig
+);
+
+impl Badge {
+    /// Creates a new Badge with the specified value and content
+    ///
+    /// # Arguments
+    /// * `value` - The numeric value to display on the badge
+    /// * `content` - The content that the badge will be attached to
+    pub fn new(value: impl IntoComputed<i32>, content: impl View + Clone) -> Self {
+        Self(BadgeConfig {
+            value: value.into_computed(),
+            content: AnyViewBuilder::new(move || content.clone().anyview()),
+            color: Color::default().into_computed(),
+        })
+    }
+
+    /// Sets the color of the badge
+    ///
+    /// # Arguments
+    /// * `color` - The color to use for the badge
+    #[must_use]
+    pub fn color(mut self, color: impl Signal<Output = Color>) -> Self {
+        self.0.color = color.into_computed();
+        self
+    }
+}

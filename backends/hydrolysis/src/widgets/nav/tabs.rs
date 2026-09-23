@@ -1,0 +1,225 @@
+#[cfg(feature = "accessibility")]
+use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::{
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_view_intrinsic, tabs_bar_and_content_rect, tabs_button_rect,
+};
+#[cfg(feature = "accessibility")]
+use accesskit::{
+    Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
+};
+use waterui::navigation::tab::{TabPosition, Tabs};
+use waterui_core::layout::Size as LayoutSize;
+use waterui_core::{AnyView, Environment, Native};
+
+use crate::widgets::widget_theme;
+
+impl HydroNativeView for Native<Tabs> {
+    fn render(ctx: &mut WidgetRenderContext<'_>, view: Self, env: &Environment) {
+        render_tabs(ctx, view, env);
+    }
+
+    fn intrinsic(state: &mut HydroState, view: &Self, env: &Environment) -> LayoutSize {
+        crate::renderer::measure_tabs_intrinsic(view.as_inner(), state, env)
+    }
+
+    fn accessibility(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        view: &Self,
+        env: &Environment,
+    ) {
+        #[cfg(feature = "accessibility")]
+        {
+            let tabs = view.as_inner();
+            assert!(
+                !(tabs.tabs.is_empty()),
+                "hydrolysis Tabs requires at least one tab"
+            );
+            let selected_id = renderer.read_signal(&tabs.selection);
+            let selected_index = tabs
+                .tabs
+                .iter()
+                .position(|tab| tab.label.tag == selected_id)
+                .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"));
+            let metrics = crate::widgets::widget_theme(env).tabs_metrics();
+            let (bar_rect, _content_rect) =
+                tabs_bar_and_content_rect(ctx.bounds, tabs.position, metrics.bar_height);
+            let mut tab_list = AccessibilityNode::new(
+                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::TabList),
+            );
+            let tab_list_label = renderer.resolve_accessibility_label(env, None);
+            if let Some(label) = tab_list_label {
+                tab_list.set_label(label);
+            }
+            for (index, tab) in tabs.tabs.iter().enumerate() {
+                let mut tab_node = AccessibilityNode::new(
+                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Tab),
+                );
+                let default_label = renderer.accessibility_label_from_view(&tab.label.content, env);
+                let label = renderer.resolve_accessibility_label(env, default_label);
+                if let Some(label) = label {
+                    tab_node.set_label(label);
+                }
+                let is_selected = index == selected_index;
+                tab_node.set_selected(is_selected);
+                tab_node.add_action(AccessibilityAction::Focus);
+                tab_node.add_action(AccessibilityAction::Click);
+                let tab_bounds = crate::renderer::transformed_rect(
+                    ctx.hit_transform,
+                    tabs_button_rect(bar_rect, tabs.tabs.len(), index),
+                );
+                if let Some(tab_node_id) = renderer.register_accessibility_child_node(
+                    tab_node,
+                    tab_bounds,
+                    env,
+                    Some(AccessibilityActionTarget::PickerSelect {
+                        selection: tabs.selection.clone(),
+                        target: tab.label.tag,
+                    }),
+                ) {
+                    tab_list.push_child(tab_node_id);
+                }
+            }
+            let _ = renderer.register_accessibility_node(
+                tab_list,
+                crate::renderer::transformed_rect(ctx.hit_transform, bar_rect),
+                env,
+                None,
+            );
+        }
+    }
+}
+
+pub(crate) fn render_tabs(
+    ctx: &mut WidgetRenderContext<'_>,
+    tabs: Native<Tabs>,
+    env: &Environment,
+) {
+    let tabs = tabs.into_inner();
+    assert!(
+        !(tabs.tabs.is_empty()),
+        "hydrolysis Tabs requires at least one tab"
+    );
+
+    let tab_count = tabs.tabs.len();
+    let position = tabs.position;
+    let selection = tabs.selection;
+    let selected_id = ctx.renderer_mut().read_signal(&selection);
+    let selected_index = tabs
+        .tabs
+        .iter()
+        .position(|tab| tab.label.tag == selected_id)
+        .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"));
+
+    let theme_metrics = widget_theme(env).tabs_metrics();
+    let (bar_rect, content_rect) =
+        tabs_bar_and_content_rect(ctx.bounds, position, theme_metrics.bar_height);
+
+    {
+        let theme = widget_theme(env);
+        let mut draw = ctx.draw_context();
+        theme.draw_tabs_bar(&mut draw, bar_rect, matches!(position, TabPosition::Top));
+    }
+
+    let mut selected_content = None;
+    for (index, tab) in tabs.tabs.into_iter().enumerate() {
+        if index == selected_index {
+            selected_content = Some(AnyView::new(tab.content.build()));
+        }
+
+        let button_rect = tabs_button_rect(bar_rect, tab_count, index);
+        let label_size = measure_view_intrinsic(&tab.label.content, ctx.state_mut(), env);
+        {
+            let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
+            let (_, press_slot, handles) =
+                ctx.renderer_mut().bind_interaction_target(hit_bounds, env);
+            let is_selected = index == selected_index;
+            if index == selected_index {
+                let highlight = tabs_active_indicator_rect(
+                    button_rect,
+                    position,
+                    theme_metrics.active_indicator_height,
+                    f64::from(label_size.width),
+                );
+                let theme = widget_theme(env);
+                let mut draw = ctx.draw_context();
+                theme.draw_tabs_highlight(&mut draw, highlight);
+            }
+            {
+                let theme = widget_theme(env);
+                let render_ctx = ctx.render_context();
+                ctx.renderer_mut().capture_state_layers(
+                    render_ctx,
+                    &handles,
+                    button_rect,
+                    false,
+                    &|draw, state| {
+                        theme.draw_tabs_button_state_layer(draw, button_rect, is_selected, state);
+                    },
+                );
+            }
+            let selection_binding = selection.clone();
+            let tab_id = tab.label.tag;
+            ctx.renderer_mut().register_interactive_pointer_target(
+                hit_bounds,
+                press_slot,
+                move |_renderer, _point, _env| {
+                    if selection_binding.get() != tab_id {
+                        selection_binding.set(tab_id);
+                    }
+                    true
+                },
+            );
+        }
+        let label_rect = tabs_label_rect(button_rect, label_size, theme_metrics);
+        if label_rect.width() > 0.0 && label_rect.height() > 0.0 {
+            ctx.dispatch_in_rect_without_accessibility(env, tab.label.content, label_rect);
+        }
+    }
+
+    if let Some(content) = selected_content
+        && content_rect.width() > 0.0
+        && content_rect.height() > 0.0
+    {
+        ctx.dispatch_in_rect(env, content, content_rect);
+    }
+}
+
+fn tabs_label_rect(
+    button_rect: vello::kurbo::Rect,
+    label_size: waterui_core::layout::Size,
+    metrics: waterui_backend_core::widget::TabsMetrics,
+) -> vello::kurbo::Rect {
+    let max_width = (button_rect.width() - metrics.button_horizontal_inset * 2.0).max(0.0);
+    let width = f64::from(label_size.width).min(max_width);
+    let height = f64::from(label_size.height).min(button_rect.height());
+    let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;
+    let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
+    vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+}
+
+fn tabs_active_indicator_rect(
+    button_rect: vello::kurbo::Rect,
+    position: TabPosition,
+    height: f64,
+    width: f64,
+) -> vello::kurbo::Rect {
+    let width = width.clamp(0.0, button_rect.width());
+    let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;
+    let x1 = x0 + width;
+    match position {
+        TabPosition::Top => vello::kurbo::Rect::new(
+            x0,
+            (button_rect.y1 - height).max(button_rect.y0),
+            x1,
+            button_rect.y1,
+        ),
+        TabPosition::Bottom => vello::kurbo::Rect::new(
+            x0,
+            button_rect.y0,
+            x1,
+            (button_rect.y0 + height).min(button_rect.y1),
+        ),
+    }
+}

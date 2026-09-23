@@ -1,0 +1,61 @@
+language = "C"
+
+header = """
+// Generate by generate_header.rs, do not modify by hand.
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+"""
+
+after_includes = """
+typedef void *NonNull;
+
+typedef struct WuiArraySlice {
+  void *head;
+  uintptr_t len;
+} WuiArraySlice;
+
+typedef struct WuiArrayVTable {
+  void (*drop)(void*);
+  struct WuiArraySlice (*slice)(const void*);
+} WuiArrayVTable;
+
+typedef struct WuiArray {
+  void *data;
+  struct WuiArrayVTable vtable;
+} WuiArray;
+
+"""
+
+trailer = """
+WuiEnv* waterui_init(void);
+
+struct WuiApp waterui_app(WuiEnv *env);
+
+#ifdef __cplusplus
+}
+#endif
+"""
+
+[export]
+include = ["MediaLoadCallback", "MediaLoadResult", "WuiApp", "WuiWindow", "WuiWindowStyle", "WuiWindowState"]
+
+[export.rename]
+
+
+[enum]
+prefix_with_name = true
+
+
+[ptr]
+non_null_attribute = "_Nonnull"
+
+
+[parse]
+parse_deps = true
+include = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","waterui-graphics","waterui-map","nami"]
+
+
+[parse.expand]
+crates = ["waterui","waterui-ffi","waterui-str","waterui-media","waterui-text","waterui-text","waterui-core","waterui-layout","waterui-graphics","waterui-map"]

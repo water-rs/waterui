@@ -1,0 +1,6 @@
+waterui_path = "../../.."
+
+[package]
+type = "playground"
+name = "Chart Example"
+bundle_identifier = "dev.waterui.examples.chart"

@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-plz:
+    name: Release
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    outputs:
+      cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: MarcoIeni/release-plz-action@v0.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Detect CLI release tag
+        id: cli_tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags origin
+          CLI_TAG="$(git tag --points-at HEAD | grep '^cli-v' | sort -V | tail -n 1 || true)"
+
+          echo "cli_tag=${CLI_TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${CLI_TAG}" ]]; then
+            echo "Detected CLI tag: ${CLI_TAG}"
+          else
+            echo "No cli-v* tag found on HEAD."
+          fi
+
+  build-cli:
+    name: Build waterui-cli binaries
+    needs: release-plz
+    if: needs.release-plz.result == 'success' && needs.release-plz.outputs.cli_tag != ''
+    uses: ./.github/workflows/build-cli.yml
+    with:
+      tag: ${{ needs.release-plz.outputs.cli_tag }}
+    secrets:
+      HOMEBREW_PAT: ${{ secrets.HOMEBREW_PAT }}

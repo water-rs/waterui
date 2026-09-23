@@ -1,0 +1,28 @@
+[default.extend-words]
+Alle = "Alle"
+COSE = "COSE"
+Dezember = "Dezember"
+Favorit = "Favorit"
+Sie = "Sie"
+Spanisch = "Spanisch"
+configuracion = "configuracion"
+cose = "cose"
+cros = "cros"
+habe = "habe"
+hel = "hel"
+raison = "raison"
+seeked = "seeked"
+thr = "thr"
+trak = "trak"
+udid = "udid"
+
+[default.extend-identifiers]
+NdefFormatable = "NdefFormatable"
+formatable = "formatable"
+thw = "thw"
+
+[files]
+extend-exclude = [
+    "examples/locale/README.md",
+    "examples/locale/i18n/*.toml",
+]

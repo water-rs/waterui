@@ -1,0 +1,7 @@
+error: `#[waterui::test(...)]` test function must take exactly one `&mut` parameter
+ --> tests/ui/waterui_test/fail_param_count.rs:5:1
+  |
+5 | #[waterui::test(sample_view)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `waterui::test` (in Nightly builds, run with -Z macro-backtrace for more info)

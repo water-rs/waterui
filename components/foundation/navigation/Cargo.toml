@@ -1,0 +1,29 @@
+[package]
+name = "waterui-navigation"
+version = "0.2.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "Navigation components for WaterUI"
+keywords = ["navigation", "ui", "components", "menu"]
+categories = ["gui"]
+
+
+[dependencies]
+waterui-core.workspace = true
+waterui-text.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+waterui-controls.workspace = true
+
+nami.workspace = true
+
+[dev-dependencies]
+hydrolysis-m3.workspace = true
+waterui.workspace = true
+waterui-testing.workspace = true
+
+
+[lints]
+workspace = true

@@ -1,0 +1,245 @@
+
+[workspace]
+members = [
+    "core",
+    "components/assets/*",
+    "components/codes/*",
+    "components/data/*",
+    "components/devtools/*/*",
+    "components/effects/*",
+    "components/foundation/*",
+    "components/multimedia/*",
+    "components/platform/*",
+    "components/visual/*",
+    "utils/*",
+    "utils/filtrate/core",
+    "utils/filtrate/derive",
+    "src",
+    "testing",
+    "ffi",
+    "macros",
+    "cli",
+    "examples/codes/*",
+    "examples/data/*",
+    "examples/effects/*",
+    "examples/media/*",
+    "examples/showcase/*/*",
+    "backends/core",
+    "backends/dew",
+    "backends/gtk",
+    "backends/hydrolysis",
+    "backends/hydrolysis_m3",
+    "components/icon/*",
+]
+exclude = [
+  "hydrolysis",
+  "derive",
+  ".github",
+  ".claude",
+  "*.png",
+  "kit",
+  "utils/nami",
+]
+
+
+
+resolver = "2"
+
+[package]
+name = "waterui"
+version = "0.2.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "A modern UI framework for Rust"
+keywords = ["ui", "framework", "rust", "gui", "water"]
+categories = ["gui"]
+
+[lib]
+path = "src/runtime/facade.rs"
+
+[workspace.package]
+version = "0.2.1"
+edition = "2024"
+authors = ["Lexo Liu"]
+rust-version = "1.88"
+license = "Apache-2.0 OR MIT"
+readme = "README.md"
+repository = "https://github.com/water-rs/waterui"
+description = "A modern UI framework for Rust"
+keywords = ["ui", "framework", "rust", "gui", "water"]
+categories = ["gui"]
+
+[workspace.lints]
+rust.missing_docs = "warn"
+rust.missing_debug_implementations = "warn"
+clippy.all = "warn"
+clippy.style = "warn"
+clippy.correctness = "warn"
+clippy.complexity = "warn"
+clippy.suspicious = "warn"
+clippy.perf = "warn"
+clippy.pedantic = "warn"
+clippy.nursery = "warn"
+clippy.cargo = "warn"
+clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
+
+
+
+[workspace.dependencies]
+# dispatch2 0.3.1 exceeds rustc's macro recursion limit with bitflags 2.12 on Apple.
+bitflags = "=2.11.1"
+executor-core = { version = "0.7.1", features = ["std"]}
+futures = "0.3"
+# Local vendored dependency overrides via git submodule.
+nami = { version = "0.10.1", path = "utils/nami" }
+nami-core = { version = "0.3.2", path = "utils/nami/core" }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2.0.18"
+waterui-core = { version = "0.2.0", path = "core" }
+waterui-str = { version = "0.2.1", path = "utils/str" }
+waterui-url = { version = "0.2.1", path = "utils/url" }
+waterui-text = { version = "0.2.2", path = "components/foundation/text" }
+waterui-media = { version = "0.2.1", path = "components/multimedia/media" }
+waterui-image = { version = "0.2.1", path = "components/visual/image" }
+waterui-video = { version = "0.2.1", path = "components/multimedia/video" }
+waterui-form = { version = "0.2.1", path = "components/foundation/form" }
+waterui-controls = { version = "0.2.1", path = "components/foundation/controls"}
+waterui-graphics = { version = "0.2.1", path = "components/visual/graphics", default-features = false }
+waterui-canvas = { version = "0.1.0", path = "components/visual/canvas" }
+waterui-shape = { version = "0.1.0", path = "components/foundation/shape" }
+waterui-svg = { version = "0.1.0", path = "components/visual/svg" }
+waterui-ffi = { version = "0.2.1", path = "ffi" }
+waterui-layout = { version = "0.2.2", path = "components/foundation/layout" }
+waterui-navigation = { version = "0.2.1", path = "components/foundation/navigation" }
+waterui-webview = { version = "0.2.0", path = "components/platform/webview" }
+waterui-icon = { version = "0.2.0", path = "components/foundation/icon" }
+waterui-icons-sf-symbol = { version = "0.1.0", path = "components/icon/sf_symbol" }
+waterui-icons-material-icon = { version = "0.1.0", path = "components/icon/material" }
+waterui-icons-fontawesome7 = { version = "0.1.0", path = "components/icon/fontawesome7" }
+waterui-icons-lucide = { version = "0.1.0", path = "components/icon/lucide" }
+waterui-icons-native = { version = "0.1.0", path = "components/icon/native" }
+waterui-locale = { version = "0.1.0", path = "utils/locale" }
+waterui-map = { version = "0.1.0", path = "components/data/map" }
+waterkit-location = { version = "0.1.0", path = "kit/device/location" }
+waterkit-screen = { version = "0.1.0", path = "kit/platform/screen" }
+waterkit-audio = { version = "0.1.0", path = "kit/multimedia/audio" }
+waterkit-clipboard = { version = "0.1.0", path = "kit/platform/clipboard" }
+waterkit-permission = { version = "0.1.0", path = "kit/platform/permission" }
+waterkit-dialog = { version = "0.1.0", path = "kit/sharing/dialog" }
+waterkit-fs = { version = "0.1.0", path = "kit/platform/fs" }
+waterkit-haptic = { version = "0.1.0", path = "kit/device/haptic" }
+waterkit-camera = { version = "0.1.0", path = "kit/device/camera" }
+waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-features = false }
+waterkit-video = { version = "0.1.0", path = "kit/multimedia/video" }
+waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
+waterui-backend-core = { version = "0.1.0", path = "backends/core", default-features = false }
+filtrate = { version = "0.1.0", path = "utils/filtrate" }
+filtrate-core = { version = "0.1.0", path = "utils/filtrate/core" }
+filtrate-derive = { version = "0.1.0", path = "utils/filtrate/derive" }
+waterui-barcode = { version = "0.1.0", path = "components/codes/barcode" }
+waterui-particle = { version = "0.1.0", path = "components/effects/particle" }
+waterui-chart = { version = "0.1.0", path = "components/data/chart" }
+waterui-assets = { version = "0.1.0", path = "components/assets/runtime" }
+waterui-assets-planner = { version = "0.1.0", path = "components/assets/planner" }
+waterui-assets-macros = { version = "0.1.0", path = "components/assets/macros" }
+waterui-inspector-protocol = { version = "0.1.0", path = "components/devtools/inspector/protocol" }
+waterui-preview-protocol = { version = "0.1.0", path = "components/devtools/preview/protocol" }
+waterui-gtk = { version = "0.1.0", path = "backends/gtk" }
+waterui-testing = { path = "testing" }
+waterui = { version = "0.2.1", path = "." }
+waterui-build-support = { version = "0.1.0", path = "utils/build_support" }
+hydrolysis-m3 = { version = "0.1.0", path = "backends/hydrolysis_m3" }
+native-executor = { version = "0.7.0" }
+waterui-macros = { version = "0.2.1", path = "macros" }
+serde = { version = "1.0", default-features = false, features = ["alloc"] }
+wgpu = "27"
+encase = { version = "0.10", features = ["glam"] }
+vello = "0.7"
+parley = { version = "0.7", default-features = false }
+vello_svg = "0.9.0"
+kurbo = "0.13"
+peniko = "0.6"
+vello_cpu = "0.0.9"
+lyon = "1.0"
+wgpu-hal = { version = "27", features = ["gles", "metal"] }
+glow = "0.16"
+tiny-skia = "0.11"
+zenwave = { version = "0.3.0", default-features = false, features = ["hyper-backend", "ws"] }
+skyzen = { version = "0.1.0", default-features = false }
+pastey = "0.2.1"
+tracing-panic = "0.1.2"
+robius-open = { version = "0.1", default-features = false }
+gtk4 = "0.9"
+gdk4 = "0.9"
+glib = "0.20"
+cairo-rs = { version = "0.20", features = ["v1_18"] }
+pollster = "0.4"
+jiff = { version = "0.2", features = ["serde"] }
+async-channel = "2.5"
+rodio = { version = "0.19", features = ["symphonia-isomp4", "symphonia-aac"] }
+cpal = "0.15"
+rustc-hash = "2.1.2"
+swift-bridge = "0.1"
+swift-bridge-build = "0.1"
+jni = "0.21"
+windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
+zbus = "5"
+minstant = "0.1"
+cpu-time = "1.0"
+sysinfo = "0.37"
+sys-locale = "0.3"
+iana-time-zone = "0.1"
+dirs = "6"
+
+
+[dependencies]
+waterui-internal = { path = "src", default-features = false }
+
+[target.'cfg(not(windows))'.dependencies]
+waterui-dylib = { path = "utils/dylib", optional = true, default-features = false }
+
+[features]
+default = ["assets", "media", "webview", "flow-markdown"]
+assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
+media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
+video = ["waterui-internal/video", "waterui-dylib?/video"]
+webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
+chart = ["waterui-internal/chart", "waterui-dylib?/chart"]
+barcode = ["waterui-internal/barcode", "waterui-dylib?/barcode"]
+map = ["waterui-internal/map", "waterui-dylib?/map"]
+particle = ["waterui-internal/particle", "waterui-dylib?/particle"]
+flow-markdown = ["waterui-internal/flow-markdown", "waterui-dylib?/flow-markdown"]
+std = ["waterui-internal/std", "waterui-dylib?/std"]
+dynamic_linking = ["dep:waterui-dylib"]
+all = [
+    "std",
+    "assets",
+    "media",
+    "webview",
+    "flow-markdown",
+    "chart",
+    "barcode",
+    "map",
+    "particle",
+]
+
+
+[lints]
+workspace = true
+
+# Optimize release builds for size
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"    # Optimize for size
+strip = true       # Strip symbols
+panic = "abort"    # Smaller panic handling
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
