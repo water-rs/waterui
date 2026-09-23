@@ -507,7 +507,7 @@ waterui-webview = { path = "components/platform/webview" }
 # registry hydrolysis still calls the removed display probe. This is the
 # hydrolysis revision that supplies the rate from winit's monitors; drop it
 # when a hydrolysis release carries that change.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "6e3316fb96b8e642485a0b66374c5895a2691dd1" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "5f314407876679463d367b7c84c0a4ca9e974ed7" }
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
