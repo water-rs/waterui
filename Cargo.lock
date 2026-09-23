@@ -3635,8 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9ec2c17a85029c20e9ca0a9f57731819aca2f9f58d79acd136e50d1fb861c2d"
+source = "git+https://github.com/water-rs/hydrolysis?rev=6e3316fb96b8e642485a0b66374c5895a2691dd1#6e3316fb96b8e642485a0b66374c5895a2691dd1"
 dependencies = [
  "accesskit",
  "async-task",
@@ -10301,6 +10300,7 @@ dependencies = [
  "tracing-panic",
  "tracing-subscriber",
  "waterkit-audio",
+ "waterkit-screen",
  "waterui",
  "waterui-browser-cef",
  "waterui-chromium",
@@ -10538,7 +10538,6 @@ dependencies = [
  "tree-sitter-md",
  "unicode-segmentation",
  "waterkit-haptic",
- "waterkit-screen",
  "waterui",
  "waterui-assets",
  "waterui-assets-macros",

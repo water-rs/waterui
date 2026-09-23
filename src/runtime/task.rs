@@ -29,7 +29,7 @@ pub use native_executor::sleep;
 mod runtime_guard;
 
 pub use runtime_guard::{
-    MainThreadStallProbeConfig, MonitoredLocalExecutor, RuntimeProbe, TaskPollSample,
-    max_refresh_rate_hz, monitored_local_executor, monitored_local_executor_with_config,
+    MainThreadStallProbeConfig, MonitoredLocalExecutor, RefreshRate, RuntimeProbe, TaskPollSample,
+    monitored_local_executor, monitored_local_executor_with_config,
     monitored_local_executor_with_probes, outstanding_local_tasks,
 };

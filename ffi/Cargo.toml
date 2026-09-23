@@ -58,6 +58,9 @@ raw-window-handle = "0.6"
 waterui-browser-cef = { workspace = true, optional = true }
 waterui-chromium = { workspace = true, optional = true }
 
+# The one display query a native host makes, for the executor's frame budget.
+waterkit-screen = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 # Android's video surface bridge is marshalled through this crate, so the
 # player is a real dependency here. Which realization *renders* video is not
@@ -116,6 +119,7 @@ gpu = [
     "dep:pollster",
     "dep:kurbo",
     "dep:futures",
+    "dep:waterkit-screen",
 ]
 # The self-drawn video player and its surface-host bridge. Off by default:
 # selecting it links decoders (rav1d, symphonia, hyper) into every package,

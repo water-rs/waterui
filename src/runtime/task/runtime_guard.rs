@@ -2,6 +2,7 @@ use core::{
     any::type_name,
     fmt,
     future::Future,
+    num::NonZeroU32,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -21,7 +22,56 @@ use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
 use minstant::Instant;
 
-const FALLBACK_REFRESH_RATE_HZ: f64 = 60.0;
+/// The refresh rate a monitored executor derives its frame budget from.
+///
+/// It is supplied by the host that owns the main loop and the displays — the
+/// same host that supplies the [`LocalExecutor`] itself. The executor never
+/// queries a display: a headless or test host has none to query, and a
+/// display-server connection opened from an arbitrary thread is exactly the
+/// kind of process-global side effect an executor constructor must not have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RefreshRate {
+    millihertz: NonZeroU32,
+}
+
+impl RefreshRate {
+    /// The rate for a host that drives no display — a test pump, a headless
+    /// runner, a preview session. Frames there are paced by the host, not by a
+    /// panel, so the budget is the conventional 60 Hz.
+    pub const HEADLESS: Self = Self::from_hz(NonZeroU32::new(60).unwrap());
+
+    /// A rate in millihertz, the unit windowing systems report
+    /// (`winit::monitor::MonitorHandle::refresh_rate_millihertz`).
+    #[must_use]
+    pub const fn from_millihertz(millihertz: NonZeroU32) -> Self {
+        Self { millihertz }
+    }
+
+    /// A whole-hertz rate.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `hz` is too large to express in millihertz as a `u32`.
+    #[must_use]
+    pub const fn from_hz(hz: NonZeroU32) -> Self {
+        match hz.checked_mul(NonZeroU32::new(1000).unwrap()) {
+            Some(millihertz) => Self { millihertz },
+            None => panic!("refresh rate in hertz overflows u32 millihertz"),
+        }
+    }
+
+    /// The rate in hertz.
+    #[must_use]
+    pub fn hz(self) -> f64 {
+        f64::from(self.millihertz.get()) / 1000.0
+    }
+
+    /// The time one frame may take at this rate.
+    #[must_use]
+    pub fn frame_budget(self) -> Duration {
+        Duration::from_secs_f64(1000.0 / f64::from(self.millihertz.get()))
+    }
+}
 
 #[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 type CpuClockSample = ThreadTime;
@@ -123,16 +173,17 @@ impl<E> MonitoredLocalExecutor<E>
 where
     E: LocalExecutor,
 {
-    /// Creates a monitored executor with default thresholds.
+    /// Creates a monitored executor with default thresholds, budgeting each
+    /// frame for the host-supplied `refresh` rate.
     #[must_use]
-    pub fn new(inner: E) -> Self {
-        Self::with_config(inner, MainThreadStallProbeConfig::default())
+    pub fn new(inner: E, refresh: RefreshRate) -> Self {
+        Self::with_config(inner, refresh, MainThreadStallProbeConfig::default())
     }
 
     /// Creates a monitored executor with custom thresholds.
     #[must_use]
-    pub fn with_config(inner: E, config: MainThreadStallProbeConfig) -> Self {
-        Self::with_config_and_probes(inner, config, [])
+    pub fn with_config(inner: E, refresh: RefreshRate, config: MainThreadStallProbeConfig) -> Self {
+        Self::with_config_and_probes(inner, refresh, config, [])
     }
 
     /// Creates a monitored executor with custom thresholds and additional
@@ -140,11 +191,10 @@ where
     #[must_use]
     pub fn with_config_and_probes(
         inner: E,
+        refresh: RefreshRate,
         config: MainThreadStallProbeConfig,
         probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
     ) -> Self {
-        let refresh_hz = max_refresh_rate_hz();
-        let frame_budget = Duration::from_secs_f64(1.0 / refresh_hz.max(1.0));
         let probes =
             core::iter::once(Arc::new(MainThreadStallProbe::new(config)) as Arc<dyn RuntimeProbe>)
                 .chain(probes)
@@ -153,8 +203,8 @@ where
         Self {
             inner,
             state: Arc::new(MonitorState {
-                refresh_hz,
-                frame_budget,
+                refresh_hz: refresh.hz(),
+                frame_budget: refresh.frame_budget(),
                 probes,
                 outstanding: AtomicUsize::new(0),
                 registered: AtomicBool::new(false),
@@ -188,31 +238,34 @@ where
     }
 }
 
-/// Wraps a local executor with main-thread stall instrumentation.
+/// Wraps a local executor with main-thread stall instrumentation, budgeting
+/// each frame for the host-supplied `refresh` rate.
 #[must_use]
-pub fn monitored_local_executor<E>(inner: E) -> MonitoredLocalExecutor<E>
+pub fn monitored_local_executor<E>(inner: E, refresh: RefreshRate) -> MonitoredLocalExecutor<E>
 where
     E: LocalExecutor,
 {
-    MonitoredLocalExecutor::new(inner)
+    MonitoredLocalExecutor::new(inner, refresh)
 }
 
 /// Wraps a local executor with custom main-thread stall settings.
 #[must_use]
 pub fn monitored_local_executor_with_config<E>(
     inner: E,
+    refresh: RefreshRate,
     config: MainThreadStallProbeConfig,
 ) -> MonitoredLocalExecutor<E>
 where
     E: LocalExecutor,
 {
-    MonitoredLocalExecutor::with_config(inner, config)
+    MonitoredLocalExecutor::with_config(inner, refresh, config)
 }
 
 /// Wraps a local executor with explicitly owned runtime probes.
 #[must_use]
 pub fn monitored_local_executor_with_probes<E>(
     inner: E,
+    refresh: RefreshRate,
     probes: impl IntoIterator<Item = Arc<dyn RuntimeProbe>>,
 ) -> MonitoredLocalExecutor<E>
 where
@@ -220,6 +273,7 @@ where
 {
     MonitoredLocalExecutor::with_config_and_probes(
         inner,
+        refresh,
         MainThreadStallProbeConfig::default(),
         probes,
     )
@@ -457,46 +511,6 @@ fn classify_level(usage_ratio: f64, config: &MainThreadStallProbeConfig) -> Opti
     }
 }
 
-/// Highest refresh rate the display can drive, in hertz.
-///
-/// Frame budgets everywhere — executor monitoring and inspector frame
-/// reporting alike — derive from this one detection.
-#[must_use]
-#[cfg(feature = "gpu")]
-pub fn max_refresh_rate_hz() -> f64 {
-    match waterkit_screen::max_refresh_rate() {
-        Ok(refresh_rate) => f64::from(refresh_rate.get()),
-        Err(waterkit_screen::Error::Unsupported | waterkit_screen::Error::MonitorNotFound) => {
-            tracing::debug!(
-                target: "waterui::runtime_guard",
-                fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
-                "Display refresh rate metadata is unavailable; using fallback"
-            );
-            FALLBACK_REFRESH_RATE_HZ
-        }
-        Err(err) => {
-            tracing::info!(
-                target: "waterui::runtime_guard",
-                error = ?err,
-                fallback_refresh_hz = FALLBACK_REFRESH_RATE_HZ,
-                "Failed to read display refresh rate; using fallback"
-            );
-            FALLBACK_REFRESH_RATE_HZ
-        }
-    }
-}
-
-// Without the GPU feature (embedded targets) there is no `waterkit-screen`
-// wgpu display query, so frame pacing uses the fallback refresh rate.
-/// Highest refresh rate the display can drive, in hertz.
-///
-/// Without the GPU feature there is no display query, so this is the fallback.
-#[must_use]
-#[cfg(not(feature = "gpu"))]
-pub const fn max_refresh_rate_hz() -> f64 {
-    FALLBACK_REFRESH_RATE_HZ
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -645,6 +659,7 @@ mod tests {
         let probe = Arc::new(CountingProbe(Arc::clone(&hits))) as Arc<dyn RuntimeProbe>;
         let executor = super::MonitoredLocalExecutor::with_config_and_probes(
             PollOnceExecutor,
+            super::RefreshRate::HEADLESS,
             MainThreadStallProbeConfig::default(),
             [probe],
         );
@@ -657,7 +672,7 @@ mod tests {
     fn outstanding_local_tasks_counts_work_parked_on_a_wake() {
         use super::{monitored_local_executor, outstanding_local_tasks};
 
-        let executor = monitored_local_executor(ParkingExecutor);
+        let executor = monitored_local_executor(ParkingExecutor, super::RefreshRate::HEADLESS);
         let parked = executor.spawn_local(core::future::pending::<()>());
         assert_eq!(
             outstanding_local_tasks(),
