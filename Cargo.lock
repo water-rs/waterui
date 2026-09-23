@@ -1770,7 +1770,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -3379,7 +3379,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=21cc0289e3c5beae94480466e5b10ab5652a0eb9#21cc0289e3c5beae94480466e5b10ab5652a0eb9"
+source = "git+https://github.com/water-rs/hydrolysis?rev=e676ca882769c36ecab7bfe8b78f46682e26f735#e676ca882769c36ecab7bfe8b78f46682e26f735"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3680,7 +3680,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=7159f3466cfb24b242ebc36bbd2fe50b4fd7dfb1#7159f3466cfb24b242ebc36bbd2fe50b4fd7dfb1"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=233005c53d1e79ce408061bd30c2c8d21a3e24bd#233005c53d1e79ce408061bd30c2c8d21a3e24bd"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -3790,7 +3790,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
