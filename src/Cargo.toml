@@ -31,7 +31,6 @@ waterui-webview = { workspace = true, optional = true }
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
 # formats a number into a string already depends on it.
 waterui-locale = { workspace = true, features = ["number"] }
-waterkit-screen = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
@@ -119,7 +118,6 @@ gpu = [
     "waterui-graphics/gpu",
     "waterui-shape/gpu",
     "dep:waterui-svg",
-    "dep:waterkit-screen",
 ]
 # `asset!` expands media-kind assets into `waterui::media::Photo` /
 # `waterui::video::video`, so the assets feature must carry the media stack.

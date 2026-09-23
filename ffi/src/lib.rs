@@ -261,6 +261,51 @@ pub unsafe fn __init() -> Option<waterui::inspector::InspectorRuntime> {
     unsafe { __init_impl() }
 }
 
+/// The refresh rate of the displays this native host drives, for the
+/// executor's frame budget.
+///
+/// The native backend owns the displays, and this entry point runs once on its
+/// main thread, so the query happens here — exactly once per process — rather
+/// than in every executor constructor.
+#[cfg(feature = "gpu")]
+fn display_refresh_rate() -> waterui::task::RefreshRate {
+    use core::num::NonZeroU32;
+    use waterui::task::RefreshRate;
+
+    match waterkit_screen::max_refresh_rate() {
+        Ok(rate) => {
+            // `waterkit_screen::RefreshRate` is bounded to `1.0..=480.0` Hz,
+            // so the millihertz value is nonzero and fits a `u32`.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the source range is 1.0..=480.0 Hz"
+            )]
+            let millihertz = (f64::from(rate.get()) * 1000.0).round() as u32;
+            RefreshRate::from_millihertz(
+                NonZeroU32::new(millihertz).expect("a refresh rate of at least 1 Hz"),
+            )
+        }
+        // Metadata the platform does not expose is not a fault of the app: the
+        // budget only scales stall diagnostics, so it takes the nominal rate.
+        Err(error) => {
+            tracing::info!(
+                target: "waterui::runtime_guard",
+                ?error,
+                "display refresh rate is unavailable; budgeting frames at the nominal rate"
+            );
+            RefreshRate::HEADLESS
+        }
+    }
+}
+
+/// Without the GPU stack there is no display query; frames are budgeted at
+/// the nominal rate.
+#[cfg(not(feature = "gpu"))]
+const fn display_refresh_rate() -> waterui::task::RefreshRate {
+    waterui::task::RefreshRate::HEADLESS
+}
+
 /// # Safety
 /// Must run on the platform main thread exactly once.
 unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
@@ -303,6 +348,7 @@ unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
     );
     init_local_executor(waterui::task::monitored_local_executor_with_probes(
         main_executor,
+        display_refresh_rate(),
         inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe),
