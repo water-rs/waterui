@@ -14,8 +14,8 @@ use crate::{
     stack::{
         Axis, VerticalAlignment,
         distribute::{
-            ChildMeasurement, LineAnchor, container_line, cross_envelope, measure_stack,
-            place_cross_extent, stack_spacing,
+            ChildMeasurement, LineAnchor, container_line, cross_envelope, empty_placement,
+            measure_stack, place_cross_extent, stack_members, stack_spacing,
         },
         stack_stretch_axis,
     },
@@ -118,14 +118,15 @@ impl Layout for HStackLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
         let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, children);
+        let measurements = measure_stack(Axis::Horizontal, proposal, spacing, &members);
         let width = measurements.iter().map(|m| m.size().width).sum::<f32>()
-            + stack_spacing(spacing, children.len());
+            + stack_spacing(spacing, members.len());
         let (above, below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let height = if measurements.iter().any(|m| m.size().height.is_infinite()) {
             f32::INFINITY
@@ -152,7 +153,8 @@ impl Layout for HStackLayout {
         // under is the extent it actually has, never the offer the row was
         // measured with.
         let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let measurements = measure_stack(Axis::Horizontal, placement, spacing, children);
+        let members = stack_members(children);
+        let measurements = measure_stack(Axis::Horizontal, placement, spacing, &members);
 
         let (above, below) = hstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let guide_line = bounds.y()
@@ -163,14 +165,30 @@ impl Layout for HStackLayout {
                 below,
             );
 
-        // Place children
+        // Place children: members claim a slot each, spaced; a non-member is
+        // answered with a zero-size frame at the cursor so the returned
+        // placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let mut measurements = measurements.iter();
         let mut current_x = bounds.x();
+        let mut members_placed = 0usize;
 
-        for (i, measurement) in measurements.iter().enumerate() {
-            if i > 0 {
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(
+                    Point::new(current_x, bounds.y()),
+                    placement,
+                ));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
+            if members_placed > 0 {
                 current_x += spacing;
             }
+            members_placed += 1;
 
             let child_height = place_cross_extent(
                 measurement.size().height,
