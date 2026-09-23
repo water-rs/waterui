@@ -1770,7 +1770,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -3379,7 +3379,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=fbc8ee9f512e1828a214a4bf19335b4c6150fffb#fbc8ee9f512e1828a214a4bf19335b4c6150fffb"
+source = "git+https://github.com/water-rs/hydrolysis?rev=e2678d7b040268547ca0089294601844b050faef#e2678d7b040268547ca0089294601844b050faef"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3680,8 +3680,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ec6d1526dd3a3998aeb073835c70efe1511f2d457bc2451696d60c3b1840102"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=0aa601378730d7a99e56b8727ea4f99dc8b62e1d#0aa601378730d7a99e56b8727ea4f99dc8b62e1d"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -3791,7 +3790,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
