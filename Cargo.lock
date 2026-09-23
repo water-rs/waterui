@@ -2880,9 +2880,9 @@ dependencies = [
 
 [[package]]
 name = "filtrate"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bd2ecaa0fba4ef2c21f6a773d5b4530ff6038a5138ac6a6a5498d30bcfb2e64"
+checksum = "16b2d5dcd0f9ccfb26c5db8447b7371e9957ddd7893a8a8c077c9c077b55d7d3"
 dependencies = [
  "bytemuck",
  "filtrate-core",
@@ -2892,6 +2892,7 @@ dependencies = [
  "shaderloom",
  "thiserror 2.0.20",
  "tracing",
+ "web-time",
  "wgpu",
 ]
 
@@ -9428,7 +9429,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
+ "js-sys",
  "libc",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -11619,9 +11623,11 @@ dependencies = [
  "sys-locale",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "wasm-bindgen",
  "waterui",
  "waterui-core",
  "waterui-locale",
+ "web-sys",
 ]
 
 [[package]]

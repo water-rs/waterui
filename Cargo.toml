@@ -177,7 +177,7 @@ waterkit-codec = { version = "0.1.0", path = "kit/multimedia/codec", default-fea
 waterkit-video = { version = "0.1.0", path = "kit/multimedia/video", features = ["streaming"] }
 waterkit-build = { version = "0.1.0", path = "kit/utils/build" }
 waterui-backend-core = { version = "0.1.2", path = "backends/core", default-features = false }
-filtrate = "0.2.0"
+filtrate = "0.2.1"
 filtrate-core = "0.2.0"
 filtrate-derive = "0.1.0"
 waterui-barcode = "0.2.0"

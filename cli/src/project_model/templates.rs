@@ -1578,6 +1578,38 @@ mod tests {
     }
 
     #[test]
+    fn hydrolysis_manifest_does_not_enable_video() {
+        let ctx = app_ctx();
+        let cargo_toml = crate::templates::hydrolysis::rendered_outputs(&ctx, "test-hydrolysis")
+            .expect("hydrolysis outputs should render")
+            .into_iter()
+            .find_map(|(path, content)| {
+                (path == std::path::Path::new("Cargo.toml"))
+                    .then(|| String::from_utf8(content).expect("Cargo.toml must be UTF-8"))
+            })
+            .expect("hydrolysis Cargo.toml output should exist");
+        let manifest = cargo_toml
+            .parse::<toml::Table>()
+            .expect("hydrolysis Cargo.toml should parse");
+        let waterui = &manifest["dependencies"]["waterui"];
+        assert_eq!(waterui["default-features"].as_bool(), Some(false));
+        let features = waterui
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .map(|feature| feature.as_str().expect("feature should be a string"))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        assert!(
+            !features.contains(&"video-gpu"),
+            "hydrolysis scaffold must not enable video-gpu, got {features:?}"
+        );
+    }
+
+    #[test]
     fn preview_scaffold_uses_embedded_workspace_version() {
         let tempdir = tempdir().expect("temporary preview scaffold dir");
         let ctx = app_ctx()
@@ -3016,7 +3048,7 @@ pub mod hydrolysis {
                             // crate of its own — `waterui-map-gpu` — is a
                             // direct dependency of the application, which
                             // installs it in its own `app(env)`.
-                            &["video-gpu"],
+                            &[],
                             Some(NativeBackendDependencyPathKind::WateruiRoot),
                         ),
                     )
