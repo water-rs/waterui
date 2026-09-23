@@ -4,8 +4,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use core::fmt;
+use core::time::Duration;
 use num_traits::ToPrimitive;
-use std::time::Instant;
 
 use encase::{ShaderSize, UniformBuffer};
 
@@ -217,7 +217,7 @@ struct AnimatedMeshRenderer {
     uniform_buffer: Option<wgpu::Buffer>,
     bind_group: Option<wgpu::BindGroup>,
     pipeline_format: Option<wgpu::TextureFormat>,
-    start_time: Instant,
+    start: Option<Duration>,
 }
 
 impl AnimatedMeshRenderer {
@@ -234,7 +234,7 @@ impl AnimatedMeshRenderer {
             uniform_buffer: None,
             bind_group: None,
             pipeline_format: None,
-            start_time: Instant::now(),
+            start: None,
         }
     }
 }
@@ -315,7 +315,7 @@ impl GpuView for AnimatedMeshRenderer {
         self.uniform_buffer = Some(uniform_buffer);
         self.bind_group = Some(bind_group);
         self.pipeline_format = Some(ctx.surface_format);
-        self.start_time = Instant::now();
+        self.start = None;
         core::future::ready(())
     }
 
@@ -337,7 +337,11 @@ impl GpuView for AnimatedMeshRenderer {
             return;
         };
 
-        let elapsed = self.start_time.elapsed().as_secs_f32();
+        // The frame clock comes from the backend, so it works on targets where
+        // `std::time::Instant` does not exist (wasm32) and stays deterministic
+        // under preview/offscreen pumping.
+        let start = *self.start.get_or_insert_with(|| frame.elapsed());
+        let elapsed = frame.elapsed().saturating_sub(start).as_secs_f32();
         let uniforms = AnimatedMeshUniforms {
             time: elapsed,
             speed: self.config.speed,
