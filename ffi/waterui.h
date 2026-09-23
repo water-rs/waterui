@@ -5298,6 +5298,11 @@ typedef struct WuiSubView {
    * Layout priority (higher = measured first, gets space preference)
    */
   int32_t priority;
+  /**
+   * Whether this child renders nothing — a semantic answer, not a measured
+   * size. `true` excludes the child from stack membership (§4.4).
+   */
+  bool is_empty;
 } WuiSubView;
 
 /**

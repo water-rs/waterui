@@ -14,8 +14,8 @@ use crate::{
     stack::{
         Axis,
         distribute::{
-            ChildMeasurement, LineAnchor, container_line, cross_envelope, measure_stack,
-            place_cross_extent, stack_spacing,
+            ChildMeasurement, LineAnchor, container_line, cross_envelope, empty_placement,
+            measure_stack, place_cross_extent, stack_members, stack_spacing,
         },
         stack_stretch_axis,
     },
@@ -63,14 +63,15 @@ fn vstack_intrinsic_cross_metrics(
 
 impl Layout for VStackLayout {
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
         let spacing = self.spacing.get();
-        let measurements = measure_stack(Axis::Vertical, proposal, spacing, children);
+        let measurements = measure_stack(Axis::Vertical, proposal, spacing, &members);
         let final_height = measurements.iter().map(|m| m.size().height).sum::<f32>()
-            + stack_spacing(spacing, children.len());
+            + stack_spacing(spacing, members.len());
 
         let (leading, trailing) = vstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let width = if measurements.iter().any(|m| m.size().width.is_infinite()) {
@@ -100,7 +101,8 @@ impl Layout for VStackLayout {
         // unshrinkable row hands that width to every child, so a title lays
         // out across the column it actually has.
         let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let measurements = measure_stack(Axis::Vertical, placement, spacing, children);
+        let members = stack_members(children);
+        let measurements = measure_stack(Axis::Vertical, placement, spacing, &members);
 
         let (above, below) = vstack_intrinsic_cross_metrics(&measurements, self.alignment);
         let guide_line = bounds.x()
@@ -111,14 +113,30 @@ impl Layout for VStackLayout {
                 below,
             );
 
-        // Place children
+        // Place children: members claim a slot each, spaced; a non-member is
+        // answered with a zero-size frame at the cursor so the returned
+        // placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let mut measurements = measurements.iter();
         let mut current_y = bounds.y();
+        let mut members_placed = 0usize;
 
-        for (i, measurement) in measurements.iter().enumerate() {
-            if i > 0 {
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(
+                    Point::new(bounds.x(), current_y),
+                    placement,
+                ));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
+            if members_placed > 0 {
                 current_y += spacing;
             }
+            members_placed += 1;
 
             let child_width = place_cross_extent(
                 measurement.size().width,

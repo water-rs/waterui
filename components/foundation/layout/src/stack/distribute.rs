@@ -19,7 +19,10 @@ use alloc::vec::Vec;
 use smallvec::SmallVec;
 
 use super::{Axis, stack_stretch_axis};
-use crate::{HorizontalAlignment, ProposalSize, Size, SubView, VerticalAlignment, ViewDimensions};
+use crate::{
+    HorizontalAlignment, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+    VerticalAlignment, ViewDimensions,
+};
 
 /// Cached measurement for a child during layout
 pub(super) struct ChildMeasurement {
@@ -165,6 +168,29 @@ pub fn container_line(extent: f32, anchor: LineAnchor, above: f32, below: f32) -
         LineAnchor::Trailing => slack,
     };
     offset + above
+}
+
+/// The stack's members: the children that take a slot.
+///
+/// A child that renders nothing ([`SubView::is_empty`] — `WaterUI`'s empty
+/// view, possibly under layout-transparent wrappers) is not a stack member:
+/// it takes no slot and no spacing. Membership is therefore the child list
+/// minus the empties, in order, and `Layout::place` still answers one
+/// placement per child — a non-member's placement is a zero-size frame at
+/// the cursor it would have occupied, since nothing is drawn there anyway.
+pub(super) fn stack_members<'v>(children: &[&'v dyn SubView]) -> SmallVec<[&'v dyn SubView; 4]> {
+    children
+        .iter()
+        .copied()
+        .filter(|child| !child.is_empty())
+        .collect()
+}
+
+/// The placement a non-member child gets: nothing drawn, so the frame only
+/// needs to be valid — a zero-size rect at `origin` under the container's
+/// negotiated `proposal`.
+pub(super) const fn empty_placement(origin: Point, proposal: ProposalSize) -> SubviewPlacement {
+    SubviewPlacement::new(Rect::new(origin, Size::zero()), proposal)
 }
 
 pub(super) fn stack_spacing(spacing: f32, count: usize) -> f32 {
