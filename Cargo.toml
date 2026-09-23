@@ -508,11 +508,11 @@ waterui-webview = { path = "components/platform/webview" }
 # hydrolysis revision that supplies the rate from winit's monitors and
 # implements the icon-button contract (water-rs/hydrolysis#115); drop it
 # when a hydrolysis release carries both changes.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "e2678d7b040268547ca0089294601844b050faef" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2c3fe6ef9fb0784f3109d2df6c22b55b01d93192" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "0aa601378730d7a99e56b8727ea4f99dc8b62e1d" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "e75469764ebfbe72d4497e4a5123be12fd5d37bd" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
