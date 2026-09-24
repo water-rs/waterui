@@ -297,8 +297,8 @@ fn end_of_day_time() -> Time {
 
 #[cfg(test)]
 mod tests {
-    use nami::Signal;
     use super::*;
+    use nami::Signal;
 
     #[test]
     fn date_range_maps_full_days() {
