@@ -1,0 +1,48 @@
+name: Layout decision
+
+# The layout system is frozen (AGENTS.md, "Layout Is Frozen"): its semantics
+# change only by a decision the maintainer records. A pull request that touches
+# the normative spec, the layout crate, or the core layout protocol is blocked
+# until it carries the `layout-decision` label, which the maintainer applies
+# after reviewing it. Contract tests live in the layout crate, so weakening one
+# needs the label too.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    # `labeled`/`unlabeled` are not in the default trigger set; they must be
+    # listed so that applying the label re-runs this check.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  layout-gate:
+    name: Layout changes need the layout-decision label
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: List frozen layout paths the pull request changes
+        id: scan
+        run: |
+          set -euo pipefail
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" -- \
+            docs/layout-spec.md \
+            components/foundation/layout/src \
+            core/src/ui/layout.rs)
+          if [ -n "$changed" ]; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            printf '::warning::frozen layout path changed: %s\n' $changed
+          else
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Block the merge without the layout-decision label
+        if: steps.scan.outputs.touched == 'true' && !contains(github.event.pull_request.labels.*.name, 'layout-decision')
+        run: |
+          echo "::error title=Layout decision::This pull request changes the frozen layout (docs/layout-spec.md, waterui-layout, or the core layout protocol). Only the maintainer applies the 'layout-decision' label, after deciding the change."
+          exit 1
