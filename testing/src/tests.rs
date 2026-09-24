@@ -7,7 +7,9 @@ use crate::driver::{DriverPumpResult, ResourceSampler};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
 use hydrolysis::InputEvent;
 use vello::kurbo::Shape;
+use waterui::Binding;
 use waterui::ViewExt as _;
+use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::color::Srgb;
@@ -79,6 +81,8 @@ fn node(
         hidden: false,
         children: Vec::new(),
         actions: Vec::new(),
+        scroll_x: None,
+        scroll_y: None,
     }
 }
 
@@ -1595,4 +1599,222 @@ fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
         1,
         "Enter on a focused button must run its action on the rendered runtime"
     );
+}
+
+// ============================================================================
+// List keyboard navigation (water-rs/waterui#1223)
+// ============================================================================
+
+/// Asserts the semantic tree's keyboard focus sits on the `List` row
+/// labelled `Row {index}` — row navigation moves `accessibility.focus`,
+/// which is what `tree().focus()` reports (UI focus is the separate
+/// text-caret channel).
+fn assert_row_focus(app: &mut SemanticApp, index: i32) {
+    let id = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label(format!("Row {index}"))
+        .single()
+        .id();
+    assert_eq!(
+        app.tree().focus(),
+        id,
+        "expected accessibility focus on Row {index}"
+    );
+}
+
+/// Locates the focused row by position among the list's `ListItem`
+/// children — for rows whose node does not carry the row label itself.
+fn assert_row_focus_at(app: &mut SemanticApp, index: usize) {
+    let list = app.query().role(Role::LIST).single();
+    let rows = app.query().role(Role::LIST_ITEM).children_of(&list).all();
+    let id = rows[index].id();
+    assert_eq!(
+        app.tree().focus(),
+        id,
+        "expected accessibility focus on row {index}"
+    );
+}
+
+/// `List` rows answer `ArrowDown`/`ArrowUp` through the accessibility tree:
+/// the arrows move keyboard focus to the adjacent row, the same focus the
+/// pointer and Tab paths share.
+#[test]
+fn list_arrow_keys_move_row_focus() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..4)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowDown");
+    assert_row_focus(&mut app, 1);
+    app.press_named_key("ArrowDown");
+    assert_row_focus(&mut app, 2);
+    app.press_named_key("ArrowUp");
+    assert_row_focus(&mut app, 1);
+}
+
+/// Arrow navigation only moves focus and scrolls: a `List` owns no
+/// selection for the backend to write — selection is app state a row reads
+/// through `ListItem::selected` — so stepping must never run a row's
+/// activation, or an `on_tap` that opens, deletes, or navigates would fire
+/// on every arrow press.
+#[test]
+fn list_arrow_keys_do_not_activate_rows() {
+    let taps = Binding::container(0i32);
+    let mut app = ui().mount({
+        let taps = taps.clone();
+        move || {
+            List::content(
+                (0..4)
+                    .map(|index| {
+                        let taps = taps.clone();
+                        move || {
+                            ListItem::new(text(format!("Row {index}")).on_tap({
+                                let taps = taps.clone();
+                                move || taps.set(taps.get() + 1)
+                            }))
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    });
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowDown");
+    app.press_named_key("ArrowDown");
+    app.press_named_key("ArrowUp");
+    app.press_named_key("End");
+    app.press_named_key("ArrowDown");
+    app.press_named_key("Home");
+    assert_row_focus(&mut app, 0);
+    assert_eq!(
+        taps.get(),
+        0,
+        "arrow, Home and End moved focus without running any row action"
+    );
+}
+
+/// `Enter`/`Space` activate the focused row through the activation it
+/// already exposes — here the row's tap surfaced as a `Button` child —
+/// exactly once per press, the way a pointer click on the row's centre
+/// resolves.
+#[test]
+fn list_enter_activates_focused_row() {
+    let taps = Binding::container(0i32);
+    let mut app = ui().mount({
+        let taps = taps.clone();
+        move || {
+            List::content(
+                (0..4)
+                    .map(|index| {
+                        let taps = taps.clone();
+                        move || {
+                            ListItem::new(vstack((text(format!("Row {index}"))
+                                .on_tap({
+                                    let taps = taps.clone();
+                                    move || taps.set(taps.get() + 1)
+                                })
+                                .a11y_role(waterui::accessibility::AccessibilityRole::Button),)))
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    });
+    app.press_named_key("Tab");
+    app.press_named_key("ArrowDown");
+    assert_row_focus_at(&mut app, 1);
+    app.press_named_key("Enter");
+    assert_eq!(taps.get(), 1, "Enter runs the focused row's action once");
+    app.press_named_key("Space");
+    assert_eq!(taps.get(), 2, "Space runs the focused row's action once");
+    assert_row_focus_at(&mut app, 1);
+}
+
+/// Stepping reveals the destination row: the semantic list reports its
+/// scroll offset in row units (one unit per row), so a reveal of row N lands
+/// `scrollY` at N.
+#[test]
+fn list_arrow_key_scrolls_row_into_view() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..20)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    app.press_named_key("Tab");
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(0.0),
+        "the list starts unscrolled"
+    );
+    app.press_named_key("ArrowDown");
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(1.0),
+        "stepping to row 1 scrolls it into view"
+    );
+    for _ in 0..5 {
+        app.press_named_key("ArrowDown");
+    }
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(6.0),
+        "stepping to row 6 scrolls it into view"
+    );
+    app.press_named_key("ArrowUp");
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(5.0),
+        "stepping back up scrolls the row into view again"
+    );
+}
+
+/// `Home`/`End` move the focused row to the first and last rows of the list.
+#[test]
+fn list_home_end_move_row_focus_to_edges() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..4)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowDown");
+    app.press_named_key("End");
+    assert_row_focus(&mut app, 3);
+    app.press_named_key("Home");
+    assert_row_focus(&mut app, 0);
+}
+
+/// The arrows stop at the list's edges: stepping past the first or last row
+/// keeps focus where it was rather than leaving the list.
+#[test]
+fn list_arrow_keys_stop_at_row_boundaries() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..3)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowUp");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("End");
+    assert_row_focus(&mut app, 2);
+    app.press_named_key("ArrowDown");
+    assert_row_focus(&mut app, 2);
 }
