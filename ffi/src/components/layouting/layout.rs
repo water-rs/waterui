@@ -1249,6 +1249,12 @@ mod tests {
                         assert_eq!(drops.get(), 1);
 
                         let bounds = Rect::new(Point::new(13.0, -9.0), expected_size);
+                        // Layout-spec §2.3: placement re-negotiates against the
+                        // resolved bounds instead of replaying the measurement
+                        // probe — a default frame re-proposes the bounds on
+                        // both axes.
+                        let negotiated =
+                            ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
                         let placed = waterui_layout_place_subviews(
                             layout,
                             bounds.into_ffi(),
@@ -1258,6 +1264,7 @@ mod tests {
                                 Rc::clone(&drops),
                             )]),
                         );
+                        let direct = FrameLayout::default().place(bounds, proposal, &[&ProbeView]);
                         let rects: Vec<Rect> = placed
                             .as_slice()
                             .iter()
@@ -1269,21 +1276,23 @@ mod tests {
                                 )
                             })
                             .collect();
-                        for placement in placed.as_slice() {
+                        for (placement, direct_placement) in placed.as_slice().iter().zip(&direct) {
                             // SAFETY: `placement.proposal` is the FFI mirror this
                             // very call produced; decoding it here is the
                             // `into_rust` contract.
                             let returned = placement.proposal.clone().into_rust();
-                            assert_eq!(returned, proposal);
+                            assert_eq!(returned, direct_placement.proposal);
+                            assert_eq!(returned, negotiated);
                         }
                         placed.consume();
                         assert_eq!(rects, vec![bounds]);
-                        let direct: Vec<Rect> = FrameLayout::default()
-                            .place(bounds, proposal, &[&ProbeView])
-                            .into_iter()
-                            .map(|placement| placement.frame)
-                            .collect();
-                        assert_eq!(rects, direct);
+                        // Placement re-measures the foreign child under the
+                        // negotiated proposal, so its layout pass receives the
+                        // real geometry rather than a stale probe.
+                        assert_eq!(proposals.borrow().last(), Some(&negotiated));
+                        let direct_rects: Vec<Rect> =
+                            direct.iter().map(|placement| placement.frame).collect();
+                        assert_eq!(rects, direct_rects);
                         assert_eq!(drops.get(), 2);
                     },
                 );
