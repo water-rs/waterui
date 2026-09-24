@@ -10,12 +10,12 @@
 //!   measured (propose `0` on the axis), never assumed — the previous fixed floor
 //!   squeezed a large control to an unusable size and let a small label claim more
 //!   than it could use.
-//! - **Layout priority orders who gives way.** Space is taken from the
-//!   lowest-priority children first, and a band only starts compressing once every
-//!   band below it has been squeezed to its minimums.
+//! - **Layout priority orders who negotiates first.** Bands receive their
+//!   offers from the highest priority down while every unprocessed child
+//!   retains its measured minimum reservation; inside a band the least
+//!   flexible child negotiates first, with original logical order breaking
+//!   ties.
 
-#[cfg(test)]
-use alloc::vec::Vec;
 use smallvec::SmallVec;
 
 use super::{Axis, stack_stretch_axis};
@@ -198,10 +198,12 @@ pub(super) fn stack_spacing(spacing: f32, count: usize) -> f32 {
 }
 
 /// Negotiates the same child measurements for sizing and placement.
-/// Unspecified main axes retain intrinsic sizes. Finite offers distribute
-/// through one priority/minimum pool, including children that stretch.
-/// Changed allocations are measured again so wrapped content and guides
-/// correspond to the exact proposal retained for recursive placement.
+/// Unspecified main axes retain intrinsic sizes. A finite main extent is
+/// negotiated sequentially: priority bands from highest to lowest, the least
+/// flexible child in a band first, and each child's reported extent — its
+/// answer, or `max(answer, offer)` for a main-axis stretcher — deducted
+/// before the next child is offered (layout-spec §4.2). The proposal each
+/// child was measured with is retained for recursive placement.
 pub(super) fn measure_stack(
     axis: Axis,
     proposal: ProposalSize,
@@ -240,146 +242,182 @@ pub(super) fn measure_stack(
         return measured;
     };
     let available = (main - stack_spacing(spacing, children.len())).max(0.0);
-    let extents: SmallVec<[Extent; 4]> = children
+    let slots: SmallVec<[Slot; 4]> = children
         .iter()
         .zip(&measured)
-        .map(|(child, measurement)| {
+        .enumerate()
+        .map(|(index, (child, measurement))| {
             let minimum = main_extent(
                 axis,
                 child.measure(with_main(axis, proposal, Some(0.0))).size,
             );
-            Extent {
-                ideal: if measurement.stretches_main_axis() {
+            let maximum = if measurement.stretches_main_axis() {
+                f32::INFINITY
+            } else {
+                main_extent(
+                    axis,
+                    child
+                        .measure(with_main(axis, proposal, Some(f32::INFINITY)))
+                        .size,
+                )
+            };
+            Slot {
+                index,
+                minimum,
+                target: if measurement.stretches_main_axis() {
                     available.max(minimum)
                 } else {
-                    main_extent(
-                        axis,
-                        child
-                            .measure(with_main(axis, proposal, Some(f32::INFINITY)))
-                            .size,
-                    )
-                    .min(available)
-                    .max(minimum)
+                    maximum.min(available).max(minimum)
                 },
-                min: minimum,
+                flexibility: maximum - minimum,
                 priority: child.priority(),
             }
         })
         .collect();
-    for ((child, measurement), allocated) in children
-        .iter()
-        .zip(&mut measured)
-        .zip(compress_to_fit(&extents, available))
-    {
-        measurement.proposal = with_main(axis, proposal, Some(allocated));
-        measurement.dimensions = child.measure(measurement.proposal);
-        if measurement.stretches_main_axis() {
-            if axis.is_horizontal() {
-                measurement.dimensions.size.width = measurement.size().width.max(allocated);
-            } else {
-                measurement.dimensions.size.height = measurement.size().height.max(allocated);
-            }
-        }
-    }
+    negotiate(axis, proposal, available, children, &slots, &mut measured);
     measured
 }
 
-/// A child's room for manoeuvre on the main axis.
-#[derive(Clone, Copy, Debug)]
-pub struct Extent {
-    /// The target extent before distributing a finite main-axis offer.
-    pub ideal: f32,
-    /// What the child reports when the axis is proposed `0` — its hard floor.
-    pub min: f32,
-    /// Higher wins space; ties share it.
-    pub priority: i32,
+/// The inputs retained per child while a finite main extent is negotiated.
+struct Slot {
+    /// The child's slot in logical member order — the tiebreak inside a band.
+    index: usize,
+    /// The child's measured minimum: its answer to main proposal `0`.
+    minimum: f32,
+    /// The extent the child claims: `max(minimum, available)` for a main-axis
+    /// stretcher, otherwise its maximum-probe answer clamped into
+    /// `[minimum, available]`.
+    target: f32,
+    /// Maximum-probe answer minus minimum; a stretcher's unbounded maximum
+    /// negotiates it last inside its band.
+    flexibility: f32,
+    /// The child's band; higher bands negotiate first.
+    priority: i32,
 }
 
-/// Clamps `extents` into `available`, taking space from the lowest priorities
-/// first and never pushing a child below its own minimum.
+/// Runs the finite main-axis negotiation (layout-spec §4.2).
 ///
-/// Returns the extent each child should occupy. When even every minimum together
-/// exceeds `available` the result overflows rather than collapsing children to
-/// nothing: an unreadable row is not a better answer than a clipped one.
-pub fn compress_to_fit(extents: &[Extent], available: f32) -> SmallVec<[f32; 4]> {
-    let mut resolved: SmallVec<[f32; 4]> = extents.iter().map(|extent| extent.ideal).collect();
-    let total: f64 = resolved.iter().copied().map(f64::from).sum();
-    if !exceeds(total, available, resolved.len()) {
-        return resolved;
-    }
-
-    // Allocate higher priorities first, reserving every lower band's measured minimum.
-    let mut priorities: SmallVec<[i32; 4]> = extents.iter().map(|extent| extent.priority).collect();
-    priorities.sort_unstable_by(|left, right| right.cmp(left));
-    priorities.dedup();
-
-    let mut allocated = 0.0;
-    for priority in priorities {
-        let band: SmallVec<[usize; 4]> = extents
-            .iter()
-            .enumerate()
-            .filter(|(_, extent)| extent.priority == priority)
-            .map(|(index, _)| index)
-            .collect();
-        let reserved: f64 = extents
-            .iter()
-            .filter(|extent| extent.priority < priority)
-            .map(|extent| f64::from(extent.min))
-            .sum();
-        let band_extents: SmallVec<[Extent; 4]> =
-            band.iter().map(|&index| extents[index]).collect();
-        let budget = f64::from(available) - allocated - reserved;
-        for (&index, extent) in band.iter().zip(water_fill(&band_extents, budget)) {
-            resolved[index] = extent;
-            allocated += f64::from(extent);
-        }
-    }
-
-    resolved
-}
-
-/// Lowers a common cap until the band fits `target`, so the widest children give
-/// up the most and equally-wide children shrink by the same amount — the property
-/// that keeps a row of equal columns (a calendar week, say) at a uniform pitch
-/// instead of crushing whichever happens to come first.
+/// When every target fits, each child is offered its target; when the minima
+/// alone overflow `available`, each child is offered its minimum and the row
+/// overflows rather than collapsing children. Otherwise children negotiate in
+/// order — priority bands high to low, flexibility low to high inside a band,
+/// logical member order on ties — and each offer reserves the minima of every
+/// unprocessed lower-priority child and of the not-yet-offered peers in its
+/// band:
 ///
-/// Each child is clamped into its own `[min, ideal]`, so a child already at its
-/// floor stops contributing and the rest absorb the remainder.
-fn water_fill(extents: &[Extent], target: f64) -> SmallVec<[f32; 4]> {
+/// `offer = max(minimum, min(target, remaining_band_budget / k, remaining_band_budget - peer_minima))`
+///
+/// A child's reported extent is deducted before the next offer, so extent a
+/// compressed child declines remains available to the children still
+/// negotiating. A processed child is never re-offered; an answer larger than
+/// its offer overflows rather than being clipped.
+fn negotiate(
+    axis: Axis,
+    proposal: ProposalSize,
+    available: f32,
+    children: &[&dyn SubView],
+    slots: &[Slot],
+    measured: &mut [ChildMeasurement],
+) {
     use num_traits::ToPrimitive;
-
-    let mut total: f64 = extents.iter().map(|extent| f64::from(extent.min)).sum();
-    if target <= total {
-        return extents.iter().map(|extent| extent.min).collect();
-    }
-    let mut breakpoints: SmallVec<[(f64, f64); 8]> = extents
-        .iter()
-        .flat_map(|extent| {
-            [
-                (f64::from(extent.min), 1.0),
-                (f64::from(extent.ideal), -1.0),
-            ]
-        })
-        .collect();
-    breakpoints.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
-    let mut cap = 0.0;
-    let mut active = 0.0;
-    for (breakpoint, change) in breakpoints {
-        let next_total = total + active * (breakpoint - cap);
-        if active > 0.0 && target <= next_total {
-            let cap = (cap + (target - total) / active)
-                .to_f32()
-                .expect("water-filling cap must be representable as f32");
-            return extents
-                .iter()
-                .map(|extent| extent.ideal.min(cap).max(extent.min))
-                .collect();
+    let count = slots.len();
+    let total_targets: f64 = slots.iter().map(|slot| f64::from(slot.target)).sum();
+    if !exceeds(total_targets, available, count) {
+        for slot in slots {
+            select(
+                axis,
+                proposal,
+                children[slot.index],
+                &mut measured[slot.index],
+                slot.target,
+            );
         }
-        total = next_total;
-        cap = breakpoint;
-        active += change;
+        return;
     }
-    extents.iter().map(|extent| extent.ideal).collect()
+    let total_minima: f64 = slots.iter().map(|slot| f64::from(slot.minimum)).sum();
+    if exceeds(total_minima, available, count) {
+        for slot in slots {
+            select(
+                axis,
+                proposal,
+                children[slot.index],
+                &mut measured[slot.index],
+                slot.minimum,
+            );
+        }
+        return;
+    }
+    // One sort: bands high to low, flexibility low to high inside a band;
+    // `sort_by` is stable, so equal flexibility keeps logical member order.
+    let mut order: SmallVec<[usize; 4]> = (0..count).collect();
+    order.sort_by(|&a, &b| {
+        slots[b]
+            .priority
+            .cmp(&slots[a].priority)
+            .then_with(|| slots[a].flexibility.total_cmp(&slots[b].flexibility))
+    });
+    // Suffix minimum sums over the sorted order: the bands below the one
+    // ending at `band_end` reserve `lower_minima[band_end]`.
+    let mut lower_minima = SmallVec::<[f64; 4]>::from_elem(0.0, count + 1);
+    for position in (0..count).rev() {
+        lower_minima[position] =
+            lower_minima[position + 1] + f64::from(slots[order[position]].minimum);
+    }
+    let mut reported = 0.0_f64;
+    let mut cursor = 0;
+    while cursor < count {
+        let priority = slots[order[cursor]].priority;
+        let mut band_end = cursor + 1;
+        while band_end < count && slots[order[band_end]].priority == priority {
+            band_end += 1;
+        }
+        let reserved_below = lower_minima[band_end];
+        let mut band_minima: f64 = (cursor..band_end)
+            .map(|position| f64::from(slots[order[position]].minimum))
+            .sum();
+        for position in cursor..band_end {
+            let slot = &slots[order[position]];
+            let unprocessed = usize_to_f64(band_end - position);
+            let budget = f64::from(available) - reported - reserved_below;
+            let offer = f64::from(slot.target)
+                .min(budget / unprocessed)
+                .min(budget - (band_minima - f64::from(slot.minimum)))
+                .max(f64::from(slot.minimum))
+                .to_f32()
+                .expect("a negotiated offer is f32-representable");
+            reported += f64::from(select(
+                axis,
+                proposal,
+                children[slot.index],
+                &mut measured[slot.index],
+                offer,
+            ));
+            band_minima -= f64::from(slot.minimum);
+        }
+        cursor = band_end;
+    }
+}
+
+/// Measures `child` at `offer` on the main axis, retains the offer as its
+/// selected proposal, and returns the reported main extent: a main-axis
+/// stretcher reports `max(answer, offer)`.
+fn select(
+    axis: Axis,
+    proposal: ProposalSize,
+    child: &dyn SubView,
+    measurement: &mut ChildMeasurement,
+    offer: f32,
+) -> f32 {
+    measurement.proposal = with_main(axis, proposal, Some(offer));
+    measurement.dimensions = child.measure(measurement.proposal);
+    if measurement.stretches_main_axis() {
+        if axis.is_horizontal() {
+            measurement.dimensions.size.width = measurement.size().width.max(offer);
+        } else {
+            measurement.dimensions.size.height = measurement.size().height.max(offer);
+        }
+    }
+    main_extent(axis, measurement.size())
 }
 
 /// Whether `total` exceeds `available` by more than the rounding error of
@@ -403,108 +441,9 @@ fn usize_to_f32(value: usize) -> f32 {
         .expect("child count must be representable as f32")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    fn extent(ideal: f32, min: f32) -> Extent {
-        Extent {
-            ideal,
-            min,
-            priority: 0,
-        }
-    }
-
-    #[test]
-    fn insufficient_space_preserves_exact_minima() {
-        let extents = [
-            extent(120.0, 120.0),
-            extent(164.0, 72.0),
-            extent(120.0, 120.0),
-        ];
-        assert_eq!(
-            compress_to_fit(&extents, 164.0).as_slice(),
-            &[120.0, 72.0, 120.0]
-        );
-    }
-
-    #[test]
-    fn one_flexible_child_receives_the_exact_remainder() {
-        let extents = [extent(50.0, 50.0), extent(280.0, 0.0), extent(80.0, 80.0)];
-        assert_eq!(
-            compress_to_fit(&extents, 280.0).as_slice(),
-            &[50.0, 150.0, 80.0]
-        );
-    }
-
-    #[test]
-    fn large_ideals_do_not_erase_a_small_budget() {
-        let extents = [extent(1.0e30, 0.0), extent(1.0e30, 0.0)];
-        assert_eq!(compress_to_fit(&extents, 2.0).as_slice(), &[1.0, 1.0]);
-    }
-
-    #[test]
-    fn everything_fits_is_a_no_op() {
-        let extents = vec![extent(30.0, 10.0), extent(40.0, 10.0)];
-        assert_eq!(compress_to_fit(&extents, 100.0).as_slice(), &[30.0, 40.0]);
-    }
-
-    #[test]
-    fn equal_children_shrink_equally() {
-        // Seven equal columns in a bound 56pt short: every column must lose the
-        // same 8pt rather than the leading ones absorbing it all.
-        let extents: Vec<Extent> = (0..7).map(|_| extent(40.0, 0.0)).collect();
-        let resolved = compress_to_fit(&extents, 224.0);
-        for width in resolved {
-            assert!((width - 32.0).abs() < 0.01, "expected 32pt, got {width}");
-        }
-    }
-
-    #[test]
-    fn the_widest_child_absorbs_the_deficit_alone() {
-        // A 50pt label beside a 200pt text in 140pt: the text gives way and the
-        // label keeps its intrinsic width.
-        let extents = vec![extent(50.0, 0.0), extent(200.0, 0.0)];
-        let resolved = compress_to_fit(&extents, 140.0);
-        assert!((resolved[0] - 50.0).abs() < 0.01, "got {}", resolved[0]);
-        assert!((resolved[1] - 90.0).abs() < 0.01, "got {}", resolved[1]);
-    }
-
-    #[test]
-    fn a_child_never_shrinks_below_its_reported_minimum() {
-        // The second child cannot go below 80, so the first absorbs everything
-        // it can and the row overflows by the remainder.
-        let extents = vec![extent(100.0, 20.0), extent(100.0, 80.0)];
-        let resolved = compress_to_fit(&extents, 120.0);
-        assert!(resolved[1] >= 80.0 - 0.01, "got {}", resolved[1]);
-        assert!(resolved[0] >= 20.0 - 0.01, "got {}", resolved[0]);
-    }
-
-    #[test]
-    fn lower_priority_gives_way_first() {
-        let extents = vec![
-            Extent {
-                ideal: 100.0,
-                min: 0.0,
-                priority: 1,
-            },
-            Extent {
-                ideal: 100.0,
-                min: 0.0,
-                priority: 0,
-            },
-        ];
-        let resolved = compress_to_fit(&extents, 150.0);
-        assert!(
-            (resolved[0] - 100.0).abs() < 0.01,
-            "the prioritized child keeps its ideal, got {}",
-            resolved[0]
-        );
-        assert!(
-            (resolved[1] - 50.0).abs() < 0.01,
-            "the lower-priority child gives up the whole deficit, got {}",
-            resolved[1]
-        );
-    }
+fn usize_to_f64(value: usize) -> f64 {
+    use num_traits::ToPrimitive;
+    value
+        .to_f64()
+        .expect("child count must be representable as f64")
 }

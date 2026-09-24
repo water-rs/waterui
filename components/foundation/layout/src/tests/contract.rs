@@ -5,7 +5,7 @@ use nami::Computed;
 use crate::stack::{Axis, HStackLayout, VStackLayout};
 use crate::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
-    VerticalAlignment, ViewDimensions, measure_layout,
+    SubviewPlacement, VerticalAlignment, ViewDimensions, measure_layout,
 };
 
 struct RangeLeaf {
@@ -719,6 +719,14 @@ const fn cross_extent(axis: Axis, size: Size) -> f32 {
     }
 }
 
+const fn cross_origin(axis: Axis, frame: Rect) -> f32 {
+    if axis.is_horizontal() {
+        frame.y()
+    } else {
+        frame.x()
+    }
+}
+
 /// A stack child that toggles between rendering a view and rendering
 /// nothing — the shape a `when(condition, ..)` presents to its stack.
 struct ConditionalChild {
@@ -861,4 +869,1319 @@ fn a_zero_sized_child_is_still_a_member() {
         20.0 + spacing * 2.0,
         "the last member keeps both gaps around the zero-size one",
     );
+}
+
+/// A leaf that cannot always fill the proposal it is compressed into:
+/// finite offers come back `decline` short, the way a truncated text line
+/// reports its drawn advance rather than the bound (§6). The unbounded
+/// probes report its ideal, so the ∞-answer over-claims what a finite bound
+/// can hold.
+struct DecliningLeaf {
+    axis: Axis,
+    minimum: f32,
+    ideal: f32,
+    decline: f32,
+    cross: f32,
+    priority: i32,
+}
+
+impl SubView for DecliningLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
+            if value == 0.0 {
+                self.minimum
+            } else if value.is_infinite() {
+                self.ideal
+            } else {
+                (value - self.decline).clamp(self.minimum, self.ideal)
+            }
+        });
+        ViewDimensions::new(axis_size(self.axis, main, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority
+    }
+}
+
+/// The `Spacer` stand-in: `MainAxis` stretch, answers its `minimum` to every
+/// measurement on that axis, and sits in the lowest band by default — so its
+/// reported extent is `max(minimum, offer)` (§5).
+struct FillLeaf {
+    axis: Axis,
+    minimum: f32,
+    cross: f32,
+    priority: i32,
+}
+
+impl SubView for FillLeaf {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(axis_size(self.axis, self.minimum, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::MainAxis
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority
+    }
+}
+
+/// A leaf that accepts whatever it is offered between its minimum and its
+/// maximum — the content the declined reserve should reach before the
+/// lowest-band stretcher sees it.
+struct AcceptingLeaf {
+    axis: Axis,
+    minimum: f32,
+    maximum: f32,
+    cross: f32,
+    priority: i32,
+}
+
+impl SubView for AcceptingLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(self.maximum, |value| {
+            value.clamp(self.minimum, self.maximum)
+        });
+        ViewDimensions::new(axis_size(self.axis, main, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority
+    }
+}
+
+/// A leaf that rounds a finite offer down to a `grain` boundary, up to its
+/// `ideal` — the rounding behaviour a truncating text has, sharpened so a
+/// one-point difference in the offer is visible in the answer.
+struct RoundDownLeaf {
+    axis: Axis,
+    grain: f32,
+    ideal: f32,
+    cross: f32,
+}
+
+impl SubView for RoundDownLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
+            if value.is_infinite() {
+                self.ideal
+            } else {
+                (self.grain * (value / self.grain).floor()).min(self.ideal)
+            }
+        });
+        ViewDimensions::new(axis_size(self.axis, main, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// A leaf with a plateau: it accepts the first ten points of any offer, then
+/// resumes growing once the offer passes a hundred. Monotone, but its
+/// maximum-probe answer does not reveal the plateau.
+struct PlateauLeaf {
+    axis: Axis,
+    cross: f32,
+}
+
+impl SubView for PlateauLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(200.0, |value| {
+            if value.is_infinite() {
+                200.0
+            } else if value <= 100.0 {
+                value.min(10.0)
+            } else {
+                (value - 90.0).clamp(10.0, 200.0)
+            }
+        });
+        ViewDimensions::new(axis_size(self.axis, main, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// A leaf that answers more than its finite offer: ninety points whenever it
+/// is proposed anything positive. A negotiation must not clamp the answer
+/// back to the offer to hide the overflow.
+struct OversizeLeaf {
+    axis: Axis,
+    answer: f32,
+    cross: f32,
+    priority: i32,
+}
+
+impl SubView for OversizeLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(self.answer, |value| {
+            if value == 0.0 { 0.0 } else { self.answer }
+        });
+        ViewDimensions::new(axis_size(self.axis, main, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        self.priority
+    }
+}
+
+/// A leaf that declines exactly one ulp: it answers `f32`'s next
+/// representable value below its finite offer. The declined sliver is
+/// honest space and must reach the stretcher, not be rounded away.
+struct NextDownLeaf {
+    axis: Axis,
+    ideal: f32,
+    cross: f32,
+}
+
+impl SubView for NextDownLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
+            if value.is_infinite() {
+                self.ideal
+            } else if value <= 0.0 {
+                0.0
+            } else {
+                f32::from_bits(value.to_bits() - 1)
+            }
+        });
+        ViewDimensions::new(axis_size(self.axis, main, self.cross))
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// The stack's cross-alignment guide key for `axis`.
+fn cross_guide(axis: Axis, dimensions: ViewDimensions, guide: f32) -> ViewDimensions {
+    if axis.is_horizontal() {
+        dimensions.with_vertical(VerticalAlignment::Top, guide)
+    } else {
+        dimensions.with_horizontal(HorizontalAlignment::Leading, guide)
+    }
+}
+
+/// A `Spacer`-like child whose cross extent and guide depend on the main
+/// proposal it was measured with: (30, 20) at main zero, (12, 9) at the six
+/// the negotiation offers it. An envelope built from any earlier probe is
+/// visibly wrong.
+struct GuidedFillLeaf {
+    axis: Axis,
+}
+
+impl SubView for GuidedFillLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let (cross, guide) = if main_proposal(self.axis, proposal) == Some(0.0) {
+            (30.0, 20.0)
+        } else {
+            (12.0, 9.0)
+        };
+        cross_guide(
+            self.axis,
+            ViewDimensions::new(axis_size(self.axis, 0.0, cross)),
+            guide,
+        )
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::MainAxis
+    }
+
+    fn priority(&self) -> i32 {
+        i32::MIN
+    }
+}
+
+/// A declining leaf with an explicit guide on the stack's cross alignment —
+/// the "(10, 8)" siblings of the guided-envelope case.
+struct DecliningGuidedLeaf {
+    axis: Axis,
+    minimum: f32,
+    ideal: f32,
+    decline: f32,
+    cross: f32,
+    guide: f32,
+}
+
+impl SubView for DecliningGuidedLeaf {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        let main = main_proposal(self.axis, proposal).map_or(self.ideal, |value| {
+            if value == 0.0 {
+                self.minimum
+            } else if value.is_infinite() {
+                self.ideal
+            } else {
+                (value - self.decline).clamp(self.minimum, self.ideal)
+            }
+        });
+        cross_guide(
+            self.axis,
+            ViewDimensions::new(axis_size(self.axis, main, self.cross)),
+            self.guide,
+        )
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// Measures the stack at `measure_main` on the main axis, then places it in
+/// bounds of `place_main`, returning its answer and the placements in
+/// logical member order.
+fn place_after_proposal(
+    axis: Axis,
+    spacing: f32,
+    measure_main: f32,
+    place_main: f32,
+    children: &[&dyn SubView],
+) -> (Size, Vec<SubviewPlacement>) {
+    let layout: Box<dyn Layout> = if axis.is_horizontal() {
+        Box::new(HStackLayout {
+            alignment: VerticalAlignment::Top,
+            spacing: Computed::constant(spacing),
+        })
+    } else {
+        Box::new(VStackLayout {
+            alignment: HorizontalAlignment::Leading,
+            spacing: Computed::constant(spacing),
+        })
+    };
+    let proposal = axis_proposal(axis, Some(measure_main), Some(10.0));
+    let size = layout.size_that_fits(proposal, children);
+    let bounds = Rect::new(Point::new(0.0, 0.0), axis_size(axis, place_main, 10.0));
+    let placements = layout.place(bounds, proposal, children);
+    (size, placements)
+}
+
+/// Asserts every member's main origin, reported extent, and selected main
+/// proposal, in logical order, across the negotiated `spacing`.
+fn assert_negotiation(
+    axis: Axis,
+    placements: &[SubviewPlacement],
+    spacing: f32,
+    expected: &[(f32, f32)],
+) {
+    assert_eq!(placements.len(), expected.len(), "one placement per member");
+    let mut cursor = 0.0;
+    for (placement, &(extent, proposal)) in placements.iter().zip(expected) {
+        assert_extent(
+            main_origin(axis, placement.frame),
+            cursor,
+            "member main origin",
+        );
+        assert_extent(
+            main_extent(axis, *placement.frame.size()),
+            extent,
+            "member reported extent",
+        );
+        assert_extent(
+            main_proposal(axis, placement.proposal).expect("a selected main proposal"),
+            proposal,
+            "member selected proposal",
+        );
+        cursor += extent + spacing;
+    }
+}
+
+/// A compressed leaf that reports less than its offer leaves surplus inside
+/// the stack's bounds; the sequential negotiation offers the spacer the six
+/// points the text declined and the trailing badge still ends on the edge
+/// (water-rs/waterui#1219).
+#[test]
+fn a_declined_extent_reaches_the_stretch_child_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 6.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_extent(main_extent(axis, size), 100.0, "stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(74.0, 80.0), (6.0, 6.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9 (a): several stretchers divide a declined surplus by the same
+/// minimum-reserving rule — equal shares in logical order.
+#[test]
+fn several_stretchers_share_the_decline_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 12.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 120.0, 120.0, &refs);
+        assert_extent(main_extent(axis, size), 120.0, "stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(88.0, 100.0), (6.0, 6.0), (6.0, 6.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9 (b): a stretcher's own minimum is reserved like any other — the S40
+/// spacer negotiates its forty before the unreserved share is offered.
+#[test]
+fn a_stretchers_minimum_is_reserved_before_peer_shares_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 12.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 40.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 120.0, 120.0, &refs);
+        assert_extent(main_extent(axis, size), 120.0, "stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(48.0, 60.0), (40.0, 40.0), (12.0, 12.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9 (c): bands negotiate in priority order — the priority-1 accepter is
+/// offered the twenty the priority-2 decliner left before the lowest-band
+/// spacer sees it.
+#[test]
+fn higher_bands_negotiate_before_the_spacer_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 20.0,
+                cross: 10.0,
+                priority: 2,
+            }),
+            Box::new(AcceptingLeaf {
+                axis,
+                minimum: 0.0,
+                maximum: 200.0,
+                cross: 10.0,
+                priority: 1,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_extent(main_extent(axis, size), 100.0, "stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(60.0, 80.0), (20.0, 20.0), (0.0, 0.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9's target-cap case: the accepting child's own maximum limits what the
+/// decline restores to it — the eight points it cannot use go to the spacer.
+#[test]
+fn a_declined_offer_respects_the_lower_bands_target_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 20.0,
+                cross: 10.0,
+                priority: 2,
+            }),
+            Box::new(AcceptingLeaf {
+                axis,
+                minimum: 0.0,
+                maximum: 12.0,
+                cross: 10.0,
+                priority: 1,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_extent(main_extent(axis, size), 100.0, "stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(60.0, 80.0), (12.0, 12.0), (8.0, 8.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9's unequal-stretcher case: stretchers in different bands negotiate in
+/// priority order, so the higher spacer takes the whole decline.
+#[test]
+fn stretchers_negotiate_in_priority_order_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 12.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: -1,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 120.0, 120.0, &refs);
+        assert_extent(main_extent(axis, size), 120.0, "stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(88.0, 100.0), (12.0, 12.0), (0.0, 0.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9 (d): equal flexibility is resolved by logical member order — the
+/// first decliner negotiates before the reserve grows, so sibling order
+/// changes the outcome and identical leaves are not equalized.
+#[test]
+fn decliners_negotiate_in_logical_order_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        for (declines, expected) in [
+            (
+                [6.0, 10.0],
+                [(44.0, 50.0), (46.0, 56.0), (10.0, 10.0), (20.0, 20.0)],
+            ),
+            (
+                [10.0, 6.0],
+                [(40.0, 50.0), (54.0, 60.0), (6.0, 6.0), (20.0, 20.0)],
+            ),
+            (
+                [6.0, 6.0],
+                [(44.0, 50.0), (50.0, 56.0), (6.0, 6.0), (20.0, 20.0)],
+            ),
+        ] {
+            let children: Vec<Box<dyn SubView>> = declines
+                .iter()
+                .map(|&decline| {
+                    Box::new(DecliningLeaf {
+                        axis,
+                        minimum: 0.0,
+                        ideal: 200.0,
+                        decline,
+                        cross: 10.0,
+                        priority: 0,
+                    }) as Box<dyn SubView>
+                })
+                .chain([
+                    Box::new(FillLeaf {
+                        axis,
+                        minimum: 0.0,
+                        cross: 0.0,
+                        priority: i32::MIN,
+                    }) as Box<dyn SubView>,
+                    Box::new(RangeLeaf {
+                        axis,
+                        minimum: 20.0,
+                        ideal: 20.0,
+                        maximum: 20.0,
+                        cross: 10.0,
+                    }),
+                ])
+                .collect();
+            let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+            let (size, placements) = place_after_proposal(axis, 0.0, 120.0, 120.0, &refs);
+            assert_extent(main_extent(axis, size), 120.0, "stack main extent");
+            assert_negotiation(axis, &placements, 0.0, &expected);
+        }
+    }
+}
+
+/// §9 (e): a nested stack's declined space stays inside its own frame —
+/// placing the inner row at its narrower resolved bound negotiates afresh
+/// and the leaf declines again from the new offer.
+#[test]
+fn declined_space_inside_a_nested_stack_stays_nested_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let leaf: Box<dyn SubView> = Box::new(DecliningLeaf {
+            axis,
+            minimum: 0.0,
+            ideal: 200.0,
+            decline: 6.0,
+            cross: 10.0,
+            priority: 0,
+        });
+        let inner = LayoutNode {
+            layout: stack(axis),
+            children: vec![leaf],
+        };
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(inner),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_extent(main_extent(axis, size), 100.0, "outer stack main extent");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(74.0, 80.0), (6.0, 6.0), (20.0, 20.0)],
+        );
+
+        // Inside the 74-point frame the inner negotiation offers the leaf
+        // 74, not the 80 the outer negotiation selected — and the leaf
+        // answers 68.
+        let inner_leaf = DecliningLeaf {
+            axis,
+            minimum: 0.0,
+            ideal: 200.0,
+            decline: 6.0,
+            cross: 10.0,
+            priority: 0,
+        };
+        let inner_stack = stack(axis);
+        let inner_proposal = axis_proposal(axis, Some(74.0), Some(10.0));
+        let inner_bounds = Rect::new(Point::new(0.0, 0.0), axis_size(axis, 74.0, 10.0));
+        let inner_placements = inner_stack.place(inner_bounds, inner_proposal, &[&inner_leaf]);
+        assert_extent(
+            main_proposal(axis, inner_placements[0].proposal)
+                .expect("the inner leaf is proposed the resolved bound"),
+            74.0,
+            "inner selected proposal",
+        );
+        assert_extent(
+            main_extent(axis, *inner_placements[0].frame.size()),
+            68.0,
+            "the inner leaf declines inside the narrower frame",
+        );
+    }
+}
+
+/// §9 (g): with no stretcher the declined extent stays unused — the stack's
+/// own answer shrinks to the reported extents, and placement into that
+/// answer negotiates the smaller bound again.
+#[test]
+fn declined_space_without_a_stretcher_stays_unused_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(RoundDownLeaf {
+                axis,
+                grain: 10.0,
+                ideal: 200.0,
+                cross: 10.0,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 103.0, 103.0, &refs);
+        assert_extent(
+            main_extent(axis, size),
+            100.0,
+            "the stack answers the reported extents",
+        );
+        assert_negotiation(axis, &placements, 0.0, &[(80.0, 83.0), (20.0, 20.0)]);
+        let (_, own_placements) = place_after_proposal(axis, 0.0, 103.0, 100.0, &refs);
+        assert_negotiation(axis, &own_placements, 0.0, &[(80.0, 80.0), (20.0, 20.0)]);
+    }
+}
+
+/// §9's larger-bounds case: placement negotiates afresh against the resolved
+/// bounds, so a row placed wider than it was measured offers the decliner
+/// the new extent.
+#[test]
+fn placement_renegotiates_against_larger_bounds_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 6.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 120.0, &refs);
+        assert_extent(main_extent(axis, size), 100.0, "measured at the proposal");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(94.0, 100.0), (6.0, 6.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9's spacing case: member spacing is subtracted before any offer, so the
+/// negotiation runs on what remains and the badge ends on the edge.
+#[test]
+fn spacing_is_reserved_before_negotiation_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 6.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 4.0, 108.0, 108.0, &refs);
+        assert_extent(main_extent(axis, size), 108.0, "stack extent incl. spacing");
+        assert_negotiation(
+            axis,
+            &placements,
+            4.0,
+            &[(74.0, 80.0), (6.0, 6.0), (20.0, 20.0)],
+        );
+        assert_extent(
+            main_origin(axis, placements[2].frame) + main_extent(axis, *placements[2].frame.size()),
+            108.0,
+            "the badge ends on the trailing edge",
+        );
+    }
+}
+
+/// §9's infeasible case: when the minima alone overflow the budget every
+/// child is offered its minimum and the row overflows rather than
+/// collapsing one below it.
+#[test]
+fn minima_that_overflow_the_budget_are_offered_verbatim_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(FillLeaf {
+                axis,
+                minimum: 90.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_extent(main_extent(axis, size), 110.0, "the overflow is reported");
+        assert_negotiation(axis, &placements, 0.0, &[(90.0, 90.0), (20.0, 20.0)]);
+    }
+}
+
+/// A decliner that rounds to a ten-point boundary still leaves an offer it
+/// can report exactly: §9's rounding case keeps the three-point remainder
+/// honest for the spacer.
+#[test]
+fn a_rounded_decline_leaves_the_exact_remainder_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(RoundDownLeaf {
+                axis,
+                grain: 10.0,
+                ideal: 200.0,
+                cross: 10.0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 103.0, 103.0, &refs);
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(80.0, 83.0), (3.0, 3.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9's sub-ulp case: a one-ulp decline is honest space, not rounding noise —
+/// the decliner keeps its actual answer and the spacer receives the exact
+/// remainder rather than the frame being snapped back to the offer.
+#[test]
+fn a_one_ulp_decline_is_honest_space_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(NextDownLeaf {
+                axis,
+                ideal: 200.0,
+                cross: 10.0,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_eq!(
+            main_extent(axis, *placements[0].frame.size()),
+            f32::from_bits(80.0_f32.to_bits() - 1),
+            "the decliner keeps its one-ulp answer",
+        );
+        assert_eq!(
+            main_proposal(axis, placements[0].proposal),
+            Some(80.0),
+            "the decliner was offered 80",
+        );
+        assert_eq!(
+            main_extent(axis, *placements[1].frame.size()),
+            1.0_f32 / 131_072.0,
+            "the spacer receives the exact ulp remainder",
+        );
+        assert_eq!(
+            main_extent(axis, *placements[2].frame.size()),
+            20.0,
+            "the badge is untouched",
+        );
+    }
+}
+
+/// §9's resize pin: a decliner beside a plateau leaf records the sequential
+/// policy — growing the bounds by two must offer the second child the two
+/// new points, never shrink the first.
+#[test]
+fn growing_the_bounds_cannot_shrink_a_decliner_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(RoundDownLeaf {
+                axis,
+                grain: 10.0,
+                ideal: 200.0,
+                cross: 10.0,
+            }),
+            Box::new(PlateauLeaf { axis, cross: 10.0 }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, at_120) = place_after_proposal(axis, 0.0, 120.0, 120.0, &refs);
+        assert_negotiation(
+            axis,
+            &at_120,
+            0.0,
+            &[(50.0, 50.0), (10.0, 50.0), (40.0, 40.0), (20.0, 20.0)],
+        );
+        let (_, at_122) = place_after_proposal(axis, 0.0, 122.0, 122.0, &refs);
+        assert_negotiation(
+            axis,
+            &at_122,
+            0.0,
+            &[(50.0, 51.0), (10.0, 52.0), (42.0, 42.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9's oversized-answer case: a child that answers above its offer
+/// overflows the row on its own — the allocator does not repair the refusal
+/// by compressing the badge below its minimum or starving the spacer.
+#[test]
+fn an_oversized_answer_overflows_without_stealing_minima_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(OversizeLeaf {
+                axis,
+                answer: 90.0,
+                cross: 10.0,
+                priority: 1,
+            }),
+            Box::new(FillLeaf {
+                axis,
+                minimum: 0.0,
+                cross: 0.0,
+                priority: i32::MIN,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                maximum: 20.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (size, placements) = place_after_proposal(axis, 0.0, 100.0, 100.0, &refs);
+        assert_extent(main_extent(axis, size), 110.0, "the refusal overflows");
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(90.0, 80.0), (0.0, 0.0), (20.0, 20.0)],
+        );
+    }
+}
+
+/// §9's cross-axis case: the alignment envelope and every guide come from
+/// the measurements the negotiation selected — not from a probe that ran
+/// before the offers were known.
+#[test]
+fn the_envelope_comes_from_the_selected_measurement_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningGuidedLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 6.0,
+                cross: 10.0,
+                guide: 8.0,
+            }),
+            Box::new(GuidedFillLeaf { axis }),
+            Box::new(DecliningGuidedLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                decline: 0.0,
+                cross: 10.0,
+                guide: 8.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let layout = stack(axis);
+        let proposal = axis_proposal(axis, Some(100.0), Some(10.0));
+        let size = layout.size_that_fits(proposal, &refs);
+        // The spacer's selected measurement answered cross extent 12, guide
+        // 9; the siblings answer (10, 8). The envelope is 9 + 3 = 12, and a
+        // sibling sits one point in from its own guide.
+        assert_extent(
+            cross_extent(axis, size),
+            12.0,
+            "the envelope is the selected guides' envelope",
+        );
+        let bounds = Rect::new(Point::new(0.0, 0.0), axis_size(axis, 100.0, 12.0));
+        let placements = layout.place(bounds, proposal, &refs);
+        for placement in [&placements[0], &placements[2]] {
+            assert_extent(
+                cross_origin(axis, placement.frame),
+                1.0,
+                "the sibling sits at line - guide",
+            );
+        }
+        assert_extent(
+            cross_origin(axis, placements[1].frame),
+            0.0,
+            "the spacer's own guide aligns it to the envelope edge",
+        );
+    }
+}
+
+/// Placement is a fresh negotiation against the same resolved bounds:
+/// probes between two placements — at any proposal — change neither the
+/// frames nor the selected proposals.
+#[test]
+fn interleaved_probes_do_not_change_a_repeated_placement_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(DecliningGuidedLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                decline: 6.0,
+                cross: 10.0,
+                guide: 8.0,
+            }),
+            Box::new(GuidedFillLeaf { axis }),
+            Box::new(DecliningGuidedLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 20.0,
+                decline: 0.0,
+                cross: 10.0,
+                guide: 8.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let layout = stack(axis);
+        let proposal = axis_proposal(axis, Some(100.0), Some(10.0));
+        let bounds = Rect::new(Point::new(0.0, 0.0), axis_size(axis, 100.0, 12.0));
+        let first = layout.place(bounds, proposal, &refs);
+        for probe in [
+            Some(0.0),
+            Some(60.0),
+            Some(200.0),
+            None,
+            Some(f32::INFINITY),
+        ] {
+            layout.size_that_fits(axis_proposal(axis, probe, Some(10.0)), &refs);
+        }
+        let second = layout.place(bounds, proposal, &refs);
+        assert_eq!(first, second, "a repeated placement is identical");
+    }
+}
+
+/// Equal-flexibility children divide a band's budget equally: seven equal
+/// columns 56 pt short all lose the same 8 pt — the rule that replaced
+/// water-filling keeps its calendar-row property.
+#[test]
+fn equal_children_share_the_band_budget_equally_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = (0..7)
+            .map(|_| {
+                Box::new(RangeLeaf {
+                    axis,
+                    minimum: 0.0,
+                    ideal: 40.0,
+                    maximum: 40.0,
+                    cross: 10.0,
+                }) as Box<dyn SubView>
+            })
+            .collect();
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 224.0, 224.0, &refs);
+        assert_negotiation(axis, &placements, 0.0, &[(32.0, 32.0); 7]);
+    }
+}
+
+/// A rigid child beside a wide flexible one: the wide child negotiates
+/// after the rigid peer's share is reserved and absorbs the deficit alone.
+#[test]
+fn the_widest_child_absorbs_the_deficit_alone_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 50.0,
+                maximum: 50.0,
+                cross: 10.0,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 200.0,
+                maximum: 200.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 140.0, 140.0, &refs);
+        assert_negotiation(axis, &placements, 0.0, &[(50.0, 50.0), (90.0, 90.0)]);
+    }
+}
+
+/// The flexible child in the middle of rigid neighbours receives exactly
+/// the remainder the peer-minimum reservations leave it.
+#[test]
+fn one_flexible_child_receives_the_exact_remainder_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 50.0,
+                ideal: 50.0,
+                maximum: 50.0,
+                cross: 10.0,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 0.0,
+                ideal: 280.0,
+                maximum: 280.0,
+                cross: 10.0,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 80.0,
+                ideal: 80.0,
+                maximum: 80.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 280.0, 280.0, &refs);
+        assert_negotiation(
+            axis,
+            &placements,
+            0.0,
+            &[(50.0, 50.0), (150.0, 150.0), (80.0, 80.0)],
+        );
+    }
+}
+
+/// A child's measured minimum is a hard floor: the negotiation cannot push
+/// the 80-point child below it, so the first child takes the whole deficit
+/// within its own floor.
+#[test]
+fn a_child_never_negotiates_below_its_reported_minimum_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 20.0,
+                ideal: 100.0,
+                maximum: 100.0,
+                cross: 10.0,
+            }),
+            Box::new(RangeLeaf {
+                axis,
+                minimum: 80.0,
+                ideal: 100.0,
+                maximum: 100.0,
+                cross: 10.0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 120.0, 120.0, &refs);
+        assert_negotiation(axis, &placements, 0.0, &[(40.0, 40.0), (80.0, 80.0)]);
+    }
+}
+
+/// A lower band's whole ideal is given up before the higher band's offer is
+/// reduced: the priority-1 child is proposed its target and the band-0
+/// child absorbs the deficit.
+#[test]
+fn the_lower_band_gives_way_before_the_higher_on_both_axes() {
+    for axis in [Axis::Horizontal, Axis::Vertical] {
+        let children: Vec<Box<dyn SubView>> = vec![
+            Box::new(AcceptingLeaf {
+                axis,
+                minimum: 0.0,
+                maximum: 100.0,
+                cross: 10.0,
+                priority: 1,
+            }),
+            Box::new(AcceptingLeaf {
+                axis,
+                minimum: 0.0,
+                maximum: 100.0,
+                cross: 10.0,
+                priority: 0,
+            }),
+        ];
+        let refs: Vec<&dyn SubView> = children.iter().map(AsRef::as_ref).collect();
+        let (_, placements) = place_after_proposal(axis, 0.0, 150.0, 150.0, &refs);
+        assert_negotiation(axis, &placements, 0.0, &[(100.0, 100.0), (50.0, 50.0)]);
+    }
 }
