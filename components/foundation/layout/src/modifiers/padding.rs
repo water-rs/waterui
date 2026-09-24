@@ -15,7 +15,7 @@ use crate::{
 /// without the subtree being rebuilt.
 #[derive(Debug, Clone)]
 pub struct PaddingLayout {
-    edges: Computed<EdgeInsets>,
+    pub(crate) edges: Computed<EdgeInsets>,
 }
 
 impl Layout for PaddingLayout {
