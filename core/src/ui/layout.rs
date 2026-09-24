@@ -584,16 +584,28 @@ impl<'a> PlacedSubview<'a> {
     }
 
     /// Returns the explicit horizontal guide in container coordinates, if any.
+    ///
+    /// A child that is not a stack member (`SubView::is_empty`) exports no
+    /// guide: its declarations contribute to nothing, not even this lookup.
     #[must_use]
     pub fn explicit_horizontal(&self, alignment: HorizontalAlignment) -> Option<f32> {
+        if self.view.is_empty() {
+            return None;
+        }
         self.dimensions()
             .explicit_horizontal(alignment)
             .map(|value| self.frame.x() + value)
     }
 
     /// Returns the explicit vertical guide in container coordinates, if any.
+    ///
+    /// A child that is not a stack member (`SubView::is_empty`) exports no
+    /// guide: its declarations contribute to nothing, not even this lookup.
     #[must_use]
     pub fn explicit_vertical(&self, alignment: VerticalAlignment) -> Option<f32> {
+        if self.view.is_empty() {
+            return None;
+        }
         self.dimensions()
             .explicit_vertical(alignment)
             .map(|value| self.frame.y() + value)
@@ -808,6 +820,11 @@ impl SubView for MemoizedSubView<'_> {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
+        // A non-member contributes nothing, including a stretch claim read
+        // before its empty body ran.
+        if self.inner.is_empty() {
+            return StretchAxis::None;
+        }
         self.inner.stretch_axis()
     }
 
@@ -1000,6 +1017,10 @@ fn measure_layout_memoized(
     let mut vertical_keys = layout.explicit_vertical_alignments();
 
     for child in &placed_subviews {
+        if child.view.is_empty() {
+            // A non-member exports no guides, not even the keys it declares.
+            continue;
+        }
         let child_dimensions = child.dimensions();
         for (alignment, _) in child_dimensions.explicit_horizontal_guides() {
             if !horizontal_keys.contains(&alignment) {

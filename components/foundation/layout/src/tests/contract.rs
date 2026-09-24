@@ -2,6 +2,7 @@ use alloc::{boxed::Box, vec, vec::Vec};
 
 use nami::Computed;
 
+use crate::modifiers::alignment_guide::HorizontalAlignmentGuideLayout;
 use crate::stack::{Axis, HStackLayout, VStackLayout};
 use crate::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -56,6 +57,7 @@ impl SubView for LayoutNode {
         let axes: Vec<_> = self
             .children
             .iter()
+            .filter(|child| !child.is_empty())
             .map(|child| child.stretch_axis())
             .collect();
         self.layout.stretch_axis(&axes)
@@ -711,6 +713,80 @@ fn explicit_guides_shape_the_envelope_on_edge_alignments() {
     );
 }
 
+/// A leaf carrying an explicit first baseline — a text run as its stack
+/// sees it.
+struct BaselineLeaf {
+    size: Size,
+    baseline: f32,
+}
+
+impl SubView for BaselineLeaf {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+            .with_vertical(VerticalAlignment::FirstBaseline, self.baseline)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// §5 — an alignment-guide modifier overrides its one key and forwards every
+/// other explicit key unchanged: a horizontal override cannot drop the
+/// baseline the wrapped child declared. The audit's fixture: a first-baseline
+/// row holding a wrapped and an unwrapped leaf is 40x28 with the sibling's
+/// baseline hung on the wrapped one's.
+#[test]
+fn an_alignment_guide_modifier_forwards_unrelated_guides() {
+    let wrapped = LayoutNode {
+        layout: Box::new(HorizontalAlignmentGuideLayout {
+            alignment: HorizontalAlignment::Leading,
+            compute: |dimensions: &ViewDimensions| {
+                dimensions.horizontal(HorizontalAlignment::Leading) - 4.0
+            },
+        }),
+        children: vec![Box::new(BaselineLeaf {
+            size: Size::new(20.0, 20.0),
+            baseline: 12.0,
+        })],
+    };
+    let sibling = BaselineLeaf {
+        size: Size::new(20.0, 20.0),
+        baseline: 4.0,
+    };
+    let outer = HStackLayout {
+        alignment: VerticalAlignment::FirstBaseline,
+        spacing: Computed::constant(0.0),
+    };
+    let children: [&dyn SubView; 2] = [&wrapped, &sibling];
+    let measured = measure_layout(&outer, ProposalSize::UNSPECIFIED, &children);
+    assert_extent(measured.size.width, 40.0, "row width is the two members");
+    assert_extent(
+        measured.size.height,
+        28.0,
+        "the forwarded baseline shapes the envelope",
+    );
+    let placements = outer.place(
+        Rect::from_size(measured.size),
+        ProposalSize::UNSPECIFIED,
+        &children,
+    );
+    assert_extent(
+        placements[0].frame.y(),
+        0.0,
+        "the wrapped member's own baseline rides the line",
+    );
+    assert_extent(
+        placements[1].frame.y(),
+        8.0,
+        "the sibling's baseline hangs on the forwarded one",
+    );
+}
+
 const fn cross_extent(axis: Axis, size: Size) -> f32 {
     if axis.is_horizontal() {
         size.height
@@ -868,6 +944,123 @@ fn a_zero_sized_child_is_still_a_member() {
         placements[2].frame.y(),
         20.0 + spacing * 2.0,
         "the last member keeps both gaps around the zero-size one",
+    );
+}
+
+/// A child that renders nothing while still declaring an explicit guide and
+/// a stretch axis — the shape §4.4's membership rule must exclude from the
+/// envelope, the exported guides, and the container's stretch, not only
+/// from slots and spacing.
+struct EmptyGuideLeaf {
+    top: f32,
+    stretch: StretchAxis,
+}
+
+impl SubView for EmptyGuideLeaf {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(Size::zero()).with_vertical(VerticalAlignment::Top, self.top)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.stretch
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+
+    fn is_empty(&self) -> bool {
+        true
+    }
+}
+
+/// §4.4 — a non-member contributes to neither the alignment envelope, nor
+/// the exported guides, nor the container's stretch. First leg is the
+/// audit's fixture: an empty child whose explicit top guide sits a hundred
+/// points above the stack leaves the row 40x10 with both members at y=0.
+/// Second leg: a non-member claiming `Both` must not stretch its stack.
+#[test]
+fn a_non_member_exports_neither_guides_nor_stretch() {
+    let rigid = || RangeLeaf {
+        axis: Axis::Horizontal,
+        minimum: 20.0,
+        ideal: 20.0,
+        maximum: 20.0,
+        cross: 10.0,
+    };
+    let top_stack = || {
+        Box::new(HStackLayout {
+            alignment: VerticalAlignment::Top,
+            spacing: Computed::constant(0.0),
+        }) as Box<dyn Layout>
+    };
+    let outer = HStackLayout {
+        alignment: VerticalAlignment::Top,
+        spacing: Computed::constant(0.0),
+    };
+
+    // Guide leg: the empty child's -100 top guide must stay out of the inner
+    // stack's exported guide and the outer envelope.
+    let inner = LayoutNode {
+        layout: top_stack(),
+        children: vec![
+            Box::new(rigid()),
+            Box::new(EmptyGuideLeaf {
+                top: -100.0,
+                stretch: StretchAxis::None,
+            }),
+        ],
+    };
+    let sibling = rigid();
+    let children: [&dyn SubView; 2] = [&inner, &sibling];
+    let measured = measure_layout(&outer, ProposalSize::UNSPECIFIED, &children);
+    assert_extent(measured.size.width, 40.0, "outer width is the two members");
+    assert_extent(
+        measured.size.height,
+        10.0,
+        "the non-member's guide cannot raise the envelope",
+    );
+    let placements = outer.place(
+        Rect::from_size(measured.size),
+        ProposalSize::UNSPECIFIED,
+        &children,
+    );
+    assert_extent(placements[0].frame.y(), 0.0, "inner member on the line");
+    assert_extent(placements[1].frame.y(), 0.0, "sibling member on the line");
+    assert_extent(
+        placements[1].frame.x(),
+        20.0,
+        "sibling follows the inner stack",
+    );
+
+    // Stretch leg: the non-member's `Both` must not make its stack greedy —
+    // under a finite offer the outer row stays content-sized.
+    let inner = LayoutNode {
+        layout: top_stack(),
+        children: vec![
+            Box::new(rigid()),
+            Box::new(EmptyGuideLeaf {
+                top: 0.0,
+                stretch: StretchAxis::Both,
+            }),
+        ],
+    };
+    let sibling = rigid();
+    let children: [&dyn SubView; 2] = [&inner, &sibling];
+    let measured = measure_layout(
+        &outer,
+        ProposalSize::new(Some(100.0), Some(60.0)),
+        &children,
+    );
+    assert_extent(
+        measured.size.width,
+        40.0,
+        "the non-member's claim cannot stretch the row",
+    );
+    assert_extent(
+        measured.size.height,
+        10.0,
+        "height stays the members' answer",
     );
 }
 
