@@ -777,6 +777,43 @@ fn free_mount_app_mounts_at_the_window_frame() {
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
 }
 
+/// Chained frame setters mutate one `FrameLayout`, so `.size(40, 20)` followed
+/// by `.min_width(60)` inverts the width axis — and `min` wins, the same
+/// precedence CSS gives a `min-width` over a conflicting `max-width`: the
+/// chain asks for a 60x20 frame and resolves to exactly that.
+#[test]
+fn a_size_then_min_width_chain_resolves_to_the_minimum() {
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(200, 200)
+        .mount_offscreen(|| {
+            vstack((waterui::Color::srgb_hex("#E67E22")
+                .size(40.0, 20.0)
+                .min_width(60.0)
+                .a11y_label("chained"),))
+        });
+    let bounds = app.query().label("chained").single().bounds();
+    assert_eq!((bounds.width(), bounds.height()), (60.0, 20.0));
+}
+
+/// `.size(50, 80)` with `.min_height(100)` and `.min_width(60)` inverts both
+/// axes; each resolves to its minimum.
+#[test]
+fn a_size_then_min_height_and_min_width_chain_resolves_to_the_minimum() {
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(200, 200)
+        .mount_offscreen(|| {
+            vstack((waterui::Color::srgb_hex("#E67E22")
+                .size(50.0, 80.0)
+                .min_height(100.0)
+                .min_width(60.0)
+                .a11y_label("chained"),))
+        });
+    let bounds = app.query().label("chained").single().bounds();
+    assert_eq!((bounds.width(), bounds.height()), (60.0, 100.0));
+}
+
 #[test]
 fn a11y_identifier_flows_from_modifier_to_selector() {
     let mut app = ui().mount(|| {

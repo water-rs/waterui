@@ -276,8 +276,10 @@ view swap does.
   the child sits at the inset offset, which may lie outside the bounds.
   Transparent to stretch and guides.
 - **Frame** (`width/height/min/max/ideal`): an inverted constraint — `min`
-  above `max` on one axis — is a programming error, and resolution panics
-  naming the axis and both values. On each axis the child hears the
+  above `max` on one axis — resolves in the `min`'s favour, the same
+  precedence CSS gives a `min-width` over a conflicting `max-width`: the
+  effective maximum is the minimum, and the axis resolves to `min`. On each
+  axis the child hears the
   parent's proposal clamped into `[min, max]`, with `ideal` answering only an
   axis the parent left unspecified; the frame answers the child's answer
   clamped into `[min, max]`, growing into a finite offer only up to `max`.
