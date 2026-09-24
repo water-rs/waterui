@@ -408,7 +408,11 @@ List::content((
 ))
 ```
 
-`ListItem` modifiers: `.deletable(signal)`, `.selected(signal)`, `.section(section)`.
+`ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
+list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
+`.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
+`List::content` rows `V::Id` is `SelfId<usize>`, for `List::for_each` it is
+`Identifiable::Id`. At most one mode per list: a later call replaces an earlier one.
 `List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
 tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.

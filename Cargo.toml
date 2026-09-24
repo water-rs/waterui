@@ -505,10 +505,11 @@ waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
 # The executor now takes its refresh rate from the host (#1201), and the
 # registry hydrolysis still calls the removed display probe. This is the
-# hydrolysis revision that supplies the rate from winit's monitors and
-# implements the icon-button contract (water-rs/hydrolysis#115); drop it
-# when a hydrolysis release carries both changes.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "d67e5e37ec58e736d62a7429bfefad7b026ba5a8" }
+# hydrolysis revision that supplies the rate from winit's monitors,
+# implements the icon-button contract (water-rs/hydrolysis#115), and
+# renders the framework-owned ListSelection (water-rs/waterui#1226); drop
+# it when a hydrolysis release carries those changes.
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "cb872581c8d334bf44ace19a6706e09d94d50b23" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.

@@ -1,12 +1,15 @@
 use crate::action::{WuiIndexAction, WuiMoveAction};
-use crate::reactive::WuiComputed;
+use crate::reactive::{WuiBinding, WuiComputed};
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView};
+use alloc::vec::Vec;
 use core::fmt;
+use core::num::NonZeroI32;
 use nami::SignalExt;
-use waterui::component::list::{ListConfig, ListItem, ListSection};
+use waterui::component::list::{ListConfig, ListItem, ListSection, ListSelection};
 use waterui::text::styled::StyledStr;
 use waterui::views::ViewsExt;
+use waterui_core::id::{Id, SelfId};
 
 /// FFI representation of the section break a list item may carry.
 ///
@@ -45,9 +48,6 @@ pub struct WuiListItem {
     pub content: *mut WuiAnyView,
     /// Read-only signal indicating whether this item can be deleted.
     pub deletable: *mut WuiComputed<bool>,
-    /// Read-only signal marking this item as the current selection; the
-    /// backend draws its platform's selection chrome while it is true.
-    pub selected: *mut WuiComputed<bool>,
     /// Section break carried by this item — see [`WuiListSection`].
     pub section: WuiListSection,
 }
@@ -90,7 +90,6 @@ impl IntoFFI for ListItem {
         WuiListItem {
             content: self.content.into_ffi(),
             deletable: self.deletable.into_ffi(),
-            selected: self.selected.into_ffi(),
             section: self.section.into_ffi(),
         }
     }
@@ -150,12 +149,87 @@ unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_forceAsListIte
     })
 }
 
+/// Selection mode a `WuiList` is bound to — at most one per list.
+#[repr(C)]
+#[derive(Debug)]
+pub enum WuiListSelectionMode {
+    /// Rows are not selectable; both binding slots are null.
+    None = 0,
+    /// The list binds `Binding<Option<row id>>`.
+    Single = 1,
+    /// The list binds `Binding<Set<row id>>`.
+    Multiple = 2,
+}
+
+/// FFI representation of a list's selection bindings.
+///
+/// Rows are keyed by the same erased id values `WuiAnyViews::get_id` reports,
+/// so the backend writes ids it received from the collection straight back,
+/// never inventing its own numbering. `single` is a `Binding<i32>` in which 0
+/// means nothing is selected (ids are non-zero); `multiple` is a
+/// `Binding<int[]>` carrying the selected ids. Slots not named by `mode` are
+/// null and must not be read or dropped. The backend draws its platform's
+/// selection chrome from these bindings and writes them on pointer, keyboard
+/// and accessibility input.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiListSelection {
+    /// Which selection mode the list is in.
+    pub mode: WuiListSelectionMode,
+    /// Single-selection binding over erased row ids (0 = none), or null.
+    pub single: *mut WuiBinding<i32>,
+    /// Multi-selection binding over erased row ids, or null.
+    pub multiple: *mut WuiBinding<Vec<Id>>,
+}
+
+impl IntoFFI for ListSelection<SelfId<Id>> {
+    type FFI = WuiListSelection;
+
+    fn into_ffi(self) -> Self::FFI {
+        let null = WuiListSelection {
+            mode: WuiListSelectionMode::None,
+            single: core::ptr::null_mut(),
+            multiple: core::ptr::null_mut(),
+        };
+        match self {
+            Self::None => null,
+            Self::Single(selection) => WuiListSelection {
+                mode: WuiListSelectionMode::Single,
+                single: WuiBinding(nami::Binding::mapping(
+                    &selection,
+                    |selected| selected.map_or(0, |id| i32::from(id.into_inner())),
+                    |binding, erased| {
+                        binding.set(NonZeroI32::new(erased).map(|id| SelfId::new(Id::from(id))));
+                    },
+                ))
+                .into_ffi(),
+                ..null
+            },
+            Self::Multiple(selection) => WuiListSelection {
+                mode: WuiListSelectionMode::Multiple,
+                multiple: WuiBinding(nami::Binding::mapping(
+                    &selection,
+                    |selected| selected.iter().map(|id| **id).collect::<Vec<Id>>(),
+                    |binding, erased: Vec<Id>| {
+                        binding.set(erased.into_iter().map(SelfId::new).collect());
+                    },
+                ))
+                .into_ffi(),
+                ..null
+            },
+        }
+    }
+}
+
 /// FFI representation of a list.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiList {
     /// The list contents (array of list items).
     pub contents: *mut WuiAnyViews,
+    /// The list's selection bindings, keyed by the ids `contents` reports —
+    /// see [`WuiListSelection`].
+    pub selection: WuiListSelection,
     /// Read-only signal for edit mode state.
     pub editing: *mut WuiComputed<bool>,
     /// Optional delete callback (null if not deletable).
@@ -192,6 +266,7 @@ impl IntoFFI for ListConfig {
         );
         WuiList {
             contents: self.contents.erase().into_ffi(),
+            selection: self.selection.into_ffi(),
             editing: self.editing.into_ffi(),
             on_delete: self.on_delete.into_ffi(),
             on_move: self.on_move.into_ffi(),

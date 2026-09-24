@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=d67e5e37ec58e736d62a7429bfefad7b026ba5a8#d67e5e37ec58e736d62a7429bfefad7b026ba5a8"
+source = "git+https://github.com/water-rs/hydrolysis?rev=cb872581c8d334bf44ace19a6706e09d94d50b23#cb872581c8d334bf44ace19a6706e09d94d50b23"
 dependencies = [
  "accesskit",
  "async-task",
@@ -10867,6 +10867,7 @@ dependencies = [
  "bitflags 2.13.2",
  "executor-core",
  "hydrolysis",
+ "hydrolysis-m3",
  "image",
  "pollster 1.0.1",
  "serde_json",
