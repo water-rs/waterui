@@ -15,9 +15,9 @@ use crate::{
 };
 
 #[derive(Clone)]
-struct HorizontalAlignmentGuideLayout<F> {
-    alignment: HorizontalAlignment,
-    compute: F,
+pub(crate) struct HorizontalAlignmentGuideLayout<F> {
+    pub(crate) alignment: HorizontalAlignment,
+    pub(crate) compute: F,
 }
 
 impl<F> fmt::Debug for HorizontalAlignmentGuideLayout<F> {
@@ -65,7 +65,11 @@ where
         children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
         if alignment != self.alignment {
-            return None;
+            // The modifier owns one key; every other explicit key the child
+            // declares passes through unchanged.
+            return children
+                .first()
+                .and_then(|child| child.explicit_horizontal(alignment));
         }
 
         assert!(
@@ -75,6 +79,17 @@ where
 
         let child = children[0];
         Some(child.frame.x() + (self.compute)(&child.dimensions()))
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_vertical(alignment))
     }
 
     fn explicit_horizontal_alignments(&self) -> Vec<HorizontalAlignment> {
@@ -136,9 +151,9 @@ where
 }
 
 #[derive(Clone)]
-struct VerticalAlignmentGuideLayout<F> {
-    alignment: VerticalAlignment,
-    compute: F,
+pub(crate) struct VerticalAlignmentGuideLayout<F> {
+    pub(crate) alignment: VerticalAlignment,
+    pub(crate) compute: F,
 }
 
 impl<F> fmt::Debug for VerticalAlignmentGuideLayout<F> {
@@ -179,6 +194,17 @@ where
         )]
     }
 
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_horizontal(alignment))
+    }
+
     fn explicit_vertical(
         &self,
         alignment: VerticalAlignment,
@@ -186,7 +212,9 @@ where
         children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
         if alignment != self.alignment {
-            return None;
+            return children
+                .first()
+                .and_then(|child| child.explicit_vertical(alignment));
         }
 
         assert!(
