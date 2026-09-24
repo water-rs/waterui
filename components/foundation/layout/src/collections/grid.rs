@@ -9,7 +9,7 @@ use waterui_core::{
 };
 
 use crate::{
-    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, SubView, SubviewPlacement,
+    Layout, PlacedSubview, Point, ProposalSize, Rect, Size, StretchAxis, SubView, SubviewPlacement,
     ViewDimensions,
     container::FixedContainer,
     stack::{Alignment, HorizontalAlignment, VerticalAlignment},
@@ -132,6 +132,14 @@ impl GridLayout {
 
 #[allow(clippy::cast_precision_loss)]
 impl Layout for GridLayout {
+    /// A grid relays the union of its children's stretch claims. It has no
+    /// main axis of its own, so axis-relative claims resolve the way they do
+    /// for its cells: `MainAxis` claims nothing, `CrossAxis` fills
+    /// horizontally.
+    fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
+        crate::stack::axisless_stretch_union(children)
+    }
+
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
         if children.is_empty() {
             return Size::zero();
@@ -460,6 +468,69 @@ mod tests {
         fn priority(&self) -> i32 {
             0
         }
+    }
+
+    struct StretchingSubView {
+        size: Size,
+    }
+
+    impl SubView for StretchingSubView {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(self.size)
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::Both
+        }
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    #[test]
+    fn grid_relays_live_child_stretch() {
+        // A grid has no main axis of its own; §3 requires it to relay the
+        // union of its children's stretch. A filling cell must therefore
+        // stretch the grid's root frame to the window.
+        let layout = GridLayout::new(
+            NonZeroUsize::new(1).unwrap(),
+            Size::zero(),
+            Alignment::Center,
+        );
+
+        let child = StretchingSubView {
+            size: Size::new(20.0, 10.0),
+        };
+        let children: Vec<&dyn SubView> = vec![&child];
+
+        let proposal = ProposalSize::new(Some(100.0), Some(80.0));
+        assert_eq!(
+            layout.size_that_fits(proposal, &children),
+            Size::new(100.0, 10.0),
+            "the grid answers the proposal width and the row's intrinsic height"
+        );
+
+        let axes: Vec<StretchAxis> = children
+            .iter()
+            .map(|child| child.stretch_axis())
+            .collect();
+        assert_eq!(
+            layout.stretch_axis(&axes),
+            StretchAxis::Both,
+            "the union of the children's claims"
+        );
+
+        // The root is placed at its answer stretched on declared axes:
+        // 100x10 stretched on both is the whole 100x80 window. Rows keep
+        // their intrinsic height, so the cell still lands at (40,0,20,10).
+        let placements = layout.place(
+            Rect::new(Point::zero(), Size::new(100.0, 80.0)),
+            proposal,
+            &children,
+        );
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 10.0))
+        );
     }
 
     #[test]
