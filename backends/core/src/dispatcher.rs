@@ -50,7 +50,7 @@ struct HandlerEntry<T, C, R> {
 /// let mut dispatcher: ViewDispatcher<(), GtkContext, gtk4::Widget> = ViewDispatcher::new();
 ///
 /// dispatcher.register::<Native<TextConfig>>(|state, ctx, config, env| {
-///     let label = gtk4::Label::new(Some(&config.content.get().to_plain()));
+///     let label = gtk4::Label::new(Some(&config.content.snapshot().to_plain()));
 ///     label.upcast()
 /// });
 ///

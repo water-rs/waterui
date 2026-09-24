@@ -93,7 +93,8 @@ configurable!(
     //
     Picker,
     PickerConfig,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 /// A picker item that associates a value of type `T` with a text display.

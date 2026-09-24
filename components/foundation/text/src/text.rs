@@ -334,7 +334,7 @@ impl Text {
                     // A plain field cannot be flattened through the config
                     // signal, so the resolved snapshot's value is the one that
                     // holds; every authoring path sets it before resolution.
-                    line_limit: config.get().line_limit,
+                    line_limit: config.snapshot().line_limit,
                     content: flatten_signal(config.map(|config| config.content)),
                     paragraph_alignment: flatten_signal(
                         config.map(|config| config.paragraph_alignment),
@@ -610,7 +610,7 @@ impl View for Text {
                 RawText(TextConfig {
                     // See `Text::resolve`: the limit is a plain field settled
                     // at authoring time, so the resolved snapshot's value holds.
-                    line_limit: config.get().line_limit,
+                    line_limit: config.snapshot().line_limit,
                     content: flatten_signal(config.map(|config| config.content)),
                     paragraph_alignment: flatten_signal(
                         config.map(|config| config.paragraph_alignment),
@@ -631,7 +631,7 @@ mod tests {
         let text =
             Text::computed(StyledStr::plain("hello")).text_align(HorizontalAlignment::Trailing);
         assert_eq!(
-            text.paragraph_alignment().get(),
+            text.paragraph_alignment().snapshot(),
             HorizontalAlignment::Trailing
         );
     }
@@ -651,9 +651,9 @@ mod tests {
         let text: Text = key.clone().into();
         let content = text.resolve(&env).content;
 
-        assert_eq!(content.get().to_plain(), "Hello");
+        assert_eq!(content.snapshot().to_plain(), "Hello");
         key.set("farewell");
-        assert_eq!(content.get().to_plain(), "Goodbye");
+        assert_eq!(content.snapshot().to_plain(), "Goodbye");
     }
 
     #[test]
@@ -685,6 +685,6 @@ mod tests {
     }
 
     fn resolved_plain(text: &Text, env: &Environment) -> String {
-        text.resolve(env).content.get().to_plain().to_string()
+        text.resolve(env).content.snapshot().to_plain().to_string()
     }
 }

@@ -112,12 +112,12 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
 
     assert_image_eventually_exists(&mut app, "Sample photo");
     assert!(
-        !last_event.get().starts_with("error:"),
+        !last_event.snapshot().starts_with("error:"),
         "photo_exposes_accessibility_image_after_load: {event}",
-        event = last_event.get()
+        event = last_event.snapshot()
     );
     assert!(
-        loaded.get(),
+        loaded.snapshot(),
         "photo load event should mark the image as loaded"
     );
 }

@@ -120,13 +120,13 @@ fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
     waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
         LazyStackAxis::Vertical { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Vertical,
-            spacing: spacing.get(),
+            spacing: spacing.snapshot(),
             horizontal_alignment: alignment.into_ffi(),
             vertical_alignment: VerticalAlignment::Center.into_ffi(),
         },
         LazyStackAxis::Horizontal { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Horizontal,
-            spacing: spacing.get(),
+            spacing: spacing.snapshot(),
             horizontal_alignment: HorizontalAlignment::Center.into_ffi(),
             vertical_alignment: alignment.into_ffi(),
         },
@@ -897,7 +897,7 @@ mod tests {
 
         impl Drop for DropProbe {
             fn drop(&mut self) {
-                self.0.set(self.0.get() + 1);
+                self.0.set(self.0.snapshot() + 1);
             }
         }
 
@@ -1038,7 +1038,7 @@ mod tests {
             // SAFETY: the test registers this callback with a pointer to its own
             // live `Target`.
             let target = unsafe { &*(context as *const Target) };
-            target.0.set(target.0.get() + 1);
+            target.0.set(target.0.snapshot() + 1);
         }
 
         unsafe extern "C" fn drop_target(context: *mut c_void) {
@@ -1168,7 +1168,7 @@ mod tests {
         // SAFETY: `context` is the boxed `ProbeContext` this callback was
         // registered with, and the drop entry runs once.
         let context = unsafe { Box::from_raw(context.cast::<ProbeContext>()) };
-        context.drops.set(context.drops.get() + 1);
+        context.drops.set(context.drops.snapshot() + 1);
     }
 
     fn foreign_probe(

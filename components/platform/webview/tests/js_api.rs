@@ -15,7 +15,7 @@
 )]
 
 use waterui::webview::{Json, serde};
-use waterui::{Binding, Computed, js_api};
+use waterui::{Binding, Computed, Signal, js_api};
 
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 #[serde(crate = "waterui::webview::serde")]
@@ -57,7 +57,7 @@ impl App {
     /// Internal helpers stay internal.
     #[js(skip)]
     fn internal(&self, factor: u32) -> u32 {
-        self.count.get() * factor
+        self.count.snapshot() * factor
     }
 }
 

@@ -188,7 +188,7 @@ mod tests {
         let action: BoxedAction<()> = Box::new(move |_| {
             // SAFETY: the cell holds the action handle installed before this callback
             // runs, and the callback runs once.
-            unsafe { waterui_drop_action(action_ptr_for_callback.get()) };
+            unsafe { waterui_drop_action(action_ptr_for_callback.snapshot()) };
             callback_finished_for_callback.set(true);
         });
         let action = action.into_ffi();

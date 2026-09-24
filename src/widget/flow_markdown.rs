@@ -137,11 +137,11 @@ impl View for FlowMarkdown {
         let Self { source, config } = self;
         let blocks = ReactiveList::new();
         let state = Rc::new(RefCell::new(FlowMarkdownState::new(
-            config.get(),
+            config.snapshot(),
             blocks.clone(),
         )));
 
-        let initial = source.get();
+        let initial = source.snapshot();
         let initial_update = state
             .borrow_mut()
             .recompute(initial.as_str(), WatcherMetadata::new());
@@ -1833,7 +1833,7 @@ mod tests {
         // A plain `FlowMarkdownConfig` is a constant signal, so this compiles
         // without a `Computed::constant` wrapper at the call site.
         let view = flow_markdown("hi").configuration(FlowMarkdownConfig::default());
-        assert_eq!(view.config.get().max_pending_bytes, 32 * 1024);
+        assert_eq!(view.config.snapshot().max_pending_bytes, 32 * 1024);
     }
 
     #[test]

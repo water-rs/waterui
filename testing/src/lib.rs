@@ -37,7 +37,7 @@
 //!     let value_for_view = value.clone();
 //!     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 //!     app.query().label("Limited").increment();
-//!     assert_eq!(value.get(), 3);
+//!     assert_eq!(value.snapshot(), 3);
 //! }
 //! ```
 //!

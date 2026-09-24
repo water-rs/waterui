@@ -4,7 +4,7 @@ use alloc::{collections::BTreeSet, vec::Vec};
 use core::ops::RangeInclusive;
 
 use jiff::civil::Date;
-use nami::{Binding, Computed, SignalExt, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt, signal::IntoComputed};
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
@@ -97,9 +97,9 @@ impl MultiDatePicker {
     /// Sets the valid date range for the picker.
     #[must_use]
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        if !visible_month_in_range(self.0.visible_month.get(), &range) {
+        if !visible_month_in_range(self.0.visible_month.snapshot(), &range) {
             self.0.visible_month.set(initial_visible_month(
-                self.0.value.get().into_iter().next(),
+                self.0.value.snapshot().into_iter().next(),
                 &range,
             ));
         }

@@ -13,7 +13,7 @@ use waterui::prelude::*;
 // Both lines are supposed to compile: the point of the section is that the
 // broken one is a *silent* bug, not a compile error. Both do.
 // ---------------------------------------------------------------------------
-// `fade.get()` is the doc's deliberate broken line — the section's point is
+// `fade.snapshot()` is the doc's deliberate broken line — the section's point is
 // that it compiles while silently freezing the view.
 #[allow(unknown_lints, signal_get_in_view)]
 pub fn troubleshooting_block_01() {
@@ -21,7 +21,7 @@ pub fn troubleshooting_block_01() {
 
     let view = Divider;
     let _ = {
-        view.opacity(fade.get()) // frozen
+        view.opacity(fade.snapshot()) // frozen
     };
     let view = Divider;
     let _ = {

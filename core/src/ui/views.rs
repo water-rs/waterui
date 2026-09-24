@@ -44,7 +44,7 @@ pub trait Views {
 
     /// Returns `true` if the collection contains no elements.
     fn is_empty(&self) -> bool {
-        nami::Signal::get(&self.len()) == 0
+        self.len().snapshot() == 0
     }
 
     /// Registers a watcher for changes in the specified range of the collection.
@@ -365,7 +365,7 @@ where
     type Output = usize;
     type Guard = C::Guard;
 
-    fn get(&self) -> Self::Output {
+    fn snapshot(&self) -> Self::Output {
         self.0.len()
     }
 
@@ -716,7 +716,7 @@ mod tests {
         type View = ();
 
         fn get_id(&self, index: usize) -> Option<Self::Id> {
-            (index < self.len_signal.get()).then_some(SelfId::new(index))
+            (index < self.len_signal.snapshot()).then_some(SelfId::new(index))
         }
 
         fn len(&self) -> Computed<usize> {
@@ -731,7 +731,7 @@ mod tests {
         }
 
         fn get_view(&self, index: usize) -> Option<Self::View> {
-            (index < self.len_signal.get()).then_some(())
+            (index < self.len_signal.snapshot()).then_some(())
         }
     }
 
@@ -742,9 +742,9 @@ mod tests {
             len_signal: len_signal.clone(),
         };
 
-        assert_eq!(views.len().get(), 2);
+        assert_eq!(views.len().snapshot(), 2);
         len_signal.set(5);
-        assert_eq!(views.len().get(), 5);
+        assert_eq!(views.len().snapshot(), 5);
     }
 
     #[test]
@@ -755,9 +755,9 @@ mod tests {
         };
         let mapped = views.map(|view| view);
 
-        assert_eq!(mapped.len().get(), 1);
+        assert_eq!(mapped.len().snapshot(), 1);
         len_signal.set(4);
-        assert_eq!(mapped.len().get(), 4);
+        assert_eq!(mapped.len().snapshot(), 4);
     }
 
     #[test]

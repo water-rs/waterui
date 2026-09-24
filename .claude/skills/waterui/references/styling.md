@@ -135,7 +135,7 @@ let fill = signal_color(selected.select(indicator, clear).computed());
 Rectangle.fill(fill).size(64.0, 32.0)
 ```
 
-Without it, `.fill(binding)` fails to type-check and `.fill(binding.get())` freezes —
+Without it, `.fill(binding)` fails to type-check and `.fill(binding.snapshot())` freezes —
 the rule-1 bug in a hat.
 
 ## HDR

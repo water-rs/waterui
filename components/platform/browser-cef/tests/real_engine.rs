@@ -416,8 +416,8 @@ impl<'a> Page<'a> {
         self.wait_for(what, || (self.loads() > loads).then_some(()));
         self.wait_for("the history signals to catch up with the browser", || {
             let handle = self.webview.handle();
-            (self.webview.can_go_back().get() == handle.can_go_back()
-                && self.webview.can_go_forward().get() == handle.can_go_forward())
+            (self.webview.can_go_back().snapshot() == handle.can_go_back()
+                && self.webview.can_go_forward().snapshot() == handle.can_go_forward())
             .then_some(())
         });
     }
@@ -474,23 +474,23 @@ fn navigation_reaches_each_url_and_history_moves_both_ways(engine: &Engine) {
     // where WPE and the Apple backends start with an empty history. Pinning it
     // here means the day it changes is the day this line fails.
     assert!(
-        page.webview.can_go_back().get(),
+        page.webview.can_go_back().snapshot(),
         "CEF has stopped committing the blank document it creates a browser on"
     );
 
     let second = page.open_page("/second");
     assert_eq!(text(&second, "page"), "second");
     assert_eq!(page.location(), engine.url("/second").as_str());
-    assert!(page.webview.can_go_back().get());
-    assert!(!page.webview.can_go_forward().get());
+    assert!(page.webview.can_go_back().snapshot());
+    assert!(!page.webview.can_go_forward().snapshot());
 
     page.navigate("the engine to go back", || page.webview.go_back());
     assert_eq!(page.location(), engine.url("/first").as_str());
-    assert!(page.webview.can_go_forward().get());
+    assert!(page.webview.can_go_forward().snapshot());
 
     page.navigate("the engine to go forward", || page.webview.go_forward());
     assert_eq!(page.location(), engine.url("/second").as_str());
-    assert!(!page.webview.can_go_forward().get());
+    assert!(!page.webview.can_go_forward().snapshot());
 }
 
 /// The reply a handler returns has to arrive as the value it returned.

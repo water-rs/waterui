@@ -263,8 +263,8 @@ pub use secure::{SecureField, secure};
 ///     vstack((
 ///         form(&form_binding),
 ///         // Display current form values
-///         text!(format!("Name: {}", form_binding.name.get())),
-///         text!(format!("Email: {}", form_binding.email.get())),
+///         text!(format!("Name: {}", form_binding.name.snapshot())),
+///         text!(format!("Email: {}", form_binding.email.snapshot())),
 ///     ))
 /// }
 /// ```
@@ -285,7 +285,7 @@ pub fn form<T: FormBuilder>(binding: &Binding<T>) -> T::View {
 mod tests {
     use alloc::string::String;
 
-    use nami::Binding;
+    use nami::{Binding, Signal};
     use waterui_core::Str;
 
     use super::map_string_binding;
@@ -294,9 +294,9 @@ mod tests {
     fn map_string_binding_round_trip() {
         let source = Binding::container(String::from("hello"));
         let mapped = map_string_binding(&source);
-        assert_eq!(mapped.get().as_str(), "hello");
+        assert_eq!(mapped.snapshot().as_str(), "hello");
 
         mapped.set(Str::from(String::from("updated")));
-        assert_eq!(source.get(), "updated");
+        assert_eq!(source.snapshot(), "updated");
     }
 }

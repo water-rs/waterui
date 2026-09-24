@@ -135,7 +135,7 @@ mod tests {
 
     impl Drop for DropProbe {
         fn drop(&mut self) {
-            self.0.set(self.0.get() + 1);
+            self.0.set(self.0.snapshot() + 1);
         }
     }
 
@@ -143,7 +143,7 @@ mod tests {
 
     impl Drop for TrackedView {
         fn drop(&mut self) {
-            self.0.set(self.0.get() + 1);
+            self.0.set(self.0.snapshot() + 1);
         }
     }
 
@@ -180,7 +180,7 @@ mod tests {
 
     impl Drop for CountingWindowStorage {
         fn drop(&mut self) {
-            self.drops.set(self.drops.get() + 1);
+            self.drops.set(self.drops.snapshot() + 1);
         }
     }
 
@@ -239,10 +239,10 @@ mod tests {
 
         let projection = app.into_android_projection();
 
-        assert_eq!(storage_drops.get(), 1);
-        assert_eq!(toolbar_drops.get(), 1);
-        assert_eq!(menu_drops.get(), 1);
-        assert_eq!(env_drops.get(), 0);
+        assert_eq!(storage_drops.snapshot(), 1);
+        assert_eq!(toolbar_drops.snapshot(), 1);
+        assert_eq!(menu_drops.snapshot(), 1);
+        assert_eq!(env_drops.snapshot(), 0);
         assert!(!projection.content.as_ptr().is_null());
         assert!(!projection.env.as_ptr().is_null());
 
@@ -254,7 +254,7 @@ mod tests {
         drop(content);
         drop(env);
 
-        assert_eq!(env_drops.get(), 1);
+        assert_eq!(env_drops.snapshot(), 1);
     }
 
     #[test]
@@ -278,10 +278,10 @@ mod tests {
                 panic_message(payload.as_ref()),
                 format!("Android backend requires exactly one window, got {window_count}")
             );
-            assert_eq!(storage_drops.get(), 1);
-            assert_eq!(toolbar_drops.get(), window_count);
-            assert_eq!(menu_drops.get(), 1);
-            assert_eq!(env_drops.get(), 1);
+            assert_eq!(storage_drops.snapshot(), 1);
+            assert_eq!(toolbar_drops.snapshot(), window_count);
+            assert_eq!(menu_drops.snapshot(), 1);
+            assert_eq!(env_drops.snapshot(), 1);
         }
     }
 }

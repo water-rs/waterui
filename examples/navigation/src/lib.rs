@@ -462,8 +462,8 @@ fn move_message(ListMove(movement): ListMove, mail: Mail) {
 /// Rows are addressed by position in the *filtered* list, so an edit maps back
 /// through the same filter the user is looking at.
 fn visible_id(mail: &Mail, index: usize) -> Option<u64> {
-    let messages = mail.messages.get();
-    let query = mail.query.get();
+    let messages = mail.messages.snapshot();
+    let query = mail.query.snapshot();
     let visible = filter_messages(&messages, &query);
     visible.as_slice().get(index).map(|message| message.id)
 }
@@ -558,7 +558,7 @@ fn compose_page(mail: Mail) -> NavigationView {
 }
 
 fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
-    let messages = mail.messages.get();
+    let messages = mail.messages.snapshot();
     let next_id = messages
         .as_slice()
         .iter()
@@ -571,8 +571,8 @@ fn send_draft(mail: Mail, navigator: Navigator<MailRoute>) {
         Message {
             id: next_id,
             sender: Str::from("Me"),
-            subject: mail.draft_subject.get(),
-            preview: mail.draft_body.get(),
+            subject: mail.draft_subject.snapshot(),
+            preview: mail.draft_body.snapshot(),
             unread: false,
             flagged: false,
         },

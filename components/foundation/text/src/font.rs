@@ -346,7 +346,7 @@ mod tests {
         let slot = ResolvedFont::new(17.0, FontWeight::Normal).with_typography_metrics(22.0, 0.4);
         let env = env_with_body(slot);
 
-        let resized = Font::new(Body).size(14.0).resolve(&env).get();
+        let resized = Font::new(Body).size(14.0).resolve(&env).snapshot();
         assert!((resized.size - 14.0).abs() < f32::EPSILON);
         assert_eq!(resized.line_height, None);
         assert!(resized.letter_spacing.abs() < f32::EPSILON);
@@ -355,7 +355,7 @@ mod tests {
             .size(14.0)
             .line_height(18.0)
             .resolve(&env)
-            .get();
+            .snapshot();
         assert_eq!(declared.line_height, Some(18.0));
     }
 }

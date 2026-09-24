@@ -223,7 +223,7 @@ mod tests {
         let event = OnEvent::new(Event::HoverEnter, move || {
             // SAFETY: the cell holds the handler installed before this callback runs,
             // and the callback runs once.
-            unsafe { waterui_drop_on_event(handler_ptr_for_callback.get()) };
+            unsafe { waterui_drop_on_event(handler_ptr_for_callback.snapshot()) };
             callback_finished_for_callback.set(true);
         })
         .into_ffi();

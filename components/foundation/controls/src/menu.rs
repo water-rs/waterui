@@ -672,6 +672,7 @@ raw_view!(ResolvedMenu, StretchAxis::None);
 
 #[cfg(test)]
 mod tests {
+    use nami::Signal;
     use super::*;
     use crate::button::button;
     use alloc::rc::Rc;
@@ -685,7 +686,7 @@ mod tests {
         let items = button(crate::label::label("Search").system_icon(system_icon::search()))
             .action(|| {})
             .into_menu_items()
-            .get();
+            .snapshot();
         assert_eq!(items.len(), 1);
         let MenuItem::Command(command) = &items[0] else {
             panic!("button menu content should resolve to a command");
@@ -696,7 +697,7 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Search"
@@ -710,7 +711,7 @@ mod tests {
             Divider.into(),
             Menu::new("More", (button("Duplicate").action(|| {}),)).into(),
         ];
-        let items = items.into_menu_items().get();
+        let items = items.into_menu_items().snapshot();
         assert_eq!(items.len(), 3);
         assert!(matches!(items[0], MenuItem::Command(_)));
         assert!(matches!(items[1], MenuItem::Divider));
@@ -736,25 +737,25 @@ mod tests {
         let ResolvedMenuItem::Command(refresh) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
-        assert_eq!(refresh.label.content.get().to_plain(), "Refresh");
-        assert!(!refresh.selected.get());
+        assert_eq!(refresh.label.content.snapshot().to_plain(), "Refresh");
+        assert!(!refresh.selected.snapshot());
 
         let ResolvedMenuItem::Command(pinned) = &resolved[1] else {
             panic!("second resolved item should be a command");
         };
-        assert_eq!(pinned.label.content.get().to_plain(), "Pinned");
-        assert!(pinned.selected.get());
+        assert_eq!(pinned.label.content.snapshot().to_plain(), "Pinned");
+        assert!(pinned.selected.snapshot());
 
         let ResolvedMenuItem::Menu(advanced) = &resolved[2] else {
             panic!("third resolved item should be a nested menu");
         };
-        assert_eq!(advanced.label.content.get().to_plain(), "Advanced");
-        assert_eq!(advanced.items.get().len(), 1);
+        assert_eq!(advanced.label.content.snapshot().to_plain(), "Advanced");
+        assert_eq!(advanced.items.snapshot().len(), 1);
 
-        let ResolvedMenuItem::Command(archive) = &advanced.items.get()[0] else {
+        let ResolvedMenuItem::Command(archive) = &advanced.items.snapshot()[0] else {
             panic!("nested menu should resolve its child command");
         };
-        assert_eq!(archive.label.content.get().to_plain(), "Archive");
+        assert_eq!(archive.label.content.snapshot().to_plain(), "Archive");
     }
 
     #[test]

@@ -366,7 +366,7 @@ macro_rules! ffi_computed {
                 use waterui::Signal;
                 // SAFETY: the caller contract requires `computed` to be a valid handle
                 // alive for this call; it is only borrowed.
-                unsafe { $crate::IntoFFI::into_ffi((&(*computed)).get()) }
+                unsafe { $crate::IntoFFI::into_ffi((&(*computed)).snapshot()) }
             }
 
             #[cfg(feature = "c-api")]
@@ -555,7 +555,7 @@ macro_rules! ffi_binding {
             pub unsafe extern "C" fn [< waterui_read_binding_ $ident >](binding: *const $crate::reactive::WuiBinding<$ty>) -> $ffi {
                 // SAFETY: the caller contract requires `binding` to be a valid handle
                 // alive for this call; it is only borrowed.
-                unsafe { (*binding).get().into_ffi() }
+                unsafe { (*binding).snapshot().into_ffi() }
             }
 
             #[cfg(feature = "c-api")]
@@ -794,7 +794,7 @@ macro_rules! jni_binding_primitive {
                 // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
                 // one live `WuiBinding<$rust_ty>` and is only read here.
                 let binding = unsafe { &*(binding_ptr as *const $crate::reactive::WuiBinding<$rust_ty>) };
-                binding.get().to_jni()
+                binding.snapshot().to_jni()
             }
 
             #[cfg(feature = "android-jni")]
@@ -833,7 +833,7 @@ macro_rules! jni_computed_primitive {
                 // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns
                 // one live `WuiComputed<$rust_ty>` and is only read here.
                 let computed = unsafe { &*(computed_ptr as *const $crate::reactive::WuiComputed<$rust_ty>) };
-                computed.get().to_jni()
+                computed.snapshot().to_jni()
             }
         }
     };
@@ -970,7 +970,7 @@ pub unsafe extern "C" fn waterui_read_binding_secure(binding: *const WuiBinding<
     // SAFETY: the caller contract requires `binding` to be a valid handle alive for
     // this call; it is only borrowed.
     unsafe {
-        let secure = (*binding).get();
+        let secure = (*binding).snapshot();
         // Create an owned String, then convert to Str
         let owned_string = String::from(secure.expose());
         Str::from(owned_string).into_ffi()

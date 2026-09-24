@@ -33,12 +33,11 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// Panics if the request generation exceeds [`i32::MAX`].
     pub fn scroll_to(&self, target: T) {
         self.target.set(target);
-        self.generation.set(
-            self.generation
-                .get()
+        self.generation.with_mut(|generation| {
+            *generation = generation
                 .checked_add(1)
-                .expect("scroll request generation overflow"),
-        );
+                .expect("scroll request generation overflow");
+        });
     }
 
     /// Returns the current requested target as a read-only signal.
@@ -203,11 +202,11 @@ mod tests {
         let controller = ScrollController::new(Point::zero());
 
         controller.scroll_to(Point::new(0.0, 240.0));
-        assert_eq!(controller.target().get(), Point::new(0.0, 240.0));
-        assert_eq!(controller.generation().get(), 1);
+        assert_eq!(controller.target().snapshot(), Point::new(0.0, 240.0));
+        assert_eq!(controller.generation().snapshot(), 1);
 
         controller.scroll_to(Point::new(0.0, 240.0));
-        assert_eq!(controller.target().get(), Point::new(0.0, 240.0));
-        assert_eq!(controller.generation().get(), 2);
+        assert_eq!(controller.target().snapshot(), Point::new(0.0, 240.0));
+        assert_eq!(controller.generation().snapshot(), 2);
     }
 }

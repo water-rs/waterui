@@ -29,8 +29,8 @@ where
     type Output = T;
     type Guard = FlattenSignalWatchGuard<S::Guard>;
 
-    fn get(&self) -> Self::Output {
-        self.nested.get().get()
+    fn snapshot(&self) -> Self::Output {
+        self.nested.snapshot().snapshot()
     }
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
@@ -58,14 +58,14 @@ where
                 if outer_revision.get() == revision {
                     *inner.borrow_mut() = Some(guard);
                     if !inner_emitted.get() {
-                        watcher(Context::new(next.get(), ctx.metadata().clone()));
+                        watcher(Context::new(next.snapshot(), ctx.metadata().clone()));
                     }
                 }
             }
         });
 
         if outer_revision.get() == 0 {
-            let initial = self.nested.get();
+            let initial = self.nested.snapshot();
             let guard = initial.watch({
                 let watcher = watcher;
                 move |ctx| watcher(ctx)
@@ -111,8 +111,8 @@ mod tests {
         type Output = Computed<i32>;
         type Guard = <Binding<Computed<i32>> as Signal>::Guard;
 
-        fn get(&self) -> Self::Output {
-            self.source.get()
+        fn snapshot(&self) -> Self::Output {
+            self.source.snapshot()
         }
 
         fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
@@ -139,7 +139,7 @@ mod tests {
         second.set(11);
 
         assert_eq!(*updates.borrow(), vec![2, 10, 11]);
-        assert_eq!(flattened.get(), 11);
+        assert_eq!(flattened.snapshot(), 11);
     }
 
     #[test]
@@ -161,6 +161,6 @@ mod tests {
         second.set(11);
 
         assert_eq!(*updates.borrow(), vec![11]);
-        assert_eq!(flattened.get(), 11);
+        assert_eq!(flattened.snapshot(), 11);
     }
 }

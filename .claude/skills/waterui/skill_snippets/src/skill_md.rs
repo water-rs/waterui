@@ -42,7 +42,7 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 // SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
-// `fade.get()` is SKILL.md's deliberate broken line — the section teaches that
+// `fade.snapshot()` is SKILL.md's deliberate broken line — the section teaches that
 // passing a snapshot freezes the view while still compiling.
 #[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
@@ -57,7 +57,7 @@ pub fn skill_block_01() {
     };
     let view = Divider;
     let _ = {
-        view.opacity(fade.get()) // frozen forever — a plain f32
+        view.opacity(fade.snapshot()) // frozen forever — a plain f32
     };
     let _ = {
         Photo::new(url).blur(blur.clone()) // reacts
@@ -111,7 +111,7 @@ pub fn skill_block_04() -> impl View {
     button("Search")
         .action(
             |State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-                hist.get_mut().push(q.get());
+                hist.get_mut().push(q.snapshot());
             },
         )
         .state(&query) // -> first parameter

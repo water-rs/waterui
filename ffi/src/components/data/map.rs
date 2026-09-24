@@ -43,8 +43,8 @@ impl IntoFFI for Coordinate {
     type FFI = WuiCoordinate;
     fn into_ffi(self) -> Self::FFI {
         WuiCoordinate {
-            latitude: self.latitude.get(),
-            longitude: self.longitude.get(),
+            latitude: self.latitude.snapshot(),
+            longitude: self.longitude.snapshot(),
         }
     }
 }
