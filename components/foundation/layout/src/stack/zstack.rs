@@ -428,10 +428,7 @@ mod tests {
 
         // A spacer claims nothing in a zstack, so the union of the children's
         // stretch is empty and a root ZStack stays content-sized.
-        let axes: Vec<StretchAxis> = children
-            .iter()
-            .map(|child| child.stretch_axis())
-            .collect();
+        let axes: Vec<StretchAxis> = children.iter().map(|child| child.stretch_axis()).collect();
         assert_eq!(layout.stretch_axis(&axes), StretchAxis::None);
 
         assert_eq!(

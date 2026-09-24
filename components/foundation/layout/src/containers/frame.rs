@@ -788,10 +788,7 @@ mod tests {
         let hugged = layout.size_that_fits(proposal, &[&rigid]);
         assert_eq!(
             rigid.proposals().as_slice(),
-            &[
-                proposal,
-                ProposalSize::new(Some(24.0), Some(24.0)),
-            ],
+            &[proposal, ProposalSize::new(Some(24.0), Some(24.0)),],
             "a rigid child hears the proposal too; it just declines it — and placement re-probes with the resolved bounds"
         );
         assert_extent(hugged.width, 24.0, "a rigid child's frame width");

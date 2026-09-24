@@ -301,8 +301,7 @@ mod tests {
 
     impl SubView for GuidedLeaf {
         fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
-            ViewDimensions::new(self.size)
-                .with_horizontal(HorizontalAlignment::Leading, self.guide)
+            ViewDimensions::new(self.size).with_horizontal(HorizontalAlignment::Leading, self.guide)
         }
         fn stretch_axis(&self) -> StretchAxis {
             StretchAxis::None
@@ -330,17 +329,13 @@ mod tests {
 
         let padding = || {
             Box::new(crate::padding::PaddingLayout {
-                edges: Computed::constant(crate::padding::EdgeInsets::new(
-                    0.0, 0.0, 10.0, 6.0,
-                )),
+                edges: Computed::constant(crate::padding::EdgeInsets::new(0.0, 0.0, 10.0, 6.0)),
             }) as Box<dyn Layout>
         };
 
         // LTR: leaf at (50,30,20,10); the exported guide is 50 - 7 = 43.
-        let ltr = DirectionalLayout::new(
-            padding(),
-            Computed::constant(LayoutDirection::LeftToRight),
-        );
+        let ltr =
+            DirectionalLayout::new(padding(), Computed::constant(LayoutDirection::LeftToRight));
         assert_eq!(
             ltr.size_that_fits(proposal, &children),
             Size::new(36.0, 10.0)
@@ -363,10 +358,8 @@ mod tests {
         // RTL: the same leaf lands at (46,30,20,10), so the exported guide
         // must be the placed child's own resolved guide, 46 - 7 = 39 —
         // not 76 - 43 = 33, which a second mirroring would report.
-        let rtl = DirectionalLayout::new(
-            padding(),
-            Computed::constant(LayoutDirection::RightToLeft),
-        );
+        let rtl =
+            DirectionalLayout::new(padding(), Computed::constant(LayoutDirection::RightToLeft));
         assert_eq!(
             rtl.size_that_fits(proposal, &children),
             Size::new(36.0, 10.0)
