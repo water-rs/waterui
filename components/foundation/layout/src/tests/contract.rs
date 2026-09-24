@@ -2,6 +2,7 @@ use alloc::{boxed::Box, vec, vec::Vec};
 
 use nami::Computed;
 
+use crate::modifiers::alignment_guide::HorizontalAlignmentGuideLayout;
 use crate::stack::{Axis, HStackLayout, VStackLayout};
 use crate::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView,
@@ -709,6 +710,80 @@ fn explicit_guides_shape_the_envelope_on_edge_alignments() {
         placements[0].frame.y(),
         0.0,
         "lone raised child starts at the top",
+    );
+}
+
+/// A leaf carrying an explicit first baseline — a text run as its stack
+/// sees it.
+struct BaselineLeaf {
+    size: Size,
+    baseline: f32,
+}
+
+impl SubView for BaselineLeaf {
+    fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.size)
+            .with_vertical(VerticalAlignment::FirstBaseline, self.baseline)
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::None
+    }
+
+    fn priority(&self) -> i32 {
+        0
+    }
+}
+
+/// §5 — an alignment-guide modifier overrides its one key and forwards every
+/// other explicit key unchanged: a horizontal override cannot drop the
+/// baseline the wrapped child declared. The audit's fixture: a first-baseline
+/// row holding a wrapped and an unwrapped leaf is 40x28 with the sibling's
+/// baseline hung on the wrapped one's.
+#[test]
+fn an_alignment_guide_modifier_forwards_unrelated_guides() {
+    let wrapped = LayoutNode {
+        layout: Box::new(HorizontalAlignmentGuideLayout {
+            alignment: HorizontalAlignment::Leading,
+            compute: |dimensions: &ViewDimensions| {
+                dimensions.horizontal(HorizontalAlignment::Leading) - 4.0
+            },
+        }),
+        children: vec![Box::new(BaselineLeaf {
+            size: Size::new(20.0, 20.0),
+            baseline: 12.0,
+        })],
+    };
+    let sibling = BaselineLeaf {
+        size: Size::new(20.0, 20.0),
+        baseline: 4.0,
+    };
+    let outer = HStackLayout {
+        alignment: VerticalAlignment::FirstBaseline,
+        spacing: Computed::constant(0.0),
+    };
+    let children: [&dyn SubView; 2] = [&wrapped, &sibling];
+    let measured = measure_layout(&outer, ProposalSize::UNSPECIFIED, &children);
+    assert_extent(measured.size.width, 40.0, "row width is the two members");
+    assert_extent(
+        measured.size.height,
+        28.0,
+        "the forwarded baseline shapes the envelope",
+    );
+    let placements = outer.place(
+        Rect::from_size(measured.size),
+        ProposalSize::UNSPECIFIED,
+        &children,
+    );
+    assert_extent(
+        placements[0].frame.y(),
+        0.0,
+        "the wrapped member's own baseline rides the line",
+    );
+    assert_extent(
+        placements[1].frame.y(),
+        8.0,
+        "the sibling's baseline hangs on the forwarded one",
     );
 }
 
