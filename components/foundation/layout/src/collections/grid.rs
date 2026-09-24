@@ -507,10 +507,7 @@ mod tests {
             "the grid answers the proposal width and the row's intrinsic height"
         );
 
-        let axes: Vec<StretchAxis> = children
-            .iter()
-            .map(|child| child.stretch_axis())
-            .collect();
+        let axes: Vec<StretchAxis> = children.iter().map(|child| child.stretch_axis()).collect();
         assert_eq!(
             layout.stretch_axis(&axes),
             StretchAxis::Both,
