@@ -335,7 +335,15 @@ fn frame_resolved_axis(
     max: Option<f32>,
 ) -> f32 {
     let content = if max.is_some() && parent_proposal != Some(0.0) {
-        parent_proposal.or(ideal).unwrap_or(child_size)
+        let extent = parent_proposal.or(ideal).unwrap_or(child_size);
+        // An unbounded answer is legal only on an axis the child left
+        // unbounded: a maximum is something to grow into, not a source of
+        // infinity of its own.
+        if extent.is_infinite() && child_size.is_finite() {
+            child_size
+        } else {
+            extent
+        }
     } else {
         child_size
     };
@@ -948,6 +956,48 @@ mod tests {
             "expected the frame to fill the proposal, got {}",
             size.width
         );
+    }
+
+    #[test]
+    fn frame_max_probe_does_not_invent_infinity() {
+        // A filling frame grows into a finite offer, but a maximum query
+        // cannot manufacture an infinite answer out of a finite child: an
+        // unbounded answer is only legal on an axis the child itself left
+        // unbounded.
+        for (layout, proposal, bounds, expected_frame) in [
+            (
+                FrameLayout {
+                    max_width: Some(Computed::constant(f32::INFINITY)),
+                    ..Default::default()
+                },
+                ProposalSize::new(Some(f32::INFINITY), Some(10.0)),
+                Rect::from_size(Size::new(100.0, 10.0)),
+                Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 10.0)),
+            ),
+            (
+                FrameLayout {
+                    max_height: Some(Computed::constant(f32::INFINITY)),
+                    ..Default::default()
+                },
+                ProposalSize::new(Some(10.0), Some(f32::INFINITY)),
+                Rect::from_size(Size::new(10.0, 100.0)),
+                Rect::new(Point::new(-5.0, 45.0), Size::new(20.0, 10.0)),
+            ),
+        ] {
+            let child = MockSubView {
+                size: Size::new(20.0, 10.0),
+            };
+            assert_eq!(
+                layout.size_that_fits(proposal, &[&child]),
+                Size::new(20.0, 10.0),
+                "an infinite probe meets a finite child: the frame's answer stays finite"
+            );
+
+            // Under later finite bounds ordinary filling placement is
+            // unchanged: the child centers in the offered extent.
+            let placements = layout.place(bounds, proposal, &[&child]);
+            assert_eq!(placements[0].frame, expected_frame);
+        }
     }
 
     #[test]
