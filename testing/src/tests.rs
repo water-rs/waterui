@@ -285,7 +285,7 @@ mod token_probe {
                     0.2,
                     1.0,
                 ),
-                linear_indeterminate_cycle: Duration::from_millis(2_000),
+                linear_indeterminate_cycle: Duration::from_secs(2),
                 loading_cycle: Duration::from_millis(4_666),
                 circular_indeterminate_cycle: Duration::from_millis(5_332),
             }
@@ -1548,5 +1548,51 @@ fn a_visually_animating_app_still_settles_and_stays_current() {
     assert!(
         !app.runtime.has_pending_semantic_update(),
         "reading the tree must have applied the update, not merely waited for it"
+    );
+}
+
+/// A `press_named_key` stroke means the same thing on every runtime: the
+/// semantic pipeline activates the focused control on the press and the
+/// rendered pipeline on the release, so a focused button's action runs
+/// identically under `mount` and `mount_offscreen`. water-rs/waterui#1222.
+#[test]
+fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
+    use waterui::prelude::*;
+
+    let count = Binding::i32(0);
+    let count_for_view = count.clone();
+    let mut app = ui().viewport(160, 96).mount(move || {
+        waterui::component::button("Increment")
+            .action(|waterui::State(count): waterui::State<Binding<i32>>| {
+                *count.get_mut() += 1;
+            })
+            .state(&count_for_view)
+    });
+    app.query().role(Role::BUTTON).label("Increment").focus();
+    app.press_named_key("Enter");
+    assert_eq!(
+        count.get(),
+        1,
+        "Enter on a focused button must run its action on the semantic runtime"
+    );
+
+    let count = Binding::i32(0);
+    let count_for_view = count.clone();
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(160, 96)
+        .mount_offscreen(move || {
+            waterui::component::button("Increment")
+                .action(|waterui::State(count): waterui::State<Binding<i32>>| {
+                    *count.get_mut() += 1;
+                })
+                .state(&count_for_view)
+        });
+    app.query().role(Role::BUTTON).label("Increment").focus();
+    app.press_named_key("Enter");
+    assert_eq!(
+        count.get(),
+        1,
+        "Enter on a focused button must run its action on the rendered runtime"
     );
 }

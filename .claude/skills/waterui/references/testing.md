@@ -175,6 +175,16 @@ app.press_named_key("Tab");   app.press_named_key_with("Tab", modifiers);
 app.press_character_key_with("a", modifiers);
 ```
 
+A `press_*` call is a full key stroke — press, then release — so one call means the same
+thing on every runtime: the semantic pipeline activates a focused control on the press and
+the rendered pipeline on the release. To hold a key across calls, use `key_down` / `key_up`,
+which take a `KeyCode` so named and character keys are both expressible:
+
+```rust
+let key = KeyCode::Named("Shift".to_string());
+app.key_down(key.clone(), modifiers);   app.key_up(key, modifiers);
+```
+
 Pointer input exists only on a rendered session:
 
 ```rust
