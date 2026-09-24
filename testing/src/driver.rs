@@ -279,13 +279,21 @@ pub const fn text_input_event(text: String) -> InputEvent {
 }
 
 pub fn key_press_event(key: KeyCode, modifiers: Modifiers) -> InputEvent {
+    key_event(key, modifiers, KeyState::Pressed)
+}
+
+pub fn key_release_event(key: KeyCode, modifiers: Modifiers) -> InputEvent {
+    key_event(key, modifiers, KeyState::Released)
+}
+
+fn key_event(key: KeyCode, modifiers: Modifiers, state: KeyState) -> InputEvent {
     InputEvent::Key {
         logical_key: key.to_w3c_key(),
         // A synthesized keystroke has no physical key behind it.
         physical_code: hydrolysis::keyboard_types::Code::Unidentified,
         repeat: false,
         key,
-        state: KeyState::Pressed,
+        state,
         modifiers,
     }
 }
