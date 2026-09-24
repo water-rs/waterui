@@ -508,7 +508,7 @@ waterui-webview = { path = "components/platform/webview" }
 # hydrolysis revision that supplies the rate from winit's monitors and
 # implements the icon-button contract (water-rs/hydrolysis#115); drop it
 # when a hydrolysis release carries both changes.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "523ef65796ab0ee94db536125415dd63fba69e9a" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "d67e5e37ec58e736d62a7429bfefad7b026ba5a8" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
