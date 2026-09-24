@@ -1,0 +1,6 @@
+waterui_path = "../../.."
+
+[package]
+type = "playground"
+name = "Layout Twins"
+bundle_identifier = "dev.waterui.layout_twins"

@@ -1,0 +1,78 @@
+[package]
+name = "layout-twins"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["lib"]
+
+[features]
+dev = ["waterui/dynamic_linking"]
+
+[dependencies]
+waterui = { path = "../../.." }
+
+[workspace]
+
+[patch.crates-io]
+block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
+glifo = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "e676ca882769c36ecab7bfe8b78f46682e26f735" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "233005c53d1e79ce408061bd30c2c8d21a3e24bd" }
+vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
+vello_common = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
+waterui = { path = "../../../." }
+waterui-assets = { path = "../../../components/assets/runtime" }
+waterui-assets-core = { path = "../../../components/assets/core" }
+waterui-backend-core = { path = "../../../backends/core" }
+waterui-controls = { path = "../../../components/foundation/controls" }
+waterui-core = { path = "../../../core" }
+waterui-form = { path = "../../../components/foundation/form" }
+waterui-graphics = { path = "../../../components/visual/graphics" }
+waterui-icon = { path = "../../../components/foundation/icon" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "2d2e6671a7df5c52b3f9ccb38c994289f1b098ec" }
+waterui-inspector-protocol = { path = "../../../components/devtools/inspector/protocol" }
+waterui-layout = { path = "../../../components/foundation/layout" }
+waterui-locale = { path = "../../../utils/locale" }
+waterui-macros = { path = "../../../macros" }
+waterui-map = { path = "../../../components/data/map" }
+waterui-navigation = { path = "../../../components/foundation/navigation" }
+waterui-shape = { path = "../../../components/foundation/shape" }
+waterui-text = { path = "../../../components/foundation/text" }
+waterui-url = { path = "../../../utils/url" }
+waterui-video = { path = "../../../components/multimedia/video" }
+waterui-webview = { path = "../../../components/platform/webview" }
+xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
+
+[patch."https://github.com/water-rs/waterui"]
+waterui = { path = "../../../." }
+waterui-assets = { path = "../../../components/assets/runtime" }
+waterui-assets-core = { path = "../../../components/assets/core" }
+waterui-backend-core = { path = "../../../backends/core" }
+waterui-controls = { path = "../../../components/foundation/controls" }
+waterui-core = { path = "../../../core" }
+waterui-form = { path = "../../../components/foundation/form" }
+waterui-graphics = { path = "../../../components/visual/graphics" }
+waterui-icon = { path = "../../../components/foundation/icon" }
+waterui-inspector-protocol = { path = "../../../components/devtools/inspector/protocol" }
+waterui-layout = { path = "../../../components/foundation/layout" }
+waterui-locale = { path = "../../../utils/locale" }
+waterui-macros = { path = "../../../macros" }
+waterui-map = { path = "../../../components/data/map" }
+waterui-navigation = { path = "../../../components/foundation/navigation" }
+waterui-shape = { path = "../../../components/foundation/shape" }
+waterui-text = { path = "../../../components/foundation/text" }
+waterui-url = { path = "../../../utils/url" }
+waterui-video = { path = "../../../components/multimedia/video" }
+waterui-webview = { path = "../../../components/platform/webview" }
