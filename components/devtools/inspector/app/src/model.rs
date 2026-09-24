@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use waterui::Identifiable;
-use waterui::Signal;
 use waterui::prelude::*;
 use waterui_chart::DataPoint;
 use waterui_inspector_protocol::{

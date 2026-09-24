@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use image::ImageEncoder as _;
 use waterui::Binding;
+use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui_media::{
