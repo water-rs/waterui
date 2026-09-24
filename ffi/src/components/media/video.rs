@@ -1186,6 +1186,7 @@ impl IntoFFI for NativeVideoPlayerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::Signal;
     use waterui_core::binding;
 
     #[test]
