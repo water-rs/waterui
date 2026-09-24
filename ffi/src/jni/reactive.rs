@@ -16,10 +16,10 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use jni::objects::{Global, JClass, JObject, JObjectArray, JString, JValue};
+use jni::objects::{Global, JClass, JIntArray, JObject, JObjectArray, JString, JValue};
 use jni::signature::MethodSignature;
 use jni::strings::JNIStr;
-use jni::sys::{jint, jlong, jobject, jobjectArray};
+use jni::sys::{jint, jintArray, jlong, jobject, jobjectArray};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
 
 use crate::components::text::WuiHorizontalAlignment;
@@ -375,7 +375,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingIdVec<'loc
     let ids = binding.get();
     super::with_env(&mut env, |env| {
         let array = env
-            .new_int_array(super::array_len(ids.len()))
+            .new_int_array(ids.len())
             .expect("readBindingIdVec failed to allocate int array");
         let values: Vec<jint> = ids.iter().map(|id| i32::from(*id)).collect();
         array
@@ -1516,7 +1516,7 @@ unsafe extern "C" fn watcher_call_id_vec(
         let values: Vec<jint> = value.as_slice().iter().map(|id| id.inner).collect();
         value.consume();
         let array = env
-            .new_int_array(super::array_len(values.len()))
+            .new_int_array(values.len())
             .expect("watcher_call_id_vec: failed to allocate callback ids");
         array
             .set_region(env, 0, &values)
