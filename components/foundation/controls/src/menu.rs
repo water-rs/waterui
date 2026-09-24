@@ -677,7 +677,6 @@ mod tests {
     use alloc::rc::Rc;
     use core::cell::Cell;
     use nami::Signal;
-    use nami::Signal;
     use waterui_icon::system_icon;
 
     #[test]
