@@ -1184,37 +1184,66 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             .push_input_event(driver::text_input_event(text.into()));
     }
 
-    /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
+    /// Dispatches a named keyboard key stroke — press, then release — such as
+    /// `Backspace`, `Delete`, or `ArrowLeft`.
     pub fn press_named_key(&mut self, key: impl Into<String>) {
         self.press_named_key_with(key, Modifiers::default());
     }
 
-    /// Dispatches a named keyboard key with explicit modifiers held.
+    /// Dispatches a named keyboard key stroke — press, then release — with
+    /// explicit modifiers held.
     pub fn press_named_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.queue_key_press(KeyCode::Named(key.into()), modifiers);
+        let key = KeyCode::Named(key.into());
+        self.queue_key_press(key.clone(), modifiers);
+        self.queue_key_release(key, modifiers);
         self.settle();
     }
 
-    /// Dispatches a character keyboard key without text-input synthesis.
+    /// Dispatches a character keyboard key stroke — press, then release —
+    /// without text-input synthesis.
     pub fn press_character_key(&mut self, key: impl Into<String>) {
         self.press_character_key_with(key, Modifiers::default());
     }
 
-    /// Dispatches a character keyboard key with explicit modifiers held.
+    /// Dispatches a character keyboard key stroke — press, then release —
+    /// with explicit modifiers held.
     pub fn press_character_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.queue_key_press(KeyCode::Character(key.into()), modifiers);
+        let key = KeyCode::Character(key.into());
+        self.queue_key_press(key.clone(), modifiers);
+        self.queue_key_release(key, modifiers);
         self.settle();
     }
 
-    /// Dispatches a keyboard key with explicit modifiers held, without the
-    /// semantic settle used by [`Self::press_named_key_with`] and
-    /// [`Self::press_character_key_with`]. The event is processed by the next
-    /// pump, so a key-triggered transient — a focus ring appearing on `Tab`,
-    /// a sheet dismissing on `Escape` — stays observable to
+    /// Presses a keyboard key and leaves it held, settling after the key-down.
+    /// Pair with [`Self::key_up`] to hold a key across calls.
+    pub fn key_down(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.queue_key_press(key, modifiers);
+        self.settle();
+    }
+
+    /// Releases a keyboard key held by [`Self::key_down`], settling after the
+    /// key-up.
+    pub fn key_up(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.queue_key_release(key, modifiers);
+        self.settle();
+    }
+
+    /// Queues a keyboard key-down with explicit modifiers held, without the
+    /// semantic settle used by [`Self::key_down`]. The event is processed by
+    /// the next pump, so a key-triggered transient — a focus ring appearing
+    /// on `Tab`, a sheet dismissing on `Escape` — stays observable to
     /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
     pub fn queue_key_press(&mut self, key: KeyCode, modifiers: Modifiers) {
         self.runtime
             .push_input_event(driver::key_press_event(key, modifiers));
+    }
+
+    /// Queues a keyboard key-up matching [`Self::queue_key_press`], without a
+    /// settle — the release half of the stroke [`Self::press_named_key_with`]
+    /// and [`Self::key_up`] dispatch.
+    pub fn queue_key_release(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.runtime
+            .push_input_event(driver::key_release_event(key, modifiers));
     }
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued

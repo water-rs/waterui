@@ -206,6 +206,10 @@ pub mod gated {
         app.press_named_key("Tab");
         app.press_named_key_with("Tab", modifiers);
         app.press_character_key_with("a", modifiers);
+
+        let key = waterui_testing::KeyCode::Named("Shift".to_string());
+        app.key_down(key.clone(), modifiers);
+        app.key_up(key, modifiers);
     }
 
     // -----------------------------------------------------------------------

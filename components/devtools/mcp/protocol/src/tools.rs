@@ -318,7 +318,7 @@ pub enum ScrollUnit {
     Line,
 }
 
-/// Press a key, then return the settled tree.
+/// Press a key — press, then release — then return the settled tree.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyArgs {
     /// A single character (`"a"`, `" "`), or a W3C named key: `Enter`, `Tab`,
