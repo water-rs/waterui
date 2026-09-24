@@ -3523,7 +3523,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=2096f41ed3925b42ad2e6a1a7a81ff72d63af5c0#2096f41ed3925b42ad2e6a1a7a81ff72d63af5c0"
+source = "git+https://github.com/water-rs/hydrolysis?rev=207d8e9195f8fb0dc803d02e7dc541f5b036bfd4#207d8e9195f8fb0dc803d02e7dc541f5b036bfd4"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3568,7 +3568,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=f3d90b8d7d7a16e04dacdc6d76bd05c0c70378f3#f3d90b8d7d7a16e04dacdc6d76bd05c0c70378f3"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=c3b5a4bbdb68a6de065054a54b70de86568240eb#c3b5a4bbdb68a6de065054a54b70de86568240eb"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -10070,7 +10070,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=975621439405c56d6ac32cf540f1e995b704955d#975621439405c56d6ac32cf540f1e995b704955d"
+source = "git+https://github.com/water-rs/barcode?rev=b3c36d66ac171cd552676648d59702225693e39d#b3c36d66ac171cd552676648d59702225693e39d"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -10152,7 +10152,7 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=c1a2f8791cb415bc1f633635566a9173d3219ce5#c1a2f8791cb415bc1f633635566a9173d3219ce5"
+source = "git+https://github.com/water-rs/canvas?rev=ad2543905e48fcd4b2f11d1d21751080c019f97c#ad2543905e48fcd4b2f11d1d21751080c019f97c"
 dependencies = [
  "image",
  "kurbo",
@@ -10166,7 +10166,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?rev=001df3bd84c659408cd443b3c228c531896bc727#001df3bd84c659408cd443b3c228c531896bc727"
+source = "git+https://github.com/water-rs/chart?rev=b3cca029388403821b90928b53913cbb0db928d1#b3cca029388403821b90928b53913cbb0db928d1"
 dependencies = [
  "bytemuck",
  "nami",
@@ -10438,7 +10438,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=cddf79cfd1784c41af0f2bdf8f95092e357fcf50#cddf79cfd1784c41af0f2bdf8f95092e357fcf50"
+source = "git+https://github.com/water-rs/image?rev=753f5288ea87ea2b883a911d2b5515f5e170c97f#753f5288ea87ea2b883a911d2b5515f5e170c97f"
 dependencies = [
  "half",
  "image",
@@ -10601,7 +10601,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=fb16a5e4765304f840fae995b73fcfd015fae279#fb16a5e4765304f840fae995b73fcfd015fae279"
+source = "git+https://github.com/water-rs/map-gpu?rev=b3258b41dd674877467c1351495cb0fb5ffd18a9#b3258b41dd674877467c1351495cb0fb5ffd18a9"
 dependencies = [
  "blocking",
  "bytemuck",
@@ -10640,7 +10640,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?rev=fdbb425d63adfd8c6e19dcaf7ffee3a0693f5a73#fdbb425d63adfd8c6e19dcaf7ffee3a0693f5a73"
+source = "git+https://github.com/water-rs/math?rev=f59cc09fd27f2000d36225e72662a653b5751182#f59cc09fd27f2000d36225e72662a653b5751182"
 dependencies = [
  "kurbo",
  "mathcat",
@@ -10737,7 +10737,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=a4f61df37ad212214f76039d84caf36dd65b91e7#a4f61df37ad212214f76039d84caf36dd65b91e7"
+source = "git+https://github.com/water-rs/particle?rev=b654b1879f8880a55a230cb906421938672df28f#b654b1879f8880a55a230cb906421938672df28f"
 dependencies = [
  "bytemuck",
  "encase",
@@ -10900,7 +10900,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=6b2aebd27917f98f95171f25c9608661a967b384#6b2aebd27917f98f95171f25c9608661a967b384"
+source = "git+https://github.com/water-rs/video-gpu?rev=a32f55106492b9dd5ffc54c6da8fe3f06b2b72c0#a32f55106492b9dd5ffc54c6da8fe3f06b2b72c0"
 dependencies = [
  "async-channel",
  "executor-core",
