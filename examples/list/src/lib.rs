@@ -75,11 +75,13 @@ fn jump_top(state: DemoState) {
 }
 
 fn jump_middle(state: DemoState) {
-    state.scroll.scroll_to((state.remaining.get() as usize) / 2);
+    state
+        .scroll
+        .scroll_to((state.remaining.snapshot() as usize) / 2);
 }
 
 fn jump_last(state: DemoState) {
-    let remaining = state.remaining.get();
+    let remaining = state.remaining.snapshot();
     if remaining > 0 {
         state.scroll.scroll_to(remaining as usize - 1);
     }

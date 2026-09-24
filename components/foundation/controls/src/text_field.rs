@@ -203,7 +203,7 @@ fn map_plain_binding(value: &Binding<Str>) -> Binding<StyledStr> {
 mod tests {
     use alloc::string::String;
 
-    use nami::Binding;
+    use nami::{Binding, Signal};
     use waterui_core::Str;
     use waterui_text::styled::StyledStr;
 
@@ -246,6 +246,6 @@ mod tests {
         let mapped = super::map_plain_binding(&plain);
         mapped.set(StyledStr::plain("updated"));
 
-        assert_eq!(source.get(), "updated");
+        assert_eq!(source.snapshot(), "updated");
     }
 }

@@ -42,12 +42,12 @@ struct ResolvedFrameLayout {
 impl FrameLayout {
     fn resolved(&self) -> ResolvedFrameLayout {
         let mut resolved = ResolvedFrameLayout {
-            min_width: self.min_width.as_ref().map(Signal::get),
-            ideal_width: self.ideal_width.as_ref().map(Signal::get),
-            max_width: self.max_width.as_ref().map(Signal::get),
-            min_height: self.min_height.as_ref().map(Signal::get),
-            ideal_height: self.ideal_height.as_ref().map(Signal::get),
-            max_height: self.max_height.as_ref().map(Signal::get),
+            min_width: self.min_width.as_ref().map(Signal::snapshot),
+            ideal_width: self.ideal_width.as_ref().map(Signal::snapshot),
+            max_width: self.max_width.as_ref().map(Signal::snapshot),
+            min_height: self.min_height.as_ref().map(Signal::snapshot),
+            ideal_height: self.ideal_height.as_ref().map(Signal::snapshot),
+            max_height: self.max_height.as_ref().map(Signal::snapshot),
         };
         // A `min` above its `max` is not an error: chained setters compose one
         // `FrameLayout`, so an ordinary chain can land the minimum past the

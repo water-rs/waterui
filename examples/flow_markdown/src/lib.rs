@@ -107,12 +107,14 @@ fn start_character_stream(
     document_index: Binding<i32>,
     stream_cps: Binding<i32>,
 ) {
-    let revision = stream_revision.get().wrapping_add(1);
-    stream_revision.set(revision);
+    let revision = stream_revision.with_mut(|revision| {
+        *revision = (*revision).wrapping_add(1);
+        *revision
+    });
     streaming.set(true);
     reset_stream(&markdown, &char_progress);
 
-    let document = current_document_body(document_index.get());
+    let document = current_document_body(document_index.snapshot());
     let char_end_offsets: Vec<usize> = document
         .char_indices()
         .map(|(start, ch)| start + ch.len_utf8())
@@ -124,19 +126,19 @@ fn start_character_stream(
 
     spawn_local(async move {
         for (index, end_offset) in char_end_offsets.into_iter().enumerate() {
-            if stream_revision.get() != revision {
+            if stream_revision.snapshot() != revision {
                 return;
             }
 
             markdown.set(Str::from_static(&document[..end_offset]));
             char_progress.set((index + 1) as i32);
 
-            let cps = stream_cps.get().clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
+            let cps = stream_cps.snapshot().clamp(STREAM_CPS_MIN, STREAM_CPS_MAX) as u64;
             let interval = Duration::from_nanos(1_000_000_000u64 / cps);
             sleep(interval).await;
         }
 
-        if stream_revision.get() == revision {
+        if stream_revision.snapshot() == revision {
             streaming.set(false);
         }
     })
@@ -337,7 +339,7 @@ pub fn demo() -> impl View {
                         &c.char_progress,
                         &c.stream_revision,
                         &c.streaming,
-                        c.document_index.get(),
+                        c.document_index.snapshot(),
                     );
                 })
                 .state(&control)

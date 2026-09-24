@@ -190,7 +190,7 @@ struct RecordedScene {
 
 impl SceneContent for RecordedScene {
     fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        let recording = self.picture.recording.get();
+        let recording = self.picture.recording.snapshot();
         recording.replay(scene, Some(self.picture.transform_to(width, height)));
         false
     }

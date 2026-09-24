@@ -1331,7 +1331,7 @@ impl GpuView for MorphShapeRenderer {
         let start = *self.start.get_or_insert_with(|| frame.elapsed());
         let age = frame.elapsed().saturating_sub(start);
         let progress = if let Some(signal) = &self.progress {
-            let value = signal.get();
+            let value = signal.snapshot();
             assert!(value.is_finite(), "MorphShape progress must be finite");
             value.clamp(0.0, 1.0)
         } else {

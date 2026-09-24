@@ -151,7 +151,7 @@ fn picker_demo() -> impl View {
             .label(text("Choose Video")),
 
         // Display selected media
-        selection.get().map(|sel| {
+        selection.snapshot().map(|sel| {
             // Load media asynchronously and display
             vstack((text("Media selected"),))
         }),

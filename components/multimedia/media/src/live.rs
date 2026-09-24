@@ -115,7 +115,7 @@ impl View for LivePhoto {
         let motion = Dynamic::watch(is_playing, move |is_playing_now| {
             if is_playing_now {
                 AnyView::new(live_photo_video(
-                    motion_source.get(),
+                    motion_source.snapshot(),
                     playback_state.clone(),
                     report.clone(),
                 ))
@@ -127,7 +127,7 @@ impl View for LivePhoto {
         Metadata::new(
             overlay(Photo::new(still_source).resizable(), motion),
             GestureObserver::new(LongPressGesture::new(activation_duration_ms), move || {
-                if !is_playing_on_press.get() {
+                if !is_playing_on_press.snapshot() {
                     is_playing_on_press.set(true);
                     report_on_press.emit(Event::MotionStarted);
                 }

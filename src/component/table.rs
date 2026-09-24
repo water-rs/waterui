@@ -234,7 +234,7 @@ impl TableRowCountSignal {
     fn max_rows(columns: &[TableColumn]) -> usize {
         columns
             .iter()
-            .map(|column| column.rows().len().get())
+            .map(|column| column.rows().len().snapshot())
             .max()
             .unwrap_or(0)
     }
@@ -251,8 +251,8 @@ impl Signal for TableRowCountSignal {
     type Output = usize;
     type Guard = TableRowCountWatchGuard;
 
-    fn get(&self) -> Self::Output {
-        Self::max_rows(&self.columns.get())
+    fn snapshot(&self) -> Self::Output {
+        Self::max_rows(&self.columns.snapshot())
     }
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
@@ -278,7 +278,7 @@ impl Signal for TableRowCountSignal {
             }
         };
 
-        subscribe_rows(self.columns.get());
+        subscribe_rows(self.columns.snapshot());
         let columns_guard = self.columns.watch({
             let watcher = Rc::clone(&watcher);
             move |ctx| {
@@ -385,11 +385,11 @@ mod tests {
             TableColumn::new("B", rows_from(col2_rows)),
         ]));
 
-        assert_eq!(signal.get(), 2);
+        assert_eq!(signal.snapshot(), 2);
 
         col1_rows.insert(1, SelfId::new(1usize));
         col1_rows.insert(2, SelfId::new(2usize));
-        assert_eq!(signal.get(), 3);
+        assert_eq!(signal.snapshot(), 3);
     }
 
     #[test]

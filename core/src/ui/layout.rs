@@ -1509,7 +1509,7 @@ macro_rules! impl_layout_signal_constant {
                 type Output = Self;
                 type Guard = ();
 
-                fn get(&self) -> Self::Output {
+                fn snapshot(&self) -> Self::Output {
                     *self
                 }
 

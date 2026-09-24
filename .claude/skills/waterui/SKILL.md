@@ -45,17 +45,17 @@ depend on before copying from it.
 ### 1. Pass the signal, never a snapshot of it
 
 Reactive APIs take `impl IntoComputed<T>`, `impl IntoSignalF32`, or `&Binding<T>`.
-Handing them `.get()` reads the value once and freezes it — the UI then never updates,
+Handing them `.snapshot()` reads the value once and freezes it — the UI then never updates,
 and nothing fails at compile time, so this bug is silent.
 
 ```rust
 view.opacity(fade.clone())              // reacts
-view.opacity(fade.get())                // frozen forever — a plain f32
+view.opacity(fade.snapshot())                // frozen forever — a plain f32
 Photo::new(url).blur(blur.clone())      // reacts
 text!("Count: {count}")                 // reacts
 ```
 
-`.get()` belongs inside event handlers and `.map()` closures, where you genuinely want
+`.snapshot()` belongs inside event handlers and `.map()` closures, where you genuinely want
 the value at that instant. It does not belong in a view body.
 
 ### 2. `watch` is not the reactive primitive — it is the escape hatch
@@ -95,7 +95,7 @@ parameter of that type.
 ```rust
 button("Search")
     .action(|State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-        hist.get_mut().push(q.get());
+        hist.with_mut(|h| h.push(q.snapshot()));
     })
     .state(&query)      // -> first parameter
     .state(&history)    // -> second parameter
@@ -514,7 +514,7 @@ whole app.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| UI never updates | `.get()` in a view body | pass the binding |
+| UI never updates | `.snapshot()` in a view body | pass the binding |
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / derive `Identifiable` | not in the prelude | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |

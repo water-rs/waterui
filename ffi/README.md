@@ -145,7 +145,7 @@ let viewId = waterui_view_id(view)
 
 if viewId == waterui_text_id() {
     let textConfig = waterui_force_as_text(view)
-    return Text(textConfig.content.get())
+    return Text(textConfig.content.snapshot())
 } else if viewId == waterui_button_id() {
     // ...
 }

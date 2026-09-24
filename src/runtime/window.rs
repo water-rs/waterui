@@ -21,7 +21,7 @@
 
 use std::{fmt::Debug, rc::Rc};
 
-use nami::{Binding, Computed, SignalExt as _, impl_constant, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
@@ -457,7 +457,7 @@ where
         if s == WindowState::Closed {
             presented.set(false);
             AnyView::new(())
-        } else if !presented.get() {
+        } else if !presented.snapshot() {
             presented.set(true);
             AnyView::new(creator(state.clone()))
         } else {

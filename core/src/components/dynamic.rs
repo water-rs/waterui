@@ -288,7 +288,7 @@ where
         let f = Rc::new(self.f);
 
         handle.set_with_metadata(
-            f(self.value.get()),
+            f(self.value.snapshot()),
             WatcherMetadata::new().with(DynamicInitialContent),
         );
 

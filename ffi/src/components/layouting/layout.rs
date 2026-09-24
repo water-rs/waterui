@@ -120,13 +120,13 @@ fn lazy_stack_descriptor(layout: &dyn Layout) -> Option<LazyStackDescriptor> {
     waterui_layout::stack::lazy_stack_axis(layout).map(|axis| match axis {
         LazyStackAxis::Vertical { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Vertical,
-            spacing: spacing.get(),
+            spacing: spacing.snapshot(),
             horizontal_alignment: alignment.into_ffi(),
             vertical_alignment: VerticalAlignment::Center.into_ffi(),
         },
         LazyStackAxis::Horizontal { spacing, alignment } => LazyStackDescriptor {
             axis: WuiLazyStackAxis::Horizontal,
-            spacing: spacing.get(),
+            spacing: spacing.snapshot(),
             horizontal_alignment: HorizontalAlignment::Center.into_ffi(),
             vertical_alignment: alignment.into_ffi(),
         },

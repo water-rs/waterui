@@ -43,7 +43,7 @@ pub fn media_block_02() {
     let entered = Binding::container(Str::from("https://waterui.dev/logo.png"));
     let (photo_slot, _view) = Dynamic::new();
 
-    let Some(parsed) = Url::parse(entered.get().as_str()) else {
+    let Some(parsed) = Url::parse(entered.snapshot().as_str()) else {
         return;
     }; // parse returns Option
     photo_slot.set(Photo::new(parsed));
@@ -174,7 +174,7 @@ pub fn media_block_06() -> impl View {
             button("Go")
                 .action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
                     // parse_user_input tolerates human input (missing scheme); returns Option.
-                    if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
+                    if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
                         proxy.go_to(url);
                     }
                 })
