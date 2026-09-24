@@ -1770,7 +1770,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -3379,7 +3379,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=2c3fe6ef9fb0784f3109d2df6c22b55b01d93192#2c3fe6ef9fb0784f3109d2df6c22b55b01d93192"
+source = "git+https://github.com/water-rs/hydrolysis?rev=022e704f793b0c4a61b89f35f5a952936856e92a#022e704f793b0c4a61b89f35f5a952936856e92a"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3790,7 +3790,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
