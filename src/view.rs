@@ -697,6 +697,11 @@ pub trait ViewExt: View + Sized {
 
     /// Observes a gesture and executes an action when the gesture is recognized.
     ///
+    /// The action resolves its extractors from the environment of the view it
+    /// is attached to, so a value it extracts with `State<T>` must be installed
+    /// with [`ViewExt::state`] on an ancestor: `view.gesture(..).state(&value)`,
+    /// not `view.state(&value).gesture(..)`.
+    ///
     /// # Arguments
     /// * `gesture` - The gesture to observe
     /// * `action` - The action to execute when the gesture is recognized
@@ -1283,6 +1288,11 @@ pub trait ViewExt: View + Sized {
     /// [`waterui_core::extract::State`] in their handler parameters — or bare,
     /// as `value: T`, when `T` is an owned type marked `#[state]`.
     ///
+    /// A handler sees the environment of the view it is attached to, so the
+    /// state must be installed on an ancestor of that view: apply `.state`
+    /// after the handler modifiers, as below. A value installed between the
+    /// view and its handler is not visible to the handler.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -1291,8 +1301,6 @@ pub trait ViewExt: View + Sized {
     /// let hover_count = binding::<i32>(0);
     /// let is_hovered = binding::<bool>(false);
     /// let hoverable = text!("Hover Me!")
-    ///     .state(&hover_count)
-    ///     .state(&is_hovered)
     ///     .on_hover_enter(
     ///         |State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
     ///             *count.get_mut() += 1;
@@ -1301,7 +1309,9 @@ pub trait ViewExt: View + Sized {
     ///     )
     ///     .on_hover_exit(|State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
-    ///     });
+    ///     })
+    ///     .state(&hover_count)
+    ///     .state(&is_hovered);
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))
