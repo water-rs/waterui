@@ -1714,7 +1714,7 @@ fn list_arrow_keys_do_not_activate_rows() {
                         move || {
                             ListItem::new(text(format!("Row {index}")).on_tap({
                                 let taps = taps.clone();
-                                move || taps.set(taps.get() + 1)
+                                move || taps.with_mut(|t| *t += 1)
                             }))
                         }
                     })
@@ -1732,7 +1732,7 @@ fn list_arrow_keys_do_not_activate_rows() {
     app.press_named_key("Home");
     assert_row_focus(&mut app, 0);
     assert_eq!(
-        taps.get(),
+        taps.snapshot(),
         0,
         "arrow, Home and End moved focus without running any row action"
     );
@@ -1756,7 +1756,7 @@ fn list_enter_activates_focused_row() {
                             ListItem::new(vstack((text(format!("Row {index}"))
                                 .on_tap({
                                     let taps = taps.clone();
-                                    move || taps.set(taps.get() + 1)
+                                    move || taps.with_mut(|t| *t += 1)
                                 })
                                 .a11y_role(waterui::accessibility::AccessibilityRole::Button),)))
                         }
@@ -1769,9 +1769,17 @@ fn list_enter_activates_focused_row() {
     app.press_named_key("ArrowDown");
     assert_row_focus_at(&mut app, 1);
     app.press_named_key("Enter");
-    assert_eq!(taps.get(), 1, "Enter runs the focused row's action once");
+    assert_eq!(
+        taps.snapshot(),
+        1,
+        "Enter runs the focused row's action once"
+    );
     app.press_named_key("Space");
-    assert_eq!(taps.get(), 2, "Space runs the focused row's action once");
+    assert_eq!(
+        taps.snapshot(),
+        2,
+        "Space runs the focused row's action once"
+    );
     assert_row_focus_at(&mut app, 1);
 }
 

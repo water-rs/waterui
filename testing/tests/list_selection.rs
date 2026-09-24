@@ -5,6 +5,7 @@
 use std::collections::BTreeSet;
 
 use waterui::Binding;
+use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::component::button;
 use waterui::component::list::{List, ListItem};
@@ -55,7 +56,7 @@ fn single_selection_click_selects_and_programmatic_write_shows() {
     });
 
     app.query().role(Role::LIST_ITEM).label(row_label(2)).tap();
-    assert_eq!(selection.get(), Some(2));
+    assert_eq!(selection.snapshot(), Some(2));
     app.query()
         .role(Role::LIST_ITEM)
         .label(row_label(2))
@@ -95,31 +96,31 @@ fn multi_selection_toggle_modifier_and_shift_range() {
     });
 
     app.query().role(Role::LIST_ITEM).label(row_label(1)).tap();
-    assert_eq!(selection.get(), BTreeSet::from([1]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1]));
 
     let control = Modifiers {
         control: true,
         ..Modifiers::default()
     };
     app.press_named_key_with("ArrowDown", control);
-    assert_eq!(selection.get(), BTreeSet::from([1, 2]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1, 2]));
     app.press_named_key_with("ArrowDown", control);
-    assert_eq!(selection.get(), BTreeSet::from([1, 2, 3]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1, 2, 3]));
     // Toggle removes the row the modifier lands on.
     app.press_named_key_with("ArrowUp", control);
-    assert_eq!(selection.get(), BTreeSet::from([1, 3]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1, 3]));
 
     // A plain click resets the selection and re-anchors at that row.
     app.query().role(Role::LIST_ITEM).label(row_label(1)).tap();
-    assert_eq!(selection.get(), BTreeSet::from([1]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1]));
     let shift = Modifiers {
         shift: true,
         ..Modifiers::default()
     };
     app.press_named_key_with("ArrowDown", shift);
-    assert_eq!(selection.get(), BTreeSet::from([1, 2]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1, 2]));
     app.press_named_key_with("ArrowDown", shift);
-    assert_eq!(selection.get(), BTreeSet::from([1, 2, 3]));
+    assert_eq!(selection.snapshot(), BTreeSet::from([1, 2, 3]));
     app.query()
         .role(Role::LIST_ITEM)
         .label(row_label(3))
@@ -151,20 +152,20 @@ fn keyboard_navigation_moves_selection_and_focus() {
         .focus();
 
     app.press_named_key("ArrowDown");
-    assert_eq!(selection.get(), Some(2));
+    assert_eq!(selection.snapshot(), Some(2));
     assert_row_focused!(app, 2);
 
     app.press_named_key("End");
-    assert_eq!(selection.get(), Some(ROW_COUNT));
+    assert_eq!(selection.snapshot(), Some(ROW_COUNT));
     assert_row_focused!(app, ROW_COUNT);
 
     app.press_named_key("Home");
-    assert_eq!(selection.get(), Some(1));
+    assert_eq!(selection.snapshot(), Some(1));
     assert_row_focused!(app, 1);
 
     // The first row consumes ArrowUp: selection and focus stay put.
     app.press_named_key("ArrowUp");
-    assert_eq!(selection.get(), Some(1));
+    assert_eq!(selection.snapshot(), Some(1));
     assert_row_focused!(app, 1);
 }
 
@@ -179,7 +180,7 @@ fn keyboard_without_selection_moves_focus_only_and_enter_activates() {
         List::for_each(row_items(), move |item| {
             let counter = counter.clone();
             ListItem::new(button(row_label(item.into_inner())).action(move || {
-                counter.set(counter.get() + 1);
+                counter.with_mut(|c| *c += 1);
             }))
         })
     });
@@ -192,10 +193,10 @@ fn keyboard_without_selection_moves_focus_only_and_enter_activates() {
     assert_row_focused!(app, 2);
     app.press_named_key("ArrowDown");
     assert_row_focused!(app, 3);
-    assert_eq!(taps.get(), 0);
+    assert_eq!(taps.snapshot(), 0);
 
     app.press_named_key("Enter");
-    assert_eq!(taps.get(), 1);
+    assert_eq!(taps.snapshot(), 1);
     assert_row_focused!(app, 3);
 }
 
@@ -215,7 +216,7 @@ fn pointer_click_selects_and_row_tap_handlers_still_run() {
             List::for_each(row_items(), move |item| {
                 let counter = counter.clone();
                 ListItem::new(text(row_label(item.into_inner())).on_tap(move || {
-                    counter.set(counter.get() + 1);
+                    counter.with_mut(|c| *c += 1);
                 }))
             })
             .selection(&binding)
@@ -225,8 +226,8 @@ fn pointer_click_selects_and_row_tap_handlers_still_run() {
         .role(Role::LIST_ITEM)
         .label(row_label(2))
         .tap_at(0.5, 0.5);
-    assert_eq!(selection.get(), Some(2));
-    assert_eq!(taps.get(), 1);
+    assert_eq!(selection.snapshot(), Some(2));
+    assert_eq!(taps.snapshot(), 1);
     app.query()
         .role(Role::LIST_ITEM)
         .label(row_label(2))
