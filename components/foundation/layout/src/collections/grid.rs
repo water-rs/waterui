@@ -141,10 +141,8 @@ impl Layout for GridLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
-            return Size::zero();
-        }
-
+        // An empty grid has no rows, so its height collapses — but it still
+        // answers the proposal width like a populated one.
         let measurement = self.measure_grid(proposal.width, children);
         Size::new(measurement.total_width, measurement.total_height)
     }
@@ -531,6 +529,35 @@ mod tests {
             placements[0].frame,
             Rect::new(Point::new(40.0, 0.0), Size::new(20.0, 10.0))
         );
+    }
+
+    #[test]
+    fn empty_grid_retains_finite_width() {
+        // A grid answers the proposal width; with no cells there are no
+        // rows, so the height collapses but the finite width survives.
+        let layout = GridLayout::new(
+            NonZeroUsize::new(2).unwrap(),
+            Size::zero(),
+            Alignment::Center,
+        );
+        let children: Vec<&dyn SubView> = vec![];
+
+        for (proposal, expected) in [
+            (ProposalSize::new(Some(0.0), Some(40.0)), Size::zero()),
+            (
+                ProposalSize::new(Some(100.0), Some(40.0)),
+                Size::new(100.0, 0.0),
+            ),
+            (ProposalSize::UNSPECIFIED, Size::zero()),
+        ] {
+            assert_eq!(layout.size_that_fits(proposal, &children), expected);
+            assert!(
+                layout
+                    .place(Rect::from_size(expected), proposal, &children)
+                    .is_empty(),
+                "an empty grid places no children"
+            );
+        }
     }
 
     #[test]
