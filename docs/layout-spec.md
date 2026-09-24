@@ -80,7 +80,7 @@ on **both** axes. Equal negotiation inputs produce equal results. Placement
 nevertheless negotiates against resolved bounds, which may differ from the
 proposal used for measurement even when the container is content-sized.
 Equality between a container's measured extent and its bounds does not
-require a child's response to be idempotent under reproposal. In every such
+require a child's response to be idempotent under reproposal. In every
 case the children see the real geometry, never a stale probe.
 
 Concretely: a stack allocates its main axis from `bounds` (§4.2 with
@@ -202,8 +202,9 @@ negotiates:
 
 The stack's main answer is the sum of the reported main extents and member
 spacing. Its cross answer is the alignment envelope of the selected
-dimensions. Arithmetic uses a stated floating-point forward-error bound for
-budget comparisons; no visual "close enough" threshold enters child-response
+dimensions. A sum exceeds a budget only when it is larger by more than
+the `f32` forward error of the operation, `ε · max(|sum|, |budget|, 1) · n`
+for `n` terms; no visual "close enough" threshold enters child-response
 accounting.
 
 At placement the same negotiation runs afresh with `main = bounds.main` and
