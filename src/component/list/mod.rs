@@ -7,13 +7,14 @@
 //! heterogeneous lists with sections.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use core::ops::RangeBounds;
 use nami::collection::Collection;
 use nami::watcher::Context;
-use nami::{Computed, signal::IntoComputed};
+use nami::{Binding, Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
-use waterui_core::id::SelfId;
+use waterui_core::id::{Id as RawId, Mapping, SelfId};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View,
@@ -75,10 +76,91 @@ pub type OnDelete = Box<dyn Fn(&Environment, usize)>;
 /// Callback type for move/reorder operations (receives environment and movement).
 pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 
+/// Selection a list binds to row identity: no selection, a single row, or a
+/// set of rows — at most one mode per list.
+///
+/// The generic `Id` is the row's identity type: `V::Id` while the binding is
+/// stored typed on [`ListBuilder`], `SelfId<RawId>` after `config()` erases
+/// it through the same generator the collection's `get_id` reports, so the
+/// backends and the FFI read and write exactly the ids the rows answer to.
+#[derive(Clone, Default)]
+pub enum ListSelection<Id: 'static> {
+    /// Rows are not selectable.
+    #[default]
+    None,
+    /// A single selected row — `None` inside the binding means nothing is
+    /// selected.
+    Single(Binding<Option<Id>>),
+    /// The set of selected row ids.
+    Multiple(Binding<BTreeSet<Id>>),
+}
+
+impl<Id: 'static> core::fmt::Debug for ListSelection<Id> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(core::any::type_name::<Self>())
+    }
+}
+
+impl<Id: 'static + Ord + Clone> ListSelection<Id> {
+    /// Re-keys the bindings through `ids`, the same generator the erased
+    /// contents feed: reads register each `Id` to the `SelfId<RawId>` the
+    /// collection reports, and backend writes resolve it back — both
+    /// directions the way `Mapping::binding` maps a `Picker` selection.
+    fn erased(self, ids: &Mapping<Id>) -> ListSelection<SelfId<RawId>> {
+        match self {
+            Self::None => ListSelection::None,
+            Self::Single(binding) => {
+                let to = ids.clone();
+                let from = ids.clone();
+                ListSelection::Single(Binding::mapping(
+                    &binding,
+                    move |selected| selected.map(|id| SelfId::new(to.to_id(id))),
+                    move |binding, erased| {
+                        binding.set(erased.map(|id| {
+                            from.to_data(id.into_inner()).expect(
+                                "list selection row id is not registered in the list's id mapping",
+                            )
+                        }));
+                    },
+                ))
+            }
+            Self::Multiple(binding) => {
+                let to = ids.clone();
+                let from = ids.clone();
+                ListSelection::Multiple(Binding::mapping(
+                    &binding,
+                    move |selected| {
+                        selected
+                            .iter()
+                            .map(|id| SelfId::new(to.to_id(id.clone())))
+                            .collect()
+                    },
+                    move |binding, erased: BTreeSet<SelfId<RawId>>| {
+                        binding.set(
+                            erased
+                                .iter()
+                                .map(|id| {
+                                    from.to_data(id.into_inner()).expect(
+                                        "list selection row id is not registered in the list's id mapping",
+                                    )
+                                })
+                                .collect(),
+                        );
+                    },
+                ))
+            }
+        }
+    }
+}
+
 /// Configuration for a list component.
 pub struct ListConfig {
     /// Content items to be displayed in the list.
     pub contents: SharedAnyViews<ListItem>,
+    /// The list's selection bindings, keyed by the same erased row ids
+    /// `contents.get_id` returns. `ListSelection::None` when the list is not
+    /// selectable.
+    pub selection: ListSelection<SelfId<RawId>>,
     /// Read-only signal for edit mode state.
     pub editing: Computed<bool>,
     /// Optional callback when any item is deleted.
@@ -126,6 +208,7 @@ where
         ListBuilder {
             contents: self.contents,
             editing: editing.into_computed(),
+            selection: ListSelection::None,
             on_delete: None,
             on_move: None,
             scroll_controller: None,
@@ -142,6 +225,7 @@ where
         ListBuilder {
             contents: self.contents,
             editing: Computed::new(false),
+            selection: ListSelection::None,
             on_delete: Some(list_delete_action(on_delete)),
             on_move: None,
             scroll_controller: None,
@@ -158,6 +242,7 @@ where
         ListBuilder {
             contents: self.contents,
             editing: Computed::new(false),
+            selection: ListSelection::None,
             on_delete: None,
             on_move: Some(list_move_action(on_move)),
             scroll_controller: None,
@@ -170,10 +255,40 @@ where
     pub fn scroll_controller(self, controller: &ScrollController<usize>) -> ListBuilder<V> {
         ListBuilder {
             contents: self.contents,
+            selection: ListSelection::None,
             editing: Computed::new(false),
             on_delete: None,
             on_move: None,
             scroll_controller: Some(controller.clone()),
+            uses_sections: self.uses_sections,
+        }
+    }
+
+    /// Single selection keyed by row identity. The framework and backends
+    /// write it on pointer, keyboard and accessibility input.
+    #[must_use]
+    pub fn selection(self, selection: &Binding<Option<V::Id>>) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.contents,
+            selection: ListSelection::Single(selection.clone()),
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: None,
+            scroll_controller: None,
+            uses_sections: self.uses_sections,
+        }
+    }
+
+    /// Multiple selection keyed by row identity.
+    #[must_use]
+    pub fn multi_selection(self, selection: &Binding<BTreeSet<V::Id>>) -> ListBuilder<V> {
+        ListBuilder {
+            contents: self.contents,
+            selection: ListSelection::Multiple(selection.clone()),
+            editing: Computed::new(false),
+            on_delete: None,
+            on_move: None,
+            scroll_controller: None,
             uses_sections: self.uses_sections,
         }
     }
@@ -283,6 +398,7 @@ where
     fn config(self) -> Self::Config {
         ListConfig {
             contents: SharedAnyViews::new(self.contents),
+            selection: ListSelection::None,
             editing: Computed::new(false),
             on_delete: None,
             on_move: None,
@@ -315,18 +431,71 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
     // environment is in hand — rows are materialized lazily by the renderer,
     // long after this body has run.
     let section_env = env.clone();
-    config.contents = SharedAnyViews::new(
-        config
-            .contents
-            .clone()
-            .map(move |item| selection_themed(resolve_item_section(item, &section_env))),
-    );
+    // Erasing the themed contents again re-keys every row id, so the erased
+    // selection travels through the same generator — a backend's `get_id`
+    // must return exactly the ids the selection is keyed by.
+    let selection = config.selection.clone();
+    let theme_selection = selection.clone();
+    let (contents, ids) = AnyViews::new_with_ids(WithId {
+        contents: config.contents.clone(),
+        transform: move |id, item| {
+            selection_themed(
+                resolve_item_section(item, &section_env),
+                &theme_selection,
+                id,
+            )
+        },
+    });
+    config.contents = SharedAnyViews::from(contents);
+    config.selection = selection.erased(&ids);
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
         AnyView::new(hook.apply(env, config))
     } else {
         let fallback =
             crate::component::lazy::Lazy::vstack(config.contents.clone().map(|item| item.content));
         AnyView::new(Native::new(config).with_fallback(fallback))
+    }
+}
+
+/// `Views` adapter that hands each element's id to the mapping closure — the
+/// row-keyed sibling of `Map`, so `selection_themed` can derive a row's
+/// selected state from the list selection and the row's own id.
+struct WithId<C, F> {
+    contents: C,
+    transform: F,
+}
+
+impl<V, C, F> Views for WithId<C, F>
+where
+    V: View,
+    C: Views,
+    F: 'static + Fn(C::Id, C::View) -> V,
+{
+    type Id = C::Id;
+    type Guard = C::Guard;
+    type View = V;
+
+    fn len(&self) -> Computed<usize> {
+        self.contents.len()
+    }
+
+    fn get_id(&self, index: usize) -> Option<Self::Id> {
+        self.contents.get_id(index)
+    }
+
+    fn get_view(&self, index: usize) -> Option<Self::View> {
+        Some((self.transform)(
+            self.contents.get_id(index)?,
+            self.contents.get_view(index)?,
+        ))
+    }
+
+    fn watch(
+        &self,
+        range: impl RangeBounds<usize>,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static,
+    ) -> Self::Guard {
+        self.contents.watch(range, watcher)
     }
 }
 
@@ -346,14 +515,30 @@ fn resolve_item_section(mut item: ListItem, env: &Environment) -> ListItem {
 /// color over it. Anything the row resolves through the theme's foreground,
 /// muted-foreground, or accent slots follows the `selected` signal reactively;
 /// the row itself is not rebuilt.
-fn selection_themed(mut item: ListItem) -> ListItem {
+fn selection_themed(
+    mut item: ListItem,
+    selection: &ListSelection<SelfId<RawId>>,
+    id: SelfId<RawId>,
+) -> ListItem {
     use crate::color::ResolvedColor;
     use crate::theme::{color, install_color_signal};
     use nami::SignalExt;
     use waterui_core::env::use_env;
     use waterui_core::resolve::Resolvable;
 
-    let selected = item.selected.clone();
+    // A row's selected state derives from the list selection and the row's
+    // own id: the row is selected exactly when its id is in the binding.
+    let selected: Computed<bool> = match selection {
+        ListSelection::None => return item,
+        ListSelection::Single(selection) => selection
+            .clone()
+            .map(move |current| current == Some(id))
+            .computed(),
+        ListSelection::Multiple(selection) => selection
+            .clone()
+            .map(move |current| current.contains(&id))
+            .computed(),
+    };
     let content = core::mem::take(&mut item.content);
     item.content = AnyView::new(use_env(move |mut env: Environment| {
         let on_selection = color::SelectionForeground.resolve(&env).computed();
@@ -396,6 +581,7 @@ where
 /// Builder for configuring a list with editing, delete, and move capabilities.
 pub struct ListBuilder<V: Views<View = ListItem>> {
     contents: V,
+    selection: ListSelection<V::Id>,
     editing: Computed<bool>,
     on_delete: Option<OnDelete>,
     on_move: Option<OnMove>,
@@ -446,6 +632,21 @@ where
         self.scroll_controller = Some(controller.clone());
         self
     }
+
+    /// Single selection keyed by row identity. The framework and backends
+    /// write it on pointer, keyboard and accessibility input.
+    #[must_use]
+    pub fn selection(mut self, selection: &Binding<Option<V::Id>>) -> Self {
+        self.selection = ListSelection::Single(selection.clone());
+        self
+    }
+
+    /// Multiple selection keyed by row identity.
+    #[must_use]
+    pub fn multi_selection(mut self, selection: &Binding<BTreeSet<V::Id>>) -> Self {
+        self.selection = ListSelection::Multiple(selection.clone());
+        self
+    }
 }
 
 impl<V> ConfigurableView for ListBuilder<V>
@@ -455,8 +656,10 @@ where
     type Config = ListConfig;
 
     fn config(self) -> Self::Config {
+        let (contents, ids) = AnyViews::new_with_ids(self.contents);
         ListConfig {
-            contents: SharedAnyViews::new(self.contents),
+            contents: SharedAnyViews::from(contents),
+            selection: self.selection.erased(&ids),
             editing: self.editing,
             on_delete: self.on_delete,
             on_move: self.on_move,
@@ -575,14 +778,6 @@ pub struct ListItem {
     /// this marker to group subsequent items into native chrome (iOS inset
     /// grouped sections, macOS group rows, Material section headers).
     pub section: Option<ListSection>,
-    /// Read-only signal marking this item as the current selection.
-    ///
-    /// The backend draws its platform's own selection chrome for the row — the
-    /// rounded sidebar highlight on macOS, the selected row background on iOS.
-    /// Selection state itself lives wherever the app owns it (for a sidebar,
-    /// typically the `NavigationSplitView` selection binding), and each row
-    /// derives its flag from that state.
-    pub selected: Computed<bool>,
 }
 
 impl NativeView for ListItem {}
@@ -604,7 +799,6 @@ impl ListItem {
             content: AnyView::new(content),
             deletable: Computed::new(true),
             section: None,
-            selected: Computed::new(false),
         }
     }
 
@@ -624,27 +818,6 @@ impl ListItem {
     #[must_use]
     pub fn section(mut self, section: ListSection) -> Self {
         self.section = Some(section);
-        self
-    }
-
-    /// Marks this item as selected through a reactive signal.
-    ///
-    /// The platform draws its own selection chrome for the row while the
-    /// signal is true. Derive the signal from the state that owns selection:
-    ///
-    /// ```rust
-    /// use waterui::component::list::ListItem;
-    /// use waterui::id::Id;
-    /// use waterui::prelude::*;
-    ///
-    /// let album = Id::try_from(1).unwrap();
-    /// let selection = binding::<Option<Id>>(None);
-    /// let item = ListItem::new(text!("Album"))
-    ///     .selected(selection.map(move |current| current == Some(album)));
-    /// ```
-    #[must_use]
-    pub fn selected(mut self, selected: impl IntoComputed<bool>) -> Self {
-        self.selected = selected.into_computed();
         self
     }
 }

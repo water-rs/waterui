@@ -32,7 +32,7 @@ use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
-use waterui::id::Id;
+use waterui::id::{Id, SelfId};
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
@@ -615,18 +615,28 @@ fn placeholder() -> impl View {
 }
 
 fn album_sidebar(selection: Binding<Option<Album>>) -> impl View {
+    const ALBUMS: [Album; 3] = [Album::Recents, Album::Favorites, Album::Shared];
+    // `List::content` keys rows by index, so the album selection travels
+    // through a binding mapped to and from those row ids.
+    let selection = Binding::mapping(
+        &selection,
+        |album| album.map(|album| SelfId::new(album as usize)),
+        move |binding, index| binding.set(index.map(|index| ALBUMS[index.into_inner()])),
+    );
     List::content((Section::new("Albums").content((
-        album_row(Album::Recents, &selection),
-        album_row(Album::Favorites, &selection),
-        album_row(Album::Shared, &selection),
+        album_row(Album::Recents),
+        album_row(Album::Favorites),
+        album_row(Album::Shared),
     )),))
+    // The framework writes the binding on pointer, keyboard and accessibility
+    // input; the platform draws its own selection chrome for the row.
+    .selection(&selection)
 }
 
 /// Static list content is built from row *builders*, so the platform list can
 /// rematerialize a row whenever it scrolls back into view.
-fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> ListItem + 'static {
+fn album_row(album: Album) -> impl Fn() -> ListItem + 'static {
     let count = album.count();
-    let selection = selection.clone();
 
     move || {
         ListItem::new(
@@ -637,15 +647,8 @@ fn album_row(album: Album, selection: &Binding<Option<Album>>) -> impl Fn() -> L
                 text!("{count}").caption().muted(),
             ))
             .spacing(10.0)
-            .padding_with((10.0, 12.0))
-            .on_tap(move |State(selection): State<Binding<Option<Album>>>| {
-                selection.set(Some(album));
-            })
-            .state(&selection),
+            .padding_with((10.0, 12.0)),
         )
-        // The platform draws its own selection chrome; the row only derives
-        // its flag from the state that owns selection.
-        .selected(selection.clone().equal_to(Some(album)))
     }
 }
 

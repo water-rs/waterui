@@ -645,12 +645,17 @@ pub fn components_block_22() -> impl View {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose() {
+    use waterui::id::SelfId;
+
     let signal = Binding::bool(true);
     let section = ListSection::default();
+    let selection = Binding::container(None::<SelfId<usize>>);
+    let multi = Binding::container(alloc::collections::BTreeSet::<SelfId<usize>>::new());
 
     let _ = ListItem::new(text("a")).deletable(signal.clone());
-    let _ = ListItem::new(text("a")).selected(signal);
     let _ = ListItem::new(text("a")).section(section);
+    let _ = List::content((row("a", text("1")),)).selection(&selection);
+    let _ = List::content((row("a", text("1")),)).multi_selection(&multi);
 }
 
 // ---------------------------------------------------------------------------
