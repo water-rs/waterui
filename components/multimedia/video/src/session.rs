@@ -793,7 +793,6 @@ mod tests {
     use super::*;
     use crate::AudioTrackInfo;
     use crate::url::Url;
-    use nami::Signal as _;
 
     fn item(path: &str, id: u8) -> MediaItem {
         MediaItem::from(Url::from_file_path_str(path.to_owned()))
