@@ -41,7 +41,7 @@ struct ResolvedFrameLayout {
 
 impl FrameLayout {
     fn resolved(&self) -> ResolvedFrameLayout {
-        let resolved = ResolvedFrameLayout {
+        let mut resolved = ResolvedFrameLayout {
             min_width: self.min_width.as_ref().map(Signal::get),
             ideal_width: self.ideal_width.as_ref().map(Signal::get),
             max_width: self.max_width.as_ref().map(Signal::get),
@@ -49,15 +49,19 @@ impl FrameLayout {
             ideal_height: self.ideal_height.as_ref().map(Signal::get),
             max_height: self.max_height.as_ref().map(Signal::get),
         };
-        for (axis, min, max) in [
-            ("width", resolved.min_width, resolved.max_width),
-            ("height", resolved.min_height, resolved.max_height),
+        // A `min` above its `max` is not an error: chained setters compose one
+        // `FrameLayout`, so an ordinary chain can land the minimum past the
+        // maximum without either literal being wrong. `min` wins — the same
+        // precedence CSS gives a `min-width` over a conflicting `max-width` —
+        // the effective maximum is the minimum, and the axis resolves to `min`.
+        for (min, max) in [
+            (&mut resolved.min_width, &mut resolved.max_width),
+            (&mut resolved.min_height, &mut resolved.max_height),
         ] {
-            if let (Some(min), Some(max)) = (min, max) {
-                assert!(
-                    min <= max,
-                    "frame {axis} constraint is inverted: min {min} exceeds max {max}"
-                );
+            if let (Some(minimum), Some(maximum)) = (*min, *max)
+                && minimum > maximum
+            {
+                *max = Some(minimum);
             }
         }
         resolved
@@ -521,29 +525,71 @@ mod tests {
         }
     }
 
-    /// An inverted constraint — `min` above `max` on one axis — is a
-    /// programming error, not an interval to resolve: resolution panics and
-    /// the message names the axis and both values.
+    /// An inverted constraint — `min` above `max` on one axis — resolves the
+    /// way CSS treats the same conflict: `min` wins, the effective maximum is
+    /// the minimum, and the axis resolves to `min`.
     #[test]
-    #[should_panic(expected = "width constraint is inverted: min 80 exceeds max 40")]
-    fn an_inverted_frame_width_panics_at_resolution() {
+    fn an_inverted_frame_width_resolves_to_the_minimum() {
         let layout = FrameLayout {
             min_width: Some(Computed::constant(80.0)),
             max_width: Some(Computed::constant(40.0)),
             ..Default::default()
         };
-        layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[]);
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(80.0, 20.0));
     }
 
     #[test]
-    #[should_panic(expected = "height constraint is inverted: min 30 exceeds max 10")]
-    fn an_inverted_frame_height_panics_at_resolution() {
+    fn an_inverted_frame_height_resolves_to_the_minimum() {
         let layout = FrameLayout {
             min_height: Some(Computed::constant(30.0)),
             max_height: Some(Computed::constant(10.0)),
             ..Default::default()
         };
-        layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[]);
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[&child]);
+        assert_eq!(size, Size::new(30.0, 30.0));
+    }
+
+    /// Chained setters mutate one `FrameLayout`, so `.size(40, 20)` followed by
+    /// `.min_width(60)` inverts the width axis — and `min` wins: the chain asks
+    /// for a 60x20 frame and gets exactly that.
+    #[test]
+    fn a_size_then_min_width_chain_resolves_to_the_minimum() {
+        // `ViewExt::size` is `Frame::new(_).width(40).height(20)`: each pin
+        // sets all three bounds on its axis, then `min_width` raises the
+        // minimum alone — an inversion composed, not written as a literal.
+        let frame = Frame::new(()).width(40.0).height(20.0).min_width(60.0);
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = frame
+            .layout
+            .size_that_fits(ProposalSize::new(Some(200.0), Some(200.0)), &[&child]);
+        assert_eq!(size, Size::new(60.0, 20.0));
+    }
+
+    /// `.size(50, 80)` with `.min_height(100)` and `.min_width(60)` inverts
+    /// both axes; each resolves to its minimum.
+    #[test]
+    fn a_size_then_min_height_and_min_width_chain_resolves_to_the_minimum() {
+        let frame = Frame::new(())
+            .width(50.0)
+            .height(80.0)
+            .min_height(100.0)
+            .min_width(60.0);
+        let child = MockSubView {
+            size: Size::new(30.0, 20.0),
+        };
+        let size = frame
+            .layout
+            .size_that_fits(ProposalSize::new(Some(200.0), Some(200.0)), &[&child]);
+        assert_eq!(size, Size::new(60.0, 100.0));
     }
 
     struct FramedChild<C> {
