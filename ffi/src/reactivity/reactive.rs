@@ -138,7 +138,7 @@ where
 {
     type Output = T;
     type Guard = BoxWatcherGuard;
-    fn get(&self) -> Self::Output {
+    fn snapshot(&self) -> Self::Output {
         // SAFETY: `get` and `data.ptr` come from the same registration, and `&self`
         // proves it has not been dropped; `get` hands back an owning value.
         unsafe { (self.get)(self.data.ptr.cast_const()).into_rust() }
@@ -553,6 +553,8 @@ macro_rules! ffi_binding {
             /// The binding pointer must be valid and point to a properly initialized binding object.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [< waterui_read_binding_ $ident >](binding: *const $crate::reactive::WuiBinding<$ty>) -> $ffi {
+                use waterui::Signal;
+
                 // SAFETY: the caller contract requires `binding` to be a valid handle
                 // alive for this call; it is only borrowed.
                 unsafe { (*binding).snapshot().into_ffi() }

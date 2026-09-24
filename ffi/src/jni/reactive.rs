@@ -198,6 +198,8 @@ fn create_date_time_struct<'local>(
 
 /// Helper for reading a Str binding as Java String.
 fn read_binding_str_to_java_string(env: &mut Env, binding_ptr: jlong) -> jobject {
+    use nami::Signal as _;
+
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Str>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
@@ -259,6 +261,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingSecure<'lo
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobject {
+    use nami::Signal as _;
     use waterui_form::secure::Secure;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
@@ -335,6 +338,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingId<'local>
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jint {
+    use nami::Signal as _;
     use waterui_core::id::Id;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
@@ -367,12 +371,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingIdVec<'loc
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jintArray {
+    use nami::Signal as _;
     use waterui_core::id::Id;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Vec<Id>>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Id>>) };
-    let ids = binding.get();
+    let ids = binding.snapshot();
     super::with_env(&mut env, |env| {
         let array = env
             .new_int_array(ids.len())
@@ -428,6 +433,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStrP
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobject {
+    use nami::Signal as _;
     use waterui_text::styled::StyledStr;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
@@ -466,6 +472,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'l
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobjectArray {
+    use nami::Signal as _;
     use waterui_form::picker::date::Date;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
@@ -559,6 +566,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTime<'
 ) -> jobject {
     use crate::IntoFFI;
     use jiff::civil::DateTime;
+    use nami::Signal as _;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<DateTime>` and is only read here.

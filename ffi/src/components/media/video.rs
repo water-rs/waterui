@@ -641,7 +641,7 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_audio(
     // SAFETY: the caller contract requires `binding` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
-    binding.set(binding.snapshot().replacing_audio(tracks));
+    binding.with_mut(|b| *b = core::mem::take(b).replacing_audio(tracks));
 }
 
 /// Replaces the video portion of a native player's shared track catalog.
@@ -661,7 +661,7 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_video(
     // SAFETY: the caller contract requires `binding` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
-    binding.set(binding.snapshot().replacing_video(tracks));
+    binding.with_mut(|b| *b = core::mem::take(b).replacing_video(tracks));
 }
 
 /// Replaces the subtitle portion of a native player's shared track catalog.
@@ -681,7 +681,7 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_subtitles(
     // SAFETY: the caller contract requires `binding` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
-    binding.set(binding.snapshot().replacing_subtitles(tracks));
+    binding.with_mut(|b| *b = core::mem::take(b).replacing_subtitles(tracks));
 }
 
 /// Drops the native write handle for a shared selectable-track catalog.
@@ -1028,7 +1028,7 @@ const fn generation_token(generation: u64) -> i32 {
 
 fn generation_binding(generation: &Binding<u64>) -> Binding<i32> {
     Binding::mapping(generation, generation_token, |generation, _| {
-        generation.set(generation.snapshot().wrapping_add(1));
+        generation.with_mut(|generation| *generation = generation.wrapping_add(1));
     })
 }
 

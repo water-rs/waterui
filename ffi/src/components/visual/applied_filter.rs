@@ -622,7 +622,7 @@ fn finish_attach(
     output_height: u32,
 ) {
     let format = output.format();
-    if let Some((_, setup_output_format)) = state.setup_formats.snapshot() {
+    if let Some((_, setup_output_format)) = state.setup_formats.get() {
         assert_eq!(
             setup_output_format, format,
             "AppliedFilter output format changed after setup"
@@ -643,7 +643,7 @@ fn finish_attach(
     state.capture_texture = Some(capture_texture);
     state.output = Some(output);
     let _ = state.redraw_handle.take_dirty();
-    if state.setup_ready.snapshot() {
+    if state.setup_ready.get() {
         state.redraw_handle.request_redraw();
     }
 }
@@ -743,7 +743,7 @@ fn ensure_current_context(
             output_height,
         );
     }
-    if state.setup_formats.snapshot().is_some() {
+    if state.setup_formats.get().is_some() {
         restart_applied_filter_setup(state);
     }
     gpu
@@ -1015,7 +1015,7 @@ pub unsafe extern "C" fn waterui_applied_filter_is_ready(
     // SAFETY: the caller contract requires `state` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
-    state.setup_ready.snapshot()
+    state.setup_ready.get()
 }
 
 /// Runs the semantic filter once, from the capture texture into `output_texture`.
@@ -1039,7 +1039,7 @@ fn render_filter_into(
     ensure_dimensions(state, width, height);
     let input_format = current_applied_filter_input_format(state);
     assert!(
-        state.setup_ready.snapshot(),
+        state.setup_ready.get(),
         "{caller} called before asynchronous setup completed"
     );
     assert_setup_input_format(state, input_format);
@@ -1139,7 +1139,7 @@ pub unsafe extern "C" fn waterui_applied_filter_render(
     let gpu = ensure_current_context(state);
 
     super::run_gpu_frame(&gpu, "waterui_applied_filter_render", || {
-        if !state.setup_ready.snapshot() {
+        if !state.setup_ready.get() {
             // The filter's setup is re-running on the rebuilt device; the frame
             // stays pending and the host comes back for it.
             return true;
@@ -1355,7 +1355,7 @@ const fn current_applied_filter_input_format(state: &WuiAppliedFilterState) -> w
 }
 
 fn assert_setup_input_format(state: &WuiAppliedFilterState, input_format: wgpu::TextureFormat) {
-    if let Some((setup_input_format, _)) = state.setup_formats.snapshot() {
+    if let Some((setup_input_format, _)) = state.setup_formats.get() {
         assert_eq!(
             setup_input_format, input_format,
             "AppliedFilter input format changed after setup"
@@ -1369,7 +1369,7 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
         .as_ref()
         .expect("AppliedFilter setup requires an attached presentation target")
         .format();
-    if let Some((setup_input_format, setup_output_format)) = state.setup_formats.snapshot() {
+    if let Some((setup_input_format, setup_output_format)) = state.setup_formats.get() {
         assert_eq!(
             setup_input_format, input_format,
             "AppliedFilter input format changed after setup"
@@ -1394,7 +1394,7 @@ fn start_applied_filter_setup(state: &WuiAppliedFilterState, input_format: wgpu:
 fn restart_applied_filter_setup(state: &WuiAppliedFilterState) {
     // Platforms without an asynchronous setup path never populate
     // `setup_formats`; there is nothing to restart there.
-    let Some((input_format, output_format)) = state.setup_formats.snapshot() else {
+    let Some((input_format, output_format)) = state.setup_formats.get() else {
         return;
     };
     // A setup already in flight read the rebuilt context when it started, so

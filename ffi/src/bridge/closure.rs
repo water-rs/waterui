@@ -177,7 +177,7 @@ mod tests {
                 drop_for_callback
                     .get()
                     .expect("drop callback was not installed")(
-                    data_for_callback.snapshot()
+                    data_for_callback.get()
                 );
             }
             callback_finished_for_callback.set(true);
