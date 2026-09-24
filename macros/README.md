@@ -151,7 +151,7 @@ let projected = person_binding.project();
 projected.name.set("Bob".to_string());
 projected.age.set(25u32);
 
-let person = person_binding.get();
+let person = person_binding.snapshot();
 assert_eq!(person.name, "Bob");
 assert_eq!(person.age, 25);
 ```

@@ -297,6 +297,7 @@ fn end_of_day_time() -> Time {
 
 #[cfg(test)]
 mod tests {
+    use nami::Signal;
     use super::*;
 
     #[test]
@@ -318,7 +319,7 @@ mod tests {
 
         mapped.set(anchor_time(Time::new(18, 45, 12, 0).unwrap()));
 
-        assert_eq!(source.get(), Time::new(18, 45, 12, 0).unwrap());
+        assert_eq!(source.snapshot(), Time::new(18, 45, 12, 0).unwrap());
     }
 
     #[test]

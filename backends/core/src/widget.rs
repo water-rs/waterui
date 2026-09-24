@@ -299,7 +299,7 @@ impl ModalInteraction {
     /// Whether this modal scope currently traps interaction.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active.get()
+        self.active.snapshot()
     }
 
     /// Whether Escape should dispatch the modal action.

@@ -86,13 +86,13 @@ fn fruit_basket(
          data: DragData| {
             // Add to collection
             let dropped_item = data.as_str().to_string();
-            let mut current_items = collected.get();
+            let mut current_items = collected.snapshot();
             if !current_items.iter().any(|x| x == &dropped_item) {
                 current_items.push(dropped_item);
                 collected.set(current_items);
             }
             // Trigger bounce animation
-            let current = bounce.get();
+            let current = bounce.snapshot();
             let target = if (current - 1.2).abs() < 0.01 {
                 1.25
             } else {

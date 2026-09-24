@@ -91,7 +91,7 @@ where
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<T>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<T>) };
-    computed.get().into_ffi().into_jint()
+    computed.snapshot().into_ffi().into_jint()
 }
 
 // ============================================================================
@@ -201,7 +201,7 @@ fn read_binding_str_to_java_string(env: &mut Env, binding_ptr: jlong) -> jobject
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Str>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
-    let s: waterui::Str = binding.get();
+    let s: waterui::Str = binding.snapshot();
     env.new_string(s.as_str())
         .expect("read_binding_str_to_java_string: failed to create Java string")
         .into_raw()
@@ -265,7 +265,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingSecure<'lo
     // `WuiBinding<Secure>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
     super::with_env(&mut env, |env| {
-        env.new_string(binding.get().expose())
+        env.new_string(binding.snapshot().expose())
             .expect("readBindingSecure failed to create Java string")
             .into_raw()
     })
@@ -340,7 +340,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingId<'local>
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Id>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Id>) };
-    binding.get().into_ffi().into_jint()
+    binding.snapshot().into_ffi().into_jint()
 }
 
 #[unsafe(no_mangle)]
@@ -434,7 +434,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStrP
     // `WuiBinding<StyledStr>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
     super::with_env(&mut env, |env| {
-        env.new_string(binding.get().to_plain().as_str())
+        env.new_string(binding.snapshot().to_plain().as_str())
             .expect("readBindingStyledStrPlain failed to create Java string")
             .into_raw()
     })
@@ -471,7 +471,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'l
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Vec<Date>>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Date>>) };
-    let dates = binding.get();
+    let dates = binding.snapshot();
     super::with_env(&mut env, |env| {
         let date_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/DateStruct"))
@@ -563,7 +563,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTime<'
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<DateTime>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<DateTime>) };
-    let date_time: DateTime = binding.get();
+    let date_time: DateTime = binding.snapshot();
     let ffi = date_time.into_ffi();
 
     super::with_env(&mut env, |env| {
@@ -691,7 +691,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedBitmap<'l
     // SAFETY: Kotlin passes back the computed pointer `pictureBitmap` handed it,
     // which stays alive until `dropComputedBitmap` and is only ever read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<RgbaBitmap>) };
-    let bitmap = computed.get().into_ffi();
+    let bitmap = computed.snapshot().into_ffi();
     super::with_env(&mut env, |env| {
         let (width, height, buffer, handle) = bitmap_struct_args(env, bitmap);
         env.new_object(
@@ -740,7 +740,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedC
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<ResolvedColor>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedColor>) };
-    let resolved: ResolvedColor = computed.get();
+    let resolved: ResolvedColor = computed.snapshot();
     let ffi: WuiResolvedColor = resolved.into_ffi();
 
     super::with_env(&mut env, |env| {
@@ -763,7 +763,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedF
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<ResolvedFont>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedFont>) };
-    let resolved: ResolvedFont = computed.get();
+    let resolved: ResolvedFont = computed.snapshot();
     let ffi = resolved.into_ffi();
 
     // The enums are repr(C), so their discriminants are the ordinals Kotlin
@@ -800,7 +800,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStyledStr
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<StyledStr>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<StyledStr>) };
-    let styled_str: StyledStr = computed.get();
+    let styled_str: StyledStr = computed.snapshot();
 
     super::with_env(&mut env, |env| {
         styled_str_to_java(env, styled_str).into_raw()
@@ -891,7 +891,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateVec<'
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<Vec<Date>>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<Vec<Date>>) };
-    let dates = computed.get();
+    let dates = computed.snapshot();
     super::with_env(&mut env, |env| {
         let date_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/DateStruct"))

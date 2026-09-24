@@ -281,7 +281,7 @@ fn display_refresh_rate() -> waterui::task::RefreshRate {
                 clippy::cast_sign_loss,
                 reason = "the source range is 1.0..=480.0 Hz"
             )]
-            let millihertz = (f64::from(rate.get()) * 1000.0).round() as u32;
+            let millihertz = (f64::from(rate.snapshot()) * 1000.0).round() as u32;
             RefreshRate::from_millihertz(
                 NonZeroU32::new(millihertz).expect("a refresh rate of at least 1 Hz"),
             )
@@ -2375,7 +2375,7 @@ mod tests {
         let action = SharedAction::new(move || {
             // SAFETY: the cell holds the action handle the test installed before
             // invoking this callback, and the callback runs once.
-            unsafe { waterui_drop_shared_action(action_ptr_for_callback.get()) };
+            unsafe { waterui_drop_shared_action(action_ptr_for_callback.snapshot()) };
             callback_finished_for_callback.set(true);
         })
         .into_ffi();

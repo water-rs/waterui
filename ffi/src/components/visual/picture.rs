@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn a_bitmap_signal_rasterises_at_the_display_scale() {
         let picture = Picture::new(Size::new(10.0, 5.0), constant(square(Color::BLACK)));
-        let bitmap = bitmap_signal(&picture, 3.0).get();
+        let bitmap = bitmap_signal(&picture, 3.0).snapshot();
         assert_eq!((bitmap.width(), bitmap.height()), (30, 15));
         assert_eq!(bitmap.data().len(), 30 * 15 * 4);
         assert_eq!(&bitmap.data()[..4], &[0, 0, 0, 255]);
@@ -196,15 +196,15 @@ mod tests {
         let tint = binding(Color::BLACK);
         let picture = Picture::new(Size::new(10.0, 10.0), tint.map(square));
         let bitmaps = bitmap_signal(&picture, 1.0);
-        assert_eq!(&bitmaps.get().data()[..4], &[0, 0, 0, 255]);
+        assert_eq!(&bitmaps.snapshot().data()[..4], &[0, 0, 0, 255]);
         tint.set(Color::WHITE);
-        assert_eq!(&bitmaps.get().data()[..4], &[255, 255, 255, 255]);
+        assert_eq!(&bitmaps.snapshot().data()[..4], &[255, 255, 255, 255]);
     }
 
     #[test]
     fn a_bitmap_crosses_the_boundary_and_comes_back_whole() {
         let picture = Picture::new(Size::new(2.0, 2.0), constant(square(Color::BLACK)));
-        let ffi = bitmap_signal(&picture, 1.0).get().into_ffi();
+        let ffi = bitmap_signal(&picture, 1.0).snapshot().into_ffi();
         assert_eq!((ffi.width, ffi.height, ffi.len), (2, 2, 16));
         // SAFETY: `ffi` came from `into_ffi` just above and is dropped once.
         unsafe { waterui_drop_bitmap(ffi) };

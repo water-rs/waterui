@@ -34,7 +34,7 @@ runtime string is not a `Url` — parse it, and report the failure rather than l
 bad address reach the loader as a local path:
 
 ```rust
-let Some(parsed) = Url::parse(entered.get().as_str()) else { return };   // parse returns Option
+let Some(parsed) = Url::parse(entered.snapshot().as_str()) else { return };   // parse returns Option
 photo_slot.set(Photo::new(parsed));
 ```
 
@@ -113,7 +113,7 @@ open.with_proxy(move || hstack((
     button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
     button("Go").action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
         // parse_user_input tolerates human input (missing scheme); returns Option.
-        if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
+        if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
             proxy.go_to(url);
         }
     }).state(&address),
@@ -192,7 +192,7 @@ full control, implement `GpuView` (async `setup(&mut self, ctx, env)` owns persi
 resources; sync `render(&mut self, frame)` draws — call `frame.request_redraw()` at the
 end to keep animating) and wrap it: `GpuSurface::new(renderer).size(w, h)`. One renderer
 instance lives for the surface's lifetime. Inside `render` you are outside the reactive
-graph: holding cloned `Binding`s on the renderer struct and `.get()`ing them per frame is
+graph: holding cloned `Binding`s on the renderer struct and `.snapshot()`ing them per frame is
 correct there. `waterui::graphics` re-exports `bytemuck`. Verify GPU components with
 offscreen rendering, never by reasoning about the code.
 

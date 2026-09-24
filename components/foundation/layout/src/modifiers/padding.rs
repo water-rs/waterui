@@ -26,7 +26,7 @@ impl Layout for PaddingLayout {
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        let edges = self.edges.get();
+        let edges = self.edges.snapshot();
         // The horizontal and vertical space consumed by padding.
         let horizontal_padding = edges.leading + edges.trailing;
         let vertical_padding = edges.top + edges.bottom;
@@ -77,7 +77,7 @@ impl Layout for PaddingLayout {
             return vec![];
         }
 
-        let edges = self.edges.get();
+        let edges = self.edges.snapshot();
         // Create the child's frame by insetting the parent's bound by the padding amount.
         let child_origin = Point::new(bounds.x() + edges.leading, bounds.y() + edges.top);
 

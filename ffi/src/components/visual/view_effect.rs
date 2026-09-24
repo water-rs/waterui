@@ -512,7 +512,7 @@ fn ensure_current_context(
             output_height,
         );
     }
-    if state.setup_formats.get().is_some() {
+    if state.setup_formats.snapshot().is_some() {
         restart_view_effect_setup(state);
     }
     gpu
@@ -551,7 +551,7 @@ fn finish_attach(
     output_width: u32,
     output_height: u32,
 ) {
-    if let Some((_, setup_output_format)) = state.setup_formats.get() {
+    if let Some((_, setup_output_format)) = state.setup_formats.snapshot() {
         assert_eq!(
             setup_output_format,
             output.format(),
@@ -564,7 +564,7 @@ fn finish_attach(
     state.output_height = output_height;
     state.output = Some(output);
     let _ = state.redraw_handle.take_dirty();
-    if state.setup_ready.get() {
+    if state.setup_ready.snapshot() {
         state.redraw_handle.request_redraw();
     }
 }
@@ -807,7 +807,7 @@ fn ensure_dimensions(state: &mut WuiViewEffectState, width: u32, height: u32) {
 }
 
 fn assert_setup_input_format(state: &WuiViewEffectState, input_format: wgpu::TextureFormat) {
-    if let Some((setup_input_format, _)) = state.setup_formats.get() {
+    if let Some((setup_input_format, _)) = state.setup_formats.snapshot() {
         assert_eq!(
             setup_input_format, input_format,
             "ViewEffect input format changed after setup"
@@ -1055,7 +1055,7 @@ pub unsafe extern "C" fn waterui_view_effect_is_ready(state: *const WuiViewEffec
     // SAFETY: the caller contract requires `state` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
-    state.setup_ready.get()
+    state.setup_ready.snapshot()
 }
 
 /// Render the effect.
@@ -1095,7 +1095,7 @@ pub unsafe extern "C" fn waterui_view_effect_render(state: *mut WuiViewEffectSta
             // frame stays pending until the backend hands a fresh input over.
             return true;
         };
-        if !state.setup_ready.get() {
+        if !state.setup_ready.snapshot() {
             // The effect's setup is re-running on the rebuilt device; the frame
             // stays pending and the host comes back for it.
             return true;
@@ -1236,7 +1236,7 @@ pub unsafe extern "C" fn waterui_view_effect_render_to_metal_texture(
     };
 
     assert!(
-        state.setup_ready.get(),
+        state.setup_ready.snapshot(),
         "waterui_view_effect_render_to_metal_texture called before asynchronous setup completed"
     );
     ensure_dimensions(state, width, height);
@@ -1349,7 +1349,7 @@ fn start_view_effect_setup(state: &WuiViewEffectState, input_format: wgpu::Textu
         .as_ref()
         .expect("ViewEffect setup requires an attached presentation target")
         .format();
-    if let Some((setup_input_format, setup_output_format)) = state.setup_formats.get() {
+    if let Some((setup_input_format, setup_output_format)) = state.setup_formats.snapshot() {
         assert_eq!(
             setup_input_format, input_format,
             "ViewEffect input format changed after setup"

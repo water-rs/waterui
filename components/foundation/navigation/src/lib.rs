@@ -137,7 +137,7 @@ impl NavigationDestinationState {
         if let Some(handler) = &mut self.pop_attempted {
             handler(env);
         }
-        self.pop_enabled.get()
+        self.pop_enabled.snapshot()
     }
 
     /// Reports that the destination became active.

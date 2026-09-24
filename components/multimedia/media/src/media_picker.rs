@@ -83,7 +83,7 @@ where
             async move {
                 #[cfg(feature = "std")]
                 {
-                    let requested_filter = filter.get();
+                    let requested_filter = filter.snapshot();
                     let picker = KitPhotoPicker::new()
                         .with_media_type(media_type_from_filter(requested_filter));
                     let handle = match picker.pick().await {

@@ -14,18 +14,18 @@
 These are the expensive ones — the type system cannot catch them, so recognize them by
 symptom.
 
-**The UI never updates.** A `.get()` reached a view-building expression, turning a signal
-into a one-time snapshot. Search the view function for `.get()`; every occurrence outside a
+**The UI never updates.** A `.snapshot()` reached a view-building expression, turning a signal
+into a one-time value. Search the view function for `.snapshot()`; every occurrence outside a
 handler or a `.map()` closure is suspect.
 
 ```rust
-view.opacity(fade.get())      // frozen
+view.opacity(fade.snapshot())      // frozen
 view.opacity(fade.clone())    // reactive
 ```
 
-**Text is stale.** Same cause, wearing a different hat: `text(format!("Count: {}", n.get()))`
+**Text is stale.** Same cause, wearing a different hat: `text(format!("Count: {}", n.snapshot()))`
 formats once. Use `text!("Count: {n}")`. (Plain `text(format!(..))` over a *non-signal*
-value is fine — the defect is specifically `.get()` on a signal.)
+value is fine — the defect is specifically `.snapshot()` on a signal.)
 
 **Typed input resets, or a control loses focus on every keystroke.** Something above it is a
 `watch` that rebuilds the subtree. Replace it — reactive text with `text!`, a reactive

@@ -68,9 +68,9 @@ mod tests {
         let env = Environment::new();
         let local = binding(false);
         let resolved = Disabled::resolve(&env, local.clone());
-        assert!(!resolved.get());
+        assert!(!resolved.snapshot());
         local.set(true);
-        assert!(resolved.get());
+        assert!(resolved.snapshot());
     }
 
     #[test]
@@ -86,13 +86,13 @@ mod tests {
             .expect("installed disabled scope must be present")
             .signal()
             .clone();
-        assert!(!resolved.get());
+        assert!(!resolved.snapshot());
         outer.set(true);
-        assert!(resolved.get(), "outer scope must disable the subtree");
+        assert!(resolved.snapshot(), "outer scope must disable the subtree");
         outer.set(false);
         inner.set(true);
-        assert!(resolved.get(), "inner scope must disable the subtree");
+        assert!(resolved.snapshot(), "inner scope must disable the subtree");
         inner.set(false);
-        assert!(!resolved.get());
+        assert!(!resolved.snapshot());
     }
 }

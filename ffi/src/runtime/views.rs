@@ -37,7 +37,7 @@ pub unsafe extern "C" fn waterui_anyviews_get_view(
 pub unsafe extern "C" fn waterui_anyviews_len(anyviews: *const WuiAnyViews) -> usize {
     // SAFETY: the caller contract requires `anyviews` to be a valid handle alive for
     // this call; it is only borrowed.
-    unsafe { (&*anyviews).len().get() }
+    unsafe { (&*anyviews).len().snapshot() }
 }
 
 fn collect_ids_in_range(anyviews: &WuiAnyViews, start: usize, end: usize) -> Vec<WuiId> {
@@ -157,7 +157,7 @@ where
     type View = AnyView;
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        let items = self.source.get();
+        let items = self.source.snapshot();
         (index < items.len()).then(|| (self.id_at)(&items, index))
     }
 
@@ -194,7 +194,7 @@ where
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
         self.source
-            .get()
+            .snapshot()
             .into_iter()
             .nth(index)
             .map(&self.build_view)

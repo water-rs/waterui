@@ -517,7 +517,7 @@ fn create_attached_surface(
 }
 
 fn start_renderer_setup(state: &WuiGpuSurfaceState, format: wgpu::TextureFormat) {
-    if let Some(existing) = state.renderer_format.get() {
+    if let Some(existing) = state.renderer_format.snapshot() {
         assert_eq!(
             existing, format,
             "GpuSurface target format changed after renderer setup started"
@@ -665,13 +665,13 @@ pub(crate) fn ensure_current_context(
             state.attached_layer,
             state.current_width,
             state.current_height,
-            state.renderer_format.get(),
+            state.renderer_format.snapshot(),
             state.attached_prefers_hdr,
         );
         state.config = Some(config);
         state.wgpu_surface = Some(surface);
     }
-    if let Some(format) = state.renderer_format.get() {
+    if let Some(format) = state.renderer_format.snapshot() {
         restart_renderer_setup(state, format);
     }
     gpu
@@ -682,7 +682,7 @@ fn with_semantic_mut<T>(
     use_semantic: impl FnOnce(&mut GpuSurfaceSemantic) -> T,
 ) -> T {
     assert!(
-        state.setup_ready.get(),
+        state.setup_ready.snapshot(),
         "GpuSurface renderer used before asynchronous setup completed"
     );
     let mut semantic = state.semantic.borrow_mut();
@@ -905,7 +905,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_attach(
         layer,
         width,
         height,
-        state.renderer_format.get(),
+        state.renderer_format.snapshot(),
         prefers_hdr,
     );
 
@@ -1028,7 +1028,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_is_ready(state: *const WuiGpuSurfac
     // SAFETY: the caller contract requires `state` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let state = unsafe { crate::borrow_ffi(state) };
-    state.setup_ready.get()
+    state.setup_ready.snapshot()
 }
 
 /// Render a single frame.
@@ -1131,7 +1131,7 @@ fn render_frame_body(
     }
 
     let format = attached_config(state, "waterui_gpu_surface_render").format;
-    if !state.setup_ready.get() {
+    if !state.setup_ready.snapshot() {
         // The renderer is mid-setup — first attach or a device-loss rebuild —
         // so the frame stays pending and the host comes back for it.
         return true;
@@ -1283,12 +1283,12 @@ pub unsafe extern "C" fn waterui_gpu_surface_render_to_metal_texture(
 
     let target_format = metal_texture_format(&metal_texture);
     assert_eq!(
-        state.renderer_format.get(),
+        state.renderer_format.snapshot(),
         Some(target_format),
         "waterui_gpu_surface_render_to_metal_texture called before preparing this target format"
     );
     assert!(
-        state.setup_ready.get(),
+        state.setup_ready.snapshot(),
         "waterui_gpu_surface_render_to_metal_texture called before asynchronous setup completed"
     );
 
@@ -1418,7 +1418,7 @@ pub(super) fn composite_runtime(state: &WuiGpuSurfaceState) -> GpuRuntime {
 /// `with_semantic_mut` instead of drawing.
 #[cfg(target_os = "android")]
 pub(super) fn composite_source_ready(state: &WuiGpuSurfaceState) -> bool {
-    state.setup_ready.get()
+    state.setup_ready.snapshot()
 }
 
 /// Renders this surface's next frame into the texture a capture reads it from.

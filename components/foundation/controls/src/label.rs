@@ -825,7 +825,7 @@ mod tests {
             .semantic_text()
             .resolve(env)
             .content
-            .get()
+            .snapshot()
             .to_plain()
             .into_string()
     }

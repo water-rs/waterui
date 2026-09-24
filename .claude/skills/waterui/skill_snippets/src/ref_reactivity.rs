@@ -662,7 +662,7 @@ pub fn reactivity_block_18() -> impl View {
             |State(url): State<Binding<Str>>,
              State(blur): State<Binding<f64>>,
              h: DynamicHandler| {
-                let Ok(parsed) = url.get().as_str().parse::<Url>() else {
+                let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else {
                     return;
                 };
                 h.set(Photo::new(parsed).blur(blur.clone()));

@@ -69,13 +69,11 @@ where
             )))
             .action(move || {
                 if has_children {
-                    let mut set = expanded_for_action.get();
-                    if set.contains(&id) {
-                        set.remove(&id);
-                    } else {
-                        set.insert(id.clone());
-                    }
-                    expanded_for_action.set(set);
+                    expanded_for_action.with_mut(|set| {
+                        if !set.insert(id.clone()) {
+                            set.remove(&id);
+                        }
+                    });
                 }
             })
         };

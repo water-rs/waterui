@@ -50,7 +50,7 @@
 //! button("Search")
 //!     .action(
 //!         |State(query): State<Binding<Str>>, State(history): State<Binding<Vec<Str>>>| {
-//!             history.get_mut().push(query.get());
+//!             history.with_mut(|history| history.push(query.snapshot()));
 //!         },
 //!     )
 //!     .state(&query)
@@ -131,7 +131,7 @@
 //! # let form_data: Binding<FormData> = binding(FormData::default());
 //! button("Submit")
 //!     .action(|State(data): State<Binding<FormData>>, client: ApiClient| {
-//!         client.submit(data.get());
+//!         client.submit(data.snapshot());
 //!     })
 //!     .state(&form_data);
 //! # }
@@ -749,7 +749,7 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit"
@@ -779,7 +779,7 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit"
@@ -790,7 +790,7 @@ mod tests {
                 .clone()
                 .resolve(&Environment::default())
                 .accessibility_label()
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Edit document"

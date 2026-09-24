@@ -20,7 +20,7 @@
 //! ```
 
 use core::fmt;
-use nami::SignalExt as _;
+use nami::{Signal as _, SignalExt as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 use waterui_core::{
@@ -70,11 +70,11 @@ impl fmt::Debug for SphericalViewport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SphericalViewport")
-            .field("yaw_degrees", &self.yaw.get())
-            .field("pitch_degrees", &self.pitch.get())
+            .field("yaw_degrees", &self.yaw.snapshot())
+            .field("pitch_degrees", &self.pitch.snapshot())
             .field(
                 "vertical_field_of_view_degrees",
-                &self.vertical_field_of_view.get(),
+                &self.vertical_field_of_view.snapshot(),
             )
             .finish()
     }
@@ -107,19 +107,19 @@ impl SphericalViewport {
     /// Returns the current normalized yaw in degrees.
     #[must_use]
     pub fn yaw_degrees(&self) -> f32 {
-        self.yaw.get()
+        self.yaw.snapshot()
     }
 
     /// Returns the current pitch in degrees.
     #[must_use]
     pub fn pitch_degrees(&self) -> f32 {
-        self.pitch.get()
+        self.pitch.snapshot()
     }
 
     /// Returns the current vertical field of view in degrees.
     #[must_use]
     pub fn vertical_field_of_view_degrees(&self) -> f32 {
-        self.vertical_field_of_view.get()
+        self.vertical_field_of_view.snapshot()
     }
 
     /// Updates the camera orientation.
@@ -1536,7 +1536,8 @@ configurable!(
             ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     },
-    resolve |config, env| config.bind_event_environment(env)
+    resolve | config,
+    env | config.bind_event_environment(env)
 );
 
 impl Video {
@@ -1702,7 +1703,8 @@ configurable!(
             ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
         }
     },
-    resolve |config, env| config.bind_event_environment(env)
+    resolve | config,
+    env | config.bind_event_environment(env)
 );
 
 impl VideoPlayer {

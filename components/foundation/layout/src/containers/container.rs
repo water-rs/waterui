@@ -29,7 +29,7 @@ impl DirectionalLayout {
     }
 
     fn mirror(&self, bounds: Rect, frame: Rect) -> Rect {
-        if self.direction.get().is_right_to_left() {
+        if self.direction.snapshot().is_right_to_left() {
             Rect::new(
                 waterui_core::layout::Point::new(
                     bounds.min_x() + bounds.max_x() - frame.max_x(),
@@ -47,7 +47,7 @@ impl Debug for DirectionalLayout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DirectionalLayout")
             .field("inner", &self.inner)
-            .field("direction", &self.direction.get())
+            .field("direction", &self.direction.snapshot())
             .finish()
     }
 }

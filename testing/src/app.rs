@@ -71,7 +71,7 @@ pub fn ui() -> UiBuilder {
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
 pub fn mount_app(app: App, style: impl Style) -> OffscreenApp {
-    let size = *app.main_window().frame.get().size();
+    let size = *waterui_core::Signal::snapshot(&app.main_window().frame).size();
     ui().theme(style)
         .viewport(
             frame_points_as_u32(size.width),

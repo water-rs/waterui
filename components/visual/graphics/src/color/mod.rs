@@ -162,7 +162,7 @@ impl<T: Clone + 'static> Signal for WithOpacity<T> {
     type Output = Self;
     type Guard = ();
 
-    fn get(&self) -> Self::Output {
+    fn snapshot(&self) -> Self::Output {
         self.clone()
     }
 
@@ -1075,7 +1075,7 @@ mod tests {
             .with_opacity(0.4)
             .with_headroom(0.6);
 
-        let resolved = base.resolve(&env).get();
+        let resolved = base.resolve(&env).snapshot();
 
         assert!(approx_eq(resolved.opacity, 0.4, EPSILON));
         assert!(approx_eq(resolved.headroom, 0.6, EPSILON));
@@ -1085,7 +1085,7 @@ mod tests {
     fn p3_resolution_matches_conversion() {
         let env = Environment::new();
         let color = Color::p3(0.3, 0.6, 0.9);
-        let resolved = color.resolve(&env).get();
+        let resolved = color.resolve(&env).snapshot();
         let srgb = P3::new(0.3, 0.6, 0.9).to_srgb().resolve();
 
         assert!(approx_eq(resolved.red, srgb.red, EPSILON_WIDE));
@@ -1103,7 +1103,7 @@ mod tests {
         ];
 
         for sample in samples {
-            let resolved_oklch = Color::from(sample).resolve(&env).get();
+            let resolved_oklch = Color::from(sample).resolve(&env).snapshot();
             let resolved_srgb = sample.to_srgb().resolve();
 
             assert!(approx_eq(
@@ -1155,7 +1155,7 @@ mod tests {
     #[test]
     fn transparent_color_has_zero_opacity() {
         let env = Environment::new();
-        let transparent = Color::transparent().resolve(&env).get();
+        let transparent = Color::transparent().resolve(&env).snapshot();
         assert!(approx_eq(transparent.opacity, 0.0, EPSILON));
     }
 
@@ -1163,9 +1163,14 @@ mod tests {
     fn lighten_and_darken_adjust_lightness() {
         let env = Environment::new();
         let base = Color::oklch(0.4, 0.12, 90.0);
-        let base_lch = base.resolve(&env).get().to_oklch();
-        let lighter = base.clone().lighten(0.2).resolve(&env).get().to_oklch();
-        let darker = base.darken(0.2).resolve(&env).get().to_oklch();
+        let base_lch = base.resolve(&env).snapshot().to_oklch();
+        let lighter = base
+            .clone()
+            .lighten(0.2)
+            .resolve(&env)
+            .snapshot()
+            .to_oklch();
+        let darker = base.darken(0.2).resolve(&env).snapshot().to_oklch();
 
         assert!(lighter.lightness > base_lch.lightness);
         assert!(darker.lightness < base_lch.lightness);
@@ -1175,9 +1180,14 @@ mod tests {
     fn saturate_and_desaturate_adjust_chroma() {
         let env = Environment::new();
         let base = Color::oklch(0.5, 0.2, 45.0);
-        let base_chroma = base.resolve(&env).get().to_oklch().chroma;
-        let saturated = base.clone().saturate(0.5).resolve(&env).get().to_oklch();
-        let desaturated = base.desaturate(0.5).resolve(&env).get().to_oklch();
+        let base_chroma = base.resolve(&env).snapshot().to_oklch().chroma;
+        let saturated = base
+            .clone()
+            .saturate(0.5)
+            .resolve(&env)
+            .snapshot()
+            .to_oklch();
+        let desaturated = base.desaturate(0.5).resolve(&env).snapshot().to_oklch();
 
         assert!(saturated.chroma > base_chroma);
         assert!(desaturated.chroma < base_chroma);
@@ -1189,7 +1199,7 @@ mod tests {
         let rotated = Color::oklch(0.6, 0.18, 350.0)
             .hue_rotate(40.0)
             .resolve(&env)
-            .get()
+            .snapshot()
             .to_oklch();
 
         assert!(approx_eq(rotated.hue, 30.0, EPSILON_WIDE));
@@ -1200,7 +1210,7 @@ mod tests {
         let env = Environment::new();
         let black = Color::srgb(0, 0, 0);
         let white = Color::srgb(255, 255, 255);
-        let mid = black.mix(white, 0.5).resolve(&env).get();
+        let mid = black.mix(white, 0.5).resolve(&env).snapshot();
 
         assert!(approx_eq(mid.red, 0.5, EPSILON));
         assert!(approx_eq(mid.green, 0.5, EPSILON));

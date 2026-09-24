@@ -140,7 +140,11 @@ serde_json = "1.0"
 schemars = { version = "1.2", features = ["derive"] }
 smallvec = "1.16"
 # Local vendored dependency overrides via git submodule.
-nami = "0.11.2"
+# The [patch] below pins nami to dev rev 5dc2d92e (the `Signal::get` →
+# `snapshot` rename, water-rs/nami#26), whose manifest still reads 0.11.1; the
+# range is pinned to =0.11.1 so the patched package is the newest match —
+# crates.io 0.11.2 still ships `get` and must not satisfy this requirement.
+nami = "=0.11.1"
 nami-core = "0.3.3"
 pin-project-lite = "0.2"
 tracing = "0.1.44"
@@ -509,11 +513,11 @@ waterui-webview = { path = "components/platform/webview" }
 # implements the icon-button contract (water-rs/hydrolysis#115), and
 # renders the framework-owned ListSelection (water-rs/waterui#1226); drop
 # it when a hydrolysis release carries those changes.
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "0149418967064785509475a49c39831215ba3387" }
+# hydrolysis is pinned by the migration block at the bottom of this table.
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "e75469764ebfbe72d4497e4a5123be12fd5d37bd" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "0f840d1263dce4a5fbd33559f308caff9d982105" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -524,15 +528,8 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "e754
 # `waterkit-video` gives two `DecodedAudioFrame` types — and `waterkit-core`
 # keeps the whole waterkit graph on one source; drop these entries once
 # registry releases carry the change.
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "b6113f8b3aa09402f5fafa95d160d7f6dc0715e5" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "8cdb00b27d5efff47082e1c30ee8463197ed8184" }
+# waterkit-* and waterui-image are pinned by the migration block at the
+# bottom of this table.
 xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
@@ -572,3 +569,32 @@ vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "d68d9e
 # `vello_hybrid`'s text API takes glyphs from `glifo`, which that repo also
 # carries by path; the same rev keeps one `Glyph` type in the graph.
 glifo = { git = "https://github.com/lexoliu/vello", rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639" }
+# nami#26 renames `Signal::get` to `Signal::snapshot` (trait-only), removes the
+# inherent `Binding::get`, and renames `BindingMailbox::get`/`get_as` to
+# `snapshot`/`snapshot_as` — a breaking change with no compatibility path.
+# Both nami crates this workspace names ride the same rev so the graph carries
+# a single `Signal` trait; `nami-derive` needs no entry because the rename
+# touched only its docs. Drop these once a nami release contains the rename.
+nami = { git = "https://github.com/water-rs/nami", rev = "5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425" }
+nami-core = { git = "https://github.com/water-rs/nami", rev = "5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425" }
+
+# TEMP: local path pins of the migrated component repositories for the
+# nami-snapshot migration — converted to git revs of each repo's
+# devin/chore/nami-snapshot head before the branch is pushed.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "0b57adb8183e5788bbd66ec4fe14f24c5675f168" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "dfdb8e471847a2873f93128e2e0d8dc26e3f3f1b" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "f362659b684aff7e1a67dedda1ded9de3708ed0b" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "32b9ddc5a0d4dcd78696525dcdd3e0e2c5c5f731" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "f62a66bfe6aec74dae7d16308a05402bd7523db9" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "1458e7f2c059a238ebb3d9ddf66578c72e99d3fd" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2096f41ed3925b42ad2e6a1a7a81ff72d63af5c0" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "b5a8e86a788d2b8f280ff426c5b08a38f5b77280" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
+waterui-math = { git = "https://github.com/water-rs/math", rev = "fdbb425d63adfd8c6e19dcaf7ffee3a0693f5a73" }

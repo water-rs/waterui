@@ -99,7 +99,7 @@ async fn session(
         &InspectorClientMessage::Hello {
             token: target.token.clone(),
             protocol: protocol_info(),
-            channels: model.subscribed.get(),
+            channels: model.subscribed.snapshot(),
         },
     )
     .await

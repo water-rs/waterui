@@ -632,7 +632,7 @@ where
     S::Guard: 'static,
 {
     fn snapshot(&self) -> f32 {
-        self.0.get()
+        self.0.snapshot()
     }
 
     fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {

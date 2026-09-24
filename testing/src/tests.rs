@@ -18,7 +18,7 @@ use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Native, View};
+use waterui_core::{AnyView, Native, Signal, View};
 
 #[derive(Debug)]
 struct NoopDriver;
@@ -237,7 +237,7 @@ mod token_probe {
         use_env(|env: Environment| {
             let accent = installed_color_signal::<theme_color::Accent>(&env)
                 .expect("the framework defaults carry the accent slot")
-                .get();
+                .snapshot();
             text(format!("accent:{accent:?}"))
         })
     }
@@ -1017,7 +1017,7 @@ fn semantic_mount_drains_spawned_local_work() {
         app.wait_for_existence(&status_selector, Duration::from_millis(500)),
         "expected the semantic runtime to drain spawn_local task and update the binding"
     );
-    assert_eq!(status.get().as_str(), "ready");
+    assert_eq!(status.snapshot().as_str(), "ready");
 }
 
 #[test]
@@ -1344,7 +1344,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         "expected initial FocusState to focus the username field"
     );
     app.assert_ui_focus(&username_selector);
-    assert_eq!(focus.get(), Some(Field::Username));
+    assert_eq!(focus.snapshot(), Some(Field::Username));
 
     let username_id = app
         .query()
@@ -1366,17 +1366,17 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         .id();
     app.assert_ui_focus(&password_selector);
     assert_eq!(app.ui_focus(), Some(password_id));
-    assert_eq!(focus.get(), Some(Field::Password));
+    assert_eq!(focus.snapshot(), Some(Field::Password));
 
     app.query().role(Role::BUTTON).label("Submit").focus();
     let submit_id = app.query().role(Role::BUTTON).label("Submit").single().id();
     assert_eq!(submit_id, app.tree().focus());
     assert_eq!(app.ui_focus(), Some(password_id));
-    assert_eq!(focus.get(), Some(Field::Password));
+    assert_eq!(focus.snapshot(), Some(Field::Password));
 
     app.clear_ui_focus();
     assert_eq!(app.ui_focus(), None);
-    assert_eq!(focus.get(), None);
+    assert_eq!(focus.snapshot(), None);
     assert_eq!(app.tree().focus(), submit_id);
 }
 
@@ -1444,11 +1444,11 @@ fn ui_focus_accepts_a_new_target_after_being_cleared() {
 
     app.clear_ui_focus();
     assert_eq!(app.ui_focus(), None);
-    assert_eq!(focus.get(), None);
+    assert_eq!(focus.snapshot(), None);
 
     app.query().role(Role::TEXT_INPUT).label("Field").focus();
     app.assert_ui_focus(&selector);
-    assert_eq!(focus.get(), Some(0));
+    assert_eq!(focus.snapshot(), Some(0));
 }
 
 #[test]
@@ -1510,7 +1510,7 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
         expected.push(character);
         app.text_input(character.to_string());
         assert_eq!(
-            value.get().as_str(),
+            value.snapshot().as_str(),
             expected,
             "each retained refresh must preserve the caret after the committed prefix"
         );
@@ -1612,7 +1612,7 @@ fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
     app.query().role(Role::BUTTON).label("Increment").focus();
     app.press_named_key("Enter");
     assert_eq!(
-        count.get(),
+        count.snapshot(),
         1,
         "Enter on a focused button must run its action on the semantic runtime"
     );
@@ -1632,7 +1632,7 @@ fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
     app.query().role(Role::BUTTON).label("Increment").focus();
     app.press_named_key("Enter");
     assert_eq!(
-        count.get(),
+        count.snapshot(),
         1,
         "Enter on a focused button must run its action on the rendered runtime"
     );
