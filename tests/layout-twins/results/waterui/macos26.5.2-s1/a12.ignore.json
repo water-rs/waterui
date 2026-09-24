@@ -1,0 +1,536 @@
+{
+  "frames" : {
+    "twins.a12.content" : [
+      220,
+      200,
+      60,
+      300
+    ],
+    "twins.a12.scroll" : [
+      0,
+      0,
+      500,
+      500
+    ]
+  },
+  "meta" : {
+    "case" : "a12.ignore",
+    "displayScale" : 1,
+    "flippedY" : true,
+    "osVersion" : "Version 26.5.2 (Build 25F84)",
+    "platform" : "macos",
+    "window" : {
+      "h" : 500,
+      "w" : 500,
+      "x" : 0,
+      "y" : 0
+    }
+  },
+  "nodes" : [
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 0,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 1,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 2,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 3,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 4,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 5,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 6,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 7,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 8,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiIgnoreSafeArea",
+      "depth" : 9,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiAccessibilityLabel",
+      "depth" : 10,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiScroll",
+      "contentInsets" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "contentSize" : [
+        500,
+        500
+      ],
+      "depth" : 11,
+      "documentVisibleRect" : [
+        0,
+        0,
+        500,
+        500
+      ],
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ],
+      "label" : "twins.a12.scroll"
+    },
+    {
+      "cls" : "BackdropView",
+      "depth" : 12,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "NSClipView",
+      "depth" : 12,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "FlippedView",
+      "depth" : 13,
+      "frame" : [
+        0,
+        200,
+        500,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 14,
+      "frame" : [
+        220,
+        200,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiAccessibilityLabel",
+      "depth" : 15,
+      "frame" : [
+        220,
+        200,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 16,
+      "frame" : [
+        220,
+        200,
+        60,
+        300
+      ],
+      "label" : "twins.a12.content"
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 17,
+      "frame" : [
+        220,
+        200,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiColorView",
+      "depth" : 18,
+      "frame" : [
+        220,
+        200,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "NSScrollPocket",
+      "depth" : 12,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "PocketMask",
+      "depth" : 13,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 15,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "PocketBlur",
+      "depth" : 13,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "PortalView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSHardPocketView",
+      "depth" : 13,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "BackdropView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "BackdropView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "_NSLayerBasedFillColorView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        500,
+        0,
+        1
+      ]
+    },
+    {
+      "cls" : "LuminanceAdjustment",
+      "depth" : 13,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 15,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "BackdropView",
+      "depth" : 16,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "_NSScrollViewContentBackgroundView",
+      "depth" : 16,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 15,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 16,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 16,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "PortalView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        472,
+        0,
+        28
+      ]
+    },
+    {
+      "cls" : "NSView",
+      "depth" : 13,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "AdditionalDimmingView",
+      "depth" : 14,
+      "frame" : [
+        0,
+        500,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "NSScroller",
+      "depth" : 12,
+      "frame" : [
+        -17,
+        500,
+        17,
+        0
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 8,
+      "frame" : [
+        250,
+        250,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "WuiDynamic",
+      "depth" : 9,
+      "frame" : [
+        250,
+        250,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 10,
+      "frame" : [
+        250,
+        250,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "WuiEmpty",
+      "depth" : 11,
+      "frame" : [
+        250,
+        250,
+        0,
+        0
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 4,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    },
+    {
+      "cls" : "WuiContainer",
+      "depth" : 5,
+      "frame" : [
+        0,
+        0,
+        500,
+        500
+      ]
+    }
+  ]
+}
