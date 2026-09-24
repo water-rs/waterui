@@ -577,6 +577,7 @@ use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// # Examples
 ///
 /// ```rust
+/// use waterui::Signal;
 /// use waterui::reactive::{Binding, binding, project::Project};
 /// use waterui_macros::Project;
 ///
@@ -595,7 +596,7 @@ use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// projected.name.set("Bob".to_string());
 /// projected.age.set(25u32);
 ///
-/// let person = person_binding.get();
+/// let person = person_binding.snapshot();
 /// assert_eq!(person.name, "Bob");
 /// assert_eq!(person.age, 25);
 /// ```
@@ -1286,7 +1287,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///     let value_for_view = value.clone();
 ///     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 ///     app.query().label("Limited").increment();
-///     assert_eq!(value.get(), 3);
+///     assert_eq!(value.snapshot(), 3);
 /// }
 /// # fn main() {}
 /// ```

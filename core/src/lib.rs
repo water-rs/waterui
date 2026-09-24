@@ -63,7 +63,7 @@
 //!
 //! // Derive the exact value consumed by a signal-aware component.
 //! let label = counter.map(|count| format!("Current value: {count}"));
-//! assert_eq!(label.get(), "Current value: 0");
+//! assert_eq!(label.snapshot(), "Current value: 0");
 //! ```
 //!
 //! Signal-aware component inputs subscribe to derived values and update only the

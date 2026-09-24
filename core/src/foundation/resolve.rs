@@ -163,7 +163,7 @@ pub trait Resolvable: Debug + Clone {
     /// Resolves this value in the given environment, returning a reactive signal.
     ///
     /// The returned signal will emit the current resolved value and any future updates.
-    /// Callers typically use `.get()` for one-shot reads or subscribe for continuous updates.
+    /// Callers typically use `.snapshot()` for one-shot reads or subscribe for continuous updates.
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved>;
 }
 
