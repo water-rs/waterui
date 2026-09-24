@@ -487,11 +487,7 @@ mod tests {
             "the container extent clamps at zero, never negative"
         );
 
-        let placements = layout.place(
-            Rect::from_size(size),
-            ProposalSize::UNSPECIFIED,
-            &children,
-        );
+        let placements = layout.place(Rect::from_size(size), ProposalSize::UNSPECIFIED, &children);
         assert_eq!(
             placements[0].frame,
             Rect::new(Point::new(-10.0, -10.0), Size::new(20.0, 20.0)),
