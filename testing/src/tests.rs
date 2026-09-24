@@ -793,8 +793,7 @@ fn a_size_then_min_width_chain_resolves_to_the_minimum() {
                 .a11y_label("chained"),))
         });
     let bounds = app.query().label("chained").single().bounds();
-    assert_eq!(bounds.width(), 60.0);
-    assert_eq!(bounds.height(), 20.0);
+    assert_eq!((bounds.width(), bounds.height()), (60.0, 20.0));
 }
 
 /// `.size(50, 80)` with `.min_height(100)` and `.min_width(60)` inverts both
@@ -812,8 +811,7 @@ fn a_size_then_min_height_and_min_width_chain_resolves_to_the_minimum() {
                 .a11y_label("chained"),))
         });
     let bounds = app.query().label("chained").single().bounds();
-    assert_eq!(bounds.width(), 60.0);
-    assert_eq!(bounds.height(), 100.0);
+    assert_eq!((bounds.width(), bounds.height()), (60.0, 100.0));
 }
 
 #[test]
