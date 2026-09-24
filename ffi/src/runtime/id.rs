@@ -40,3 +40,5 @@ ffi_binding!(Id, WuiId, id);
 ffi_binding!(Vec<Id>, WuiArray<WuiId>, id_vec);
 #[cfg(feature = "c-api")]
 crate::ffi_watcher!(Id, WuiId, id);
+#[cfg(feature = "c-api")]
+crate::ffi_watcher!(Vec<Id>, WuiArray<WuiId>, id_vec);

@@ -9360,6 +9360,20 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
                                              void (*drop)(void*));
 
 /**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_Vec_Id *waterui_new_watcher_id_vec(void *data,
+                                                     void (*call)(void*,
+                                                                  struct WuiArray_WuiId,
+                                                                  struct WuiWatcherMetadata*),
+                                                     void (*drop)(void*));
+
+/**
  * Opens the inspector for this application.
  *
  * Reveals nothing in particular: use this where the backend cannot say which
