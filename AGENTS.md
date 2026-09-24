@@ -95,6 +95,19 @@ between the document and the code is a bug in the code; a pull request that
 has to weaken a contract test or amend the document is rejected. The only path
 to a semantic change is a major-version decision recorded by the maintainer.
 
+`.github/workflows/layout-decision.yml` enforces this mechanically: a pull
+request that touches `docs/layout-spec.md`, `components/foundation/layout/src/`,
+or `core/src/ui/layout.rs` fails until it carries the `layout-decision` label.
+Only the maintainer applies that label; an agent never adds it, including to a
+pull request the maintainer approved in conversation. It records his decision
+that the change is either a conformance fix (the code now matches the document)
+or an approved amendment of the document.
+
+A case the document does not decide is not a licence to pick a behaviour in
+code. Every freeze break so far came from such a case found by a dogfood app;
+record it as an issue with the code's current behaviour, the reference
+framework's behaviour, and a recommended rule, and let the maintainer decide it.
+
 ## Engagement Rules
 
 **Prefer a coherent design over a small diff.** Avoiding overengineering means avoiding unnecessary complexity, not avoiding substantial refactoring.
