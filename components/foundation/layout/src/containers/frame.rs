@@ -41,14 +41,26 @@ struct ResolvedFrameLayout {
 
 impl FrameLayout {
     fn resolved(&self) -> ResolvedFrameLayout {
-        ResolvedFrameLayout {
+        let resolved = ResolvedFrameLayout {
             min_width: self.min_width.as_ref().map(Signal::get),
             ideal_width: self.ideal_width.as_ref().map(Signal::get),
             max_width: self.max_width.as_ref().map(Signal::get),
             min_height: self.min_height.as_ref().map(Signal::get),
             ideal_height: self.ideal_height.as_ref().map(Signal::get),
             max_height: self.max_height.as_ref().map(Signal::get),
+        };
+        for (axis, min, max) in [
+            ("width", resolved.min_width, resolved.max_width),
+            ("height", resolved.min_height, resolved.max_height),
+        ] {
+            if let (Some(min), Some(max)) = (min, max) {
+                assert!(
+                    min <= max,
+                    "frame {axis} constraint is inverted: min {min} exceeds max {max}"
+                );
+            }
         }
+        resolved
     }
 }
 
@@ -507,6 +519,31 @@ mod tests {
             );
             assert_eq!(*placements[0].frame.size(), Size::new(expected, 10.0));
         }
+    }
+
+    /// An inverted constraint — `min` above `max` on one axis — is a
+    /// programming error, not an interval to resolve: resolution panics and
+    /// the message names the axis and both values.
+    #[test]
+    #[should_panic(expected = "width constraint is inverted: min 80 exceeds max 40")]
+    fn an_inverted_frame_width_panics_at_resolution() {
+        let layout = FrameLayout {
+            min_width: Some(Computed::constant(80.0)),
+            max_width: Some(Computed::constant(40.0)),
+            ..Default::default()
+        };
+        layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[]);
+    }
+
+    #[test]
+    #[should_panic(expected = "height constraint is inverted: min 30 exceeds max 10")]
+    fn an_inverted_frame_height_panics_at_resolution() {
+        let layout = FrameLayout {
+            min_height: Some(Computed::constant(30.0)),
+            max_height: Some(Computed::constant(10.0)),
+            ..Default::default()
+        };
+        layout.size_that_fits(ProposalSize::new(Some(100.0), Some(10.0)), &[]);
     }
 
     struct FramedChild<C> {
