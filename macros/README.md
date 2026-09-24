@@ -133,6 +133,7 @@ Implements the `Project` trait, enabling decomposition of struct bindings into s
 **Example from `/Users/lexoliu/Coding/waterui/derive/src/lib.rs` documentation:**
 
 ```rust
+use waterui::Signal;
 use waterui::reactive::{Binding, binding, project::Project};
 use waterui_macros::Project;
 
