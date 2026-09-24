@@ -672,11 +672,11 @@ raw_view!(ResolvedMenu, StretchAxis::None);
 
 #[cfg(test)]
 mod tests {
-    use nami::Signal;
     use super::*;
     use crate::button::button;
     use alloc::rc::Rc;
     use core::cell::Cell;
+    use nami::Signal;
     use nami::Signal;
     use waterui_icon::system_icon;
 
