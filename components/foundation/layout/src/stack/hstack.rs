@@ -123,7 +123,7 @@ impl Layout for HStackLayout {
             return Size::zero();
         }
 
-        let spacing = self.spacing.get();
+        let spacing = self.spacing.snapshot();
         let measurements = measure_stack(Axis::Horizontal, proposal, spacing, &members);
         let width = measurements.iter().map(|m| m.size().width).sum::<f32>()
             + stack_spacing(spacing, members.len());
@@ -146,7 +146,7 @@ impl Layout for HStackLayout {
             return vec![];
         }
 
-        let spacing = self.spacing.get();
+        let spacing = self.spacing.snapshot();
         // Placement is a fresh negotiation against the bounds the row was
         // placed in: every child is allocated from the row's resolved width
         // and proposed the row's resolved height, so what a child lays out

@@ -457,7 +457,7 @@ Uses `nami` crate for fine-grained reactivity:
 </important>
 
 <important>
-    You are not allowed to use `.get()` on Signals/Bindings directly in view body functions, as it breaks reactivity tracking. Instead, use zip and map combinators to derive new Computed values that depend on multiple signals.
+    You are not allowed to use `.snapshot()` on Signals/Bindings directly in view body functions, as it breaks reactivity tracking. Instead, use zip and map combinators to derive new Computed values that depend on multiple signals.
 </important>
 
 ### View Trait

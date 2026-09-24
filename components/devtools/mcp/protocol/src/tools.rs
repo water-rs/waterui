@@ -433,43 +433,73 @@ pub struct AdvanceArgs {
 
 session_tool!(
     /// The `snapshot` tool.
-    Snapshot, "snapshot", SnapshotArgs, snapshot
+    Snapshot,
+    "snapshot",
+    SnapshotArgs,
+    snapshot
 );
 session_tool!(
     /// The `find` tool.
-    Find, "find", FindArgs, find
+    Find,
+    "find",
+    FindArgs,
+    find
 );
 session_tool!(
     /// The `act` tool.
-    Act, "act", ActArgs, act
+    Act,
+    "act",
+    ActArgs,
+    act
 );
 session_tool!(
     /// The `pointer` tool.
-    Pointer, "pointer", PointerArgs, pointer
+    Pointer,
+    "pointer",
+    PointerArgs,
+    pointer
 );
 session_tool!(
     /// The `key` tool.
-    Key, "key", KeyArgs, key
+    Key,
+    "key",
+    KeyArgs,
+    key
 );
 session_tool!(
     /// The `type_text` tool.
-    TypeText, "type_text", TypeTextArgs, type_text
+    TypeText,
+    "type_text",
+    TypeTextArgs,
+    type_text
 );
 session_tool!(
     /// The `wait` tool.
-    Wait, "wait", WaitArgs, wait
+    Wait,
+    "wait",
+    WaitArgs,
+    wait
 );
 session_tool!(
     /// The `screenshot` tool.
-    Screenshot, "screenshot", ScreenshotArgs, screenshot
+    Screenshot,
+    "screenshot",
+    ScreenshotArgs,
+    screenshot
 );
 session_tool!(
     /// The `restart` tool.
-    Restart, "restart", RestartArgs, restart
+    Restart,
+    "restart",
+    RestartArgs,
+    restart
 );
 session_tool!(
     /// The `advance` tool.
-    Advance, "advance", AdvanceArgs, advance
+    Advance,
+    "advance",
+    AdvanceArgs,
+    advance
 );
 
 /// The registered tool names, in registration order.

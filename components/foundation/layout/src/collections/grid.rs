@@ -2,7 +2,7 @@
 
 use alloc::{vec, vec::Vec};
 use core::num::NonZeroUsize;
-use nami::{Computed, SignalExt};
+use nami::{Computed, Signal, SignalExt};
 use num_traits::ToPrimitive;
 use waterui_core::{
     AnyView, Environment, IntoSignalF32, View, layout::LayoutInvalidationCallback, view::TupleViews,
@@ -57,7 +57,7 @@ impl GridLayout {
     ) -> GridMeasurement {
         let num_columns = self.columns.get();
         let num_rows = children.len().div_ceil(num_columns);
-        let spacing = nami::Signal::get(&self.spacing);
+        let spacing = self.spacing.snapshot();
 
         let constrained_width = proposed_width
             .filter(|width| width.is_finite())
@@ -158,7 +158,7 @@ impl Layout for GridLayout {
         }
 
         let num_columns = self.columns.get();
-        let spacing = nami::Signal::get(&self.spacing);
+        let spacing = self.spacing.snapshot();
         let measurement = self.measure_grid(proposal.width, children);
 
         let mut placements = Vec::with_capacity(children.len());

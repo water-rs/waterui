@@ -806,7 +806,7 @@ impl FetchedState {
     }
 
     fn try_start(&self) -> bool {
-        if self.result.get().is_some() {
+        if self.result.snapshot().is_some() {
             return false;
         }
 
@@ -895,9 +895,9 @@ impl Signal for Fetched {
     type Output = Option<Url>;
     type Guard = nami_core::watcher::BoxWatcherGuard;
 
-    fn get(&self) -> Self::Output {
+    fn snapshot(&self) -> Self::Output {
         self.ensure_started();
-        self.state.result.get()
+        self.state.result.snapshot()
     }
 
     fn watch(
@@ -1638,7 +1638,7 @@ mod tests {
     fn fetch_resolves_local_url_immediately() {
         let url = Url::new("/tmp/example.txt");
         let fetched = url.fetch();
-        assert_eq!(fetched.get(), Some(url));
+        assert_eq!(fetched.snapshot(), Some(url));
     }
 
     #[cfg(feature = "remote")]
@@ -1708,7 +1708,7 @@ mod tests {
         assert!(state.try_start());
 
         state.resolve(Url::new("/tmp/example.txt"));
-        assert_eq!(state.result.get(), Some(Url::new("/tmp/example.txt")));
+        assert_eq!(state.result.snapshot(), Some(Url::new("/tmp/example.txt")));
         assert!(!state.try_start());
     }
 

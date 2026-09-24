@@ -20,7 +20,7 @@
 
 Three types cover everything:
 
-- **`Binding<T>`** — mutable state you own. Read with `.get()`, write with `.set()` /
+- **`Binding<T>`** — mutable state you own. Read with `.snapshot()`, write with `.set()` /
   `.get_mut()`.
 - **`Computed<T>`** — a derived, read-only value. Produced by `.computed()` on any signal.
 - **`impl Signal<Output = T>`** — the trait both implement, plus every transform.
@@ -191,8 +191,8 @@ a signal is moved into a modifier and used again afterwards.
 
 ## Reading state in handlers
 
-Inside an `.action()` handler you are outside the reactive graph, so `.get()` is correct
-there. What you must not do is `.get()` while *building* a view.
+Inside an `.action()` handler you are outside the reactive graph, so `.snapshot()` is correct
+there. What you must not do is `.snapshot()` while *building* a view.
 
 ```rust
 button("Reset")
@@ -380,7 +380,7 @@ button("Load")
         |State(url): State<Binding<Str>>,
          State(blur): State<Binding<f64>>,
          h: DynamicHandler| {
-            let Ok(parsed) = url.get().as_str().parse::<Url>() else { return };
+            let Ok(parsed) = url.snapshot().as_str().parse::<Url>() else { return };
             h.set(Photo::new(parsed).blur(blur.clone()));
         },
     )
@@ -395,7 +395,7 @@ vstack((slot, /* … */))
 injection bare while the `Binding`s stay wrapped in `State<..>` (they are foreign types).
 
 Even there, keep the *reactive* properties reactive — the replacement above is built with
-`.blur(blur.clone())`, not `.blur(blur.get())`, so the slider keeps working without
+`.blur(blur.clone())`, not `.blur(blur.snapshot())`, so the slider keeps working without
 another swap.
 
 ## Async, tasks, and lifecycle

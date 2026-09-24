@@ -283,38 +283,37 @@ impl Model {
     /// see a node is a request for the channel that carries it — and marks the
     /// node so the pane can reveal it.
     pub fn apply_select(&self, node: u64) {
-        self.subscribed
-            .set(self.subscribed.get() | ChannelSet::TREE);
+        self.subscribed.with_mut(|set| *set |= ChannelSet::TREE);
         self.section.set(Some(Section::Tree));
         self.revealed.set(Some(node));
     }
 
     /// Records a frame and advances the timeline.
     pub fn apply_frame(&self, sample: FrameSample) {
-        self.frames_seen.set(self.frames_seen.get() + 1);
+        self.frames_seen.with_mut(|seen| *seen += 1);
         self.frame_budget_us.set(sample.budget_us);
 
-        let mut series = self.frame_series.get();
-        if series.len() >= FRAME_HISTORY {
-            series.remove(0);
-        }
-        // Re-index so the x axis is always "frames ago", independent of how many
-        // frames the session has seen in total.
-        #[expect(
+        self.frame_series.with_mut(|series| {
+            if series.len() >= FRAME_HISTORY {
+                series.remove(0);
+            }
+            // Re-index so the x axis is always "frames ago", independent of how many
+            // frames the session has seen in total.
+            #[expect(
             clippy::cast_precision_loss,
             reason = "a frame duration in microseconds is far inside f32's exact-integer range"
         )]
-        series.push(DataPoint::new(0.0, sample.total_us as f32 / 1000.0));
-        for (index, point) in series.iter_mut().enumerate() {
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "the series is bounded by FRAME_HISTORY, far inside f32's exact-integer range"
-            )]
-            {
-                point.x = index as f32;
+            series.push(DataPoint::new(0.0, sample.total_us as f32 / 1000.0));
+            for (index, point) in series.iter_mut().enumerate() {
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "the series is bounded by FRAME_HISTORY, far inside f32's exact-integer range"
+                )]
+                {
+                    point.x = index as f32;
+                }
             }
-        }
-        self.frame_series.set(series);
+        });
         self.last_frame.set(Some(sample));
     }
 
@@ -402,38 +401,38 @@ impl Model {
     /// Records a stall, newest first.
     pub fn apply_stall(&self, stall: StallSample) {
         let id = self.tracking.borrow_mut().next_id();
-        let mut rows = self.stalls.get();
-        rows.insert(
-            0,
-            StallRow {
-                id,
-                task_type: Str::from(short_type_name(&stall.task_type)),
-                usage_pct: stall.usage_pct,
-                wall_us: stall.wall_us,
-                backtrace: stall.backtrace.into_iter().map(Str::from).collect(),
-            },
-        );
-        rows.truncate(EVENT_HISTORY);
-        self.stalls.set(rows);
+        self.stalls.with_mut(|rows| {
+            rows.insert(
+                0,
+                StallRow {
+                    id,
+                    task_type: Str::from(short_type_name(&stall.task_type)),
+                    usage_pct: stall.usage_pct,
+                    wall_us: stall.wall_us,
+                    backtrace: stall.backtrace.into_iter().map(Str::from).collect(),
+                },
+            );
+            rows.truncate(EVENT_HISTORY);
+        });
     }
 
     /// Appends a log line, dropping the oldest once the buffer is full.
     pub fn apply_log(&self, record: LogRecord) {
         let id = self.tracking.borrow_mut().next_id();
-        let mut rows = self.logs.get();
-        if rows.len() >= EVENT_HISTORY {
-            rows.remove(0);
-        }
-        rows.push(LogRow {
-            id,
-            level: record.level,
-            target: Str::from(record.target),
-            message: Str::from(record.message),
-            origin: record
-                .file
-                .map(|file| Str::from(format!("{file}:{}", record.line.unwrap_or(0)))),
+        self.logs.with_mut(|rows| {
+            if rows.len() >= EVENT_HISTORY {
+                rows.remove(0);
+            }
+            rows.push(LogRow {
+                id,
+                level: record.level,
+                target: Str::from(record.target),
+                message: Str::from(record.message),
+                origin: record
+                    .file
+                    .map(|file| Str::from(format!("{file}:{}", record.line.unwrap_or(0)))),
+            });
         });
-        self.logs.set(rows);
     }
 
     /// Folds a reactive-graph event into the node table.
@@ -487,7 +486,8 @@ impl Model {
 
     /// Records events the target could not deliver.
     pub fn apply_drop(&self, events: u64) {
-        self.dropped.set(self.dropped.get().saturating_add(events));
+        self.dropped
+            .with_mut(|dropped| *dropped = dropped.saturating_add(events));
     }
 
     /// Clears everything that belongs to a connection, keeping UI preferences.
@@ -518,6 +518,7 @@ fn short_type_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{Model, short_type_name};
+    use waterui::Signal;
     use waterui_inspector_protocol::{Bounds, NodeId, NodeState, TreeNode, TreeUpdate};
 
     fn node(id: u64, children: &[u64]) -> TreeNode {
@@ -549,7 +550,7 @@ mod tests {
             removed: Vec::new(),
         });
 
-        let rows = model.tree.get();
+        let rows = model.tree.snapshot();
         assert_eq!(
             rows.iter()
                 .map(|row| (row.id, row.depth))
@@ -571,7 +572,7 @@ mod tests {
             removed: Vec::new(),
         });
 
-        assert_eq!(model.tree.get().len(), 2);
+        assert_eq!(model.tree.snapshot().len(), 2);
     }
 
     #[test]
@@ -598,7 +599,7 @@ mod tests {
         assert_eq!(
             model
                 .tree
-                .get()
+                .snapshot()
                 .iter()
                 .map(|row| row.id)
                 .collect::<Vec<_>>(),

@@ -160,7 +160,7 @@ mod tests {
         type Output = Vec<ResolvedMenuItem>;
         type Guard = ();
 
-        fn get(&self) -> Self::Output {
+        fn snapshot(&self) -> Self::Output {
             Vec::new()
         }
 

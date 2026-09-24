@@ -264,7 +264,7 @@ where
         let start = start.clone();
         move |context| update_photo_source(&state, context.into_value(), &start)
     });
-    update_photo_source(state, source.get(), &start);
+    update_photo_source(state, source.snapshot(), &start);
     guard
 }
 
@@ -415,8 +415,8 @@ mod tests {
         type Output = Url;
         type Guard = <Binding<Url> as Signal>::Guard;
 
-        fn get(&self) -> Self::Output {
-            self.source.get()
+        fn snapshot(&self) -> Self::Output {
+            self.source.snapshot()
         }
 
         fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {

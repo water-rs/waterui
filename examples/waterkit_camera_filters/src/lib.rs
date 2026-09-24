@@ -106,7 +106,7 @@ fn camera_filter_lab(preview: impl View, state: CameraLabState) -> impl View {
         hstack((button("Reconnect Camera Stream")
             .action(
                 |State(ticket): State<Binding<usize>>, State(status): State<Binding<Str>>| {
-                    let next = ticket.get().saturating_add(1);
+                    let next = ticket.snapshot().saturating_add(1);
                     ticket.set(next);
                     status.set(Str::from("Reconnecting camera stream..."));
                 },
@@ -216,8 +216,10 @@ impl GpuView for SyntheticCameraPreviewRenderer {
     async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        let (brightness, saturation, contrast, tint, vignette) =
-            filter_params(self.active_filter.get(), self.filter_strength.get() as f32);
+        let (brightness, saturation, contrast, tint, vignette) = filter_params(
+            self.active_filter.snapshot(),
+            self.filter_strength.snapshot() as f32,
+        );
         let red = (0.32 + brightness + tint * 0.08).clamp(0.0, 1.0);
         let green = (0.46 + brightness + saturation * 0.04 - vignette * 0.03).clamp(0.0, 1.0);
         let blue = (0.58 + brightness - tint * 0.08 + contrast * 0.03).clamp(0.0, 1.0);
@@ -448,8 +450,10 @@ impl CameraFilterRenderer {
             return;
         };
 
-        let (brightness, saturation, contrast, tint, vignette) =
-            filter_params(self.active_filter.get(), self.filter_strength.get() as f32);
+        let (brightness, saturation, contrast, tint, vignette) = filter_params(
+            self.active_filter.snapshot(),
+            self.filter_strength.snapshot() as f32,
+        );
 
         let uniforms: [f32; 8] = [
             brightness, saturation, contrast, tint, vignette, 0.0, 0.0, 0.0,
@@ -494,7 +498,7 @@ impl GpuView for CameraFilterRenderer {
     }
 
     fn render(&mut self, frame: &mut GpuFrame) {
-        let reconnect_ticket = self.reconnect_ticket.get();
+        let reconnect_ticket = self.reconnect_ticket.snapshot();
         if reconnect_ticket != self.last_reconnect_ticket {
             self.last_reconnect_ticket = reconnect_ticket;
             self.start_camera_open(frame.device, frame.queue, true);

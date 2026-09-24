@@ -225,7 +225,7 @@ mod tests {
         let pointer = unsafe { waterui_color_from_srgba(0.5, 0.5, 0.5, 0.25) };
         // SAFETY: `pointer` is the valid owning handle returned above.
         let color: Color = unsafe { IntoRust::into_rust(pointer) };
-        let resolved = color.resolve(&Environment::new()).get();
+        let resolved = color.resolve(&Environment::new()).snapshot();
 
         assert!((resolved.red - 0.214_041_14).abs() < 1.0e-6);
         assert!((resolved.green - 0.214_041_14).abs() < 1.0e-6);

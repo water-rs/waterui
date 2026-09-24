@@ -491,7 +491,7 @@ where
         let pending_update = self.pending_update.swap(false, Ordering::AcqRel);
 
         if pending_update || self.last_colors.is_none() {
-            let colors: Vec<ResolvedColor> = self.colors.get().into_iter().collect();
+            let colors: Vec<ResolvedColor> = self.colors.snapshot().into_iter().collect();
 
             let colors_changed = self.last_colors.as_ref().is_none_or(|last| {
                 last.len() != colors.len()

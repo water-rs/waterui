@@ -80,7 +80,7 @@ where
 
         with(
             button(self.label).style(ButtonStyle::Link).action(move || {
-                let url_str = url.get();
+                let url_str = url.snapshot();
                 open_url(&url_str);
             }),
             LinkTarget(target),

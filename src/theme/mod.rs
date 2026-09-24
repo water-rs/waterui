@@ -832,6 +832,6 @@ mod tests {
         });
 
         assert!((observed_red.get() - 1.0).abs() < f32::EPSILON);
-        assert!((resolved.get().red - 1.0).abs() < f32::EPSILON);
+        assert!((resolved.snapshot().red - 1.0).abs() < f32::EPSILON);
     }
 }

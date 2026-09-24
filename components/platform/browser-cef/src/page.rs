@@ -667,7 +667,7 @@ fn new_request_handler(state: Rc<PageState>) -> RequestHandler {
                             to: destination.clone(),
                         });
                     }
-                    if !self.state.redirects_enabled.borrow().get() {
+                    if !self.state.redirects_enabled.borrow().snapshot() {
                         return 1;
                     }
                 }

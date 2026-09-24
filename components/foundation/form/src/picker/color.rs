@@ -41,7 +41,8 @@ configurable!(
     //
     ColorPicker,
     ColorPickerConfig,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl ColorPickerConfig {

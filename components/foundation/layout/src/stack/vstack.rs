@@ -68,7 +68,7 @@ impl Layout for VStackLayout {
             return Size::zero();
         }
 
-        let spacing = self.spacing.get();
+        let spacing = self.spacing.snapshot();
         let measurements = measure_stack(Axis::Vertical, proposal, spacing, &members);
         let final_height = measurements.iter().map(|m| m.size().height).sum::<f32>()
             + stack_spacing(spacing, members.len());
@@ -92,7 +92,7 @@ impl Layout for VStackLayout {
             return vec![];
         }
 
-        let spacing = self.spacing.get();
+        let spacing = self.spacing.snapshot();
         // Placement is a fresh negotiation against the bounds the column was
         // placed in: every child is allocated from the column's resolved
         // height and proposed the column's resolved width, so what a child

@@ -52,7 +52,7 @@ impl ReactiveColor {
     /// Returns the current environment-resolved color.
     #[must_use]
     pub fn get(&self) -> ResolvedColor {
-        self.resolved.get()
+        self.resolved.snapshot()
     }
 }
 

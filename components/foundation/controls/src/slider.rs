@@ -73,7 +73,8 @@ configurable!(
     Slider,
     SliderConfig,
     StretchAxis::Horizontal,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl SliderConfig {

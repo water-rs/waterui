@@ -197,7 +197,7 @@ fn combined_transform_section(
                 .state(&transform),
             button("Pulse")
                 .action(|State(s): State<Binding<f32>>| {
-                    if s.get() > 1.2 {
+                    if s.snapshot() > 1.2 {
                         s.set(0.8);
                     } else {
                         s.set(1.5);
@@ -248,7 +248,7 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
             spacer(),
             button("Toggle")
                 .action(|State(sv): State<Binding<f64>>| {
-                    if sv.get() > 0.5 {
+                    if sv.snapshot() > 0.5 {
                         sv.set(0.1);
                     } else {
                         sv.set(0.9);

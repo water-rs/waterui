@@ -160,9 +160,9 @@ mod tests {
         let app = App::new(|| (), env);
         let direction = layout_direction(&app.env);
 
-        assert_eq!(direction.get(), LayoutDirection::RightToLeft);
+        assert_eq!(direction.snapshot(), LayoutDirection::RightToLeft);
         locale.set(locales::EN);
-        assert_eq!(direction.get(), LayoutDirection::LeftToRight);
+        assert_eq!(direction.snapshot(), LayoutDirection::LeftToRight);
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
         let app = App::new(|| (), env);
 
         assert_eq!(
-            layout_direction(&app.env).get(),
+            layout_direction(&app.env).snapshot(),
             LayoutDirection::LeftToRight
         );
     }

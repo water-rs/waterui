@@ -86,7 +86,7 @@ where
             }
         });
         if cache.borrow().is_none() {
-            cache.borrow_mut().replace(source.get());
+            cache.borrow_mut().replace(source.snapshot());
         }
         Metadata::new(content, Retain::new(guard))
     }
@@ -113,8 +113,8 @@ mod tests {
         type Output = i32;
         type Guard = <Binding<i32> as Signal>::Guard;
 
-        fn get(&self) -> Self::Output {
-            self.source.get()
+        fn snapshot(&self) -> Self::Output {
+            self.source.snapshot()
         }
 
         fn watch(
@@ -199,7 +199,7 @@ mod tests {
         source.set(2);
         source.set(3);
 
-        assert_eq!(total.get(), 5);
+        assert_eq!(total.snapshot(), 5);
     }
 
     #[test]

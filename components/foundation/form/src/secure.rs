@@ -120,7 +120,8 @@ configurable!(
     SecureField,
     SecureFieldConfig,
     StretchAxis::Horizontal,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl SecureFieldConfig {

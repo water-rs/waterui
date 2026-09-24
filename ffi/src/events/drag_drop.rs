@@ -87,7 +87,7 @@ pub unsafe extern "C" fn waterui_draggable_get_data(draggable: *const WuiDraggab
     unsafe {
         let draggable = crate::borrow_ffi(draggable);
         let wrapper = crate::borrow_ffi(draggable.inner);
-        wrapper.0.data.get().into_ffi()
+        wrapper.0.data.snapshot().into_ffi()
     }
 }
 
