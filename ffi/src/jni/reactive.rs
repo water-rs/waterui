@@ -362,6 +362,67 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingId<'local>(
 }
 
 #[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingIdVec<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+) -> jintArray {
+    use waterui_core::id::Id;
+
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Vec<Id>>` and is only read here.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Id>>) };
+    let ids = binding.get();
+    super::with_env(&mut env, |env| {
+        let array = env
+            .new_int_array(super::array_len(ids.len()))
+            .expect("readBindingIdVec failed to allocate int array");
+        let values: Vec<jint> = ids.iter().map(|id| i32::from(*id)).collect();
+        array
+            .set_region(env, 0, &values)
+            .expect("readBindingIdVec failed to write ids");
+        array.into_raw()
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Replaces an id-vector binding from a Java int array.
+///
+/// # Safety
+///
+/// `binding_ptr` must point to a live `WuiBinding<Vec<Id>>`; `ids` must be a
+/// valid local JNI int-array reference for the duration of this call.
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingIdVec<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    ids: jintArray,
+) {
+    use crate::IntoRust;
+    use waterui_core::id::Id;
+
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Vec<Id>>`; `Binding::set` needs only a shared reference.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Id>>) };
+    super::with_env(&mut env, |env| {
+        // SAFETY: the caller contract above makes `ids` a local reference the JVM
+        // keeps valid for this call.
+        let ids = unsafe { JIntArray::from_raw(env, ids) };
+        let mut values = vec![0; ids.len(env).expect("setBindingIdVec array length")];
+        ids.get_region(env, 0, &mut values)
+            .expect("setBindingIdVec failed to read ids");
+        binding.set(
+            values
+                .into_iter()
+                // SAFETY: Kotlin echoes back ids this binding previously produced, so
+                // each is a non-zero `Id` the mapping still knows.
+                .map(|inner| unsafe { WuiId { inner }.into_rust() })
+                .collect(),
+        );
+    });
+}
+
+#[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStrPlain<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
@@ -1445,6 +1506,27 @@ unsafe extern "C" fn watcher_call_id(
     unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
+/// Call function for an id-vector watcher: the selected ids cross as `int[]`.
+unsafe extern "C" fn watcher_call_id_vec(
+    data: *mut (),
+    value: crate::array::WuiArray<WuiId>,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    with_watcher_env(data, |env, watcher_data| {
+        let values: Vec<jint> = value.as_slice().iter().map(|id| id.inner).collect();
+        value.consume();
+        let array = env
+            .new_int_array(super::array_len(values.len()))
+            .expect("watcher_call_id_vec: failed to allocate callback ids");
+        array
+            .set_region(env, 0, &values)
+            .expect("watcher_call_id_vec: failed to write callback ids");
+        let array = JObject::from(array);
+        let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
+        invoke_callback(env, &watcher_data.callback, &array, &metadata);
+    });
+}
+
 unsafe extern "C" fn watcher_call_color_scheme(
     data: *mut (),
     value: WuiColorScheme,
@@ -1561,6 +1643,7 @@ jni_create_watcher_typed!(Float, watcher_call_float, &[]);
 jni_create_watcher_typed!(String, watcher_call_string, &[]);
 jni_create_watcher_typed!(Secure, watcher_call_string, &[]);
 jni_create_watcher_typed!(Id, watcher_call_id, &[]);
+jni_create_watcher_typed!(IdVec, watcher_call_id_vec, &[]);
 jni_create_watcher_typed!(AnyView, watcher_call_any_view, &[]);
 jni_create_watcher_typed!(Color, watcher_call_color, &[]);
 jni_create_watcher_typed!(StyledStrPlain, watcher_call_styled_str_plain, &[]);

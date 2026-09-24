@@ -5,17 +5,14 @@
 //! tracking of view collections.
 
 use crate::id::Id as RawId;
+use crate::id::Mapping;
 use crate::{AnyView, View};
 use alloc::fmt::Debug;
-use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::any::type_name;
 use core::fmt;
-use core::num::NonZeroI32;
+use core::hash::Hash;
 use core::ops::{Bound, RangeBounds};
-use core::{
-    cell::{Cell, RefCell},
-    hash::Hash,
-};
 use nami::collection::Collection;
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Computed, Signal};
@@ -101,6 +98,23 @@ impl<V> SharedAnyViews<V> {
     pub fn new(contents: impl Views<View = V> + 'static) -> Self {
         Self(Rc::new(IntoAnyViews::new(contents)))
     }
+
+    /// Creates a new `SharedAnyViews` together with the id mapping that
+    /// erases the collection's `C::Id` values into the ids `get_id` returns.
+    ///
+    /// The returned [`Mapping`] is the same generator the erased collection
+    /// consults, so a selection keyed by `C::Id` can be mapped to and from
+    /// the erased ids in both directions — the way `Mapping::binding` maps a
+    /// `Picker` selection. Crate-internal: public only for `waterui` itself.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_ids<C>(contents: C) -> (Self, Mapping<C::Id>)
+    where
+        C: Views<View = V> + 'static,
+    {
+        let (contents, ids) = IntoAnyViews::new_with_ids(contents);
+        (Self(Rc::new(contents)), ids)
+    }
 }
 
 impl<V> From<AnyViews<V>> for SharedAnyViews<V> {
@@ -159,52 +173,12 @@ trait AnyViewsImpl {
     ) -> BoxWatcherGuard;
 }
 
-#[derive(Debug)]
-struct IdGenerator<Id> {
-    map: RefCell<BTreeMap<Id, i32>>,
-    counter: Cell<i32>,
-}
-
-impl<Id: Hash + Ord> Default for IdGenerator<Id> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<Id: Hash + Ord> IdGenerator<Id> {
-    pub const fn new() -> Self {
-        Self {
-            map: RefCell::new(BTreeMap::new()),
-            counter: Cell::new(i32::MIN),
-        }
-    }
-    pub fn to_id(&self, value: Id) -> RawId {
-        let mut this = self.map.borrow_mut();
-        if let Some(&id) = this.get(&value) {
-            return RawId::from(NonZeroI32::new(id).expect("stored raw id must never be zero"));
-        }
-        let mut id = self.counter.get();
-        if id == 0 {
-            id = 1;
-        }
-
-        let mut next = id.checked_add(1).expect("id counter exhausted");
-        if next == 0 {
-            next = next.checked_add(1).expect("id counter exhausted");
-        }
-        self.counter.set(next);
-
-        this.insert(value, id);
-        RawId::from(NonZeroI32::new(id).expect("generated raw id must never be zero"))
-    }
-}
-
 struct IntoAnyViews<V>
 where
     V: Views,
 {
     contents: V,
-    id: Rc<IdGenerator<V::Id>>,
+    id: Mapping<V::Id>,
 }
 
 impl<V> IntoAnyViews<V>
@@ -212,10 +186,21 @@ where
     V: Views + 'static,
 {
     pub fn new(contents: V) -> Self {
-        Self {
-            contents,
-            id: Rc::default(),
-        }
+        Self::new_with_ids(contents).0
+    }
+
+    /// Builds the erasure together with the [`Mapping`] it feeds: every id
+    /// `get_id` returns is registered through it, so the same handle maps a
+    /// `V::Id`-keyed binding to and from the erased ids in both directions.
+    pub fn new_with_ids(contents: V) -> (Self, Mapping<V::Id>) {
+        let id = Mapping::new();
+        (
+            Self {
+                id: id.clone(),
+                contents,
+            },
+            id,
+        )
     }
 }
 
@@ -272,10 +257,24 @@ where
     where
         C: Views<View = V> + 'static,
     {
-        Self(Box::new(IntoAnyViews {
-            id: Rc::new(IdGenerator::<C::Id>::new()),
-            contents,
-        }))
+        Self::new_with_ids(contents).0
+    }
+
+    /// Creates a new `AnyViews` together with the id mapping that erases the
+    /// collection's `C::Id` values into the ids `get_id` returns.
+    ///
+    /// The returned [`Mapping`] is the same generator the erased collection
+    /// consults, so a selection keyed by `C::Id` can be mapped to and from
+    /// the erased ids in both directions — the way `Mapping::binding` maps a
+    /// `Picker` selection. Crate-internal: public only for `waterui` itself.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_ids<C>(contents: C) -> (Self, Mapping<C::Id>)
+    where
+        C: Views<View = V> + 'static,
+    {
+        let (contents, ids) = IntoAnyViews::new_with_ids(contents);
+        (Self(Box::new(contents)), ids)
     }
 }
 
