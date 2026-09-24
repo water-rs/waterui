@@ -613,7 +613,8 @@ impl<'a> Session<'a> {
         } else {
             KeyCode::Named(args.key.clone())
         };
-        self.app.queue_key_press(key, modifiers);
+        self.app.queue_key_press(key.clone(), modifiers);
+        self.app.queue_key_release(key, modifiers);
         self.finish_input(args.settle)
     }
 
