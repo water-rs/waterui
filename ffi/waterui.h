@@ -5609,8 +5609,10 @@ typedef struct WuiListItem {
   struct WuiListSection section;
   /**
    * The insets between the row's edges and its content, in points; null
-   * defers to the theme's row insets. Owned; release it with
-   * `waterui_drop_edge_insets`.
+   * defers to the theme's row insets. Owned: over the C ABI the backend
+   * releases it with `waterui_drop_edge_insets`; over JNI the conversion
+   * takes ownership and frees it while flattening the edges into the
+   * item struct.
    */
   struct WuiEdgeInsets *insets;
 } WuiListItem;

@@ -1833,16 +1833,31 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/ListItemStruct"))
             .expect("ListItemStruct class not found");
+        // JNI hands Kotlin values, not owning pointers: reclaim the insets
+        // box once here and send the edges as struct fields. Over the C ABI
+        // the pointer still reaches the backend, which releases it through
+        // `waterui_drop_edge_insets`.
+        let insets = if self.insets.is_null() {
+            None
+        } else {
+            // SAFETY: `self.insets` is an owning pointer produced by the
+            // matching `into_ffi` conversion and not previously dropped.
+            Some(unsafe { Box::from_raw(self.insets) })
+        };
         env.new_object(
             &class,
-            jni_sig!("(JJZJJJ)V"),
+            jni_sig!("(JJZJJZFFFF)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.deletable as jlong),
                 JValue::Bool(self.section.has_value),
                 JValue::Long(self.section.label as jlong),
                 JValue::Long(self.section.footer as jlong),
-                JValue::Long(self.insets as jlong),
+                JValue::Bool(insets.is_some()),
+                JValue::Float(insets.as_ref().map_or(0.0, |i| i.top)),
+                JValue::Float(insets.as_ref().map_or(0.0, |i| i.leading)),
+                JValue::Float(insets.as_ref().map_or(0.0, |i| i.bottom)),
+                JValue::Float(insets.as_ref().map_or(0.0, |i| i.trailing)),
             ],
         )
         .expect("Failed to create ListItemStruct")
