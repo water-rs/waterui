@@ -815,7 +815,9 @@ impl ToJavaStruct for crate::WuiMetadataClipShape {
     }
 }
 
-/// `MetadataContextMenuStruct(contentPtr: Long, itemsPtr: Long)`
+/// `MetadataContextMenuStruct(contentPtr: Long, itemsPtr: Long, previewPtr: Long,
+/// accessoryPtr: Long, dismissRequestsPtr: Long)`; a zero preview or accessory
+/// pointer means the menu has none.
 impl ToJavaStruct for crate::WuiMetadataContextMenu {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -825,10 +827,13 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
             .expect("MetadataContextMenuStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJ)V"),
+            jni_sig!("(JJJJJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.items as jlong),
+                JValue::Long(self.value.preview as jlong),
+                JValue::Long(self.value.accessory as jlong),
+                JValue::Long(self.value.dismiss_requests as jlong),
             ],
         )
         .expect("Failed to create MetadataContextMenuStruct")
@@ -2028,12 +2033,25 @@ impl ToJavaStruct for crate::WuiMenuItem {
             )
         };
 
+        let subtitle = if self.subtitle.is_null() {
+            JObject::null()
+        } else {
+            // SAFETY: this menu item is owned here, so its non-null owning subtitle
+            // pointer is reclaimed exactly once, and the `WuiStr` is moved out.
+            let subtitle: waterui::Str =
+                unsafe { crate::IntoRust::into_rust(*Box::from_raw(self.subtitle)) };
+            JObject::from(
+                env.new_string(subtitle.as_str())
+                    .expect("Failed to create menu item subtitle string"),
+            )
+        };
+
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/MenuItemStruct"))
             .expect("MenuItemStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(IJJJJLjava/lang/String;ZZZZJ)V"),
+            jni_sig!("(IJJJJLjava/lang/String;ZZZZILjava/lang/String;J)V"),
             &[
                 JValue::Int(self.tag as jint),
                 JValue::Long(label_ptr),
@@ -2045,6 +2063,8 @@ impl ToJavaStruct for crate::WuiMenuItem {
                 JValue::Bool(shift),
                 JValue::Bool(option),
                 JValue::Bool(control),
+                JValue::Int(self.role as jint),
+                JValue::Object(&subtitle),
                 JValue::Long(self.items as jlong),
             ],
         )

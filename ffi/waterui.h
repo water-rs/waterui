@@ -152,6 +152,20 @@ typedef enum WuiMenuItemTag {
 } WuiMenuItemTag;
 
 /**
+ * FFI-safe command role.
+ */
+typedef enum WuiCommandRole {
+  /**
+   * An ordinary command.
+   */
+  WuiCommandRole_Standard = 0,
+  /**
+   * A command that deletes or irreversibly changes data.
+   */
+  WuiCommandRole_Destructive = 1,
+} WuiCommandRole;
+
+/**
  * FFI-safe representation of a material blur style.
  *
  * Maps to `SwiftUI`'s Material types on Apple platforms.
@@ -3518,6 +3532,14 @@ typedef struct WuiMenuItem {
    */
   struct WuiShortcut *shortcut;
   /**
+   * What a command does, which decides its presentation.
+   */
+  enum WuiCommandRole role;
+  /**
+   * Optional secondary line under a command's label; null when absent.
+   */
+  struct WuiStr *subtitle;
+  /**
    * Nested menu items.
    */
   struct WuiAnyViews *items;
@@ -3531,6 +3553,20 @@ typedef struct WuiContextMenu {
    * Identity-aware reactive menu items.
    */
   struct WuiAnyViews *items;
+  /**
+   * The view to lift while the menu is open; null lifts the source view.
+   */
+  struct WuiAnyView *preview;
+  /**
+   * The interactive view anchored to the lifted preview; null when the
+   * menu has none.
+   */
+  struct WuiAnyView *accessory;
+  /**
+   * Dismiss requests from the accessory: every change closes the open
+   * menu.
+   */
+  WuiComputed_i32 *dismiss_requests;
 } WuiContextMenu;
 
 /**
@@ -8160,6 +8196,15 @@ struct WuiSystemIcon waterui_menu_item_take_icon(struct WuiSystemIcon *icon);
  * `shortcut` must be consumed exactly once.
  */
 struct WuiShortcut waterui_menu_item_take_shortcut(struct WuiShortcut *shortcut);
+
+/**
+ * Takes the subtitle value from an owned menu-item subtitle allocation.
+ *
+ * # Safety
+ *
+ * `subtitle` must be consumed exactly once.
+ */
+struct WuiStr waterui_menu_item_take_subtitle(struct WuiStr *subtitle);
 
 /**
  * # Safety
