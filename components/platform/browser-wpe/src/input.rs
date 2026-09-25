@@ -232,8 +232,8 @@ impl WpeSurfaceInput {
 /// A WPE presenter that also consumes the input landing on its surface.
 ///
 /// The presenter and the input adapter are separate concerns — one composites
-/// the dma-buf stream, the other owns `WPEPlatform`'s event ABI — but a backend
-/// that routes input to GPU views by
+/// the browser's frame stream, the other owns `WPEPlatform`'s event ABI — but
+/// a backend that routes input to GPU views by
 /// [`wants_input_events`](GpuView::wants_input_events) needs them as one
 /// object. See [`gpu_view_with_input`](crate::gpu_view_with_input).
 pub struct WpeInputGpuView<V> {

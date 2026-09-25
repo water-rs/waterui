@@ -47,6 +47,11 @@ jobs:
     env:
       CC: gcc-12
       CXX: g++-12
+      # The WebKit compile is hours of C++; ccache makes a repeat run mostly
+      # cache hits. `build-runtime.sh` only passes the launcher flags when the
+      # variable or the binary is present, so a bare host is unaffected.
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
     strategy:
       fail-fast: false
       matrix:
@@ -66,17 +71,38 @@ jobs:
         with:
           gpu: "true"
           gcc-version: "12"
+          extra-packages: ccache
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: browser-runtime-${{ matrix.architecture }}
           cache-on-failure: true
 
+      # Keyed on the inputs that change what the compiler produces — the
+      # WebKit source and the configure flags — with the per-architecture
+      # prefix as the fallback for everything else.
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: browser-wpe-ccache-${{ matrix.architecture }}-${{ hashFiles('components/platform/browser-wpe/runtime/source.toml', 'components/platform/browser-wpe/runtime/build-runtime.sh') }}
+          restore-keys: |
+            browser-wpe-ccache-${{ matrix.architecture }}-
+
       # Compiles WebKit and the bridge, packages the runtime zip with its
       # .artifact.json metadata, and finishes by running run-smoke.py against
       # the staged tree — the same validation a downloaded artifact gets.
       - name: Build self-contained WPE runtime
         run: components/platform/browser-wpe/runtime/build-runtime.sh runtime-artifacts
+
+      # `always()`, so a failed smoke test still preserves the objects a retry
+      # would recompile for hours.
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: browser-wpe-ccache-${{ matrix.architecture }}-${{ hashFiles('components/platform/browser-wpe/runtime/source.toml', 'components/platform/browser-wpe/runtime/build-runtime.sh') }}
 
       - name: Upload WPE runtime
         uses: actions/upload-artifact@v4

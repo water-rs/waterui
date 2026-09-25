@@ -1,7 +1,9 @@
 use num_traits::ToPrimitive as _;
 use std::rc::Rc;
 use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
-use wgpu_external_frame::dma_buf::{DmaBufFrame, DmaBufImporter};
+use wgpu_external_frame::dma_buf::{DmaBufFormat, DmaBufImporter};
+
+use crate::frame::WpeFrame;
 
 #[cfg(feature = "webview")]
 use crate::WpePage;
@@ -25,8 +27,8 @@ struct GpuState {
     source: Option<SourceTexture>,
 }
 
-/// Source of Linux browser frames for GPU-only DMA-BUF composition.
-pub trait DmaBufFrameSource: 'static {
+/// Source of Linux browser frames for GPU composition without CPU readback.
+pub trait WpeFrameSource: 'static {
     /// Drains engine work that is ready on the current thread.
     fn pump(&self);
     /// Updates the browser viewport.
@@ -34,11 +36,11 @@ pub trait DmaBufFrameSource: 'static {
     /// Installs the host redraw callback.
     fn set_frame_waker(&self, waker: Rc<dyn Fn()>);
     /// Takes the newest available frame.
-    fn take_frame(&self) -> Option<DmaBufFrame>;
+    fn take_frame(&self) -> Option<WpeFrame>;
 }
 
 #[cfg(feature = "webview")]
-impl DmaBufFrameSource for WpePage {
+impl WpeFrameSource for WpePage {
     fn pump(&self) {
         Self::pump(self);
     }
@@ -51,29 +53,25 @@ impl DmaBufFrameSource for WpePage {
         Self::set_frame_waker(self, move || waker());
     }
 
-    fn take_frame(&self) -> Option<DmaBufFrame> {
+    fn take_frame(&self) -> Option<WpeFrame> {
         Self::take_frame(self)
     }
 }
 
-/// GPU view that composites a Linux browser DMA-BUF stream without CPU readback.
-pub struct DmaBufGpuView<S> {
+/// GPU view that composites a Linux browser frame stream without CPU readback.
+pub struct WpeGpuView<S> {
     source: S,
     gpu: Option<GpuState>,
-    pending_frame: Option<DmaBufFrame>,
+    pending_frame: Option<WpeFrame>,
 }
 
-/// WPE-specialized DMA-BUF GPU view.
-#[cfg(feature = "webview")]
-pub type WpeGpuView = DmaBufGpuView<WpePage>;
-
-impl<S> core::fmt::Debug for DmaBufGpuView<S> {
+impl<S> core::fmt::Debug for WpeGpuView<S> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.debug_struct("WpeGpuView").finish_non_exhaustive()
     }
 }
 
-impl<S: DmaBufFrameSource> DmaBufGpuView<S> {
+impl<S: WpeFrameSource> WpeGpuView<S> {
     /// Creates a renderer for `source`.
     ///
     /// The device scale comes from the frame the host draws — see
@@ -103,15 +101,15 @@ impl<S: DmaBufFrameSource> DmaBufGpuView<S> {
 /// on this layer reach `WPEPlatform` through
 /// [`WpeSurfaceInput`](crate::WpeSurfaceInput). A backend whose input arrives
 /// somewhere else entirely — GTK delivers it to the `GtkGLArea`'s event
-/// controllers — builds a [`DmaBufGpuView`] and owns a `WpeSurfaceInput` beside
+/// controllers — builds a [`WpeGpuView`] and owns a `WpeSurfaceInput` beside
 /// it instead.
 #[cfg(feature = "webview")]
 #[must_use]
 pub fn gpu_view_with_input(page: WpePage) -> impl GpuView {
-    WpeInputGpuView::new(DmaBufGpuView::new(page.clone()), WpeSurfaceInput::new(page))
+    WpeInputGpuView::new(WpeGpuView::new(page.clone()), WpeSurfaceInput::new(page))
 }
 
-impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
+impl<S: WpeFrameSource> GpuView for WpeGpuView<S> {
     #[expect(
         clippy::future_not_send,
         reason = "browser GPU views and WaterUI environments are confined to the UI thread"
@@ -155,7 +153,7 @@ impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
     }
 }
 
-fn resize_browser_source<S: DmaBufFrameSource>(source: &S, frame: &GpuFrame<'_>) {
+fn resize_browser_source<S: WpeFrameSource>(source: &S, frame: &GpuFrame<'_>) {
     let scale = frame.scale();
     let logical_width = (f64::from(frame.width) / scale)
         .round()
@@ -170,7 +168,7 @@ fn resize_browser_source<S: DmaBufFrameSource>(source: &S, frame: &GpuFrame<'_>)
     source.resize(logical_width, logical_height, scale);
 }
 
-fn render_browser_frame(gpu: &mut GpuState, mut incoming: DmaBufFrame, frame: &GpuFrame<'_>) {
+fn render_browser_frame(gpu: &mut GpuState, incoming: WpeFrame, frame: &GpuFrame<'_>) {
     assert_eq!(
         frame.format, gpu.target_format,
         "WPE target format changed after setup"
@@ -178,30 +176,75 @@ fn render_browser_frame(gpu: &mut GpuState, mut incoming: DmaBufFrame, frame: &G
     ensure_source_texture(
         gpu,
         frame.device,
-        incoming.width,
-        incoming.height,
-        incoming.format.texture_format(),
+        incoming.width(),
+        incoming.height(),
+        incoming.format().texture_format(),
     );
-    let bind_group = create_source_bind_group(gpu, &incoming, frame.device, frame.queue);
-    let source = gpu
-        .source
-        .as_ref()
-        .expect("WPE source texture must exist before import");
-    let import = gpu.importer.copy_into(&mut incoming, &source.texture);
-    let mut encoder = import.encoder;
-    let guard = import.guard;
-    incoming.presented();
-    encode_browser_blit(gpu, &bind_group, frame, &mut encoder);
-    frame.queue.submit([encoder.finish()]);
-    frame.queue.on_submitted_work_done(move || {
-        drop(guard);
-        incoming.release(None);
-    });
+    let bind_group = create_source_bind_group(gpu, incoming.format(), frame.device, frame.queue);
+    match incoming {
+        WpeFrame::DmaBuf(mut dma_buf) => {
+            let source = gpu
+                .source
+                .as_ref()
+                .expect("WPE source texture must exist before import");
+            let import = gpu.importer.copy_into(&mut dma_buf, &source.texture);
+            let mut encoder = import.encoder;
+            let guard = import.guard;
+            dma_buf.presented();
+            encode_browser_blit(gpu, &bind_group, frame, &mut encoder);
+            frame.queue.submit([encoder.finish()]);
+            frame.queue.on_submitted_work_done(move || {
+                drop(guard);
+                dma_buf.release(None);
+            });
+        }
+        WpeFrame::Shm(mut shm) => {
+            let source = gpu
+                .source
+                .as_ref()
+                .expect("WPE source texture must exist before upload");
+            // `write_texture` copies the pixels into its own staging buffer
+            // before returning — repacking rows internally when the stride is
+            // not copy-aligned — so the buffer the frame borrows is free to be
+            // reused once this call's submission has completed.
+            frame.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &source.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                shm.pixels(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(shm.stride),
+                    rows_per_image: Some(shm.height),
+                },
+                wgpu::Extent3d {
+                    width: shm.width,
+                    height: shm.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            shm.presented();
+            let mut encoder =
+                frame
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("waterui_wpe_blit"),
+                    });
+            encode_browser_blit(gpu, &bind_group, frame, &mut encoder);
+            frame.queue.submit([encoder.finish()]);
+            frame
+                .queue
+                .on_submitted_work_done(move || shm.release(None));
+        }
+    }
 }
 
 fn create_source_bind_group(
     gpu: &GpuState,
-    incoming: &DmaBufFrame,
+    format: DmaBufFormat,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
 ) -> wgpu::BindGroup {
@@ -209,7 +252,7 @@ fn create_source_bind_group(
         .source
         .as_ref()
         .expect("WPE source texture must exist after allocation");
-    let force_opaque = u32::from(incoming.format.force_opaque());
+    let force_opaque = u32::from(format.force_opaque());
     let mut options = [0u8; 16];
     options[..4].copy_from_slice(&force_opaque.to_ne_bytes());
     queue.write_buffer(&gpu.options, 0, &options);
