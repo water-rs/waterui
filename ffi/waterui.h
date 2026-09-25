@@ -5227,6 +5227,33 @@ typedef struct WuiRect {
 } WuiRect;
 
 /**
+ * C ABI mirror of [`EdgeInsets`]: the space between a rectangle's edges and
+ * its content, in points.
+ *
+ * The value crosses the boundary as `*mut WuiEdgeInsets` — an owning handle
+ * the backend releases with `waterui_drop_edge_insets` when it is done with
+ * it. A null pointer defers to whatever insets the context supplies.
+ */
+typedef struct WuiEdgeInsets {
+  /**
+   * The top edge inset, in points.
+   */
+  float top;
+  /**
+   * The leading edge inset, in points (left in left-to-right text).
+   */
+  float leading;
+  /**
+   * The bottom edge inset, in points.
+   */
+  float bottom;
+  /**
+   * The trailing edge inset, in points (right in left-to-right text).
+   */
+  float trailing;
+} WuiEdgeInsets;
+
+/**
  * C ABI mirror of one explicit horizontal alignment guide entry from
  * [`ViewDimensions`], pairing a named alignment with its measured offset.
  */
@@ -5580,6 +5607,12 @@ typedef struct WuiListItem {
    * Section break carried by this item — see [`WuiListSection`].
    */
   struct WuiListSection section;
+  /**
+   * The insets between the row's edges and its content, in points; null
+   * defers to the theme's row insets. Owned; release it with
+   * `waterui_drop_edge_insets`.
+   */
+  struct WuiEdgeInsets *insets;
 } WuiListItem;
 
 /**
@@ -5646,6 +5679,16 @@ typedef struct WuiList {
    * Whether rows carry semantic section markers.
    */
   bool uses_sections;
+  /**
+   * Whether `min_row_height` holds a value; `false` uses the theme's
+   * one-line row height.
+   */
+  bool has_min_row_height;
+  /**
+   * The minimum height of a row in points, when `has_min_row_height` is
+   * true. `0` lets rows size to their content.
+   */
+  float min_row_height;
 } WuiList;
 
 /**
@@ -10274,6 +10317,16 @@ struct WuiWatcher_Rect *waterui_new_watcher_rect(void *data,
                                                               struct WuiRect,
                                                               struct WuiWatcherMetadata*),
                                                  void (*drop)(void*));
+
+/**
+ * Drops a `WuiEdgeInsets` handle produced by the Rust side.
+ *
+ * # Safety
+ *
+ * `value` must be a valid, owning `*mut WuiEdgeInsets` produced by the
+ * matching `into_ffi` conversion and not previously dropped.
+ */
+void waterui_drop_edge_insets(struct WuiEdgeInsets *value);
 
 /**
  * Calculates the size required by the layout given a proposal and child proxies.
