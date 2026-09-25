@@ -226,6 +226,14 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
+      # The stow pilot (#1145): the release binary installs and wires
+      # RUSTC_WRAPPER plus the cc/CMAKE launchers through the job
+      # environment, so the workspace's dependency closure resolves from
+      # the signed edge cache — preheated for these targets in
+      # water-rs/stow#90 — instead of a cold compile every night. An
+      # unreachable edge falls back to plain cargo rather than failing
+      # the job.
+      - uses: water-rs/stow@main
       # One full-workspace pass under default features. Every crate's own
       # optional features are the `all-features` job below (Linux) and
       # `macos-all-features` (macOS). The `trybuild_*` macro contract tests run
@@ -235,6 +243,16 @@ jobs:
       - run: cargo nextest run --locked --workspace --exclude '*-example' --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
       - run: cargo test --locked --doc --workspace --exclude '*-example'
+      # The pilot's hit/miss evidence (#1145): the shim accumulates per-crate
+      # counters in its stats db during the builds above, and `stow status`
+      # prints them — it only shows them when the project config exists, so
+      # `stow setup` writes the disposable copy first. Runs after a failure
+      # too, so a red run still reports how much of the closure hit.
+      - name: stow hit ratio
+        if: always()
+        run: |
+          stow setup
+          stow status
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
