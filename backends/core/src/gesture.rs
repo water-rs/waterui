@@ -28,7 +28,11 @@ use crate::time::Instant;
 
 const TAP_REPEAT_WINDOW: Duration = Duration::from_millis(320);
 const TAP_SPATIAL_TOLERANCE: f64 = 24.0;
-const LONG_PRESS_SLOP: f64 = 10.0;
+/// How far, in logical points, a long press may drift before it fails.
+///
+/// Backends that recognise a platform hold gesture outside the gesture engine
+/// (a touch hold that opens a context menu) use the same slop.
+pub const LONG_PRESS_SLOP: f64 = 10.0;
 const EXCLUSIVE_RECOGNITION_WINDOW: Duration = Duration::from_millis(50);
 
 type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
