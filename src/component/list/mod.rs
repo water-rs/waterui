@@ -23,6 +23,7 @@ use waterui_core::{
     impl_extractor,
     layout::StretchAxis,
 };
+use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::ScrollController;
 use waterui_text::{IntoText, Text};
 
@@ -171,9 +172,20 @@ pub struct ListConfig {
     pub scroll_controller: Option<ScrollController<usize>>,
     /// Whether rows carry semantic section markers.
     pub uses_sections: bool,
+    /// The minimum height of a row, from [`ListMinRowHeight`] in the list's
+    /// environment. `None` uses the theme's one-line row height.
+    pub min_row_height: Option<f32>,
 }
 
 impl_debug!(ListConfig);
+
+/// The minimum height of every row in the lists below it, in points.
+///
+/// Replaces the theme's one-line row height as the floor a row is measured
+/// against. `0.0` sizes each row to its content plus its insets. Set it with
+/// [`ViewExt::list_min_row_height`](crate::ViewExt::list_min_row_height).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ListMinRowHeight(pub f32);
 
 impl NativeView for ListConfig {
     fn stretch_axis(&self) -> StretchAxis {
@@ -404,6 +416,7 @@ where
             on_move: None,
             scroll_controller: None,
             uses_sections: self.uses_sections,
+            min_row_height: None,
         }
     }
 }
@@ -448,6 +461,7 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
     });
     config.contents = SharedAnyViews::from(contents);
     config.selection = selection.erased(&ids);
+    config.min_row_height = env.get::<ListMinRowHeight>().map(|height| height.0);
     if let Some(hook) = env.get::<Hook<ListConfig>>() {
         AnyView::new(hook.apply(env, config))
     } else {
@@ -665,6 +679,7 @@ where
             on_move: self.on_move,
             scroll_controller: self.scroll_controller,
             uses_sections: self.uses_sections,
+            min_row_height: None,
         }
     }
 }
@@ -778,6 +793,9 @@ pub struct ListItem {
     /// this marker to group subsequent items into native chrome (iOS inset
     /// grouped sections, macOS group rows, Material section headers).
     pub section: Option<ListSection>,
+    /// The insets between the row's edges and its content. `None` uses the
+    /// theme's row insets.
+    pub insets: Option<EdgeInsets>,
 }
 
 impl NativeView for ListItem {}
@@ -799,6 +817,7 @@ impl ListItem {
             content: AnyView::new(content),
             deletable: Computed::new(true),
             section: None,
+            insets: None,
         }
     }
 
@@ -811,6 +830,17 @@ impl ListItem {
         self
     }
 
+    /// Replaces the theme's row insets for this item.
+    ///
+    /// Together with [`ListMinRowHeight`], this lets one row size to its
+    /// content (a one-line event in a chat log, a compact header) while the
+    /// rest keep the list's row metrics.
+    #[must_use]
+    pub const fn insets(mut self, insets: EdgeInsets) -> Self {
+        self.insets = Some(insets);
+        self
+    }
+
     /// Marks this item as the first row of a new section with the given header.
     ///
     /// All later items without their own [`ListItem::section`] marker render
@@ -819,5 +849,84 @@ impl ListItem {
     pub fn section(mut self, section: ListSection) -> Self {
         self.section = Some(section);
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ViewExt;
+    use waterui_macros::text;
+
+    /// Renders `config` the way `List::body` does and returns the `Native`
+    /// payload, so the resolved metrics can be asserted on.
+    fn render_config(config: ListConfig, env: &Environment) -> ListConfig {
+        AnyView::new(render_list_config(config, env))
+            .downcast::<Native<ListConfig>>()
+            .map_or_else(
+                |_| panic!("the list did not render a Native<ListConfig>"),
+                |native| native.into_inner(),
+            )
+    }
+
+    /// Unpacks the `Metadata<Environment>` an environment modifier emits —
+    /// the same step a renderer runs before realizing the wrapped view.
+    fn modifier_parts(view: impl View) -> (AnyView, Environment) {
+        let metadata = AnyView::new(view.body(&Environment::new()))
+            .downcast::<Metadata<Environment>>()
+            .map_or_else(
+                |_| panic!("the modifier did not emit environment metadata"),
+                |metadata| *metadata,
+            );
+        (metadata.content, metadata.value)
+    }
+
+    /// `water-rs/waterui#1249`: `.list_min_row_height` carries the row floor
+    /// through the environment into the rendered `ListConfig` — `0.0`
+    /// included — while a list without the modifier keeps `None`.
+    #[test]
+    fn min_row_height_resolves_from_the_environment() {
+        let (content, env) = modifier_parts(
+            List::content((
+                || ListItem::new(text!("Alice joined")),
+                || ListItem::new(text!("Hello")),
+            ))
+            .list_min_row_height(0.0),
+        );
+        let list = *content
+            .downcast::<List<BuiltViews>>()
+            .unwrap_or_else(|_| panic!("the metadata did not wrap the list"));
+        let with_floor = render_config(ConfigurableView::config(list), &env);
+        assert_eq!(with_floor.min_row_height, Some(0.0));
+
+        let without = render_config(
+            ConfigurableView::config(List::content((
+                || ListItem::new(text!("Alice joined")),
+                || ListItem::new(text!("Hello")),
+            ))),
+            &Environment::new(),
+        );
+        assert_eq!(without.min_row_height, None);
+    }
+
+    /// `water-rs/waterui#1249`: a row's `insets` survives the section and
+    /// selection transforms `render_list_config` wraps every item in.
+    #[test]
+    fn row_insets_survive_the_section_and_selection_transform() {
+        let selection = nami::Binding::container(Option::<SelfId<usize>>::None);
+        let config = render_config(
+            ConfigurableView::config(
+                List::content((
+                    || ListItem::new(text!("Alice joined")).insets(EdgeInsets::all(4.0)),
+                    || ListItem::new(text!("Hello")),
+                ))
+                .selection(&selection),
+            ),
+            &Environment::new(),
+        );
+        let first = config.contents.get_view(0).expect("row 0 exists");
+        let second = config.contents.get_view(1).expect("row 1 exists");
+        assert_eq!(first.insets, Some(EdgeInsets::all(4.0)));
+        assert_eq!(second.insets, None);
     }
 }

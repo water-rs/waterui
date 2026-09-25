@@ -1088,6 +1088,32 @@ pub trait ViewExt: View + Sized {
         }
     }
 
+    /// Sets the minimum row height of every list inside this view, in points.
+    ///
+    /// Replaces the theme's one-line row height as the floor rows are measured
+    /// against; `0.0` sizes each row to its content plus its insets. Combine
+    /// with [`ListItem::insets`](crate::component::list::ListItem::insets) to
+    /// make individual rows compact.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::layout::padding::EdgeInsets;
+    /// use waterui::prelude::*;
+    ///
+    /// let log = List::content((
+    ///     || ListItem::new(text!("Alice joined the group")).insets(EdgeInsets::all(4.0)),
+    ///     || ListItem::new(text!("Hello")),
+    /// ))
+    /// .list_min_row_height(0.0);
+    /// ```
+    fn list_min_row_height(
+        self,
+        height: f32,
+    ) -> waterui_core::env::With<Self, crate::component::list::ListMinRowHeight> {
+        waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
+    }
+
     /// Extends this view's bounds to ignore safe area insets on the specified edges.
     ///
     /// This allows backgrounds, images, and other visual elements to extend edge-to-edge

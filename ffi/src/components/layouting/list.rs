@@ -1,4 +1,5 @@
 use crate::action::{WuiIndexAction, WuiMoveAction};
+use crate::components::layout::WuiEdgeInsets;
 use crate::reactive::{WuiBinding, WuiComputed};
 use crate::views::WuiAnyViews;
 use crate::{IntoFFI, WuiAnyView};
@@ -50,6 +51,10 @@ pub struct WuiListItem {
     pub deletable: *mut WuiComputed<bool>,
     /// Section break carried by this item — see [`WuiListSection`].
     pub section: WuiListSection,
+    /// The insets between the row's edges and its content, in points; null
+    /// defers to the theme's row insets. Owned; release it with
+    /// `waterui_drop_edge_insets`.
+    pub insets: *mut WuiEdgeInsets,
 }
 
 impl fmt::Debug for WuiListItem {
@@ -58,6 +63,7 @@ impl fmt::Debug for WuiListItem {
             .field("content", &self.content)
             .field("deletable", &self.deletable)
             .field("section", &self.section)
+            .field("insets", &self.insets)
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +97,7 @@ impl IntoFFI for ListItem {
             content: self.content.into_ffi(),
             deletable: self.deletable.into_ffi(),
             section: self.section.into_ffi(),
+            insets: self.insets.into_ffi(),
         }
     }
 }
@@ -242,6 +249,12 @@ pub struct WuiList {
     pub scroll_generation: *mut WuiComputed<i32>,
     /// Whether rows carry semantic section markers.
     pub uses_sections: bool,
+    /// Whether `min_row_height` holds a value; `false` uses the theme's
+    /// one-line row height.
+    pub has_min_row_height: bool,
+    /// The minimum height of a row in points, when `has_min_row_height` is
+    /// true. `0` lets rows size to their content.
+    pub min_row_height: f32,
 }
 
 impl IntoFFI for ListConfig {
@@ -273,6 +286,8 @@ impl IntoFFI for ListConfig {
             target_index,
             scroll_generation,
             uses_sections: self.uses_sections,
+            has_min_row_height: self.min_row_height.is_some(),
+            min_row_height: self.min_row_height.unwrap_or(0.0),
         }
     }
 }

@@ -8,13 +8,14 @@ use waterui_layout::{
     SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
     measure_layout,
+    padding::EdgeInsets,
     scroll::Axis,
     stack::LazyStackAxis,
     with_memoized_children,
 };
 
 use crate::views::WuiAnyViews;
-use crate::{IntoFFI, IntoRust, WuiAnyView, array::WuiArray};
+use crate::{IntoFFI, IntoNullableFFI, IntoRust, WuiAnyView, array::WuiArray};
 
 opaque!(WuiLayout, Box<dyn Layout>, layout);
 
@@ -644,6 +645,93 @@ impl IntoFFI for SubviewPlacement {
             frame: self.frame.into_ffi(),
             proposal: self.proposal.into_ffi(),
         }
+    }
+}
+
+/// C ABI mirror of [`EdgeInsets`]: the space between a rectangle's edges and
+/// its content, in points.
+///
+/// The value crosses the boundary as `*mut WuiEdgeInsets` — an owning handle
+/// the backend releases with `waterui_drop_edge_insets` when it is done with
+/// it. A null pointer defers to whatever insets the context supplies.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiEdgeInsets {
+    /// The top edge inset, in points.
+    pub top: f32,
+    /// The leading edge inset, in points (left in left-to-right text).
+    pub leading: f32,
+    /// The bottom edge inset, in points.
+    pub bottom: f32,
+    /// The trailing edge inset, in points (right in left-to-right text).
+    pub trailing: f32,
+}
+
+impl IntoNullableFFI for EdgeInsets {
+    type FFI = *mut WuiEdgeInsets;
+
+    fn into_ffi(self) -> Self::FFI {
+        Box::into_raw(Box::new(WuiEdgeInsets {
+            top: self.top(),
+            leading: self.leading(),
+            bottom: self.bottom(),
+            trailing: self.trailing(),
+        }))
+    }
+
+    fn null() -> Self::FFI {
+        core::ptr::null_mut()
+    }
+}
+
+impl IntoRust for *mut WuiEdgeInsets {
+    type Rust = EdgeInsets;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: the caller contract makes `self` an owning pointer produced
+        // by the matching `into_ffi`, so reclaiming the box is the inverse.
+        let insets = unsafe { Box::from_raw(self) };
+        EdgeInsets::new(insets.top, insets.bottom, insets.leading, insets.trailing)
+    }
+}
+
+/// Drops a `WuiEdgeInsets` handle produced by the Rust side.
+///
+/// # Safety
+///
+/// `value` must be a valid, owning `*mut WuiEdgeInsets` produced by the
+/// matching `into_ffi` conversion and not previously dropped.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_drop_edge_insets(value: *mut WuiEdgeInsets) {
+    // SAFETY: the caller contract above makes `value` a pointer from the
+    // matching FFI conversion that has not been dropped, so reclaiming it
+    // once and letting it fall out of scope frees it exactly once.
+    unsafe {
+        let _ = IntoRust::into_rust(value);
+    }
+}
+
+/// JNI: Drops the edge-insets pointer, freeing its memory.
+///
+/// # Safety
+///
+/// `ptr` must be a valid, owning `*mut WuiEdgeInsets` produced by the
+/// matching `into_ffi` conversion and not previously dropped.
+#[cfg(feature = "android-jni")]
+#[unsafe(no_mangle)]
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropEdgeInsets<'local>(
+    _env: crate::jni::JNIEnv<'local>,
+    _class: crate::jni::JClass<'local>,
+    ptr: crate::jni::jlong,
+) {
+    use crate::jni::convert::jlong_to_ptr_mut;
+    // SAFETY: the caller contract above makes `ptr` a handle from the
+    // matching FFI conversion that has not been dropped, so reclaiming it
+    // once and letting it fall out of scope frees it exactly once.
+    unsafe {
+        let ptr: *mut WuiEdgeInsets = jlong_to_ptr_mut(ptr);
+        let _ = IntoRust::into_rust(ptr);
     }
 }
 

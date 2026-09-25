@@ -1807,7 +1807,7 @@ impl ToJavaStruct for crate::components::list::WuiList {
             .expect("ListStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JIJJJJJJJZ)V"),
+            jni_sig!("(JIJJJJJJJZZF)V"),
             &[
                 JValue::Long(self.contents as jlong),
                 JValue::Int(self.selection.mode as jint),
@@ -1819,6 +1819,8 @@ impl ToJavaStruct for crate::components::list::WuiList {
                 JValue::Long(self.target_index as jlong),
                 JValue::Long(self.scroll_generation as jlong),
                 JValue::Bool(self.uses_sections),
+                JValue::Bool(self.has_min_row_height),
+                JValue::Float(self.min_row_height),
             ],
         )
         .expect("Failed to create ListStruct")
@@ -1833,13 +1835,14 @@ impl ToJavaStruct for crate::components::list::WuiListItem {
             .expect("ListItemStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJZJJ)V"),
+            jni_sig!("(JJZJJJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.deletable as jlong),
                 JValue::Bool(self.section.has_value),
                 JValue::Long(self.section.label as jlong),
                 JValue::Long(self.section.footer as jlong),
+                JValue::Long(self.insets as jlong),
             ],
         )
         .expect("Failed to create ListItemStruct")
