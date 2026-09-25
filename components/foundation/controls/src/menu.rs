@@ -170,6 +170,20 @@ impl View for Menu {
     }
 }
 
+/// What a command does to the thing it acts on, which decides how every
+/// menu presents it.
+///
+/// A destructive command is drawn in the platform's destructive style: red
+/// text on iOS, macOS and Android, and the error colour in drawn menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommandRole {
+    /// An ordinary command.
+    #[default]
+    Standard,
+    /// A command that deletes or irreversibly changes data.
+    Destructive,
+}
+
 /// A semantic command that can be reused across menu-like surfaces.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -184,6 +198,10 @@ pub struct Command {
     pub selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
+    /// What the command does, which decides its presentation.
+    pub role: CommandRole,
+    /// An optional secondary line shown under the label.
+    pub subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
     pub captured_env: Environment,
     identity: Rc<()>,
@@ -218,6 +236,8 @@ impl Command {
             disabled: Disabled::resolve(env, self.disabled),
             selected: self.selected,
             shortcut: self.shortcut,
+            role: self.role,
+            subtitle: self.subtitle,
             identity: self.identity,
         }
     }
@@ -240,6 +260,26 @@ impl Command {
     #[must_use]
     pub fn shortcut(mut self, shortcut: Shortcut) -> Self {
         self.shortcut = Some(shortcut);
+        self
+    }
+
+    /// Sets what the command does, which decides its presentation.
+    #[must_use]
+    pub const fn role(mut self, role: CommandRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Marks the command as destructive.
+    #[must_use]
+    pub const fn destructive(self) -> Self {
+        self.role(CommandRole::Destructive)
+    }
+
+    /// Shows a secondary line under the command's label.
+    #[must_use]
+    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
+        self.subtitle = Some(subtitle.into());
         self
     }
 
@@ -284,6 +324,8 @@ impl CommandBuilder {
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
             shortcut: None,
+            role: CommandRole::Standard,
+            subtitle: None,
             captured_env: Environment::new(),
             identity: Rc::new(()),
         }
@@ -631,6 +673,10 @@ pub struct ResolvedCommand {
     pub selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
+    /// What the command does, which decides its presentation.
+    pub role: CommandRole,
+    /// An optional secondary line shown under the label.
+    pub subtitle: Option<Str>,
     identity: Rc<()>,
 }
 
@@ -744,6 +790,33 @@ mod tests {
         assert!(matches!(items[0], MenuItem::Command(_)));
         assert!(matches!(items[1], MenuItem::Divider));
         assert!(matches!(items[2], MenuItem::Menu(_)));
+    }
+
+    #[test]
+    fn resolve_menu_items_carries_role_and_subtitle() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let items = vec![
+            Command::builder("Reply").action(|| {}).into(),
+            Command::builder("Delete")
+                .action(|| {})
+                .destructive()
+                .subtitle("For everyone")
+                .into(),
+        ];
+
+        let resolved = resolve_menu_items_now(items, &env);
+        let ResolvedMenuItem::Command(reply) = &resolved[0] else {
+            panic!("first resolved item should be a command");
+        };
+        assert_eq!(reply.role, CommandRole::Standard);
+        assert!(reply.subtitle.is_none());
+
+        let ResolvedMenuItem::Command(delete) = &resolved[1] else {
+            panic!("second resolved item should be a command");
+        };
+        assert_eq!(delete.role, CommandRole::Destructive);
+        assert_eq!(delete.subtitle.as_deref(), Some("For everyone"));
     }
 
     #[test]

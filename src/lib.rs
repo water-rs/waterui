@@ -50,7 +50,7 @@ pub mod prelude {
     #[cfg(feature = "webview")]
     pub use super::webview;
     pub use super::{
-        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, View,
+        AnimationExt, AnyView, Binding, Color, Computed, Signal, SignalExt, State, Str, Use, View,
         ViewExt, accessibility, animation, app, binding, color, component, cursor, drag_drop,
         entry, env, error, filter, form, fullscreen, gesture, gradient, id, layout, locale,
         metadata, navigation, reactive, regional, shape, signal, style, task, text, widget, window,
@@ -86,8 +86,9 @@ pub mod prelude {
         List, ListContent, ListItem, ListSection, Row, Section, detail_row, row,
     };
     pub use super::component::menu::{
-        Command, CommandExt, Menu, MenuItem, Shortcut, ShortcutModifiers,
+        Command, CommandExt, CommandRole, Menu, MenuItem, Shortcut, ShortcutModifiers,
     };
+    pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 
     // Drag and drop extension traits
     pub use super::drag_drop::DropDestinationExt;

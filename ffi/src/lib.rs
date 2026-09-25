@@ -1875,7 +1875,9 @@ use crate::components::icon::WuiSystemIcon;
 use crate::components::text::WuiText;
 use crate::views::{WuiAnyViews, signal_vec_views};
 use waterui::metadata::context_menu::ResolvedContextMenu;
-use waterui_controls::menu::{ResolvedMenu, ResolvedMenuItem, Shortcut, ShortcutModifiers};
+use waterui_controls::menu::{
+    CommandRole, ResolvedMenu, ResolvedMenuItem, Shortcut, ShortcutModifiers,
+};
 use waterui_core::handler::SharedAction;
 use waterui_icon::SystemIcon;
 use waterui_text::styled::StyledStr;
@@ -1914,6 +1916,29 @@ pub enum WuiMenuItemTag {
 }
 
 ffi_safe!(WuiMenuItemTag);
+
+/// FFI-safe command role.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiCommandRole {
+    /// An ordinary command.
+    Standard = 0,
+    /// A command that deletes or irreversibly changes data.
+    Destructive = 1,
+}
+
+ffi_safe!(WuiCommandRole);
+
+impl IntoFFI for CommandRole {
+    type FFI = WuiCommandRole;
+
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Standard => WuiCommandRole::Standard,
+            Self::Destructive => WuiCommandRole::Destructive,
+        }
+    }
+}
 
 /// FFI-safe shortcut modifier flags.
 #[repr(C)]
@@ -1983,6 +2008,10 @@ pub struct WuiMenuItem {
     pub selected: *mut WuiComputed<bool>,
     /// Optional keyboard shortcut metadata for commands.
     pub shortcut: *mut WuiShortcut,
+    /// What a command does, which decides its presentation.
+    pub role: WuiCommandRole,
+    /// Optional secondary line under a command's label; null when absent.
+    pub subtitle: *mut WuiStr,
     /// Nested menu items.
     pub items: *mut WuiAnyViews,
 }
@@ -2028,6 +2057,26 @@ pub unsafe extern "C" fn waterui_menu_item_take_shortcut(
     unsafe { *Box::from_raw(shortcut) }
 }
 
+/// Takes the subtitle value from an owned menu-item subtitle allocation.
+///
+/// # Safety
+///
+/// `subtitle` must be consumed exactly once.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_menu_item_take_subtitle(subtitle: *mut WuiStr) -> WuiStr {
+    // SAFETY: the caller contract makes `subtitle` an owning pointer from the
+    // matching FFI constructor, so reclaiming the box frees it exactly once.
+    unsafe { *Box::from_raw(subtitle) }
+}
+
+#[inline]
+fn optional_subtitle(subtitle: Option<Str>) -> *mut WuiStr {
+    subtitle.map_or_else(null_mut, |subtitle| {
+        Box::into_raw(Box::new(subtitle.into_ffi()))
+    })
+}
+
 #[inline]
 fn menu_text(label: waterui_text::TextConfig) -> *mut WuiText {
     Box::into_raw(Box::new(label.into_ffi()))
@@ -2065,6 +2114,8 @@ impl IntoFFI for ResolvedMenuItemView {
                 disabled: command.disabled.into_ffi(),
                 selected: command.selected.into_ffi(),
                 shortcut: optional_shortcut(command.shortcut),
+                role: command.role.into_ffi(),
+                subtitle: optional_subtitle(command.subtitle),
                 items: null_mut(),
             },
             ResolvedMenuItem::Divider => WuiMenuItem {
@@ -2075,6 +2126,8 @@ impl IntoFFI for ResolvedMenuItemView {
                 disabled: null_mut(),
                 selected: null_mut(),
                 shortcut: null_mut(),
+                role: WuiCommandRole::Standard,
+                subtitle: null_mut(),
                 items: null_mut(),
             },
             ResolvedMenuItem::Menu(menu) => WuiMenuItem {
@@ -2085,6 +2138,8 @@ impl IntoFFI for ResolvedMenuItemView {
                 disabled: null_mut(),
                 selected: null_mut(),
                 shortcut: null_mut(),
+                role: WuiCommandRole::Standard,
+                subtitle: null_mut(),
                 items: menu_items_views(menu.items),
             },
         }
@@ -2126,6 +2181,14 @@ pub(crate) fn menu_items_views(
 pub struct WuiContextMenu {
     /// Identity-aware reactive menu items.
     pub items: *mut WuiAnyViews,
+    /// The view to lift while the menu is open; null lifts the source view.
+    pub preview: *mut WuiAnyView,
+    /// The interactive view anchored to the lifted preview; null when the
+    /// menu has none.
+    pub accessory: *mut WuiAnyView,
+    /// Dismiss requests from the accessory: every change closes the open
+    /// menu.
+    pub dismiss_requests: *mut WuiComputed<i32>,
 }
 
 impl IntoFFI for ResolvedContextMenu {
@@ -2133,6 +2196,9 @@ impl IntoFFI for ResolvedContextMenu {
     fn into_ffi(self) -> Self::FFI {
         WuiContextMenu {
             items: menu_items_views(self.items),
+            preview: self.preview.map_or_else(null_mut, IntoFFI::into_ffi),
+            accessory: self.accessory.map_or_else(null_mut, IntoFFI::into_ffi),
+            dismiss_requests: self.dismiss_requests.into_ffi(),
         }
     }
 }

@@ -1060,11 +1060,12 @@ pub trait ViewExt: View + Sized {
     /// Attaches a context menu to this view.
     ///
     /// The context menu appears when the user:
-    /// - Long-presses on iOS/Android
-    /// - Right-clicks on macOS
+    /// - Long-presses on iOS/Android, or holds a touch or pen press elsewhere
+    /// - Secondary-clicks with a pointer
     ///
-    /// # Arguments
-    /// * `items` - The menu items to display
+    /// Pass the menu items directly, or a
+    /// [`ContextMenu`](crate::metadata::context_menu::ContextMenu) to also
+    /// choose the lifted preview and anchor an interactive accessory to it.
     ///
     /// # Example
     ///
@@ -1079,11 +1080,11 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn context_menu(
         self,
-        items: impl crate::component::menu::MenuView,
+        menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
         crate::metadata::context_menu::ContextMenuView {
             content: self,
-            items: items.into_menu_items(),
+            menu: menu.into_context_menu(),
         }
     }
 
