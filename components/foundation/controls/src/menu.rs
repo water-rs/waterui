@@ -2,7 +2,11 @@
 
 use alloc::{rc::Rc, vec, vec::Vec};
 
-use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed};
+use nami::{
+    Computed, Signal, SignalExt, SignalIdentity, impl_constant,
+    signal::IntoComputed,
+    watcher::{BoxWatcherGuard, Context, WatcherGuard},
+};
 use waterui_core::Str;
 use waterui_core::{
     AnyView, Environment, View,
@@ -431,40 +435,81 @@ impl<const N: usize> MenuBarView for [Menu; N] {
     }
 }
 
-fn extend_menus(mut left: Vec<Menu>, right: Vec<Menu>) -> Vec<Menu> {
-    left.extend(right);
-    left
+/// A `Signal` that concatenates the `Vec` outputs of its children.
+///
+/// One evaluation reads every child once and concatenates the results in
+/// order, so an update costs linear work in the total item count instead of
+/// propagating through an intermediate `zip` layer per element.
+struct ConcatVecs<T> {
+    children: Rc<Vec<Computed<Vec<T>>>>,
+}
+
+impl<T> Clone for ConcatVecs<T> {
+    fn clone(&self) -> Self {
+        Self {
+            children: self.children.clone(),
+        }
+    }
+}
+
+impl<T: 'static> Signal for ConcatVecs<T> {
+    type Output = Vec<T>;
+    type Guard = ConcatVecsGuard;
+
+    fn snapshot(&self) -> Vec<T> {
+        self.children.iter().flat_map(Computed::snapshot).collect()
+    }
+
+    fn identity(&self) -> Option<SignalIdentity> {
+        let mut children = self.children.iter();
+        let mut identity = children.next()?.identity()?;
+        for child in children {
+            identity = identity.combine(child.identity()?);
+        }
+        Some(identity)
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Vec<T>>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let guards = self
+            .children
+            .iter()
+            .map(|child| {
+                let watcher = Rc::clone(&watcher);
+                let children = Rc::clone(&self.children);
+                child.watch(move |ctx| {
+                    let items = children.iter().flat_map(Computed::snapshot).collect();
+                    watcher(ctx.map(|_| items));
+                })
+            })
+            .collect();
+        ConcatVecsGuard { _guards: guards }
+    }
+}
+
+/// Owns the per-child subscriptions opened for one `ConcatVecs` watcher.
+struct ConcatVecsGuard {
+    _guards: Vec<BoxWatcherGuard>,
+}
+
+impl WatcherGuard for ConcatVecsGuard {}
+
+fn concat_vec_children<T: 'static>(children: Vec<Computed<Vec<T>>>) -> Computed<Vec<T>> {
+    Computed::new(ConcatVecs {
+        children: Rc::new(children),
+    })
 }
 
 impl<T: MenuView> MenuView for Vec<T> {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        self.into_iter()
-            .fold(Computed::constant(Vec::new()), |items, item| {
-                let right = item.into_menu_items();
-                items
-                    .zip(&right)
-                    .map(|(left, right)| extend_menu_items(left, right))
-                    .computed()
-            })
+        concat_vec_children(self.into_iter().map(MenuView::into_menu_items).collect())
     }
 }
 
 impl<T: MenuView, const N: usize> MenuView for [T; N] {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        self.into_iter()
-            .fold(Computed::constant(Vec::new()), |items, item| {
-                let right = item.into_menu_items();
-                items
-                    .zip(&right)
-                    .map(|(left, right)| extend_menu_items(left, right))
-                    .computed()
-            })
+        concat_vec_children(self.into_iter().map(MenuView::into_menu_items).collect())
     }
-}
-
-fn extend_menu_items(mut left: Vec<MenuItem>, right: Vec<MenuItem>) -> Vec<MenuItem> {
-    left.extend(right);
-    left
 }
 
 macro_rules! menu_tuples {
@@ -502,15 +547,7 @@ macro_rules! impl_tuple_menu_view {
         impl<$T0: MenuView, $($T: MenuView),+> MenuView for ($T0, $($T,)+) {
             fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
                 let ($T0, $($T),+) = self;
-                let items = $T0.into_menu_items();
-                $(
-                    let $T = $T.into_menu_items();
-                    let items = items
-                        .zip(&$T)
-                        .map(|(left, right)| extend_menu_items(left, right))
-                        .computed();
-                )+
-                items
+                concat_vec_children(vec![$T0.into_menu_items(), $($T.into_menu_items()),+])
             }
         }
     };
@@ -531,15 +568,7 @@ macro_rules! impl_tuple_menu_bar_view {
         impl<$T0: MenuBarView, $($T: MenuBarView),+> MenuBarView for ($T0, $($T,)+) {
             fn into_menus(self) -> Computed<Vec<Menu>> {
                 let ($T0, $($T),+) = self;
-                let items = $T0.into_menus();
-                $(
-                    let $T = $T.into_menus();
-                    let items = items
-                        .zip(&$T)
-                        .map(|(left, right)| extend_menus(left, right))
-                        .computed();
-                )+
-                items
+                concat_vec_children(vec![$T0.into_menus(), $($T.into_menus()),+])
             }
         }
     };
@@ -755,6 +784,77 @@ mod tests {
             panic!("nested menu should resolve its child command");
         };
         assert_eq!(archive.label.content.snapshot().to_plain(), "Archive");
+    }
+
+    /// A leaf `Computed<Vec<MenuItem>>` that counts how often it is evaluated.
+    #[derive(Clone)]
+    struct CountedItems {
+        source: nami::Binding<Vec<MenuItem>>,
+        evaluations: Rc<Cell<usize>>,
+    }
+
+    impl Signal for CountedItems {
+        type Output = Vec<MenuItem>;
+        type Guard = nami::watcher::BoxWatcherGuard;
+
+        fn snapshot(&self) -> Vec<MenuItem> {
+            self.evaluations.set(self.evaluations.get() + 1);
+            self.source.snapshot()
+        }
+
+        fn watch(
+            &self,
+            watcher: impl Fn(nami::watcher::Context<Vec<MenuItem>>) + 'static,
+        ) -> Self::Guard {
+            self.source.watch(watcher)
+        }
+    }
+
+    #[test]
+    fn tuple_menu_reads_each_child_once_per_change() {
+        const N: usize = 14;
+        crate::init_test_executor();
+        let evaluations = Rc::new(Cell::new(0usize));
+        let sources: [nami::Binding<Vec<MenuItem>>; N] =
+            core::array::from_fn(|_| nami::binding(vec![MenuItem::Divider]));
+        let leaf = |source: &nami::Binding<Vec<MenuItem>>| {
+            Computed::new(CountedItems {
+                source: source.clone(),
+                evaluations: evaluations.clone(),
+            })
+        };
+        let items = (
+            leaf(&sources[0]),
+            leaf(&sources[1]),
+            leaf(&sources[2]),
+            leaf(&sources[3]),
+            leaf(&sources[4]),
+            leaf(&sources[5]),
+            leaf(&sources[6]),
+            leaf(&sources[7]),
+            leaf(&sources[8]),
+            leaf(&sources[9]),
+            leaf(&sources[10]),
+            leaf(&sources[11]),
+            leaf(&sources[12]),
+            leaf(&sources[13]),
+        )
+            .into_menu_items();
+
+        let _guard = items.watch(|_| {});
+        assert!(
+            evaluations.get() <= N,
+            "subscribing evaluated the leaves {} times; evaluation must be linear in tuple arity",
+            evaluations.get()
+        );
+
+        evaluations.set(0);
+        sources[0].set(vec![MenuItem::Divider, MenuItem::Divider]);
+        assert_eq!(
+            evaluations.get(),
+            N,
+            "one leaf change must evaluate each of the {N} children exactly once"
+        );
     }
 
     #[test]
