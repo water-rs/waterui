@@ -842,9 +842,9 @@ mod tests {
         let resolved = color.resolve(&env).snapshot();
         let srgb = P3::new(0.3, 0.6, 0.9).to_srgb().resolve();
 
-        assert!(approx_eq(resolved.red, srgb.red, EPSILON_WIDE));
-        assert!(approx_eq(resolved.green, srgb.green, EPSILON_WIDE));
-        assert!(approx_eq(resolved.blue, srgb.blue, EPSILON_WIDE));
+        assert!(approx_eq(resolved.components[0], srgb.components[0], EPSILON_WIDE));
+        assert!(approx_eq(resolved.components[1], srgb.components[1], EPSILON_WIDE));
+        assert!(approx_eq(resolved.components[2], srgb.components[2], EPSILON_WIDE));
     }
 
     #[test]
@@ -861,18 +861,18 @@ mod tests {
             let resolved_srgb = sample.to_srgb().resolve();
 
             assert!(approx_eq(
-                resolved_oklch.red,
-                resolved_srgb.red,
+                resolved_oklch.components[0],
+                resolved_srgb.components[0],
                 EPSILON_WIDE
             ));
             assert!(approx_eq(
-                resolved_oklch.green,
-                resolved_srgb.green,
+                resolved_oklch.components[1],
+                resolved_srgb.components[1],
                 EPSILON_WIDE
             ));
             assert!(approx_eq(
-                resolved_oklch.blue,
-                resolved_srgb.blue,
+                resolved_oklch.components[2],
+                resolved_srgb.components[2],
                 EPSILON_WIDE
             ));
         }

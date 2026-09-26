@@ -82,20 +82,10 @@ pub struct PerfStats {
     pub measurement_cache_misses: u64,
     /// Maximum compositor layers submitted by one sampled frame.
     pub scene_layers: u64,
-    /// Maximum Vello scene layers submitted by one sampled frame.
-    pub vello_scene_layers: u64,
-    /// Maximum embedded GPU surface layers submitted by one sampled frame.
-    pub gpu_surface_layers: u64,
-    /// Maximum Vello clip layers pushed by one sampled frame.
+    /// Maximum clip layers pushed by one sampled frame.
     pub clip_layers: u64,
-    /// Maximum nested Vello clip depth observed across sampled frames.
+    /// Maximum nested clip depth observed across sampled frames.
     pub max_clip_depth: u64,
-    /// `AppliedFilter` nodes dispatched across sampled frames.
-    pub applied_filter_count: u64,
-    /// `AppliedFilter` subtree capture time across sampled frames, in microseconds.
-    pub applied_filter_capture_us: u64,
-    /// `AppliedFilter` GPU effect time across sampled frames, in microseconds.
-    pub applied_filter_effect_us: u64,
 }
 
 /// Statistical summary for the measured frame phases.
@@ -199,16 +189,6 @@ impl PerfStats {
                 .map(|frame| u64::from(frame.profile.counters.scene_layers))
                 .max()
                 .unwrap_or_default(),
-            vello_scene_layers: frames
-                .iter()
-                .map(|frame| u64::from(frame.profile.counters.vello_scene_layers))
-                .max()
-                .unwrap_or_default(),
-            gpu_surface_layers: frames
-                .iter()
-                .map(|frame| u64::from(frame.profile.counters.gpu_surface_layers))
-                .max()
-                .unwrap_or_default(),
             clip_layers: frames
                 .iter()
                 .map(|frame| u64::from(frame.profile.counters.clip_layers))
@@ -219,18 +199,6 @@ impl PerfStats {
                 .map(|frame| u64::from(frame.profile.counters.max_clip_depth))
                 .max()
                 .unwrap_or_default(),
-            applied_filter_count: frames
-                .iter()
-                .map(|frame| u64::from(frame.profile.counters.applied_filter_count))
-                .sum(),
-            applied_filter_capture_us: frames
-                .iter()
-                .map(|frame| frame.profile.counters.applied_filter_capture_us)
-                .sum(),
-            applied_filter_effect_us: frames
-                .iter()
-                .map(|frame| frame.profile.counters.applied_filter_effect_us)
-                .sum(),
         }
     }
 }

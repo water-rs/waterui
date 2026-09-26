@@ -226,6 +226,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::float_cmp, reason = "sorting preserves these exact input offsets")]
     fn stops_are_sorted_by_offset() {
         let gradient = Gradient::linear(
             vec![(1.0, WorkingColor::WHITE), (0.0, WorkingColor::BLACK)],

@@ -5,20 +5,19 @@ use std::time::Duration;
 
 use crate::driver::{DriverPumpResult, ResourceSampler};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
+use cherenkov::WorkingColor;
 use hydrolysis::InputEvent;
-use vello::kurbo::Shape;
 use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
-use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::color::Srgb;
-use waterui::graphics::{Scene2D, SceneContent, SceneView};
+use waterui::graphics::{Scene, SceneContent, SceneView};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Native, Signal, View};
+use waterui_core::Signal;
 
 #[derive(Debug)]
 struct NoopDriver;
@@ -196,9 +195,10 @@ fn semantic_builder_does_not_require_theme_package() {
 mod token_probe {
     use std::time::Duration;
 
-    use vello::kurbo::{BezPath, Point, Rect};
+    use cherenkov::kurbo::{BezPath, Point, Rect};
+    use cherenkov::{Paint, Recorder, WorkingColor};
     use waterui::animation::{Animation, Curve};
-    use waterui::color::{ResolvedColor, Srgb};
+    use waterui::color::Srgb;
     use waterui::component::button::{ButtonSize, ButtonStyle};
     use waterui::component::text;
     use waterui::component::toggle::ToggleStyle;
@@ -207,9 +207,9 @@ mod token_probe {
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
-    use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
+    use waterui::{Color, Environment, Signal as _, SignalExt as _, View};
     use waterui_backend_core::widget::{
-        BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
+        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics,
         InteractionMotion, ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics,
         ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
         RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TableMetrics, TabsMetrics,
@@ -227,7 +227,7 @@ mod token_probe {
 
     /// Formats an accent the way [`accent_probe`] labels it.
     pub(super) fn accent_label(accent: Srgb) -> String {
-        format!("accent:{:?}", ResolvedColor::from_srgb(accent))
+        format!("accent:{:?}", WorkingColor::from(accent))
     }
 
     /// Reads the environment's accent slot and publishes its resolved value
@@ -249,7 +249,7 @@ mod token_probe {
         fn install_tokens(&self, env: &mut Environment) {
             install_color_signal::<theme_color::Accent>(
                 env,
-                constant(ResolvedColor::from_srgb(PROBE_ACCENT)).computed(),
+                constant(WorkingColor::from(PROBE_ACCENT)).computed(),
             );
         }
     }
@@ -311,8 +311,7 @@ mod token_probe {
 
         fn navigation_motion(&self) -> NavigationMotion {
             NavigationMotion {
-                transition_duration: Duration::from_millis(450),
-                transition_easing: EasingCurve::bezier(0.2, 0.0, 0.0, 1.0),
+                transition: Curve::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
                 shared_axis_slide_distance: 30.0,
                 fade_through_threshold: 0.35,
             }
@@ -329,7 +328,7 @@ mod token_probe {
 
         fn draw_button_chrome(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _style: ButtonStyle,
             _icon_only: bool,
@@ -351,7 +350,7 @@ mod token_probe {
 
         fn draw_toggle_switch(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _progress: f32,
             _selected: bool,
@@ -361,7 +360,7 @@ mod token_probe {
 
         fn draw_toggle_checkbox(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _progress: f32,
             _state: WidgetInteractionState,
@@ -380,14 +379,14 @@ mod token_probe {
 
         fn draw_stepper_button(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _end: StepperEnd,
             _state: WidgetInteractionState,
         ) {
         }
-        fn draw_stepper_decrement_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_stepper_decrement_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_stepper_increment_icon(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
@@ -403,17 +402,17 @@ mod token_probe {
             Color::srgb(0, 0, 0)
         }
 
-        fn input_selection_brush(&self) -> Brush {
-            Brush::from(vello::peniko::Color::new([0.20, 0.45, 0.90, 0.28]))
+        fn input_selection_brush(&self) -> Paint {
+            WorkingColor::new([0.20, 0.45, 0.90, 0.28]).into()
         }
 
-        fn input_caret_brush(&self, opacity: f32) -> Brush {
-            Brush::from(vello::peniko::Color::new([0.12, 0.14, 0.18, opacity]))
+        fn input_caret_brush(&self, opacity: f32) -> Paint {
+            WorkingColor::new([0.12, 0.14, 0.18, opacity]).into()
         }
 
         fn draw_input_field(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _state: WidgetInteractionState,
         ) {
@@ -433,9 +432,9 @@ mod token_probe {
             }
         }
 
-        fn draw_text_context_menu_panel(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_text_context_menu_panel(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
-        fn draw_text_context_menu_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_text_context_menu_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
         fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
             PickerMetrics {
@@ -463,23 +462,23 @@ mod token_probe {
             }
         }
 
-        fn draw_picker_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_picker_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
-        fn draw_picker_popup(&self, _draw: &mut dyn DrawContext, _popup_rect: Rect) {}
+        fn draw_picker_popup(&self, _draw: &mut Recorder, _popup_rect: Rect) {}
 
         fn draw_picker_popup_row_background(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _row_rect: Rect,
             _selected: bool,
         ) {
         }
 
-        fn draw_picker_separator(&self, _draw: &mut dyn DrawContext, _separator: Rect) {}
+        fn draw_picker_separator(&self, _draw: &mut Recorder, _separator: Rect) {}
 
         fn draw_radio_indicator(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _center: Point,
             _radius: f64,
             _state: RadioIndicatorState,
@@ -500,7 +499,7 @@ mod token_probe {
 
         fn draw_slider_track(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _track_rect: Rect,
             _fill_rect: Rect,
             _state: WidgetInteractionState,
@@ -509,7 +508,7 @@ mod token_probe {
 
         fn draw_slider_thumb(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _center: Point,
             _radius: f64,
             _state: WidgetInteractionState,
@@ -546,15 +545,15 @@ mod token_probe {
 
         fn draw_progress_linear_track(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _active_end: Option<f64>,
         ) {
         }
-        fn draw_progress_linear_fill(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_progress_linear_fill(&self, _draw: &mut Recorder, _bounds: Rect) {}
         fn draw_progress_linear_indeterminate(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _elapsed: Duration,
             _four_color: bool,
@@ -562,7 +561,7 @@ mod token_probe {
         }
         fn draw_progress_circular_track(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _center: Point,
             _radius: f64,
             _width: f64,
@@ -571,14 +570,14 @@ mod token_probe {
         }
         fn draw_progress_circular_fill(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _path: &BezPath,
             _width: f64,
         ) {
         }
         fn draw_progress_loading(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _elapsed: Duration,
             _four_color: bool,
@@ -587,7 +586,7 @@ mod token_probe {
 
         fn draw_progress_circular_indeterminate(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _center: Point,
             _radius: f64,
             _width: f64,
@@ -620,14 +619,14 @@ mod token_probe {
 
         fn draw_navigation_bar(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
-            _background: &Brush,
+            _background: &Paint,
         ) {
         }
 
-        fn draw_navigation_bar_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_navigation_bar_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_navigation_back_button(&self, _draw: &mut Recorder, _bounds: Rect) {}
         fn tabs_metrics(&self) -> TabsMetrics {
             TabsMetrics {
                 bar_height: 48.0,
@@ -637,15 +636,15 @@ mod token_probe {
                 active_indicator_radius: 3.0,
             }
         }
-        fn draw_tabs_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _top_edge: bool) {}
-        fn draw_tabs_highlight(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_scroll_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_tabs_bar(&self, _draw: &mut Recorder, _bounds: Rect, _top_edge: bool) {}
+        fn draw_tabs_highlight(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_scroll_indicator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {
             DividerMetrics { thickness: 1.0 }
         }
 
-        fn draw_divider(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_divider(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
         fn badge_metrics(&self) -> BadgeMetrics {
             BadgeMetrics {
@@ -667,8 +666,8 @@ mod token_probe {
             Font::default()
         }
 
-        fn draw_badge_small(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_badge_large(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_badge_small(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_badge_large(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
         fn list_metrics(&self) -> ListMetrics {
             ListMetrics {
@@ -688,14 +687,14 @@ mod token_probe {
 
         fn draw_list_row_background(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _bounds: Rect,
             _alternate: bool,
         ) {
         }
-        fn draw_list_move_control(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_list_delete_control(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_list_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_list_move_control(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_list_delete_control(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_list_separator(&self, _draw: &mut Recorder, _bounds: Rect) {}
 
         fn table_metrics(&self) -> TableMetrics {
             TableMetrics {
@@ -708,12 +707,12 @@ mod token_probe {
             }
         }
 
-        fn draw_table_background(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_table_header_background(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_table_cell_border(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_table_background(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_table_header_background(&self, _draw: &mut Recorder, _bounds: Rect) {}
+        fn draw_table_cell_border(&self, _draw: &mut Recorder, _bounds: Rect) {}
         fn draw_table_column_separator(
             &self,
-            _draw: &mut dyn DrawContext,
+            _draw: &mut Recorder,
             _from: Point,
             _to: Point,
         ) {
@@ -948,7 +947,7 @@ fn canvas_and_text_expose_accessibility_nodes_semantically() {
         .assert_exists();
 }
 
-/// A `SceneView` marked to merge exposes its accessibility node on the
+/// A `SceneView` exposes its accessibility node on the
 /// semantic pipeline: the role and label are view-tree metadata, the scene's
 /// pixels are the rendered pipeline's concern.
 #[test]
@@ -967,34 +966,21 @@ fn scene_view_exposes_accessibility_node_semantically() {
 struct TestSceneContent(Rc<Cell<bool>>);
 
 impl SceneContent for TestSceneContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+    fn record(&mut self, scene: &mut Scene<'_>) -> bool {
+        use cherenkov::Draw as _;
         self.0.set(true);
-        let rect = vello::kurbo::Rect::from_origin_size(
-            vello::kurbo::Point::new(8.0, 8.0),
-            vello::kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
-        )
-        .to_path(0.1);
-        let brush: vello::peniko::Brush = vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
-            &brush,
-            None,
-            &rect,
+        let rect = cherenkov::kurbo::Rect::from_origin_size(
+            cherenkov::kurbo::Point::new(8.0, 8.0),
+            cherenkov::kurbo::Size::new(
+                f64::from(scene.width().min(40.0)),
+                f64::from(scene.height().min(24.0)),
+            ),
         );
+        scene
+            .recorder()
+            .fill(rect, WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
         false
     }
-}
-
-#[test]
-fn scene_view_body_merges_to_native_when_marker_is_present() {
-    let env = waterui_core::Environment::new().extending(SceneViewMergeToParent);
-    let body = SceneView::new(TestSceneContent(Rc::new(Cell::new(false)))).body(&env);
-    let any = AnyView::new(body);
-    assert!(
-        any.is::<Native<SceneView>>(),
-        "expected SceneView body to resolve to Native<SceneView> when merge marker is present"
-    );
 }
 
 /// `spawn_local` work scheduled from `on_appear` drains on the semantic

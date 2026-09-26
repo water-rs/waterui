@@ -299,7 +299,6 @@ pub mod gated {
         max_mean_us = 8_000,
         max_rebuild_ratio = 0.5,
         max_scene_layers = 64,
-        max_gpu_surface_layers = 4,
         max_clip_layers = 8
     )]
     fn dashboard_budgets(perf: &mut PerfApp) {

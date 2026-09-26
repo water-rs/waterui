@@ -1387,15 +1387,14 @@ struct WateruiBenchArgs {
     view: Option<syn::Path>,
     theme: Option<Expr>,
     viewport: Option<(Expr, Expr)>,
-    budgets: [(&'static str, Option<Expr>); 6],
+    budgets: [(&'static str, Option<Expr>); 5],
 }
 
-const BENCH_BUDGET_ARGS: [&str; 6] = [
+const BENCH_BUDGET_ARGS: [&str; 5] = [
     "max_p95_us",
     "max_mean_us",
     "max_rebuild_ratio",
     "max_scene_layers",
-    "max_gpu_surface_layers",
     "max_clip_layers",
 ];
 
@@ -1432,7 +1431,7 @@ impl WateruiBenchArgs {
         }
         Err(syn::Error::new_spanned(
             name,
-            "`#[waterui::bench(...)]` accepts an optional view function path followed by `theme = <style>`, `viewport = (width, height)`, and the budgets `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`, `max_gpu_surface_layers`, `max_clip_layers`",
+            "`#[waterui::bench(...)]` accepts an optional view function path followed by `theme = <style>`, `viewport = (width, height)`, and the budgets `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`, `max_clip_layers`",
         ))
     }
 
@@ -1581,7 +1580,7 @@ fn validate_bench_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTy
 /// # Budgets
 ///
 /// `max_p95_us`, `max_mean_us`, `max_rebuild_ratio`, `max_scene_layers`,
-/// `max_gpu_surface_layers`, and `max_clip_layers` are all optional and apply
+/// and `max_clip_layers` are all optional and apply
 /// to every measurement the bench records. `water bench` can only tighten
 /// them further via its `--max-*` flags.
 #[proc_macro_attribute]

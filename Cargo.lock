@@ -3474,12 +3474,14 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f"
 dependencies = [
  "accesskit",
  "async-task",
  "cfg_aliases",
+ "cherenkov",
+ "cherenkov-gpu",
  "executor-core",
+ "icu_properties",
  "js-sys",
  "keyboard-types",
  "lru 0.18.5",
@@ -3492,11 +3494,9 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
- "shaderloom",
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
- "vello",
  "waterkit-clipboard",
  "waterui",
  "waterui-assets",
@@ -3519,12 +3519,11 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=29c821ad297d61ad8f7e42c474652eef92c56768#29c821ad297d61ad8f7e42c474652eef92c56768"
 dependencies = [
+ "cherenkov",
  "hydrolysis",
  "material-color-utils",
  "num-traits",
- "vello",
  "waterui",
  "waterui-backend-core",
  "waterui-controls",
@@ -5322,7 +5321,6 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.11.1"
-source = "git+https://github.com/water-rs/nami?rev=6908aac816de14ee5aff23bfffd7d2b109d08fea#6908aac816de14ee5aff23bfffd7d2b109d08fea"
 dependencies = [
  "async-channel",
  "async-io",
@@ -5339,7 +5337,6 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.3.3"
-source = "git+https://github.com/water-rs/nami?rev=6908aac816de14ee5aff23bfffd7d2b109d08fea#6908aac816de14ee5aff23bfffd7d2b109d08fea"
 dependencies = [
  "kurbo",
 ]
@@ -5347,7 +5344,6 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/nami?rev=6908aac816de14ee5aff23bfffd7d2b109d08fea#6908aac816de14ee5aff23bfffd7d2b109d08fea"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -9866,13 +9862,11 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=e56945bd4c71a7d3cf8f9c9a040624ec07851418#e56945bd4c71a7d3cf8f9c9a040624ec07851418"
 dependencies = [
+ "cherenkov",
  "image",
- "kurbo",
  "nami",
  "parley",
- "peniko",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -10517,6 +10511,7 @@ dependencies = [
  "accesskit",
  "async-io",
  "bitflags 2.13.2",
+ "cherenkov",
  "executor-core",
  "hydrolysis",
  "hydrolysis-m3",
@@ -10529,7 +10524,6 @@ dependencies = [
  "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",
- "wgpu",
 ]
 
 [[package]]

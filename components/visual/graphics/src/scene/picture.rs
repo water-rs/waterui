@@ -217,7 +217,7 @@ impl SceneContent for RecordedScene {
 mod tests {
     use super::*;
     use cherenkov::{Draw, WorkingColor};
-    use kurbo::Rect;
+    use cherenkov::kurbo::Rect;
     use nami::{SignalExt, binding, constant};
     use waterui_core::AnyView;
     use waterui_core::layout::StretchAxis;

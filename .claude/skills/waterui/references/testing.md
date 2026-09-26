@@ -270,7 +270,7 @@ The closure runs **before every frame**: queue input (`run.pointer_move/down/up`
 
 Budgets are attribute arguments and apply to every measurement in the bench:
 `max_p95_us`, `max_mean_us`, `max_rebuild_ratio` (0.0–1.0), `max_scene_layers`,
-`max_gpu_surface_layers`, `max_clip_layers`.
+`max_clip_layers`.
 
 `max_rebuild_ratio` is the most useful one for catching regressions of the kind this
 framework cares about — it fails the bench when interaction starts causing structural

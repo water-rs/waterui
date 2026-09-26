@@ -333,7 +333,6 @@ mod bench {
         viewport = (390, 844),
         max_rebuild_ratio = 0.05,
         max_scene_layers = 4,
-        max_gpu_surface_layers = 2,
         max_clip_layers = 160,
     )]
     fn stress_steady_redraw(perf: &mut PerfApp) {

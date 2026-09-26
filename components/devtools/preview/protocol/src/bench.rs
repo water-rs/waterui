@@ -29,9 +29,7 @@ pub const BENCH_MAX_MEAN_US_ENV: &str = "WATERUI_BENCH_MAX_MEAN_US";
 pub const BENCH_MAX_REBUILD_RATIO_ENV: &str = "WATERUI_BENCH_MAX_REBUILD_RATIO";
 /// Environment variable capping every bench's compositor scene-layer budget.
 pub const BENCH_MAX_SCENE_LAYERS_ENV: &str = "WATERUI_BENCH_MAX_SCENE_LAYERS";
-/// Environment variable capping every bench's embedded GPU-surface-layer budget.
-pub const BENCH_MAX_GPU_SURFACE_LAYERS_ENV: &str = "WATERUI_BENCH_MAX_GPU_SURFACE_LAYERS";
-/// Environment variable capping every bench's Vello clip-layer budget.
+/// Environment variable capping every bench's clip-layer budget.
 pub const BENCH_MAX_CLIP_LAYERS_ENV: &str = "WATERUI_BENCH_MAX_CLIP_LAYERS";
 
 /// File name of one bench's report inside the report directory.
@@ -78,9 +76,7 @@ pub struct BenchBudgets {
     pub max_rebuild_ratio: Option<f64>,
     /// Maximum allowed compositor scene layers submitted by one frame.
     pub max_scene_layers: Option<u64>,
-    /// Maximum allowed embedded GPU surface layers submitted by one frame.
-    pub max_gpu_surface_layers: Option<u64>,
-    /// Maximum allowed Vello clip layers pushed by one frame.
+    /// Maximum allowed clip layers pushed by one frame.
     pub max_clip_layers: Option<u64>,
 }
 
@@ -123,20 +119,10 @@ pub struct PerfMeasurement {
     pub measurement_cache_misses: u64,
     /// Compositor scene layers submitted.
     pub scene_layers: u64,
-    /// Vello scene layers submitted.
-    pub vello_scene_layers: u64,
-    /// GPU surface layers submitted.
-    pub gpu_surface_layers: u64,
     /// Clip layers pushed.
     pub clip_layers: u64,
     /// Maximum clip depth reached.
     pub max_clip_depth: u64,
-    /// Applied filter count.
-    pub applied_filter_count: u64,
-    /// Applied filter capture time in microseconds.
-    pub applied_filter_capture_us: u64,
-    /// Applied filter effect time in microseconds.
-    pub applied_filter_effect_us: u64,
     /// Frame phase aggregates.
     pub phases: PerfPhases,
     /// Per-frame samples.
@@ -219,18 +205,8 @@ pub struct PerfFrame {
     pub measurement_cache_misses: u64,
     /// Compositor scene layers this frame.
     pub scene_layers: u64,
-    /// Vello scene layers this frame.
-    pub vello_scene_layers: u64,
-    /// GPU surface layers this frame.
-    pub gpu_surface_layers: u64,
     /// Clip layers pushed this frame.
     pub clip_layers: u64,
     /// Maximum clip depth this frame.
     pub max_clip_depth: u64,
-    /// Applied filter count this frame.
-    pub applied_filter_count: u64,
-    /// Applied filter capture time this frame in microseconds.
-    pub applied_filter_capture_us: u64,
-    /// Applied filter effect time this frame in microseconds.
-    pub applied_filter_effect_us: u64,
 }

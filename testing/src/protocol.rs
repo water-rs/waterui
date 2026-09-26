@@ -38,13 +38,8 @@ pub fn perf_report_to_protocol(report: &PerfReport) -> Vec<PerfMeasurement> {
                 measurement_cache_hits: stats.measurement_cache_hits,
                 measurement_cache_misses: stats.measurement_cache_misses,
                 scene_layers: stats.scene_layers,
-                vello_scene_layers: stats.vello_scene_layers,
-                gpu_surface_layers: stats.gpu_surface_layers,
                 clip_layers: stats.clip_layers,
                 max_clip_depth: stats.max_clip_depth,
-                applied_filter_count: stats.applied_filter_count,
-                applied_filter_capture_us: stats.applied_filter_capture_us,
-                applied_filter_effect_us: stats.applied_filter_effect_us,
                 phases: PerfPhases {
                     rebuild_mean_us: micros(stats.phases.rebuild.mean),
                     rebuild_p95_us: micros(stats.phases.rebuild.p95),
@@ -94,15 +89,8 @@ pub fn perf_report_to_protocol(report: &PerfReport) -> Vec<PerfMeasurement> {
                             frame.profile.counters.measurement_cache_misses,
                         ),
                         scene_layers: u64::from(frame.profile.counters.scene_layers),
-                        vello_scene_layers: u64::from(frame.profile.counters.vello_scene_layers),
-                        gpu_surface_layers: u64::from(frame.profile.counters.gpu_surface_layers),
                         clip_layers: u64::from(frame.profile.counters.clip_layers),
                         max_clip_depth: u64::from(frame.profile.counters.max_clip_depth),
-                        applied_filter_count: u64::from(
-                            frame.profile.counters.applied_filter_count,
-                        ),
-                        applied_filter_capture_us: frame.profile.counters.applied_filter_capture_us,
-                        applied_filter_effect_us: frame.profile.counters.applied_filter_effect_us,
                     })
                     .collect(),
             }

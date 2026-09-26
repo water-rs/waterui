@@ -19,8 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use waterui_preview_protocol::bench::{
-    BENCH_MAX_CLIP_LAYERS_ENV, BENCH_MAX_GPU_SURFACE_LAYERS_ENV, BENCH_MAX_MEAN_US_ENV,
-    BENCH_MAX_P95_US_ENV, BENCH_MAX_REBUILD_RATIO_ENV, BENCH_MAX_SCENE_LAYERS_ENV,
+    BENCH_MAX_CLIP_LAYERS_ENV, BENCH_MAX_MEAN_US_ENV, BENCH_MAX_P95_US_ENV, BENCH_MAX_REBUILD_RATIO_ENV, BENCH_MAX_SCENE_LAYERS_ENV,
     BENCH_REPETITIONS_ENV, BENCH_REPORT_DIR_ENV, BENCH_SAMPLES_ENV, BENCH_WARMUPS_ENV,
     bench_report_file_name,
 };
@@ -98,7 +97,6 @@ fn budget_caps_from_env() -> BenchBudgets {
         max_mean_us: env_parsed::<u64>(BENCH_MAX_MEAN_US_ENV),
         max_rebuild_ratio: env_parsed::<f64>(BENCH_MAX_REBUILD_RATIO_ENV),
         max_scene_layers: env_parsed::<u64>(BENCH_MAX_SCENE_LAYERS_ENV),
-        max_gpu_surface_layers: env_parsed::<u64>(BENCH_MAX_GPU_SURFACE_LAYERS_ENV),
         max_clip_layers: env_parsed::<u64>(BENCH_MAX_CLIP_LAYERS_ENV),
     }
 }
@@ -116,10 +114,6 @@ fn merge_budgets(attribute: BenchBudgets, caps: BenchBudgets) -> BenchBudgets {
         max_mean_us: tighter(attribute.max_mean_us, caps.max_mean_us),
         max_rebuild_ratio: tighter(attribute.max_rebuild_ratio, caps.max_rebuild_ratio),
         max_scene_layers: tighter(attribute.max_scene_layers, caps.max_scene_layers),
-        max_gpu_surface_layers: tighter(
-            attribute.max_gpu_surface_layers,
-            caps.max_gpu_surface_layers,
-        ),
         max_clip_layers: tighter(attribute.max_clip_layers, caps.max_clip_layers),
     }
 }
@@ -158,15 +152,6 @@ fn enforce_budgets(crate_name: &str, bench_name: &str, budgets: BenchBudgets, re
             violation(
                 "scene layers",
                 stats.scene_layers.to_string(),
-                limit.to_string(),
-            );
-        }
-        if let Some(limit) = budgets.max_gpu_surface_layers
-            && stats.gpu_surface_layers > limit
-        {
-            violation(
-                "GPU surface layers",
-                stats.gpu_surface_layers.to_string(),
                 limit.to_string(),
             );
         }
