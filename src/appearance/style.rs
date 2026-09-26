@@ -7,7 +7,6 @@
 //! use waterui::shape::FixedRoundedRectangle;
 //! use waterui::style;
 //! use waterui_graphics::color::Color;
-use waterui_shape::{ClipShape, Rectangle, Shape};
 //!
 //! fn shadow_example() {
 //!     let shadow = style::Shadow::new(
@@ -22,6 +21,7 @@ use waterui_shape::{ClipShape, Rectangle, Shape};
 use nami::{Computed, SignalExt};
 use waterui_core::{IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
 use waterui_graphics::color::Color;
+use waterui_shape::{ClipShape, Rectangle, Shape};
 
 /// Theme tokens for a view promoted with [`ViewExt::floating`](crate::ViewExt::floating).
 ///
@@ -150,7 +150,12 @@ impl Shadow {
 impl Default for Shadow {
     /// A moderate black shadow slightly below a rectangular caster.
     fn default() -> Self {
-        Self::new(Color::srgb(0, 0, 0), Vector { x: 0.0, y: 2.0 }, 4.0, Rectangle)
+        Self::new(
+            Color::srgb(0, 0, 0),
+            Vector { x: 0.0, y: 2.0 },
+            4.0,
+            Rectangle,
+        )
     }
 }
 
