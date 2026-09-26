@@ -48,7 +48,7 @@ pub struct WuiSpacer {
     pub min_length: f32,
 }
 
-ffi_view!(Spacer, WuiSpacer, spacer);
+ffi_view!(Spacer, WuiSpacer, spacer, all(), any());
 
 impl IntoFFI for Spacer {
     type FFI = WuiSpacer;
