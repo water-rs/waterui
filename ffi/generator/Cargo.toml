@@ -19,7 +19,9 @@ name = "generate_header"
 path = "generate_header.rs"
 
 [dependencies]
-cbindgen = "0.29.4"
+# Library-only use (`cbindgen::{Builder, Config}`): the default `clap` feature
+# exists solely for cbindgen's own binary target and is skipped here.
+cbindgen = { version = "0.29.4", default-features = false }
 
 [lints]
 workspace = true
