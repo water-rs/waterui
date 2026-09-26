@@ -60,7 +60,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
 apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "b8477febe8f7d8025ee5a5e0dbcfe229d57c49b8"
+android-backend-revision = "986bc4ed98aa68573f50a08cfb869c1d54a66284"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.
