@@ -197,7 +197,7 @@ mod token_probe {
     use std::time::Duration;
 
     use vello::kurbo::{BezPath, Point, Rect};
-    use waterui::animation::Animation;
+    use waterui::animation::{Animation, Curve};
     use waterui::color::{ResolvedColor, Srgb};
     use waterui::component::button::{ButtonSize, ButtonStyle};
     use waterui::component::text;
@@ -261,13 +261,19 @@ mod token_probe {
                 focus_opacity: 0.12,
                 pressed_opacity: 0.12,
                 dragged_opacity: 0.16,
-                hover_enter: Animation::linear(Duration::from_millis(15)),
-                hover_exit: Animation::linear(Duration::from_millis(15)),
-                focus_enter: Animation::linear(Duration::from_millis(15)),
-                focus_exit: Animation::linear(Duration::from_millis(15)),
-                press_fade_in: Animation::linear(Duration::from_millis(105)),
-                press_fade_out: Animation::linear(Duration::from_millis(375)),
-                press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+                hover_enter: Animation::Curve(Curve::linear(Duration::from_millis(15))),
+                hover_exit: Animation::Curve(Curve::linear(Duration::from_millis(15))),
+                focus_enter: Animation::Curve(Curve::linear(Duration::from_millis(15))),
+                focus_exit: Animation::Curve(Curve::linear(Duration::from_millis(15))),
+                press_fade_in: Animation::Curve(Curve::linear(Duration::from_millis(105))),
+                press_fade_out: Animation::Curve(Curve::linear(Duration::from_millis(375))),
+                press_grow: Animation::Curve(Curve::bezier(
+                    Duration::from_millis(450),
+                    0.2,
+                    0.0,
+                    0.0,
+                    1.0,
+                )),
                 minimum_press_duration: Duration::from_millis(225),
                 touch_delay: Duration::from_millis(150),
             }
@@ -275,20 +281,20 @@ mod token_probe {
 
         fn progress_motion(&self) -> ProgressMotion {
             ProgressMotion {
-                linear_determinate: Animation::bezier(
+                linear_determinate: Animation::Curve(Curve::bezier(
                     Duration::from_millis(250),
                     0.4,
                     0.0,
                     0.6,
                     1.0,
-                ),
-                circular_determinate: Animation::bezier(
+                )),
+                circular_determinate: Animation::Curve(Curve::bezier(
                     Duration::from_millis(500),
                     0.0,
                     0.0,
                     0.2,
                     1.0,
-                ),
+                )),
                 linear_indeterminate_cycle: Duration::from_secs(2),
                 loading_cycle: Duration::from_millis(4_666),
                 circular_indeterminate_cycle: Duration::from_millis(5_332),
@@ -340,7 +346,7 @@ mod token_probe {
         }
 
         fn toggle_value_animation(&self) -> Animation {
-            Animation::linear(Duration::from_millis(100))
+            Animation::Curve(Curve::linear(Duration::from_millis(100)))
         }
 
         fn draw_toggle_switch(
@@ -451,9 +457,9 @@ mod token_probe {
 
         fn radio_selection_motion(&self) -> RadioSelectionMotion {
             RadioSelectionMotion {
-                inner_grow: Animation::linear(Duration::from_millis(1)),
-                inner_opacity: Animation::linear(Duration::from_millis(1)),
-                outer_color: Animation::linear(Duration::from_millis(1)),
+                inner_grow: Animation::Curve(Curve::linear(Duration::from_millis(1))),
+                inner_opacity: Animation::Curve(Curve::linear(Duration::from_millis(1))),
+                outer_color: Animation::Curve(Curve::linear(Duration::from_millis(1))),
             }
         }
 

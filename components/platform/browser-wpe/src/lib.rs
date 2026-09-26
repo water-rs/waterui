@@ -12,7 +12,7 @@
 //! importing a dma-buf into a `wgpu` texture is a general problem, so it lives
 //! in a crate that knows nothing about WPE or `WaterUI`. What is WPE's is the
 //! buffer lease ([`WpeFrameLease`]) and the compositing view built on top
-//! ([`DmaBufGpuView`]).
+//! ([`DmaBufContent`] fed by a [`DmaBufFeed`]).
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 mod abi;
@@ -33,12 +33,12 @@ mod webview;
 
 #[cfg(all(feature = "webview", target_os = "linux"))]
 pub use frame::WpeFrameLease;
-#[cfg(target_os = "linux")]
-pub use gpu::{DmaBufFrameSource, DmaBufGpuView};
 #[cfg(all(target_os = "linux", feature = "webview"))]
-pub use gpu::{WpeGpuView, gpu_view_with_input};
+pub use gpu::gpu_view_with_input;
+#[cfg(target_os = "linux")]
+pub use gpu::{DmaBufContent, DmaBufFeed, DmaBufFrameSource, dma_buf_presenter};
 #[cfg(all(feature = "webview", target_os = "linux"))]
-pub use input::{WpeInputGpuView, WpeSurfaceInput};
+pub use input::WpeSurfaceInput;
 #[cfg(all(feature = "webview", target_os = "linux"))]
 pub use install::install;
 #[cfg(all(feature = "webview", target_os = "linux"))]

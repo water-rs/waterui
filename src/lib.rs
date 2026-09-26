@@ -140,16 +140,6 @@ pub use waterui_canvas as canvas;
 pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
-#[cfg(feature = "gpu")]
-pub use waterui_graphics::image_analysis;
-#[cfg(feature = "gpu")]
-pub use waterui_graphics::image_generator;
-#[cfg(feature = "gpu")]
-pub use waterui_graphics::{
-    CheckerboardGenerator, DominantColor, DotGridGenerator, GeneratedImage, Histogram,
-    ImageAnalysis, ImageGenerator, LinearGradientGenerator, MinMaxLuma, NoiseGenerator,
-    RadialGradientGenerator, StripeGenerator,
-};
 pub use waterui_icon as icon;
 #[cfg(feature = "particle")]
 pub use waterui_particle as particle;
@@ -201,7 +191,6 @@ pub use waterui_url::Url;
 #[doc(inline)]
 pub use waterui_core::{
     AnyView, Error, Str, animation,
-    easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
     extract::{self, Extractor, State, Use},

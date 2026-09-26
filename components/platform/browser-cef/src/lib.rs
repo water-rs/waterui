@@ -29,7 +29,7 @@ pub use application_mac::initialize_macos_application;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 pub use cdp::CefCdpSession;
 #[cfg(any(feature = "chromium", feature = "webview"))]
-pub use gpu::{gpu_view, gpu_view_with_input};
+pub use gpu::{CefContent, CefFeed, cef_presenter, gpu_view, gpu_view_with_input};
 #[cfg(any(feature = "chromium", feature = "webview"))]
 pub use input::CefSurfaceInput;
 #[cfg(feature = "webview")]

@@ -30,7 +30,7 @@ use waterui_layout::{
 
 use crate::IntoFFI;
 use crate::components::layout::{WuiLayout, WuiStretchAxis};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::WorkingColor;
 use waterui_text::font::{FontWeight, ResolvedFont};
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
@@ -974,7 +974,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeInstallColor<'lo
         crate::theme::waterui_theme_install_color(
             env_ptr as *mut crate::WuiEnv,
             slot,
-            signal_ptr as *mut crate::reactive::WuiComputed<waterui_graphics::color::ResolvedColor>,
+            signal_ptr as *mut crate::reactive::WuiComputed<WorkingColor>,
         );
     }
 }
@@ -1087,12 +1087,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurat
 
     let (tag, duration_ms): (u32, u32) = match animation {
         crate::animation::WuiAnimation::None => (0, 0),
-        crate::animation::WuiAnimation::Bezier { duration_ms, .. } => (
+        crate::animation::WuiAnimation::Curve { duration_ms, .. } => (
             1,
             u32::try_from(duration_ms)
                 .expect("Android animation duration exceeds packed JNI range"),
         ),
         crate::animation::WuiAnimation::Spring { .. } => (2, 0),
+        crate::animation::WuiAnimation::Decay { .. } => (3, 0),
     };
 
     ((u64::from(duration_ms) << 32) | u64::from(tag)).cast_signed()
@@ -1113,8 +1114,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12P
     };
 
     let (p1, p2): (f32, f32) = match animation {
-        crate::animation::WuiAnimation::Bezier { x1, y1, .. } => (x1, y1),
-        crate::animation::WuiAnimation::Spring { stiffness, damping } => (stiffness, damping),
+        crate::animation::WuiAnimation::Curve { x1, y1, .. } => (x1, y1),
+        crate::animation::WuiAnimation::Spring { response, damping } => (response, damping),
+        crate::animation::WuiAnimation::Decay {
+            velocity_x,
+            velocity_y,
+            ..
+        } => (velocity_x, velocity_y),
         crate::animation::WuiAnimation::None => (0.0, 0.0),
     };
 
@@ -1136,7 +1142,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34P
     };
 
     let (p3, p4): (f32, f32) = match animation {
-        crate::animation::WuiAnimation::Bezier { x2, y2, .. } => (x2, y2),
+        crate::animation::WuiAnimation::Curve { x2, y2, .. } => (x2, y2),
+        crate::animation::WuiAnimation::Decay { deceleration, .. } => (deceleration, 0.0),
         crate::animation::WuiAnimation::Spring { .. } | crate::animation::WuiAnimation::None => {
             (0.0, 0.0)
         }
@@ -1489,7 +1496,7 @@ struct ReactiveColorSchemeState {
 }
 
 struct ReactiveColorState {
-    binding: waterui::Binding<ResolvedColor>,
+    binding: waterui::Binding<WorkingColor>,
 }
 
 struct ReactiveFontState {
@@ -1517,14 +1524,12 @@ fn color_scheme_from_ordinal(ordinal: jint) -> waterui::theme::ColorScheme {
     }
 }
 
-fn resolved_color_from_argb(argb: jint) -> ResolvedColor {
+fn working_color_from_argb(argb: jint) -> WorkingColor {
     let argb = argb.cast_unsigned();
     let [a, r, g, b] = argb.to_be_bytes();
 
-    let srgb = waterui_graphics::color::Srgb::new_u8(r, g, b);
-    let mut resolved = ResolvedColor::from_srgb(srgb);
-    resolved.opacity = f32::from(a) / 255.0;
-    resolved
+    WorkingColor::from(waterui_graphics::color::Srgb::new_u8(r, g, b))
+        .with_alpha(f32::from(a) / 255.0)
 }
 
 fn font_weight_from_ordinal(weight: jint) -> FontWeight {
@@ -1615,7 +1620,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_createReactiveColorSt
     argb: jint,
 ) -> jlong {
     let state = ReactiveColorState {
-        binding: waterui::reactive::binding(resolved_color_from_argb(argb)),
+        binding: waterui::reactive::binding(working_color_from_argb(argb)),
     };
     Box::into_raw(Box::new(state)) as jlong
 }
@@ -1643,7 +1648,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_reactiveColorStateSet
     // SAFETY: Kotlin passes back the handle `createReactive*State` returned for this
     // state type, which the runtime drops only through `dropReactive*State`.
     let state = unsafe { reactive_state::<ReactiveColorState>(state_ptr) };
-    state.binding.set(resolved_color_from_argb(argb));
+    state.binding.set(working_color_from_argb(argb));
 }
 
 #[unsafe(no_mangle)]
@@ -1812,7 +1817,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_androidVideoSurfaceHo
 }
 
 // ============================================================================
-// GpuSurface Functions
+// Picture and GpuContent Functions
 // ============================================================================
 
 /// `WatcherJni.pictureBitmap(picturePtr, scale)`: the picture rasterised at
@@ -1844,22 +1849,22 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropPicture<'local>(
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
-struct JniGpuSurfaceState {
-    state: *mut crate::components::gpu_surface::WuiGpuSurfaceState,
+struct JniGpuContentState {
+    state: *mut crate::components::gpu_content::WuiGpuContentState,
     window: Option<AndroidNativeWindow>,
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
-struct AndroidGpuSurfaceRedrawTarget {
+struct AndroidGpuContentRedrawTarget {
     jvm: jni::JavaVM,
     owner: Global<JObject<'static>>,
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
-unsafe extern "C" fn wake_android_gpu_surface(context: *mut c_void) {
-    // SAFETY: `context` is the target `gpuSurfaceCreate` registered with this entry
+unsafe extern "C" fn wake_android_gpu_content(context: *mut c_void) {
+    // SAFETY: `context` is the target `gpuContentCreate` registered with this entry
     // point, live until the paired drop entry point reclaims it.
-    let target = unsafe { &*context.cast::<AndroidGpuSurfaceRedrawTarget>() };
+    let target = unsafe { &*context.cast::<AndroidGpuContentRedrawTarget>() };
     super::with_attached_env(&target.jvm, |env| {
         env.call_method(
             &target.owner,
@@ -1867,67 +1872,63 @@ unsafe extern "C" fn wake_android_gpu_surface(context: *mut c_void) {
             jni_sig!("()V"),
             &[],
         )
-        .expect("GpuSurface redraw callback failed to call requestNativeRedraw");
+        .expect("GpuContent redraw callback failed to call requestNativeRedraw");
     })
-    .expect("GpuSurface redraw callback failed to attach to JVM");
+    .expect("GpuContent redraw callback failed to attach to JVM");
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
-unsafe extern "C" fn drop_android_gpu_surface_redraw_target(context: *mut c_void) {
-    // SAFETY: `context` is the boxed target `gpuSurfaceCreate` registered with this
+unsafe extern "C" fn drop_android_gpu_content_redraw_target(context: *mut c_void) {
+    // SAFETY: `context` is the boxed target `gpuContentCreate` registered with this
     // drop entry point, which the surface invokes once.
     unsafe {
         drop(Box::from_raw(
-            context.cast::<AndroidGpuSurfaceRedrawTarget>(),
+            context.cast::<AndroidGpuContentRedrawTarget>(),
         ));
     }
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentCreate<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     owner: JObject<'local>,
-    renderer_ptr: jlong,
-    has_picture_in_picture_host_id: jboolean,
-    picture_in_picture_host_id: jlong,
+    descriptor_ptr: jlong,
     wui_env_ptr: jlong,
 ) -> jlong {
     super::with_env(&mut env, |env| {
-        let mut wui_surface = crate::components::gpu_surface::WuiGpuSurface {
-            surface: renderer_ptr as *mut c_void,
-            has_picture_in_picture_host_id,
-            picture_in_picture_host_id: picture_in_picture_host_id.cast_unsigned(),
-        };
-        // SAFETY: `wui_surface` carries the renderer handle Kotlin took from the
-        // surface struct, and `wui_env_ptr` is the live app environment.
+        // SAFETY: Kotlin passes back the boxed descriptor `GpuContentStruct` carried,
+        // still owning its view, and consumes it here exactly once; `wui_env_ptr` is
+        // the live app environment.
         let state = unsafe {
-            crate::components::gpu_surface::waterui_gpu_surface_create(
-                &raw mut wui_surface,
+            let mut descriptor =
+                Box::from_raw(descriptor_ptr as *mut crate::components::gpu_content::WuiGpuContent);
+            crate::components::gpu_content::waterui_gpu_content_create(
+                &raw mut *descriptor,
                 wui_env_ptr as *const crate::WuiEnv,
             )
         };
-        let redraw_target = Box::new(AndroidGpuSurfaceRedrawTarget {
+        let redraw_target = Box::new(AndroidGpuContentRedrawTarget {
             jvm: env
                 .get_java_vm()
-                .expect("WatcherJni.gpuSurfaceCreate failed to access JavaVM"),
+                .expect("WatcherJni.gpuContentCreate failed to access JavaVM"),
             owner: env
                 .new_global_ref(owner)
-                .expect("WatcherJni.gpuSurfaceCreate failed to retain owner view"),
+                .expect("WatcherJni.gpuContentCreate failed to retain owner view"),
         });
         let redraw_context = Box::into_raw(redraw_target).cast::<c_void>();
         // SAFETY: `state` was just created above, and `redraw_context` is the payload
         // the two entry points above expect, whose ownership moves to the surface.
         unsafe {
-            crate::components::gpu_surface::waterui_gpu_surface_set_redraw_callback(
+            crate::components::gpu_content::waterui_gpu_content_set_redraw_callback(
                 state,
                 redraw_context,
-                wake_android_gpu_surface,
-                drop_android_gpu_surface_redraw_target,
+                wake_android_gpu_content,
+                drop_android_gpu_content_redraw_target,
             );
         }
-        let wrapper = Box::new(JniGpuSurfaceState {
+        let wrapper = Box::new(JniGpuContentState {
             state,
             window: None,
         });
@@ -1937,60 +1938,21 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceCreate<'loc
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceMeasure<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    width: jfloat,
-    height: jfloat,
-) -> jobject {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live
-        // until `gpuSurfaceDrop`.
-        let wrapper = unsafe { &*(state_ptr as *const JniGpuSurfaceState) };
-        let proposal = ProposalSize {
-            width: width.is_finite().then_some(width),
-            height: height.is_finite().then_some(height),
-        };
-        // SAFETY: `wrapper.state` is the surface state created alongside it, still
-        // live.
-        let dimensions =
-            unsafe { crate::components::gpu_surface::measure_state(&*wrapper.state, proposal) };
-        view_dimensions_to_java(env, &dimensions).into_raw()
-    })
-}
-
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfacePriority<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jint {
-    // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live until
-    // `gpuSurfaceDrop`.
-    let wrapper = unsafe { &*(state_ptr as *const JniGpuSurfaceState) };
-    // SAFETY: `wrapper.state` is the surface state created alongside it, still live.
-    unsafe { crate::components::gpu_surface::priority_state(&*wrapper.state) }
-}
-
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceIsReady<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentIsReady<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jboolean {
-    // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live until
-    // `gpuSurfaceDrop`.
-    let wrapper = unsafe { &*(state_ptr as *const JniGpuSurfaceState) };
+    // SAFETY: Kotlin passes back the handle `gpuContentCreate` returned, live until
+    // `gpuContentDrop`.
+    let wrapper = unsafe { &*(state_ptr as *const JniGpuContentState) };
     // SAFETY: `wrapper.state` is the surface state created alongside it, still live.
-    unsafe { crate::components::gpu_surface::waterui_gpu_surface_is_ready(wrapper.state) }
+    unsafe { crate::components::gpu_content::waterui_gpu_content_is_ready(wrapper.state) }
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentAttach<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -2000,25 +1962,25 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'loc
     prefers_hdr: jboolean,
 ) {
     super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live until
-        // `gpuSurfaceDrop`; the Android view calls these entry points one at a time from
+        // SAFETY: Kotlin passes back the handle `gpuContentCreate` returned, live until
+        // `gpuContentDrop`; the Android view calls these entry points one at a time from
         // its own thread, so this exclusive borrow is the only live reference.
-        let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
+        let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuContentState) };
         assert!(
             wrapper.window.is_none(),
-            "WatcherJni.gpuSurfaceAttach called while a native surface is already attached"
+            "WatcherJni.gpuContentAttach called while a native surface is already attached"
         );
         let window = require_native_window(
             // SAFETY: `env` is this JNI call's own environment and `surface` its local
             // reference, both valid for the call.
             unsafe { AndroidNativeWindow::from_surface(env.get_raw(), surface.as_raw()) },
-            "gpuSurfaceAttach",
+            "gpuContentAttach",
         );
         // SAFETY: `wrapper.state` is the surface state created alongside it, and the
         // `ANativeWindow` stays alive because `wrapper.window` takes it below, before
         // any detach.
         unsafe {
-            crate::components::gpu_surface::waterui_gpu_surface_attach(
+            crate::components::gpu_content::waterui_gpu_content_attach(
                 wrapper.state,
                 window.as_void_ptr(),
                 width.cast_unsigned(),
@@ -2032,29 +1994,29 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAttach<'loc
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDetach<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentDetach<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {
-    // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live until
-    // `gpuSurfaceDrop`; the Android view calls these entry points one at a time from
+    // SAFETY: Kotlin passes back the handle `gpuContentCreate` returned, live until
+    // `gpuContentDrop`; the Android view calls these entry points one at a time from
     // its own thread, so this exclusive borrow is the only live reference.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuContentState) };
     assert!(
         wrapper.window.is_some(),
-        "WatcherJni.gpuSurfaceDetach called without an attached native surface"
+        "WatcherJni.gpuContentDetach called without an attached native surface"
     );
     // SAFETY: `wrapper.state` is the surface state created alongside it, still live.
     unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_detach(wrapper.state);
+        crate::components::gpu_content::waterui_gpu_content_detach(wrapper.state);
     }
     drop(wrapper.window.take());
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentRender<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -2062,13 +2024,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'loc
     height: jint,
     scale: jfloat,
 ) -> jboolean {
-    // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live until
-    // `gpuSurfaceDrop`; the Android view calls these entry points one at a time from
+    // SAFETY: Kotlin passes back the handle `gpuContentCreate` returned, live until
+    // `gpuContentDrop`; the Android view calls these entry points one at a time from
     // its own thread, so this exclusive borrow is the only live reference.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
+    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuContentState) };
     // SAFETY: `wrapper.state` is the surface state created alongside it, still live.
     unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_render(
+        crate::components::gpu_content::waterui_gpu_content_render(
             wrapper.state,
             width.cast_unsigned(),
             height.cast_unsigned(),
@@ -2077,60 +2039,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceRender<'loc
     }
 }
 
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    has_position: jboolean,
-    x: jfloat,
-    y: jfloat,
-    has_hit: jboolean,
-    hit_x: jfloat,
-    hit_y: jfloat,
-    gesture_active: jboolean,
-    pinch_scale: jfloat,
-    has_pinch_center: jboolean,
-    pinch_center_x: jfloat,
-    pinch_center_y: jfloat,
-    pan_offset_x: jfloat,
-    pan_offset_y: jfloat,
-    double_tap: jboolean,
-) {
-    // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, live until
-    // `gpuSurfaceDrop`; the Android view calls these entry points one at a time from
-    // its own thread, so this exclusive borrow is the only live reference.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniGpuSurfaceState) };
-
-    let input = crate::components::gpu_surface::WuiGpuSurfaceInput {
-        pointer: crate::components::gpu_surface::WuiPointerState {
-            has_position,
-            x,
-            y,
-            has_hit,
-            hit_x,
-            hit_y,
-        },
-        gesture: crate::components::gpu_surface::WuiGestureState {
-            active: gesture_active,
-            pinch_scale,
-            has_pinch_center,
-            pinch_center_x,
-            pinch_center_y,
-            pan_offset_x,
-            pan_offset_y,
-            double_tap,
-        },
-    };
-
-    // SAFETY: `wrapper.state` is the surface state created alongside it, still live.
-    unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_set_input(wrapper.state, input);
-    }
-}
-
-/// Forwards one key, IME, scroll or focus event to an input-taking GPU view.
+/// Forwards one pointer, key, IME, scroll or focus event to an input-taking GPU view.
 ///
 /// The arguments are the flat `WuiSurfaceInputEvent` carrier spelled out as a
 /// JNI signature: the C ABI has no envelope worth allocating per keystroke, and
@@ -2138,7 +2047,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSetInput<'l
 /// same W3C key/code parsing — as every other backend.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSendInputEvent<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentSendInputEvent<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -2159,19 +2068,19 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSendInputEv
     is_repeat: jboolean,
     caret: jlong,
 ) -> jboolean {
-    use crate::components::gpu_surface_input::{WuiScrollUnit, WuiSurfaceInputEvent};
+    use crate::components::gpu_content_input::{WuiScrollUnit, WuiSurfaceInputEvent};
 
     super::with_env(&mut env, |env| {
-        let state_ptr = state_ptr as *mut JniGpuSurfaceState;
-        // SAFETY: Kotlin passes back the handle `gpuSurfaceCreate` returned, which
-        // stays alive until `gpuSurfaceDrop`, and the JNI call is single-threaded
+        let state_ptr = state_ptr as *mut JniGpuContentState;
+        // SAFETY: Kotlin passes back the handle `gpuContentCreate` returned, which
+        // stays alive until `gpuContentDrop`, and the JNI call is single-threaded
         // on the UI thread that owns it.
         let wrapper = unsafe { &mut *state_ptr };
         let event = WuiSurfaceInputEvent {
             kind: surface_input_event_kind(kind),
             focused,
             modifiers: u32::try_from(modifiers)
-                .expect("WatcherJni.gpuSurfaceSendInputEvent: modifier bits must be non-negative"),
+                .expect("WatcherJni.gpuContentSendInputEvent: modifier bits must be non-negative"),
             x,
             y,
             pressed,
@@ -2181,7 +2090,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSendInputEv
             scroll_unit: match scroll_unit {
                 0 => WuiScrollUnit::Line,
                 1 => WuiScrollUnit::Pixel,
-                other => panic!("WatcherJni.gpuSurfaceSendInputEvent: unknown scroll unit {other}"),
+                other => panic!("WatcherJni.gpuContentSendInputEvent: unknown scroll unit {other}"),
             },
             finished,
             key: java_surface_string(env, &key),
@@ -2191,10 +2100,10 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceSendInputEv
             caret,
         };
         // SAFETY: `wrapper.state` is the live surface state built by
-        // `gpuSurfaceCreate`, and every string in `event` was just built by
+        // `gpuContentCreate`, and every string in `event` was just built by
         // `java_surface_string` as a fresh owning handle.
         unsafe {
-            crate::components::gpu_surface_input::waterui_gpu_surface_send_input_event(
+            crate::components::gpu_content_input::waterui_gpu_content_send_input_event(
                 wrapper.state,
                 event,
             )
@@ -2216,8 +2125,8 @@ fn java_surface_string<'local>(
 #[cfg(all(target_os = "android", feature = "gpu"))]
 fn surface_input_event_kind(
     kind: jint,
-) -> crate::components::gpu_surface_input::WuiSurfaceInputEventKind {
-    use crate::components::gpu_surface_input::WuiSurfaceInputEventKind as Kind;
+) -> crate::components::gpu_content_input::WuiSurfaceInputEventKind {
+    use crate::components::gpu_content_input::WuiSurfaceInputEventKind as Kind;
     match kind {
         0 => Kind::Focus,
         1 => Kind::Modifiers,
@@ -2230,7 +2139,7 @@ fn surface_input_event_kind(
         8 => Kind::CompositionUpdate,
         9 => Kind::CompositionCommit,
         10 => Kind::CompositionCancel,
-        other => panic!("WatcherJni.gpuSurfaceSendInputEvent: unknown event kind {other}"),
+        other => panic!("WatcherJni.gpuContentSendInputEvent: unknown event kind {other}"),
     }
 }
 
@@ -2238,35 +2147,35 @@ fn surface_input_event_kind(
 #[cfg(all(target_os = "android", feature = "gpu"))]
 fn surface_pointer_button(
     button: jint,
-) -> crate::components::gpu_surface_input::WuiSurfacePointerButton {
-    use crate::components::gpu_surface_input::WuiSurfacePointerButton as Button;
+) -> crate::components::gpu_content_input::WuiSurfacePointerButton {
+    use crate::components::gpu_content_input::WuiSurfacePointerButton as Button;
     match button {
         0 => Button::Primary,
         1 => Button::Secondary,
         2 => Button::Middle,
         3 => Button::Back,
         4 => Button::Forward,
-        other => panic!("WatcherJni.gpuSurfaceSendInputEvent: unknown pointer button {other}"),
+        other => panic!("WatcherJni.gpuContentSendInputEvent: unknown pointer button {other}"),
     }
 }
 
 /// Whether this GPU view takes its own keyboard, IME and scroll input.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-const extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceWantsInputEvents<
+const extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentWantsInputEvents<
     'local,
 >(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jboolean {
-    let state_ptr = state_ptr as *const JniGpuSurfaceState;
-    // SAFETY: as for every other `gpuSurface*` entry point, Kotlin passes back the
-    // handle `gpuSurfaceCreate` returned and only borrows it for this call.
+    let state_ptr = state_ptr as *const JniGpuContentState;
+    // SAFETY: as for every other `gpuContent*` entry point, Kotlin passes back the
+    // handle `gpuContentCreate` returned and only borrows it for this call.
     let wrapper = unsafe { &*state_ptr };
     // SAFETY: `wrapper.state` is the live surface state that handle owns.
     unsafe {
-        crate::components::gpu_surface_input::waterui_gpu_surface_wants_input_events(wrapper.state)
+        crate::components::gpu_content_input::waterui_gpu_content_wants_input_events(wrapper.state)
     }
 }
 
@@ -2276,20 +2185,20 @@ const extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceWants
 /// caret to anchor an input-method panel against.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceImeCaret<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentImeCaret<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jni::sys::jfloatArray {
     super::with_env(&mut env, |env| {
-        let state_ptr = state_ptr as *const JniGpuSurfaceState;
-        // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate`.
+        let state_ptr = state_ptr as *const JniGpuContentState;
+        // SAFETY: Kotlin passes back the live handle from `gpuContentCreate`.
         let wrapper = unsafe { &*state_ptr };
         let mut rect = core::mem::MaybeUninit::<crate::components::layout::WuiRect>::uninit();
         // SAFETY: `wrapper.state` is live and `rect` is writable storage for one
         // `WuiRect`, which the entry point only writes when it answers `true`.
         let has_caret = unsafe {
-            crate::components::gpu_surface_input::waterui_gpu_surface_ime_caret(
+            crate::components::gpu_content_input::waterui_gpu_content_ime_caret(
                 wrapper.state,
                 rect.as_mut_ptr(),
             )
@@ -2307,10 +2216,10 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceImeCaret<'l
         let values: [jfloat; 4] = [origin.x, origin.y, size.width, size.height];
         let array = env
             .new_float_array(values.len())
-            .expect("gpuSurfaceImeCaret: failed to allocate the caret array");
+            .expect("gpuContentImeCaret: failed to allocate the caret array");
         array
             .set_region(env, 0, &values)
-            .expect("gpuSurfaceImeCaret: failed to write the caret array");
+            .expect("gpuContentImeCaret: failed to write the caret array");
         array.into_raw()
     })
 }
@@ -2322,31 +2231,31 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceImeCaret<'l
 /// "this surface has no description of its own".
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAccessibilityLabel<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentAccessibilityLabel<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jni::sys::jstring {
     super::with_env(&mut env, |env| {
-        let state_ptr = state_ptr as *const JniGpuSurfaceState;
-        // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate`.
+        let state_ptr = state_ptr as *const JniGpuContentState;
+        // SAFETY: Kotlin passes back the live handle from `gpuContentCreate`.
         let wrapper = unsafe { &*state_ptr };
         // SAFETY: `wrapper.state` is live for this call and only read.
         let label = unsafe {
-            crate::components::gpu_surface::waterui_gpu_surface_accessibility_label(wrapper.state)
+            crate::components::gpu_content::waterui_gpu_content_accessibility_label(wrapper.state)
         };
         // SAFETY: the entry point builds the `WuiStr` from a Rust `Str`, so its
         // bytes are UTF-8; the borrow ends before `label` is dropped below.
         let text = unsafe { label.as_str() }.to_owned();
         env.new_string(&text)
-            .expect("gpuSurfaceAccessibilityLabel: failed to create the Java string")
+            .expect("gpuContentAccessibilityLabel: failed to create the Java string")
             .into_raw()
     })
 }
 
 /// The semantic value the GPU view carries, for a screen reader.
 ///
-/// The value channel's counterpart to `gpuSurfaceAccessibilityLabel`: the
+/// The value channel's counterpart to `gpuContentAccessibilityLabel`: the
 /// content's own semantic payload — a formula's spoken mathematics, a chart's
 /// summary — published beside the label rather than underneath it.
 ///
@@ -2354,781 +2263,42 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAccessibili
 /// carries no semantic content of its own.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceAccessibilityValue<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentAccessibilityValue<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) -> jni::sys::jstring {
     super::with_env(&mut env, |env| {
-        let state_ptr = state_ptr as *const JniGpuSurfaceState;
-        // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate`.
+        let state_ptr = state_ptr as *const JniGpuContentState;
+        // SAFETY: Kotlin passes back the live handle from `gpuContentCreate`.
         let wrapper = unsafe { &*state_ptr };
         // SAFETY: `wrapper.state` is live for this call and only read.
         let value = unsafe {
-            crate::components::gpu_surface::waterui_gpu_surface_accessibility_value(wrapper.state)
+            crate::components::gpu_content::waterui_gpu_content_accessibility_value(wrapper.state)
         };
         // SAFETY: the entry point builds the `WuiStr` from a Rust `Str`, so its
         // bytes are UTF-8; the borrow ends before `value` is dropped below.
         let text = unsafe { value.as_str() }.to_owned();
         env.new_string(&text)
-            .expect("gpuSurfaceAccessibilityValue: failed to create the Java string")
+            .expect("gpuContentAccessibilityValue: failed to create the Java string")
             .into_raw()
     })
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuSurfaceDrop<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentDrop<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
 ) {
-    // SAFETY: Kotlin passes back the owning handle `gpuSurfaceCreate` returned, and
+    // SAFETY: Kotlin passes back the owning handle `gpuContentCreate` returned, and
     // the runtime drops each surface once.
-    let wrapper = unsafe { Box::from_raw(state_ptr as *mut JniGpuSurfaceState) };
+    let wrapper = unsafe { Box::from_raw(state_ptr as *mut JniGpuContentState) };
     // SAFETY: `wrapper.state` is the surface state created alongside it, dropped here
     // exactly once together with its wrapper.
     unsafe {
-        crate::components::gpu_surface::waterui_gpu_surface_drop(wrapper.state);
+        crate::components::gpu_content::waterui_gpu_content_drop(wrapper.state);
     }
     drop(wrapper);
-}
-
-// ============================================================================
-// AppliedFilter / ViewEffect (Android view capture)
-//
-// These mirror the `gpuSurface*` conventions exactly: the state handle crosses
-// as a `Long` wrapper this file owns, an attached `Surface` becomes an
-// `ANativeWindow` held alongside it, and the redraw callback is installed by
-// `*Create` so Kotlin only implements `requestNativeRedraw()` on the owner view.
-// ============================================================================
-
-/// The handle `appliedFilterCreate` returns, and every `appliedFilter*` takes.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-struct JniAppliedFilterState {
-    state: *mut crate::components::applied_filter::WuiAppliedFilterState,
-    window: Option<AndroidNativeWindow>,
-}
-
-/// The handle `viewEffectCreate` returns, and every `viewEffect*` takes.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-struct JniViewEffectState {
-    state: *mut crate::components::view_effect::WuiViewEffectState,
-    window: Option<AndroidNativeWindow>,
-}
-
-/// What an Android capture target's redraw callback wakes.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-struct AndroidCaptureRedrawTarget {
-    jvm: jni::JavaVM,
-    owner: Global<JObject<'static>>,
-}
-
-#[cfg(all(target_os = "android", feature = "gpu"))]
-unsafe extern "C" fn wake_android_capture(context: *mut c_void) {
-    // SAFETY: `context` is the target the matching `*Create` registered with this
-    // entry point, live until the paired drop entry point reclaims it.
-    let target = unsafe { &*context.cast::<AndroidCaptureRedrawTarget>() };
-    super::with_attached_env(&target.jvm, |env| {
-        env.call_method(
-            &target.owner,
-            jni_str!("requestNativeRedraw"),
-            jni_sig!("()V"),
-            &[],
-        )
-        .expect("capture redraw callback failed to call requestNativeRedraw");
-    })
-    .expect("capture redraw callback failed to attach to JVM");
-}
-
-#[cfg(all(target_os = "android", feature = "gpu"))]
-unsafe extern "C" fn drop_android_capture_redraw_target(context: *mut c_void) {
-    // SAFETY: `context` is the boxed target the matching `*Create` registered with
-    // this drop entry point, which the capture target invokes once.
-    unsafe {
-        drop(Box::from_raw(context.cast::<AndroidCaptureRedrawTarget>()));
-    }
-}
-
-/// Boxes the redraw target Kotlin's owner view is woken through.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-fn android_capture_redraw_context<'local>(
-    env: &Env<'local>,
-    owner: JObject<'local>,
-    function: &str,
-) -> *mut c_void {
-    let target = Box::new(AndroidCaptureRedrawTarget {
-        jvm: env
-            .get_java_vm()
-            .unwrap_or_else(|_| panic!("WatcherJni.{function} failed to access JavaVM")),
-        owner: env
-            .new_global_ref(owner)
-            .unwrap_or_else(|_| panic!("WatcherJni.{function} failed to retain owner view")),
-    });
-    Box::into_raw(target).cast::<c_void>()
-}
-
-/// `WatcherJni.appliedFilterCreate(owner, filterPtr, wuiEnvPtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterCreate<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    owner: JObject<'local>,
-    filter_ptr: jlong,
-    wui_env_ptr: jlong,
-) -> jlong {
-    super::with_env(&mut env, |env| {
-        let mut wui_filter = crate::components::applied_filter::WuiAppliedFilter {
-            content: core::ptr::null_mut(),
-            filter: filter_ptr as *mut c_void,
-        };
-        // SAFETY: `wui_filter` carries the semantic filter Kotlin took from the
-        // struct `forceAsMetadataAppliedFilter` handed it, and `wui_env_ptr` is the
-        // live app environment.
-        let state = unsafe {
-            crate::components::applied_filter::waterui_applied_filter_create(
-                &raw mut wui_filter,
-                wui_env_ptr as *const crate::WuiEnv,
-            )
-        };
-        let redraw_context = android_capture_redraw_context(env, owner, "appliedFilterCreate");
-        // SAFETY: `state` was just created above, and `redraw_context` is the
-        // payload the two entry points above expect, whose ownership moves to the
-        // filter.
-        unsafe {
-            crate::components::applied_filter::waterui_applied_filter_set_redraw_callback(
-                state,
-                redraw_context,
-                wake_android_capture,
-                drop_android_capture_redraw_target,
-            );
-        }
-        Box::into_raw(Box::new(JniAppliedFilterState {
-            state,
-            window: None,
-        })) as jlong
-    })
-}
-
-/// `WatcherJni.appliedFilterAttach(statePtr, surface, width, height, prefersHdr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterAttach<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    surface: JObject<'local>,
-    input_width: jint,
-    input_height: jint,
-    prefers_hdr: jboolean,
-) {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the handle `appliedFilterCreate` returned, live
-        // until `appliedFilterDrop`; the Android view calls these entry points one at
-        // a time from its own thread, so this exclusive borrow is the only live one.
-        let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-        assert!(
-            wrapper.window.is_none(),
-            "WatcherJni.appliedFilterAttach called while a native surface is already attached"
-        );
-        let window = require_native_window(
-            // SAFETY: `env` is this JNI call's own environment and `surface` its local
-            // reference, both valid for the call.
-            unsafe { AndroidNativeWindow::from_surface(env.get_raw(), surface.as_raw()) },
-            "appliedFilterAttach",
-        );
-        // SAFETY: `wrapper.state` is the filter state created alongside it, and the
-        // `ANativeWindow` stays alive because `wrapper.window` takes it below, before
-        // any detach.
-        unsafe {
-            crate::components::applied_filter::waterui_applied_filter_attach(
-                wrapper.state,
-                window.as_void_ptr(),
-                input_width.cast_unsigned(),
-                input_height.cast_unsigned(),
-                prefers_hdr,
-            );
-        }
-        wrapper.window = Some(window);
-    });
-}
-
-/// `WatcherJni.appliedFilterDetach(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterDetach<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) {
-    // SAFETY: as for every other `appliedFilter*` entry point, Kotlin passes back
-    // the live handle from `appliedFilterCreate`, one call at a time.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    assert!(
-        wrapper.window.is_some(),
-        "WatcherJni.appliedFilterDetach called without an attached native surface"
-    );
-    // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_detach(wrapper.state);
-    }
-    drop(wrapper.window.take());
-}
-
-/// `WatcherJni.appliedFilterSetup(statePtr)`: starts asynchronous filter setup.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetup<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) {
-    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_setup(wrapper.state);
-    }
-}
-
-/// `WatcherJni.appliedFilterIsReady(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterIsReady<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jboolean {
-    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-    let wrapper = unsafe { &*(state_ptr as *const JniAppliedFilterState) };
-    // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-    unsafe { crate::components::applied_filter::waterui_applied_filter_is_ready(wrapper.state) }
-}
-
-/// `WatcherJni.appliedFilterResolveOutputSize(statePtr, inputWidth, inputHeight)`.
-///
-/// Returns `[width, height]` in pixels.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterResolveOutputSize<
-    'local,
->(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    input_width: jint,
-    input_height: jint,
-) -> jintArray {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-        let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-        // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-        let size = unsafe {
-            crate::components::applied_filter::waterui_applied_filter_resolve_output_size(
-                wrapper.state,
-                input_width.cast_unsigned(),
-                input_height.cast_unsigned(),
-            )
-        };
-        let values: [jint; 2] = [
-            jint::try_from(size.width)
-                .expect("appliedFilterResolveOutputSize: width exceeds jint capacity"),
-            jint::try_from(size.height)
-                .expect("appliedFilterResolveOutputSize: height exceeds jint capacity"),
-        ];
-        let array = env
-            .new_int_array(values.len())
-            .expect("appliedFilterResolveOutputSize: failed to allocate the size array");
-        array
-            .set_region(env, 0, &values)
-            .expect("appliedFilterResolveOutputSize: failed to write the size array");
-        array.into_raw()
-    })
-}
-
-/// `WatcherJni.appliedFilterPrepareCapture(statePtr, width, height)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterPrepareCapture<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    width: jint,
-    height: jint,
-) {
-    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_prepare_capture(
-            wrapper.state,
-            width.cast_unsigned(),
-            height.cast_unsigned(),
-        );
-    }
-}
-
-/// `WatcherJni.appliedFilterCaptureFormat(statePtr)`.
-///
-/// The `ImageReader` format this filter's capture buffers must be allocated
-/// with: `0` is `PixelFormat.RGBA_8888`, `1` is `PixelFormat.RGBA_FP16`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterCaptureFormat<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jint {
-    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-    let wrapper = unsafe { &*(state_ptr as *const JniAppliedFilterState) };
-    // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-    let format = unsafe {
-        crate::components::applied_filter::waterui_applied_filter_capture_format(wrapper.state)
-    };
-    format as jint
-}
-
-/// `WatcherJni.appliedFilterSetCaptureHardwareBuffer(statePtr, hardwareBuffer)`.
-///
-/// Returns the capture fence, to be consumed exactly once by
-/// `gpuCaptureFenceOnComplete`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterSetCaptureHardwareBuffer<
-    'local,
->(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    hardware_buffer: JObject<'local>,
-) -> jlong {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-        let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-        // SAFETY: `env` is this JNI call's own environment and `hardware_buffer` its
-        // local reference, both valid for the call.
-        let buffer = unsafe {
-            crate::components::hardware_buffer::hardware_buffer_from_java(
-                env.get_raw().cast(),
-                hardware_buffer.as_raw().cast(),
-            )
-        };
-        // SAFETY: `wrapper.state` is the live filter state, and `buffer` is borrowed
-        // from the Java object, which the caller keeps open across this call.
-        let fence = unsafe {
-            crate::components::applied_filter::waterui_applied_filter_set_capture_hardware_buffer(
-                wrapper.state,
-                buffer.cast::<c_void>(),
-            )
-        };
-        fence as jlong
-    })
-}
-
-/// `WatcherJni.appliedFilterCompositeGpuSurface(statePtr, surfaceStatePtr, x, y, width, height, scale)`.
-///
-/// Draws one `GpuSurface` nested in the captured subtree into the capture, at
-/// the rectangle it occupies inside the captured content in pixels. Called
-/// between `appliedFilterSetCaptureHardwareBuffer` and `appliedFilterRender`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterCompositeGpuSurface<
-    'local,
->(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    surface_state_ptr: jlong,
-    x: jint,
-    y: jint,
-    width: jint,
-    height: jint,
-    scale: jfloat,
-) {
-    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate` for a
-    // surface inside this filter's own subtree, so the two states are distinct.
-    let surface = unsafe { &mut *(surface_state_ptr as *mut JniGpuSurfaceState) };
-    // SAFETY: both states were created on this thread and are only borrowed for
-    // the call, and the placement is the surface's rectangle in capture pixels.
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_composite_gpu_surface(
-            wrapper.state,
-            surface.state,
-            x,
-            y,
-            width.cast_unsigned(),
-            height.cast_unsigned(),
-            f64::from(scale),
-        );
-    }
-}
-
-/// `WatcherJni.appliedFilterRender(statePtr, width, height)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterRender<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    width: jint,
-    height: jint,
-) -> jboolean {
-    // SAFETY: Kotlin passes back the live handle from `appliedFilterCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniAppliedFilterState) };
-    // SAFETY: `wrapper.state` is the filter state created alongside it, still live.
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_render(
-            wrapper.state,
-            width.cast_unsigned(),
-            height.cast_unsigned(),
-        )
-    }
-}
-
-/// `WatcherJni.appliedFilterDrop(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_appliedFilterDrop<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) {
-    // SAFETY: Kotlin passes back the owning handle `appliedFilterCreate` returned,
-    // and the runtime drops each filter once.
-    let wrapper = unsafe { Box::from_raw(state_ptr as *mut JniAppliedFilterState) };
-    // SAFETY: `wrapper.state` is the filter state created alongside it, dropped here
-    // exactly once together with its wrapper.
-    unsafe {
-        crate::components::applied_filter::waterui_applied_filter_drop(wrapper.state);
-    }
-    drop(wrapper);
-}
-
-/// `WatcherJni.viewEffectCreate(owner, effectPtr, outputSizeKind, outputWidth,
-/// outputHeight, outputScale, wuiEnvPtr)`.
-///
-/// The four output-size arguments are the flattened `ViewEffectStruct` fields
-/// `forceAsViewEffect` handed Kotlin, passed straight back.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectCreate<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    owner: JObject<'local>,
-    effect_ptr: jlong,
-    output_size_kind: jint,
-    output_width: jint,
-    output_height: jint,
-    output_scale: jfloat,
-    wui_env_ptr: jlong,
-) -> jlong {
-    super::with_env(&mut env, |env| {
-        let mut wui_effect = crate::components::view_effect::WuiViewEffect {
-            content: core::ptr::null_mut(),
-            effect: effect_ptr as *mut c_void,
-            output_size: view_effect_output_size(
-                output_size_kind,
-                output_width,
-                output_height,
-                output_scale,
-            ),
-        };
-        // SAFETY: `wui_effect` carries the renderer Kotlin took from the struct
-        // `forceAsViewEffect` handed it, and `wui_env_ptr` is the live app
-        // environment.
-        let state = unsafe {
-            crate::components::view_effect::waterui_view_effect_create(
-                &raw mut wui_effect,
-                wui_env_ptr as *const crate::WuiEnv,
-            )
-        };
-        let redraw_context = android_capture_redraw_context(env, owner, "viewEffectCreate");
-        // SAFETY: `state` was just created above, and `redraw_context` is the payload
-        // the two entry points above expect, whose ownership moves to the effect.
-        unsafe {
-            crate::components::view_effect::waterui_view_effect_set_redraw_callback(
-                state,
-                redraw_context,
-                wake_android_capture,
-                drop_android_capture_redraw_target,
-            );
-        }
-        Box::into_raw(Box::new(JniViewEffectState {
-            state,
-            window: None,
-        })) as jlong
-    })
-}
-
-/// Rebuilds the output-size enum from the fields `ViewEffectStruct` flattened it into.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-fn view_effect_output_size(
-    kind: jint,
-    width: jint,
-    height: jint,
-    scale: jfloat,
-) -> crate::components::view_effect::WuiOutputSize {
-    use crate::components::view_effect::WuiOutputSize;
-    match kind {
-        0 => WuiOutputSize::MatchInput,
-        1 => WuiOutputSize::Fixed {
-            width: width.cast_unsigned(),
-            height: height.cast_unsigned(),
-        },
-        2 => WuiOutputSize::Scale { factor: scale },
-        other => panic!("WatcherJni.viewEffectCreate: unknown output size kind {other}"),
-    }
-}
-
-/// `WatcherJni.viewEffectAttach(statePtr, surface, width, height, prefersHdr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectAttach<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    surface: JObject<'local>,
-    input_width: jint,
-    input_height: jint,
-    prefers_hdr: jboolean,
-) {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the handle `viewEffectCreate` returned, live
-        // until `viewEffectDrop`, one call at a time from the view's own thread.
-        let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
-        assert!(
-            wrapper.window.is_none(),
-            "WatcherJni.viewEffectAttach called while a native surface is already attached"
-        );
-        let window = require_native_window(
-            // SAFETY: `env` is this JNI call's own environment and `surface` its local
-            // reference, both valid for the call.
-            unsafe { AndroidNativeWindow::from_surface(env.get_raw(), surface.as_raw()) },
-            "viewEffectAttach",
-        );
-        // SAFETY: `wrapper.state` is the effect state created alongside it, and the
-        // `ANativeWindow` stays alive because `wrapper.window` takes it below, before
-        // any detach.
-        unsafe {
-            crate::components::view_effect::waterui_view_effect_attach(
-                wrapper.state,
-                window.as_void_ptr(),
-                input_width.cast_unsigned(),
-                input_height.cast_unsigned(),
-                prefers_hdr,
-            );
-        }
-        wrapper.window = Some(window);
-    });
-}
-
-/// `WatcherJni.viewEffectDetach(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectDetach<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) {
-    // SAFETY: Kotlin passes back the live handle from `viewEffectCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
-    assert!(
-        wrapper.window.is_some(),
-        "WatcherJni.viewEffectDetach called without an attached native surface"
-    );
-    // SAFETY: `wrapper.state` is the effect state created alongside it, still live.
-    unsafe {
-        crate::components::view_effect::waterui_view_effect_detach(wrapper.state);
-    }
-    drop(wrapper.window.take());
-}
-
-/// `WatcherJni.viewEffectIsReady(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectIsReady<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jboolean {
-    // SAFETY: Kotlin passes back the live handle from `viewEffectCreate`.
-    let wrapper = unsafe { &*(state_ptr as *const JniViewEffectState) };
-    // SAFETY: `wrapper.state` is the effect state created alongside it, still live.
-    unsafe { crate::components::view_effect::waterui_view_effect_is_ready(wrapper.state) }
-}
-
-/// `WatcherJni.viewEffectSetInputHardwareBuffer(statePtr, hardwareBuffer)`.
-///
-/// Returns the capture fence, to be consumed exactly once by
-/// `gpuCaptureFenceOnComplete`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectSetInputHardwareBuffer<
-    'local,
->(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    hardware_buffer: JObject<'local>,
-) -> jlong {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back the live handle from `viewEffectCreate`.
-        let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
-        // SAFETY: `env` is this JNI call's own environment and `hardware_buffer` its
-        // local reference, both valid for the call.
-        let buffer = unsafe {
-            crate::components::hardware_buffer::hardware_buffer_from_java(
-                env.get_raw().cast(),
-                hardware_buffer.as_raw().cast(),
-            )
-        };
-        // SAFETY: `wrapper.state` is the live effect state, and `buffer` is borrowed
-        // from the Java object, which the caller keeps open across this call.
-        let fence = unsafe {
-            crate::components::view_effect::waterui_view_effect_set_input_hardware_buffer(
-                wrapper.state,
-                buffer.cast::<c_void>(),
-            )
-        };
-        fence as jlong
-    })
-}
-
-/// `WatcherJni.viewEffectCompositeGpuSurface(statePtr, surfaceStatePtr, x, y, width, height, scale)`.
-///
-/// Draws one `GpuSurface` nested in the captured subtree into the effect's
-/// input, at the rectangle it occupies inside the captured content in pixels.
-/// Called between `viewEffectSetInputHardwareBuffer` and `viewEffectRender`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectCompositeGpuSurface<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-    surface_state_ptr: jlong,
-    x: jint,
-    y: jint,
-    width: jint,
-    height: jint,
-    scale: jfloat,
-) {
-    // SAFETY: Kotlin passes back the live handle from `viewEffectCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
-    // SAFETY: Kotlin passes back the live handle from `gpuSurfaceCreate` for a
-    // surface inside this effect's own subtree, so the two states are distinct.
-    let surface = unsafe { &mut *(surface_state_ptr as *mut JniGpuSurfaceState) };
-    // SAFETY: both states were created on this thread and are only borrowed for
-    // the call, and the placement is the surface's rectangle in capture pixels.
-    unsafe {
-        crate::components::view_effect::waterui_view_effect_composite_gpu_surface(
-            wrapper.state,
-            surface.state,
-            x,
-            y,
-            width.cast_unsigned(),
-            height.cast_unsigned(),
-            f64::from(scale),
-        );
-    }
-}
-
-/// `WatcherJni.viewEffectRender(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectRender<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) -> jboolean {
-    // SAFETY: Kotlin passes back the live handle from `viewEffectCreate`.
-    let wrapper = unsafe { &mut *(state_ptr as *mut JniViewEffectState) };
-    // SAFETY: `wrapper.state` is the effect state created alongside it, still live.
-    unsafe { crate::components::view_effect::waterui_view_effect_render(wrapper.state) }
-}
-
-/// `WatcherJni.viewEffectDrop(statePtr)`.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewEffectDrop<'local>(
-    _env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    state_ptr: jlong,
-) {
-    // SAFETY: Kotlin passes back the owning handle `viewEffectCreate` returned, and
-    // the runtime drops each effect once.
-    let wrapper = unsafe { Box::from_raw(state_ptr as *mut JniViewEffectState) };
-    // SAFETY: `wrapper.state` is the effect state created alongside it, dropped here
-    // exactly once together with its wrapper.
-    unsafe {
-        crate::components::view_effect::waterui_view_effect_drop(wrapper.state);
-    }
-    drop(wrapper);
-}
-
-/// The completion Kotlin registers on a capture fence.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-struct AndroidCaptureCompletion {
-    jvm: jni::JavaVM,
-    runnable: Global<JObject<'static>>,
-}
-
-#[cfg(all(target_os = "android", feature = "gpu"))]
-unsafe extern "C" fn run_android_capture_completion(context: *mut c_void) {
-    // SAFETY: `context` is the completion `gpuCaptureFenceOnComplete` registered,
-    // live until the paired drop entry point reclaims it.
-    let completion = unsafe { &*context.cast::<AndroidCaptureCompletion>() };
-    super::with_attached_env(&completion.jvm, |env| {
-        env.call_method(&completion.runnable, jni_str!("run"), jni_sig!("()V"), &[])
-            .expect("capture completion failed to call Runnable.run");
-    })
-    .expect("capture completion failed to attach to JVM");
-}
-
-#[cfg(all(target_os = "android", feature = "gpu"))]
-unsafe extern "C" fn drop_android_capture_completion(context: *mut c_void) {
-    // SAFETY: `context` is the boxed completion registered with this drop entry
-    // point, which the completion driver invokes once.
-    unsafe {
-        drop(Box::from_raw(context.cast::<AndroidCaptureCompletion>()));
-    }
-}
-
-/// `WatcherJni.gpuCaptureFenceOnComplete(fencePtr, completion)`.
-///
-/// Consumes the fence and runs `completion` on `WaterUI`'s GPU completion thread —
-/// never on the main thread — once the capture copy has finished on the GPU.
-/// That is when the `Image` the buffer came from may be closed.
-#[cfg(all(target_os = "android", feature = "gpu"))]
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuCaptureFenceOnComplete<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    fence_ptr: jlong,
-    completion: JObject<'local>,
-) {
-    super::with_env(&mut env, |env| {
-        let completion = Box::new(AndroidCaptureCompletion {
-            jvm: env
-                .get_java_vm()
-                .expect("WatcherJni.gpuCaptureFenceOnComplete failed to access JavaVM"),
-            runnable: env
-                .new_global_ref(completion)
-                .expect("WatcherJni.gpuCaptureFenceOnComplete failed to retain the completion"),
-        });
-        let context = Box::into_raw(completion).cast::<c_void>();
-        // SAFETY: Kotlin passes back the owning fence one of the capture entry
-        // points returned, consumed exactly once here, and `context` is the payload
-        // the two entry points above expect, whose ownership moves to the driver.
-        unsafe {
-            crate::components::gpu_surface::waterui_gpu_capture_fence_on_complete(
-                fence_ptr as *mut crate::components::gpu_surface::WuiGpuCaptureFence,
-                context,
-                run_android_capture_completion,
-                drop_android_capture_completion,
-            );
-        }
-    });
 }

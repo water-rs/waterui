@@ -14,7 +14,6 @@
 //!   render loops (redraw / patch / structural rebuild requests)
 //! - [`gesture`]: platform-agnostic gesture recognition state machines
 //! - [`scroll`]: scroll offset/viewport math and handle registry
-//! - [`animation`]: animated scalar sampling and animation key tracking
 //! - [`input`]: platform-agnostic input event vocabulary
 //! - [`time`]: monotonic clock abstraction valid across native and web targets
 //!
@@ -32,8 +31,6 @@
 //! - Layout traits: [`SubView`], [`StretchAxis`], [`Layout`]
 //! - View types: [`AnyView`], [`View`], [`Environment`]
 
-#[cfg(feature = "widgets")]
-pub mod animation;
 pub mod dispatcher;
 pub mod frame_signals;
 #[cfg(feature = "gestures")]
@@ -46,7 +43,7 @@ pub mod widget;
 
 pub use dispatcher::ViewDispatcher;
 #[cfg(feature = "widgets")]
-pub use widget::{Brush, DrawContext, WidgetTheme};
+pub use widget::WidgetTheme;
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

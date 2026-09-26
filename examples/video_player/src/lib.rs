@@ -8,7 +8,7 @@
 //! ## Native vs self-rendered playback
 //!
 //! The same SDR and HDR10 sources exercise either the platform-native player or
-//! WaterUI's self-rendered pipeline (`GpuSurface` + `waterkit-codec`), depending
+//! WaterUI's self-rendered pipeline (`GpuContent` + `waterkit-codec`), depending
 //! on the selected backend/runtime policy.
 
 use waterui::app::App;

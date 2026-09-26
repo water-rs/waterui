@@ -6,7 +6,7 @@
 //! ## Overview
 //!
 //! The theme FFI uses a **slot-based approach**:
-//! 1. Native code creates reactive signals (`WuiComputed<ResolvedColor>`, etc.)
+//! 1. Native code creates reactive signals (`WuiComputed<WorkingColor>`, etc.)
 //! 2. Native installs signals for specific slots using enum-based APIs
 //! 3. `WaterUI` views resolve these slots to get reactive theme values
 //!
@@ -29,7 +29,7 @@
 //!
 //! ```c
 //! // Install foreground color
-//! WuiComputed_ResolvedColor* fg = create_foreground_signal();
+//! WuiComputed_WorkingColor* fg = create_foreground_signal();
 //! waterui_theme_install_color(env, WuiColorSlot_Foreground, fg);
 //!
 //! // Install body font
@@ -42,14 +42,14 @@
 //! Native components can query current theme values:
 //!
 //! ```c
-//! WuiComputed_ResolvedColor* accent = waterui_theme_color(env, WuiColorSlot_Accent);
+//! WuiComputed_WorkingColor* accent = waterui_theme_color(env, WuiColorSlot_Accent);
 //! // Use the signal, then drop when done
-//! waterui_drop_computed_resolved_color(accent);
+//! waterui_drop_computed_working_color(accent);
 //! ```
 
 use alloc::boxed::Box;
 
-use crate::color::WuiResolvedColor;
+use crate::color::WuiWorkingColor;
 use crate::components::text::WuiResolvedFont;
 use crate::{IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, reactive::WuiComputed};
 use nami::SignalExt;
@@ -57,7 +57,7 @@ use waterui::theme::{
     self, color, install_color_scheme, install_color_signal, install_font_signal,
 };
 use waterui_core::resolve::Resolvable;
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::WorkingColor;
 use waterui_text::font::{Body, Caption, Footnote, Headline, ResolvedFont, Subheadline, Title};
 
 // ============================================================================
@@ -198,7 +198,7 @@ pub enum WuiColorSlot {
 pub unsafe extern "C" fn waterui_theme_install_color(
     env: *mut WuiEnv,
     slot: WuiColorSlot,
-    signal: *mut WuiComputed<ResolvedColor>,
+    signal: *mut WuiComputed<WorkingColor>,
 ) {
     // SAFETY: the caller contract requires `env` to be a valid handle, alive and not
     // otherwise borrowed for this call; the exclusive borrow ends here.
@@ -252,7 +252,7 @@ pub unsafe extern "C" fn waterui_theme_install_color(
 pub unsafe extern "C" fn waterui_theme_color(
     env: *const WuiEnv,
     slot: WuiColorSlot,
-) -> *mut WuiComputed<ResolvedColor> {
+) -> *mut WuiComputed<WorkingColor> {
     // SAFETY: the caller contract requires `env` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
@@ -363,7 +363,7 @@ pub unsafe extern "C" fn waterui_theme_font(
 // ============================================================================
 
 crate::ffi_watcher_notify!(theme::ColorScheme, WuiColorScheme, color_scheme);
-crate::ffi_watcher_notify!(ResolvedColor, WuiResolvedColor, resolved_color);
+crate::ffi_watcher_notify!(WorkingColor, WuiWorkingColor, working_color);
 crate::ffi_watcher_notify!(ResolvedFont, WuiResolvedFont, resolved_font);
 
 #[cfg(all(test, feature = "c-api"))]
@@ -389,13 +389,7 @@ mod tests {
         let mut env = WuiEnv(waterui::Environment::new());
 
         // Create and install a foreground color
-        let fg_signal = waterui::Computed::constant(ResolvedColor {
-            red: 1.0,
-            green: 0.0,
-            blue: 0.0,
-            headroom: 0.0,
-            opacity: 1.0,
-        });
+        let fg_signal = waterui::Computed::constant(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
         let fg_ptr = fg_signal.into_ffi();
 
         // SAFETY: `env` is a live local and `fg_ptr` an owning color handle the
@@ -410,12 +404,12 @@ mod tests {
         assert!(!queried.is_null());
 
         // SAFETY: `queried` is the non-null owning handle just returned.
-        let value = unsafe { crate::color::waterui_read_computed_resolved_color(queried) };
+        let value = unsafe { crate::color::waterui_read_computed_working_color(queried) };
         assert!((value.red - 1.0).abs() < 0.001);
 
         // SAFETY: `queried` is that same handle, dropped once here.
         unsafe {
-            crate::color::waterui_drop_computed_resolved_color(queried);
+            crate::color::waterui_drop_computed_working_color(queried);
         }
     }
 }

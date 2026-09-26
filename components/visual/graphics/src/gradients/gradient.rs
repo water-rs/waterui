@@ -1,157 +1,108 @@
-//! Gradient primitives resolved into `ResolvedGradient` raw views so backends
-//! render them natively.
+//! Gradient views: a Cherenkov [`Paint`] filling the view's bounds.
 //!
-//! Linear/radial/angular gradients are lightweight native-rendered primitives
-//! and live here unconditionally. Mesh gradients are GPU-backed (`GpuView`)
-//! because they require custom interpolation in shader space; the `mesh`
-//! constructor and the mesh arm of `body` are compiled only under `gpu`.
+//! A gradient is authored in unit space — `[0, 1]` on both axes, `(0, 0)` the
+//! top-left of the view — and the backend maps it onto the bounds it lays the
+//! view out at. Radii and the mesh's control points follow the same
+//! convention: a radius of `0.5` reaches the nearer edge from the centre.
 
 extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::color::ResolvedColor;
-#[cfg(feature = "gpu")]
-use crate::gpu_surface::GpuSurface;
-#[cfg(feature = "gpu")]
-use crate::gradients::gradient_renderer::StaticMeshRenderer;
-use waterui_core::{AnyView, View};
+use cherenkov::kurbo::{Affine, Point};
+use cherenkov::{
+    ColorStop, LinearGradient, MeshGradient, Paint, RadialGradient, SweepGradient, WorkingColor,
+};
+use waterui_core::View;
+use waterui_core::layout::StretchAxis;
 
-/// Gradient type discriminator.
+/// The family of a gradient, for backends that map it onto a platform type.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum GradientType {
-    /// Linear gradient along a line.
+    /// Colours run along a line.
     #[default]
     Linear = 0,
-    /// Radial gradient from a center point.
+    /// Colours run outward from a centre.
     Radial = 1,
-    /// Angular (conic) gradient around a center point.
+    /// Colours run around a centre.
     Angular = 2,
-    /// 2D mesh gradient.
+    /// Colours are interpolated across a grid of control points.
     Mesh = 3,
 }
 
 nami::impl_constant!(GradientType);
 
-/// A resolved color stop for backend-native gradient rendering.
-#[derive(Debug, Clone, Copy)]
-pub struct ResolvedGradientStop {
-    /// Position in range `[0.0, 1.0]`.
-    pub position: f32,
-    /// Stop color in linear color space.
-    pub color: ResolvedColor,
-}
-
-impl ResolvedGradientStop {
-    /// Creates a stop from position + color.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the position or any color channel is outside the documented range.
-    #[must_use]
-    pub fn new(position: f32, color: ResolvedColor) -> Self {
-        assert!(
-            position.is_finite(),
-            "gradient stop position must be finite"
-        );
-        assert!(
-            (0.0..=1.0).contains(&position),
-            "gradient stop position must be within [0, 1]"
-        );
-        assert!(
-            color.red.is_finite(),
-            "gradient stop red channel must be finite"
-        );
-        assert!(
-            color.green.is_finite(),
-            "gradient stop green channel must be finite"
-        );
-        assert!(
-            color.blue.is_finite(),
-            "gradient stop blue channel must be finite"
-        );
-        assert!(
-            color.headroom.is_finite() && color.headroom >= 0.0,
-            "gradient stop headroom must be finite and >= 0"
-        );
-        assert!(
-            color.opacity.is_finite() && (0.0..=1.0).contains(&color.opacity),
-            "gradient stop opacity must be finite and within [0, 1]"
-        );
-        Self { position, color }
-    }
-}
-
-/// Resolved gradient payload rendered by backend-native engines.
-#[derive(Debug, Clone)]
-pub struct ResolvedGradient {
-    /// Gradient kind.
-    pub gradient_type: GradientType,
-    /// Gradient stops.
-    pub stops: Vec<ResolvedGradientStop>,
-    /// Start point (linear) or center (radial/angular).
-    pub start_point: [f32; 2],
-    /// End point (linear).
-    pub end_point: [f32; 2],
-    /// Start radius (radial) or start angle (angular).
-    pub start_value: f32,
-    /// End radius (radial) or end angle (angular).
-    pub end_value: f32,
-}
-
-impl ResolvedGradient {
-    fn validate_stops(stops: &[ResolvedGradientStop]) {
-        assert!(
-            !stops.is_empty(),
-            "resolved gradient must contain at least one stop"
-        );
-
-        let mut prev = f32::NEG_INFINITY;
-        for stop in stops {
+fn stops(stops: Vec<(f32, WorkingColor)>) -> Vec<ColorStop> {
+    assert!(
+        !stops.is_empty(),
+        "a gradient must contain at least one stop"
+    );
+    let mut stops = stops
+        .into_iter()
+        .map(|(offset, color)| {
             assert!(
-                stop.position > prev,
-                "gradient stops must be strictly increasing by position"
+                offset.is_finite() && (0.0..=1.0).contains(&offset),
+                "gradient stop position must be within [0, 1], got {offset}"
             );
-            prev = stop.position;
-        }
-    }
+            assert!(
+                color
+                    .components
+                    .iter()
+                    .all(|component| component.is_finite()),
+                "gradient stop colour must be finite, got {color:?}"
+            );
+            ColorStop { offset, color }
+        })
+        .collect::<Vec<_>>();
+    stops.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+    stops
+}
 
-    fn validate_point(point: [f32; 2], name: &str) {
-        assert!(point[0].is_finite(), "{name}.x must be finite");
-        assert!(point[1].is_finite(), "{name}.y must be finite");
-    }
+fn point([x, y]: [f32; 2], name: &str) -> Point {
+    assert!(x.is_finite(), "{name}.x must be finite");
+    assert!(y.is_finite(), "{name}.y must be finite");
+    Point::new(f64::from(x), f64::from(y))
+}
 
-    /// Creates a linear gradient.
+/// A gradient view: a [`Paint`] in unit space that fills the view's bounds.
+///
+/// # Layout Behavior
+///
+/// A gradient is a greedy view: it expands to fill all available space on
+/// both axes. Constrain it with `.frame()` or use it as a background.
+#[derive(Debug, Clone)]
+pub struct Gradient {
+    gradient_type: GradientType,
+    paint: Paint,
+}
+
+impl Gradient {
+    /// A gradient whose colours run along the line from `start` to `end`.
     #[must_use]
-    pub fn linear(stops: Vec<ResolvedGradientStop>, start: [f32; 2], end: [f32; 2]) -> Self {
-        Self::validate_stops(&stops);
-        Self::validate_point(start, "linear gradient start_point");
-        Self::validate_point(end, "linear gradient end_point");
+    pub fn linear(colors: Vec<(f32, WorkingColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
+        let mut gradient = LinearGradient::new(
+            point(start, "linear gradient start"),
+            point(end, "linear gradient end"),
+        );
+        gradient.stops = stops(colors);
         Self {
             gradient_type: GradientType::Linear,
-            stops,
-            start_point: start,
-            end_point: end,
-            start_value: 0.0,
-            end_value: 1.0,
+            paint: Paint::Linear(gradient),
         }
     }
 
-    /// Creates a radial gradient.
+    /// A gradient whose colours run outward from `center`, between two radii.
     ///
     /// # Panics
-    ///
-    /// Panics when the center is invalid or the radii violate the required bounds.
+    /// When a radius is negative or not finite.
     #[must_use]
     pub fn radial(
-        stops: Vec<ResolvedGradientStop>,
+        colors: Vec<(f32, WorkingColor)>,
         center: [f32; 2],
         start_radius: f32,
         end_radius: f32,
     ) -> Self {
-        Self::validate_stops(&stops);
-        Self::validate_point(center, "radial gradient center");
         assert!(
             start_radius.is_finite() && start_radius >= 0.0,
             "radial gradient start radius must be finite and >= 0"
@@ -160,37 +111,35 @@ impl ResolvedGradient {
             end_radius.is_finite() && end_radius > 0.0,
             "radial gradient end radius must be finite and > 0"
         );
+        let center = point(center, "radial gradient center");
+        let mut gradient = RadialGradient::two_point(
+            center,
+            f64::from(start_radius),
+            center,
+            f64::from(end_radius),
+        );
+        gradient.stops = stops(colors);
         Self {
             gradient_type: GradientType::Radial,
-            stops,
-            start_point: center,
-            end_point: center,
-            start_value: start_radius,
-            end_value: end_radius,
+            paint: Paint::Radial(gradient),
         }
     }
 
-    /// Creates an angular gradient.
+    /// A gradient whose colours run around `center`, from one angle to the
+    /// other, in radians.
     ///
     /// # Panics
-    ///
-    /// Panics when the center is invalid or the angle sweep is not finite and positive.
+    /// When an angle is not finite.
     #[must_use]
     pub fn angular(
-        stops: Vec<ResolvedGradientStop>,
+        colors: Vec<(f32, WorkingColor)>,
         center: [f32; 2],
         start_angle: f32,
         end_angle: f32,
     ) -> Self {
-        Self::validate_stops(&stops);
-        Self::validate_point(center, "angular gradient center");
         assert!(
-            start_angle.is_finite(),
-            "angular gradient start angle must be finite"
-        );
-        assert!(
-            end_angle.is_finite(),
-            "angular gradient end angle must be finite"
+            start_angle.is_finite() && end_angle.is_finite(),
+            "angular gradient angles must be finite"
         );
         let sweep = end_angle - start_angle;
         assert!(sweep > 0.0, "angular gradient sweep must be positive");
@@ -198,289 +147,117 @@ impl ResolvedGradient {
             sweep <= core::f32::consts::TAU,
             "angular gradient sweep must be <= TAU"
         );
+        let mut gradient = SweepGradient::new(
+            point(center, "angular gradient center"),
+            f64::from(start_angle),
+            f64::from(end_angle),
+        );
+        gradient.stops = stops(colors);
         Self {
             gradient_type: GradientType::Angular,
-            stops,
-            start_point: center,
-            end_point: center,
-            start_value: start_angle,
-            end_value: end_angle,
-        }
-    }
-}
-
-// Linear/radial/angular gradients are lightweight native-rendered primitives.
-waterui_core::raw_view!(ResolvedGradient, waterui_core::layout::StretchAxis::Both);
-
-/// Configuration for creating a gradient view.
-#[derive(Debug, Clone)]
-pub struct GradientConfig {
-    /// Type of gradient.
-    pub gradient_type: GradientType,
-    /// Color stops (position + color).
-    pub stops: Vec<(f32, ResolvedColor)>,
-    /// Start point (linear) or center (radial/angular).
-    pub start_point: [f32; 2],
-    /// End point (linear only).
-    pub end_point: [f32; 2],
-    /// Start radius (radial) or start angle in radians (angular).
-    pub start_value: f32,
-    /// End radius (radial) or end angle in radians (angular).
-    pub end_value: f32,
-    /// Mesh grid dimensions (width, height) for mesh gradients.
-    pub mesh_size: (u32, u32),
-    /// Mesh vertices for mesh gradients.
-    pub mesh_vertices: Vec<([f32; 2], ResolvedColor)>,
-    /// Whether to smooth colors (mesh gradients).
-    pub smooths_colors: bool,
-}
-
-impl Default for GradientConfig {
-    fn default() -> Self {
-        Self {
-            gradient_type: GradientType::Linear,
-            stops: vec![
-                (
-                    0.0,
-                    ResolvedColor {
-                        red: 1.0,
-                        green: 0.0,
-                        blue: 0.0,
-                        opacity: 1.0,
-                        headroom: 0.0,
-                    },
-                ),
-                (
-                    1.0,
-                    ResolvedColor {
-                        red: 0.0,
-                        green: 0.0,
-                        blue: 1.0,
-                        opacity: 1.0,
-                        headroom: 0.0,
-                    },
-                ),
-            ],
-            start_point: [0.5, 0.0],
-            end_point: [0.5, 1.0],
-            start_value: 0.0,
-            end_value: 1.0,
-            mesh_size: (2, 2),
-            mesh_vertices: Vec::new(),
-            smooths_colors: true,
-        }
-    }
-}
-
-impl GradientConfig {
-    /// Creates a linear gradient configuration.
-    #[must_use]
-    pub fn linear(stops: Vec<(f32, ResolvedColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
-        Self {
-            gradient_type: GradientType::Linear,
-            stops,
-            start_point: start,
-            end_point: end,
-            ..Default::default()
+            paint: Paint::Sweep(gradient),
         }
     }
 
-    /// Creates a radial gradient configuration.
-    #[must_use]
-    pub fn radial(
-        stops: Vec<(f32, ResolvedColor)>,
-        center: [f32; 2],
-        start_radius: f32,
-        end_radius: f32,
-    ) -> Self {
-        Self {
-            gradient_type: GradientType::Radial,
-            stops,
-            start_point: center,
-            end_point: center,
-            start_value: start_radius,
-            end_value: end_radius,
-            ..Default::default()
-        }
-    }
-
-    /// Creates an angular gradient configuration.
-    #[must_use]
-    pub fn angular(
-        stops: Vec<(f32, ResolvedColor)>,
-        center: [f32; 2],
-        start_angle: f32,
-        end_angle: f32,
-    ) -> Self {
-        Self {
-            gradient_type: GradientType::Angular,
-            stops,
-            start_point: center,
-            end_point: center,
-            start_value: start_angle,
-            end_value: end_angle,
-            ..Default::default()
-        }
-    }
-
-    /// Creates a mesh gradient configuration.
-    ///
-    /// Mesh gradients are GPU-rendered; this constructor is only available with
-    /// the `gpu` feature.
+    /// A gradient interpolated across a `columns` × `rows` grid of control
+    /// vertices in unit space, row-major.
     ///
     /// # Panics
-    ///
-    /// Panics when `vertices.len() != width * height`.
-    #[cfg(feature = "gpu")]
+    /// When the grid has fewer than two vertices on a side or `vertices`
+    /// does not hold exactly `columns * rows` entries.
     #[must_use]
-    pub fn mesh(
-        width: u32,
-        height: u32,
-        vertices: Vec<([f32; 2], ResolvedColor)>,
-        smooths_colors: bool,
-    ) -> Self {
+    pub fn mesh(columns: u32, rows: u32, vertices: Vec<([f32; 2], WorkingColor)>) -> Self {
+        assert!(
+            columns >= 2 && rows >= 2,
+            "mesh gradients need at least a 2x2 grid of vertices"
+        );
         assert_eq!(
             vertices.len(),
-            (width * height) as usize,
-            "mesh gradients require exactly width*height vertices"
+            (columns * rows) as usize,
+            "mesh gradients require exactly columns*rows vertices"
         );
+        let (points, colors): (Vec<Point>, Vec<WorkingColor>) = vertices
+            .into_iter()
+            .map(|(position, color)| (point(position, "mesh gradient vertex"), color))
+            .unzip();
         Self {
             gradient_type: GradientType::Mesh,
-            stops: Vec::new(),
-            mesh_size: (width, height),
-            mesh_vertices: vertices,
-            smooths_colors,
-            ..Default::default()
+            paint: Paint::Mesh(MeshGradient::new(columns - 1, rows - 1, points, colors)),
         }
     }
 
-    fn into_resolved_gradient(self) -> ResolvedGradient {
-        assert!(
-            !(self.gradient_type == GradientType::Mesh),
-            "mesh gradients must use MeshGradient/GPU path, not ResolvedGradient"
-        );
+    /// The family of this gradient.
+    #[must_use]
+    pub const fn gradient_type(&self) -> GradientType {
+        self.gradient_type
+    }
 
-        let mut stops = self
-            .stops
-            .into_iter()
-            .map(|(position, color)| ResolvedGradientStop::new(position, color))
-            .collect::<Vec<_>>();
-        stops.sort_by(|a, b| a.position.total_cmp(&b.position));
+    /// The paint in unit space.
+    #[must_use]
+    pub const fn paint(&self) -> &Paint {
+        &self.paint
+    }
 
-        match self.gradient_type {
-            GradientType::Linear => {
-                ResolvedGradient::linear(stops, self.start_point, self.end_point)
-            }
-            GradientType::Radial => {
-                ResolvedGradient::radial(stops, self.start_point, self.start_value, self.end_value)
-            }
-            GradientType::Angular => {
-                ResolvedGradient::angular(stops, self.start_point, self.start_value, self.end_value)
-            }
-            GradientType::Mesh => panic!("mesh gradients must use MeshGradient/GPU path"),
-        }
+    /// The transform that maps unit space onto a `width` × `height` box.
+    #[must_use]
+    pub fn transform_to(width: f32, height: f32) -> Affine {
+        Affine::scale_non_uniform(f64::from(width), f64::from(height))
     }
 }
 
-/// User-facing gradient view.
-///
-/// - Linear/radial/angular gradients resolve to `ResolvedGradient` raw views.
-/// - Mesh gradients remain GPU-rendered.
-#[derive(Debug, Clone)]
-pub struct Gradient {
-    config: GradientConfig,
-}
-
-impl Gradient {
-    /// Creates a gradient from config.
-    #[must_use]
-    pub const fn new(config: GradientConfig) -> Self {
-        Self { config }
-    }
-
-    /// Creates a linear gradient view.
-    #[must_use]
-    pub fn linear(stops: Vec<(f32, ResolvedColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
-        Self::new(GradientConfig::linear(stops, start, end))
-    }
-
-    /// Creates a radial gradient view.
-    #[must_use]
-    pub fn radial(
-        stops: Vec<(f32, ResolvedColor)>,
-        center: [f32; 2],
-        start_radius: f32,
-        end_radius: f32,
-    ) -> Self {
-        Self::new(GradientConfig::radial(
-            stops,
-            center,
-            start_radius,
-            end_radius,
-        ))
-    }
-
-    /// Creates an angular gradient view.
-    #[must_use]
-    pub fn angular(
-        stops: Vec<(f32, ResolvedColor)>,
-        center: [f32; 2],
-        start_angle: f32,
-        end_angle: f32,
-    ) -> Self {
-        Self::new(GradientConfig::angular(
-            stops,
-            center,
-            start_angle,
-            end_angle,
-        ))
-    }
-
-    /// Creates a static mesh gradient view.
-    ///
-    /// Mesh gradients are GPU-rendered; this constructor is only available with
-    /// the `gpu` feature.
-    #[cfg(feature = "gpu")]
-    #[must_use]
-    pub fn mesh(
-        width: u32,
-        height: u32,
-        vertices: Vec<([f32; 2], ResolvedColor)>,
-        smooths_colors: bool,
-    ) -> Self {
-        Self::new(GradientConfig::mesh(
-            width,
-            height,
-            vertices,
-            smooths_colors,
-        ))
+impl waterui_core::NativeView for Gradient {
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
     }
 }
 
 impl View for Gradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        let config = self.config;
-        match config.gradient_type {
-            #[cfg(feature = "gpu")]
-            GradientType::Mesh => AnyView::new(GpuSurface::new(StaticMeshRenderer::new(
-                config.mesh_size.0,
-                config.mesh_size.1,
-                config.mesh_vertices,
-                config.smooths_colors,
-            ))),
-            #[cfg(not(feature = "gpu"))]
-            GradientType::Mesh => {
-                panic!("mesh gradients require the `gpu` feature")
-            }
-            GradientType::Linear | GradientType::Radial | GradientType::Angular => {
-                AnyView::new(config.into_resolved_gradient())
-            }
-        }
+        waterui_core::Native::new(self)
     }
 
-    /// Every branch resolves to a both-axes leaf: `GpuSurface` for mesh
-    /// gradients, `ResolvedGradient` (declared `Both`) for the rest.
-    fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        waterui_core::layout::StretchAxis::Both
+    fn stretch_axis(&self) -> StretchAxis {
+        StretchAxis::Both
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stops_are_sorted_by_offset() {
+        let gradient = Gradient::linear(
+            vec![(1.0, WorkingColor::WHITE), (0.0, WorkingColor::BLACK)],
+            [0.0, 0.0],
+            [1.0, 0.0],
+        );
+        let Paint::Linear(linear) = gradient.paint() else {
+            panic!("a linear gradient is a linear paint");
+        };
+        assert_eq!(linear.stops[0].offset, 0.0);
+        assert_eq!(linear.stops[1].offset, 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "within [0, 1]")]
+    fn an_offset_past_one_is_rejected() {
+        let _ = Gradient::linear(vec![(1.5, WorkingColor::WHITE)], [0.0, 0.0], [1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_mesh_carries_its_grid() {
+        let gradient = Gradient::mesh(
+            2,
+            2,
+            vec![
+                ([0.0, 0.0], WorkingColor::BLACK),
+                ([1.0, 0.0], WorkingColor::WHITE),
+                ([0.0, 1.0], WorkingColor::WHITE),
+                ([1.0, 1.0], WorkingColor::BLACK),
+            ],
+        );
+        assert_eq!(gradient.gradient_type(), GradientType::Mesh);
+        assert!(matches!(gradient.paint(), Paint::Mesh(_)));
     }
 }

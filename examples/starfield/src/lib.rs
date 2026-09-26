@@ -1,4 +1,4 @@
-//! Starfield animation example using `ShaderSurface`.
+//! Starfield animation example using `ShaderPaintView`.
 //!
 //! This example demonstrates the simplest way to create GPU-rendered content
 //! using the `shader!` macro.

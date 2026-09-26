@@ -1,6 +1,6 @@
 use waterui::shape::{ResolvedShape, ShapeKind};
 
-use crate::{IntoFFI, WuiArray, WuiPathCommand, reactive::WuiComputed};
+use crate::{IntoFFI, WuiArray, WuiPathCommand, path_commands, reactive::WuiComputed};
 
 /// C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
 /// per-corner radii used only by the rounded-rect variants.
@@ -115,22 +115,16 @@ pub struct WuiResolvedShape {
     /// Path commands in unit coordinate space.
     pub commands: WuiArray<WuiPathCommand>,
     /// Read-only signal for the environment-resolved fill color.
-    pub fill: *mut WuiComputed<waterui_graphics::ResolvedColor>,
+    pub fill: *mut WuiComputed<waterui_graphics::WorkingColor>,
 }
 
 impl IntoFFI for ResolvedShape {
     type FFI = WuiResolvedShape;
 
     fn into_ffi(self) -> Self::FFI {
-        let commands = self
-            .commands
-            .into_iter()
-            .map(IntoFFI::into_ffi)
-            .collect::<Vec<WuiPathCommand>>();
-
         WuiResolvedShape {
             kind: self.kind.into_ffi(),
-            commands: WuiArray::new(commands),
+            commands: path_commands(&self.path),
             fill: self.fill.into_ffi(),
         }
     }

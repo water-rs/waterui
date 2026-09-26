@@ -20,7 +20,7 @@
 
 use core::time::Duration;
 
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Curve, Spring};
 use waterui::app::App;
 use waterui::prelude::*;
 use waterui::preview;
@@ -55,7 +55,7 @@ fn stress_card_background(index: usize) -> Color {
 
 fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View {
     let fast = Duration::from_millis(520);
-    let easing = Animation::bezier(fast, 0.22, 1.0, 0.36, 1.0);
+    let easing = Animation::Curve(Curve::bezier(fast, 0.22, 1.0, 0.36, 1.0));
 
     let amp = ((index % 5) as f32).mul_add(2.0, 8.0);
     let hi_scale = ((index % 4) as f32).mul_add(0.09, 0.9);
@@ -66,7 +66,7 @@ fn system_tile(toggle: &Binding<bool>, index: usize) -> impl View {
     let rotation = toggle.select(hi_rot, -hi_rot).with(easing);
     let offset_x = toggle
         .select(amp, -amp)
-        .with(Animation::spring(260.0, 20.0));
+        .with(Animation::Spring(Spring::from_physics(260.0, 20.0)));
 
     RoundedRectangle::new(0.22)
         .fill(stress_card_background(index))
@@ -95,17 +95,21 @@ fn filter_tile(
     let blur = blur_target
         .clone()
         .map(move |v| (idx * 0.17).sin().mul_add(1.6, v).clamp(0.0, 12.0) as f32)
-        .with(Animation::spring(220.0, 14.0));
+        .with(Animation::Spring(Spring::from_physics(220.0, 14.0)));
 
     let saturation = saturation_target
         .clone()
         .map(move |v| (idx * 0.11).cos().mul_add(0.35, v).clamp(0.0, 2.0) as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(380)));
+        .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+            380,
+        ))));
 
     let hue = hue_target
         .clone()
         .map(move |v| idx.mul_add(11.0, v).rem_euclid(360.0) as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(420)));
+        .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+            420,
+        ))));
 
     zstack((
         stress_card_background(index),

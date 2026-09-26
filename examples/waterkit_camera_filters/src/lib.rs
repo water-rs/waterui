@@ -6,13 +6,14 @@
 //! - Waterkit Camera: native camera streaming + device enumeration
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-use futures::{FutureExt, StreamExt, future::LocalBoxFuture};
+use futures::{FutureExt, StreamExt, future::BoxFuture};
 use shaderloom::CompiledShader;
 use waterkit_camera::Camera;
 use waterkit_permission::{Permission, PermissionStatus, check, request};
 use waterui::app::App;
-use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, bytemuck};
+use waterui::graphics::{Context as GpuContext, Frame as GpuFrame, GpuContent, GpuContentView};
 use waterui::prelude::slider::slider;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
@@ -164,28 +165,42 @@ fn camera_surface(
     reconnect_ticket: Binding<usize>,
     preview_status: Binding<Str>,
 ) -> impl View {
-    GpuSurface::new(CameraFilterRenderer::new(
-        active_filter,
-        filter_strength,
-        reconnect_ticket,
-        preview_status,
-    ))
-    .size(960.0, 540.0)
-    .background(Surface)
-    .padding_with(8.0)
+    let controls = Arc::new(FilterControls::default());
+    let (status_tx, status_rx) = std::sync::mpsc::channel();
+    let content = CameraFilterRenderer::new(controls.clone(), status_tx);
+    GpuContentView::new(content)
+        .on_frame(move || {
+            controls.publish(
+                active_filter.snapshot(),
+                filter_strength.snapshot() as f32,
+                reconnect_ticket.snapshot(),
+            );
+            if let Some(status) = status_rx.try_iter().last() {
+                preview_status.set(Str::from(status));
+            }
+        })
+        .size(960.0, 540.0)
+        .background(Surface)
+        .padding_with(8.0)
 }
 
 fn synthetic_camera_surface(
     active_filter: Binding<usize>,
     filter_strength: Binding<f64>,
 ) -> impl View {
-    GpuSurface::new(SyntheticCameraPreviewRenderer::new(
-        active_filter,
-        filter_strength,
-    ))
-    .size(960.0, 540.0)
-    .background(Surface)
-    .padding_with(8.0)
+    let controls = Arc::new(FilterControls::default());
+    let content = SyntheticCameraPreviewRenderer::new(controls.clone());
+    GpuContentView::new(content)
+        .on_frame(move || {
+            controls.publish(
+                active_filter.snapshot(),
+                filter_strength.snapshot() as f32,
+                0,
+            );
+        })
+        .size(960.0, 540.0)
+        .background(Surface)
+        .padding_with(8.0)
 }
 
 fn filter_button(
@@ -198,28 +213,53 @@ fn filter_button(
         .state(active_filter)
 }
 
-struct SyntheticCameraPreviewRenderer {
-    active_filter: Binding<usize>,
-    filter_strength: Binding<f64>,
+/// The filter selection the UI thread publishes to the render thread.
+///
+/// The bindings live with the view; the content only ever sees the last
+/// snapshot the frame hook stored here.
+#[derive(Debug, Default)]
+struct FilterControls {
+    filter: AtomicUsize,
+    strength_bits: AtomicU32,
+    reconnect_ticket: AtomicUsize,
 }
 
-impl SyntheticCameraPreviewRenderer {
-    fn new(active_filter: Binding<usize>, filter_strength: Binding<f64>) -> Self {
-        Self {
-            active_filter,
-            filter_strength,
-        }
+impl FilterControls {
+    fn publish(&self, filter: usize, strength: f32, reconnect_ticket: usize) {
+        self.filter.store(filter, Ordering::Relaxed);
+        self.strength_bits
+            .store(strength.to_bits(), Ordering::Relaxed);
+        self.reconnect_ticket
+            .store(reconnect_ticket, Ordering::Relaxed);
+    }
+
+    fn params(&self) -> (f32, f32, f32, f32, f32) {
+        filter_params(
+            self.filter.load(Ordering::Relaxed),
+            f32::from_bits(self.strength_bits.load(Ordering::Relaxed)),
+        )
+    }
+
+    fn reconnect_ticket(&self) -> usize {
+        self.reconnect_ticket.load(Ordering::Relaxed)
     }
 }
 
-impl GpuView for SyntheticCameraPreviewRenderer {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
+struct SyntheticCameraPreviewRenderer {
+    controls: Arc<FilterControls>,
+}
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        let (brightness, saturation, contrast, tint, vignette) = filter_params(
-            self.active_filter.snapshot(),
-            self.filter_strength.snapshot() as f32,
-        );
+impl SyntheticCameraPreviewRenderer {
+    fn new(controls: Arc<FilterControls>) -> Self {
+        Self { controls }
+    }
+}
+
+impl GpuContent for SyntheticCameraPreviewRenderer {
+    fn setup(&mut self, _ctx: &GpuContext<'_>) {}
+
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        let (brightness, saturation, contrast, tint, vignette) = self.controls.params();
         let red = (0.32 + brightness + tint * 0.08).clamp(0.0, 1.0);
         let green = (0.46 + brightness + saturation * 0.04 - vignette * 0.03).clamp(0.0, 1.0);
         let blue = (0.58 + brightness - tint * 0.08 + contrast * 0.03).clamp(0.0, 1.0);
@@ -257,14 +297,12 @@ impl GpuView for SyntheticCameraPreviewRenderer {
 }
 
 struct CameraFilterRenderer {
-    active_filter: Binding<usize>,
-    filter_strength: Binding<f64>,
-    reconnect_ticket: Binding<usize>,
-    preview_status: Binding<Str>,
+    controls: Arc<FilterControls>,
+    preview_status: std::sync::mpsc::Sender<String>,
     last_reconnect_ticket: usize,
 
     camera: Option<Camera>,
-    camera_open_task: Option<LocalBoxFuture<'static, Result<Camera, String>>>,
+    camera_open_task: Option<BoxFuture<'static, Result<Camera, String>>>,
     pipeline: Option<wgpu::RenderPipeline>,
     bind_group_layout: Option<wgpu::BindGroupLayout>,
     sampler: Option<wgpu::Sampler>,
@@ -275,16 +313,9 @@ struct CameraFilterRenderer {
 }
 
 impl CameraFilterRenderer {
-    fn new(
-        active_filter: Binding<usize>,
-        filter_strength: Binding<f64>,
-        reconnect_ticket: Binding<usize>,
-        preview_status: Binding<Str>,
-    ) -> Self {
+    fn new(controls: Arc<FilterControls>, preview_status: std::sync::mpsc::Sender<String>) -> Self {
         Self {
-            active_filter,
-            filter_strength,
-            reconnect_ticket,
+            controls,
             preview_status,
             last_reconnect_ticket: 0,
             camera: None,
@@ -299,8 +330,8 @@ impl CameraFilterRenderer {
         }
     }
 
-    fn ensure_pipeline(&mut self, ctx: &GpuContext) {
-        if self.pipeline.is_some() && self.pipeline_format == Some(ctx.surface_format) {
+    fn ensure_pipeline(&mut self, ctx: &GpuContext<'_>) {
+        if self.pipeline.is_some() && self.pipeline_format == Some(ctx.format) {
             return;
         }
 
@@ -364,7 +395,7 @@ impl CameraFilterRenderer {
                     module: fragment_shader.module(),
                     entry_point: Some(fragment_shader.entry_point()),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
+                        format: ctx.format,
                         blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -402,7 +433,12 @@ impl CameraFilterRenderer {
         self.bind_group_layout = Some(bind_group_layout);
         self.sampler = Some(sampler);
         self.uniform_buffer = Some(uniform_buffer);
-        self.pipeline_format = Some(ctx.surface_format);
+        self.pipeline_format = Some(ctx.format);
+    }
+
+    fn set_status(&self, status: impl Into<String>) {
+        // The view may already be gone; then nobody reads the status.
+        let _ = self.preview_status.send(status.into());
     }
 
     fn start_camera_open(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, reconnect: bool) {
@@ -411,7 +447,7 @@ impl CameraFilterRenderer {
         } else {
             "Opening camera stream..."
         };
-        self.preview_status.set(status.to_string().into());
+        self.set_status(status);
         self.camera = None;
         self.latest_texture = None;
         self.latest_bind_group = None;
@@ -433,11 +469,10 @@ impl CameraFilterRenderer {
         match task.as_mut().now_or_never() {
             Some(Ok(camera)) => {
                 self.camera = Some(camera);
-                self.preview_status.set(Str::from("Camera stream active."));
+                self.set_status("Camera stream active.");
             }
             Some(Err(error)) => {
-                self.preview_status
-                    .set(format!("Failed to open camera stream: {error}").into());
+                self.set_status(format!("Failed to open camera stream: {error}"));
             }
             None => {
                 self.camera_open_task = Some(task);
@@ -445,22 +480,25 @@ impl CameraFilterRenderer {
         };
     }
 
-    fn update_filter_uniform(&self, frame: &GpuFrame) {
+    fn update_filter_uniform(&self, frame: &GpuFrame<'_>) {
         let Some(uniform_buffer) = &self.uniform_buffer else {
             return;
         };
 
-        let (brightness, saturation, contrast, tint, vignette) = filter_params(
-            self.active_filter.snapshot(),
-            self.filter_strength.snapshot() as f32,
-        );
+        let (brightness, saturation, contrast, tint, vignette) = self.controls.params();
 
         let uniforms: [f32; 8] = [
             brightness, saturation, contrast, tint, vignette, 0.0, 0.0, 0.0,
         ];
-        frame
-            .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::cast_slice(&uniforms));
+        frame.queue.write_buffer(
+            uniform_buffer,
+            0,
+            uniforms
+                .iter()
+                .flat_map(|v| v.to_ne_bytes())
+                .collect::<Vec<u8>>()
+                .as_slice(),
+        );
     }
 
     fn pull_latest_frame(&mut self) {
@@ -483,22 +521,21 @@ impl CameraFilterRenderer {
                 self.camera = None;
                 self.latest_texture = None;
                 self.latest_bind_group = None;
-                self.preview_status
-                    .set(Str::from("Camera stream ended unexpectedly."));
+                self.set_status("Camera stream ended unexpectedly.");
             }
             std::task::Poll::Pending => {}
         }
     }
 }
 
-impl GpuView for CameraFilterRenderer {
-    async fn setup(&mut self, ctx: &GpuContext<'_>, _env: &mut Environment) {
+impl GpuContent for CameraFilterRenderer {
+    fn setup(&mut self, ctx: &GpuContext<'_>) {
         self.ensure_pipeline(ctx);
         self.start_camera_open(ctx.device, ctx.queue, false);
     }
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        let reconnect_ticket = self.reconnect_ticket.snapshot();
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        let reconnect_ticket = self.controls.reconnect_ticket();
         if reconnect_ticket != self.last_reconnect_ticket {
             self.last_reconnect_ticket = reconnect_ticket;
             self.start_camera_open(frame.device, frame.queue, true);

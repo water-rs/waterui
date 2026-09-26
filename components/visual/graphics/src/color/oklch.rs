@@ -1,7 +1,9 @@
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use super::{ResolvedColor, Srgb, linear_to_srgb, oklch_to_linear_srgb};
+use cherenkov::WorkingColor;
+
+use super::{Srgb, linear_to_srgb, oklch_to_linear_srgb, working};
 
 /// Represents a color in the perceptually-uniform OKLCH color space.
 ///
@@ -44,18 +46,24 @@ impl Oklch {
     }
 }
 
+impl Oklch {
+    /// The working colour of this Oklch colour, fully opaque.
+    #[must_use]
+    pub fn resolve(&self) -> WorkingColor {
+        working::from_oklch(*self, 1.0)
+    }
+}
+
 impl Resolvable for Oklch {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let [red, green, blue] = oklch_to_linear_srgb(self.lightness, self.chroma, self.hue);
+        Self::resolve(self)
+    }
+}
 
-        ResolvedColor {
-            red,
-            green,
-            blue,
-            headroom: 0.0,
-            opacity: 1.0,
-        }
+impl From<Oklch> for WorkingColor {
+    fn from(value: Oklch) -> Self {
+        value.resolve()
     }
 }

@@ -43,7 +43,7 @@ use nami::Binding;
 use nami::collection::List;
 use suiteki::Str;
 use waterui_controls::{Button, ButtonStyle, button, label};
-use waterui_core::animation::Animation;
+use waterui_core::animation::{Animation, Curve};
 use waterui_core::extract::State;
 use waterui_core::handler::{AnyViewBuilder, Handler, SharedAction, shared_action};
 use waterui_core::id::Identifiable;
@@ -195,9 +195,9 @@ pub struct SnackbarTheme {
     /// Entrance and dismissal vertical travel.
     pub motion_offset_y: f32,
     /// Entrance animation.
-    pub enter_animation: Animation,
+    pub enter_animation: Curve,
     /// Dismissal animation.
-    pub exit_animation: Animation,
+    pub exit_animation: Curve,
 }
 
 impl SnackbarTheme {
@@ -228,8 +228,8 @@ impl SnackbarTheme {
             ambient_shadow_radius: 0.0,
             ambient_shadow_offset_y: 0.0,
             motion_offset_y: 20.0,
-            enter_animation: Animation::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
-            exit_animation: Animation::bezier(Duration::from_millis(200), 0.3, 0.0, 1.0, 1.0),
+            enter_animation: Curve::bezier(Duration::from_millis(250), 0.0, 0.0, 0.0, 1.0),
+            exit_animation: Curve::bezier(Duration::from_millis(200), 0.3, 0.0, 1.0, 1.0),
         }
     }
 
@@ -262,8 +262,8 @@ impl SnackbarTheme {
             ambient_shadow_radius: 2.0,
             ambient_shadow_offset_y: 1.0,
             motion_offset_y: 16.0,
-            enter_animation: Animation::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0),
-            exit_animation: Animation::bezier(Duration::from_millis(220), 0.4, 0.0, 1.0, 1.0),
+            enter_animation: Curve::bezier(Duration::from_millis(280), 0.2, 0.0, 0.0, 1.0),
+            exit_animation: Curve::bezier(Duration::from_millis(220), 0.4, 0.0, 1.0, 1.0),
         }
     }
 }
@@ -718,7 +718,7 @@ impl SnackbarManager {
         self.reflow();
 
         let manager = self.clone();
-        let exit = SnackbarTheme::default().exit_animation.duration();
+        let exit = SnackbarTheme::default().exit_animation.duration;
         spawn_local(async move {
             native_executor::sleep(exit).await;
             manager.finish_dismissal(id);
@@ -971,7 +971,7 @@ impl View for StackedSnackbarView {
 
         let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
 
-        let enter_animation = theme.enter_animation.clone();
+        let enter_animation = Animation::Curve(theme.enter_animation);
         let shadow = Shadow::new(
             theme.shadow_color.clone(),
             Vector::new(0.0, theme.shadow_offset_y),
@@ -1013,10 +1013,10 @@ impl View for StackedSnackbarView {
             )
             .shadow(ambient_shadow)
             .shadow(shadow)
-            .opacity(item.opacity.with(enter_animation.clone()))
+            .opacity(item.opacity.with(enter_animation))
             // Entrance slide and reflow shift are independent animated
             // bindings (each has a stable identity, so each animates).
-            .offset(0.0, item.entrance_offset.with(enter_animation.clone()))
+            .offset(0.0, item.entrance_offset.with(enter_animation))
             .offset(0.0, item.stack_offset.with(enter_animation)),
         )
         .alignment(position.to_alignment())

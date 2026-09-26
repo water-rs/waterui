@@ -1,70 +1,83 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Mutex;
 
 use cef::PaintElementType;
 use num_traits::ToPrimitive as _;
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame};
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame, RedrawHandle};
 
 use crate::CefPopupRect;
 
+/// The newest frames the browser has published, shared between the UI-thread
+/// frame sink that imports them and the render-thread content that presents
+/// them.
 pub(super) struct OwnedFrameMailbox {
-    view_frame: RefCell<Option<wgpu::Texture>>,
-    popup_frame: RefCell<Option<wgpu::Texture>>,
-    popup_rect: RefCell<Option<CefPopupRect>>,
-    waker: RefCell<Option<Rc<dyn Fn()>>>,
+    slots: Mutex<Slots>,
+}
+
+#[derive(Default)]
+struct Slots {
+    view_frame: Option<wgpu::Texture>,
+    popup_frame: Option<wgpu::Texture>,
+    popup_rect: Option<CefPopupRect>,
+    waker: Option<RedrawHandle>,
 }
 
 impl OwnedFrameMailbox {
     pub(super) fn new() -> Self {
         Self {
-            view_frame: RefCell::new(None),
-            popup_frame: RefCell::new(None),
-            popup_rect: RefCell::new(None),
-            waker: RefCell::new(None),
+            slots: Mutex::new(Slots::default()),
         }
     }
 
-    pub(super) fn set_waker(&self, waker: Rc<dyn Fn()>) {
-        self.waker.replace(Some(waker));
+    fn slots(&self) -> std::sync::MutexGuard<'_, Slots> {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn set_waker(&self, waker: RedrawHandle) {
+        self.slots().waker = Some(waker);
     }
 
     pub(super) fn publish(&self, element: PaintElementType, frame: wgpu::Texture) {
-        match element {
-            PaintElementType::VIEW => {
-                self.view_frame.replace(Some(frame));
+        {
+            let mut slots = self.slots();
+            match element {
+                PaintElementType::VIEW => slots.view_frame = Some(frame),
+                PaintElementType::POPUP => slots.popup_frame = Some(frame),
+                element => panic!("CEF returned unsupported paint element {element:?}"),
             }
-            PaintElementType::POPUP => {
-                self.popup_frame.replace(Some(frame));
-            }
-            element => panic!("CEF returned unsupported paint element {element:?}"),
         }
         self.wake();
     }
 
     pub(super) fn set_popup_rect(&self, rect: Option<CefPopupRect>) {
-        self.popup_rect.replace(rect);
-        if rect.is_none() {
-            self.popup_frame.borrow_mut().take();
+        {
+            let mut slots = self.slots();
+            slots.popup_rect = rect;
+            if rect.is_none() {
+                slots.popup_frame = None;
+            }
         }
         self.wake();
     }
 
     fn wake(&self) {
-        if let Some(waker) = self.waker.borrow().as_ref() {
-            waker();
+        let waker = self.slots().waker.clone();
+        if let Some(waker) = waker {
+            waker.request_redraw();
         }
     }
 
     pub(super) fn take_view(&self) -> Option<wgpu::Texture> {
-        self.view_frame.borrow_mut().take()
+        self.slots().view_frame.take()
     }
 
     pub(super) fn take_popup(&self) -> Option<wgpu::Texture> {
-        self.popup_frame.borrow_mut().take()
+        self.slots().popup_frame.take()
     }
 
     pub(super) fn popup_rect(&self) -> Option<CefPopupRect> {
-        *self.popup_rect.borrow()
+        self.slots().popup_rect
     }
 }
 
@@ -192,7 +205,7 @@ impl TexturePresenter {
                     entry_point: Some("fragment_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: context.surface_format,
+                        format: context.format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -213,7 +226,7 @@ impl TexturePresenter {
             pipeline,
             bind_group_layout,
             sampler,
-            target_format: context.surface_format,
+            target_format: context.format,
             source: None,
             popup: None,
             popup_rect: None,

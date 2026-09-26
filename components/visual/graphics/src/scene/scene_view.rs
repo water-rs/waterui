@@ -7,18 +7,10 @@ use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis};
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{Environment, Native, NativeView, View};
 
-#[cfg(feature = "gpu")]
-use crate::gpu_surface::GpuSurface;
 use crate::input::SurfaceInputEvent;
-#[cfg(feature = "gpu")]
-use crate::scene::scene_surface::SceneSurfaceRenderer;
-use crate::scene2d::Scene2D;
-
-/// Environment marker: render `SceneView` directly in the backend scene.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SceneViewMergeToParent;
+use crate::scene::resources::Scene;
 
 /// Callback used by scene content to request another frame.
 pub type SceneInvalidator = Rc<dyn Fn()>;
@@ -28,7 +20,7 @@ pub type SceneInvalidator = Rc<dyn Fn()>;
 ///
 /// The one way scene content follows a signal it draws from. This is scene
 /// invalidation, not a subtree rebuild: the content instance and whatever it
-/// caches survive the change, and the next `build_scene` reads the new value.
+/// caches survive the change, and the next `record` reads the new value.
 /// Keep the guard beside the invalidator and drop both when the invalidator
 /// is cleared, which is what stopping the frames means.
 #[must_use]
@@ -42,10 +34,12 @@ pub fn invalidate_on_change<S: Signal>(
 
 /// Object-safe scene producer for `SceneView`.
 pub trait SceneContent: 'static {
-    /// Build commands into the provided scene.
+    /// Records the content into `scene` at the size it reports.
     ///
-    /// Returns true when the content requires another frame to be rendered.
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool;
+    /// Signals the content passes to the recorder stay live: a colour or a
+    /// transform that changes updates in place without a re-record. Returns
+    /// true only when the content simulates and must be re-recorded next frame.
+    fn record(&mut self, scene: &mut Scene<'_>) -> bool;
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
@@ -118,7 +112,7 @@ pub trait SceneContent: 'static {
     /// game board — returns `true`, and whichever realization draws it then
     /// routes the events landing on it to [`SceneContent::input`]: a backend
     /// that merges the scene into its own tree registers the content as an
-    /// input target, and the `GpuSurface` realization forwards its surface's
+    /// input target, and the `GpuContent` realization forwards its surface's
     /// events. Content that only draws — the common case — leaves this
     /// `false`, claims no focus, and every event keeps going to the widgets
     /// around it.
@@ -133,7 +127,7 @@ pub trait SceneContent: 'static {
     ///
     /// Only called when [`SceneContent::wants_input_events`] returns `true`.
     /// Every position is logical and local to the content: its own top-left is
-    /// `(0, 0)`, in the same space [`SceneContent::build_scene`] draws in. See
+    /// `(0, 0)`, in the same space [`SceneContent::record`] draws in. See
     /// [`SurfaceInputEvent`] for the vocabulary.
     ///
     /// An event that changes what the content draws is followed by a call to
@@ -149,7 +143,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
+    fn ime_caret(&self) -> Option<cherenkov::kurbo::Rect> {
         None
     }
 }
@@ -157,7 +151,7 @@ pub trait SceneContent: 'static {
 /// Fills in the axes a proposal left open from scene content's intrinsic size.
 ///
 /// This is the one rule every realization of a [`SceneView`] measures by — the
-/// `GpuSurface` one, hydrolysis' retained tree, dew's display list — so a scene
+/// `GpuContent` one, hydrolysis' retained tree, dew's display list — so a scene
 /// cannot be sized differently depending on which backend drew it.
 ///
 /// - Content with no intrinsic size is returned unchanged, so a scene that takes
@@ -232,7 +226,7 @@ pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     }
 }
 
-/// A view that renders scene content either directly (backend) or via `GpuSurface`.
+/// A view that renders scene content either directly (backend) or through Cherenkov content.
 pub struct SceneView {
     content: Box<dyn SceneContent>,
 }
@@ -290,17 +284,6 @@ impl SceneView {
     pub fn into_content(self) -> Box<dyn SceneContent> {
         self.content
     }
-
-    /// Converts this scene directly into a GPU surface.
-    ///
-    /// This is primarily useful for offscreen rendering and visual tests. Normal
-    /// view composition should return `SceneView` so a self-drawn backend can
-    /// merge its commands directly into the parent scene.
-    #[cfg(feature = "gpu")]
-    #[must_use]
-    pub fn into_gpu_surface(self) -> GpuSurface {
-        GpuSurface::new(SceneSurfaceRenderer::new(self.content))
-    }
 }
 
 impl NativeView for SceneView {
@@ -310,25 +293,8 @@ impl NativeView for SceneView {
 }
 
 impl View for SceneView {
-    fn body(self, env: &Environment) -> impl View {
-        if env.get::<SceneViewMergeToParent>().is_some() {
-            return AnyView::new(Native::new(self));
-        }
-        #[cfg(feature = "gpu")]
-        {
-            AnyView::new(self.into_gpu_surface())
-        }
-        // Without a GPU surface to fall back on there is nowhere left to draw:
-        // a scene either merges into a backend's own scene or rasterizes into a
-        // surface of its own, and neither is available here.
-        #[cfg(not(feature = "gpu"))]
-        {
-            panic!(
-                "a SceneView has no way to render: the backend did not install \
-                 `SceneViewMergeToParent`, and `waterui-graphics` was built \
-                 without the `gpu` feature that provides the GpuSurface path"
-            );
-        }
+    fn body(self, _env: &Environment) -> impl View {
+        Native::new(self)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -342,13 +308,13 @@ mod tests {
         NativeView, ProposalSize, SceneContent, SceneView, Size, StretchAxis,
         resolve_scene_proposal, scene_stretch_axis,
     };
-    use crate::scene2d::Scene2D;
+    use crate::scene::resources::Scene;
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
     struct Tall;
 
     impl SceneContent for Tall {
-        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+        fn record(&mut self, _scene: &mut Scene<'_>) -> bool {
             false
         }
 
@@ -361,54 +327,12 @@ mod tests {
     struct Sizeless;
 
     impl SceneContent for Sizeless {
-        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+        fn record(&mut self, _scene: &mut Scene<'_>) -> bool {
             false
         }
     }
 
     /// Content that says what it draws, the way a formula or a chart does.
-    struct Spoken;
-
-    impl SceneContent for Spoken {
-        fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
-            false
-        }
-
-        fn accessibility_value(&self) -> Option<alloc::string::String> {
-            Some("x squared plus one".into())
-        }
-    }
-
-    /// The value has to survive the trip onto a GPU surface, because that is
-    /// the path every native backend takes: a `SceneView` that is not merged
-    /// into a backend's own scene becomes a `GpuSurface`, and a surface whose
-    /// renderer forgot the value is announced to a screen reader as a silent
-    /// rectangle.
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn a_surface_carries_the_value_its_content_gives() {
-        assert_eq!(
-            SceneView::new(Spoken)
-                .into_gpu_surface()
-                .accessibility_value(),
-            Some("x squared plus one".into())
-        );
-        assert_eq!(
-            SceneView::new(Spoken)
-                .into_gpu_surface()
-                .accessibility_label(),
-            None,
-            "content that names nothing must not invent a name for itself"
-        );
-        assert_eq!(
-            SceneView::new(Sizeless)
-                .into_gpu_surface()
-                .accessibility_value(),
-            None,
-            "content with nothing to say must not invent a value either"
-        );
-    }
-
     #[test]
     fn content_defaults_to_no_intrinsic_size() {
         assert_eq!(Sizeless.intrinsic_size(), None);

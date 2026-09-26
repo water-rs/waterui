@@ -35,15 +35,13 @@ use waterui::easing::{EasingCurve, Interpolatable};
 #[cfg(feature = "std")]
 use waterui::Intensity;
 
-// `.filter(F)` requires `F: Effect`; the whole family is at the graphics root
-// beside the `ViewEffect` family it mirrors.
+// Filters, shader paints and self-drawn GPU content are at the graphics root.
 #[cfg(feature = "gpu")]
 use waterui::graphics::{
-    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-    ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
+    AnyEffect, Context, FilterViewExt, Frame, GpuContent, GpuContentView, ShaderPaintView,
 };
 
-// Apps implementing `GpuView`/`Effect` must be able to use the same `wgpu` this
+// Apps implementing `GpuContent` must be able to use the same `wgpu` this
 // build links, rather than hand-adding a version that may not match.
 #[cfg(feature = "gpu")]
 use waterui::graphics::wgpu;

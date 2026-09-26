@@ -979,17 +979,11 @@ fn create_path_command_struct<'local>(
         .expect("PathCommandStruct class not found");
 
     // Extract values based on the command type
-    // PathCommandStruct(tag, x, y, cx, cy, c1x, c1y, c2x, c2y, rx, ry, start, sweep)
-    let (tag, x, y, cx, cy, c1x, c1y, c2x, c2y, rx, ry, start, sweep) = match cmd {
-        crate::WuiPathCommand::MoveTo { x, y } => {
-            (0, *x, *y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        }
-        crate::WuiPathCommand::LineTo { x, y } => {
-            (1, *x, *y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        }
-        crate::WuiPathCommand::QuadTo { cx, cy, x, y } => {
-            (2, *x, *y, *cx, *cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-        }
+    // PathCommandStruct(tag, x, y, cx, cy, c1x, c1y, c2x, c2y)
+    let (tag, x, y, cx, cy, c1x, c1y, c2x, c2y) = match cmd {
+        crate::WuiPathCommand::MoveTo { x, y } => (0, *x, *y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        crate::WuiPathCommand::LineTo { x, y } => (1, *x, *y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        crate::WuiPathCommand::QuadTo { cx, cy, x, y } => (2, *x, *y, *cx, *cy, 0.0, 0.0, 0.0, 0.0),
         crate::WuiPathCommand::CubicTo {
             c1x,
             c1y,
@@ -997,27 +991,13 @@ fn create_path_command_struct<'local>(
             c2y,
             x,
             y,
-        } => (
-            3, *x, *y, 0.0, 0.0, *c1x, *c1y, *c2x, *c2y, 0.0, 0.0, 0.0, 0.0,
-        ),
-        crate::WuiPathCommand::Arc {
-            cx,
-            cy,
-            rx,
-            ry,
-            start,
-            sweep,
-        } => (
-            4, 0.0, 0.0, *cx, *cy, 0.0, 0.0, 0.0, 0.0, *rx, *ry, *start, *sweep,
-        ),
-        crate::WuiPathCommand::Close => (
-            5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        ),
+        } => (3, *x, *y, 0.0, 0.0, *c1x, *c1y, *c2x, *c2y),
+        crate::WuiPathCommand::Close => (4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
     };
 
     env.new_object(
         &class,
-        jni_sig!("(IFFFFFFFFFFFF)V"),
+        jni_sig!("(IFFFFFFFF)V"),
         &[
             JValue::Int(tag),
             JValue::Float(x),
@@ -1028,10 +1008,6 @@ fn create_path_command_struct<'local>(
             JValue::Float(c1y),
             JValue::Float(c2x),
             JValue::Float(c2y),
-            JValue::Float(rx),
-            JValue::Float(ry),
-            JValue::Float(start),
-            JValue::Float(sweep),
         ],
     )
     .expect("Failed to create PathCommandStruct")
@@ -1063,67 +1039,75 @@ impl ToJavaStruct for crate::WuiStr {
     }
 }
 
-/// `WuiResolvedColor -> ResolvedColorStruct(red, green, blue, opacity, headroom)`
-impl ToJavaStruct for crate::color::WuiResolvedColor {
+/// `WuiWorkingColor -> WorkingColorStruct(red, green, blue, alpha)`
+impl ToJavaStruct for crate::color::WuiWorkingColor {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/ResolvedColorStruct"))
-            .expect("ResolvedColorStruct class not found");
+            .find_class(jni_str!("dev/waterui/android/runtime/WorkingColorStruct"))
+            .expect("WorkingColorStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(FFFFF)V"),
+            jni_sig!("(FFFF)V"),
             &[
                 JValue::Float(self.red),
                 JValue::Float(self.green),
                 JValue::Float(self.blue),
-                JValue::Float(self.opacity),
-                JValue::Float(self.headroom),
+                JValue::Float(self.alpha),
             ],
         )
-        .expect("Failed to create ResolvedColorStruct")
+        .expect("Failed to create WorkingColorStruct")
     }
 }
 
-/// `WuiResolvedGradientStop -> ResolvedGradientStopStruct(position, color)`
-impl ToJavaStruct for crate::gradient::WuiResolvedGradientStop {
+/// `WuiGradientStop -> GradientStopStruct(position, color)`
+impl ToJavaStruct for crate::gradient::WuiGradientStop {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
-            .find_class(jni_str!(
-                "dev/waterui/android/runtime/ResolvedGradientStopStruct"
-            ))
-            .expect("ResolvedGradientStopStruct class not found");
-        let color = crate::color::WuiResolvedColor {
-            red: self.color.red,
-            green: self.color.green,
-            blue: self.color.blue,
-            opacity: self.color.opacity,
-            headroom: self.color.headroom,
-        };
-        let java_color = color.to_java_struct(env);
+            .find_class(jni_str!("dev/waterui/android/runtime/GradientStopStruct"))
+            .expect("GradientStopStruct class not found");
+        let java_color = self.color.to_java_struct(env);
         env.new_object(
             &class,
-            jni_sig!("(FLdev/waterui/android/runtime/ResolvedColorStruct;)V"),
+            jni_sig!("(FLdev/waterui/android/runtime/WorkingColorStruct;)V"),
             &[JValue::Float(self.position), JValue::Object(&java_color)],
         )
-        .expect("Failed to create ResolvedGradientStopStruct")
+        .expect("Failed to create GradientStopStruct")
     }
 }
 
-/// `WuiResolvedGradient -> ResolvedGradientStruct(...)`
-impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
+/// `WuiMeshVertex -> MeshVertexStruct(x, y, color)`
+impl ToJavaStruct for crate::gradient::WuiMeshVertex {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/MeshVertexStruct"))
+            .expect("MeshVertexStruct class not found");
+        let java_color = self.color.to_java_struct(env);
+        env.new_object(
+            &class,
+            jni_sig!("(FFLdev/waterui/android/runtime/WorkingColorStruct;)V"),
+            &[
+                JValue::Float(self.x),
+                JValue::Float(self.y),
+                JValue::Object(&java_color),
+            ],
+        )
+        .expect("Failed to create MeshVertexStruct")
+    }
+}
+
+/// `WuiGradient -> GradientStruct(...)`
+impl ToJavaStruct for crate::gradient::WuiGradient {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let stop_class = env
-            .find_class(jni_str!(
-                "dev/waterui/android/runtime/ResolvedGradientStopStruct"
-            ))
-            .expect("ResolvedGradientStopStruct class not found");
+            .find_class(jni_str!("dev/waterui/android/runtime/GradientStopStruct"))
+            .expect("GradientStopStruct class not found");
         let stop_array = env
             .new_object_array(
                 super::array_len(self.stops.len()),
                 &stop_class,
                 JObject::null(),
             )
-            .expect("Failed to create ResolvedGradientStopStruct array");
+            .expect("Failed to create GradientStopStruct array");
 
         // SAFETY: this gradient owns `stops`, the loop takes each element exactly once,
         // and `consume` below frees the buffer without dropping the moved-out elements.
@@ -1131,18 +1115,37 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
             let java_stop = stop.to_java_struct(env);
             stop_array
                 .set_element(env, index, &java_stop)
-                .expect("Failed to set ResolvedGradientStopStruct array element");
+                .expect("Failed to set GradientStopStruct array element");
+        }
+
+        let vertex_class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/MeshVertexStruct"))
+            .expect("MeshVertexStruct class not found");
+        let vertex_array = env
+            .new_object_array(
+                super::array_len(self.mesh_vertices.len()),
+                &vertex_class,
+                JObject::null(),
+            )
+            .expect("Failed to create MeshVertexStruct array");
+
+        // SAFETY: as for `stops`; `mesh_vertices` is owned and consumed below.
+        for (index, vertex) in unsafe { take_ffi_array_elements(&self.mesh_vertices) }.enumerate() {
+            let java_vertex = vertex.to_java_struct(env);
+            vertex_array
+                .set_element(env, index, &java_vertex)
+                .expect("Failed to set MeshVertexStruct array element");
         }
 
         let class = env
-            .find_class(jni_str!(
-                "dev/waterui/android/runtime/ResolvedGradientStruct"
-            ))
-            .expect("ResolvedGradientStruct class not found");
+            .find_class(jni_str!("dev/waterui/android/runtime/GradientStruct"))
+            .expect("GradientStruct class not found");
         let object = env
             .new_object(
                 &class,
-                jni_sig!("(I[Ldev/waterui/android/runtime/ResolvedGradientStopStruct;FFFFFF)V"),
+                jni_sig!(
+                    "(I[Ldev/waterui/android/runtime/GradientStopStruct;FFFFFFII[Ldev/waterui/android/runtime/MeshVertexStruct;)V"
+                ),
                 &[
                     JValue::Int(self.gradient_type as i32),
                     JValue::Object(&stop_array),
@@ -1152,10 +1155,14 @@ impl ToJavaStruct for crate::gradient::WuiResolvedGradient {
                     JValue::Float(self.end_y),
                     JValue::Float(self.start_value),
                     JValue::Float(self.end_value),
+                    JValue::Int(self.mesh_columns.cast_signed()),
+                    JValue::Int(self.mesh_rows.cast_signed()),
+                    JValue::Object(&vertex_array),
                 ],
             )
-            .expect("Failed to create ResolvedGradientStruct");
+            .expect("Failed to create GradientStruct");
         self.stops.consume();
+        self.mesh_vertices.consume();
         object
     }
 }
@@ -1904,30 +1911,37 @@ impl ToJavaStruct for crate::components::badge::WuiBadge {
     }
 }
 
-/// `WuiGpuSurface -> GpuSurfaceStruct(rendererPtr, HDR preference, PiP host)`
+/// `WuiGpuContent -> GpuContentStruct(descriptorPtr, hasIntrinsicSize, width,
+/// height, isOpaque, wantsInputEvents)`
+///
+/// `descriptorPtr` is the boxed descriptor, still owning its view; Kotlin hands
+/// it to `WatcherJni.gpuContentCreate`, which consumes it.
 #[cfg(feature = "gpu")]
-impl ToJavaStruct for crate::components::gpu_surface::WuiGpuSurface {
+impl ToJavaStruct for crate::components::gpu_content::WuiGpuContent {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        // SAFETY: the pointer addresses the live surface struct owned here, and the
-        // query only reads through it.
-        let preference = unsafe {
-            crate::components::gpu_surface::waterui_gpu_surface_hdr_preference(&raw const self)
-        };
         let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/GpuSurfaceStruct"))
-            .expect("GpuSurfaceStruct class not found");
+            .find_class(jni_str!("dev/waterui/android/runtime/GpuContentStruct"))
+            .expect("GpuContentStruct class not found");
+        let (has_intrinsic_size, width, height) = (
+            self.has_intrinsic_size,
+            self.intrinsic_size.width,
+            self.intrinsic_size.height,
+        );
+        let (is_opaque, wants_input_events) = (self.is_opaque, self.wants_input_events);
+        let descriptor = Box::into_raw(Box::new(self));
         env.new_object(
             &class,
-            jni_sig!("(JZZZJ)V"),
+            jni_sig!("(JZFFZZ)V"),
             &[
-                JValue::Long(self.surface as jlong),
-                JValue::Bool(preference.has_preference),
-                JValue::Bool(preference.prefers_hdr),
-                JValue::Bool(self.has_picture_in_picture_host_id),
-                JValue::Long(self.picture_in_picture_host_id.cast_signed()),
+                JValue::Long(descriptor as jlong),
+                JValue::Bool(has_intrinsic_size),
+                JValue::Float(width),
+                JValue::Float(height),
+                JValue::Bool(is_opaque),
+                JValue::Bool(wants_input_events),
             ],
         )
-        .expect("Failed to create GpuSurfaceStruct")
+        .expect("Failed to create GpuContentStruct")
     }
 }
 
@@ -2087,65 +2101,5 @@ impl ToJavaStruct for crate::WuiMenuItem {
             ],
         )
         .expect("Failed to create MenuItemStruct")
-    }
-}
-
-/// `AppliedFilterStruct(contentPtr: Long, filterPtr: Long)`
-///
-/// `filterPtr` is the semantic filter, consumed once by
-/// `WatcherJni.appliedFilterCreate`.
-#[cfg(feature = "gpu")]
-impl ToJavaStruct for crate::components::applied_filter::WuiAppliedFilter {
-    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/AppliedFilterStruct"))
-            .expect("AppliedFilterStruct class not found");
-        env.new_object(
-            &class,
-            jni_sig!("(JJ)V"),
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.filter as jlong),
-            ],
-        )
-        .expect("Failed to create AppliedFilterStruct")
-    }
-}
-
-/// `ViewEffectStruct(contentPtr: Long, effectPtr: Long, outputSizeKind: Int,
-/// outputWidth: Int, outputHeight: Int, outputScale: Float)`
-///
-/// The output size is a Rust enum with per-variant payloads, so it crosses
-/// flattened: `outputSizeKind` selects which of the remaining fields carry
-/// meaning — 0 matches the input and reads none of them, 1 is a fixed size and
-/// reads width and height, 2 is a scale factor and reads `outputScale`. Kotlin
-/// hands all four straight back to `WatcherJni.viewEffectCreate`.
-#[cfg(feature = "gpu")]
-impl ToJavaStruct for crate::components::view_effect::WuiViewEffect {
-    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        use crate::components::view_effect::WuiOutputSize;
-        let (kind, width, height, scale) = match self.output_size {
-            WuiOutputSize::MatchInput => (0, 0, 0, 1.0),
-            WuiOutputSize::Fixed { width, height } => {
-                (1, width.cast_signed(), height.cast_signed(), 1.0)
-            }
-            WuiOutputSize::Scale { factor } => (2, 0, 0, factor),
-        };
-        let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/ViewEffectStruct"))
-            .expect("ViewEffectStruct class not found");
-        env.new_object(
-            &class,
-            jni_sig!("(JJIIIF)V"),
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.effect as jlong),
-                JValue::Int(kind),
-                JValue::Int(width),
-                JValue::Int(height),
-                JValue::Float(scale),
-            ],
-        )
-        .expect("Failed to create ViewEffectStruct")
     }
 }

@@ -32,7 +32,7 @@ use waterui_core::{
     flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
     metadata::MetadataKey, raw_view,
 };
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::color::{Color, WorkingColor};
 use waterui_icon::SystemIcon;
 use waterui_text::IntoText;
 use waterui_text::Text;
@@ -890,13 +890,13 @@ pub enum BarColor {
     /// An author-specified color that has not been resolved yet.
     Unresolved(Computed<Color>),
     /// A color resolved against the effective environment.
-    Resolved(Computed<ResolvedColor>),
+    Resolved(Computed<WorkingColor>),
 }
 
 impl BarColor {
     /// Returns the resolved color, or `None` while still unresolved.
     #[must_use]
-    pub const fn resolved(&self) -> Option<&Computed<ResolvedColor>> {
+    pub const fn resolved(&self) -> Option<&Computed<WorkingColor>> {
         match self {
             Self::Unresolved(_) => None,
             Self::Resolved(color) => Some(color),
@@ -911,7 +911,7 @@ impl BarColor {
     /// [`NavigationView::resolve_native_fields`].
     #[doc(hidden)]
     #[must_use]
-    pub const fn expect_resolved(&self) -> &Computed<ResolvedColor> {
+    pub const fn expect_resolved(&self) -> &Computed<WorkingColor> {
         self.resolved().expect(
             "NavigationView bar color reached a native backend before it was resolved against an environment",
         )

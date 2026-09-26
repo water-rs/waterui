@@ -116,7 +116,6 @@ snackbar = []
 # cross-compile lean for embedded targets without the GPU stack.
 gpu = [
     "waterui-graphics/gpu",
-    "waterui-shape/gpu",
     "dep:waterui-svg",
 ]
 # `asset!` expands media-kind assets into `waterui::media::Photo` /

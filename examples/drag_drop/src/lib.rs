@@ -7,7 +7,7 @@
 //! - Spring animations on successful drop
 
 use core::time::Duration;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Spring};
 use waterui::app::App;
 use waterui::drag_drop::DragData;
 use waterui::prelude::font::Title;
@@ -37,10 +37,10 @@ fn fruit_basket(
     // Scale up when hovering (SignalExt methods take &self and clone internally)
     let hover_scale = is_hovering
         .select(1.05, 1.0)
-        .with(Animation::spring(400.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(400.0, 15.0)));
 
     // Bounce animation on drop
-    let drop_bounce = bounce.with(Animation::spring(500.0, 10.0));
+    let drop_bounce = bounce.with(Animation::Spring(Spring::from_physics(500.0, 10.0)));
 
     // Combined scale for uniform scaling
     let combined_scale = hover_scale.zip(&drop_bounce).map(|(a, b)| a * b);

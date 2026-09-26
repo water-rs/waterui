@@ -31,7 +31,7 @@ use waterui::Handler;
 use waterui::Identifiable;
 use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Curve};
 use waterui::app::App;
 use waterui::form::picker::{PickerStyle, picker};
 use waterui::layout::collection_transition;
@@ -401,7 +401,13 @@ fn sidebar(
     // through the items' fine-grained reactive backgrounds.
     let drawer = collection_transition(
         drawer,
-        Animation::bezier(Duration::from_millis(250), 0.2, 0.0, 0.0, 1.0),
+        Animation::Curve(Curve::bezier(
+            Duration::from_millis(250),
+            0.2,
+            0.0,
+            0.0,
+            1.0,
+        )),
     );
 
     scroll(

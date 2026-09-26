@@ -11,6 +11,7 @@
 //! bounds. All coordinates are logical pixels; timestamps come from
 //! [`crate::time::Instant`].
 
+use cherenkov::kurbo;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;

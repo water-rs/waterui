@@ -1,7 +1,7 @@
 //! Explicit GPU runtime ownership across native backends.
 
 use executor_core::{spawn, spawn_local};
-use waterui_graphics::shared_context::GpuRuntime;
+use waterui_graphics::gpu::GpuRuntime;
 
 #[cfg(all(feature = "c-api", any(target_os = "macos", target_os = "ios")))]
 use {objc2::rc::Retained, wgpu_hal::api::Metal as MetalApi};
@@ -117,10 +117,9 @@ pub unsafe extern "C" fn waterui_gpu_runtime_metal_device(
     // alive for this call; it is only borrowed.
     let env = unsafe { crate::borrow_ffi(env) };
     let runtime = gpu_runtime(&env.0);
-    let gpu = runtime.context();
     // SAFETY: this entry point is Metal-only, so the runtime's device has `MetalApi`
     // as its HAL type.
-    let device = unsafe { gpu.device.as_hal::<MetalApi>() }
+    let device = unsafe { runtime.device().as_hal::<MetalApi>() }
         .expect("WaterUI GPU runtime did not create a Metal device");
     Retained::as_ptr(device.raw_device()).cast_mut().cast()
 }

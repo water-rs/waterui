@@ -3,12 +3,11 @@
 //! Which browser engine draws a `WebView` is the application's choice, not the
 //! renderer's: an app that wants WPE depends on this crate and calls
 //! [`install`] from its composition root. The renderer stays engine-agnostic —
-//! it draws the [`GpuSurface`] this hook returns exactly like any other — and a
+//! it draws the [`GpuContentView`](waterui_graphics::GpuContentView) this hook returns exactly like any other — and a
 //! build that never asks for WPE links none of it.
 
 use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
-use waterui_graphics::gpu_surface::GpuSurface;
 use waterui_webview::{WebView, WebViewController};
 
 use crate::{WpeController, WpeWebViewHandle, gpu_view_with_input};
@@ -61,7 +60,7 @@ pub fn install(env: &mut Environment) {
         // The WPE view takes its own input: it reports `wants_input_events`, so
         // a renderer routes what lands on this layer straight into this crate's
         // adapter and owns no `WPEPlatform` semantics.
-        let surface = GpuSurface::new(gpu_view_with_input(page));
+        let surface = gpu_view_with_input(page);
         // The semantic `WebView` owns the subscriptions that drive
         // `can_go_back` / `can_go_forward`, the event signal, and the URL and
         // user-agent bindings. Dropping it here would leave a live page whose

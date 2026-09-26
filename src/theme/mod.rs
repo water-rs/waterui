@@ -98,7 +98,7 @@
 //!
 //! Native backends should:
 //! 1. Create a `Binding<ColorScheme>` that tracks system appearance
-//! 2. Create `Computed<ResolvedColor>` signals that react to color scheme changes
+//! 2. Create `Computed<WorkingColor>` signals that react to color scheme changes
 //! 3. Install via `Theme::new().color_scheme(binding).colors(ColorSettings::new()...)`
 
 use core::{any::TypeId, marker::PhantomData};
@@ -107,7 +107,7 @@ use nami::{Computed, SignalExt, signal::IntoSignal};
 use waterui_core::{Environment, env::Store, plugin::Plugin};
 
 use crate::{
-    color::ResolvedColor,
+    color::WorkingColor,
     text::font::{Body, Caption, FontSlot, Footnote, Headline, ResolvedFont, Subheadline, Title},
 };
 
@@ -157,21 +157,21 @@ pub use waterui_graphics::color::{ColorScheme, CurrentColorScheme};
 /// ```
 #[derive(Default, Debug)]
 pub struct ColorSettings {
-    background: Option<Computed<ResolvedColor>>,
-    surface: Option<Computed<ResolvedColor>>,
-    surface_variant: Option<Computed<ResolvedColor>>,
-    border: Option<Computed<ResolvedColor>>,
-    foreground: Option<Computed<ResolvedColor>>,
-    muted_foreground: Option<Computed<ResolvedColor>>,
-    accent: Option<Computed<ResolvedColor>>,
-    accent_container: Option<Computed<ResolvedColor>>,
-    accent_foreground: Option<Computed<ResolvedColor>>,
-    tertiary: Option<Computed<ResolvedColor>>,
-    tertiary_container: Option<Computed<ResolvedColor>>,
-    selection_container: Option<Computed<ResolvedColor>>,
-    selection_foreground: Option<Computed<ResolvedColor>>,
-    error: Option<Computed<ResolvedColor>>,
-    error_foreground: Option<Computed<ResolvedColor>>,
+    background: Option<Computed<WorkingColor>>,
+    surface: Option<Computed<WorkingColor>>,
+    surface_variant: Option<Computed<WorkingColor>>,
+    border: Option<Computed<WorkingColor>>,
+    foreground: Option<Computed<WorkingColor>>,
+    muted_foreground: Option<Computed<WorkingColor>>,
+    accent: Option<Computed<WorkingColor>>,
+    accent_container: Option<Computed<WorkingColor>>,
+    accent_foreground: Option<Computed<WorkingColor>>,
+    tertiary: Option<Computed<WorkingColor>>,
+    tertiary_container: Option<Computed<WorkingColor>>,
+    selection_container: Option<Computed<WorkingColor>>,
+    selection_foreground: Option<Computed<WorkingColor>>,
+    error: Option<Computed<WorkingColor>>,
+    error_foreground: Option<Computed<WorkingColor>>,
 }
 
 impl ColorSettings {
@@ -183,105 +183,105 @@ impl ColorSettings {
 
     /// Sets the background color.
     #[must_use]
-    pub fn background(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn background(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.background = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the surface color (cards, sheets).
     #[must_use]
-    pub fn surface(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn surface(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.surface = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the surface variant color.
     #[must_use]
-    pub fn surface_variant(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn surface_variant(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.surface_variant = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the border color.
     #[must_use]
-    pub fn border(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn border(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.border = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the foreground color (text, icons).
     #[must_use]
-    pub fn foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.foreground = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the muted foreground color (secondary text).
     #[must_use]
-    pub fn muted_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn muted_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.muted_foreground = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the accent color (interactive elements).
     #[must_use]
-    pub fn accent(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn accent(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.accent = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the accent container color.
     #[must_use]
-    pub fn accent_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn accent_container(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.accent_container = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the accent foreground color (text on accent).
     #[must_use]
-    pub fn accent_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn accent_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.accent_foreground = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the tertiary accent color.
     #[must_use]
-    pub fn tertiary(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn tertiary(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.tertiary = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the tertiary container color.
     #[must_use]
-    pub fn tertiary_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn tertiary_container(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.tertiary_container = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the fill painted behind a selected item.
     #[must_use]
-    pub fn selection_container(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn selection_container(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.selection_container = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the foreground drawn on the selection container.
     #[must_use]
-    pub fn selection_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn selection_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.selection_foreground = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the error color (destructive / error emphasis).
     #[must_use]
-    pub fn error(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn error(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.error = Some(color.into_signal().computed());
         self
     }
 
     /// Sets the foreground drawn on the error color.
     #[must_use]
-    pub fn error_foreground(mut self, color: impl IntoSignal<ResolvedColor>) -> Self {
+    pub fn error_foreground(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
         self.error_foreground = Some(color.into_signal().computed());
         self
     }
@@ -554,10 +554,10 @@ impl Plugin for Theme {
 
 /// Color token definitions.
 ///
-/// These unit structs implement `Resolvable<Resolved = ResolvedColor>`, so they
+/// These unit structs implement `Resolvable<Resolved = WorkingColor>`, so they
 /// can be used directly with view modifiers like `.foreground(Foreground)`.
 pub mod color {
-    use super::{Environment, ResolvedColor};
+    use super::{Environment, WorkingColor};
     use nami::{Signal, impl_constant};
     use waterui_core::resolve::Resolvable;
 
@@ -568,7 +568,7 @@ pub mod color {
             pub struct $name;
 
             impl Resolvable for $name {
-                type Resolved = ResolvedColor;
+                type Resolved = WorkingColor;
 
                 fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
                     super::resolve_color_slot::<Self>(env)
@@ -627,12 +627,12 @@ pub mod color {
 /// Internal storage for a color signal in the environment.
 #[derive(Clone)]
 struct ColorSlotValue<T> {
-    signal: Computed<ResolvedColor>,
+    signal: Computed<WorkingColor>,
     _marker: PhantomData<T>,
 }
 
 impl<T> ColorSlotValue<T> {
-    const fn new(signal: Computed<ResolvedColor>) -> Self {
+    const fn new(signal: Computed<WorkingColor>) -> Self {
         Self {
             signal,
             _marker: PhantomData,
@@ -641,7 +641,7 @@ impl<T> ColorSlotValue<T> {
 }
 
 /// Resolves a color slot by looking up the signal installed by the backend or theme.
-fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<ResolvedColor> {
+fn resolve_color_slot<T: 'static>(env: &Environment) -> Computed<WorkingColor> {
     env.get::<ColorSlotValue<T>>()
         .unwrap_or_else(|| {
             panic!(
@@ -683,27 +683,25 @@ pub fn installed_color_scheme(env: &Environment) -> Option<Computed<ColorScheme>
 /// ```rust
 /// use nami::Computed;
 /// use waterui::Environment;
-/// use waterui::color::ResolvedColor;
+/// use waterui::color::WorkingColor;
 /// use waterui::theme::{color, install_color_signal};
 ///
 /// let mut env = Environment::new();
 ///
 /// // A backend supplies a reactive colour for the slot.
-/// let dark_mode_color: Computed<ResolvedColor> =
-///     Computed::constant(ResolvedColor::default());
+/// let dark_mode_color: Computed<WorkingColor> =
+///     Computed::constant(WorkingColor::BLACK);
 ///
 /// // Install it for the Foreground slot
 /// install_color_signal::<color::Foreground>(&mut env, dark_mode_color);
 /// ```
-pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<ResolvedColor>) {
+pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<WorkingColor>) {
     env.insert(ColorSlotValue::<T>::new(signal.clone()));
 
     macro_rules! mirror_graphics_color {
         ($theme_slot:ty, $graphics_slot:ty) => {
             if TypeId::of::<T>() == TypeId::of::<$theme_slot>() {
-                env.insert(Store::<$graphics_slot, Computed<ResolvedColor>>::new(
-                    signal,
-                ));
+                env.insert(Store::<$graphics_slot, Computed<WorkingColor>>::new(signal));
                 return;
             }
         };
@@ -752,7 +750,7 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
 
 /// Returns an installed color signal for the requested slot when one exists.
 #[must_use]
-pub fn installed_color_signal<T: 'static>(env: &Environment) -> Option<Computed<ResolvedColor>> {
+pub fn installed_color_signal<T: 'static>(env: &Environment) -> Option<Computed<WorkingColor>> {
     env.get::<ColorSlotValue<T>>()
         .map(|value| value.signal.clone())
 }
@@ -816,22 +814,19 @@ mod tests {
 
     #[test]
     fn graphics_accent_color_tracks_installed_theme_signal() {
-        let accent = Binding::container(ResolvedColor::default());
+        let accent = Binding::container(WorkingColor::TRANSPARENT);
         let mut env = Environment::new();
         install_color_signal::<color::Accent>(&mut env, accent.computed());
         let resolved = Color::new(AccentColor).resolve(&env);
         let observed_red = Rc::new(Cell::new(0.0));
         let captured_red = Rc::clone(&observed_red);
         let _guard = resolved.watch(move |context| {
-            captured_red.set(context.into_value().red);
+            captured_red.set(context.into_value().components[0]);
         });
 
-        accent.set(ResolvedColor {
-            red: 1.0,
-            ..ResolvedColor::default()
-        });
+        accent.set(WorkingColor::new([1.0, 0.0, 0.0, 0.0]));
 
         assert!((observed_red.get() - 1.0).abs() < f32::EPSILON);
-        assert!((resolved.snapshot().red - 1.0).abs() < f32::EPSILON);
+        assert!((resolved.snapshot().components[0] - 1.0).abs() < f32::EPSILON);
     }
 }

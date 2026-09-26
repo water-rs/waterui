@@ -1,8 +1,8 @@
 //! Gradient Example - Demonstrates WaterUI's gradient system
 //!
 //! This example showcases GPU-rendered gradients:
-//! - Animated fluid mesh gradient background (time-based, automatic)
-//! - GPU flowing shader gradient (fully GPU-animated)
+//! - Animated mesh gradient background (time-based, re-recorded per frame)
+//! - GPU flowing shader paint (fully GPU-animated)
 //! - Linear, radial, angular gradients
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
@@ -12,38 +12,30 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::task::sleep;
-use waterui_graphics::{
-    AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ResolvedColor,
+use waterui_graphics::cherenkov::kurbo::{Point, Rect};
+use waterui_graphics::cherenkov::{Draw as _, MeshGradient, Paint};
+use waterui_graphics::color::working;
+use waterui_graphics::scene_view::{
+    BoxWatcherGuard, SceneContent, SceneInvalidator, invalidate_on_change,
 };
+use waterui_graphics::{Gradient, Scene, SceneView, ShaderPaintView, WorkingColor};
 
 use core::time::Duration;
 
-/// Helper to create a resolved color (SDR)
-fn color(r: f32, g: f32, b: f32) -> ResolvedColor {
-    ResolvedColor {
-        red: r,
-        green: g,
-        blue: b,
-        opacity: 1.0,
-        headroom: 0.0,
-    }
+/// Helper to create a working-space color from linear sRGB (SDR)
+fn color(r: f32, g: f32, b: f32) -> WorkingColor {
+    working::from_linear_srgb([r, g, b], 1.0)
 }
 
 /// Helper to create an HDR color with extended brightness
 /// Values can exceed 1.0 for bright highlights on HDR displays
-fn hdr_color(r: f32, g: f32, b: f32, headroom: f32) -> ResolvedColor {
-    ResolvedColor {
-        red: r,
-        green: g,
-        blue: b,
-        opacity: 1.0,
-        headroom,
-    }
+fn hdr_color(r: f32, g: f32, b: f32, headroom: f32) -> WorkingColor {
+    working::with_headroom(color(r, g, b), headroom)
 }
 
 /// Computes animated mesh colors based on elapsed time.
 /// Uses sine waves with different phases and frequencies for a dreamy fluid effect.
-fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
+fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
     // Base palette - deep blues, purples, teals
     let base_colors: [[f32; 3]; 9] = [
         [0.1, 0.1, 0.3],   // Top-left: dark blue
@@ -57,7 +49,7 @@ fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
         [0.15, 0.1, 0.25], // Bottom-right: dark purple
     ];
 
-    let mut colors = [ResolvedColor::default(); 9];
+    let mut colors = [WorkingColor::TRANSPARENT; 9];
 
     for (i, base) in base_colors.iter().enumerate() {
         // Each vertex has unique phase offsets for organic movement
@@ -71,19 +63,17 @@ fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
         let wave3 = (time * 0.7 + y * 0.8).cos() * 0.08;
 
         // Apply waves to each color channel with different phases
-        colors[i] = ResolvedColor {
-            red: (base[0] + wave1 + wave2 * 0.5).clamp(0.0, 1.0),
-            green: (base[1] + wave2 + wave3 * 0.5).clamp(0.0, 1.0),
-            blue: (base[2] + wave3 + wave1 * 0.5).clamp(0.0, 1.0),
-            opacity: 1.0,
-            headroom: 0.0,
-        };
+        colors[i] = color(
+            (base[0] + wave1 + wave2 * 0.5).clamp(0.0, 1.0),
+            (base[1] + wave2 + wave3 * 0.5).clamp(0.0, 1.0),
+            (base[2] + wave3 + wave1 * 0.5).clamp(0.0, 1.0),
+        );
     }
 
     colors
 }
 
-async fn animate_mesh_colors(colors: Binding<[ResolvedColor; 9]>) {
+async fn animate_mesh_colors(colors: Binding<[WorkingColor; 9]>) {
     let start = std::time::Instant::now();
     loop {
         let elapsed = start.elapsed().as_secs_f32();
@@ -92,18 +82,54 @@ async fn animate_mesh_colors(colors: Binding<[ResolvedColor; 9]>) {
     }
 }
 
+/// A 3×3 mesh whose vertex colours follow a signal: the mesh is a Cherenkov
+/// `Paint`, so the content re-records the fill when the colours change and the
+/// view itself stays put.
+struct ReactiveMesh {
+    colors: Binding<[WorkingColor; 9]>,
+    _watch: Option<BoxWatcherGuard>,
+}
+
+impl ReactiveMesh {
+    fn new(colors: Binding<[WorkingColor; 9]>) -> Self {
+        Self {
+            colors,
+            _watch: None,
+        }
+    }
+}
+
+impl SceneContent for ReactiveMesh {
+    fn record(&mut self, scene: &mut Scene<'_>) -> bool {
+        let points = (0..9)
+            .map(|i| Point::new(f64::from(i % 3) / 2.0, f64::from(i / 3) / 2.0))
+            .collect();
+        let mesh = MeshGradient::new(3, 3, points, self.colors.get().to_vec());
+        let to_bounds = Gradient::transform_to(scene.width(), scene.height());
+        scene.recorder().transform(to_bounds, |recorder| {
+            recorder.fill(Rect::new(0.0, 0.0, 1.0, 1.0), Paint::Mesh(mesh));
+        });
+        false
+    }
+
+    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        self._watch =
+            invalidator.map(|invalidator| invalidate_on_change(&invalidator, &self.colors));
+    }
+}
+
 /// Demo: Animated fluid mesh gradient background (automatic time-based animation)
 fn animated_background_section() -> impl View {
     // Create binding for animated colors
-    let colors: Binding<[ResolvedColor; 9]> = Binding::container(compute_animated_colors(0.0));
+    let colors: Binding<[WorkingColor; 9]> = Binding::container(compute_animated_colors(0.0));
 
     vstack((
         text("Animated Mesh Gradient").size(20.0),
         "Automatic time-based fluid animation",
         // The animated mesh gradient
         zstack((
-            // Background: MeshGradient accepts Signal directly!
-            MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0),
+            // Background: the mesh paint follows the colour signal.
+            SceneView::new(ReactiveMesh::new(colors.clone())).size(300.0, 200.0),
             // Overlay content
             vstack((
                 text("Fluid Background")
@@ -122,11 +148,11 @@ fn animated_background_section() -> impl View {
 
 /// Demo: GPU flowing gradient (fully shader animated, no CPU updates)
 fn gpu_animated_mesh_gradient_section() -> impl View {
-    let gradient = AnimatedMeshGradient::new(animated_mesh_config());
+    let gradient = ShaderPaintView::flowing_gradient();
 
     vstack((
-        text("GPU Animated Mesh Gradient").size(20.0),
-        "Speed + palette configured at creation time",
+        text("GPU Flowing Gradient").size(20.0),
+        "A shader paint; the palette lives in the WGSL",
         zstack((
             gradient.size(300.0, 200.0),
             vstack((
@@ -143,13 +169,9 @@ fn gpu_animated_mesh_gradient_section() -> impl View {
     .padding()
 }
 
-fn animated_mesh_config() -> AnimatedMeshGradientConfig {
-    AnimatedMeshGradientConfig::aqua_bloom()
-}
-
 #[preview]
-fn animated_mesh_gradient_preview() -> impl View {
-    AnimatedMeshGradient::new(animated_mesh_config()).size(640.0, 360.0)
+fn flowing_gradient_preview() -> impl View {
+    ShaderPaintView::flowing_gradient().size(640.0, 360.0)
 }
 
 /// Demo: Shape filled with gradient
@@ -196,7 +218,6 @@ fn shape_fill_section() -> impl View {
                         ([0.0, 1.0], color(0.8, 0.4, 0.0)),
                         ([1.0, 1.0], color(0.8, 0.0, 0.4)),
                     ],
-                    true,
                 )
                 .size(100.0, 100.0)
                 .clip(RoundedRectangle::new(0.22)),
@@ -318,7 +339,6 @@ fn mesh_gradient_section() -> impl View {
                         ([0.0, 1.0], color(0.0, 0.0, 1.0)), // Bottom-left: Blue
                         ([1.0, 1.0], color(1.0, 1.0, 0.0)), // Bottom-right: Yellow
                     ],
-                    true,
                 )
                 .size(120.0, 120.0),
                 "2x2 Corners",
@@ -339,7 +359,6 @@ fn mesh_gradient_section() -> impl View {
                         ([0.5, 1.0], color(0.3, 0.3, 0.5)),
                         ([1.0, 1.0], color(0.2, 0.2, 0.4)),
                     ],
-                    true,
                 )
                 .size(120.0, 120.0),
                 "3x3 Highlight",

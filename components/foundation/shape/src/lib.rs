@@ -1,10 +1,14 @@
-//! Shape system for `WaterUI` with HDR support.
+//! Shapes for `WaterUI`: normalized descriptions that resolve to Cherenkov
+//! [`ShapeData`] against a view's bounds.
 //!
-//! This module provides a trait-based system for defining shapes that can be used
-//! for clipping views and as filled views.
+//! A [`Shape`] describes itself in the unit square, so it scales with the view
+//! it clips or fills. A backend that renders through Cherenkov calls
+//! [`Shape::resolve`] (or [`resolve_shape`] on the erased [`ShapeKind`] and
+//! path) with the view's rect and records the result; native backends receive
+//! the kind and the normalized path over the FFI and draw it themselves.
 //!
-//! Filled shapes are emitted as native `ResolvedShape` raw views so each backend
-//! renders paths with its own 2D engine. Morphing shapes stay GPU-backed.
+//! Filled shapes are emitted as native `ResolvedShape` raw views so each
+//! backend renders paths with its own 2D engine.
 //!
 //! # Example
 //!
@@ -15,110 +19,26 @@
 //! // Clip to a circle
 //! image("avatar.jpg").clip(Circle);
 //!
-//! // Fill a shape with HDR color
-//! Circle.fill(Color::red().with_headroom(0.5))
+//! // Fill a shape
+//! Circle.fill(Color::red())
 //! ```
 
-extern crate alloc;
-
-use core::f32::consts::{FRAC_PI_2, PI, TAU};
-#[cfg(feature = "gpu")]
-use core::fmt;
+use core::f64::consts::{FRAC_PI_2, PI};
 use core::time::Duration;
-#[cfg(feature = "gpu")]
-use num_traits::ToPrimitive;
 
-#[cfg(feature = "gpu")]
-use nami::Signal as _;
-use nami::{Computed, SignalExt as _, signal::IntoComputed};
-#[cfg(feature = "gpu")]
-use shaderloom::CompiledShader;
-#[cfg(feature = "gpu")]
-use waterui_core::reactive::watcher::BoxWatcherGuard;
-use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
-use waterui_graphics::color::Color;
-#[cfg(feature = "gpu")]
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor,
-    single_bind_group_render_stages,
+pub use cherenkov::kurbo;
+use cherenkov::kurbo::{
+    Affine, Arc, BezPath, Circle as CircleGeometry, Ellipse as EllipseGeometry, PathEl, Point,
+    Rect, RoundedRect, RoundedRectRadii, Shape as _, Vec2,
 };
+use cherenkov::{Curve, WorkingColor};
+pub use cherenkov::{FillRule, ShapeData};
+use nami::{Computed, SignalExt as _, signal::IntoComputed};
+use waterui_core::{Environment, View, metadata::MetadataKey};
+use waterui_graphics::color::Color;
 
-#[cfg(feature = "gpu")]
-const MORPH_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/morph.rs"));
-
-// ============================================================================
-// PathCommand - The primitive operations for drawing paths
-// ============================================================================
-
-/// A single path command for drawing shapes.
-///
-/// All coordinates are normalized (0.0-1.0) and scale with view bounds.
-/// Native backends convert these to absolute coordinates based on view size.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PathCommand {
-    /// Move to a position without drawing.
-    MoveTo {
-        /// X coordinate (normalized 0.0-1.0)
-        x: f32,
-        /// Y coordinate (normalized 0.0-1.0)
-        y: f32,
-    },
-
-    /// Draw a straight line to a position.
-    LineTo {
-        /// X coordinate (normalized 0.0-1.0)
-        x: f32,
-        /// Y coordinate (normalized 0.0-1.0)
-        y: f32,
-    },
-
-    /// Draw a quadratic bezier curve.
-    QuadTo {
-        /// Control point x
-        cx: f32,
-        /// Control point y
-        cy: f32,
-        /// End point x
-        x: f32,
-        /// End point y
-        y: f32,
-    },
-
-    /// Draw a cubic bezier curve.
-    CubicTo {
-        /// First control point x
-        c1x: f32,
-        /// First control point y
-        c1y: f32,
-        /// Second control point x
-        c2x: f32,
-        /// Second control point y
-        c2y: f32,
-        /// End point x
-        x: f32,
-        /// End point y
-        y: f32,
-    },
-
-    /// Draw an arc.
-    Arc {
-        /// Center x (normalized)
-        cx: f32,
-        /// Center y (normalized)
-        cy: f32,
-        /// Radius x (normalized, relative to width)
-        rx: f32,
-        /// Radius y (normalized, relative to height)
-        ry: f32,
-        /// Start angle in radians
-        start: f32,
-        /// Sweep angle in radians (positive = clockwise)
-        sweep: f32,
-    },
-
-    /// Close the current subpath by drawing a line to the start.
-    Close,
-}
+/// Flattening tolerance for arcs in the unit square.
+const UNIT_TOLERANCE: f64 = 1e-4;
 
 #[inline]
 const fn clamp_radius(value: f32) -> f32 {
@@ -166,32 +86,131 @@ impl CornerRadii {
         }
         self
     }
+
+    /// The unit-square outline, corners as quarter arcs.
+    fn unit_path(self) -> BezPath {
+        let mut path = BezPath::new();
+        let tl = f64::from(self.top_left);
+        let tr = f64::from(self.top_right);
+        let br = f64::from(self.bottom_right);
+        let bl = f64::from(self.bottom_left);
+        path.move_to((tl, 0.0));
+        path.line_to((1.0 - tr, 0.0));
+        append_arc(&mut path, (1.0 - tr, tr), tr, -FRAC_PI_2, FRAC_PI_2);
+        path.line_to((1.0, 1.0 - br));
+        append_arc(&mut path, (1.0 - br, 1.0 - br), br, 0.0, FRAC_PI_2);
+        path.line_to((bl, 1.0));
+        append_arc(&mut path, (bl, 1.0 - bl), bl, FRAC_PI_2, FRAC_PI_2);
+        path.line_to((0.0, tl));
+        append_arc(&mut path, (tl, tl), tl, PI, FRAC_PI_2);
+        path.close_path();
+        path
+    }
+
+    fn radii(self, scale: f64) -> RoundedRectRadii {
+        RoundedRectRadii::new(
+            f64::from(self.top_left) * scale,
+            f64::from(self.top_right) * scale,
+            f64::from(self.bottom_right) * scale,
+            f64::from(self.bottom_left) * scale,
+        )
+    }
+}
+
+fn append_arc(path: &mut BezPath, center: (f64, f64), radius: f64, start: f64, sweep: f64) {
+    if radius <= 0.0 {
+        return;
+    }
+    let arc = Arc::new(center, (radius, radius), start, sweep, 0.0);
+    path.extend(arc.append_iter(UNIT_TOLERANCE));
 }
 
 // ============================================================================
 // Shape Trait
 // ============================================================================
 
-/// A trait for types that can produce path commands for clipping.
+/// A shape described in the unit square, resolved against a view's bounds.
 ///
-/// All coordinates are normalized (0.0-1.0) and scale with view bounds.
-/// Built-in shapes use stack-allocated arrays for zero heap allocation.
+/// Built-in shapes carry a [`ShapeKind`] a backend can act on directly: path
+/// coordinates are normalized per axis, so resolving them against a
+/// non-square rect makes circular corners elliptical, while the kind resolves
+/// a normalized radius against the shorter side instead.
 pub trait Shape {
-    /// The iterator type returned by `path()`.
-    type Iter: IntoIterator<Item = PathCommand>;
+    /// The path in normalized (0.0–1.0) coordinates.
+    fn path(&self) -> BezPath;
 
-    /// Returns the path commands that define this shape.
-    fn path(&self) -> Self::Iter;
-
-    /// Returns what this shape *is*, for backends that can render it directly.
+    /// What this shape *is*, for backends that can render it directly.
     ///
-    /// Prefer this over [`Self::path`] wherever a backend can act on it. Path
-    /// commands are normalized per axis, so resolving them against a non-square
-    /// rect makes circular corners elliptical; the kind lets a backend resolve a
-    /// normalized radius against the shorter side instead. Defaults to
-    /// [`ShapeKind::CustomPath`], which means "only the path describes me".
+    /// Defaults to [`ShapeKind::CustomPath`]: only the path describes it.
     fn shape_kind(&self) -> ShapeKind {
         ShapeKind::CustomPath
+    }
+
+    /// The Cherenkov shape filling `bounds`.
+    fn resolve(&self, bounds: Rect) -> ShapeData {
+        resolve_shape(self.shape_kind(), &self.path(), bounds)
+    }
+}
+
+/// Resolves an erased shape (its kind and normalized path) against `bounds`.
+///
+/// Built-in kinds become Cherenkov's semantic shapes, with normalized radii
+/// measured against the shorter side and point radii clamped to half of it;
+/// a custom path is scaled per axis into the rect.
+#[must_use]
+pub fn resolve_shape(kind: ShapeKind, path: &BezPath, bounds: Rect) -> ShapeData {
+    let shorter = bounds.width().min(bounds.height());
+    let point = |radius: f32| f64::from(radius).min(shorter / 2.0);
+    match kind {
+        ShapeKind::Rect => ShapeData::Rect(bounds),
+        ShapeKind::Circle => ShapeData::Circle(CircleGeometry::new(bounds.center(), shorter / 2.0)),
+        ShapeKind::Ellipse => ShapeData::Ellipse(EllipseGeometry::from_rect(bounds)),
+        ShapeKind::RoundedRect { corner_radius } => ShapeData::RoundedRect(RoundedRect::from_rect(
+            bounds,
+            f64::from(clamp_radius(corner_radius)) * shorter,
+        )),
+        ShapeKind::UnevenRoundedRect {
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+        } => ShapeData::RoundedRect(RoundedRect::from_rect(
+            bounds,
+            CornerRadii {
+                top_left,
+                top_right,
+                bottom_right,
+                bottom_left,
+            }
+            .sanitized()
+            .radii(shorter),
+        )),
+        ShapeKind::Capsule => ShapeData::RoundedRect(RoundedRect::from_rect(bounds, shorter / 2.0)),
+        ShapeKind::FixedRoundedRect { corner_radius } => {
+            ShapeData::RoundedRect(RoundedRect::from_rect(bounds, point(corner_radius)))
+        }
+        ShapeKind::FixedUnevenRoundedRect {
+            top_left,
+            top_right,
+            bottom_left,
+            bottom_right,
+        } => ShapeData::RoundedRect(RoundedRect::from_rect(
+            bounds,
+            RoundedRectRadii::new(
+                point(top_left),
+                point(top_right),
+                point(bottom_right),
+                point(bottom_left),
+            ),
+        )),
+        ShapeKind::CustomPath => {
+            let transform = Affine::translate(bounds.origin().to_vec2())
+                * Affine::scale_non_uniform(bounds.width(), bounds.height());
+            ShapeData::Path {
+                elements: path.elements().iter().map(|el| transform * *el).collect(),
+                rule: FillRule::NonZero,
+            }
+        }
     }
 }
 
@@ -204,17 +223,8 @@ pub trait Shape {
 pub struct Circle;
 
 impl Shape for Circle {
-    type Iter = [PathCommand; 1];
-
-    fn path(&self) -> Self::Iter {
-        [PathCommand::Arc {
-            cx: 0.5,
-            cy: 0.5,
-            rx: 0.5,
-            ry: 0.5,
-            start: 0.0,
-            sweep: TAU,
-        }]
+    fn path(&self) -> BezPath {
+        CircleGeometry::new((0.5, 0.5), 0.5).to_path(UNIT_TOLERANCE)
     }
 
     fn shape_kind(&self) -> ShapeKind {
@@ -222,22 +232,13 @@ impl Shape for Circle {
     }
 }
 
-/// An ellipse that fills the view bounds.
+/// An ellipse filling the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Ellipse;
 
 impl Shape for Ellipse {
-    type Iter = [PathCommand; 1];
-
-    fn path(&self) -> Self::Iter {
-        [PathCommand::Arc {
-            cx: 0.5,
-            cy: 0.5,
-            rx: 0.5,
-            ry: 0.5,
-            start: 0.0,
-            sweep: TAU,
-        }]
+    fn path(&self) -> BezPath {
+        EllipseGeometry::new((0.5, 0.5), (0.5, 0.5), 0.0).to_path(UNIT_TOLERANCE)
     }
 
     fn shape_kind(&self) -> ShapeKind {
@@ -245,40 +246,19 @@ impl Shape for Ellipse {
     }
 }
 
-/// A capsule (pill) shape.
+/// A capsule (stadium): a rectangle with fully rounded ends.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Capsule;
 
 impl Shape for Capsule {
-    type Iter = [PathCommand; 4];
-
-    /// Unit-space approximation only — an ellipse inscribed in the box.
-    ///
-    /// A pill's caps are half its *shorter* side, which normalized per-axis
-    /// coordinates cannot express without knowing the aspect ratio. Backends
-    /// must render a capsule from [`ShapeKind::Capsule`], not from these
-    /// commands.
-    fn path(&self) -> Self::Iter {
-        [
-            PathCommand::MoveTo { x: 0.5, y: 0.0 },
-            PathCommand::Arc {
-                cx: 0.5,
-                cy: 0.5,
-                rx: 0.5,
-                ry: 0.5,
-                start: -FRAC_PI_2,
-                sweep: PI,
-            },
-            PathCommand::Arc {
-                cx: 0.5,
-                cy: 0.5,
-                rx: 0.5,
-                ry: 0.5,
-                start: FRAC_PI_2,
-                sweep: PI,
-            },
-            PathCommand::Close,
-        ]
+    fn path(&self) -> BezPath {
+        CornerRadii {
+            top_left: 0.5,
+            top_right: 0.5,
+            bottom_right: 0.5,
+            bottom_left: 0.5,
+        }
+        .unit_path()
     }
 
     fn shape_kind(&self) -> ShapeKind {
@@ -311,69 +291,21 @@ impl RoundedRectangle {
 }
 
 impl Shape for RoundedRectangle {
-    type Iter = [PathCommand; 10];
-
-    fn path(&self) -> Self::Iter {
-        let r = CornerRadii {
+    fn path(&self) -> BezPath {
+        CornerRadii {
             top_left: self.corner_radius,
             top_right: self.corner_radius,
             bottom_right: self.corner_radius,
             bottom_left: self.corner_radius,
         }
         .sanitized()
-        .top_left;
-        [
-            PathCommand::MoveTo { x: r, y: 0.0 },
-            PathCommand::LineTo { x: 1.0 - r, y: 0.0 },
-            PathCommand::Arc {
-                cx: 1.0 - r,
-                cy: r,
-                rx: r,
-                ry: r,
-                start: -FRAC_PI_2,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: 1.0, y: 1.0 - r },
-            PathCommand::Arc {
-                cx: 1.0 - r,
-                cy: 1.0 - r,
-                rx: r,
-                ry: r,
-                start: 0.0,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: r, y: 1.0 },
-            PathCommand::Arc {
-                cx: r,
-                cy: 1.0 - r,
-                rx: r,
-                ry: r,
-                start: FRAC_PI_2,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: 0.0, y: r },
-            PathCommand::Arc {
-                cx: r,
-                cy: r,
-                rx: r,
-                ry: r,
-                start: PI,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::Close,
-        ]
+        .unit_path()
     }
 
     fn shape_kind(&self) -> ShapeKind {
-        let r = CornerRadii {
-            top_left: self.corner_radius,
-            top_right: self.corner_radius,
-            bottom_right: self.corner_radius,
-            bottom_left: self.corner_radius,
+        ShapeKind::RoundedRect {
+            corner_radius: clamp_radius(self.corner_radius),
         }
-        .sanitized()
-        .top_left;
-        ShapeKind::RoundedRect { corner_radius: r }
     }
 }
 
@@ -406,79 +338,25 @@ impl UnevenRoundedRectangle {
             bottom_trailing,
         }
     }
+
+    fn corners(&self) -> CornerRadii {
+        CornerRadii {
+            top_left: self.top_leading,
+            top_right: self.top_trailing,
+            bottom_right: self.bottom_trailing,
+            bottom_left: self.bottom_leading,
+        }
+        .sanitized()
+    }
 }
 
 impl Shape for UnevenRoundedRectangle {
-    type Iter = [PathCommand; 10];
-
-    fn path(&self) -> Self::Iter {
-        let corners = CornerRadii {
-            top_left: self.top_leading,
-            top_right: self.top_trailing,
-            bottom_right: self.bottom_trailing,
-            bottom_left: self.bottom_leading,
-        }
-        .sanitized();
-        let tl = corners.top_left;
-        let tr = corners.top_right;
-        let bl = corners.bottom_left;
-        let br = corners.bottom_right;
-        [
-            PathCommand::MoveTo { x: tl, y: 0.0 },
-            PathCommand::LineTo {
-                x: 1.0 - tr,
-                y: 0.0,
-            },
-            PathCommand::Arc {
-                cx: 1.0 - tr,
-                cy: tr,
-                rx: tr,
-                ry: tr,
-                start: -FRAC_PI_2,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo {
-                x: 1.0,
-                y: 1.0 - br,
-            },
-            PathCommand::Arc {
-                cx: 1.0 - br,
-                cy: 1.0 - br,
-                rx: br,
-                ry: br,
-                start: 0.0,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: bl, y: 1.0 },
-            PathCommand::Arc {
-                cx: bl,
-                cy: 1.0 - bl,
-                rx: bl,
-                ry: bl,
-                start: FRAC_PI_2,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::LineTo { x: 0.0, y: tl },
-            PathCommand::Arc {
-                cx: tl,
-                cy: tl,
-                rx: tl,
-                ry: tl,
-                start: PI,
-                sweep: FRAC_PI_2,
-            },
-            PathCommand::Close,
-        ]
+    fn path(&self) -> BezPath {
+        self.corners().unit_path()
     }
 
     fn shape_kind(&self) -> ShapeKind {
-        let corners = CornerRadii {
-            top_left: self.top_leading,
-            top_right: self.top_trailing,
-            bottom_right: self.bottom_trailing,
-            bottom_left: self.bottom_leading,
-        }
-        .sanitized();
+        let corners = self.corners();
         ShapeKind::UnevenRoundedRect {
             top_left: corners.top_left,
             top_right: corners.top_right,
@@ -488,10 +366,9 @@ impl Shape for UnevenRoundedRectangle {
     }
 }
 
-/// A rectangle with a uniform corner radius in logical points.
+/// A rectangle whose corner radius is a fixed length in logical points.
 ///
-/// [`RoundedRectangle`] expresses the corner as a fraction of the shorter side;
-/// this type expresses it as an absolute length — the shape specs give for a
+/// This is the shape a design system's spec radii describe: an M3 medium
 /// dialog (28dp) or a card (12dp). The rendered radius does not change as the
 /// shape resizes, which is the whole point: spec radii stay constant however
 /// tall or wide the surface ends up.
@@ -510,25 +387,19 @@ impl FixedRoundedRectangle {
     #[must_use]
     pub const fn new(corner_radius: f32) -> Self {
         Self {
-            corner_radius: if corner_radius.is_finite() {
-                corner_radius.max(0.0)
-            } else {
-                0.0
-            },
+            corner_radius: point_radius(corner_radius),
         }
     }
 }
 
 impl Shape for FixedRoundedRectangle {
-    type Iter = [PathCommand; 10];
-
     /// Unit-space approximation only — maximally rounded, like a stadium.
     ///
-    /// An absolute radius cannot be expressed in normalized commands without
-    /// knowing the bounds. Backends must render this shape from
-    /// [`ShapeKind::FixedRoundedRect`], not from these commands.
-    fn path(&self) -> Self::Iter {
-        RoundedRectangle::new(0.5).path()
+    /// An absolute radius cannot be expressed in normalized coordinates
+    /// without knowing the bounds. Backends must render this shape from
+    /// [`ShapeKind::FixedRoundedRect`], not from this path.
+    fn path(&self) -> BezPath {
+        Capsule.path()
     }
 
     fn shape_kind(&self) -> ShapeKind {
@@ -538,10 +409,18 @@ impl Shape for FixedRoundedRectangle {
     }
 }
 
+const fn point_radius(radius: f32) -> f32 {
+    if radius.is_finite() {
+        radius.max(0.0)
+    } else {
+        0.0
+    }
+}
+
 /// A rectangle with independent corner radii in logical points.
 ///
-/// The absolute-radius counterpart of [`UnevenRoundedRectangle`]: each corner
-/// is a length in points, used where a spec names per-corner values — a modal
+/// The fixed-radius counterpart of [`UnevenRoundedRectangle`]: a bottom sheet
+/// that rounds only its top corners, or a navigation drawer rounding its
 /// panel's trailing corners, say.
 #[derive(Debug, Clone, Copy)]
 pub struct FixedUnevenRoundedRectangle {
@@ -564,13 +443,6 @@ impl FixedUnevenRoundedRectangle {
         bottom_leading: f32,
         bottom_trailing: f32,
     ) -> Self {
-        const fn point_radius(radius: f32) -> f32 {
-            if radius.is_finite() {
-                radius.max(0.0)
-            } else {
-                0.0
-            }
-        }
         Self {
             top_leading: point_radius(top_leading),
             top_trailing: point_radius(top_trailing),
@@ -581,15 +453,13 @@ impl FixedUnevenRoundedRectangle {
 }
 
 impl Shape for FixedUnevenRoundedRectangle {
-    type Iter = [PathCommand; 10];
-
     /// Unit-space approximation only — each corner saturates independently,
     /// like [`UnevenRoundedRectangle`] at its maximum.
     ///
-    /// Absolute radii cannot be expressed in normalized commands without
+    /// Absolute radii cannot be expressed in normalized coordinates without
     /// knowing the bounds. Backends must render this shape from
-    /// [`ShapeKind::FixedUnevenRoundedRect`], not from these commands.
-    fn path(&self) -> Self::Iter {
+    /// [`ShapeKind::FixedUnevenRoundedRect`], not from this path.
+    fn path(&self) -> BezPath {
         UnevenRoundedRectangle::new(
             clamp_radius(self.top_leading),
             clamp_radius(self.top_trailing),
@@ -609,21 +479,13 @@ impl Shape for FixedUnevenRoundedRectangle {
     }
 }
 
-/// A simple rectangle with sharp corners.
+/// A rectangle filling the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Rectangle;
 
 impl Shape for Rectangle {
-    type Iter = [PathCommand; 5];
-
-    fn path(&self) -> Self::Iter {
-        [
-            PathCommand::MoveTo { x: 0.0, y: 0.0 },
-            PathCommand::LineTo { x: 1.0, y: 0.0 },
-            PathCommand::LineTo { x: 1.0, y: 1.0 },
-            PathCommand::LineTo { x: 0.0, y: 1.0 },
-            PathCommand::Close,
-        ]
+    fn path(&self) -> BezPath {
+        Rect::new(0.0, 0.0, 1.0, 1.0).to_path(UNIT_TOLERANCE)
     }
 
     fn shape_kind(&self) -> ShapeKind {
@@ -631,18 +493,16 @@ impl Shape for Rectangle {
     }
 }
 
-// ============================================================================
-// Custom Path Builder
-// ============================================================================
-
-/// A custom path defined by explicit commands.
+/// A custom path built from normalized coordinates.
+///
+/// All coordinates are in the 0.0–1.0 range and scale with the view bounds.
 #[derive(Debug, Clone, Default)]
 pub struct Path {
-    commands: Vec<PathCommand>,
+    path: BezPath,
 }
 
 impl Path {
-    /// Creates a new empty path.
+    /// Creates an empty path.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -651,69 +511,69 @@ impl Path {
     /// Moves to a position without drawing.
     #[must_use]
     pub fn move_to(mut self, x: f32, y: f32) -> Self {
-        self.commands.push(PathCommand::MoveTo { x, y });
+        self.path.move_to(point(x, y));
         self
     }
 
     /// Draws a straight line to a position.
     #[must_use]
     pub fn line_to(mut self, x: f32, y: f32) -> Self {
-        self.commands.push(PathCommand::LineTo { x, y });
+        self.path.line_to(point(x, y));
         self
     }
 
     /// Draws a quadratic bezier curve.
     #[must_use]
     pub fn quad_to(mut self, cx: f32, cy: f32, x: f32, y: f32) -> Self {
-        self.commands.push(PathCommand::QuadTo { cx, cy, x, y });
+        self.path.quad_to(point(cx, cy), point(x, y));
         self
     }
 
     /// Draws a cubic bezier curve.
     #[must_use]
     pub fn cubic_to(mut self, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32) -> Self {
-        self.commands.push(PathCommand::CubicTo {
-            c1x,
-            c1y,
-            c2x,
-            c2y,
-            x,
-            y,
-        });
+        self.path
+            .curve_to(point(c1x, c1y), point(c2x, c2y), point(x, y));
         self
     }
 
-    /// Draws an arc.
+    /// Draws an elliptical arc around `(cx, cy)`, from `start` over `sweep`
+    /// radians (positive = clockwise), connecting from the current point.
     #[must_use]
     pub fn arc(mut self, cx: f32, cy: f32, rx: f32, ry: f32, start: f32, sweep: f32) -> Self {
-        self.commands.push(PathCommand::Arc {
-            cx,
-            cy,
-            rx,
-            ry,
-            start,
-            sweep,
-        });
+        let arc = Arc::new(
+            point(cx, cy),
+            Vec2::new(f64::from(rx), f64::from(ry)),
+            f64::from(start),
+            f64::from(sweep),
+            0.0,
+        );
+        let mut elements = arc.path_elements(UNIT_TOLERANCE);
+        match (self.path.elements().is_empty(), elements.next()) {
+            (true, Some(PathEl::MoveTo(start))) => self.path.move_to(start),
+            (false, Some(PathEl::MoveTo(start))) => self.path.line_to(start),
+            (_, Some(other)) => self.path.push(other),
+            (_, None) => {}
+        }
+        self.path.extend(elements);
         self
     }
 
-    /// Closes the current subpath.
+    /// Closes the current subpath by drawing a line to its start.
     #[must_use]
     pub fn close(mut self) -> Self {
-        self.commands.push(PathCommand::Close);
+        self.path.close_path();
         self
     }
 }
 
+fn point(x: f32, y: f32) -> Point {
+    Point::new(f64::from(x), f64::from(y))
+}
+
 impl Shape for Path {
-    type Iter = alloc::vec::IntoIter<PathCommand>;
-
-    fn path(&self) -> Self::Iter {
-        self.commands.clone().into_iter()
-    }
-
-    fn shape_kind(&self) -> ShapeKind {
-        ShapeKind::CustomPath
+    fn path(&self) -> BezPath {
+        self.path.clone()
     }
 }
 
@@ -721,42 +581,39 @@ impl Shape for Path {
 // ClipShape Metadata
 // ============================================================================
 
-/// Metadata for clipping a view to a shape.
-///
-/// Carries both the structured [`ShapeKind`] and the unit-space path. Backends
-/// should prefer the kind: [`PathCommand`] coordinates are normalized per axis,
-/// so resolving them against a non-square rect turns a circular corner into an
-/// elliptical one — a fully-rounded clip comes out as an ellipse instead of a
-/// pill. The kind says what the shape *is*, letting a backend resolve a
-/// normalized radius against the shorter side the way [`FilledShape`] already
-/// does. The commands remain the fallback for [`ShapeKind::CustomPath`].
+/// Metadata clipping a view to a shape.
 #[derive(Debug)]
 pub struct ClipShape {
     kind: ShapeKind,
-    commands: Vec<PathCommand>,
+    path: BezPath,
 }
 
 impl ClipShape {
-    /// Creates a new clip shape from any type implementing Shape.
+    /// Clips to `shape`.
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape) -> Self {
         Self {
             kind: shape.shape_kind(),
-            commands: shape.path().into_iter().collect(),
+            path: shape.path(),
         }
     }
 
-    /// Returns the structured shape kind. Prefer this over [`Self::commands`];
-    /// see the type documentation.
+    /// What the shape is, for backends that render kinds directly.
     #[must_use]
     pub const fn kind(&self) -> ShapeKind {
         self.kind
     }
 
-    /// Returns the unit-space path commands.
+    /// The normalized path.
     #[must_use]
-    pub fn commands(&self) -> &[PathCommand] {
-        &self.commands
+    pub const fn path(&self) -> &BezPath {
+        &self.path
+    }
+
+    /// The Cherenkov shape clipping `bounds`.
+    #[must_use]
+    pub fn resolve(&self, bounds: Rect) -> ShapeData {
+        resolve_shape(self.kind, &self.path, bounds)
     }
 }
 
@@ -766,87 +623,88 @@ impl MetadataKey for ClipShape {}
 // ShapeKind - For backend rendering optimization
 // ============================================================================
 
-/// The kind of shape for backend rendering optimization.
-#[derive(Debug, Clone, Copy, Default)]
+/// What a shape *is*, so a backend can render it from its parameters.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum ShapeKind {
-    /// Rectangle with sharp corners.
+    /// The full bounds.
     #[default]
     Rect,
-    /// Circle inscribed in bounds.
+    /// A circle inscribed in the bounds.
     Circle,
-    /// Ellipse filling bounds.
+    /// An ellipse filling the bounds.
     Ellipse,
-    /// Rectangle with uniform corner radius.
+    /// A rectangle with one normalized radius (fraction of the shorter side).
     RoundedRect {
-        /// Corner radius (normalized 0.0-0.5).
+        /// Normalized corner radius, 0.0–0.5.
         corner_radius: f32,
     },
-    /// Rectangle with per-corner radii.
+    /// A rectangle with per-corner normalized radii.
     UnevenRoundedRect {
-        /// Top-left corner radius.
+        /// Top-left radius.
         top_left: f32,
-        /// Top-right corner radius.
+        /// Top-right radius.
         top_right: f32,
-        /// Bottom-left corner radius.
+        /// Bottom-left radius.
         bottom_left: f32,
-        /// Bottom-right corner radius.
+        /// Bottom-right radius.
         bottom_right: f32,
     },
-    /// Capsule (pill) shape.
+    /// A stadium: fully rounded ends.
     Capsule,
-    /// Rectangle with a uniform corner radius in logical points.
-    ///
-    /// Unlike [`ShapeKind::RoundedRect`], the radius is an absolute length, not
-    /// a fraction of the shorter side: a `corner_radius` of `28.0` is 28 points
-    /// whether the bounds are 280x140 or 560x300. Backends clamp it to half the
-    /// shorter side at resolve time.
+    /// A rectangle with one radius in logical points.
     FixedRoundedRect {
-        /// Corner radius in logical points.
+        /// Corner radius in points.
         corner_radius: f32,
     },
-    /// Rectangle with per-corner radii in logical points.
-    ///
-    /// Same absolute semantics as [`ShapeKind::FixedRoundedRect`], with each
-    /// corner named independently.
+    /// A rectangle with per-corner radii in logical points.
     FixedUnevenRoundedRect {
-        /// Top-left corner radius in logical points.
+        /// Top-left radius in points.
         top_left: f32,
-        /// Top-right corner radius in logical points.
+        /// Top-right radius in points.
         top_right: f32,
-        /// Bottom-left corner radius in logical points.
+        /// Bottom-left radius in points.
         bottom_left: f32,
-        /// Bottom-right corner radius in logical points.
+        /// Bottom-right radius in points.
         bottom_right: f32,
     },
-    /// Custom path.
+    /// Only the path describes the shape.
     CustomPath,
 }
 
-/// Resolved shape payload rendered directly by native backends.
+/// A filled shape as a backend receives it: kind, normalized path and the
+/// environment-resolved fill.
 #[derive(Debug, Clone)]
 pub struct ResolvedShape {
-    /// Shape kind for backend-side optimization.
+    /// What the shape is.
     pub kind: ShapeKind,
-    /// Path commands in unit coordinate space.
-    pub commands: Vec<PathCommand>,
-    /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
+    /// The normalized path.
+    pub path: BezPath,
+    /// The fill colour.
+    pub fill: Computed<WorkingColor>,
+}
+
+impl ResolvedShape {
+    /// The Cherenkov shape filling `bounds`.
+    #[must_use]
+    pub fn resolve(&self, bounds: Rect) -> ShapeData {
+        resolve_shape(self.kind, &self.path, bounds)
+    }
 }
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 
-/// Resolved morphing shape payload rendered directly by capable backends.
+/// A morphing shape as a backend receives it.
 #[derive(Debug, Clone)]
 pub struct ResolvedMorphShape {
-    /// Source shape kind.
+    /// The shape at progress 0.
     pub from: ShapeKind,
-    /// Target shape kind.
+    /// The shape at progress 1.
     pub to: ShapeKind,
-    /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
-    /// Time-based morph animation configuration.
+    /// The fill colour.
+    pub fill: Computed<WorkingColor>,
+    /// The timing when `progress` is `None`.
     pub animation: MorphAnimation,
-    /// Optional explicit progress signal.
+    /// An explicit progress signal, 0.0–1.0.
     pub progress: Option<Computed<f32>>,
 }
 
@@ -860,21 +718,21 @@ impl waterui_core::NativeView for ResolvedMorphShape {
 // FilledShape - Shape as a View with backend-native fill rendering
 // ============================================================================
 
-/// A shape filled with a color, resolved to `ResolvedShape`.
+/// A shape filled with a colour.
 #[derive(Debug)]
 pub struct FilledShape {
     kind: ShapeKind,
-    commands: Vec<PathCommand>,
+    path: BezPath,
     fill: Color,
 }
 
 impl FilledShape {
-    /// Creates a new filled shape from a shape and color.
+    /// Fills `shape` with `fill`, rendering it as a custom path.
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
             kind: ShapeKind::CustomPath,
-            commands: shape.path().into_iter().collect(),
+            path: shape.path(),
             fill: fill.into(),
         }
     }
@@ -883,33 +741,30 @@ impl FilledShape {
     fn with_kind(kind: ShapeKind, shape: impl Shape, fill: impl Into<Color>) -> Self {
         Self {
             kind,
-            commands: shape.path().into_iter().collect(),
+            path: shape.path(),
             fill: fill.into(),
         }
     }
 
-    /// Returns the path commands.
+    /// The normalized path.
     #[must_use]
-    pub fn commands(&self) -> &[PathCommand] {
-        &self.commands
+    pub const fn path(&self) -> &BezPath {
+        &self.path
     }
 
-    /// Returns the fill color.
+    /// The fill colour.
     #[must_use]
     pub const fn fill(&self) -> &Color {
         &self.fill
     }
 
-    /// Returns the shape kind.
+    /// What the shape is.
     #[must_use]
     pub const fn kind(&self) -> ShapeKind {
         self.kind
     }
 
-    /// Creates a morphing shape animation from this shape to another built-in shape.
-    ///
-    /// Morphing currently supports SDF-backed built-in shapes:
-    /// `Rectangle`, `Circle`, `Ellipse`, `RoundedRectangle`, `UnevenRoundedRectangle`, `Capsule`.
+    /// Morphs this shape into `target`.
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn morph_to(self, target: impl ShapeExt) -> MorphShape {
@@ -917,24 +772,21 @@ impl FilledShape {
     }
 }
 
-/// Configuration for shape morph animations.
+/// Timing of a [`MorphShape`] without an explicit progress signal.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MorphAnimation {
-    /// Duration of one forward morph cycle.
-    pub duration: Duration,
-    /// Easing curve applied to normalized cycle progress.
-    pub easing: EasingCurve,
-    /// Whether the animation repeats after reaching the end.
+    /// The easing of one run; its duration is the run's length.
+    pub curve: Curve,
+    /// Whether the morph runs again after finishing.
     pub repeat: bool,
-    /// Whether repeating animation should play in reverse every other cycle.
+    /// Whether repeated runs alternate direction.
     pub autoreverse: bool,
 }
 
 impl Default for MorphAnimation {
     fn default() -> Self {
         Self {
-            duration: Duration::from_millis(900),
-            easing: EasingCurve::EASE_IN_OUT,
+            curve: Curve::ease_in_out(Duration::from_millis(900)),
             repeat: true,
             autoreverse: true,
         }
@@ -942,43 +794,18 @@ impl Default for MorphAnimation {
 }
 
 impl MorphAnimation {
-    /// Creates a one-shot morph animation.
+    /// A single run of `curve`.
     #[must_use]
-    pub const fn once(duration: Duration, easing: EasingCurve) -> Self {
+    pub const fn once(curve: Curve) -> Self {
         Self {
-            duration,
-            easing,
+            curve,
             repeat: false,
             autoreverse: false,
         }
     }
-
-    #[cfg(feature = "gpu")]
-    #[must_use]
-    fn sample(self, elapsed: Duration) -> f32 {
-        if self.duration.is_zero() {
-            return 1.0;
-        }
-        let raw = elapsed.as_secs_f32() / self.duration.as_secs_f32();
-        let cycle = if self.repeat {
-            let base = raw.fract();
-            let index = raw
-                .floor()
-                .to_u64()
-                .expect("MorphAnimation::sample: cycle index must fit into u64");
-            if self.autoreverse && index % 2 == 1 {
-                1.0 - base
-            } else {
-                base
-            }
-        } else {
-            raw.clamp(0.0, 1.0)
-        };
-        self.easing.ease(cycle).clamp(0.0, 1.0)
-    }
 }
 
-/// A morphing filled shape view.
+/// A shape morphing between two built-in shapes.
 #[derive(Debug, Clone)]
 pub struct MorphShape {
     from: ShapeKind,
@@ -999,44 +826,45 @@ impl MorphShape {
         }
     }
 
-    /// Sets explicit animation configuration.
+    /// Sets the timing.
     #[must_use]
     pub const fn animation(mut self, animation: MorphAnimation) -> Self {
         self.animation = animation;
         self
     }
 
-    /// Sets the cycle duration (keeps other animation options unchanged).
+    /// Sets the run length.
     #[must_use]
     pub const fn duration(mut self, duration: Duration) -> Self {
-        self.animation.duration = duration;
+        self.animation.curve.duration = duration;
         self
     }
 
-    /// Sets easing (keeps other animation options unchanged).
+    /// Sets the easing, keeping the run length.
     #[must_use]
-    pub const fn easing(mut self, easing: EasingCurve) -> Self {
-        self.animation.easing = easing;
+    pub const fn curve(mut self, curve: Curve) -> Self {
+        self.animation.curve = Curve {
+            duration: self.animation.curve.duration,
+            ..curve
+        };
         self
     }
 
-    /// Enables/disables repeating.
+    /// Sets whether the morph repeats.
     #[must_use]
     pub const fn repeat(mut self, repeat: bool) -> Self {
         self.animation.repeat = repeat;
         self
     }
 
-    /// Enables/disables autoreverse for repeating animations.
+    /// Sets whether repeats alternate direction.
     #[must_use]
     pub const fn autoreverse(mut self, autoreverse: bool) -> Self {
         self.animation.autoreverse = autoreverse;
         self
     }
 
-    /// Overrides animated progress with an explicit reactive progress signal `[0, 1]`.
-    ///
-    /// When set, this takes precedence over the time-based animation config.
+    /// Drives the morph from a progress signal (0.0–1.0) instead of the clock.
     #[must_use]
     pub fn progress(mut self, progress: impl IntoComputed<f32>) -> Self {
         self.progress = Some(progress.into_computed());
@@ -1048,12 +876,11 @@ impl View for FilledShape {
     fn body(self, env: &Environment) -> impl View {
         ResolvedShape {
             kind: self.kind,
-            commands: self.commands,
+            path: self.path,
             fill: self.fill.resolve(env).computed(),
         }
     }
 
-    /// Resolves to `ResolvedShape`, which fills both axes.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         waterui_core::layout::StretchAxis::Both
     }
@@ -1061,351 +888,18 @@ impl View for FilledShape {
 
 impl View for MorphShape {
     fn body(self, env: &Environment) -> impl View {
-        let resolved = self.fill.resolve(env).computed();
-        // The GPU fallback renderer also consumes `progress`, so clone it
-        // only on that path; the lean path moves it into the native node.
-        #[cfg(feature = "gpu")]
-        let progress_for_gpu = self.progress.clone();
-        let native = waterui_core::Native::new(ResolvedMorphShape {
+        waterui_core::Native::new(ResolvedMorphShape {
             from: self.from,
             to: self.to,
-            fill: resolved,
+            fill: self.fill.resolve(env).computed(),
             animation: self.animation,
             progress: self.progress,
-        });
-        #[cfg(feature = "gpu")]
-        let native = native.with_fallback(GpuSurface::new(MorphShapeRenderer::new(
-            kind_to_morph_shape(self.from)
-                .expect("morph source shape must be a built-in morphable shape"),
-            kind_to_morph_shape(self.to)
-                .expect("morph target shape must be a built-in morphable shape"),
-            ReactiveColor::new(&Computed::constant(self.fill), env),
-            self.animation,
-            progress_for_gpu,
-        )));
-        native
+        })
     }
 
-    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuSurface`
-    /// fallback), both of which fill both axes.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         waterui_core::layout::StretchAxis::Both
     }
-}
-
-// ============================================================================
-// MorphShapeRenderer - SDF morphing for built-in shapes
-// ============================================================================
-
-#[cfg(feature = "gpu")]
-#[derive(Debug, Clone, Copy)]
-struct MorphSdfShape {
-    shape_type: u32,
-    radii: [f32; 4],
-}
-
-#[cfg(feature = "gpu")]
-fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
-    match kind {
-        ShapeKind::Rect => Some(MorphSdfShape {
-            shape_type: 0,
-            radii: [0.0; 4],
-        }),
-        ShapeKind::Circle => Some(MorphSdfShape {
-            shape_type: 1,
-            radii: [0.0; 4],
-        }),
-        ShapeKind::Ellipse => Some(MorphSdfShape {
-            shape_type: 2,
-            radii: [0.0; 4],
-        }),
-        ShapeKind::RoundedRect { corner_radius } => Some(MorphSdfShape {
-            shape_type: 3,
-            radii: [clamp_radius(corner_radius); 4],
-        }),
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => {
-            let corners = CornerRadii {
-                top_left,
-                top_right,
-                bottom_right,
-                bottom_left,
-            }
-            .sanitized();
-            Some(MorphSdfShape {
-                shape_type: 3,
-                radii: [
-                    corners.top_left,
-                    corners.top_right,
-                    corners.bottom_right,
-                    corners.bottom_left,
-                ],
-            })
-        }
-        ShapeKind::Capsule => Some(MorphSdfShape {
-            shape_type: 4,
-            radii: [0.0; 4],
-        }),
-        // Absolute radii cannot be normalized for the SDF shader without
-        // knowing the bounds the shape resolves against, and custom paths
-        // carry no radius structure at all.
-        ShapeKind::FixedRoundedRect { .. }
-        | ShapeKind::FixedUnevenRoundedRect { .. }
-        | ShapeKind::CustomPath => None,
-    }
-}
-
-#[cfg(feature = "gpu")]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct MorphUniforms {
-    color: [f32; 4],
-    dimensions_and_progress: [f32; 4], // width, height, progress, pad
-    shape_types: [f32; 4],             // from_type, to_type, pad, pad
-    from_radii: [f32; 4],              // tl, tr, br, bl
-    to_radii: [f32; 4],                // tl, tr, br, bl
-}
-
-#[cfg(feature = "gpu")]
-struct MorphShapeRenderer {
-    from: MorphSdfShape,
-    to: MorphSdfShape,
-    fill_color: ReactiveColor,
-    animation: MorphAnimation,
-    progress: Option<Computed<f32>>,
-    progress_guard: Option<BoxWatcherGuard>,
-    start: Option<Duration>,
-    pipeline: Option<wgpu::RenderPipeline>,
-    uniform_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
-    pipeline_format: Option<wgpu::TextureFormat>,
-}
-
-#[cfg(feature = "gpu")]
-impl fmt::Debug for MorphShapeRenderer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MorphShapeRenderer")
-            .field("from", &self.from)
-            .field("to", &self.to)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(feature = "gpu")]
-impl MorphShapeRenderer {
-    fn new(
-        from: MorphSdfShape,
-        to: MorphSdfShape,
-        fill_color: ReactiveColor,
-        animation: MorphAnimation,
-        progress: Option<Computed<f32>>,
-    ) -> Self {
-        Self {
-            from,
-            to,
-            fill_color,
-            animation,
-            progress,
-            progress_guard: None,
-            start: None,
-            pipeline: None,
-            uniform_buffer: None,
-            bind_group: None,
-            pipeline_format: None,
-        }
-    }
-}
-
-#[cfg(feature = "gpu")]
-impl GpuView for MorphShapeRenderer {
-    fn setup(
-        &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
-        self.fill_color.install(&ctx.redraw_handle);
-        if let Some(progress) = &self.progress {
-            let redraw = ctx.redraw_handle.clone();
-            self.progress_guard = Some(progress.watch(move |_| redraw.request_redraw()));
-        }
-
-        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
-            &MORPH_SHADER,
-            ctx.device,
-            "the morph shape shader",
-            "vs_main",
-            "fs_main",
-        );
-
-        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Morph Shape Uniforms"),
-            size: core::mem::size_of::<MorphUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Morph Shape Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Morph Shape Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let blend = ctx.alpha_blend_state();
-
-        let pipeline = ctx
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Morph Shape Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: vertex_shader.module(),
-                    entry_point: Some(vertex_shader.entry_point()),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fragment_shader.module(),
-                    entry_point: Some(fragment_shader.entry_point()),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-
-        self.pipeline = Some(pipeline);
-        self.uniform_buffer = Some(uniform_buffer);
-        self.bind_group = Some(bind_group);
-        self.pipeline_format = Some(ctx.surface_format);
-        self.start = None;
-        core::future::ready(())
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        assert_eq!(
-            self.pipeline_format,
-            Some(frame.format),
-            "MorphShape target format changed after setup"
-        );
-        let pipeline = self
-            .pipeline
-            .as_ref()
-            .expect("MorphShape render called before setup");
-        let uniform_buffer = self
-            .uniform_buffer
-            .as_ref()
-            .expect("MorphShape render called before setup");
-        let bind_group = self
-            .bind_group
-            .as_ref()
-            .expect("MorphShape render called before setup");
-
-        // The frame clock is supplied by the backend, so it is monotonic on
-        // every target — `std::time::Instant` does not exist on wasm32 — and
-        // deterministic under preview/offscreen pumping.
-        let start = *self.start.get_or_insert_with(|| frame.elapsed());
-        let age = frame.elapsed().saturating_sub(start);
-        let progress = if let Some(signal) = &self.progress {
-            let value = signal.snapshot();
-            assert!(value.is_finite(), "MorphShape progress must be finite");
-            value.clamp(0.0, 1.0)
-        } else {
-            self.animation.sample(age)
-        };
-
-        let fill_color = self.fill_color.get();
-        let [r, g, b] = fill_color.linear_with_headroom();
-        let uniforms = MorphUniforms {
-            color: [r, g, b, fill_color.opacity],
-            dimensions_and_progress: [
-                u32_to_f32(frame.width),
-                u32_to_f32(frame.height),
-                progress,
-                0.0,
-            ],
-            shape_types: [
-                u32_to_f32(self.from.shape_type),
-                u32_to_f32(self.to.shape_type),
-                0.0,
-                0.0,
-            ],
-            from_radii: self.from.radii,
-            to_radii: self.to.radii,
-        };
-        frame
-            .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Morph Shape Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Morph Shape Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        frame.queue.submit(core::iter::once(encoder.finish()));
-
-        // Request continuous redraw while animation is active
-        let animation_active =
-            self.progress.is_none() && (self.animation.repeat || age < self.animation.duration);
-        if animation_active {
-            frame.request_redraw();
-        }
-    }
-}
-
-#[cfg(feature = "gpu")]
-fn u32_to_f32(value: u32) -> f32 {
-    value
-        .to_f32()
-        .expect("shape dimensions must be representable as f32")
 }
 
 // ============================================================================
@@ -1421,7 +915,7 @@ pub trait ShapeExt: Shape + Sized {
 
     /// Creates a morphing filled shape from this shape to another built-in shape.
     ///
-    /// Morphing currently supports SDF-backed built-in shapes:
+    /// Morphing supports the built-in shapes:
     /// `Rectangle`, `Circle`, `Ellipse`, `RoundedRectangle`, `UnevenRoundedRectangle`, `Capsule`.
     fn morph_to(self, target: impl ShapeExt, fill: impl Into<Color>) -> MorphShape {
         MorphShape::new(self.shape_kind(), target.shape_kind(), fill.into())
@@ -1493,19 +987,13 @@ mod tests {
 
     #[test]
     fn fixed_radii_reject_negative_and_non_finite_values() {
-        let kind = FixedRoundedRectangle::new(f32::NAN).shape_kind();
-        match kind {
-            ShapeKind::FixedRoundedRect { corner_radius } => {
-                assert!((corner_radius - 0.0).abs() < 1e-6);
+        for radius in [f32::NAN, -4.0] {
+            match FixedRoundedRectangle::new(radius).shape_kind() {
+                ShapeKind::FixedRoundedRect { corner_radius } => {
+                    assert!((corner_radius - 0.0).abs() < 1e-6);
+                }
+                _ => panic!("unexpected kind"),
             }
-            _ => panic!("unexpected kind"),
-        }
-        let kind = FixedRoundedRectangle::new(-4.0).shape_kind();
-        match kind {
-            ShapeKind::FixedRoundedRect { corner_radius } => {
-                assert!((corner_radius - 0.0).abs() < 1e-6);
-            }
-            _ => panic!("unexpected kind"),
         }
     }
 
@@ -1528,12 +1016,47 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "gpu")]
     #[test]
-    fn one_shot_animation_reaches_end() {
-        let animation = MorphAnimation::once(Duration::from_millis(200), EasingCurve::LINEAR);
-        assert!((animation.sample(Duration::ZERO) - 0.0).abs() < 1e-6);
-        assert!((animation.sample(Duration::from_millis(100)) - 0.5).abs() < 1e-3);
-        assert!((animation.sample(Duration::from_secs(1)) - 1.0).abs() < 1e-6);
+    fn kinds_resolve_against_the_shorter_side() {
+        let bounds = Rect::new(10.0, 20.0, 110.0, 60.0);
+        match Circle.resolve(bounds) {
+            ShapeData::Circle(circle) => {
+                assert_eq!(circle.center, Point::new(60.0, 40.0));
+                assert!((circle.radius - 20.0).abs() < 1e-9);
+            }
+            other => panic!("unexpected shape {other:?}"),
+        }
+        match RoundedRectangle::new(0.25).resolve(bounds) {
+            ShapeData::RoundedRect(rounded) => {
+                assert!((rounded.radii().top_left - 10.0).abs() < 1e-9);
+            }
+            other => panic!("unexpected shape {other:?}"),
+        }
+        match FixedRoundedRectangle::new(80.0).resolve(bounds) {
+            ShapeData::RoundedRect(rounded) => {
+                assert!((rounded.radii().top_left - 20.0).abs() < 1e-9);
+            }
+            other => panic!("unexpected shape {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_paths_scale_per_axis() {
+        let bounds = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let path = Path::new().move_to(0.0, 0.0).line_to(1.0, 1.0).close();
+        match path.resolve(bounds) {
+            ShapeData::Path { elements, .. } => {
+                assert_eq!(elements[1], PathEl::LineTo(Point::new(200.0, 100.0)));
+            }
+            other => panic!("unexpected shape {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capsule_path_stays_in_the_unit_square() {
+        let path = Capsule.path();
+        let bbox = path.bounding_box();
+        assert!(bbox.x0 >= -1e-6 && bbox.y0 >= -1e-6);
+        assert!(bbox.x1 <= 1.0 + 1e-6 && bbox.y1 <= 1.0 + 1e-6);
     }
 }

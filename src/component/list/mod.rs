@@ -534,7 +534,7 @@ fn selection_themed(
     selection: &ListSelection<SelfId<RawId>>,
     id: SelfId<RawId>,
 ) -> ListItem {
-    use crate::color::ResolvedColor;
+    use crate::color::WorkingColor;
     use crate::theme::{color, install_color_signal};
     use nami::SignalExt;
     use waterui_core::env::use_env;
@@ -556,7 +556,7 @@ fn selection_themed(
     let content = core::mem::take(&mut item.content);
     item.content = AnyView::new(use_env(move |mut env: Environment| {
         let on_selection = color::SelectionForeground.resolve(&env).computed();
-        let flip = |normal: Computed<ResolvedColor>| {
+        let flip = |normal: Computed<WorkingColor>| {
             selected
                 .clone()
                 .zip(&normal)

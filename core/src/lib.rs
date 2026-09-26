@@ -91,18 +91,16 @@ extern crate alloc;
 
 #[macro_use]
 mod macros;
-mod animation_system;
+pub mod animation;
 mod components;
 mod foundation;
 mod state;
 mod ui;
 
-pub use animation::{Animatable, AnimationExt, AnimationTrack};
-pub use animation_system::{animation, easing, vector_arithmetic};
+pub use animation::AnimationExt;
 pub use anyhow::Error;
 pub use anyview::AnyView;
 pub use components::*;
-pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
 pub use extract::State;
 pub use foundation::main_thread::MainThreadBound;

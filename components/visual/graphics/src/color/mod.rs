@@ -14,6 +14,8 @@
 
 mod oklch;
 pub use oklch::Oklch;
+pub mod working;
+pub use cherenkov::WorkingColor;
 mod p3;
 pub use p3::P3;
 mod srgb;
@@ -21,7 +23,6 @@ use core::{
     fmt::{self, Debug, Display},
     ops::{Deref, DerefMut},
 };
-use num_traits::ToPrimitive;
 use pastey::paste;
 pub use srgb::{BLACK, Srgb, WHITE};
 
@@ -74,7 +75,7 @@ use waterui_core::{
 // ═══════════════════════════════════════════════════════════════════════════
 //
 #[derive(Debug, Clone)]
-pub struct Color(AnyResolvable<ResolvedColor>);
+pub struct Color(AnyResolvable<WorkingColor>);
 
 impl Default for Color {
     fn default() -> Self {
@@ -82,13 +83,21 @@ impl Default for Color {
     }
 }
 
-impl_constant!(ResolvedColor);
+/// A colour already in the working space: resolves to itself.
+#[derive(Debug, Clone, Copy)]
+pub struct Working(pub WorkingColor);
 
-impl Resolvable for ResolvedColor {
-    type Resolved = Self;
+impl Resolvable for Working {
+    type Resolved = WorkingColor;
 
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        *self
+        self.0
+    }
+}
+
+impl<T: Resolvable<Resolved = WorkingColor> + 'static> From<T> for Color {
+    fn from(value: T) -> Self {
+        Self::new(value)
     }
 }
 
@@ -96,7 +105,7 @@ impl Resolvable for ResolvedColor {
 struct SignalColor(Computed<Color>);
 
 impl Resolvable for SignalColor {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         let env = env.clone();
@@ -112,12 +121,6 @@ pub fn signal_color(source: impl IntoSignal<Color> + 'static) -> Color {
     Color::new(SignalColor(source.into_signal().computed()))
 }
 
-impl<T: Resolvable<Resolved = ResolvedColor> + 'static> From<T> for Color {
-    fn from(value: T) -> Self {
-        Self::new(value)
-    }
-}
-
 /// Represents a color with an opacity/alpha value applied.
 ///
 /// This wrapper type allows applying a specific opacity to any color type.
@@ -129,7 +132,7 @@ pub struct WithOpacity<T> {
 
 impl<T> View for WithOpacity<T>
 where
-    T: Resolvable<Resolved = ResolvedColor> + 'static,
+    T: Resolvable<Resolved = WorkingColor> + 'static,
 {
     fn body(self, _env: &Environment) -> impl View {
         Color::new(self)
@@ -171,15 +174,14 @@ impl<T: Clone + 'static> Signal for WithOpacity<T> {
 
 impl<T> Resolvable for WithOpacity<T>
 where
-    T: Resolvable<Resolved = ResolvedColor> + 'static,
+    T: Resolvable<Resolved = WorkingColor> + 'static,
 {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         let opacity = self.opacity;
-        self.color.resolve(env).map(move |mut resolved| {
-            resolved.opacity = opacity;
-            resolved
-        })
+        self.color
+            .resolve(env)
+            .map(move |resolved| resolved.with_alpha(opacity))
     }
 }
 
@@ -216,211 +218,6 @@ impl Display for HexColorError {
     }
 }
 
-// mod parse; removed to avoid duplication
-
-/// Represents a resolved color in linear sRGB color space with extended range support.
-///
-/// This struct stores color components in linear RGB values (0.0-1.0 for standard sRGB,
-/// values outside this range represent colors in extended color spaces like P3).
-#[derive(Debug, Clone, Copy)]
-pub struct ResolvedColor {
-    /// Red component in linear RGB (0.0-1.0 for sRGB, <0 or >1 for P3)
-    pub red: f32,
-    /// Green component in linear RGB (0.0-1.0 for sRGB, <0 or >1 for P3)
-    pub green: f32,
-    /// Blue component in linear RGB (0.0-1.0 for sRGB, <0 or >1 for P3)
-    pub blue: f32,
-    /// Extended color range headroom value (positive values allow for HDR colors)
-    pub headroom: f32,
-    /// Opacity/alpha channel (0.0 = transparent, 1.0 = opaque)
-    pub opacity: f32,
-}
-
-impl ResolvedColor {
-    /// Creates a resolved color from an sRGB color with default metadata.
-    #[must_use]
-    pub fn from_srgb(color: Srgb) -> Self {
-        color.resolve()
-    }
-
-    /// Converts this resolved color back into sRGB space (with gamma correction).
-    #[must_use]
-    pub fn to_srgb(&self) -> Srgb {
-        Srgb::new(
-            linear_to_srgb(self.red),
-            linear_to_srgb(self.green),
-            linear_to_srgb(self.blue),
-        )
-    }
-
-    /// Converts this resolved color into the OKLCH color space.
-    #[must_use]
-    pub fn to_oklch(&self) -> Oklch {
-        linear_srgb_to_oklch(self.red, self.green, self.blue)
-    }
-
-    /// Returns linear RGB components with HDR headroom applied.
-    #[must_use]
-    pub fn linear_with_headroom(&self) -> [f32; 3] {
-        let headroom = if self.headroom.is_finite() && self.headroom > 0.0 {
-            self.headroom
-        } else {
-            0.0
-        };
-        let scale = 1.0 + headroom;
-        [self.red * scale, self.green * scale, self.blue * scale]
-    }
-
-    /// Converts this resolved color into sRGB space with headroom applied.
-    #[must_use]
-    pub fn to_srgb_with_headroom(&self) -> Srgb {
-        let [red, green, blue] = self.linear_with_headroom();
-        Srgb::new(
-            linear_to_srgb(red),
-            linear_to_srgb(green),
-            linear_to_srgb(blue),
-        )
-    }
-
-    /// Creates a resolved color from an OKLCH color with the provided metadata.
-    #[must_use]
-    pub fn from_oklch(oklch: Oklch, headroom: f32, opacity: f32) -> Self {
-        let [red, green, blue] = oklch_to_linear_srgb(oklch.lightness, oklch.chroma, oklch.hue);
-        Self {
-            red,
-            green,
-            blue,
-            headroom,
-            opacity,
-        }
-    }
-
-    /// Returns a copy of this color with the provided opacity.
-    #[must_use]
-    pub const fn with_opacity(mut self, opacity: f32) -> Self {
-        self.opacity = opacity;
-        self
-    }
-
-    /// Returns a copy of this color with the provided headroom value.
-    #[must_use]
-    pub const fn with_headroom(mut self, headroom: f32) -> Self {
-        self.headroom = headroom;
-        self
-    }
-
-    /// Linearly interpolates between this color and another color.
-    #[must_use]
-    pub fn lerp(self, other: Self, factor: f32) -> Self {
-        let t = factor.clamp(0.0, 1.0);
-        let first = self.linear_with_headroom();
-        let second = other.linear_with_headroom();
-        let headroom = lerp(self.headroom, other.headroom, t);
-        let scale = 1.0 + headroom;
-        Self {
-            red: lerp(first[0], second[0], t) / scale,
-            green: lerp(first[1], second[1], t) / scale,
-            blue: lerp(first[2], second[2], t) / scale,
-            headroom,
-            opacity: lerp(self.opacity, other.opacity, t),
-        }
-    }
-}
-
-impl Default for ResolvedColor {
-    fn default() -> Self {
-        Self {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.0,
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
-
-impl core::ops::Add for ResolvedColor {
-    type Output = Self;
-
-    fn add(self, other: Self) -> Self {
-        Self {
-            red: self.red + other.red,
-            green: self.green + other.green,
-            blue: self.blue + other.blue,
-            headroom: self.headroom + other.headroom,
-            opacity: self.opacity + other.opacity,
-        }
-    }
-}
-
-impl core::ops::Sub for ResolvedColor {
-    type Output = Self;
-
-    fn sub(self, other: Self) -> Self {
-        Self {
-            red: self.red - other.red,
-            green: self.green - other.green,
-            blue: self.blue - other.blue,
-            headroom: self.headroom - other.headroom,
-            opacity: self.opacity - other.opacity,
-        }
-    }
-}
-
-impl core::ops::Mul<f64> for ResolvedColor {
-    type Output = Self;
-
-    fn mul(self, scalar: f64) -> Self {
-        let s = scalar
-            .to_f32()
-            .expect("ResolvedColor::mul: scalar must be representable as f32");
-        Self {
-            red: self.red * s,
-            green: self.green * s,
-            blue: self.blue * s,
-            headroom: self.headroom * s,
-            opacity: self.opacity * s,
-        }
-    }
-}
-
-impl From<Srgb> for ResolvedColor {
-    fn from(value: Srgb) -> Self {
-        value.resolve()
-    }
-}
-
-impl From<P3> for ResolvedColor {
-    fn from(value: P3) -> Self {
-        let linear_p3 = [
-            srgb_to_linear(value.red),
-            srgb_to_linear(value.green),
-            srgb_to_linear(value.blue),
-        ];
-        let linear_srgb = p3_to_linear_srgb(linear_p3);
-        Self {
-            red: linear_srgb[0],
-            green: linear_srgb[1],
-            blue: linear_srgb[2],
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
-
-impl From<Oklch> for ResolvedColor {
-    fn from(value: Oklch) -> Self {
-        let [red, green, blue] = oklch_to_linear_srgb(value.lightness, value.chroma, value.hue);
-        Self {
-            red,
-            green,
-            blue,
-            headroom: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd, Hash, Eq, Ord)]
 #[non_exhaustive]
 /// Represents the supported color spaces for color representation.
@@ -443,13 +240,13 @@ struct ReactiveOpacity {
 }
 
 impl Resolvable for ReactiveOpacity {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         self.color
             .resolve(env)
             .zip(&self.opacity)
-            .map(|(color, opacity)| color.with_opacity(opacity))
+            .map(|(color, opacity)| color.with_alpha(opacity))
     }
 }
 
@@ -458,17 +255,17 @@ impl Color {
     ///
     /// # Arguments
     /// * `custom` - A resolvable color implementation
-    pub fn new(custom: impl Resolvable<Resolved = ResolvedColor> + 'static) -> Self {
+    pub fn new(custom: impl Resolvable<Resolved = WorkingColor> + 'static) -> Self {
         Self(AnyResolvable::new(custom))
     }
 
-    fn map_resolved(self, func: impl Fn(ResolvedColor) -> ResolvedColor + Clone + 'static) -> Self {
+    fn map_resolved(self, func: impl Fn(WorkingColor) -> WorkingColor + Clone + 'static) -> Self {
         Self::new(resolve::Map::new(self.0, func))
     }
 
     fn map_oklch(self, func: impl Fn(Oklch) -> Oklch + Clone + 'static) -> Self {
         self.map_resolved(move |resolved| {
-            let base = resolved.to_oklch();
+            let base = working::to_oklch(resolved);
             let mut mapped = func(base);
 
             if !mapped.lightness.is_finite() {
@@ -486,7 +283,7 @@ impl Color {
             }
             mapped.hue = normalize_hue(mapped.hue);
 
-            ResolvedColor::from_oklch(mapped, resolved.headroom, resolved.opacity)
+            working::from_oklch(mapped, resolved.components[3])
         })
     }
 
@@ -566,13 +363,13 @@ impl Color {
     /// Returns [`HexColorError`] if the provided string is not a valid six-digit
     /// hexadecimal color.
     pub fn try_srgb_hex(hex: &str) -> Result<Self, HexColorError> {
-        Srgb::try_from_hex(hex).map(Self::from)
+        Srgb::try_from_hex(hex).map(Self::new)
     }
 
     /// Creates an sRGB color from a packed 0xRRGGBB value.
     #[must_use]
     pub fn srgb_u32(rgb: u32) -> Self {
-        Self::from(Srgb::from_u32(rgb))
+        Self::new(Srgb::from_u32(rgb))
     }
 
     /// Returns a fully transparent color.
@@ -600,7 +397,7 @@ impl Color {
     #[must_use]
     pub fn with_headroom(self, headroom: f32) -> Self {
         let clamped = clamp_non_negative(headroom);
-        self.map_resolved(move |resolved| resolved.with_headroom(clamped))
+        self.map_resolved(move |resolved| working::with_headroom(resolved, clamped))
     }
 
     /// Lightens the color by increasing its OKLCH lightness component.
@@ -652,26 +449,28 @@ impl Color {
     /// # Arguments
     /// * `env` - The environment to resolve the color in
     #[must_use]
-    pub fn resolve(&self, env: &Environment) -> Computed<ResolvedColor> {
+    pub fn resolve(&self, env: &Environment) -> Computed<WorkingColor> {
         self.0.resolve(env)
     }
 }
 
 #[derive(Debug, Clone)]
 struct Mix {
-    first: AnyResolvable<ResolvedColor>,
-    second: AnyResolvable<ResolvedColor>,
+    first: AnyResolvable<WorkingColor>,
+    second: AnyResolvable<WorkingColor>,
     factor: f32,
 }
 
 impl Resolvable for Mix {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         let factor = self.factor;
         let first = self.first.resolve(env);
         let second = self.second.resolve(env);
-        first.zip(&second).map(move |(a, b)| a.lerp(b, factor))
+        first
+            .zip(&second)
+            .map(move |(a, b)| working::lerp(a, b, factor))
     }
 }
 
@@ -682,10 +481,10 @@ macro_rules! environment_color {
         pub struct $name;
 
         impl Resolvable for $name {
-            type Resolved = ResolvedColor;
+            type Resolved = WorkingColor;
 
             fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-                env.query::<Self, Computed<ResolvedColor>>()
+                env.query::<Self, Computed<WorkingColor>>()
                     .cloned()
                     .expect(concat!(
                         stringify!($name),
@@ -805,10 +604,10 @@ macro_rules! color_const {
             }
 
             impl Resolvable for $name {
-                type Resolved = ResolvedColor;
+                type Resolved = WorkingColor;
                 fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
                     let default_color = Srgb::[<$name:snake:upper>] ;
-                    env.query::<Self, ResolvedColor>()
+                    env.query::<Self, WorkingColor>()
                         .copied()
                         .unwrap_or_else(|| default_color.resolve())
                 }
@@ -854,7 +653,6 @@ color_const!(BlueGrey, "Blue grey color.");
 // Colors remain semantic native views so their resolved signal can update the
 // platform fill precisely without rebuilding the view subtree.
 waterui_core::raw_view!(Color, waterui_core::layout::StretchAxis::Both);
-waterui_core::raw_view!(ResolvedColor, waterui_core::layout::StretchAxis::Both);
 
 /// Hex parsing helpers shared by color constructors.
 pub mod parse;
@@ -904,47 +702,6 @@ pub(crate) fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
             0.072_397_4_f32.mul_add(srgb[1], 0.910_519_9 * srgb[2]),
         ),
     ]
-}
-
-#[allow(
-    clippy::excessive_precision,
-    clippy::many_single_char_names,
-    clippy::suboptimal_flops
-)]
-fn linear_srgb_to_oklab(red: f32, green: f32, blue: f32) -> [f32; 3] {
-    let l = 0.412_221_470_8_f32.mul_add(red, 0.536_332_536_3 * green) + 0.051_445_992_9 * blue;
-    let m = 0.211_903_498_2_f32.mul_add(red, 0.680_699_545_1 * green) + 0.107_396_956_6 * blue;
-    let s = 0.088_302_461_9_f32.mul_add(red, 0.281_718_837_6 * green) + 0.629_978_700_5 * blue;
-
-    let l_ = l.cbrt();
-    let m_ = m.cbrt();
-    let s_ = s.cbrt();
-
-    [
-        0.210_454_255_3_f32.mul_add(l_, 0.793_617_785 * m_) - 0.004_072_046_8 * s_,
-        1.977_998_495_1_f32.mul_add(l_, (-2.428_592_205_f32).mul_add(m_, 0.450_593_709_9 * s_)),
-        0.025_904_037_1_f32.mul_add(l_, 0.782_771_766_2 * m_) - 0.808_675_766 * s_,
-    ]
-}
-
-#[allow(
-    clippy::excessive_precision,
-    clippy::many_single_char_names,
-    clippy::suboptimal_flops
-)]
-fn linear_srgb_to_oklch(red: f32, green: f32, blue: f32) -> Oklch {
-    let [lightness, a, b] = linear_srgb_to_oklab(red, green, blue);
-    let chroma = a.hypot(b);
-    let mut hue = b.atan2(a).to_degrees();
-    if hue < 0.0 {
-        hue += 360.0;
-    }
-
-    Oklch::new(lightness, chroma, hue)
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    (b - a).mul_add(t, a)
 }
 
 const fn clamp_unit(value: f32) -> f32 {
@@ -1052,20 +809,12 @@ mod tests {
     fn srgb_resolve_matches_linear_components() {
         let color = Srgb::from_hex("#4CAF50");
         let resolved = color.resolve();
+        let [red, green, blue] = working::to_linear_srgb(resolved);
 
-        assert!(approx_eq(resolved.red, srgb_to_linear(color.red), EPSILON));
-        assert!(approx_eq(
-            resolved.green,
-            srgb_to_linear(color.green),
-            EPSILON
-        ));
-        assert!(approx_eq(
-            resolved.blue,
-            srgb_to_linear(color.blue),
-            EPSILON
-        ));
-        assert!(approx_eq(resolved.headroom, 0.0, EPSILON));
-        assert!(approx_eq(resolved.opacity, 1.0, EPSILON));
+        assert!(approx_eq(red, srgb_to_linear(color.red), EPSILON_WIDE));
+        assert!(approx_eq(green, srgb_to_linear(color.green), EPSILON_WIDE));
+        assert!(approx_eq(blue, srgb_to_linear(color.blue), EPSILON_WIDE));
+        assert!(approx_eq(resolved.components[3], 1.0, EPSILON));
     }
 
     #[test]
@@ -1076,9 +825,14 @@ mod tests {
             .with_headroom(0.6);
 
         let resolved = base.resolve(&env).snapshot();
+        let plain = Color::srgb(32, 64, 128).resolve(&env).snapshot();
 
-        assert!(approx_eq(resolved.opacity, 0.4, EPSILON));
-        assert!(approx_eq(resolved.headroom, 0.6, EPSILON));
+        assert!(approx_eq(resolved.components[3], 0.4, EPSILON));
+        assert!(approx_eq(
+            resolved.components[0],
+            plain.components[0] * 1.6,
+            EPSILON
+        ));
     }
 
     #[test]
@@ -1156,21 +910,20 @@ mod tests {
     fn transparent_color_has_zero_opacity() {
         let env = Environment::new();
         let transparent = Color::transparent().resolve(&env).snapshot();
-        assert!(approx_eq(transparent.opacity, 0.0, EPSILON));
+        assert!(approx_eq(transparent.components[3], 0.0, EPSILON));
+    }
+
+    fn oklch_of(color: &Color, env: &Environment) -> Oklch {
+        working::to_oklch(color.resolve(env).snapshot())
     }
 
     #[test]
     fn lighten_and_darken_adjust_lightness() {
         let env = Environment::new();
         let base = Color::oklch(0.4, 0.12, 90.0);
-        let base_lch = base.resolve(&env).snapshot().to_oklch();
-        let lighter = base
-            .clone()
-            .lighten(0.2)
-            .resolve(&env)
-            .snapshot()
-            .to_oklch();
-        let darker = base.darken(0.2).resolve(&env).snapshot().to_oklch();
+        let base_lch = oklch_of(&base, &env);
+        let lighter = oklch_of(&base.clone().lighten(0.2), &env);
+        let darker = oklch_of(&base.darken(0.2), &env);
 
         assert!(lighter.lightness > base_lch.lightness);
         assert!(darker.lightness < base_lch.lightness);
@@ -1180,14 +933,9 @@ mod tests {
     fn saturate_and_desaturate_adjust_chroma() {
         let env = Environment::new();
         let base = Color::oklch(0.5, 0.2, 45.0);
-        let base_chroma = base.resolve(&env).snapshot().to_oklch().chroma;
-        let saturated = base
-            .clone()
-            .saturate(0.5)
-            .resolve(&env)
-            .snapshot()
-            .to_oklch();
-        let desaturated = base.desaturate(0.5).resolve(&env).snapshot().to_oklch();
+        let base_chroma = oklch_of(&base, &env).chroma;
+        let saturated = oklch_of(&base.clone().saturate(0.5), &env);
+        let desaturated = oklch_of(&base.desaturate(0.5), &env);
 
         assert!(saturated.chroma > base_chroma);
         assert!(desaturated.chroma < base_chroma);
@@ -1196,11 +944,7 @@ mod tests {
     #[test]
     fn hue_rotation_wraps_within_range() {
         let env = Environment::new();
-        let rotated = Color::oklch(0.6, 0.18, 350.0)
-            .hue_rotate(40.0)
-            .resolve(&env)
-            .snapshot()
-            .to_oklch();
+        let rotated = oklch_of(&Color::oklch(0.6, 0.18, 350.0).hue_rotate(40.0), &env);
 
         assert!(approx_eq(rotated.hue, 30.0, EPSILON_WIDE));
     }
@@ -1212,23 +956,18 @@ mod tests {
         let white = Color::srgb(255, 255, 255);
         let mid = black.mix(white, 0.5).resolve(&env).snapshot();
 
-        assert!(approx_eq(mid.red, 0.5, EPSILON));
-        assert!(approx_eq(mid.green, 0.5, EPSILON));
-        assert!(approx_eq(mid.blue, 0.5, EPSILON));
+        for channel in &mid.components[..3] {
+            assert!(approx_eq(*channel, 0.5, EPSILON));
+        }
     }
 
     #[test]
     fn color_mixing_interpolates_hdr_output_light() {
-        let first = ResolvedColor::default();
-        let second = ResolvedColor {
-            red: 1.0,
-            headroom: 1.0,
-            ..ResolvedColor::default()
-        };
+        let first = WorkingColor::BLACK;
+        let second = working::with_headroom(WorkingColor::new([1.0, 0.0, 0.0, 1.0]), 1.0);
 
-        let midpoint = first.lerp(second, 0.5);
+        let midpoint = working::lerp(first, second, 0.5);
 
-        assert!(approx_eq(midpoint.linear_with_headroom()[0], 1.0, EPSILON));
-        assert!(approx_eq(midpoint.headroom, 0.5, EPSILON));
+        assert!(approx_eq(midpoint.components[0], 1.0, EPSILON));
     }
 }

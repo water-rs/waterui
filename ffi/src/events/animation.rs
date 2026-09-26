@@ -4,7 +4,7 @@ use crate::reactive::WuiWatcherMetadata;
 
 use crate::IntoFFI;
 
-/// FFI-safe representation of an animation.
+/// FFI-safe representation of a Cherenkov animation.
 ///
 /// cbindgen generates a tagged union with:
 /// - `WuiAnimation_Tag` enum for variant discrimination
@@ -15,12 +15,12 @@ use crate::IntoFFI;
 pub enum WuiAnimation {
     /// No animation - changes apply immediately
     None,
-    /// Timed cubic bezier animation with control points
+    /// Timed cubic bezier curve with control points
     ///
     /// Native backends can use these control points with:
     /// - Apple: `CAMediaTimingFunction(controlPoints:)`
     /// - Android: `PathInterpolator(x1, y1, x2, y2)`
-    Bezier {
+    Curve {
         /// Duration in milliseconds
         duration_ms: u64,
         /// First control point X (0.0 to 1.0)
@@ -34,40 +34,45 @@ pub enum WuiAnimation {
     },
     /// Spring animation with physics-based movement
     Spring {
-        /// Stiffness of the spring (higher = faster)
-        stiffness: f32,
-        /// Damping factor (higher = less bounce)
+        /// The oscillation period in seconds
+        response: f32,
+        /// The damping ratio; 1 is critically damped
         damping: f32,
+    },
+    /// Momentum decay from an initial velocity
+    Decay {
+        /// Initial velocity along X, logical pixels per second
+        velocity_x: f32,
+        /// Initial velocity along Y, logical pixels per second
+        velocity_y: f32,
+        /// Exponential deceleration constant, per second
+        deceleration: f32,
     },
 }
 
+#[allow(clippy::cast_possible_truncation)]
 impl IntoFFI for Animation {
     type FFI = WuiAnimation;
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Self::Default => WuiAnimation::Bezier {
-                duration_ms: 250,
-                x1: 0.42,
-                y1: 0.0,
-                x2: 0.58,
-                y2: 1.0,
-            },
-            Self::Bezier {
-                duration,
-                x1,
-                y1,
-                x2,
-                y2,
-            } => WuiAnimation::Bezier {
-                duration_ms: u64::try_from(duration.as_millis())
+            Self::Curve(curve) => WuiAnimation::Curve {
+                duration_ms: u64::try_from(curve.duration.as_millis())
                     .expect("Animation duration exceeds u64::MAX milliseconds"),
-                x1,
-                y1,
-                x2,
-                y2,
+                x1: curve.p1.x as f32,
+                y1: curve.p1.y as f32,
+                x2: curve.p2.x as f32,
+                y2: curve.p2.y as f32,
             },
-            Self::Spring { stiffness, damping } => WuiAnimation::Spring { stiffness, damping },
+            Self::Spring(spring) => WuiAnimation::Spring {
+                response: spring.response as f32,
+                damping: spring.damping as f32,
+            },
+            Self::Decay(decay) => WuiAnimation::Decay {
+                velocity_x: decay.velocity.x as f32,
+                velocity_y: decay.velocity.y as f32,
+                deceleration: decay.deceleration as f32,
+            },
         }
     }
 }

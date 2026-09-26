@@ -1,4 +1,4 @@
-// Flowing animated gradient (ShaderSurface-compatible)
+// Flowing animated gradient shader paint.
 // Uses uniforms.time and uniforms.resolution
 
 const PI: f32 = 3.14159265359;

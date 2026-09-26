@@ -1,12 +1,17 @@
-use num_traits::ToPrimitive as _;
+use std::cell::RefCell;
 use std::rc::Rc;
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
+use std::sync::mpsc::{Receiver, Sender, channel};
+
+use num_traits::ToPrimitive as _;
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame, GpuContent, RedrawHandle};
 use wgpu_external_frame::dma_buf::{DmaBufFrame, DmaBufImporter};
 
 #[cfg(feature = "webview")]
 use crate::WpePage;
 #[cfg(feature = "webview")]
-use crate::input::{WpeInputGpuView, WpeSurfaceInput};
+use crate::input::WpeSurfaceInput;
+#[cfg(feature = "webview")]
+use waterui_graphics::gpu::GpuContentView;
 
 struct SourceTexture {
     size: (u32, u32),
@@ -56,82 +61,153 @@ impl DmaBufFrameSource for WpePage {
     }
 }
 
-/// GPU view that composites a Linux browser DMA-BUF stream without CPU readback.
-pub struct DmaBufGpuView<S> {
-    source: S,
-    gpu: Option<GpuState>,
-    pending_frame: Option<DmaBufFrame>,
+/// The logical viewport the content last rendered at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Viewport {
+    width: u32,
+    height: u32,
+    scale: f64,
 }
 
-/// WPE-specialized DMA-BUF GPU view.
-#[cfg(feature = "webview")]
-pub type WpeGpuView = DmaBufGpuView<WpePage>;
+/// The UI-thread half of a DMA-BUF presenter: owns the (non-`Send`) frame
+/// source, pumps it once per host frame, applies the viewport the content
+/// reports, and forwards every frame to the [`DmaBufContent`] that draws it.
+pub struct DmaBufFeed<S> {
+    source: S,
+    frames: Sender<DmaBufFrame>,
+    viewports: Receiver<Viewport>,
+    redraws: Receiver<RedrawHandle>,
+    redraw: RefCell<Option<RedrawHandle>>,
+    viewport: RefCell<Option<Viewport>>,
+}
 
-impl<S> core::fmt::Debug for DmaBufGpuView<S> {
+impl<S> core::fmt::Debug for DmaBufFeed<S> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("WpeGpuView").finish_non_exhaustive()
+        formatter.debug_struct("DmaBufFeed").finish_non_exhaustive()
     }
 }
 
-impl<S: DmaBufFrameSource> DmaBufGpuView<S> {
-    /// Creates a renderer for `source`.
+impl<S: DmaBufFrameSource> DmaBufFeed<S> {
+    /// Pumps the source and hands what it produced to the content.
     ///
-    /// The device scale comes from the frame the host draws — see
-    /// [`GpuFrame::scale`] — so nothing has to publish it separately.
-    #[must_use]
-    pub const fn new(source: S) -> Self {
-        Self {
-            source,
-            gpu: None,
-            pending_frame: None,
+    /// Call once per host frame from the UI thread.
+    pub fn pump(&self) {
+        self.source.pump();
+        if let Some(redraw) = self.redraws.try_iter().last() {
+            self.redraw.replace(Some(redraw));
+        }
+        if let Some(viewport) = self.viewports.try_iter().last()
+            && self.viewport.replace(Some(viewport)) != Some(viewport)
+        {
+            self.source
+                .resize(viewport.width, viewport.height, viewport.scale);
+        }
+        self.forward();
+    }
+
+    fn forward(&self) {
+        while let Some(frame) = self.source.take_frame() {
+            if self.frames.send(frame).is_err() {
+                return;
+            }
         }
     }
 
-    /// Returns the frame source.
-    #[must_use]
-    pub const fn source(&self) -> &S {
-        &self.source
+    fn wake(&self) {
+        self.forward();
+        if let Some(redraw) = self.redraw.borrow().as_ref() {
+            redraw.request_redraw();
+        }
     }
+}
+
+/// GPU content that composites a Linux browser DMA-BUF stream without CPU
+/// readback. Frames arrive from a [`DmaBufFeed`] on the UI thread.
+pub struct DmaBufContent {
+    frames: Receiver<DmaBufFrame>,
+    viewports: Sender<Viewport>,
+    redraws: Sender<RedrawHandle>,
+    gpu: Option<GpuState>,
+    pending_frame: Option<DmaBufFrame>,
+    viewport: Option<Viewport>,
+}
+
+impl core::fmt::Debug for DmaBufContent {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("DmaBufContent")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Splits `source` into the UI-thread feed and the render-thread content.
+///
+/// The feed must be pumped once per host frame — see
+/// [`GpuContentView::on_frame`] — and stays alive as long as the content is
+/// installed; frames delivered while the feed is idle wake the host through
+/// the content's redraw handle.
+#[must_use]
+pub fn dma_buf_presenter<S: DmaBufFrameSource>(source: S) -> (Rc<DmaBufFeed<S>>, DmaBufContent) {
+    let (frames, frame_rx) = channel();
+    let (viewport_tx, viewports) = channel();
+    let (redraw_tx, redraws) = channel();
+    let feed = Rc::new(DmaBufFeed {
+        source,
+        frames,
+        viewports,
+        redraws,
+        redraw: RefCell::new(None),
+        viewport: RefCell::new(None),
+    });
+    let waker = Rc::downgrade(&feed);
+    feed.source.set_frame_waker(Rc::new(move || {
+        if let Some(feed) = waker.upgrade() {
+            feed.wake();
+        }
+    }));
+    let content = DmaBufContent {
+        frames: frame_rx,
+        viewports: viewport_tx,
+        redraws: redraw_tx,
+        gpu: None,
+        pending_frame: None,
+        viewport: None,
+    };
+    (feed, content)
 }
 
 /// Creates the presenter for one visible WPE page, wired to take its own input.
 ///
-/// The view reports
-/// [`wants_input_events`](waterui_graphics::gpu_surface::GpuView::wants_input_events),
-/// so a backend that routes surface input to GPU views needs nothing
-/// WPE-specific: the pointer, keyboard, scroll and composition events landing
-/// on this layer reach `WPEPlatform` through
-/// [`WpeSurfaceInput`](crate::WpeSurfaceInput). A backend whose input arrives
-/// somewhere else entirely — GTK delivers it to the `GtkGLArea`'s event
-/// controllers — builds a [`DmaBufGpuView`] and owns a `WpeSurfaceInput` beside
-/// it instead.
+/// The pointer, keyboard, scroll and composition events landing on this layer
+/// reach `WPEPlatform` through [`WpeSurfaceInput`](crate::WpeSurfaceInput),
+/// and the page is pumped on the UI thread once per host frame.
 #[cfg(feature = "webview")]
 #[must_use]
-pub fn gpu_view_with_input(page: WpePage) -> impl GpuView {
-    WpeInputGpuView::new(DmaBufGpuView::new(page.clone()), WpeSurfaceInput::new(page))
+pub fn gpu_view_with_input(page: WpePage) -> GpuContentView {
+    let (feed, content) = dma_buf_presenter(page.clone());
+    let input = RefCell::new(WpeSurfaceInput::new(page));
+    GpuContentView::new(content)
+        .on_frame(move || feed.pump())
+        .on_input(move |event| input.borrow_mut().handle(event))
 }
 
-impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
-    #[expect(
-        clippy::future_not_send,
-        reason = "browser GPU views and WaterUI environments are confined to the UI thread"
-    )]
-    async fn setup(&mut self, context: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        let redraw = context.redraw_handle.clone();
-        self.source
-            .set_frame_waker(Rc::new(move || redraw.request_redraw()));
+impl GpuContent for DmaBufContent {
+    fn setup(&mut self, context: &GpuContext<'_>) {
+        // The feed may already be gone when the view was dropped before its
+        // first frame; nothing is left to wake then.
+        let _ = self.redraws.send(context.redraw.clone());
         self.gpu = Some(create_gpu_state(context));
     }
 
     fn render(&mut self, frame: &mut GpuFrame<'_>) {
-        self.source.pump();
-        resize_browser_source(&self.source, frame);
-        if self.pending_frame.is_none() {
-            self.pending_frame = self.source.take_frame();
+        self.sync_viewport(frame);
+        while let Ok(next) = self.frames.try_recv() {
+            if let Some(superseded) = self.pending_frame.replace(next) {
+                superseded.release(None);
+            }
         }
         let Some(pending) = self.pending_frame.as_ref() else {
             clear_target(frame);
-            frame.request_redraw();
             return;
         };
         if !pending.is_render_ready() {
@@ -146,28 +222,31 @@ impl<S: DmaBufFrameSource> GpuView for DmaBufGpuView<S> {
         let gpu = self
             .gpu
             .as_mut()
-            .expect("WPE GPU view rendered before setup");
+            .expect("WPE GPU content rendered before setup");
         render_browser_frame(gpu, incoming, frame);
-        if let Some(next) = self.source.take_frame() {
-            self.pending_frame = Some(next);
-            frame.request_redraw();
-        }
     }
 }
 
-fn resize_browser_source<S: DmaBufFrameSource>(source: &S, frame: &GpuFrame<'_>) {
-    let scale = frame.scale();
-    let logical_width = (f64::from(frame.width) / scale)
-        .round()
-        .max(1.0)
-        .to_u32()
-        .expect("WPE logical width exceeds u32");
-    let logical_height = (f64::from(frame.height) / scale)
-        .round()
-        .max(1.0)
-        .to_u32()
-        .expect("WPE logical height exceeds u32");
-    source.resize(logical_width, logical_height, scale);
+impl DmaBufContent {
+    fn sync_viewport(&mut self, frame: &GpuFrame<'_>) {
+        let scale = f64::from(frame.scale);
+        let logical = |pixels: u32| {
+            (f64::from(pixels) / scale)
+                .round()
+                .max(1.0)
+                .to_u32()
+                .expect("WPE logical size exceeds u32")
+        };
+        let viewport = Viewport {
+            width: logical(frame.width),
+            height: logical(frame.height),
+            scale,
+        };
+        if self.viewport.replace(viewport) != Some(viewport) {
+            // A feed that has gone away has no page left to resize.
+            let _ = self.viewports.send(viewport);
+        }
+    }
 }
 
 fn render_browser_frame(gpu: &mut GpuState, mut incoming: DmaBufFrame, frame: &GpuFrame<'_>) {
@@ -325,7 +404,7 @@ fn create_gpu_state(context: &GpuContext<'_>) -> GpuState {
                 entry_point: Some("fragment_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: context.surface_format,
+                    format: context.format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -338,7 +417,7 @@ fn create_gpu_state(context: &GpuContext<'_>) -> GpuState {
         });
     GpuState {
         importer,
-        target_format: context.surface_format,
+        target_format: context.format,
         pipeline,
         bind_group_layout,
         sampler: context.device.create_sampler(&wgpu::SamplerDescriptor {

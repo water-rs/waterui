@@ -13,8 +13,9 @@ categories = ["gui"]
 
 [features]
 default = ["widgets", "gestures"]
-# Widget theme vocabulary (Brush/DrawContext/WidgetTheme) and animated-scalar
-# sampling; pulls the control/form/text/graphics config types it describes.
+# Widget theme vocabulary (`WidgetTheme` recording Cherenkov content) and
+# animated-scalar sampling; pulls the control/form/text/graphics config types
+# it describes.
 widgets = [
     "dep:waterui-controls",
     "dep:waterui-form",
@@ -36,8 +37,7 @@ waterui-text = { workspace = true, optional = true }
 nami.workspace = true
 num-traits = { version = "0.2", default-features = false }
 tracing.workspace = true
-kurbo.workspace = true
-peniko.workspace = true
+cherenkov.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time = "1"

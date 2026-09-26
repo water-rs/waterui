@@ -6,7 +6,6 @@
 //! a stack, a frame, a clip, theme tokens — and ships no FFI type of its own.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::metadata::secure::ColorSpace;
 use crate::prelude::*;
@@ -20,7 +19,8 @@ use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 #[cfg(feature = "media")]
 use waterui_layout::ContentMode;
 use waterui_layout::stack::zstack;
-use waterui_shape::{Circle, PathCommand, Shape, ShapeExt, ShapeKind};
+use waterui_shape::kurbo::BezPath;
+use waterui_shape::{Circle, Shape, ShapeExt, ShapeKind};
 use waterui_text::Text;
 
 /// The side length an avatar takes when the caller names none, in points.
@@ -37,24 +37,24 @@ const INITIALS_SCALE: f32 = 0.4;
 /// A shape captured by value so an avatar can both clip to it and fill behind
 /// it.
 ///
-/// [`Shape`] is a producer of path commands, not a value: `ClipShape::new`
+/// [`Shape`] is a producer of a path, not a value: `ClipShape::new`
 /// consumes one and `ShapeExt::fill` consumes another, while an avatar needs
 /// the same silhouette for its clip, its container fill, and its ring. Holding
-/// the resolved [`ShapeKind`] and unit-space commands lets one authored shape
+/// the resolved [`ShapeKind`] and unit-space path lets one authored shape
 /// answer all three. The kind is what backends act on — a normalized radius
 /// resolved per axis turns a circular corner elliptical — so it is carried
-/// alongside the commands rather than derived from them.
+/// alongside the path rather than derived from it.
 #[derive(Debug, Clone)]
 struct CapturedShape {
     kind: ShapeKind,
-    commands: Vec<PathCommand>,
+    path: BezPath,
 }
 
 impl CapturedShape {
     fn new(shape: &impl Shape) -> Self {
         Self {
             kind: shape.shape_kind(),
-            commands: shape.path().into_iter().collect(),
+            path: shape.path(),
         }
     }
 
@@ -92,10 +92,8 @@ impl CapturedShape {
 }
 
 impl Shape for CapturedShape {
-    type Iter = Vec<PathCommand>;
-
-    fn path(&self) -> Self::Iter {
-        self.commands.clone()
+    fn path(&self) -> BezPath {
+        self.path.clone()
     }
 
     fn shape_kind(&self) -> ShapeKind {

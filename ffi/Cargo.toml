@@ -33,7 +33,7 @@ nami.workspace = true
 executor-core.workspace = true
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
-waterui-graphics = { workspace = true, features = ["cpu-scene"] }
+waterui-graphics = { workspace = true, features = ["cpu"] }
 # The geometry vocabulary of the `GpuSurface` input contract: surface-local
 # points on the way in, the IME caret rect on the way out.
 kurbo = { workspace = true, optional = true }
@@ -177,4 +177,3 @@ ignored = ["waterui-svg"]
 
 [dev-dependencies]
 kurbo.workspace = true
-peniko.workspace = true

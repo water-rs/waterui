@@ -15,6 +15,7 @@ categories = ["gui"]
 suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true
+cherenkov.workspace = true
 waterui-macros.workspace = true
 
 [dependencies.anyhow]

@@ -1,86 +1,226 @@
-//! GPU filter processing for captured view content.
+//! Filters on views: a `filtrate` filter applied to a view's rendered subtree.
 //!
-//! This module provides the `Effect` trait for implementing GPU-based filters
-//! that process captured view textures. Native backends capture child views to
-//! textures, pass them to Rust for GPU processing via wgpu.
+//! [`Filtered`] pairs a view with a [`Filter`]. Its body erases the filter
+//! into a [`FilteredView`] carrying an [`AnyEffect`]: a `Send` source the
+//! backend builds on its render thread into the filter behind `filtrate`'s
+//! [`Executor`], attached to the layer rendering the view.
 //!
-//! # Architecture
-//!
-//! 1. Native backend captures child view to a texture
-//! 2. Native calls into Rust with input texture handle
-//! 3. Rust applies filter pipeline via wgpu
-//! 4. Result written to output texture for native to display
-//!
-//! # Animation Support
-//!
-//! Filters support Rust-side animation interpolation. When a reactive value
-//! changes with animation metadata, the filter smoothly interpolates between
-//! values and signals `needs_redraw = true` until the animation completes.
+//! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
+//! feeds a `Send` value slot the executor samples on the render side, and a
+//! change carrying an [`Animation`] in its metadata interpolates on the
+//! render clock.
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
 use core::time::Duration;
-// Keep the filter authoring and runtime contracts in one public module.
-pub use filtrate::effect::EffectRedrawCallback;
-pub use filtrate::{
-    Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRenderResult, EffectSetupResult, FilterAdapter, HdrPolicy, WgslModuleCache,
+use std::sync::Mutex;
+
+use cherenkov::{Animation, curve_value, settled, spring_step};
+pub use filtrate::filters::{BlendMode, TransitionDirection};
+use filtrate::{
+    AnimatedCallback, AnimatedTarget, Chain, Effect, EffectContext, EffectInput, EffectOutput,
+    EffectRedrawCallback, EffectRenderResult, EffectSetupResult, Executor, Filter, FilterExt as _,
+    FilterParam, Interpolator, WatchGuard,
 };
-use filtrate_core::{
-    AnimatedCallback, AnimatedTarget, Chain, Filter, FilterParam, Interpolator, WatchGuard,
-};
-use nami::{Computed, Signal, SignalExt as _};
-use waterui_core::animation::Animation as WuiAnimation;
+pub use filtrate::{FilterImage, LutImage};
+use nami::Signal;
 use waterui_core::layout::StretchAxis;
-use waterui_core::metadata::MetadataKey;
-use waterui_core::{Environment, IntoSignalF32, Metadata, View};
+use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
-use crate::gpu_surface::RedrawHandle;
+/// A filter parameter fed by a nami signal.
+///
+/// The slot is `Send + Sync`; the UI-side subscription that writes it lives
+/// in the view's [`ParamGuards`].
+#[derive(Clone)]
+pub struct Reactive(Arc<Slot>);
 
-type ErasedEffectSetupFuture<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
+struct Slot {
+    value: Mutex<f32>,
+    callback: Mutex<Option<AnimatedCallback>>,
+}
 
-trait ErasedEffect: 'static {
+impl fmt::Debug for Reactive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Reactive").field(&self.snapshot()).finish()
+    }
+}
+
+impl FilterParam for Reactive {
+    fn snapshot(&self) -> f32 {
+        *self
+            .0
+            .value
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
+        *self
+            .0
+            .callback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(callback);
+        WatchGuard::new(())
+    }
+}
+
+/// The UI-side subscriptions keeping a filter's [`Reactive`] parameters fed.
+///
+/// Dropping the guards freezes the parameters at their last value.
+#[derive(Default)]
+pub struct ParamGuards(Vec<Box<dyn core::any::Any>>);
+
+impl fmt::Debug for ParamGuards {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ParamGuards").field(&self.0.len()).finish()
+    }
+}
+
+impl ParamGuards {
+    /// Binds a signal to a new [`Reactive`] slot, keeping the subscription here.
+    pub fn bind(&mut self, value: impl IntoSignalF32) -> Reactive {
+        let signal = value.into_signal_f32();
+        let slot = Arc::new(Slot {
+            value: Mutex::new(signal.snapshot()),
+            callback: Mutex::new(None),
+        });
+        let target = Arc::clone(&slot);
+        let guard = signal.watch(move |context| {
+            let interpolator = context.metadata().try_get::<Animation>().map(|animation| {
+                Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
+            });
+            let value = context.into_value();
+            *target
+                .value
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+            if let Some(callback) = &*target
+                .callback
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
+                callback(AnimatedTarget {
+                    value,
+                    interpolator,
+                });
+            }
+        });
+        self.0.push(Box::new(guard));
+        Reactive(slot)
+    }
+
+    fn extend(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+}
+
+/// A Cherenkov [`Animation`] driving a scalar filter parameter.
+struct AnimationInterpolator(Animation);
+
+const SPRING_STEP: f64 = 1.0 / 240.0;
+const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
+const SPRING_LIMIT: Duration = Duration::from_secs(10);
+
+#[allow(clippy::cast_possible_truncation)]
+impl AnimationInterpolator {
+    fn spring_at(spring: &cherenkov::Spring, from: f32, to: f32, elapsed: Duration) -> (f64, bool) {
+        let (mut pos, mut velocity) = ([f64::from(from)], [0.0]);
+        let target = [f64::from(to)];
+        let steps = (elapsed.min(SPRING_LIMIT).as_nanos() / SPRING_STEP_NANOS) + 1;
+        for _ in 0..steps {
+            (pos, velocity) = spring_step(pos, velocity, target, spring, SPRING_STEP);
+            if settled(pos, velocity, target) {
+                return (target[0], true);
+            }
+        }
+        (pos[0], false)
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+impl Interpolator for AnimationInterpolator {
+    fn duration(&self) -> Duration {
+        match &self.0 {
+            Animation::Curve(curve) => curve.duration,
+            Animation::Spring(_) => SPRING_LIMIT,
+            Animation::Decay(_) => Duration::ZERO,
+        }
+    }
+
+    fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
+        match &self.0 {
+            Animation::Curve(curve) => {
+                let t = if curve.duration.is_zero() {
+                    1.0
+                } else {
+                    (elapsed.as_secs_f64() / curve.duration.as_secs_f64()).min(1.0)
+                };
+                let k = curve_value(curve, t);
+                (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
+            }
+            Animation::Spring(spring) => Self::spring_at(spring, from, to, elapsed).0 as f32,
+            Animation::Decay(_) => to,
+        }
+    }
+
+    fn is_complete(&self, elapsed: Duration) -> bool {
+        match &self.0 {
+            Animation::Spring(spring) => {
+                elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
+            }
+            _ => elapsed >= self.duration(),
+        }
+    }
+}
+
+type BoxedSetup<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
+
+/// Object-safe [`Effect`], built on the render thread by [`AnyEffect::build`].
+///
+/// `Effect::setup` returns an `impl Future`, so the trait itself cannot be
+/// boxed; this form boxes the future. It is not `Send`: `filtrate`'s
+/// [`Executor`] lives on the thread that built it.
+pub trait ErasedEffect {
+    /// Installs the callback the effect fires when it needs another frame.
     fn set_redraw_callback(&mut self, callback: EffectRedrawCallback);
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> ErasedEffectSetupFuture<'a>;
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult;
+    /// Creates pipelines and resources; once, before the first render.
+    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> BoxedSetup<'a>;
+    /// Encodes one frame of effect work.
+    ///
+    /// # Errors
+    /// The effect's own render error, surfaced by the host as a frame failure.
     fn encode_render(
         &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
+        input: &EffectInput<'_>,
+        output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult;
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
+    /// Whether the effect wants another frame (an animating parameter).
     fn redraw_hint(&self) -> bool;
 }
 
-impl<T: Effect> ErasedEffect for T {
+impl<E: Effect> ErasedEffect for E {
     fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
         Effect::set_redraw_callback(self, callback);
     }
 
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> ErasedEffectSetupFuture<'a> {
+    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> BoxedSetup<'a> {
         Box::pin(Effect::setup(self, ctx))
-    }
-
-    fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
-        Effect::render(self, input, output)
     }
 
     fn encode_render(
         &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
+        input: &EffectInput<'_>,
+        output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult {
         Effect::encode_render(self, input, output, encoder)
-    }
-
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        Effect::output_size(self, input_width, input_height)
     }
 
     fn redraw_hint(&self) -> bool {
@@ -88,433 +228,156 @@ impl<T: Effect> ErasedEffect for T {
     }
 }
 
-type ReactiveParam = Reactive<Computed<f32>>;
-
-// Each alias below pins one multi-input filter to `ReactiveParam`. The `Reactive`
-// prefix is load-bearing: cbindgen resolves type names in a single flat namespace,
-// so an alias reusing the filter's own name shadows the generic it aliases and
-// aborts header generation with "has 0 params but is being instantiated with 1
-// values". Keep these names distinct from `crate::multi_input_filter::*`.
-type ReactiveBlendWithImageFilter = crate::multi_input_filter::BlendWithImageFilter<ReactiveParam>;
-type ReactiveMaskedBlurFilter = crate::multi_input_filter::MaskedBlurFilter<ReactiveParam>;
-type ReactiveTransitionToImageFilter =
-    crate::multi_input_filter::TransitionToImageFilter<ReactiveParam>;
-type ReactiveSwipeTransitionToImageFilter =
-    crate::multi_input_filter::SwipeTransitionToImageFilter<ReactiveParam>;
-type ReactiveRadialTransitionToImageFilter =
-    crate::multi_input_filter::RadialTransitionToImageFilter<ReactiveParam>;
-type ReactiveZoomTransitionToImageFilter =
-    crate::multi_input_filter::ZoomTransitionToImageFilter<ReactiveParam>;
-type ReactiveDisplacementTransitionToImageFilter =
-    crate::multi_input_filter::DisplacementTransitionToImageFilter<ReactiveParam>;
-type ReactiveDisplacementWarpFilter =
-    crate::multi_input_filter::DisplacementWarpFilter<ReactiveParam>;
-type ReactiveGuidedSmoothFilter = crate::multi_input_filter::GuidedSmoothFilter<ReactiveParam>;
-type ReactiveDepthAwareBlurFilter = crate::multi_input_filter::DepthAwareBlurFilter<ReactiveParam>;
-type ReactiveTemporalDenoiseFilter =
-    crate::multi_input_filter::TemporalDenoiseFilter<ReactiveParam>;
-type ReactiveBackgroundReplaceFilter =
-    crate::multi_input_filter::BackgroundReplaceFilter<ReactiveParam>;
-type ReactiveLutColorGradeFilter = crate::multi_input_filter::LutColorGradeFilter<ReactiveParam>;
-type ReactiveToneCurveFilter = crate::multi_input_filter::ToneCurveFilter<ReactiveParam>;
-
-/// Wraps a signal-convertible scalar as a reactive filter parameter.
-fn reactive(value: impl IntoSignalF32) -> ReactiveParam {
-    Reactive(value.into_signal_f32().computed())
-}
-type ChainedFilter<V, F, Next> = Filtered<V, FilterAdapter<Chain<F, Next>>>;
-type TemperatureTintFilter = filtrate::filters::TemperatureTint<ReactiveParam, ReactiveParam>;
-type HighlightsShadowsFilter = filtrate::filters::HighlightsShadows<ReactiveParam, ReactiveParam>;
-type VignetteFilter = filtrate::filters::Vignette<ReactiveParam, ReactiveParam>;
-type MotionBlurFilter = filtrate::filters::MotionBlur<ReactiveParam, ReactiveParam>;
-type WhitePointFilter = filtrate::filters::WhitePoint<ReactiveParam, ReactiveParam, ReactiveParam>;
-type ZoomBlurFilter = filtrate::filters::ZoomBlur<ReactiveParam, ReactiveParam, ReactiveParam>;
-
-const fn temperature_tint_filter(
-    temperature: ReactiveParam,
-    tint: ReactiveParam,
-) -> TemperatureTintFilter {
-    filtrate::filters::TemperatureTint(temperature, tint)
+trait EffectSource: Send {
+    fn build(self: Box<Self>) -> Box<dyn ErasedEffect>;
 }
 
-/// Type-erased filter for FFI boundary.
+struct FromFilter<F>(F);
+
+impl<F: Filter + Send> EffectSource for FromFilter<F> {
+    fn build(self: Box<Self>) -> Box<dyn ErasedEffect> {
+        Box::new(Executor::new(self.0))
+    }
+}
+
+struct FromEffect<E>(E);
+
+impl<E: Effect + Send> EffectSource for FromEffect<E> {
+    fn build(self: Box<Self>) -> Box<dyn ErasedEffect> {
+        Box::new(self.0)
+    }
+}
+
+/// A filter or effect, erased and `Send`, as a backend receives it.
 ///
-/// This owns the private type-erased effect shim used by native backends.
-pub struct AppliedFilter {
-    filter: Box<dyn ErasedEffect>,
-    redraw_handle: RedrawHandle,
-    /// Whether the effect's wake callback has been bound to `redraw_handle`.
-    wake_bound: bool,
-}
+/// The backend moves it to its render thread and calls [`build`](Self::build)
+/// there; the result runs against the engine's device.
+pub struct AnyEffect(Box<dyn EffectSource>);
 
-impl fmt::Debug for AppliedFilter {
+impl fmt::Debug for AnyEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AppliedFilter").finish_non_exhaustive()
+        f.debug_struct("AnyEffect").finish_non_exhaustive()
     }
 }
 
-impl MetadataKey for AppliedFilter {}
-
-impl AppliedFilter {
-    /// Create a new `AppliedFilter` from a GPU filter.
-    pub fn new<F: Effect>(filter: F) -> Self {
-        Self {
-            filter: Box::new(filter),
-            redraw_handle: RedrawHandle::new(),
-            wake_bound: false,
-        }
+impl AnyEffect {
+    /// Erases a custom effect.
+    pub fn new(effect: impl Effect + Send) -> Self {
+        Self(Box::new(FromEffect(effect)))
     }
 
-    /// Builds one filter that runs `inner`'s filters and then `outer`'s.
-    ///
-    /// A component that filters its own body and a caller that filters the
-    /// component are two filters over one subtree, and the `impl View` boundary
-    /// between them hides the first from the second's type — so nothing at the
-    /// authoring layer can fuse them the way `Filtered::then` fuses a chain
-    /// written in one expression. Collapsing the pair here means one capture of
-    /// the content, one presentation target and one submission instead of two
-    /// of each (#521).
-    ///
-    /// The order is the order the filters were written: `inner` sees the
-    /// content, `outer` sees what `inner` produced.
-    ///
-    /// # Panics
-    ///
-    /// Panics if either filter's wake callback is already bound, which means a
-    /// host is already driving it and it is no longer free to be folded in.
+    /// Erases a filter, to run through `filtrate`'s [`Executor`].
+    pub fn filter(filter: impl Filter + Send) -> Self {
+        Self(Box::new(FromFilter(filter)))
+    }
+
+    /// Builds the effect on the render thread.
     #[must_use]
-    pub fn chained(inner: Self, outer: Self) -> Self {
-        assert!(
-            !inner.wake_bound && !outer.wake_bound,
-            "AppliedFilter::chained needs filters no host is driving yet"
-        );
-        Self::new(EffectChain {
-            first: inner.filter,
-            second: outer.filter,
-            intermediate: None,
-        })
-    }
-
-    /// Returns a clone of the handle used to wake the native renderer, binding
-    /// the effect's wake callback to it on the first call.
-    ///
-    /// The binding waits for a host to ask because an effect accepts a wake
-    /// callback exactly once: a filter folded into a chain hands its effect to
-    /// that chain, which installs one callback of its own across both halves.
-    /// Binding at construction would spend that one installation on a handle no
-    /// host ever polls, and the fold would abort on the second attempt (#521).
-    pub fn redraw_handle(&mut self) -> RedrawHandle {
-        if !self.wake_bound {
-            let handle = self.redraw_handle.clone();
-            self.filter.set_redraw_callback(Arc::new(move || {
-                handle.request_redraw();
-            }));
-            self.wake_bound = true;
-        }
-        self.redraw_handle.clone()
-    }
-
-    /// Calls `setup` on the filter, returning a future that completes when ready.
-    #[expect(
-        clippy::future_not_send,
-        reason = "effect setup is driven by the UI-local GPU host executor and intentionally accepts non-Send effects"
-    )]
-    pub fn setup<'a>(
-        &'a mut self,
-        ctx: &'a EffectContext<'a>,
-    ) -> impl Future<Output = EffectSetupResult> + 'a {
-        self.filter.setup(ctx)
-    }
-
-    /// Calls `render` on the filter.
-    ///
-    /// Returns `Ok(true)` if another frame is needed (animation in progress).
-    ///
-    /// # Errors
-    ///
-    /// Propagates the wrapped filter's render failure.
-    pub fn render(&mut self, input: &EffectInput, output: &EffectOutput) -> EffectRenderResult {
-        let _ = self.redraw_handle.take_dirty();
-        let result = self.filter.render(input, output);
-        let callback_requested_redraw = self.redraw_handle.take_dirty();
-        result.map(|needs_redraw| needs_redraw || callback_requested_redraw)
-    }
-
-    /// Encodes `render` into an existing command encoder.
-    ///
-    /// Returns `Ok(true)` if another frame is needed (animation in progress).
-    ///
-    /// # Errors
-    ///
-    /// Propagates the wrapped filter's render failure.
-    pub fn encode_render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult {
-        let _ = self.redraw_handle.take_dirty();
-        let result = self.filter.encode_render(input, output, encoder);
-        let callback_requested_redraw = self.redraw_handle.take_dirty();
-        result.map(|needs_redraw| needs_redraw || callback_requested_redraw)
-    }
-
-    /// Resolve the current output dimensions from snapped filter state.
-    #[must_use]
-    pub fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        self.filter.output_size(input_width, input_height)
-    }
-
-    /// Query whether this filter needs a redraw even without layout changes.
-    #[must_use]
-    pub fn redraw_hint(&self) -> bool {
-        self.redraw_handle.is_dirty() || self.filter.redraw_hint()
+    pub fn build(self) -> Box<dyn ErasedEffect> {
+        self.0.build()
     }
 }
 
-/// Two effects over one capture: the first's output is the second's input.
-///
-/// A component that filters its own body, filtered again by its caller, is two
-/// `AppliedFilter`s over one subtree — and because the component returns
-/// `impl View`, no type-level chaining can see through the boundary to fuse
-/// them. Run as written that costs two captures of the same content, two
-/// presentation targets and two full-size intermediates for what is one chain
-/// of filters. [`AppliedFilter::chained`] collapses the pair into this, which
-/// the host then drives as a single filter.
-///
-/// Both halves are encoded into the caller's command encoder, so the pair still
-/// costs one submission. The one thing that cannot be shared is the texture
-/// between them: an effect reads a texture and writes another, so the chain
-/// owns the intermediate and sizes it by what the first half says it produces.
-struct EffectChain {
-    first: Box<dyn ErasedEffect>,
-    second: Box<dyn ErasedEffect>,
-    /// What the first half writes and the second half reads.
-    ///
-    /// Kept across frames and rebuilt only when the size or format it must
-    /// carry changes, because reallocating a full-size texture every frame is
-    /// most of what this chain exists to avoid.
-    intermediate: Option<wgpu::Texture>,
-}
-
-impl EffectChain {
-    /// The texture between the halves, made or remade to fit this frame.
-    fn intermediate_for<'a>(
-        intermediate: &'a mut Option<wgpu::Texture>,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) -> &'a wgpu::Texture {
-        let fits = intermediate.as_ref().is_some_and(|texture| {
-            texture.width() == width && texture.height() == height && texture.format() == format
-        });
-        if !fits {
-            *intermediate = Some(device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("filter chain intermediate"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            }));
-        }
-        intermediate
-            .as_ref()
-            .expect("the chain intermediate was just made")
-    }
-}
-
-impl Effect for EffectChain {
-    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
-        self.first.set_redraw_callback(callback.clone());
-        self.second.set_redraw_callback(callback);
-    }
-
-    #[expect(
-        clippy::future_not_send,
-        reason = "effect setup is driven by the UI-local GPU host executor and intentionally accepts non-Send effects, exactly as AppliedFilter::setup does"
-    )]
-    async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
-        self.first.setup(ctx).await?;
-        self.second.setup(ctx).await
-    }
-
-    fn encode_render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult {
-        let Self {
-            first,
-            second,
-            intermediate,
-        } = self;
-        let (middle_width, middle_height) = first.output_size(input.width, input.height);
-        let texture = Self::intermediate_for(
-            intermediate,
-            input.device,
-            middle_width,
-            middle_height,
-            output.format,
-        );
-        let middle_output = EffectOutput {
-            device: input.device,
-            queue: input.queue,
-            texture,
-            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            format: output.format,
-            width: middle_width,
-            height: middle_height,
-        };
-        let first_needs_redraw = first.encode_render(input, &middle_output, encoder)?;
-
-        let middle_input = EffectInput {
-            device: input.device,
-            queue: input.queue,
-            texture,
-            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            format: output.format,
-            width: middle_width,
-            height: middle_height,
-            timing: input.timing,
-        };
-        let second_needs_redraw = second.encode_render(&middle_input, output, encoder)?;
-
-        Ok(first_needs_redraw || second_needs_redraw)
-    }
-
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        let (middle_width, middle_height) = self.first.output_size(input_width, input_height);
-        self.second.output_size(middle_width, middle_height)
-    }
-
-    fn redraw_hint(&self) -> bool {
-        self.first.redraw_hint() || self.second.redraw_hint()
-    }
-}
-
-/// Public filter wrapper returned by `ViewExt` APIs.
-///
-/// `Filtered` preserves the concrete content type for fluent chaining and lowers
-/// directly to the backend [`AppliedFilter`] metadata node.
-pub struct Filtered<V: View, F: Effect> {
-    content: V,
+/// A view with a filter applied to its rendered subtree.
+#[derive(Debug)]
+pub struct Filtered<V, F> {
+    view: V,
     filter: F,
+    guards: ParamGuards,
 }
 
-impl<V: View, F: Effect> fmt::Debug for Filtered<V, F> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Filtered").finish_non_exhaustive()
-    }
-}
-
-impl<V: View, F: Effect> Filtered<V, F> {
-    /// Create a new filtered view with a `Effect`.
-    #[must_use]
-    pub const fn new(content: V, filter: F) -> Self {
-        Self { content, filter }
-    }
-}
-
-#[allow(private_bounds)]
-impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
-    /// Chain another filter onto this view.
-    ///
-    /// Returns a new `Filtered` with the filters chained together.
-    /// Consecutive color-only filters will be fused into a single GPU pass.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use filtrate::filters::{Brightness, Contrast};
-    /// use waterui::prelude::*;
-    ///
-    /// # fn softened(my_view: impl View) -> impl View {
-    /// my_view
-    ///     .blur(10.0)
-    ///     .then(Brightness(0.2_f32))
-    ///     .then(Contrast(1.5_f32))
-    /// # }
-    /// ```
-    #[must_use]
-    pub fn then<F2: Filter>(self, filter: F2) -> Filtered<V, FilterAdapter<Chain<F, F2>>> {
-        Filtered::new(self.content, self.filter.then(filter))
+impl<V: View, F: Filter + Send> Filtered<V, F> {
+    /// Applies `filter` to `view`.
+    pub fn new(view: V, filter: F) -> Self {
+        Self::bound(view, filter, ParamGuards::default())
     }
 
-    /// Set HDR behavior policy for this filtered view.
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn hdr_policy(mut self, policy: HdrPolicy) -> Self {
-        self.filter = self.filter.hdr_policy(policy);
-        self
+    /// Applies `filter` to `view`, keeping the subscriptions of its reactive parameters.
+    pub const fn bound(view: V, filter: F, guards: ParamGuards) -> Self {
+        Self {
+            view,
+            filter,
+            guards,
+        }
     }
 
-    /// Require HDR intermediates; setup fails if unsupported.
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn require_hdr(self) -> Self {
-        self.hdr_policy(HdrPolicy::RequireHdr)
+    /// Appends `next` to the filter chain.
+    pub fn then<G: Filter + Send>(self, next: G) -> Filtered<V, Chain<F, G>> {
+        self.then_bound(next, ParamGuards::default())
     }
 
-    /// Prefer HDR intermediates with automatic LDR fallback.
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn prefer_hdr(self) -> Self {
-        self.hdr_policy(HdrPolicy::PreferHdr)
-    }
-
-    /// Force LDR intermediates for compatibility/performance.
-    #[must_use]
-    #[allow(clippy::missing_const_for_fn)]
-    pub fn force_ldr(self) -> Self {
-        self.hdr_policy(HdrPolicy::ForceLdr)
+    fn then_bound<G: Filter + Send>(
+        mut self,
+        next: G,
+        guards: ParamGuards,
+    ) -> Filtered<V, Chain<F, G>> {
+        self.guards.extend(guards);
+        Filtered {
+            view: self.view,
+            filter: self.filter.then(next),
+            guards: self.guards,
+        }
     }
 }
 
-// ============================================================================
-// Auto-fusion inherent methods
-// ============================================================================
-//
-// `Filtered<V, FilterAdapter<F>>` lets users continue chaining built-in filters
-// without losing fusion. When the receiver of `.brightness(0.2)` is already a
-// `Filtered<V, FilterAdapter<F>>`, Rust's method resolution picks these
-// inherent methods over the trait-method counterparts on `FilterViewExt`,
-// so `view.blur(5).brightness(0.2)` extends the existing chain instead of
-// wrapping the whole filtered view in a second adapter.
+impl<V: View, F: Filter + Send> View for Filtered<V, F> {
+    fn body(self, _env: &Environment) -> impl View {
+        FilteredView {
+            content: AnyView::new(self.view),
+            effect: AnyEffect::filter(self.filter),
+            guards: self.guards,
+        }
+    }
 
-/// Internal helper: declare an inherent auto-fusion method on
-/// `Filtered<V, FilterAdapter<F>>` that appends a single-parameter built-in
-/// filter to the chain.
+    fn stretch_axis(&self) -> StretchAxis {
+        self.view.stretch_axis()
+    }
+}
+
+/// A view with an effect on its rendered subtree, as a backend receives it.
+///
+/// The backend registers `effect` with its engine (`Engine::effect`), sets
+/// the returned `Filter` on the layer rendering `content`, and keeps
+/// `guards` alive as long as the filter.
+#[derive(Debug)]
+pub struct FilteredView {
+    /// The filtered subtree.
+    pub content: AnyView,
+    /// The effect to register.
+    pub effect: AnyEffect,
+    /// The subscriptions feeding the effect's reactive parameters.
+    pub guards: ParamGuards,
+}
+
+impl FilteredView {
+    /// Applies a custom effect to `view`.
+    pub fn new(view: impl View, effect: impl Effect + Send) -> Self {
+        Self {
+            content: AnyView::new(view),
+            effect: AnyEffect::new(effect),
+            guards: ParamGuards::default(),
+        }
+    }
+}
+
+waterui_core::raw_view!(FilteredView);
+
 macro_rules! inherent_single_param_filter {
     ($method:ident, $filter:ident) => {
-        #[doc = concat!("Append a `", stringify!($filter), "` filter to the existing chain.")]
-        ///
-        /// This extends the running `Filtered<V, FilterAdapter<...>>` instead
-        /// of starting a new adapter, preserving compile-time fusion.
+        #[doc = concat!("Append a `", stringify!($filter), "` filter to the chain.")]
         #[must_use]
         pub fn $method<P: IntoSignalF32>(
             self,
             value: P,
-        ) -> Filtered<V, FilterAdapter<Chain<F, filtrate::filters::$filter<Reactive<Computed<f32>>>>>>
-        {
-            self.then(filtrate::filters::$filter(Reactive(
-                value.into_signal_f32().computed(),
-            )))
+        ) -> Filtered<V, Chain<F, filtrate::filters::$filter<Reactive>>> {
+            let mut guards = ParamGuards::default();
+            let filter = filtrate::filters::$filter(guards.bind(value));
+            self.then_bound(filter, guards)
         }
     };
 }
 
-#[allow(private_bounds)]
-impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
+impl<V: View, F: Filter + Send> Filtered<V, F> {
     inherent_single_param_filter!(blur, Blur);
     inherent_single_param_filter!(brightness, Brightness);
     inherent_single_param_filter!(contrast, Contrast);
@@ -530,266 +393,158 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
     inherent_single_param_filter!(sharpen, Sharpen);
     inherent_single_param_filter!(vibrance, Vibrance);
 
-    /// Append an `Invert` filter to the chain (zero parameters).
+    /// Append an `Invert` filter to the chain.
     #[must_use]
-    pub fn invert(self) -> Filtered<V, FilterAdapter<Chain<F, filtrate::filters::Invert>>> {
+    pub fn invert(self) -> Filtered<V, Chain<F, filtrate::filters::Invert>> {
         self.then(filtrate::filters::Invert)
     }
-
-    /// Append a two-parameter `TemperatureTint` filter to the chain.
-    #[must_use]
-    pub fn temperature_tint<T: IntoSignalF32, U: IntoSignalF32>(
-        self,
-        temperature: T,
-        tint: U,
-    ) -> ChainedFilter<V, F, TemperatureTintFilter> {
-        self.then(temperature_tint_filter(
-            Reactive(temperature.into_signal_f32().computed()),
-            Reactive(tint.into_signal_f32().computed()),
-        ))
-    }
-
-    /// Append a `HighlightsShadows` filter to the chain.
-    #[must_use]
-    pub fn highlights_shadows<H: IntoSignalF32, S: IntoSignalF32>(
-        self,
-        highlights: H,
-        shadows: S,
-    ) -> ChainedFilter<V, F, HighlightsShadowsFilter> {
-        self.then(filtrate::filters::HighlightsShadows(
-            Reactive(highlights.into_signal_f32().computed()),
-            Reactive(shadows.into_signal_f32().computed()),
-        ))
-    }
-
-    /// Append a `Vignette` filter to the chain.
-    #[must_use]
-    pub fn vignette<R: IntoSignalF32, S: IntoSignalF32>(
-        self,
-        radius: R,
-        softness: S,
-    ) -> ChainedFilter<V, F, VignetteFilter> {
-        self.then(filtrate::filters::Vignette(
-            Reactive(radius.into_signal_f32().computed()),
-            Reactive(softness.into_signal_f32().computed()),
-        ))
-    }
-
-    /// Append a directional `MotionBlur` filter to the chain.
-    #[must_use]
-    pub fn motion_blur<R: IntoSignalF32, A: IntoSignalF32>(
-        self,
-        radius: R,
-        angle: A,
-    ) -> ChainedFilter<V, F, MotionBlurFilter> {
-        self.then(filtrate::filters::MotionBlur(
-            Reactive(radius.into_signal_f32().computed()),
-            Reactive(angle.into_signal_f32().computed()),
-        ))
-    }
 }
 
-impl<V: View, F: Effect> View for Filtered<V, F> {
-    fn body(self, _env: &Environment) -> impl View {
-        Metadata::new(self.content, AppliedFilter::new(self.filter))
-    }
+// Concrete filter aliases with stable type identities.
+/// Alias for the `Blur` filter.
+pub type Blur = filtrate::filters::Blur<Reactive>;
+/// Alias for the `Brightness` filter.
+pub type Brightness = filtrate::filters::Brightness<Reactive>;
+/// Alias for the `Contrast` filter.
+pub type Contrast = filtrate::filters::Contrast<Reactive>;
+/// Alias for the `Exposure` filter.
+pub type Exposure = filtrate::filters::Exposure<Reactive>;
+/// Alias for the `ColorMatrix` filter.
+pub type ColorMatrix = filtrate::filters::ColorMatrix<f32>;
+/// Alias for the `Gamma` filter.
+pub type Gamma = filtrate::filters::Gamma<Reactive>;
+/// Alias for the `GaussianBlur` filter.
+pub type GaussianBlur = filtrate::filters::GaussianBlur<Reactive>;
+/// Alias for the `Saturation` filter.
+pub type Saturation = filtrate::filters::Saturation<Reactive>;
+/// Alias for the `TemperatureTint` filter.
+pub type TemperatureTint = filtrate::filters::TemperatureTint<Reactive, Reactive>;
+/// Alias for the `Grayscale` filter.
+pub type Grayscale = filtrate::filters::Grayscale<Reactive>;
+/// Alias for the `Bloom` filter.
+pub type Bloom = filtrate::filters::Bloom<Reactive>;
+/// Alias for the `Gloom` filter.
+pub type Gloom = filtrate::filters::Gloom<Reactive>;
+/// Alias for the `HighlightsShadows` filter.
+pub type HighlightsShadows = filtrate::filters::HighlightsShadows<Reactive, Reactive>;
+/// Alias for the `HueRotation` filter.
+pub type HueRotation = filtrate::filters::HueRotation<Reactive>;
+/// Alias for the `Invert` filter.
+pub type Invert = filtrate::filters::Invert;
+/// Alias for the `Sobel` filter.
+pub type Sobel = filtrate::filters::Sobel;
+/// Alias for the `Prewitt` filter.
+pub type Prewitt = filtrate::filters::Prewitt;
+/// Alias for the `Median3x3` filter.
+pub type Median3x3 = filtrate::filters::Median3x3;
+/// Alias for the `Convolution3x3` filter.
+pub type Convolution3x3 = filtrate::filters::Convolution3x3<Reactive>;
+/// Alias for the `Convolution5x5` filter.
+pub type Convolution5x5 = filtrate::filters::Convolution5x5<Reactive>;
+/// Alias for the `MorphologyMin` filter.
+pub type MorphologyMin = filtrate::filters::MorphologyMin;
+/// Alias for the `MorphologyMax` filter.
+pub type MorphologyMax = filtrate::filters::MorphologyMax;
+/// Alias for the `MorphologyGradient` filter.
+pub type MorphologyGradient = filtrate::filters::MorphologyGradient;
+/// Alias for the `PhotoEffectMono` filter.
+pub type PhotoEffectMono = filtrate::filters::PhotoEffectMono;
+/// Alias for the `PhotoEffectNoir` filter.
+pub type PhotoEffectNoir = filtrate::filters::PhotoEffectNoir;
+/// Alias for the `PhotoEffectChrome` filter.
+pub type PhotoEffectChrome = filtrate::filters::PhotoEffectChrome;
+/// Alias for the `PhotoEffectInstant` filter.
+pub type PhotoEffectInstant = filtrate::filters::PhotoEffectInstant;
+/// Alias for the `PhotoEffectFade` filter.
+pub type PhotoEffectFade = filtrate::filters::PhotoEffectFade;
+/// Alias for the `PhotoEffectProcess` filter.
+pub type PhotoEffectProcess = filtrate::filters::PhotoEffectProcess;
+/// Alias for the `PhotoEffectTonal` filter.
+pub type PhotoEffectTonal = filtrate::filters::PhotoEffectTonal;
+/// Alias for the `PhotoEffectTransfer` filter.
+pub type PhotoEffectTransfer = filtrate::filters::PhotoEffectTransfer;
+/// Alias for the `MotionBlur` filter.
+pub type MotionBlur = filtrate::filters::MotionBlur<Reactive, Reactive>;
+/// Alias for the `BumpDistortion` filter.
+pub type BumpDistortion = filtrate::filters::BumpDistortion<Reactive>;
+/// Alias for the `PinchDistortion` filter.
+pub type PinchDistortion = filtrate::filters::PinchDistortion<Reactive>;
+/// Alias for the `TwirlDistortion` filter.
+pub type TwirlDistortion = filtrate::filters::TwirlDistortion<Reactive>;
+/// Alias for the `VortexDistortion` filter.
+pub type VortexDistortion = filtrate::filters::VortexDistortion<Reactive>;
+/// Alias for the `PerspectiveTransform` filter.
+pub type PerspectiveTransform = filtrate::filters::PerspectiveTransform<f32>;
+/// Alias for the `PerspectiveCorrection` filter.
+pub type PerspectiveCorrection = filtrate::filters::PerspectiveCorrection<f32>;
+/// Alias for the `Sepia` filter.
+pub type Sepia = filtrate::filters::Sepia<Reactive>;
+/// Alias for the `Vibrance` filter.
+pub type Vibrance = filtrate::filters::Vibrance<Reactive>;
+/// Alias for the `Pixellate` filter.
+pub type Pixellate = filtrate::filters::Pixellate<Reactive>;
+/// Alias for the `Crystallize` filter.
+pub type Crystallize = filtrate::filters::Crystallize<Reactive>;
+/// Alias for the `EdgeWork` filter.
+pub type EdgeWork = filtrate::filters::EdgeWork<Reactive>;
+/// Alias for the `DotHalftone` filter.
+pub type DotHalftone = filtrate::filters::DotHalftone<Reactive>;
+/// Alias for the `LineHalftone` filter.
+pub type LineHalftone = filtrate::filters::LineHalftone<Reactive>;
+/// Alias for the `Kaleidoscope` filter.
+pub type Kaleidoscope = filtrate::filters::Kaleidoscope<Reactive>;
+/// Alias for the `MirrorTile` filter.
+pub type MirrorTile = filtrate::filters::MirrorTile<Reactive>;
+/// Alias for the `UnsharpMask` filter.
+pub type UnsharpMask = filtrate::filters::UnsharpMask<Reactive>;
+/// Alias for the `Sharpen` filter.
+pub type Sharpen = filtrate::filters::Sharpen<Reactive>;
+/// Alias for the `Vignette` filter.
+pub type Vignette = filtrate::filters::Vignette<Reactive, Reactive>;
+/// Alias for the `WhitePoint` filter.
+pub type WhitePoint = filtrate::filters::WhitePoint<Reactive, Reactive, Reactive>;
+/// Alias for the `ZoomBlur` filter.
+pub type ZoomBlur = filtrate::filters::ZoomBlur<Reactive, Reactive, Reactive>;
+/// Alias for the `BlendWithImage` filter with reactive parameters.
+pub type BlendWithImage = filtrate::filters::BlendWithImage<Reactive>;
+/// Alias for the `MaskedBlur` filter with reactive parameters.
+pub type MaskedBlur = filtrate::filters::MaskedBlur<Reactive>;
+/// Alias for the `TransitionToImage` filter with reactive parameters.
+pub type TransitionToImage = filtrate::filters::TransitionToImage<Reactive>;
+/// Alias for the `SwipeTransitionToImage` filter with reactive parameters.
+pub type SwipeTransitionToImage = filtrate::filters::SwipeTransitionToImage<Reactive>;
+/// Alias for the `RadialTransitionToImage` filter with reactive parameters.
+pub type RadialTransitionToImage = filtrate::filters::RadialTransitionToImage<Reactive>;
+/// Alias for the `ZoomTransitionToImage` filter with reactive parameters.
+pub type ZoomTransitionToImage = filtrate::filters::ZoomTransitionToImage<Reactive>;
+/// Alias for the `DisplacementTransitionToImage` filter with reactive parameters.
+pub type DisplacementTransitionToImage = filtrate::filters::DisplacementTransitionToImage<Reactive>;
+/// Alias for the `DisplacementWarp` filter with reactive parameters.
+pub type DisplacementWarp = filtrate::filters::DisplacementWarp<Reactive>;
+/// Alias for the `GuidedSmooth` filter with reactive parameters.
+pub type GuidedSmooth = filtrate::filters::GuidedSmooth<Reactive>;
+/// Alias for the `DepthAwareBlur` filter with reactive parameters.
+pub type DepthAwareBlur = filtrate::filters::DepthAwareBlur<Reactive>;
+/// Alias for the `TemporalDenoise` filter with reactive parameters.
+pub type TemporalDenoise = filtrate::filters::TemporalDenoise<Reactive>;
+/// Alias for the `BackgroundReplace` filter with reactive parameters.
+pub type BackgroundReplace = filtrate::filters::BackgroundReplace<Reactive>;
+/// Alias for the `LutColorGrade` filter with reactive parameters.
+pub type LutColorGrade = filtrate::filters::LutColorGrade<Reactive>;
+/// Alias for the `ToneCurve` filter with reactive parameters.
+pub type ToneCurve = filtrate::filters::ToneCurve<Reactive>;
 
-    fn stretch_axis(&self) -> StretchAxis {
-        self.content.stretch_axis()
-    }
-}
-
-// ============================================================================
-// FilterParam ↔ nami signal bridge
-// ============================================================================
-
-/// Wraps any `nami::Signal<Output = f32>` so it can be used as a
-/// [`FilterParam`] in `filtrate-core` filter structs without coupling
-/// `filtrate-core` to nami.
-///
-/// Produced internally by view-level modifiers (`view.blur(...)` etc.); end
-/// users do not normally name this type.
-#[derive(Debug, Clone, Copy)]
-pub struct Reactive<S>(pub S);
-
-struct WaterUiAnimationInterpolator(WuiAnimation);
-
-impl Interpolator for WaterUiAnimationInterpolator {
-    fn duration(&self) -> Duration {
-        self.0.duration()
-    }
-    fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
-        self.0.interpolate(&from, &to, elapsed)
-    }
-    fn is_complete(&self, elapsed: Duration) -> bool {
-        self.0.is_complete(elapsed)
-    }
-}
-
-impl<S> FilterParam for Reactive<S>
-where
-    S: Signal<Output = f32> + 'static,
-    S::Guard: 'static,
-{
-    fn snapshot(&self) -> f32 {
-        self.0.snapshot()
-    }
-
-    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
-        let guard = self.0.watch(move |context| {
-            let interpolator = context
-                .metadata()
-                .try_get::<WuiAnimation>()
-                .map(|animation| {
-                    Box::new(WaterUiAnimationInterpolator(animation)) as Box<dyn Interpolator>
-                });
-            let value = context.into_value();
-            callback(AnimatedTarget {
-                value,
-                interpolator,
-            });
-        });
-        WatchGuard::new(guard)
-    }
-}
-
-/// Concrete filter aliases with stable type identities.
-///
-/// These aliases normalize reactive parameters to `Reactive<Computed<f32>>` so
-/// fluent filter chains keep stable concrete types.
-/// Alias for a box-blur filter.
-pub type Blur = FilterAdapter<filtrate::filters::Blur<Reactive<Computed<f32>>>>;
-/// Alias for a brightness adjustment filter.
-pub type Brightness = FilterAdapter<filtrate::filters::Brightness<Reactive<Computed<f32>>>>;
-/// Alias for a contrast adjustment filter.
-pub type Contrast = FilterAdapter<filtrate::filters::Contrast<Reactive<Computed<f32>>>>;
-/// Alias for an exposure adjustment filter.
-pub type Exposure = FilterAdapter<filtrate::filters::Exposure<Reactive<Computed<f32>>>>;
-/// Alias for a 4x5 color-matrix filter.
-pub type ColorMatrix = FilterAdapter<filtrate::filters::ColorMatrix<f32>>;
-/// Alias for a gamma adjustment filter.
-pub type Gamma = FilterAdapter<filtrate::filters::Gamma<Reactive<Computed<f32>>>>;
-/// Alias for a Gaussian blur filter.
-pub type GaussianBlur = FilterAdapter<filtrate::filters::GaussianBlur<Reactive<Computed<f32>>>>;
-/// Alias for a saturation adjustment filter.
-pub type Saturation = FilterAdapter<filtrate::filters::Saturation<Reactive<Computed<f32>>>>;
-/// Alias for a temperature/tint adjustment filter.
-pub type TemperatureTintFilterAdapter = FilterAdapter<TemperatureTintFilter>;
-pub use TemperatureTintFilterAdapter as TemperatureTint;
-/// Alias for a grayscale mix filter.
-pub type Grayscale = FilterAdapter<filtrate::filters::Grayscale<Reactive<Computed<f32>>>>;
-/// Alias for a bloom filter.
-pub type Bloom = FilterAdapter<filtrate::filters::Bloom<Reactive<Computed<f32>>>>;
-/// Alias for a gloom filter.
-pub type Gloom = FilterAdapter<filtrate::filters::Gloom<Reactive<Computed<f32>>>>;
-/// Alias for a highlights/shadows adjustment filter.
-pub type HighlightsShadowsFilterAdapter = FilterAdapter<HighlightsShadowsFilter>;
-pub use HighlightsShadowsFilterAdapter as HighlightsShadows;
-/// Alias for a hue-rotation filter.
-pub type HueRotation = FilterAdapter<filtrate::filters::HueRotation<Reactive<Computed<f32>>>>;
-/// Alias for a color inversion filter.
-pub type Invert = FilterAdapter<filtrate::filters::Invert>;
-/// Alias for a Sobel edge-detection filter.
-pub type Sobel = FilterAdapter<filtrate::filters::Sobel>;
-/// Alias for a Prewitt edge-detection filter.
-pub type Prewitt = FilterAdapter<filtrate::filters::Prewitt>;
-/// Alias for a 3x3 median filter.
-pub type Median3x3 = FilterAdapter<filtrate::filters::Median3x3>;
-/// Alias for a 3x3 convolution filter (caller-supplied kernel).
-pub type Convolution3x3 = FilterAdapter<filtrate::filters::Convolution3x3<Reactive<Computed<f32>>>>;
-/// Alias for a 5x5 convolution filter (caller-supplied kernel).
-pub type Convolution5x5 = FilterAdapter<filtrate::filters::Convolution5x5<Reactive<Computed<f32>>>>;
-/// Alias for a 3x3 morphological erosion filter (per-channel minimum).
-pub type MorphologyMin = FilterAdapter<filtrate::filters::MorphologyMin>;
-/// Alias for a 3x3 morphological dilation filter (per-channel maximum).
-pub type MorphologyMax = FilterAdapter<filtrate::filters::MorphologyMax>;
-/// Alias for a 3x3 morphological gradient filter (per-channel max minus min).
-pub type MorphologyGradient = FilterAdapter<filtrate::filters::MorphologyGradient>;
-/// Alias for the monochrome photo preset.
-pub type PhotoEffectMono = FilterAdapter<filtrate::filters::PhotoEffectMono>;
-/// Alias for the noir photo preset.
-pub type PhotoEffectNoir = FilterAdapter<filtrate::filters::PhotoEffectNoir>;
-/// Alias for the chrome photo preset.
-pub type PhotoEffectChrome = FilterAdapter<filtrate::filters::PhotoEffectChrome>;
-/// Alias for the instant photo preset.
-pub type PhotoEffectInstant = FilterAdapter<filtrate::filters::PhotoEffectInstant>;
-/// Alias for the fade photo preset.
-pub type PhotoEffectFade = FilterAdapter<filtrate::filters::PhotoEffectFade>;
-/// Alias for the process photo preset.
-pub type PhotoEffectProcess = FilterAdapter<filtrate::filters::PhotoEffectProcess>;
-/// Alias for the tonal photo preset.
-pub type PhotoEffectTonal = FilterAdapter<filtrate::filters::PhotoEffectTonal>;
-/// Alias for the transfer photo preset.
-pub type PhotoEffectTransfer = FilterAdapter<filtrate::filters::PhotoEffectTransfer>;
-/// Alias for a motion blur filter.
-pub type MotionBlurFilterAdapter = FilterAdapter<MotionBlurFilter>;
-pub use MotionBlurFilterAdapter as MotionBlur;
-/// Alias for a bump distortion filter.
-pub type BumpDistortion = FilterAdapter<filtrate::filters::BumpDistortion<Reactive<Computed<f32>>>>;
-/// Alias for a pinch distortion filter.
-pub type PinchDistortion =
-    FilterAdapter<filtrate::filters::PinchDistortion<Reactive<Computed<f32>>>>;
-/// Alias for a twirl distortion filter.
-pub type TwirlDistortion =
-    FilterAdapter<filtrate::filters::TwirlDistortion<Reactive<Computed<f32>>>>;
-/// Alias for a vortex distortion filter.
-pub type VortexDistortion =
-    FilterAdapter<filtrate::filters::VortexDistortion<Reactive<Computed<f32>>>>;
-/// Alias for a perspective transform filter.
-pub type PerspectiveTransform = FilterAdapter<filtrate::filters::PerspectiveTransform<f32>>;
-/// Alias for a perspective correction filter.
-pub type PerspectiveCorrection = FilterAdapter<filtrate::filters::PerspectiveCorrection<f32>>;
-/// Alias for a sepia-toning filter.
-pub type Sepia = FilterAdapter<filtrate::filters::Sepia<Reactive<Computed<f32>>>>;
-/// Alias for a vibrance adjustment filter.
-pub type Vibrance = FilterAdapter<filtrate::filters::Vibrance<Reactive<Computed<f32>>>>;
-/// Alias for a pixellation filter.
-pub type Pixellate = FilterAdapter<filtrate::filters::Pixellate<Reactive<Computed<f32>>>>;
-/// Alias for a crystallize filter.
-pub type Crystallize = FilterAdapter<filtrate::filters::Crystallize<Reactive<Computed<f32>>>>;
-/// Alias for an edge-work stylization filter.
-pub type EdgeWork = FilterAdapter<filtrate::filters::EdgeWork<Reactive<Computed<f32>>>>;
-/// Alias for a dot-halftone filter.
-pub type DotHalftone = FilterAdapter<filtrate::filters::DotHalftone<Reactive<Computed<f32>>>>;
-/// Alias for a line-halftone filter.
-pub type LineHalftone = FilterAdapter<filtrate::filters::LineHalftone<Reactive<Computed<f32>>>>;
-/// Alias for a kaleidoscope filter.
-pub type Kaleidoscope = FilterAdapter<filtrate::filters::Kaleidoscope<Reactive<Computed<f32>>>>;
-/// Alias for a mirror-tile filter.
-pub type MirrorTile = FilterAdapter<filtrate::filters::MirrorTile<Reactive<Computed<f32>>>>;
-/// Alias for an unsharp-mask filter.
-pub type UnsharpMask = FilterAdapter<filtrate::filters::UnsharpMask<Reactive<Computed<f32>>>>;
-/// Alias for a sharpen filter.
-pub type Sharpen = FilterAdapter<filtrate::filters::Sharpen<Reactive<Computed<f32>>>>;
-/// Alias for a vignette filter.
-pub type VignetteFilterAdapter = FilterAdapter<VignetteFilter>;
-pub use VignetteFilterAdapter as Vignette;
-/// Alias for a white-point adjustment filter.
-pub type WhitePointFilterAdapter = FilterAdapter<WhitePointFilter>;
-pub use WhitePointFilterAdapter as WhitePoint;
-/// Alias for a zoom-blur filter.
-pub type ZoomBlurFilterAdapter = FilterAdapter<ZoomBlurFilter>;
-pub use ZoomBlurFilterAdapter as ZoomBlur;
-
-/// Rebuilds the canonical blur filter adapter from a reactive radius signal.
-#[must_use]
-pub fn blur_from_radius_signal(radius: Reactive<Computed<f32>>) -> Blur {
-    FilterAdapter::new(filtrate::filters::Blur(radius))
-}
-
-/// Extension methods for applying filters to views.
+/// Filters on any view: `.filter(F)`, `.effect(E)` and the named shortcuts.
 pub trait FilterViewExt: View + Sized {
-    /// Apply a `Effect` to this view.
-    ///
-    /// For the high-level `Filter` API with automatic optimization,
-    /// use convenience methods like `.blur()`, `.brightness()`, etc.
-    fn filter<F: Effect>(self, filter: F) -> Filtered<Self, F> {
+    /// Apply a `filtrate` filter to this view.
+    fn filter<F: Filter + Send>(self, filter: F) -> Filtered<Self, F> {
         Filtered::new(self, filter)
     }
 
-    // ========================================================================
-    // Convenience methods - return FilterAdapter which supports .then()
-    // ========================================================================
+    /// Apply a custom `filtrate` effect to this view.
+    fn effect(self, effect: impl Effect + Send) -> FilteredView {
+        FilteredView::new(self, effect)
+    }
 
     /// Apply a blur filter.
     ///
@@ -812,112 +567,100 @@ pub trait FilterViewExt: View + Sized {
     /// # }
     /// ```
     fn blur<T: IntoSignalF32>(self, radius: T) -> Filtered<Self, Blur> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::Blur(Reactive(
-                radius.into_signal_f32().computed(),
-            ))),
-        )
+        let mut guards = ParamGuards::default();
+        Filtered::bound(self, filtrate::filters::Blur(guards.bind(radius)), guards)
     }
 
     /// Apply a brightness filter.
     fn brightness<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Brightness> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Brightness(Reactive(
-                amount.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Brightness(guards.bind(amount)),
+            guards,
         )
     }
 
     /// Apply an exposure filter in photographic stops.
     fn exposure<T: IntoSignalF32>(self, ev: T) -> Filtered<Self, Exposure> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::Exposure(Reactive(
-                ev.into_signal_f32().computed(),
-            ))),
-        )
+        let mut guards = ParamGuards::default();
+        Filtered::bound(self, filtrate::filters::Exposure(guards.bind(ev)), guards)
     }
 
     /// Apply a gamma adjustment filter.
     fn gamma<T: IntoSignalF32>(self, gamma: T) -> Filtered<Self, Gamma> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::Gamma(Reactive(
-                gamma.into_signal_f32().computed(),
-            ))),
-        )
+        let mut guards = ParamGuards::default();
+        Filtered::bound(self, filtrate::filters::Gamma(guards.bind(gamma)), guards)
     }
 
     /// Apply a contrast filter.
     fn contrast<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Contrast> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Contrast(Reactive(
-                amount.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Contrast(guards.bind(amount)),
+            guards,
         )
     }
 
     /// Apply a saturation filter.
     fn saturation<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Saturation> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Saturation(Reactive(
-                amount.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Saturation(guards.bind(amount)),
+            guards,
         )
     }
 
     /// Apply a vibrance filter.
     fn vibrance<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Vibrance> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Vibrance(Reactive(
-                amount.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Vibrance(guards.bind(amount)),
+            guards,
         )
     }
 
     /// Apply a grayscale filter.
     fn grayscale<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Grayscale> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Grayscale(Reactive(
-                intensity.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Grayscale(guards.bind(intensity)),
+            guards,
         )
     }
 
     /// Apply a hue rotation filter.
     fn hue_rotation<T: IntoSignalF32>(self, angle: T) -> Filtered<Self, HueRotation> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::HueRotation(Reactive(
-                angle.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::HueRotation(guards.bind(angle)),
+            guards,
         )
     }
 
     /// Apply an invert filter.
     fn invert(self) -> Filtered<Self, Invert> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::Invert))
+        Filtered::new(self, filtrate::filters::Invert)
     }
 
     /// Apply a Sobel edge-detection filter (3x3, gradient magnitude).
     fn sobel(self) -> Filtered<Self, Sobel> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::Sobel))
+        Filtered::new(self, filtrate::filters::Sobel)
     }
 
     /// Apply a Prewitt edge-detection filter (3x3, uniform-weight kernels).
     fn prewitt(self) -> Filtered<Self, Prewitt> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::Prewitt))
+        Filtered::new(self, filtrate::filters::Prewitt)
     }
 
     /// Apply a 3x3 per-channel median filter for salt-and-pepper denoising.
     fn median3x3(self) -> Filtered<Self, Median3x3> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::Median3x3))
+        Filtered::new(self, filtrate::filters::Median3x3)
     }
 
     /// Apply a 3x3 convolution filter with a caller-supplied kernel
@@ -926,12 +669,9 @@ pub trait FilterViewExt: View + Sized {
         self,
         kernel: [P; 9],
     ) -> Filtered<Self, Convolution3x3> {
-        let signals: [Reactive<Computed<f32>>; 9] =
-            core::array::from_fn(|i| Reactive(kernel[i].into_signal_f32().computed()));
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::Convolution3x3(signals)),
-        )
+        let mut guards = ParamGuards::default();
+        let signals: [Reactive; 9] = core::array::from_fn(|i| guards.bind(kernel[i]));
+        Filtered::bound(self, filtrate::filters::Convolution3x3(signals), guards)
     }
 
     /// Apply a 5x5 convolution filter with a caller-supplied 25-element
@@ -940,104 +680,83 @@ pub trait FilterViewExt: View + Sized {
         self,
         kernel: [P; 25],
     ) -> Filtered<Self, Convolution5x5> {
-        let signals: [Reactive<Computed<f32>>; 25] =
-            core::array::from_fn(|i| Reactive(kernel[i].into_signal_f32().computed()));
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::Convolution5x5(signals)),
-        )
+        let mut guards = ParamGuards::default();
+        let signals: [Reactive; 25] = core::array::from_fn(|i| guards.bind(kernel[i]));
+        Filtered::bound(self, filtrate::filters::Convolution5x5(signals), guards)
     }
 
     /// Apply a 3x3 morphological erosion (per-channel minimum).
     fn morphology_min(self) -> Filtered<Self, MorphologyMin> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::MorphologyMin))
+        Filtered::new(self, filtrate::filters::MorphologyMin)
     }
 
     /// Apply a 3x3 morphological dilation (per-channel maximum).
     fn morphology_max(self) -> Filtered<Self, MorphologyMax> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::MorphologyMax))
+        Filtered::new(self, filtrate::filters::MorphologyMax)
     }
 
     /// Apply a 3x3 morphological gradient (per-channel max minus min).
     fn morphology_gradient(self) -> Filtered<Self, MorphologyGradient> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::MorphologyGradient),
-        )
+        Filtered::new(self, filtrate::filters::MorphologyGradient)
     }
 
     /// Apply the monochrome photo preset.
     fn photo_effect_mono(self) -> Filtered<Self, PhotoEffectMono> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::PhotoEffectMono))
+        Filtered::new(self, filtrate::filters::PhotoEffectMono)
     }
 
     /// Apply the noir photo preset.
     fn photo_effect_noir(self) -> Filtered<Self, PhotoEffectNoir> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::PhotoEffectNoir))
+        Filtered::new(self, filtrate::filters::PhotoEffectNoir)
     }
 
     /// Apply the chrome photo preset.
     fn photo_effect_chrome(self) -> Filtered<Self, PhotoEffectChrome> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PhotoEffectChrome),
-        )
+        Filtered::new(self, filtrate::filters::PhotoEffectChrome)
     }
 
     /// Apply the instant photo preset.
     fn photo_effect_instant(self) -> Filtered<Self, PhotoEffectInstant> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PhotoEffectInstant),
-        )
+        Filtered::new(self, filtrate::filters::PhotoEffectInstant)
     }
 
     /// Apply the fade photo preset.
     fn photo_effect_fade(self) -> Filtered<Self, PhotoEffectFade> {
-        Filtered::new(self, FilterAdapter::new(filtrate::filters::PhotoEffectFade))
+        Filtered::new(self, filtrate::filters::PhotoEffectFade)
     }
 
     /// Apply the process photo preset.
     fn photo_effect_process(self) -> Filtered<Self, PhotoEffectProcess> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PhotoEffectProcess),
-        )
+        Filtered::new(self, filtrate::filters::PhotoEffectProcess)
     }
 
     /// Apply the tonal photo preset.
     fn photo_effect_tonal(self) -> Filtered<Self, PhotoEffectTonal> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PhotoEffectTonal),
-        )
+        Filtered::new(self, filtrate::filters::PhotoEffectTonal)
     }
 
     /// Apply the transfer photo preset.
     fn photo_effect_transfer(self) -> Filtered<Self, PhotoEffectTransfer> {
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PhotoEffectTransfer),
-        )
+        Filtered::new(self, filtrate::filters::PhotoEffectTransfer)
     }
 
     /// Apply a sepia filter.
     fn sepia<T: IntoSignalF32>(self, intensity: T) -> Filtered<Self, Sepia> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Sepia(Reactive(
-                intensity.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Sepia(guards.bind(intensity)),
+            guards,
         )
     }
 
     /// Apply a sharpen filter.
     fn sharpen<T: IntoSignalF32>(self, amount: T) -> Filtered<Self, Sharpen> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Sharpen(Reactive(
-                amount.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Sharpen(guards.bind(amount)),
+            guards,
         )
     }
 
@@ -1047,12 +766,11 @@ pub trait FilterViewExt: View + Sized {
         temperature: T,
         tint: U,
     ) -> Filtered<Self, TemperatureTint> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(temperature_tint_filter(
-                Reactive(temperature.into_signal_f32().computed()),
-                Reactive(tint.into_signal_f32().computed()),
-            )),
+            filtrate::filters::TemperatureTint(guards.bind(temperature), guards.bind(tint)),
+            guards,
         )
     }
 
@@ -1062,12 +780,11 @@ pub trait FilterViewExt: View + Sized {
         highlights: H,
         shadows: S,
     ) -> Filtered<Self, HighlightsShadows> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::HighlightsShadows(
-                Reactive(highlights.into_signal_f32().computed()),
-                Reactive(shadows.into_signal_f32().computed()),
-            )),
+            filtrate::filters::HighlightsShadows(guards.bind(highlights), guards.bind(shadows)),
+            guards,
         )
     }
 
@@ -1077,12 +794,11 @@ pub trait FilterViewExt: View + Sized {
         radius: R,
         angle: A,
     ) -> Filtered<Self, MotionBlur> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::MotionBlur(
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(angle.into_signal_f32().computed()),
-            )),
+            filtrate::filters::MotionBlur(guards.bind(radius), guards.bind(angle)),
+            guards,
         )
     }
 
@@ -1092,12 +808,11 @@ pub trait FilterViewExt: View + Sized {
         radius: R,
         softness: S,
     ) -> Filtered<Self, Vignette> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Vignette(
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(softness.into_signal_f32().computed()),
-            )),
+            filtrate::filters::Vignette(guards.bind(radius), guards.bind(softness)),
+            guards,
         )
     }
 
@@ -1108,13 +823,11 @@ pub trait FilterViewExt: View + Sized {
         green: G,
         blue: B,
     ) -> Filtered<Self, WhitePoint> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::WhitePoint(
-                Reactive(red.into_signal_f32().computed()),
-                Reactive(green.into_signal_f32().computed()),
-                Reactive(blue.into_signal_f32().computed()),
-            )),
+            filtrate::filters::WhitePoint(guards.bind(red), guards.bind(green), guards.bind(blue)),
+            guards,
         )
     }
 
@@ -1125,23 +838,25 @@ pub trait FilterViewExt: View + Sized {
         center_x: X,
         center_y: Y,
     ) -> Filtered<Self, ZoomBlur> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::ZoomBlur(
-                Reactive(amount.into_signal_f32().computed()),
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-            )),
+            filtrate::filters::ZoomBlur(
+                guards.bind(amount),
+                guards.bind(center_x),
+                guards.bind(center_y),
+            ),
+            guards,
         )
     }
 
     /// Apply a gaussian blur filter.
     fn gaussian_blur<T: IntoSignalF32>(self, sigma: T) -> Filtered<Self, GaussianBlur> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::GaussianBlur(Reactive(
-                sigma.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::GaussianBlur(guards.bind(sigma)),
+            guards,
         )
     }
 
@@ -1161,10 +876,7 @@ pub trait FilterViewExt: View + Sized {
             matrix[2][2],
             matrix[2][3],
         ];
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::ColorMatrix(params)),
-        )
+        Filtered::new(self, filtrate::filters::ColorMatrix(params))
     }
 
     /// Apply bloom around bright regions.
@@ -1174,13 +886,15 @@ pub trait FilterViewExt: View + Sized {
         intensity: U,
         threshold: V,
     ) -> Filtered<Self, Bloom> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Bloom {
-                radius: Reactive(radius.into_signal_f32().computed()),
-                intensity: Reactive(intensity.into_signal_f32().computed()),
-                threshold: Reactive(threshold.into_signal_f32().computed()),
-            }),
+            filtrate::filters::Bloom {
+                radius: guards.bind(radius),
+                intensity: guards.bind(intensity),
+                threshold: guards.bind(threshold),
+            },
+            guards,
         )
     }
 
@@ -1191,13 +905,15 @@ pub trait FilterViewExt: View + Sized {
         intensity: U,
         threshold: V,
     ) -> Filtered<Self, Gloom> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Gloom {
-                radius: Reactive(radius.into_signal_f32().computed()),
-                intensity: Reactive(intensity.into_signal_f32().computed()),
-                threshold: Reactive(threshold.into_signal_f32().computed()),
-            }),
+            filtrate::filters::Gloom {
+                radius: guards.bind(radius),
+                intensity: guards.bind(intensity),
+                threshold: guards.bind(threshold),
+            },
+            guards,
         )
     }
 
@@ -1207,12 +923,14 @@ pub trait FilterViewExt: View + Sized {
         radius: T,
         amount: U,
     ) -> Filtered<Self, UnsharpMask> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::UnsharpMask {
-                radius: Reactive(radius.into_signal_f32().computed()),
-                intensity: Reactive(amount.into_signal_f32().computed()),
-            }),
+            filtrate::filters::UnsharpMask {
+                radius: guards.bind(radius),
+                intensity: guards.bind(amount),
+            },
+            guards,
         )
     }
 
@@ -1224,14 +942,16 @@ pub trait FilterViewExt: View + Sized {
         radius: V,
         scale: W,
     ) -> Filtered<Self, BumpDistortion> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::BumpDistortion([
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(scale.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::BumpDistortion([
+                guards.bind(center_x),
+                guards.bind(center_y),
+                guards.bind(radius),
+                guards.bind(scale),
+            ]),
+            guards,
         )
     }
 
@@ -1243,14 +963,16 @@ pub trait FilterViewExt: View + Sized {
         radius: V,
         scale: W,
     ) -> Filtered<Self, PinchDistortion> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::PinchDistortion([
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(scale.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::PinchDistortion([
+                guards.bind(center_x),
+                guards.bind(center_y),
+                guards.bind(radius),
+                guards.bind(scale),
+            ]),
+            guards,
         )
     }
 
@@ -1262,14 +984,16 @@ pub trait FilterViewExt: View + Sized {
         radius: V,
         angle: W,
     ) -> Filtered<Self, TwirlDistortion> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::TwirlDistortion([
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(angle.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::TwirlDistortion([
+                guards.bind(center_x),
+                guards.bind(center_y),
+                guards.bind(radius),
+                guards.bind(angle),
+            ]),
+            guards,
         )
     }
 
@@ -1281,14 +1005,16 @@ pub trait FilterViewExt: View + Sized {
         radius: V,
         angle: W,
     ) -> Filtered<Self, VortexDistortion> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::VortexDistortion([
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(angle.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::VortexDistortion([
+                guards.bind(center_x),
+                guards.bind(center_y),
+                guards.bind(radius),
+                guards.bind(angle),
+            ]),
+            guards,
         )
     }
 
@@ -1298,10 +1024,7 @@ pub trait FilterViewExt: View + Sized {
             quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
             quad[3][1],
         ];
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PerspectiveTransform(params)),
-        )
+        Filtered::new(self, filtrate::filters::PerspectiveTransform(params))
     }
 
     /// Correct a perspective-skewed quadrilateral back to a rectangle.
@@ -1310,29 +1033,26 @@ pub trait FilterViewExt: View + Sized {
             quad[0][0], quad[0][1], quad[1][0], quad[1][1], quad[2][0], quad[2][1], quad[3][0],
             quad[3][1],
         ];
-        Filtered::new(
-            self,
-            FilterAdapter::new(filtrate::filters::PerspectiveCorrection(params)),
-        )
+        Filtered::new(self, filtrate::filters::PerspectiveCorrection(params))
     }
 
     /// Apply a pixellate effect.
     fn pixellate<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Pixellate> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Pixellate(Reactive(
-                size.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Pixellate(guards.bind(size)),
+            guards,
         )
     }
 
     /// Apply a crystallize effect.
     fn crystallize<T: IntoSignalF32>(self, size: T) -> Filtered<Self, Crystallize> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Crystallize(Reactive(
-                size.into_signal_f32().computed(),
-            ))),
+            filtrate::filters::Crystallize(guards.bind(size)),
+            guards,
         )
     }
 
@@ -1342,12 +1062,11 @@ pub trait FilterViewExt: View + Sized {
         radius: T,
         amount: U,
     ) -> Filtered<Self, EdgeWork> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::EdgeWork([
-                Reactive(radius.into_signal_f32().computed()),
-                Reactive(amount.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::EdgeWork([guards.bind(radius), guards.bind(amount)]),
+            guards,
         )
     }
 
@@ -1359,14 +1078,16 @@ pub trait FilterViewExt: View + Sized {
         center_x: V,
         center_y: W,
     ) -> Filtered<Self, DotHalftone> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::DotHalftone([
-                Reactive(scale.into_signal_f32().computed()),
-                Reactive(angle.into_signal_f32().computed()),
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::DotHalftone([
+                guards.bind(scale),
+                guards.bind(angle),
+                guards.bind(center_x),
+                guards.bind(center_y),
+            ]),
+            guards,
         )
     }
 
@@ -1378,14 +1099,16 @@ pub trait FilterViewExt: View + Sized {
         center_x: V,
         center_y: W,
     ) -> Filtered<Self, LineHalftone> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::LineHalftone([
-                Reactive(scale.into_signal_f32().computed()),
-                Reactive(angle.into_signal_f32().computed()),
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::LineHalftone([
+                guards.bind(scale),
+                guards.bind(angle),
+                guards.bind(center_x),
+                guards.bind(center_y),
+            ]),
+            guards,
         )
     }
 
@@ -1397,14 +1120,16 @@ pub trait FilterViewExt: View + Sized {
         center_x: V,
         center_y: W,
     ) -> Filtered<Self, Kaleidoscope> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::Kaleidoscope([
-                Reactive(segments.into_signal_f32().computed()),
-                Reactive(angle.into_signal_f32().computed()),
-                Reactive(center_x.into_signal_f32().computed()),
-                Reactive(center_y.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::Kaleidoscope([
+                guards.bind(segments),
+                guards.bind(angle),
+                guards.bind(center_x),
+                guards.bind(center_y),
+            ]),
+            guards,
         )
     }
 
@@ -1414,240 +1139,272 @@ pub trait FilterViewExt: View + Sized {
         repeat_x: T,
         repeat_y: U,
     ) -> Filtered<Self, MirrorTile> {
-        Filtered::new(
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            FilterAdapter::new(filtrate::filters::MirrorTile([
-                Reactive(repeat_x.into_signal_f32().computed()),
-                Reactive(repeat_y.into_signal_f32().computed()),
-            ])),
+            filtrate::filters::MirrorTile([guards.bind(repeat_x), guards.bind(repeat_y)]),
+            guards,
         )
     }
 
     /// Blend the current content with an auxiliary image.
     fn blend_with_image<T: IntoSignalF32>(
         self,
-        image: crate::multi_input_filter::FilterImage,
+        image: FilterImage,
         amount: T,
-        mode: crate::multi_input_filter::BlendMode,
-    ) -> Filtered<Self, ReactiveBlendWithImageFilter> {
-        Filtered::new(
+        mode: BlendMode,
+    ) -> Filtered<Self, BlendWithImage> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::blend_with_image_filter(image, reactive(amount), mode),
+            filtrate::filters::BlendWithImage {
+                image,
+                amount: guards.bind(amount),
+                mode,
+            },
+            guards,
         )
     }
 
     /// Apply masked blur using an auxiliary mask image.
     fn masked_blur<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        mask: crate::multi_input_filter::FilterImage,
+        mask: FilterImage,
         radius: T,
         strength: U,
-    ) -> Filtered<Self, ReactiveMaskedBlurFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, MaskedBlur> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::masked_blur_filter(
+            filtrate::filters::MaskedBlur {
                 mask,
-                reactive(radius),
-                reactive(strength),
-            ),
+                radius: guards.bind(radius),
+                strength: guards.bind(strength),
+            },
+            guards,
         )
     }
 
     /// Transition to another image.
     fn transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        target: crate::multi_input_filter::FilterImage,
+        target: FilterImage,
         progress: T,
         softness: U,
-    ) -> Filtered<Self, ReactiveTransitionToImageFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, TransitionToImage> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::transition_to_image_filter(
+            filtrate::filters::TransitionToImage {
                 target,
-                reactive(progress),
-                reactive(softness),
-            ),
+                progress: guards.bind(progress),
+                softness: guards.bind(softness),
+            },
+            guards,
         )
     }
 
     /// Transition to another image with a directional swipe.
     fn swipe_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        target: crate::multi_input_filter::FilterImage,
+        target: FilterImage,
         progress: T,
         softness: U,
-        direction: crate::multi_input_filter::TransitionDirection,
-    ) -> Filtered<Self, ReactiveSwipeTransitionToImageFilter> {
-        Filtered::new(
+        direction: TransitionDirection,
+    ) -> Filtered<Self, SwipeTransitionToImage> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::swipe_transition_to_image_filter(
+            filtrate::filters::SwipeTransitionToImage {
                 target,
-                reactive(progress),
-                reactive(softness),
+                progress: guards.bind(progress),
+                softness: guards.bind(softness),
                 direction,
-            ),
+            },
+            guards,
         )
     }
 
     /// Transition to another image from a radial reveal center.
     fn radial_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        target: crate::multi_input_filter::FilterImage,
+        target: FilterImage,
         progress: T,
         softness: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, ReactiveRadialTransitionToImageFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, RadialTransitionToImage> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::radial_transition_to_image_filter(
+            filtrate::filters::RadialTransitionToImage {
                 target,
-                reactive(progress),
-                reactive(softness),
-                reactive(center_x),
-                reactive(center_y),
-            ),
+                progress: guards.bind(progress),
+                softness: guards.bind(softness),
+                center_x: guards.bind(center_x),
+                center_y: guards.bind(center_y),
+            },
+            guards,
         )
     }
 
     /// Transition to another image with a zooming blend.
     fn zoom_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        target: crate::multi_input_filter::FilterImage,
+        target: FilterImage,
         progress: T,
         amount: U,
         center_x: f32,
         center_y: f32,
-    ) -> Filtered<Self, ReactiveZoomTransitionToImageFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, ZoomTransitionToImage> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::zoom_transition_to_image_filter(
+            filtrate::filters::ZoomTransitionToImage {
                 target,
-                reactive(progress),
-                reactive(amount),
-                reactive(center_x),
-                reactive(center_y),
-            ),
+                progress: guards.bind(progress),
+                amount: guards.bind(amount),
+                center_x: guards.bind(center_x),
+                center_y: guards.bind(center_y),
+            },
+            guards,
         )
     }
 
     /// Transition to another image driven by a displacement map.
     fn displacement_transition_to_image<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        target: crate::multi_input_filter::FilterImage,
-        map: crate::multi_input_filter::FilterImage,
+        target: FilterImage,
+        map: FilterImage,
         progress: T,
         scale: U,
-    ) -> Filtered<Self, ReactiveDisplacementTransitionToImageFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, DisplacementTransitionToImage> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::displacement_transition_to_image_filter(
+            filtrate::filters::DisplacementTransitionToImage {
                 target,
                 map,
-                reactive(progress),
-                reactive(scale),
-            ),
+                progress: guards.bind(progress),
+                scale: guards.bind(scale),
+            },
+            guards,
         )
     }
 
     /// Warp with an auxiliary displacement map.
     fn displacement_warp<T: IntoSignalF32, U: IntoSignalF32>(
         self,
-        map: crate::multi_input_filter::FilterImage,
+        map: FilterImage,
         scale_x: T,
         scale_y: U,
-    ) -> Filtered<Self, ReactiveDisplacementWarpFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, DisplacementWarp> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::displacement_warp_filter(
+            filtrate::filters::DisplacementWarp {
                 map,
-                reactive(scale_x),
-                reactive(scale_y),
-            ),
+                scale_x: guards.bind(scale_x),
+                scale_y: guards.bind(scale_y),
+            },
+            guards,
         )
     }
 
     /// Apply guide-image-aware smoothing.
     fn guided_smooth<T: IntoSignalF32, U: IntoSignalF32, W: IntoSignalF32>(
         self,
-        guide: crate::multi_input_filter::FilterImage,
+        guide: FilterImage,
         radius: T,
         range_sigma: U,
         amount: W,
-    ) -> Filtered<Self, ReactiveGuidedSmoothFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, GuidedSmooth> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::guided_smooth_filter(
+            filtrate::filters::GuidedSmooth {
                 guide,
-                reactive(radius),
-                reactive(range_sigma),
-                reactive(amount),
-            ),
+                radius: guards.bind(radius),
+                range_sigma: guards.bind(range_sigma),
+                amount: guards.bind(amount),
+            },
+            guards,
         )
     }
 
     /// Apply depth-aware blur using a depth map.
     fn depth_aware_blur<T: IntoSignalF32, U: IntoSignalF32, W: IntoSignalF32>(
         self,
-        depth: crate::multi_input_filter::FilterImage,
+        depth: FilterImage,
         focus_depth: T,
         aperture: U,
         max_radius: W,
-    ) -> Filtered<Self, ReactiveDepthAwareBlurFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, DepthAwareBlur> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::depth_aware_blur_filter(
+            filtrate::filters::DepthAwareBlur {
                 depth,
-                reactive(focus_depth),
-                reactive(aperture),
-                reactive(max_radius),
-            ),
+                focus_depth: guards.bind(focus_depth),
+                aperture: guards.bind(aperture),
+                max_radius: guards.bind(max_radius),
+            },
+            guards,
         )
     }
 
     /// Temporal denoise/stabilize using history and motion maps.
     fn temporal_denoise<T: IntoSignalF32>(
         self,
-        history: crate::multi_input_filter::FilterImage,
-        motion: crate::multi_input_filter::FilterImage,
+        history: FilterImage,
+        motion: FilterImage,
         history_weight: T,
-    ) -> Filtered<Self, ReactiveTemporalDenoiseFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, TemporalDenoise> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::temporal_denoise_filter(
+            filtrate::filters::TemporalDenoise {
                 history,
                 motion,
-                reactive(history_weight),
-            ),
+                history_weight: guards.bind(history_weight),
+            },
+            guards,
         )
     }
 
     /// Replace background using matte and background images.
     fn replace_background<T: IntoSignalF32>(
         self,
-        matte: crate::multi_input_filter::FilterImage,
-        background: crate::multi_input_filter::FilterImage,
+        matte: FilterImage,
+        background: FilterImage,
         edge_softness: T,
-    ) -> Filtered<Self, ReactiveBackgroundReplaceFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, BackgroundReplace> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::background_replace_filter(
+            filtrate::filters::BackgroundReplace {
                 matte,
                 background,
-                reactive(edge_softness),
-            ),
+                edge_softness: guards.bind(edge_softness),
+            },
+            guards,
         )
     }
 
     /// Apply a 3D LUT color transform encoded as a 2D strip (`size*size x size`).
     fn lut_color_grade<T: IntoSignalF32>(
         self,
-        lut: crate::multi_input_filter::LutImage,
+        lut: LutImage,
         intensity: T,
-    ) -> Filtered<Self, ReactiveLutColorGradeFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, LutColorGrade> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::lut_color_grade_filter(lut, reactive(intensity)),
+            filtrate::filters::LutColorGrade {
+                lut,
+                intensity: guards.bind(intensity),
+            },
+            guards,
         )
     }
 
@@ -1665,139 +1422,20 @@ pub trait FilterViewExt: View + Sized {
         highlights: W,
         gamma: X,
         amount: Y,
-    ) -> Filtered<Self, ReactiveToneCurveFilter> {
-        Filtered::new(
+    ) -> Filtered<Self, ToneCurve> {
+        let mut guards = ParamGuards::default();
+        Filtered::bound(
             self,
-            crate::multi_input_filter::tone_curve_filter(
-                reactive(shadows),
-                reactive(midtones),
-                reactive(highlights),
-                reactive(gamma),
-                reactive(amount),
-            ),
+            filtrate::filters::ToneCurve {
+                shadows: guards.bind(shadows),
+                midtones: guards.bind(midtones),
+                highlights: guards.bind(highlights),
+                gamma: guards.bind(gamma),
+                amount: guards.bind(amount),
+            },
+            guards,
         )
     }
 }
 
 impl<V: View> FilterViewExt for V {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::rc::Rc;
-    use core::cell::{Cell, RefCell};
-
-    /// What a probe lets a test see from the outside.
-    struct ProbeSpy {
-        wake: Rc<RefCell<Option<EffectRedrawCallback>>>,
-        installs: Rc<Cell<usize>>,
-    }
-
-    /// An effect that records what a host installs on it and by how much it
-    /// would resize its input.
-    struct ProbeEffect {
-        wake: Rc<RefCell<Option<EffectRedrawCallback>>>,
-        installs: Rc<Cell<usize>>,
-        scale: u32,
-    }
-
-    impl ProbeEffect {
-        fn new(scale: u32) -> (Self, ProbeSpy) {
-            let spy = ProbeSpy {
-                wake: Rc::new(RefCell::new(None)),
-                installs: Rc::new(Cell::new(0)),
-            };
-            let effect = Self {
-                wake: Rc::clone(&spy.wake),
-                installs: Rc::clone(&spy.installs),
-                scale,
-            };
-            (effect, spy)
-        }
-    }
-
-    impl Effect for ProbeEffect {
-        fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
-            self.installs.set(self.installs.get() + 1);
-            *self.wake.borrow_mut() = Some(callback);
-        }
-
-        fn setup(&mut self, _ctx: &EffectContext<'_>) -> impl Future<Output = EffectSetupResult> {
-            core::future::ready(Ok(()))
-        }
-
-        fn encode_render(
-            &mut self,
-            _input: &EffectInput,
-            _output: &EffectOutput,
-            _encoder: &mut wgpu::CommandEncoder,
-        ) -> EffectRenderResult {
-            Ok(false)
-        }
-
-        fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-            (input_width * self.scale, input_height * self.scale)
-        }
-    }
-
-    /// An effect accepts a wake callback exactly once, so a filter that is
-    /// folded into a chain must not have spent that installation on a handle
-    /// the chain replaces (#521).
-    #[test]
-    fn a_chain_binds_each_half_once_onto_its_own_handle() {
-        let (inner_effect, inner) = ProbeEffect::new(1);
-        let (outer_effect, outer) = ProbeEffect::new(1);
-
-        let mut chained = AppliedFilter::chained(
-            AppliedFilter::new(inner_effect),
-            AppliedFilter::new(outer_effect),
-        );
-        let handle = chained.redraw_handle();
-
-        assert_eq!(inner.installs.get(), 1);
-        assert_eq!(outer.installs.get(), 1);
-
-        for spy in [&inner, &outer] {
-            assert!(!handle.take_dirty());
-            let wake = spy
-                .wake
-                .borrow()
-                .clone()
-                .expect("the chain installed a wake");
-            wake();
-            assert!(
-                handle.take_dirty(),
-                "a wake from either half must reach the handle the host polls"
-            );
-        }
-    }
-
-    /// The halves run in the order they were written, so the chain's output is
-    /// what the outer filter makes of the inner filter's output.
-    #[test]
-    fn a_chain_resizes_through_both_halves() {
-        let (inner_effect, _inner) = ProbeEffect::new(2);
-        let (outer_effect, _outer) = ProbeEffect::new(3);
-
-        let chained = AppliedFilter::chained(
-            AppliedFilter::new(inner_effect),
-            AppliedFilter::new(outer_effect),
-        );
-
-        assert_eq!(chained.output_size(10, 20), (60, 120));
-    }
-
-    /// A filter a host is already driving has spent its one installation, and
-    /// folding it in would leave the host's handle wired to nothing.
-    #[test]
-    #[should_panic(expected = "no host is driving yet")]
-    fn a_chain_refuses_a_filter_a_host_already_drives() {
-        let (inner_effect, _inner) = ProbeEffect::new(1);
-        let (outer_effect, _outer) = ProbeEffect::new(1);
-
-        let mut inner = AppliedFilter::new(inner_effect);
-        let _ = inner.redraw_handle();
-
-        let _ = AppliedFilter::chained(inner, AppliedFilter::new(outer_effect));
-    }
-}

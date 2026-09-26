@@ -13,7 +13,7 @@
 //! the `.with(Animation::...)` modifier.
 
 use core::time::Duration;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Curve, Spring};
 use waterui::app::App;
 use waterui::graphics::{
     EffectRenderer, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput, wgpu,
@@ -51,10 +51,13 @@ fn sample_content() -> impl View {
 
 /// Demo: Blur filter - Gaussian blur effect
 fn blur_section(blur_radius: &Binding<f64>) -> impl View {
-    let animated_blur = blur_radius
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_blur =
+        blur_radius
+            .clone()
+            .map(|v| v as f32)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                300,
+            ))));
 
     vstack((
         text("Blur").headline(),
@@ -75,10 +78,13 @@ fn blur_section(blur_radius: &Binding<f64>) -> impl View {
 
 /// Demo: Brightness filter - lighten or darken
 fn brightness_section(brightness: &Binding<f64>) -> impl View {
-    let animated_brightness = brightness
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_brightness =
+        brightness
+            .clone()
+            .map(|v| v as f32)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                300,
+            ))));
 
     vstack((
         text("Brightness").headline(),
@@ -101,10 +107,13 @@ fn brightness_section(brightness: &Binding<f64>) -> impl View {
 
 /// Demo: Saturation filter - color intensity
 fn saturation_section(saturation: &Binding<f64>) -> impl View {
-    let animated_saturation = saturation
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_saturation =
+        saturation
+            .clone()
+            .map(|v| v as f32)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                300,
+            ))));
 
     vstack((
         text("Saturation").headline(),
@@ -127,10 +136,13 @@ fn saturation_section(saturation: &Binding<f64>) -> impl View {
 
 /// Demo: Contrast filter
 fn contrast_section(contrast: &Binding<f64>) -> impl View {
-    let animated_contrast = contrast
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_contrast =
+        contrast
+            .clone()
+            .map(|v| v as f32)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                300,
+            ))));
 
     vstack((
         text("Contrast").headline(),
@@ -154,7 +166,9 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
     let animated_hue = hue
         .clone()
         .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(400)));
+        .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+            400,
+        ))));
 
     vstack((
         text("Hue Rotation").headline(),
@@ -175,10 +189,13 @@ fn hue_rotation_section(hue: &Binding<f64>) -> impl View {
 
 /// Demo: Grayscale filter
 fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
-    let animated_grayscale = grayscale
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_grayscale =
+        grayscale
+            .clone()
+            .map(|v| v as f32)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                300,
+            ))));
 
     vstack((
         text("Grayscale").headline(),
@@ -198,10 +215,13 @@ fn grayscale_section(grayscale: &Binding<f64>) -> impl View {
 
 /// Demo: Opacity filter
 fn opacity_section(opacity: &Binding<f64>) -> impl View {
-    let animated_opacity = opacity
-        .clone()
-        .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(300)));
+    let animated_opacity =
+        opacity
+            .clone()
+            .map(|v| v as f32)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                300,
+            ))));
 
     vstack((
         text("Opacity").headline(),
@@ -240,15 +260,17 @@ fn combined_section(
     let animated_blur = combined_blur
         .clone()
         .map(|v| v as f32)
-        .with(Animation::spring(200.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(200.0, 15.0)));
     let animated_saturation = combined_saturation
         .clone()
         .map(|v| v as f32)
-        .with(Animation::spring(200.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(200.0, 15.0)));
     let animated_hue = combined_hue
         .clone()
         .map(|v| v as f32)
-        .with(Animation::ease_in_out(Duration::from_millis(500)));
+        .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+            500,
+        ))));
 
     vstack((
         text("Combined Filters").headline(),

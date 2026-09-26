@@ -4,10 +4,10 @@
 //! terminal, a text editor, a game — needs the keyboard, IME, pointer and
 //! scroll events that reach it, not just the pointer state a frame exposes.
 //!
-//! Two kinds of view receive them: a
-//! [`GpuView`](crate::gpu_surface::GpuView), which owns a GPU surface, and a
-//! [`SceneContent`](crate::scene_view::SceneContent), which draws through
-//! `Scene2D` and lets the backend decide how the scene reaches the screen.
+//! Two kinds of view receive them: a [`GpuContent`](crate::gpu::GpuContent),
+//! which draws its own frames, and a
+//! [`SceneContent`](crate::scene_view::SceneContent), which records Cherenkov
+//! content and lets the backend decide how the scene reaches the screen.
 //! Every backend used to invent its own adapter for this, so an engine had to
 //! be ported once per backend. This module is the single vocabulary they all
 //! speak: a backend translates its platform events into
@@ -29,7 +29,7 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
-use kurbo::Point;
+use cherenkov::kurbo::Point;
 use waterui_core::Str;
 
 /// A pointer button, in the W3C UI Events button vocabulary.
@@ -67,7 +67,7 @@ pub enum ScrollUnit {
 
 /// One input event delivered to a view that asked for input.
 ///
-/// The receiver is a [`GpuView`](crate::gpu_surface::GpuView) or a
+/// The receiver is a [`GpuContent`](crate::gpu::GpuContent) or a
 /// [`SceneContent`](crate::scene_view::SceneContent) returning `true` from its
 /// `wants_input_events`.
 ///

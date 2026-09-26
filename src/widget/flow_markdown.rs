@@ -25,7 +25,7 @@ use waterui_layout::stack::{HorizontalAlignment, VStack};
 use waterui_text::styled::StyledStr;
 
 use crate::{
-    animation::Animation,
+    animation::{Animation, Curve},
     widget::rich_text::{RichText, RichTextElement},
 };
 
@@ -859,14 +859,14 @@ fn animation_policy_for_kind(
             FlowElementKind::CodeBlock | FlowElementKind::Table | FlowElementKind::Hr => {
                 FlowAnimationPolicy::None
             }
-            FlowElementKind::Image => {
-                FlowAnimationPolicy::Fade(Animation::ease_in_out(Duration::from_millis(180)))
-            }
+            FlowElementKind::Image => FlowAnimationPolicy::Fade(Animation::Curve(
+                Curve::ease_in_out(Duration::from_millis(180)),
+            )),
         },
         FlowAnimationPreset::Minimal => match kind {
-            FlowElementKind::Image => {
-                FlowAnimationPolicy::Fade(Animation::ease_in_out(Duration::from_millis(120)))
-            }
+            FlowElementKind::Image => FlowAnimationPolicy::Fade(Animation::Curve(
+                Curve::ease_in_out(Duration::from_millis(120)),
+            )),
             _ => FlowAnimationPolicy::None,
         },
         FlowAnimationPreset::None => FlowAnimationPolicy::None,
@@ -1894,7 +1894,9 @@ mod tests {
     #[test]
     fn typewriter_run_includes_token_fade_animation_when_enabled() {
         let config = FlowMarkdownConfig {
-            typewriter_token_fade_in: Some(Animation::ease_in_out(Duration::from_millis(140))),
+            typewriter_token_fade_in: Some(Animation::Curve(Curve::ease_in_out(
+                Duration::from_millis(140),
+            ))),
             ..FlowMarkdownConfig::default()
         };
         let mut state = FlowMarkdownState::new(config, ReactiveList::new());

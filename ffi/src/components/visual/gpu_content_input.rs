@@ -1,12 +1,10 @@
-//! Backend-neutral input carrier for [`GpuSurface`](waterui_graphics::GpuSurface).
+//! Backend-neutral input carrier for [`GpuContent`](waterui_graphics::GpuContent).
 //!
-//! [`waterui_gpu_surface_set_input`](super::gpu_surface::waterui_gpu_surface_set_input)
-//! carries a pointer *snapshot*, which is all a chart or a shader needs. A GPU
-//! view that draws interactive content — a browser engine, a terminal, a text
-//! editor — needs the events themselves: keys with their W3C identity, the
-//! modifier chord, committed text, an input-method composition session, scroll
-//! with its unit, and focus. This module is that carrier, and it speaks the
-//! same vocabulary as
+//! A GPU view that draws interactive content — a browser engine, a terminal, a
+//! text editor — needs input events: pointer motion and buttons, keys with
+//! their W3C identity, the modifier chord, committed text, an input-method
+//! composition session, scroll with its unit, and focus. This module is that
+//! carrier, and it speaks the same vocabulary as
 //! [`SurfaceInputEvent`](waterui_graphics::SurfaceInputEvent) so no platform
 //! keycode ever crosses the ABI.
 //!
@@ -28,19 +26,20 @@
 //!
 //! # Thread affinity
 //!
-//! Like every other `WuiGpuSurfaceState` entry point, these run on the thread
+//! Like every other `WuiGpuContentState` entry point, these run on the thread
 //! that created the state. Delivery is synchronous: the event reaches
-//! [`GpuView::input`](waterui_graphics::GpuView::input) before the call
-//! returns. A view that needs the screen back asks for it through the
-//! [`RedrawHandle`](waterui_graphics::RedrawHandle) it cloned from its
-//! `GpuContext` during setup, which fires the host's installed redraw callback.
+//! [`GpuContentView::input`](waterui_graphics::GpuContentView::input) before
+//! the call returns. Content that needs the screen back asks for it through
+//! the [`RedrawHandle`](waterui_graphics::RedrawHandle) it cloned from its
+//! [`Context`](waterui_graphics::Context) during setup, which fires the host's
+//! installed redraw callback.
 
 use waterui_core::layout::{Point as LayoutPoint, Rect as LayoutRect, Size as LayoutSize};
 use waterui_graphics::input::{
     Code, Key, Modifiers, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
 
-use super::gpu_surface::{WuiGpuSurfaceState, with_semantic_input};
+use super::gpu_content::{WuiGpuContentState, with_view};
 use crate::components::layouting::layout::WuiRect;
 use crate::{IntoFFI, IntoRust, WuiStr};
 
@@ -195,7 +194,7 @@ fn modifiers_from_ffi(bits: u32) -> Modifiers {
     assert_eq!(
         bits & !SUPPORTED_MODIFIERS,
         0,
-        "waterui_gpu_surface_send_input_event: unsupported modifier bits {:#x}",
+        "waterui_gpu_content_send_input_event: unsupported modifier bits {:#x}",
         bits & !SUPPORTED_MODIFIERS
     );
     Modifiers::from_bits(bits).expect("supported modifier bits are a subset of `Modifiers`")
@@ -206,7 +205,7 @@ fn caret_from_ffi(caret: i64, text: &str) -> Option<usize> {
     if caret < 0 {
         assert_eq!(
             caret, -1,
-            "waterui_gpu_surface_send_input_event: composition caret must be a byte offset or -1, got {caret}"
+            "waterui_gpu_content_send_input_event: composition caret must be a byte offset or -1, got {caret}"
         );
         return None;
     }
@@ -214,7 +213,7 @@ fn caret_from_ffi(caret: i64, text: &str) -> Option<usize> {
         .expect("a non-negative i64 caret fits usize on every platform WaterUI targets");
     assert!(
         text.is_char_boundary(caret),
-        "waterui_gpu_surface_send_input_event: composition caret {caret} is not a UTF-8 boundary of {text:?}"
+        "waterui_gpu_content_send_input_event: composition caret {caret} is not a UTF-8 boundary of {text:?}"
     );
     Some(caret)
 }
@@ -278,12 +277,12 @@ impl IntoRust for WuiSurfaceInputEvent {
                 pressed,
                 key: key.parse::<Key>().unwrap_or_else(|_| {
                     panic!(
-                        "waterui_gpu_surface_send_input_event: {key:?} is not a W3C KeyboardEvent.key name"
+                        "waterui_gpu_content_send_input_event: {key:?} is not a W3C KeyboardEvent.key name"
                     )
                 }),
                 code: code.parse::<Code>().unwrap_or_else(|_| {
                     panic!(
-                        "waterui_gpu_surface_send_input_event: {code:?} is not a W3C KeyboardEvent.code name"
+                        "waterui_gpu_content_send_input_event: {code:?} is not a W3C KeyboardEvent.code name"
                     )
                 }),
                 modifiers: modifiers_from_ffi(modifiers),
@@ -312,10 +311,10 @@ impl IntoRust for WuiSurfaceInputEvent {
 /// # Safety
 ///
 /// `state` must be a valid pointer returned by
-/// [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create).
+/// [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create).
 #[unsafe(no_mangle)]
-pub const unsafe extern "C" fn waterui_gpu_surface_wants_input_events(
-    state: *const WuiGpuSurfaceState,
+pub const unsafe extern "C" fn waterui_gpu_content_wants_input_events(
+    state: *const WuiGpuContentState,
 ) -> bool {
     // SAFETY: the caller contract requires `state` to be a valid handle that stays
     // alive for this call; it is only borrowed.
@@ -326,14 +325,14 @@ pub const unsafe extern "C" fn waterui_gpu_surface_wants_input_events(
 /// Delivers one input event to the GPU view.
 ///
 /// The event is translated to [`SurfaceInputEvent`] and handed to
-/// [`GpuView::input`](waterui_graphics::GpuView::input) before this returns.
-/// All three of the event's strings are consumed, whatever its kind.
+/// [`GpuContentView::input`](waterui_graphics::GpuContentView::input) before
+/// this returns. All three of the event's strings are consumed, whatever its
+/// kind.
 ///
 /// # Returns
 ///
-/// Whether the event reached the view. `false` means this surface does not take
-/// input, or its asynchronous renderer setup has not finished yet — in both
-/// cases the host should fall through to its own handling of the event.
+/// Whether the event reached the view. `false` means this view does not take
+/// input, and the host should fall through to its own handling of the event.
 ///
 /// # Panics
 ///
@@ -345,12 +344,12 @@ pub const unsafe extern "C" fn waterui_gpu_surface_wants_input_events(
 /// # Safety
 ///
 /// `state` must be a valid pointer returned by
-/// [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
+/// [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create),
 /// and every [`WuiStr`] in `event` must be an owning handle from the matching
 /// FFI constructor.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_gpu_surface_send_input_event(
-    state: *mut WuiGpuSurfaceState,
+pub unsafe extern "C" fn waterui_gpu_content_send_input_event(
+    state: *mut WuiGpuContentState,
     event: WuiSurfaceInputEvent,
 ) -> bool {
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
@@ -362,7 +361,8 @@ pub unsafe extern "C" fn waterui_gpu_surface_send_input_event(
     if !state.wants_input_events() {
         return false;
     }
-    with_semantic_input(state, |gpu_surface| gpu_surface.input(&event)).is_some()
+    with_view(state, |view| view.input(&event));
+    true
 }
 
 /// The GPU view's text caret, in logical surface-local coordinates.
@@ -384,16 +384,16 @@ pub unsafe extern "C" fn waterui_gpu_surface_send_input_event(
 /// # Safety
 ///
 /// `state` must be a valid pointer returned by
-/// [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
+/// [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create),
 /// and `out` must point to writable storage for one [`WuiRect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn waterui_gpu_surface_ime_caret(
-    state: *const WuiGpuSurfaceState,
+pub unsafe extern "C" fn waterui_gpu_content_ime_caret(
+    state: *const WuiGpuContentState,
     out: *mut WuiRect,
 ) -> bool {
     assert!(
         !out.is_null(),
-        "waterui_gpu_surface_ime_caret: `out` must point to writable WuiRect storage"
+        "waterui_gpu_content_ime_caret: `out` must point to writable WuiRect storage"
     );
     // SAFETY: the caller contract requires `state` to be a valid handle that stays
     // alive for this call; it is only borrowed.
@@ -413,7 +413,7 @@ pub unsafe extern "C" fn waterui_gpu_surface_ime_caret(
                 .max(caret.width())
                 .max(caret.height())
                 <= f64::from(f32::MAX),
-        "waterui_gpu_surface_ime_caret: the view reported a caret the f32 layout ABI cannot carry: {caret:?}"
+        "waterui_gpu_content_ime_caret: the view reported a caret the f32 layout ABI cannot carry: {caret:?}"
     );
     // WaterUI's layout ABI is `f32` throughout (`WuiPoint`, `WuiSize`); the GPU
     // view vocabulary is kurbo's `f64`. The assertion above rules out the

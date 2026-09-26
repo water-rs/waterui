@@ -13,7 +13,7 @@
 //! `.with(Animation::...)` modifiers.
 
 use core::time::Duration;
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Curve, Spring};
 use waterui::app::App;
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
@@ -65,7 +65,7 @@ struct ScaleRotation {
 
 /// Demo: Scale animation - visual transform on colored boxes
 fn scale_animation_section(scale: &Binding<f32>) -> impl View {
-    let animated_scale = scale.with(Animation::spring(300.0, 15.0));
+    let animated_scale = scale.with(Animation::Spring(Spring::from_physics(300.0, 15.0)));
 
     vstack((
         text("Scale Animation").headline(),
@@ -87,7 +87,9 @@ fn scale_animation_section(scale: &Binding<f32>) -> impl View {
 
 /// Demo: Rotation animation - spinning box
 fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
-    let animated_rotation = rotation.with(Animation::ease_in_out(Duration::from_millis(500)));
+    let animated_rotation = rotation.with(Animation::Curve(Curve::ease_in_out(
+        Duration::from_millis(500),
+    )));
 
     vstack((
         text("Rotation Animation").headline(),
@@ -123,8 +125,8 @@ fn rotation_animation_section(rotation: &Binding<f32>) -> impl View {
 
 /// Demo: Translation animation - moving box
 fn translation_animation_section(offset_x: &Binding<f32>, offset_y: &Binding<f32>) -> impl View {
-    let animated_x = offset_x.with(Animation::spring(200.0, 20.0));
-    let animated_y = offset_y.with(Animation::spring(200.0, 20.0));
+    let animated_x = offset_x.with(Animation::Spring(Spring::from_physics(200.0, 20.0)));
+    let animated_y = offset_y.with(Animation::Spring(Spring::from_physics(200.0, 20.0)));
     let axes = TranslationAxes {
         x: offset_x.clone(),
         y: offset_y.clone(),
@@ -164,9 +166,10 @@ fn combined_transform_section(
     combined_scale: &Binding<f32>,
     combined_rotation: &Binding<f32>,
 ) -> impl View {
-    let animated_scale = combined_scale.with(Animation::spring(250.0, 18.0));
-    let animated_rotation =
-        combined_rotation.with(Animation::ease_in_out(Duration::from_millis(400)));
+    let animated_scale = combined_scale.with(Animation::Spring(Spring::from_physics(250.0, 18.0)));
+    let animated_rotation = combined_rotation.with(Animation::Curve(Curve::ease_in_out(
+        Duration::from_millis(400),
+    )));
     let transform = ScaleRotation {
         scale: combined_scale.clone(),
         rotation: combined_rotation.clone(),
@@ -211,7 +214,9 @@ fn combined_transform_section(
 
 /// Demo: Animated progress bar - the most visually impressive animation
 fn progress_animation_section(progress_value: &Binding<f64>) -> impl View {
-    let animated_progress = progress_value.with(Animation::ease_in_out(Duration::from_millis(800)));
+    let animated_progress = progress_value.with(Animation::Curve(Curve::ease_in_out(
+        Duration::from_millis(800),
+    )));
 
     vstack((
         text("Progress Bar Animation").headline(),
@@ -234,7 +239,7 @@ fn progress_animation_section(progress_value: &Binding<f64>) -> impl View {
 
 /// Demo: Progress with spring physics - bouncy feel
 fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
-    let animated_progress = spring_value.with(Animation::spring(200.0, 12.0));
+    let animated_progress = spring_value.with(Animation::Spring(Spring::from_physics(200.0, 12.0)));
     let status = spring_value.gt(0.5).select("High", "Low").animated();
 
     vstack((
@@ -263,10 +268,14 @@ fn spring_progress_section(spring_value: &Binding<f64>) -> impl View {
 /// Demo: Animation curves comparison using visual bars
 fn animation_curves_section(bar_scale: &Binding<f32>) -> impl View {
     // Same value animated with different curves - visually compare timing
-    let linear_scale = bar_scale.with(Animation::linear(Duration::from_millis(1000)));
-    let ease_in_scale = bar_scale.with(Animation::ease_in(Duration::from_millis(1000)));
-    let ease_out_scale = bar_scale.with(Animation::ease_out(Duration::from_millis(1000)));
-    let spring_scale = bar_scale.with(Animation::spring(150.0, 12.0));
+    let linear_scale = bar_scale.with(Animation::Curve(Curve::linear(Duration::from_millis(1000))));
+    let ease_in_scale = bar_scale.with(Animation::Curve(Curve::ease_in(Duration::from_millis(
+        1000,
+    ))));
+    let ease_out_scale = bar_scale.with(Animation::Curve(Curve::ease_out(Duration::from_millis(
+        1000,
+    ))));
+    let spring_scale = bar_scale.with(Animation::Spring(Spring::from_physics(150.0, 12.0)));
 
     vstack((
         text("Animation Curves Comparison").headline(),
@@ -317,12 +326,15 @@ fn toggle_animation_section(toggle_state: &Binding<bool>) -> impl View {
     // Animated scale for the indicator
     let indicator_scale = toggle_state
         .select(1.0, 0.3)
-        .with(Animation::spring(300.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(300.0, 15.0)));
 
     // Animated rotation
-    let indicator_rotation = toggle_state
-        .select(0.0, 180.0)
-        .with(Animation::ease_in_out(Duration::from_millis(400)));
+    let indicator_rotation =
+        toggle_state
+            .select(0.0, 180.0)
+            .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+                400,
+            ))));
 
     vstack((
         text("Toggle Animation").headline(),
@@ -347,16 +359,16 @@ fn staggered_section(expanded: &Binding<bool>) -> impl View {
     // Each bar has different spring stiffness, creating a cascading effect
     let bar1_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(200.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(200.0, 15.0)));
     let bar2_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(150.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(150.0, 15.0)));
     let bar3_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(100.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(100.0, 15.0)));
     let bar4_scale = expanded
         .select(1.0, 0.2)
-        .with(Animation::spring(80.0, 12.0));
+        .with(Animation::Spring(Spring::from_physics(80.0, 12.0)));
 
     vstack((
         text("Staggered Animations").headline(),
@@ -395,17 +407,19 @@ fn size_indicator_section(size_value: &Binding<f64>) -> impl View {
     let animated_scale = size_value
         .clone()
         .map(|s| s / 100.0 + 0.1)
-        .with(Animation::spring(200.0, 15.0));
+        .with(Animation::Spring(Spring::from_physics(200.0, 15.0)));
 
     let animated_rotation = size_value
         .clone()
         .map(|s| s * 3.6) // 0-100 maps to 0-360 degrees
-        .with(Animation::ease_in_out(Duration::from_millis(600)));
+        .with(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+            600,
+        ))));
 
     let animated_y_scale = size_value
         .clone()
         .map(|s| s / 100.0)
-        .with(Animation::spring(180.0, 14.0));
+        .with(Animation::Spring(Spring::from_physics(180.0, 14.0)));
 
     vstack((
         text("Size Indicator").headline(),

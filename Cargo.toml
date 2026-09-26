@@ -205,9 +205,11 @@ waterkit-codec = { version = "0.1.4", default-features = false }
 waterkit-video = { version = "0.1.4", features = ["streaming"] }
 waterkit-build = "0.1.4"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
-filtrate = "0.2.0"
-filtrate-core = "0.2.0"
-filtrate-derive = "0.1.0"
+# filtrate lives in the Cherenkov repository; the engine and the filters must
+# share one `filtrate-core`, so all three come from the same revision.
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
 waterui-barcode = "0.3.0"
 waterui-particle = "0.2.0"
 waterui-chart = "0.3.0"
@@ -239,34 +241,25 @@ native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.5.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
-# 29, not 30, and not by neglect: `vello` 0.10.0 — the newest release — pins
-# `wgpu` 29.0.3 in its own workspace, so taking 30 here would put two `wgpu`
-# majors in the graph and split every type that crosses between the renderer
-# and us. This moves when vello releases against 30 (#405).
+# 29, not 30: `cherenkov-gpu` builds against wgpu 29, so
+# taking 30 here would put two `wgpu` majors in the graph and split every type
+# that crosses between the renderer and us.
 wgpu = "29.0.4"
 encase = "0.12"
-vello = "0.9"
-# The CPU/GPU split renderer: it processes paths on the CPU and rasterizes on
-# the GPU, so unlike Vello classic it needs no indirect execution — which is
-# what the iOS Simulator's Metal lacks.
-vello_hybrid = { version = "0.2", default-features = false, features = ["std", "wgpu", "text"] }
-# The glyph-run types `vello_hybrid`'s text API takes but does not re-export.
-# Taken from the same checkout as `vello_hybrid`, which vendors it: the crates.io
-# release is a different major version, and a glyph from one is not a glyph from
-# the other.
-glifo = { version = "0.3.0", default-features = false, features = ["std"] }
-# The paint and pixel types `vello_hybrid` takes but does not re-export. An
-# image is drawn there by naming a handle into the renderer's atlas, and the
-# handle, the paint that samples it, and the premultiplied conversion that
-# fills it all live here.
-vello_common = { version = "0.2", default-features = false, features = ["std"] }
+# The rendering engine. Cherenkov is not on crates.io: every crate of it is
+# consumed from the same git revision, never a branch
+# or a path, so the graph carries exactly one `Content`, `Paint` and `Shape`.
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+# Cherenkov's colour arithmetic; named directly for the authoring spaces
+# (`Oklch`) the engine does not re-export.
+color = "0.3.3"
 parley = { version = "0.11", default-features = false }
-# SVG documents are parsed here and drawn through `Scene2D`; nothing in the
-# workspace renders one with `vello_svg`, so the parser is depended on directly
-# rather than through a Vello-only renderer.
+# SVG documents are parsed here and recorded as Cherenkov content; nothing in
+# the workspace renders one with a Vello-only renderer.
 usvg = "0.48.1"
-kurbo = "0.13"
-peniko = "0.6"
+kurbo = { version = "0.13", features = ["serde"] }
 skrifa = "0.47.0"
 # The only crate in the Rust ecosystem that reads the OpenType `MATH` table.
 # `read-fonts`/`skrifa` do not expose it (googlefonts/fontations#1269 has been
@@ -289,8 +282,6 @@ quick-xml = "0.42"
 # find at runtime; without it MathCAT looks for a `Rules` directory on disk.
 mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.6"
-vello_cpu = { version = "0.2.0", default-features = false }
-lyon = "1.0"
 wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
 # The Vulkan bindings `wgpu-hal` itself links. Android view capture imports an
 # `AHardwareBuffer` as a raw `VkImage`, which means calling
@@ -498,6 +489,11 @@ waterui-macros = { path = "macros" }
 # name needs an entry here or the workspace builds a second `waterui` beside
 # its own.
 waterui = { path = "." }
+# Every filtrate in the graph must be Cherenkov's, or a filter type built
+# against the registry crate cannot be handed to the engine.
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "ef46abff2e13514ce407d917af8dfb7facede174" }
 waterui-assets = { path = "components/assets/runtime" }
 waterui-assets-core = { path = "components/assets/core" }
 waterui-backend-core = { path = "backends/core" }
@@ -536,47 +532,16 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # storage and takes its address as the opaque class pointer.
 block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 
-# vello loses the Vulkan device on Mali: `select`'s discarded arm computes an
-# underflowed workgroup-array index and Mali page-faults on it. The fix is
-# ours, offered upstream as linebender/vello#1817 and still open there, so this
-# patch is what carries it — drop it when a release containing that PR ships.
-#
-# This rev is `v0.10.0` for every crate the workspace takes from it. The six
-# commits between it and the tag are the version bump and five changes under
-# `sparse_strips/`, which is `vello_hybrid`'s line and comes from a different
-# rev below; not a line of `vello`, `vello_encoding` or `vello_shaders`
-# differs. So the `vello = "0.9"` requirement above understates what is
-# actually compiled, and moving it to "0.10" would buy no code — only a
-# lockstep re-release of `waterui-graphics` and then `hydrolysis`, which
-# consumes graphics from crates.io and requires `vello ^0.9`.
-vello = { git = "https://github.com/lexoliu/vello", rev = "7f5e1ca5769a96dc4404b812e7fa0351499cd2c4" }
-
-# vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
-# and wgpu's GL backend then makes that texture `TEXTURE_2D` while the shader
-# samples a `texture_2d_array`, so every image brush renders black on a GL
-# adapter (#366). It also clamps `Extend::Pad` to the last texel's leading
-# corner and only then subtracts the half texel that turns a corner into a
-# centre, so a bilinear image brush never reaches its final source row or
-# column (#234). This rev is the 0.2.0 release plus a two-layer floor decided
-# by the adapter backend and a pad that clamps to the texel centres. The other
-# two sparse-strip crates come from the same rev because `vello_hybrid` names
-# them by path there, and a second copy of `vello_common` would make its paint
-# types different types. Drop when a release carrying both fixes ships —
-# linebender/vello#1859 (one 2D texture per atlas) covers the first.
-vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-# `vello_hybrid`'s text API takes glyphs from `glifo`, which that repo also
-# carries by path; the same rev keeps one `Glyph` type in the graph.
-glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
 # nami#26 renames `Signal::get` to `Signal::snapshot` (trait-only), removes the
 # inherent `Binding::get`, and renames `BindingMailbox::get`/`get_as` to
 # `snapshot`/`snapshot_as` — a breaking change with no compatibility path.
-# Both nami crates this workspace names ride the same rev so the graph carries
-# a single `Signal` trait; `nami-derive` needs no entry because the rename
-# touched only its docs. Drop these once a nami release contains the rename.
-nami = { git = "https://github.com/water-rs/nami", rev = "5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425" }
-nami-core = { git = "https://github.com/water-rs/nami", rev = "5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425" }
+# nami#28 adds the `kurbo` feature (constant `Signal` for kurbo types) that
+# Cherenkov's live recording requires. Both nami crates this workspace names
+# ride the same rev so the graph carries a single `Signal` trait; `nami-derive`
+# needs no entry because the rename touched only its docs. Drop these once a
+# nami release contains both changes.
+nami = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5aff23bfffd7d2b109d08fea" }
+nami-core = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5aff23bfffd7d2b109d08fea" }
 
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
@@ -588,7 +553,8 @@ waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "74d7dcd7
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "324c75acb1228808fe3facb7a4b2ce7a18748610" }
+waterui-image = { path = "/home/ubuntu/repos/image" } # LOCALDEV: restore git rev before commit
+waterui-svg = { path = "/home/ubuntu/repos/svg" } # LOCALDEV: replace with git rev before commit
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }

@@ -1,46 +1,54 @@
 use crate::{IntoFFI, IntoRust, WuiEnv, ffi_computed, ffi_computed_ctor, reactive::WuiComputed};
 
 use nami::SignalExt;
-use waterui::{Color, Signal};
-use waterui_core::{Environment, resolve::Resolvable};
-use waterui_graphics::color::ResolvedColor;
+use waterui::Color;
+#[cfg(feature = "android-jni")]
+use waterui::Signal;
+use waterui_graphics::WorkingColor;
 
 opaque!(WuiColor, Color);
 
-into_ffi!(
-    ResolvedColor,
-    pub struct WuiResolvedColor {
-        red: f32,
-        green: f32,
-        blue: f32,
-        opacity: f32,
-        headroom: f32,
-    }
-);
+/// C ABI mirror of [`WorkingColor`]: premultiplied-free linear Display P3
+/// components with straight alpha.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WuiWorkingColor {
+    /// Linear Display P3 red.
+    pub red: f32,
+    /// Linear Display P3 green.
+    pub green: f32,
+    /// Linear Display P3 blue.
+    pub blue: f32,
+    /// Straight alpha.
+    pub alpha: f32,
+}
 
-impl IntoRust for WuiResolvedColor {
-    type Rust = ResolvedColor;
-    unsafe fn into_rust(self) -> Self::Rust {
-        ResolvedColor {
-            red: self.red,
-            green: self.green,
-            blue: self.blue,
-            opacity: self.opacity,
-            headroom: self.headroom,
+impl IntoFFI for WorkingColor {
+    type FFI = WuiWorkingColor;
+    fn into_ffi(self) -> Self::FFI {
+        let [red, green, blue, alpha] = self.components;
+        WuiWorkingColor {
+            red,
+            green,
+            blue,
+            alpha,
         }
     }
 }
 
-ffi_computed!(ResolvedColor, WuiResolvedColor);
-ffi_computed_ctor!(ResolvedColor, WuiResolvedColor);
+impl IntoRust for WuiWorkingColor {
+    type Rust = WorkingColor;
+    unsafe fn into_rust(self) -> Self::Rust {
+        WorkingColor::new([self.red, self.green, self.blue, self.alpha])
+    }
+}
+
+ffi_computed!(WorkingColor, WuiWorkingColor);
+ffi_computed_ctor!(WorkingColor, WuiWorkingColor);
 
 crate::ffi_binding!(Color, *mut WuiColor, color);
 #[cfg(feature = "c-api")]
 crate::ffi_watcher!(Color, *mut WuiColor, color);
-
-// `ResolvedColor` is a raw view (native fill) on all backends to avoid creating
-// GPU surfaces for simple color blocks.
-ffi_view!(ResolvedColor, WuiResolvedColor, resolved_color);
 
 /// Consumes a semantic color view and returns its owned resolvable color handle.
 ///
@@ -114,22 +122,10 @@ impl crate::jni::JniPrimitive for Color {
 // Generate JNI read/set for Color binding
 crate::jni_binding_primitive!(Color, color);
 
-#[derive(Debug, Clone)]
-struct LinearResolvedColor {
-    resolved: ResolvedColor,
-}
-
-impl Resolvable for LinearResolvedColor {
-    type Resolved = ResolvedColor;
-    fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        self.resolved
-    }
-}
-
 /// Creates a new linear sRGBA color with optional HDR headroom.
 ///
 /// `headroom` is an HDR scale factor where `0.0` means SDR and values above
-/// `0.0` allow the renderer to apply an extended range multiplier.
+/// `0.0` scale the colour into the extended range.
 ///
 /// # Safety
 ///
@@ -143,17 +139,15 @@ pub unsafe extern "C" fn waterui_color_from_linear_rgba_headroom(
     alpha: f32,
     headroom: f32,
 ) -> *mut WuiColor {
-    let resolved = ResolvedColor {
-        red,
-        green,
-        blue,
-        opacity: alpha.clamp(0.0, 1.0),
-        headroom: headroom.max(0.0),
-    };
-    Color::new(LinearResolvedColor { resolved }).into_ffi()
+    let color = waterui_graphics::color::working::from_linear_srgb(
+        [red, green, blue],
+        alpha.clamp(0.0, 1.0),
+    );
+    let color = waterui_graphics::color::working::with_headroom(color, headroom.max(0.0));
+    Color::new(waterui_graphics::color::Working(color)).into_ffi()
 }
 
-/// Creates a new linear sRGBA color (SDR only).
+/// Creates a new sRGBA color (SDR only) from encoded sRGB components.
 ///
 /// # Safety
 ///
@@ -166,10 +160,9 @@ pub unsafe extern "C" fn waterui_color_from_srgba(
     blue: f32,
     alpha: f32,
 ) -> *mut WuiColor {
-    let mut resolved =
-        ResolvedColor::from_srgb(waterui_graphics::color::Srgb::new(red, green, blue));
-    resolved.opacity = alpha.clamp(0.0, 1.0);
-    Color::new(LinearResolvedColor { resolved }).into_ffi()
+    Color::srgb_f32(red, green, blue)
+        .with_opacity(alpha.clamp(0.0, 1.0))
+        .into_ffi()
 }
 
 /// Resolves a color in the given environment.
@@ -181,7 +174,7 @@ pub unsafe extern "C" fn waterui_color_from_srgba(
 pub unsafe extern "C" fn waterui_resolve_color(
     color: *const WuiColor,
     env: *const WuiEnv,
-) -> *mut WuiComputed<ResolvedColor> {
+) -> *mut WuiComputed<WorkingColor> {
     // SAFETY: the caller contract requires `color` and `env` to be valid handles that
     // stay alive for this call; both are only borrowed here.
     unsafe {
@@ -204,7 +197,7 @@ pub unsafe extern "C" fn waterui_resolve_color(
 pub unsafe extern "C" fn waterui_resolve_computed_color(
     color: *mut WuiComputed<Color>,
     env: *const WuiEnv,
-) -> *mut WuiComputed<ResolvedColor> {
+) -> *mut WuiComputed<WorkingColor> {
     // SAFETY: the caller contract above makes `color` an owning handle reclaimed
     // exactly once here, and `env` a valid borrow for the call.
     unsafe {
@@ -227,9 +220,10 @@ mod tests {
         let color: Color = unsafe { IntoRust::into_rust(pointer) };
         let resolved = color.resolve(&Environment::new()).snapshot();
 
-        assert!((resolved.red - 0.214_041_14).abs() < 1.0e-6);
-        assert!((resolved.green - 0.214_041_14).abs() < 1.0e-6);
-        assert!((resolved.blue - 0.214_041_14).abs() < 1.0e-6);
-        assert!((resolved.opacity - 0.25).abs() < f32::EPSILON);
+        let [red, green, blue, alpha] = resolved.components;
+        assert!((red - 0.214_041_14).abs() < 1.0e-6);
+        assert!((green - 0.214_041_14).abs() < 1.0e-6);
+        assert!((blue - 0.214_041_14).abs() < 1.0e-6);
+        assert!((alpha - 0.25).abs() < f32::EPSILON);
     }
 }

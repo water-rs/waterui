@@ -1,7 +1,7 @@
 //! Flow Markdown playground.
 use std::time::Duration;
 
-use waterui::animation::Animation;
+use waterui::animation::{Animation, Curve};
 use waterui::app::App;
 use waterui::prelude::flow_markdown::FlowMarkdownConfig;
 use waterui::prelude::*;
@@ -47,7 +47,9 @@ fn token_fade_animation(stream_cps: i32, enabled: bool) -> Option<Animation> {
     }
 
     let fade_ms = stream_interval_ms(stream_cps).clamp(8, 64);
-    Some(Animation::ease_in_out(Duration::from_millis(fade_ms)))
+    Some(Animation::Curve(Curve::ease_in_out(Duration::from_millis(
+        fade_ms,
+    ))))
 }
 
 fn normalized_document_index(index: i32) -> usize {

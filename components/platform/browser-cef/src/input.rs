@@ -26,9 +26,6 @@
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::str::FromStr as _;
 
-use waterui_core::Environment;
-use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
 use waterui_graphics::input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
@@ -218,73 +215,6 @@ impl CefSurfaceInput {
         {
             self.page.commit_text(&text, None);
         }
-    }
-}
-
-/// A CEF presenter that also consumes the input landing on its surface.
-///
-/// The presenter and the input adapter are separate concerns — one owns the
-/// shared texture, the other owns Chromium's input ABI — but a backend that
-/// routes input to GPU views by
-/// [`wants_input_events`](GpuView::wants_input_events) needs them as one
-/// object. See [`gpu_view_with_input`](crate::gpu_view_with_input).
-pub struct CefInputGpuView<V> {
-    view: V,
-    input: CefSurfaceInput,
-}
-
-impl<V> CefInputGpuView<V> {
-    pub const fn new(view: V, input: CefSurfaceInput) -> Self {
-        Self { view, input }
-    }
-}
-
-impl<V: GpuView> GpuView for CefInputGpuView<V> {
-    #[expect(
-        clippy::future_not_send,
-        reason = "CEF and WaterUI view state are confined to the UI thread"
-    )]
-    async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
-        self.view.setup(ctx, env).await;
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.view.render(frame);
-    }
-
-    fn preferred_surface_hdr(&self) -> Option<bool> {
-        self.view.preferred_surface_hdr()
-    }
-
-    fn is_opaque(&self) -> bool {
-        self.view.is_opaque()
-    }
-
-    fn wants_input_events(&self) -> bool {
-        true
-    }
-
-    fn input(&mut self, event: &SurfaceInputEvent) {
-        self.input.handle(event);
-    }
-
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
-        // Wrapping a presenter must not take its caret away, even though no CEF
-        // presenter reports one today: Chromium knows where the composition is
-        // and the host would have to be told.
-        self.view.ime_caret()
-    }
-
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        self.view.measure(proposal)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
-    }
-
-    fn priority(&self) -> i32 {
-        self.view.priority()
     }
 }
 

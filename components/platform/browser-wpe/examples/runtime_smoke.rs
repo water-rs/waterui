@@ -8,11 +8,11 @@ mod linux {
 
     use base64::Engine as _;
     use waterui_browser_wpe::{
-        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
+        DmaBufFrameSource, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
+        dma_buf_presenter,
     };
-    use waterui_core::Environment;
-    use waterui_graphics::gpu_surface::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
-    use waterui_graphics::shared_context::GpuRuntime;
+    use waterui_graphics::gpu::GpuRuntime;
+    use waterui_graphics::offscreen::OffscreenSize;
     use waterui_webview::{BackendEvent, WebViewEvent};
     use wgpu_external_frame::dma_buf::DmaBufFrame;
 
@@ -113,18 +113,11 @@ mod linux {
         let source = SmokeFrameSource {
             frame: RefCell::new(Some(frame)),
         };
-        let surface = GpuSurface::new(DmaBufGpuView::new(source));
-        let config = OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
-                .expect("WPE smoke viewport must be non-zero"),
-        )
-        .format(wgpu::TextureFormat::Rgba8Unorm);
-        let rendered = pollster::block_on(surface.render_offscreen(
-            &gpu_runtime,
-            config,
-            &mut Environment::new(),
-        ))
-        .unwrap_or_else(|error| panic!("WPE smoke offscreen render failed: {error}"));
+        let (feed, mut content) = dma_buf_presenter(source);
+        feed.pump();
+        let size = OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
+            .expect("WPE smoke viewport must be non-zero");
+        let rendered = gpu_runtime.render_content(&mut content, size, 1.0);
         rendered
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));

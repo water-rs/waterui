@@ -1,20 +1,18 @@
 //! A recorded drawing shown as a static image.
+use cherenkov::Draw;
 
-use alloc::sync::Arc;
 use core::fmt;
 
-use kurbo::Affine;
+use cherenkov::kurbo::Affine;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal};
 use waterui_core::Str;
 use waterui_core::layout::Size;
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{AnyView, Environment, Native, NativeView, View};
+use waterui_core::{Environment, NativeView, View};
 
-use crate::scene_view::{
-    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
-};
-use crate::scene2d::{Scene2D, SceneRecording};
+use crate::scene::resources::Scene;
+use crate::scene_view::{SceneContent, SceneInvalidator, SceneView, invalidate_on_change};
 
 /// A recorded drawing shown as a static image.
 ///
@@ -26,7 +24,7 @@ use crate::scene2d::{Scene2D, SceneRecording};
 /// what keeps a static drawing from costing a GPU surface of its own.
 #[derive(Clone)]
 pub struct Picture {
-    recording: Computed<Arc<SceneRecording>>,
+    recording: Computed<cherenkov::Picture>,
     size: Size,
     label: Option<Str>,
     value: Option<Str>,
@@ -50,7 +48,7 @@ impl Picture {
     ///
     /// When `size` is not finite and positive: a picture with no area is an
     /// authoring error, not something to lay out.
-    pub fn new(size: Size, recording: impl IntoComputed<Arc<SceneRecording>>) -> Self {
+    pub fn new(size: Size, recording: impl IntoComputed<cherenkov::Picture>) -> Self {
         assert!(
             size.width.is_finite()
                 && size.height.is_finite()
@@ -108,10 +106,8 @@ impl Picture {
 
     /// Records `draw` into a fresh recording.
     #[must_use]
-    pub fn record(draw: impl FnOnce(&mut dyn Scene2D)) -> Arc<SceneRecording> {
-        let mut recording = SceneRecording::new();
-        draw(&mut recording);
-        Arc::new(recording)
+    pub fn record(draw: impl FnOnce(&mut cherenkov::StaticRecorder)) -> cherenkov::Picture {
+        cherenkov::Picture::record(draw)
     }
 
     /// The picture's size in points.
@@ -122,7 +118,7 @@ impl Picture {
 
     /// The drawing, as a signal.
     #[must_use]
-    pub const fn recording(&self) -> &Computed<Arc<SceneRecording>> {
+    pub const fn recording(&self) -> &Computed<cherenkov::Picture> {
         &self.recording
     }
 
@@ -170,14 +166,11 @@ impl Picture {
 impl NativeView for Picture {}
 
 impl View for Picture {
-    fn body(self, env: &Environment) -> impl View {
-        if env.get::<SceneViewMergeToParent>().is_some() {
-            return AnyView::new(SceneView::new(RecordedScene {
-                picture: self,
-                watcher: None,
-            }));
-        }
-        AnyView::new(Native::new(self))
+    fn body(self, _env: &Environment) -> impl View {
+        SceneView::new(RecordedScene {
+            picture: self,
+            watcher: None,
+        })
     }
 }
 
@@ -189,9 +182,10 @@ struct RecordedScene {
 }
 
 impl SceneContent for RecordedScene {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+    fn record(&mut self, scene: &mut Scene<'_>) -> bool {
         let recording = self.picture.recording.snapshot();
-        recording.replay(scene, Some(self.picture.transform_to(width, height)));
+        let transform = self.picture.transform_to(scene.width(), scene.height());
+        scene.recorder().picture(&recording, transform);
         false
     }
 
@@ -222,44 +216,39 @@ impl SceneContent for RecordedScene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kurbo::{Rect, Shape};
+    use cherenkov::{Draw, WorkingColor};
+    use kurbo::Rect;
     use nami::{SignalExt, binding, constant};
-    use peniko::{Brush, Color, Fill};
+    use waterui_core::AnyView;
     use waterui_core::layout::StretchAxis;
 
-    fn square(color: Color) -> Arc<SceneRecording> {
+    fn square(color: WorkingColor) -> cherenkov::Picture {
         Picture::record(|scene| {
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Solid(color),
-                None,
-                &Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1),
-            );
+            scene.fill(Rect::new(0.0, 0.0, 10.0, 10.0), color);
         })
     }
 
     #[test]
     fn a_picture_has_its_own_size() {
-        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
         assert_eq!(NativeView::stretch_axis(&picture), StretchAxis::None);
         assert_eq!(picture.size(), Size::new(10.0, 10.0));
         assert_eq!(picture.pixel_size(2.5), (25, 25));
     }
 
     #[test]
-    fn a_backend_that_draws_its_own_scene_gets_a_scene_view_and_the_rest_a_raw_picture() {
-        let picture = || Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
-        let merged =
-            AnyView::new(picture().body(&Environment::new().extending(SceneViewMergeToParent)));
-        assert!(merged.downcast::<SceneView>().is_ok());
-        let raw = AnyView::new(picture().body(&Environment::new()));
-        assert!(raw.downcast::<Native<Picture>>().is_ok());
+    fn a_picture_is_a_scene_view_that_knows_its_size() {
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
+        let view = AnyView::new(picture.body(&Environment::new()));
+        let scene = view
+            .downcast::<SceneView>()
+            .unwrap_or_else(|_| panic!("a picture renders as a scene view"));
+        assert_eq!(scene.intrinsic_size(), Some(Size::new(10.0, 10.0)));
     }
 
     #[test]
     fn a_labeled_picture_offers_its_name_and_an_unlabeled_one_stays_quiet() {
-        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
         assert_eq!(picture.label(), None);
         assert_eq!(picture.value(), None);
         let quiet = RecordedScene {
@@ -269,8 +258,8 @@ mod tests {
         assert_eq!(quiet.accessibility_label(), None);
         assert_eq!(quiet.accessibility_value(), None);
 
-        let picture =
-            Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK))).labeled("Warning");
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)))
+            .labeled("Warning");
         assert_eq!(picture.label().map(Str::as_str), Some("Warning"));
         let named = RecordedScene {
             picture,
@@ -281,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_described_picture_keeps_its_content_on_the_value_channel() {
-        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)))
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)))
             .labeled("Warning")
             .described("A triangle with an exclamation mark");
         assert_eq!(
@@ -302,18 +291,21 @@ mod tests {
 
     #[test]
     fn a_new_recording_reaches_the_replayed_scene_without_a_new_view() {
-        let tint = binding(Color::BLACK);
+        let tint = binding(WorkingColor::BLACK);
         let picture = Picture::new(Size::new(10.0, 10.0), tint.map(square));
         let mut content = RecordedScene {
             picture,
             watcher: None,
         };
-        let mut scene = SceneRecording::new();
-        content.build_scene(&mut scene, 20.0, 20.0);
-        assert_eq!(scene.len(), 1);
-        tint.set(Color::WHITE);
-        let mut scene = SceneRecording::new();
-        content.build_scene(&mut scene, 20.0, 20.0);
-        assert_eq!(scene.len(), 1);
+        let resources = crate::scene::resources::testing::none();
+        let mut first = cherenkov::Content::record(|recorder| {
+            content.record(&mut Scene::new(recorder, &resources, 20.0, 20.0));
+        });
+        tint.set(WorkingColor::WHITE);
+        let mut second = cherenkov::Content::record(|recorder| {
+            content.record(&mut Scene::new(recorder, &resources, 20.0, 20.0));
+        });
+        assert_eq!(first.snapshot().commands().len(), 1);
+        assert_eq!(second.snapshot().commands().len(), 1);
     }
 }
