@@ -16,11 +16,8 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui.workspace = true
-waterui-icons-fontawesome7.workspace = true
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 waterui-icons-sf-symbol.workspace = true
-[package.metadata.cargo-machete]
-ignored = ["waterui-icons-fontawesome7"]
