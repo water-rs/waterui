@@ -424,7 +424,7 @@ impl<R: Clone + 'static> NavigationPath<R> {
         watcher: impl Fn(Vec<R>) + 'static,
     ) -> impl nami::watcher::WatcherGuard {
         self.inner.watch(.., move |context, _change| {
-            watcher(context.into_value().to_vec())
+            watcher(context.into_value().to_vec());
         })
     }
 }
