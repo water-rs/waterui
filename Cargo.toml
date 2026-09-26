@@ -513,7 +513,7 @@ waterui-webview = { path = "components/platform/webview" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "6906a66f671d19a7b7f23616763b31ed77cf2bdc" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "723e00aed4aa82162e740f5cdaf3b5a846cb9c31" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -547,14 +547,14 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5
 # nami-snapshot migration — converted to git revs of each repo's
 # devin/chore/nami-snapshot head before the branch is pushed.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "7455379d3b6ef88a9a767c62438f93c2d0835874" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "8f909cfb958d85e568e17166bd9b36dd1c02a82e" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "663c9a06baa4a3609880e598b9ab452a700a9d66" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "74d7dcd7a6d59a739eab40fa0f73c87151832408" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "6a51119b7b2f086f5328b5655efb5a7e51debcee" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "352d635cfcb9ad312a66255162bde0079900e0ad" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "8c6dc7438bbd8788f820085a8a2bc3f6065d2cc2" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "4b2578d54278950778ccd074b8be4646d80f7a9a" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "13c5ad378bf2cdaa26b75ff3b725ba8afc88bc66" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "c978b2bd8282db2ca76d271599dd93cbfd743550" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
