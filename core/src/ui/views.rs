@@ -13,7 +13,7 @@ use core::any::type_name;
 use core::fmt;
 use core::hash::Hash;
 use core::ops::{Bound, RangeBounds};
-use nami::collection::Collection;
+use nami::collection::{Collection, CollectionChange};
 use nami::watcher::{BoxWatcherGuard, Context, WatcherGuard};
 use nami::{Computed, Signal};
 
@@ -49,11 +49,15 @@ pub trait Views {
 
     /// Registers a watcher for changes in the specified range of the collection.
     ///
+    /// The watcher receives the new id slice plus a [`CollectionChange`]
+    /// naming which positions the notification touched — the source of truth
+    /// for which views a consumer must re-materialize.
+    ///
     /// Returns a guard that will unregister the watcher when dropped.
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard;
 
     /// Returns the view at the specified index, or `None` if the index is out of bounds.
@@ -146,14 +150,14 @@ impl<V: View> Views for SharedAnyViews<V> {
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.0.watch(
             (range.start_bound().cloned(), range.end_bound().cloned()),
-            Box::new(move |ctx| {
+            Box::new(move |ctx, change| {
                 let ctx =
                     ctx.map(|value| value.iter().copied().map(SelfId::new).collect::<Vec<_>>());
-                watcher(ctx.as_deref());
+                watcher(ctx.as_deref(), change);
             }),
         )
     }
@@ -169,7 +173,7 @@ trait AnyViewsImpl {
     fn watch(
         &self,
         range: (Bound<usize>, Bound<usize>),
-        watcher: Box<dyn for<'a> Fn(Context<&'a [RawId]>) + 'static>,
+        watcher: Box<dyn for<'a> Fn(Context<&'a [RawId]>, CollectionChange) + 'static>,
     ) -> BoxWatcherGuard;
 }
 
@@ -225,17 +229,19 @@ where
     fn watch(
         &self,
         range: (Bound<usize>, Bound<usize>),
-        watcher: Box<dyn for<'a> Fn(Context<&'a [RawId]>) + 'static>,
+        watcher: Box<dyn for<'a> Fn(Context<&'a [RawId]>, CollectionChange) + 'static>,
     ) -> BoxWatcherGuard {
         let id = self.id.clone();
-        Box::new(self.contents.watch(range, move |ctx| {
+        Box::new(self.contents.watch(range, move |ctx, change| {
             let ctx = ctx.map(|value| {
                 value
                     .iter()
                     .map(|data| id.to_id(data.clone()))
                     .collect::<Vec<_>>()
             });
-            watcher(ctx.as_deref());
+            // Ids are index-parallel with the items slice — a change index
+            // names the same position in both.
+            watcher(ctx.as_deref(), change);
         }))
     }
 }
@@ -298,14 +304,14 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.0.watch(
             (range.start_bound().cloned(), range.end_bound().cloned()),
-            Box::new(move |ctx| {
+            Box::new(move |ctx, change| {
                 let ctx =
                     ctx.map(|value| value.iter().copied().map(SelfId::new).collect::<Vec<_>>());
-                watcher(ctx.as_deref());
+                watcher(ctx.as_deref(), change);
             }),
         )
     }
@@ -370,7 +376,7 @@ where
     }
 
     fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
-        self.0.watch(.., move |ctx| {
+        self.0.watch(.., move |ctx, _change| {
             let len = ctx.value().len();
             watcher(ctx.map(move |_| len));
         })
@@ -397,12 +403,12 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Item]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl for<'a> Fn(Context<&'a [Self::Item]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
-        self.data.watch(range, move |ctx| {
+        self.data.watch(range, move |ctx, change| {
             let ctx = ctx.map(|value| value.iter().map(Identifiable::id).collect::<Vec<_>>());
 
-            watcher(ctx.as_deref());
+            watcher(ctx.as_deref(), change);
         })
     }
 }
@@ -429,12 +435,12 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
-        self.data.watch(range, move |ctx| {
+        self.data.watch(range, move |ctx, change| {
             let ctx = ctx.map(|value| value.iter().map(Identifiable::id).collect::<Vec<_>>());
 
-            watcher(ctx.as_deref());
+            watcher(ctx.as_deref(), change);
         })
     }
 }
@@ -493,7 +499,7 @@ where
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Item]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Item]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
     }
 }
@@ -526,7 +532,7 @@ where
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         // No-op for Constant
     }
@@ -556,7 +562,7 @@ impl<V: View + Clone> Views for Vec<V> {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         // No-op for Vec
     }
@@ -586,7 +592,7 @@ impl<V: View + Clone, const N: usize> Views for [V; N] {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         // No-op for arrays
     }
@@ -647,7 +653,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static, // watcher will receive a slice of items, its range is decided by the range parameter
     ) -> Self::Guard {
         self.source.watch(range, watcher)
     }
@@ -726,7 +732,7 @@ mod tests {
         fn watch(
             &self,
             _range: impl RangeBounds<usize>,
-            _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static,
+            _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static,
         ) -> Self::Guard {
         }
 
@@ -773,7 +779,7 @@ mod tests {
         let snapshots: Rc<RefCell<Vec<Vec<i32>>>> = Rc::new(RefCell::new(Vec::new()));
         let snapshots_ref = snapshots.clone();
 
-        let _guard = Views::watch(&views, 1..3, move |ctx: Context<&[i32]>| {
+        let _guard = Views::watch(&views, 1..3, move |ctx: Context<&[i32]>, _change| {
             snapshots_ref.borrow_mut().push(ctx.into_value().to_vec());
         });
 

@@ -3498,12 +3498,13 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f"
+source = "git+https://github.com/water-rs/hydrolysis?rev=06003fdfd05094c58ed2f615f60d0074d8561bcd#06003fdfd05094c58ed2f615f60d0074d8561bcd"
 dependencies = [
  "accesskit",
  "async-task",
  "cfg_aliases",
  "executor-core",
+ "icu_properties",
  "js-sys",
  "keyboard-types",
  "lru 0.18.5",
@@ -5496,7 +5497,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.11.1"
-source = "git+https://github.com/water-rs/nami?rev=1a3711e4f93515098bc6414a80dbe9640bf19a2b#1a3711e4f93515098bc6414a80dbe9640bf19a2b"
+source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
 dependencies = [
  "async-channel",
  "async-io",
@@ -5513,7 +5514,7 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.3.3"
-source = "git+https://github.com/water-rs/nami?rev=1a3711e4f93515098bc6414a80dbe9640bf19a2b#1a3711e4f93515098bc6414a80dbe9640bf19a2b"
+source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
 dependencies = [
  "kurbo",
 ]
@@ -5521,7 +5522,7 @@ dependencies = [
 [[package]]
 name = "nami-derive"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/nami?rev=1a3711e4f93515098bc6414a80dbe9640bf19a2b#1a3711e4f93515098bc6414a80dbe9640bf19a2b"
+source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
 dependencies = [
  "proc-macro2",
  "quote",

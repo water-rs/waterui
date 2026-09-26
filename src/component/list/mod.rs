@@ -9,7 +9,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use core::ops::RangeBounds;
-use nami::collection::Collection;
+use nami::collection::{Collection, CollectionChange};
 use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
@@ -396,7 +396,7 @@ impl Views for BuiltViews {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static,
+        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static,
     ) -> Self::Guard {
     }
 }
@@ -507,7 +507,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>) + 'static,
+        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static,
     ) -> Self::Guard {
         self.contents.watch(range, watcher)
     }
