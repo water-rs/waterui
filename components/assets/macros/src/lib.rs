@@ -200,11 +200,15 @@ fn emit_module(
 /// - one `const _: &[u8] = include_bytes!(<abs file>);` per planned asset, so
 ///   adding or editing a file retriggers expansion (a proc macro's own reads
 ///   are invisible to Cargo's dependency graph otherwise);
-/// - one `#[used]` metadata static named `waterui_meta_bundle_<mount>` whose
+/// - one metadata static named `waterui_meta_bundle_<mount>` whose
 ///   NUL-terminated [`BundleMountMeta`] payload the CLI reads back from the
-///   compiled artifact's symbol table. Debug builds only: the CLI reads a
-///   dev-profile host rlib, and `#[used]` is linker-retained, so the gate is
-///   what keeps release binaries free of it.
+///   compiled artifact's symbol table, in every profile — a `water build
+///   --release` mounts the same bundle a debug build does. It carries no
+///   `#[used]`: the CLI reads the crate's own rlib
+///   (`waterui-cli::build::app_library_artifact` selects the app crate's rlib
+///   over any linked artifact), and archive members keep their symbols
+///   whether or not downstream code references them, so nothing marks the
+///   static for retention into a shipped binary — the linker dead-strips it.
 fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     if !root.is_dir() {
         return syn::Error::new(
@@ -263,8 +267,6 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
 
             #(#tracking)*
 
-            #[cfg(debug_assertions)]
-            #[used]
             #[allow(non_upper_case_globals)]
             #[doc(hidden)]
             pub static #meta_ident: [u8; #payload_len] = *#payload_lit;
@@ -395,15 +397,15 @@ const WEB_MOUNT: &str = "web";
 /// Building the frontend and staging `<root>/<out_dir>` into the platform
 /// bundle are the CLI's job (`water package` / `water run`); the macro records
 /// the resolved paths in a `waterui_meta_bundle_web` artifact-channel symbol
-/// the CLI reads back from the compiled artifact's symbol table — debug
-/// builds only, since `#[used]` is linker-retained and the CLI reads a
-/// dev-profile host rlib rather than the target build. The macro never runs a
-/// bundler, never reads `Water.toml`, and embeds no frontend bytes in the
-/// binary. In a debug build the expansion first consults the dev-server
+/// the CLI reads back from the compiled artifact's symbol table, in every
+/// profile. The macro never runs a bundler, never reads `Water.toml`, and
+/// embeds no frontend bytes in the binary. On a development-linkage build
+/// (the crate's `dev` feature, which the generated backend enables for `water
+/// run`/`preview`/`build`) the expansion first consults the dev-server
 /// handoff
 /// (`WATERUI_DEV_URL` or a `--waterui-dev-url=` argument) and serves the
-/// bundler's URL instead when one was handed over; release always serves the
-/// staged bundle.
+/// bundler's URL instead when one was handed over; a packaged build always
+/// serves the staged bundle.
 ///
 /// One `include_web!` per application: a second invocation emits a metadata
 /// symbol with the same leaf and a different payload, which the CLI's artifact
@@ -480,23 +482,28 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
     quote! {
         {
-            #[cfg(debug_assertions)]
-            #[used]
             #[allow(non_upper_case_globals)]
             #[doc(hidden)]
             static #meta_ident: [u8; #payload_len] = *#payload_lit;
+            // A block-scoped static is private: it is only emitted into the
+            // object file when the surrounding code refers to it, so this
+            // throwaway reference is what puts the symbol into the rlib the
+            // CLI reads. `#[used]` would do that too, but it also survives
+            // the linker's dead stripping and ships in the binary.
+            let _ = &#meta_ident;
 
             // Cargo does not see a proc macro's filesystem reads, so the
             // package.json the expansion checked is tracked explicitly: the
             // macro re-expands when it appears or changes.
             const _: &[u8] = ::core::include_bytes!(#package_json);
 
+            #[allow(unexpected_cfgs)]
             let dev: ::core::option::Option<#waterui::Url> = {
-                #[cfg(debug_assertions)]
+                #[cfg(feature = "dev")]
                 {
                     #waterui::webview::dev_url()
                 }
-                #[cfg(not(debug_assertions))]
+                #[cfg(not(feature = "dev"))]
                 {
                     ::core::option::Option::None
                 }

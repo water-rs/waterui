@@ -234,13 +234,21 @@ pub use tracing as log;
 /// Internal helper macro for generating preview export symbols.
 ///
 /// Symbol format: `waterui_preview_{crate_name}_{fn_name}`
+///
+/// The export exists only when the emitting crate's `dev` feature is on: the
+/// generated backend enables `<app>/dev` on every development-linkage build
+/// (`water run`/`preview`/`build`), and `dev` is what pulls in the
+/// `dynamic_linking` runtime a preview host loads the app through. A packaged
+/// static-linkage build never enables it, so the exported entry point — and
+/// the view it would force into the artifact — stays out of shipped binaries.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
         $crate::pastey::paste! {
             #[doc(hidden)]
-            #[cfg(debug_assertions)]
+            #[allow(unexpected_cfgs)]
+            #[cfg(feature = "dev")]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
                 $body
