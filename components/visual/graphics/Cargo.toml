@@ -64,11 +64,12 @@ vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
 vello_common = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
+# Only the u8 pipeline: `Rasterizer` renders with `RenderMode::OptimizeSpeed`,
+# so the f32 pipeline's kernels would never be reachable from this crate.
 vello_cpu = { workspace = true, optional = true, features = [
     "std",
     "text",
     "u8_pipeline",
-    "f32_pipeline",
 ] }
 kurbo.workspace = true
 keyboard-types.workspace = true
