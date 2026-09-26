@@ -211,6 +211,7 @@ pub unsafe extern "C" fn waterui_resolve_computed_color(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui_core::{Environment, Signal as _};
 
     #[test]
     fn srgba_constructor_decodes_transfer_function() {

@@ -185,6 +185,7 @@ impl GpuContentRenderer {
     ///
     /// # Panics
     /// When engine or surface creation fails.
+    #[must_use]
     pub fn new(runtime: GpuRuntime, content: GpuContentBox, size: OffscreenSize) -> Self {
         let engine = runtime
             .engine()
