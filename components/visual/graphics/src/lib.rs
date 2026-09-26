@@ -63,6 +63,10 @@ pub use shader_paint::ShaderPaintView;
 #[cfg(feature = "cpu")]
 pub use cherenkov_cpu;
 
+/// The GPU backend for hosts that own a retained engine.
+#[cfg(feature = "gpu")]
+pub use cherenkov_gpu;
+
 /// The filter library `.filter(F)` and `.effect(E)` take, re-exported so a
 /// filter written against it is the one the engine runs.
 #[cfg(feature = "gpu")]

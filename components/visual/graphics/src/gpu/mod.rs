@@ -11,7 +11,7 @@
 extern crate alloc;
 
 pub mod runtime;
-pub use runtime::{GpuRuntime, GpuRuntimeError, preferred_surface_format};
+pub use runtime::{GpuContentRenderer, GpuRuntime, GpuRuntimeError, preferred_surface_format};
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -352,7 +352,7 @@ impl View for GpuContentView {
     }
 }
 
-/// Projects WaterUI's producer contract onto the engine's render context.
+/// Projects `WaterUI`'s producer contract onto the engine's render context.
 struct EngineContent(Box<dyn GpuContent>);
 
 impl cherenkov_gpu::interop::GpuContent for EngineContent {

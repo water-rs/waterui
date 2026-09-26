@@ -1,20 +1,20 @@
-//! A `wgpu` device for hosts that present [`GpuContent`](super::GpuContent)
-//! themselves.
-//!
-//! A backend rendering through a Cherenkov engine hands content the engine's
-//! device. A native host — Android's `SurfaceView`, an Apple layer showing a
-//! Metal texture — has no engine on the presenting thread and owns its device
-//! here instead, one per environment, shared by every GPU view it presents.
+//! Shared native GPU devices and engine-composed content presentation.
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::fmt;
-use core::time::Duration;
 
 use wgpu::{Adapter, Device, Instance, Queue, TextureFormat};
 
-use super::{Context, Frame, GpuContent, RedrawHandle};
+use super::{GpuContent, GpuContentView};
 use crate::offscreen::{OffscreenImage, OffscreenSize};
+use cherenkov::{Display, Engine, FrameTime, Next, Surface};
+use cherenkov_gpu::{
+    Gpu, GpuConfig,
+    interop::{
+        GpuContentBox, OutputAlpha, OutputColor, Presenter, SharedDevice, TextureOutput,
+        TextureTarget,
+    },
+};
 
 /// Why a [`GpuRuntime`] could not be created.
 #[derive(Debug, thiserror::Error)]
@@ -101,109 +101,41 @@ impl GpuRuntime {
         &self.0.queue
     }
 
-    /// Sets `content` up on this device, renders one frame into an
-    /// `Rgba8Unorm` texture of `size` pixels and reads it back.
+    /// Creates an engine sharing the native host's device.
     ///
-    /// For tests and smoke checks that want a [`GpuContent`]'s first frame as
-    /// an image without a presenting host.
+    /// # Errors
+    /// When the engine cannot initialize its rendering resources.
+    pub fn engine(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
+        Engine::new(GpuConfig {
+            device: Some(SharedDevice {
+                instance: self.instance().clone(),
+                adapter: self.adapter().clone(),
+                device: self.device().clone(),
+                queue: self.queue().clone(),
+            }),
+            ..GpuConfig::default()
+        })
+    }
+
+    /// Renders owned GPU content through the engine's offscreen surface.
     ///
     /// # Panics
-    /// When the readback buffer cannot be mapped.
+    /// When engine creation, rendering, or readback fails.
     pub fn render_content(
         &self,
-        content: &mut dyn GpuContent,
+        content: impl GpuContent,
         size: OffscreenSize,
         scale: f32,
     ) -> OffscreenImage {
-        let (width, height) = (size.width(), size.height());
-        let format = TextureFormat::Rgba8Unorm;
-        let device = self.device();
-        let queue = self.queue();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("waterui GpuRuntime::render_content"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        content.setup(&Context {
-            adapter: self.adapter(),
-            device,
-            queue,
-            format,
-            redraw: RedrawHandle::new(|| {}),
-        });
-        let mut frame = Frame::new(
-            device,
-            queue,
-            &texture,
-            &view,
-            format,
-            (width, height),
-            scale,
-            (Duration::ZERO, Duration::ZERO),
-        );
-        content.render(&mut frame);
-
-        let bytes_per_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("waterui GpuRuntime::render_content readback"),
-            size: u64::from(bytes_per_row) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        encoder.copy_texture_to_buffer(
-            texture.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([encoder.finish()]);
-        let slice = buffer.slice(..);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            sender.send(result).expect("readback receiver dropped");
-        });
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("waiting for the readback failed");
-        receiver
-            .recv()
-            .expect("readback callback never ran")
-            .expect("mapping the readback buffer failed");
-        let mapped = slice.get_mapped_range();
-        let mut rgba8 = Vec::with_capacity((width * height * 4) as usize);
-        for row in mapped.chunks_exact(bytes_per_row as usize) {
-            rgba8.extend_from_slice(&row[..(width * 4) as usize]);
-        }
-        drop(mapped);
-        buffer.unmap();
-        OffscreenImage {
-            width,
-            height,
-            rgba8,
-        }
+        let content = GpuContentView::new(content).take_engine_content(|| {});
+        let mut renderer = GpuContentRenderer::new(self.clone(), content, size);
+        renderer.render(size, scale);
+        OffscreenImage::from_readback(
+            &renderer
+                .surface
+                .readback()
+                .expect("GPU content readback failed"),
+        )
     }
 }
 
@@ -230,4 +162,111 @@ pub fn preferred_surface_format(
         .or_else(|| formats.first())
         .copied()
         .expect("surface offers no texture format")
+}
+
+/// A retained engine surface for GPU content presented by a native host.
+pub struct GpuContentRenderer {
+    surface: Surface<Gpu>,
+    engine: Engine<Gpu>,
+    runtime: GpuRuntime,
+    textures: std::sync::mpsc::Receiver<wgpu::Texture>,
+    source: wgpu::Texture,
+    presenter: Presenter,
+}
+
+impl fmt::Debug for GpuContentRenderer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuContentRenderer").finish_non_exhaustive()
+    }
+}
+
+impl GpuContentRenderer {
+    /// Moves the producer to a retained engine layer on the runtime's device.
+    ///
+    /// # Panics
+    /// When engine or surface creation fails.
+    pub fn new(runtime: GpuRuntime, content: GpuContentBox, size: OffscreenSize) -> Self {
+        let engine = runtime
+            .engine()
+            .expect("native content engine creation failed");
+        let pixels = (size.width(), size.height());
+        let (target, textures) = TextureTarget::new(pixels);
+        let surface = engine
+            .surface(target)
+            .expect("native content surface creation failed");
+        let source = textures
+            .try_recv()
+            .expect("surface creation published its texture");
+        surface.update(|tx| {
+            tx[surface.root()].content(engine.gpu_content(pixels, content));
+        });
+        let presenter = Presenter::new(runtime.device());
+        Self {
+            surface,
+            engine,
+            runtime,
+            textures,
+            source,
+            presenter,
+        }
+    }
+
+    /// Renders a frame at the current size and display scale.
+    ///
+    /// # Panics
+    /// When resizing, display configuration, or rendering fails.
+    pub fn render(&mut self, size: OffscreenSize, scale: f32) -> Next {
+        let pixels = (size.width(), size.height());
+        if self.surface.size() != pixels {
+            self.surface
+                .resize(pixels)
+                .expect("native content resize failed");
+            self.surface.update(|tx| {
+                tx[self.surface.root()].gpu_content_size(pixels);
+            });
+        }
+        self.surface
+            .display(Display {
+                scale: f64::from(scale),
+                ..Display::default()
+            })
+            .expect("native content display configuration failed");
+        let next = self
+            .engine
+            .render(FrameTime::now())
+            .expect("native content rendering failed");
+        for texture in self.textures.try_iter() {
+            self.source = texture;
+        }
+        next
+    }
+
+    /// Renders and composites into a native host's texture.
+    /// Float targets carry extended linear Display P3; other targets carry sRGB.
+    ///
+    /// # Panics
+    /// When the destination is empty or rendering fails.
+    pub fn present(&mut self, target: &wgpu::Texture, scale: f32) -> Next {
+        let size = OffscreenSize::try_from_pixels(target.width(), target.height())
+            .expect("native target must be nonempty");
+        let next = self.render(size, scale);
+        let source = self
+            .source
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.presenter.texture(
+            self.runtime.device(),
+            self.runtime.queue(),
+            &source,
+            TextureOutput {
+                texture: target,
+                color: if target.format() == TextureFormat::Rgba16Float {
+                    OutputColor::LinearDisplayP3
+                } else {
+                    OutputColor::Srgb
+                },
+                alpha: OutputAlpha::Premultiplied,
+            },
+        );
+        next
+    }
 }

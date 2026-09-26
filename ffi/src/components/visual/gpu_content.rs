@@ -1,7 +1,7 @@
 //! FFI bindings for [`GpuContentView`]: user GPU work a native host presents.
 //!
-//! A native host has no Cherenkov engine on its presenting thread, so it
-//! renders [`GpuContent`] itself on the environment's [`GpuRuntime`]:
+//! Cherenkov owns content rendering and composition. The native host presents
+//! the engine texture on the environment's shared [`GpuRuntime`]:
 //!
 //! 1. `waterui_gpu_content_create` consumes the view descriptor and returns
 //!    the state the host owns for the semantic view's lifetime.
@@ -25,7 +25,6 @@
 
 use core::ffi::c_void;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use alloc::boxed::Box;
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
@@ -40,7 +39,9 @@ use {
 
 use waterui_core::Str;
 use waterui_core::layout::Size;
-use waterui_graphics::gpu::{Context, Frame, GpuContent, GpuContentView, GpuRuntime, RedrawHandle};
+use waterui_graphics::cherenkov::Next;
+use waterui_graphics::gpu::{GpuContentRenderer, GpuContentView, GpuRuntime, RedrawHandle};
+use waterui_graphics::offscreen::OffscreenSize;
 
 use crate::components::layouting::layout::WuiSize;
 use crate::{IntoFFI, WuiStr};
@@ -88,45 +89,16 @@ impl IntoFFI for GpuContentView {
 // Generate waterui_gpu_content_id() and waterui_force_as_gpu_content()
 ffi_view!(GpuContentView, WuiGpuContent, gpu_content);
 
-/// The clock a content's frames are stamped with.
-struct FrameClock {
-    start: Instant,
-    last: Instant,
-}
-
-impl FrameClock {
-    fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            start: now,
-            last: now
-                .checked_sub(Duration::from_secs_f32(1.0 / 60.0))
-                .expect("the monotonic clock is more than a frame old"),
-        }
-    }
-
-    fn advance(&mut self) -> (Duration, Duration) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.start);
-        let delta = now
-            .duration_since(self.last)
-            .min(Duration::from_millis(100));
-        self.last = now;
-        (elapsed, delta)
-    }
-}
-
 /// Opaque state held by the native backend after initialization.
 pub struct WuiGpuContentState {
     runtime: GpuRuntime,
     view: GpuContentView,
-    content: Box<dyn GpuContent>,
+    renderer: Option<GpuContentRenderer>,
     /// The format the content was set up for; `None` until the first target
     /// declares one. It never changes afterwards.
     format: Option<wgpu::TextureFormat>,
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     surface: Option<(wgpu::Surface<'static>, wgpu::SurfaceConfiguration)>,
-    clock: FrameClock,
     redraw: RedrawHandle,
     /// The redraw waker installed by the host; the handle above fires it.
     waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>>,
@@ -153,28 +125,19 @@ impl WuiGpuContentState {
         self.view.ime_caret()
     }
 
-    fn setup_once(&mut self, format: wgpu::TextureFormat) {
+    fn prepare_format(&mut self, format: wgpu::TextureFormat) {
         match self.format {
-            Some(existing) => assert_eq!(
-                existing, format,
-                "GpuContent target format changed after setup"
-            ),
+            Some(existing) => {
+                assert_eq!(existing, format, "native target format changed after setup")
+            }
             None => {
                 self.format = Some(format);
-                let ctx = Context {
-                    adapter: self.runtime.adapter(),
-                    device: self.runtime.device(),
-                    queue: self.runtime.queue(),
-                    format,
-                    redraw: self.redraw.clone(),
-                };
-                self.content.setup(&ctx);
                 self.redraw.request_redraw();
             }
         }
     }
 
-    /// Renders one frame into `texture`; returns whether another is wanted.
+    /// Renders through the retained engine and presents its composed texture.
     fn render_into(
         &mut self,
         texture: &wgpu::Texture,
@@ -182,27 +145,24 @@ impl WuiGpuContentState {
         (width, height): (u32, u32),
         scale: f32,
     ) -> bool {
-        let view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("GpuContent Frame View"),
-            format: Some(format),
-            ..Default::default()
-        });
-        let timing = self.clock.advance();
+        assert_eq!(texture.format(), format, "native texture format mismatch");
         self.dirty
             .store(false, core::sync::atomic::Ordering::Release);
         self.view.frame();
-        let mut frame = Frame::new(
-            self.runtime.device(),
-            self.runtime.queue(),
-            texture,
-            &view,
-            format,
-            (width, height),
-            scale,
-            timing,
-        );
-        self.content.render(&mut frame);
-        frame.redraw_requested() || self.dirty.load(core::sync::atomic::Ordering::Acquire)
+        let renderer = self.renderer.get_or_insert_with(|| {
+            let redraw = self.redraw.clone();
+            let content = self
+                .view
+                .take_engine_content(move || redraw.request_redraw());
+            GpuContentRenderer::new(
+                self.runtime.clone(),
+                content,
+                OffscreenSize::try_from_pixels(width, height)
+                    .expect("native target must be nonempty"),
+            )
+        });
+        renderer.present(texture, scale) != Next::Idle
+            || self.dirty.load(core::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -283,10 +243,8 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
     );
     // SAFETY: the assert above proves the descriptor still owns its view, and the
     // field is nulled immediately after, so it is reclaimed once.
-    let mut view: GpuContentView =
-        unsafe { *Box::from_raw(descriptor.view.cast::<GpuContentView>()) };
+    let view: GpuContentView = unsafe { *Box::from_raw(descriptor.view.cast::<GpuContentView>()) };
     descriptor.view = core::ptr::null_mut();
-    let content = view.take_content();
 
     // SAFETY: the caller contract requires `env` to be a valid handle alive for this
     // call; it is only borrowed.
@@ -310,11 +268,10 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
     Box::into_raw(Box::new(WuiGpuContentState {
         runtime,
         view,
-        content,
+        renderer: None,
         format: None,
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         surface: None,
-        clock: FrameClock::new(),
         redraw,
         waker,
         dirty,
@@ -484,7 +441,7 @@ pub unsafe extern "C" fn waterui_gpu_content_attach(
     };
     surface.configure(state.runtime.device(), &config);
     state.surface = Some((surface, config));
-    state.setup_once(format);
+    state.prepare_format(format);
 }
 
 /// Attaches a native presentation surface (non-Apple only).
@@ -676,7 +633,7 @@ pub unsafe extern "C" fn waterui_gpu_content_prepare_metal_texture(
     // SAFETY: the caller contract requires `texture` to be a live `MTLTexture` that
     // stays alive for this call; it is only borrowed to read its pixel format.
     let texture = unsafe { &*texture.cast::<ProtocolObject<dyn MTLTexture>>() };
-    state.setup_once(metal_texture_format(texture));
+    state.prepare_format(metal_texture_format(texture));
 }
 
 /// Renders one frame into an external Metal texture (Apple only).

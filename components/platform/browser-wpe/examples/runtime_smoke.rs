@@ -113,11 +113,11 @@ mod linux {
         let source = SmokeFrameSource {
             frame: RefCell::new(Some(frame)),
         };
-        let (feed, mut content) = dma_buf_presenter(source);
+        let (feed, content) = dma_buf_presenter(source);
         feed.pump();
         let size = OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
             .expect("WPE smoke viewport must be non-zero");
-        let rendered = gpu_runtime.render_content(&mut content, size, 1.0);
+        let rendered = gpu_runtime.render_content(content, size, 1.0);
         rendered
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));
