@@ -3498,12 +3498,13 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f"
+source = "git+https://github.com/water-rs/hydrolysis?rev=06003fdfd05094c58ed2f615f60d0074d8561bcd#06003fdfd05094c58ed2f615f60d0074d8561bcd"
 dependencies = [
  "accesskit",
  "async-task",
  "cfg_aliases",
  "executor-core",
+ "icu_properties",
  "js-sys",
  "keyboard-types",
  "lru 0.18.5",
