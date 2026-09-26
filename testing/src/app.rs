@@ -7,6 +7,7 @@ use accesskit::{
 };
 use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
 use waterui::app::App;
+use waterui::window::Window;
 use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
@@ -60,10 +61,10 @@ pub fn ui() -> UiBuilder {
 /// through the styled builder instead:
 /// `ui().theme(style).viewport(w, h).mount_app(app)`.
 ///
-/// Only the main window's content is mounted: the headless runtime hosts a
-/// single window, so the app's menu bar and any additional windows are not
-/// mounted. Popup windows the app opens at runtime (context menus, pickers)
-/// are still merged into the accessibility tree by Hydrolysis.
+/// Only the main window is mounted: the headless runtime hosts a single
+/// window, so the app's menu bar and any additional windows are not mounted.
+/// Popup windows the app opens at runtime (context menus, pickers) are still
+/// merged into the accessibility tree by Hydrolysis.
 ///
 /// # Panics
 ///
@@ -394,9 +395,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// [`Self::scale_factor`] apply; [`mount_app`](crate::mount_app) is this
     /// method with the viewport sized from the window's declared frame.
     ///
-    /// Only the main window's content is mounted: the headless runtime hosts
-    /// a single window, so the app's menu bar and any additional windows are
-    /// not mounted. Popup windows the app opens at runtime (context menus,
+    /// Only the main window is mounted: the headless runtime hosts a single
+    /// window, so the app's menu bar and any additional windows are not
+    /// mounted. Popup windows the app opens at runtime (context menus,
     /// pickers) are still merged into the accessibility tree by Hydrolysis.
     ///
     /// # Panics
@@ -419,35 +420,73 @@ impl<S: Style> UiBuilder<Styled<S>> {
         // self-drawn video realization applies even where `App::new`'s
         // `realization::install` skipped it.
         waterui::realization::install_video(&mut env);
-        self.mount_rendered(env, window.content)
+        self.mount_rendered_window(env, window)
     }
 
-    /// Mounts `content` on the rendered runtime — the construction shared by
-    /// `mount_offscreen` and `mount_app`, which differ only in where the
-    /// environment and the view builder come from.
+    /// Mounts `content` on the rendered runtime — the mount a view-only
+    /// `mount_offscreen` performs, wrapped in the runtime's synthetic
+    /// default window.
     fn mount_rendered(self, env: Environment, content: AnyViewBuilder<AnyView>) -> OffscreenApp {
-        assert!(
-            self.scale_factor.is_finite() && self.scale_factor > 0.0,
-            "waterui-testing scale_factor must be finite and greater than zero, got {}",
-            self.scale_factor
-        );
-        let runtime = match self.flavor {
-            RuntimeFlavor::Test => HeadlessRuntime::new_for_tests(
-                env,
-                content,
-                self.width,
-                self.height,
-                self.style.style,
-            ),
+        let Self {
+            width,
+            height,
+            style,
+            flavor,
+            scale_factor,
+            ..
+        } = self;
+        let runtime = match flavor {
+            RuntimeFlavor::Test => {
+                HeadlessRuntime::new_for_tests(env, content, width, height, style.style)
+            }
             RuntimeFlavor::Application => {
-                HeadlessRuntime::new(env, content, self.width, self.height, self.style.style)
+                HeadlessRuntime::new(env, content, width, height, style.style)
             }
         };
+        Self::wrap_rendered(runtime, width, height, scale_factor)
+    }
+
+    /// Mounts the app's own [`Window`] — the mount the window runner
+    /// performs — so the viewport writes [`Window::frame`] on the app's
+    /// binding at mount and on every move/resize, and window events land on
+    /// [`Window::state`]. Mounting only the window's content would leave the
+    /// app's `frame` binding at its initial value, so every signal derived
+    /// from it — a `max_width` computed from the frame, a `when()` keyed on
+    /// width — would resolve against a size the mounted viewport never had.
+    fn mount_rendered_window(self, env: Environment, window: Window) -> OffscreenApp {
+        let Self {
+            width,
+            height,
+            style,
+            flavor,
+            scale_factor,
+            ..
+        } = self;
+        let runtime = match flavor {
+            RuntimeFlavor::Test => {
+                HeadlessRuntime::new_for_tests_with_window(env, window, width, height, style.style)
+            }
+            RuntimeFlavor::Application => {
+                HeadlessRuntime::new_with_window(env, window, width, height, style.style)
+            }
+        };
+        Self::wrap_rendered(runtime, width, height, scale_factor)
+    }
+
+    /// Wraps a rendered runtime in the offscreen session — the tail shared by
+    /// `mount_rendered` and `mount_rendered_window`.
+    fn wrap_rendered(
+        runtime: HeadlessRuntime,
+        width: u32,
+        height: u32,
+        scale_factor: f64,
+    ) -> OffscreenApp {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "waterui-testing scale_factor must be finite and greater than zero, got {scale_factor}"
+        );
         OffscreenApp {
-            app: SemanticApp::new(
-                runtime.with_scale_factor(self.scale_factor),
-                (self.width, self.height),
-            ),
+            app: SemanticApp::new(runtime.with_scale_factor(scale_factor), (width, height)),
         }
     }
 
