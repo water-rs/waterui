@@ -18,6 +18,7 @@ default = ["gpu"]
 # `Content` and needs no device here.
 gpu = [
     "dep:cherenkov-gpu",
+    "dep:arc-swap",
     "dep:thiserror",
     "dep:filtrate",
     "dep:wgpu",
@@ -29,6 +30,7 @@ gpu = [
 cpu = ["dep:cherenkov-cpu", "dep:thiserror", "dep:image"]
 
 [dependencies]
+arc-swap = { version = "1.9.2", optional = true }
 waterui-core.workspace = true
 nami.workspace = true
 cherenkov.workspace = true

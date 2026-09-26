@@ -13,13 +13,14 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use arc_swap::ArcSwap;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
-use std::sync::Mutex;
 
 use cherenkov::{Animation, curve_value, settled, spring_step};
 pub use filtrate::filters::{BlendMode, TransitionDirection};
@@ -41,8 +42,8 @@ use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 pub struct Reactive(Arc<Slot>);
 
 struct Slot {
-    value: Mutex<f32>,
-    callback: Mutex<Option<AnimatedCallback>>,
+    value: AtomicU32,
+    callbacks: ArcSwap<Vec<Arc<AnimatedCallback>>>,
 }
 
 impl fmt::Debug for Reactive {
@@ -51,22 +52,41 @@ impl fmt::Debug for Reactive {
     }
 }
 
+struct Subscription {
+    slot: Weak<Slot>,
+    callback: Arc<AnimatedCallback>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot.upgrade() {
+            slot.callbacks.rcu(|callbacks| {
+                callbacks
+                    .iter()
+                    .filter(|callback| !Arc::ptr_eq(callback, &self.callback))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            });
+        }
+    }
+}
+
 impl FilterParam for Reactive {
     fn snapshot(&self) -> f32 {
-        *self
-            .0
-            .value
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        f32::from_bits(self.0.value.load(Ordering::Acquire))
     }
 
     fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
-        *self
-            .0
-            .callback
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(callback);
-        WatchGuard::new(())
+        let callback = Arc::new(callback);
+        self.0.callbacks.rcu(|callbacks| {
+            let mut next = (**callbacks).clone();
+            next.push(Arc::clone(&callback));
+            next
+        });
+        WatchGuard::new(Subscription {
+            slot: Arc::downgrade(&self.0),
+            callback,
+        })
     }
 }
 
@@ -87,27 +107,20 @@ impl ParamGuards {
     pub fn bind(&mut self, value: impl IntoSignalF32) -> Reactive {
         let signal = value.into_signal_f32();
         let slot = Arc::new(Slot {
-            value: Mutex::new(signal.snapshot()),
-            callback: Mutex::new(None),
+            value: AtomicU32::new(signal.snapshot().to_bits()),
+            callbacks: ArcSwap::from_pointee(Vec::new()),
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
-            let interpolator = context.metadata().try_get::<Animation>().map(|animation| {
-                Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
-            });
+            let animation = context.metadata().try_get::<Animation>();
             let value = context.into_value();
-            *target
-                .value
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
-            if let Some(callback) = &*target
-                .callback
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-            {
+            target.value.store(value.to_bits(), Ordering::Release);
+            for callback in target.callbacks.load().iter() {
                 callback(AnimatedTarget {
                     value,
-                    interpolator,
+                    interpolator: animation.map(|animation| {
+                        Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
+                    }),
                 });
             }
         });
@@ -1439,3 +1452,52 @@ pub trait FilterViewExt: View + Sized {
 }
 
 impl<V: View> FilterViewExt for V {}
+
+#[cfg(test)]
+mod tests {
+    use super::{FilterParam as _, ParamGuards};
+    use std::sync::mpsc;
+
+    #[test]
+    fn reactive_parameters_keep_independent_subscription_lifetimes() {
+        let value = nami::binding(0.25_f32);
+        let mut guards = ParamGuards::default();
+        let parameter = guards.bind(value.clone());
+        let (first_send, first_receive) = mpsc::channel();
+        let (second_send, second_receive) = mpsc::channel();
+        let first = parameter.watch_animated(Box::new(move |target| {
+            first_send
+                .send(target.value.to_bits())
+                .expect("first receiver exists");
+        }));
+        let second = parameter.clone().watch_animated(Box::new(move |target| {
+            second_send
+                .send(target.value.to_bits())
+                .expect("second receiver exists");
+        }));
+        value.set(0.5_f32);
+        assert_eq!(
+            first_receive.try_recv().expect("first update"),
+            0.5_f32.to_bits()
+        );
+        assert_eq!(
+            second_receive.try_recv().expect("second update"),
+            0.5_f32.to_bits()
+        );
+        drop(first);
+        value.set(0.75_f32);
+        assert!(matches!(
+            first_receive.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert_eq!(
+            second_receive.try_recv().expect("remaining subscription"),
+            0.75_f32.to_bits()
+        );
+        assert_eq!(parameter.snapshot().to_bits(), 0.75_f32.to_bits());
+        drop(second);
+        drop(guards);
+        value.set(1.0_f32);
+        assert_eq!(parameter.snapshot().to_bits(), 0.75_f32.to_bits());
+    }
+}
