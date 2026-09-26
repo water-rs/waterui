@@ -72,13 +72,13 @@ where
             style.ambient_shadow_color.clone(),
             Vector::new(0.0, style.ambient_shadow_offset_y),
             style.ambient_shadow_radius,
-            style.clip_radius,
+            shape,
         );
         let key_shadow = Shadow::new(
             style.key_shadow_color.clone(),
             Vector::new(0.0, style.key_shadow_offset_y),
             style.key_shadow_radius,
-            style.clip_radius,
+            shape,
         );
 
         self.content

@@ -4,16 +4,18 @@
 //!
 //! ```
 //! use waterui::prelude::*;
+//! use waterui::shape::FixedRoundedRectangle;
 //! use waterui::style;
 //! use waterui_graphics::color::Color;
+use waterui_shape::{ClipShape, Rectangle, Shape};
 //!
 //! fn shadow_example() {
-//!     let shadow = style::Shadow {
-//!         color: Color::srgb(0, 0, 0),
-//!         offset: style::Vector { x: 2.0, y: 2.0 },
-//!         radius: 4.0,
-//!         corner_radius: 8.0,
-//!     };
+//!     let shadow = style::Shadow::new(
+//!         Color::srgb(0, 0, 0),
+//!         style::Vector { x: 2.0, y: 2.0 },
+//!         4.0,
+//!         FixedRoundedRectangle::new(8.0),
+//!     );
 //! }
 //! ```
 
@@ -87,8 +89,8 @@ impl Default for FloatingStyle {
 
 /// Represents a shadow effect that can be applied to UI elements.
 ///
-/// A shadow is defined by its color, offset from the original element,
-/// blur radius, and the corner radius of the element casting it.
+/// A shadow is defined by its color, offset from the original element, blur
+/// radius, and the silhouette of the element casting it.
 #[derive(Debug)]
 pub struct Shadow {
     /// The color of the shadow, including alpha for opacity.
@@ -97,59 +99,58 @@ pub struct Shadow {
     pub offset: Vector<f32>,
     /// The blur radius of the shadow in pixels.
     pub radius: f32,
-    /// The corner radius of the element casting the shadow.
+    /// The shape of the element casting the shadow.
     ///
-    /// Backends that rasterize the shadow themselves draw a blurred rounded
-    /// rect; this must match the caster's corner radius or the shadow
-    /// silhouette won't follow the element's shape.
-    pub corner_radius: f32,
+    /// Backends that rasterize the shadow themselves blur this shape, so it
+    /// must be the caster's own shape — the one it is filled or clipped with —
+    /// or the shadow will not follow the element's outline. It carries the
+    /// shape's [`ShapeKind`](waterui_shape::ShapeKind), so a normalized corner
+    /// radius and an absolute one can never be confused.
+    pub silhouette: ClipShape,
 }
 
 impl MetadataKey for Shadow {}
 
 impl Shadow {
-    /// Creates a new shadow with the specified color, offset, and radius.
+    /// Creates a new shadow with the specified color, offset, blur radius and
+    /// caster silhouette.
     ///
     /// # Arguments
     ///
     /// * `color` - The color of the shadow
     /// * `offset` - The offset of the shadow from the original element
     /// * `radius` - The blur radius of the shadow in pixels
-    /// * `corner_radius` - The corner radius of the element casting the shadow
+    /// * `silhouette` - The shape of the element casting the shadow
     #[must_use]
-    pub const fn new(color: Color, offset: Vector<f32>, radius: f32, corner_radius: f32) -> Self {
+    pub fn new(color: Color, offset: Vector<f32>, radius: f32, silhouette: impl Shape) -> Self {
         Self {
             color,
             offset,
             radius,
-            corner_radius,
+            silhouette: ClipShape::new(silhouette),
         }
     }
 
-    /// Creates a shadow with the same offset and radius for both x and y directions.
+    /// Creates a black shadow of a rectangular caster, with the same offset and
+    /// blur radius in both directions.
     ///
-    /// The color is set to black by default.
     /// # Arguments
     /// * `value` - The value to set for both offset and radius
     #[must_use]
     pub fn splat(value: f32) -> Self {
-        Self {
-            color: Color::srgb(0, 0, 0),
-            offset: Vector { x: value, y: value },
-            radius: value,
-            corner_radius: 0.0,
-        }
+        Self::new(
+            Color::srgb(0, 0, 0),
+            Vector { x: value, y: value },
+            value,
+            Rectangle,
+        )
     }
 }
 
 impl Default for Shadow {
+    /// A moderate black shadow slightly below a rectangular caster.
     fn default() -> Self {
-        Self {
-            color: Color::srgb(0, 0, 0),       // Default to black shadow
-            offset: Vector { x: 0.0, y: 2.0 }, // Slightly below the element
-            radius: 4.0,                       // Moderate blur
-            corner_radius: 0.0,
-        }
+        Self::new(Color::srgb(0, 0, 0), Vector { x: 0.0, y: 2.0 }, 4.0, Rectangle)
     }
 }
 
@@ -157,12 +158,7 @@ impl Default for Shadow {
 impl<T: Into<f64>> From<T> for Shadow {
     fn from(value: T) -> Self {
         let v = value.into() as f32;
-        Self {
-            color: Color::srgb(0, 0, 0),
-            offset: Vector { x: 0.0, y: v },
-            radius: v,
-            corner_radius: 0.0,
-        }
+        Self::new(Color::srgb(0, 0, 0), Vector { x: 0.0, y: v }, v, Rectangle)
     }
 }
 
