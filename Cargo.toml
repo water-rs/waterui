@@ -616,5 +616,5 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f20
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "b0361024e98e3cd7d9d23993e133b70a663bfd19" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "cc7a9737b1d1acd3117e39833e60f4b575fe4155" }
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "641c3c2985aad60d90eb60554a0e6f5b3aa7e4b7" }
