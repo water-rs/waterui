@@ -226,6 +226,204 @@ pub mod context_menu {
     }
 }
 
+/// Anchored overlay metadata module.
+pub mod anchored_overlay {
+    use nami::Binding;
+    use waterui_core::{AnyView, View, metadata::MetadataKey};
+
+    /// A view presented next to the view it is attached to (its anchor),
+    /// above all other content in the window.
+    ///
+    /// The backend places the overlay: it knows where the anchor sits in the
+    /// window and how large the window is, which a layout inside the anchor
+    /// cannot see. It puts the overlay against the preferred
+    /// [`edge`](AnchorPlacement::edge), moves it to the opposite edge when
+    /// the preferred one has no room and [`flip`](AnchorPlacement::flip) is
+    /// set, then keeps it inside the window as [`clamp`](AnchorPlacement::clamp)
+    /// asks. Tooltips, popovers and dropdowns are built on it.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay, Clamp};
+    /// use waterui::prelude::*;
+    ///
+    /// let shown = binding(false);
+    /// let icon = text!("?").anchored_overlay(
+    ///     AnchoredOverlay::new(&shown, text!("Opens the help page"))
+    ///         .edge(AnchorEdge::Top)
+    ///         .gap(4.0)
+    ///         .clamp(Clamp::Window { margin: 2.0 }),
+    /// );
+    /// ```
+    #[derive(Debug)]
+    pub struct AnchoredOverlay {
+        /// The view presented next to the anchor.
+        pub content: AnyView,
+        /// Whether the overlay is presented. The backend writes `false` when
+        /// it dismisses the overlay itself, as [`dismissal`](Self::dismissal)
+        /// allows.
+        pub is_presented: Binding<bool>,
+        /// Where the overlay sits relative to the anchor.
+        pub placement: AnchorPlacement,
+        /// What besides the binding closes the overlay.
+        pub dismissal: Dismissal,
+    }
+
+    impl MetadataKey for AnchoredOverlay {}
+
+    impl AnchoredOverlay {
+        /// An overlay showing `content` while `is_presented` is `true`.
+        ///
+        /// It sits below the anchor, centered, with no gap, flips when there
+        /// is no room below, stays inside the window, and closes when the
+        /// user interacts outside it.
+        #[must_use]
+        pub fn new(is_presented: &Binding<bool>, content: impl View) -> Self {
+            Self {
+                content: AnyView::new(content),
+                is_presented: is_presented.clone(),
+                placement: AnchorPlacement::default(),
+                dismissal: Dismissal::OutsideInteraction,
+            }
+        }
+
+        /// Places the overlay against `edge` of the anchor.
+        #[must_use]
+        pub const fn edge(mut self, edge: AnchorEdge) -> Self {
+            self.placement.edge = edge;
+            self
+        }
+
+        /// Lines the overlay up with the anchor along its edge.
+        #[must_use]
+        pub const fn alignment(mut self, alignment: EdgeAlignment) -> Self {
+            self.placement.alignment = alignment;
+            self
+        }
+
+        /// Leaves `gap` points between the anchor and the overlay.
+        #[must_use]
+        pub const fn gap(mut self, gap: f32) -> Self {
+            self.placement.gap = gap;
+            self
+        }
+
+        /// Whether the overlay moves to the opposite edge when the preferred
+        /// edge has no room for it.
+        #[must_use]
+        pub const fn flip(mut self, flip: bool) -> Self {
+            self.placement.flip = flip;
+            self
+        }
+
+        /// How the overlay is kept inside the window.
+        #[must_use]
+        pub const fn clamp(mut self, clamp: Clamp) -> Self {
+            self.placement.clamp = clamp;
+            self
+        }
+
+        /// What besides the binding closes the overlay.
+        #[must_use]
+        pub const fn dismissal(mut self, dismissal: Dismissal) -> Self {
+            self.dismissal = dismissal;
+            self
+        }
+    }
+
+    /// Where an [`AnchoredOverlay`] sits relative to its anchor.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct AnchorPlacement {
+        /// The edge of the anchor the overlay is placed against.
+        pub edge: AnchorEdge,
+        /// How the overlay lines up with the anchor along that edge.
+        pub alignment: EdgeAlignment,
+        /// The distance between the anchor and the overlay, in points.
+        pub gap: f32,
+        /// Whether the overlay moves to the opposite edge when the preferred
+        /// edge has no room for it.
+        pub flip: bool,
+        /// How the overlay is kept inside the window.
+        pub clamp: Clamp,
+    }
+
+    impl Default for AnchorPlacement {
+        fn default() -> Self {
+            Self {
+                edge: AnchorEdge::Bottom,
+                alignment: EdgeAlignment::Center,
+                gap: 0.0,
+                flip: true,
+                clamp: Clamp::Window { margin: 0.0 },
+            }
+        }
+    }
+
+    /// An edge of the anchor. `Leading` and `Trailing` follow the layout
+    /// direction.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum AnchorEdge {
+        /// Above the anchor.
+        Top,
+        /// Below the anchor.
+        Bottom,
+        /// Before the anchor in the layout direction.
+        Leading,
+        /// After the anchor in the layout direction.
+        Trailing,
+    }
+
+    impl AnchorEdge {
+        /// The edge across the anchor from this one.
+        #[must_use]
+        pub const fn opposite(self) -> Self {
+            match self {
+                Self::Top => Self::Bottom,
+                Self::Bottom => Self::Top,
+                Self::Leading => Self::Trailing,
+                Self::Trailing => Self::Leading,
+            }
+        }
+    }
+
+    /// How an overlay lines up with its anchor along the edge it sits
+    /// against. Along the top and bottom edges, start is the leading side;
+    /// along the leading and trailing edges, start is the top.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum EdgeAlignment {
+        /// The overlay's start side lines up with the anchor's start side.
+        Start,
+        /// The overlay is centered on the anchor.
+        Center,
+        /// The overlay's end side lines up with the anchor's end side.
+        End,
+    }
+
+    /// How an overlay is kept inside the window.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub enum Clamp {
+        /// The overlay may extend past the window's edges.
+        Off,
+        /// The overlay is shifted to stay at least `margin` points inside
+        /// the window's edges.
+        Window {
+            /// The minimum distance from the window's edges, in points.
+            margin: f32,
+        },
+    }
+
+    /// What besides its binding closes an overlay.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Dismissal {
+        /// Only setting the binding to `false` closes the overlay.
+        Manual,
+        /// The backend also closes the overlay, writing `false` to its
+        /// binding, when the user interacts outside it.
+        OutsideInteraction,
+    }
+}
+
 /// Secure metadata module.
 pub mod secure {
     use waterui_core::metadata::MetadataKey;
