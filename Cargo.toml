@@ -207,9 +207,9 @@ waterkit-build = "0.1.4"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # filtrate lives in the Cherenkov repository; the engine and the filters must
 # share one `filtrate-core`, so all three come from the same revision.
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
 waterui-barcode = "0.3.0"
 waterui-particle = "0.2.0"
 waterui-chart = "0.3.0"
@@ -249,9 +249,9 @@ encase = "0.12"
 # The rendering engine. Cherenkov is not on crates.io: every crate of it is
 # consumed from the same git revision, never a branch
 # or a path, so the graph carries exactly one `Content`, `Paint` and `Shape`.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
 # Cherenkov's colour arithmetic; named directly for the authoring spaces
 # (`Oklch`) the engine does not re-export.
 color = "0.3.3"
@@ -491,9 +491,9 @@ waterui-macros = { path = "macros" }
 waterui = { path = "." }
 # Every filtrate in the graph must be Cherenkov's, or a filter type built
 # against the registry crate cannot be handed to the engine.
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "06a60e96cd54e0fb16e2ff708dbbe2785f0f8bed" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "ce5c04f63e4e3303fc76421e61af0d45b0c4b336" }
 waterui-assets = { path = "components/assets/runtime" }
 waterui-assets-core = { path = "components/assets/core" }
 waterui-backend-core = { path = "backends/core" }
@@ -513,7 +513,7 @@ waterui-webview = { path = "components/platform/webview" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "723e00aed4aa82162e740f5cdaf3b5a846cb9c31" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "83fef750aa3de531d33197d76b8036bffa13cb2c" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -547,14 +547,14 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5
 # nami-snapshot migration — converted to git revs of each repo's
 # devin/chore/nami-snapshot head before the branch is pushed.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "7455379d3b6ef88a9a767c62438f93c2d0835874" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "663c9a06baa4a3609880e598b9ab452a700a9d66" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "adf6545c41d6b9ee8f49ce29dd106673927f191f" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "74d7dcd7a6d59a739eab40fa0f73c87151832408" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "4b2578d54278950778ccd074b8be4646d80f7a9a" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "13c5ad378bf2cdaa26b75ff3b725ba8afc88bc66" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "c978b2bd8282db2ca76d271599dd93cbfd743550" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "af44221f4c06364ad92d92c5052ee0c5b8a9e1d0" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "60dfb1512a7035ab1dbc9c7076d96eb290836cc8" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "6d1b5affc8dfafda82f20518b11b0c7c0baa994c" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
