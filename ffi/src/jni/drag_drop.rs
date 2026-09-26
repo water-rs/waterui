@@ -17,14 +17,14 @@ use alloc::vec::Vec;
 use jni::EnvUnowned;
 use jni::objects::{JClass, JObject, JObjectArray, JString};
 use jni::sys::{jboolean, jint, jlong, jobjectArray, jstring};
-use jni::{JNIEnv, jni_str};
+use jni::{Env as JNIEnv, jni_str};
 
 use super::convert::{jlong_to_ptr, jlong_to_ptr_mut, string_from_java};
 use super::with_env;
 use crate::drag_drop::{
-    WuiDragPayload, WuiDraggable, WuiDropDestination,
-    waterui_call_drop_enter_handler, waterui_call_drop_exit_handler, waterui_call_drop_handler,
-    waterui_drag_payload_kind, waterui_drop_destination_accepts, waterui_draggable_payload,
+    WuiDragPayload, WuiDraggable, WuiDropDestination, waterui_call_drop_enter_handler,
+    waterui_call_drop_exit_handler, waterui_call_drop_handler, waterui_drag_payload_kind,
+    waterui_draggable_payload, waterui_drop_destination_accepts,
 };
 use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files, PlatformRepresentation};
@@ -36,7 +36,7 @@ fn payload_handle(payload: DragPayload) -> jlong {
 /// # Safety
 ///
 /// `payload_ptr` must be a live payload handle handed out by this module.
-unsafe fn borrow_payload<'a>(payload_ptr: jlong) -> &'a DragPayload {
+const unsafe fn borrow_payload<'a>(payload_ptr: jlong) -> &'a DragPayload {
     // SAFETY: the caller contract makes the handle live for the borrow.
     unsafe { &(*jlong_to_ptr::<WuiDragPayload>(payload_ptr)).0 }
 }
@@ -332,4 +332,3 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropDropDestination<'
         }
     });
 }
-

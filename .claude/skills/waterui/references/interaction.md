@@ -174,9 +174,9 @@ The parts an agent cannot guess:
   compile error. It sets the binding `true` on drag-enter, `false` on exit — feed it to
   a background or scale signal for a highlight. `.on_enter(f)` / `.on_exit(f)` chain in
   the same position and *add* handlers rather than replacing them.
-- `.draggable(..)` takes `impl IntoComputed<T>`, so the payload may itself be reactive;
-  a plain value of your own type needs `impl_constant!` (as above). Text is
-  `.draggable(Str::from(..))`.
+- `.draggable(..)` takes a plain transferable value or any signal of one (`Binding<T>`,
+  `Computed<T>`); the payload type is inferred from it. A plain value of your own type
+  needs `impl_constant!` (as above). Text is `.draggable(Str::from(..))`.
 - The initiating gesture is platform-defined: click-drag on macOS, long-press-drag on
   iOS and Android. Do not add your own long-press recognizer on top.
 

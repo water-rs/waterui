@@ -1183,8 +1183,8 @@ pub trait ViewExt: View + Sized {
     /// applications; an application's own [`Transferable`] types stay in the process.
     ///
     /// # Arguments
-    /// * `payload` - The value to transfer when dragging (can be reactive); it is read when
-    ///   the drag begins
+    /// * `payload` - The value to transfer: a plain [`Transferable`] value, or a `Binding` /
+    ///   `Computed` of one, read when the drag begins
     ///
     /// # Example
     ///
@@ -1195,7 +1195,11 @@ pub trait ViewExt: View + Sized {
     /// text!("Drag me")
     ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable<T: Transferable>(self, payload: impl IntoComputed<T>) -> Metadata<Draggable> {
+    fn draggable<S>(self, payload: S) -> Metadata<Draggable>
+    where
+        S: waterui_core::Signal + Clone + 'static,
+        S::Output: Transferable,
+    {
         Metadata::new(self, Draggable::new(payload))
     }
 

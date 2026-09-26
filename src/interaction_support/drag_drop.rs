@@ -54,7 +54,6 @@ use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::fmt;
 use nami::Computed;
-use nami::signal::IntoComputed;
 use nami::{Signal, SignalExt};
 use suiteki::Str;
 use waterui_core::{
@@ -248,11 +247,17 @@ impl fmt::Debug for Draggable {
 impl MetadataKey for Draggable {}
 
 impl Draggable {
-    /// Creates draggable metadata carrying `payload`, which may be reactive.
+    /// Creates draggable metadata carrying `payload`: a plain transferable value,
+    /// or any signal of one (a `Binding` or `Computed`) to carry its value at the
+    /// time the drag begins.
     #[must_use]
-    pub fn new<T: Transferable>(payload: impl IntoComputed<T>) -> Self {
+    pub fn new<S>(payload: S) -> Self
+    where
+        S: Signal + Clone + 'static,
+        S::Output: Transferable,
+    {
         Self {
-            payload: Computed::new(payload.into_computed().map(DragPayload::new::<T>)),
+            payload: Computed::new(payload.map(DragPayload::new::<S::Output>)),
         }
     }
 
