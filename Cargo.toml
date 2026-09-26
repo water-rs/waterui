@@ -575,8 +575,8 @@ glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6
 # Both nami crates this workspace names ride the same rev so the graph carries
 # a single `Signal` trait; `nami-derive` needs no entry because the rename
 # touched only its docs. Drop these once a nami release contains the rename.
-nami = { git = "https://github.com/water-rs/nami", rev = "1a3711e4f93515098bc6414a80dbe9640bf19a2b" }
-nami-core = { git = "https://github.com/water-rs/nami", rev = "1a3711e4f93515098bc6414a80dbe9640bf19a2b" }
+nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
+nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's

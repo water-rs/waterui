@@ -9,6 +9,7 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::hash::Hash;
+use nami::collection::CollectionChange;
 use nami::watcher::WatcherGuard;
 use nami::{Signal, SignalExt};
 use waterui_core::id::SelfId;
@@ -115,7 +116,7 @@ pub unsafe extern "C" fn waterui_anyviews_watch_range(
         let anyviews = &*anyviews;
         let watcher = alloc::rc::Rc::new(ForeignWatcher { data, call, drop });
         let callback_watcher = alloc::rc::Rc::clone(&watcher);
-        let guard = anyviews.watch(start..end, move |ctx| {
+        let guard = anyviews.watch(start..end, move |ctx, _change| {
             let watcher = alloc::rc::Rc::clone(&callback_watcher);
             let metadata = ctx.metadata().clone();
             let ids: Vec<WuiId> = ctx
@@ -168,7 +169,7 @@ where
     fn watch(
         &self,
         range: impl core::ops::RangeBounds<usize>,
-        watcher: impl for<'a> Fn(nami::watcher::Context<&'a [Self::Id]>) + 'static,
+        watcher: impl for<'a> Fn(nami::watcher::Context<&'a [Self::Id]>, CollectionChange) + 'static,
     ) -> Self::Guard {
         let start = match range.start_bound() {
             core::ops::Bound::Included(index) => *index,
@@ -188,7 +189,12 @@ where
                     .map(|index| id_at(&items, index))
                     .collect::<Vec<_>>()
             });
-            watcher(ctx.as_deref());
+            // A whole-`Vec` signal cannot say which items changed: every
+            // notification is a whole-value replacement by definition.
+            watcher(
+                ctx.as_deref(),
+                CollectionChange::everything(ctx.value().len()),
+            );
         })
     }
 
