@@ -4536,6 +4536,7 @@ checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
 dependencies = [
  "arrayvec",
  "euclid",
+ "libm",
  "polycool",
  "smallvec",
 ]
@@ -5495,7 +5496,7 @@ dependencies = [
 [[package]]
 name = "nami"
 version = "0.11.1"
-source = "git+https://github.com/water-rs/nami?rev=5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425#5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425"
+source = "git+https://github.com/water-rs/nami?rev=1a3711e4f93515098bc6414a80dbe9640bf19a2b#1a3711e4f93515098bc6414a80dbe9640bf19a2b"
 dependencies = [
  "async-channel",
  "async-io",
@@ -5512,12 +5513,15 @@ dependencies = [
 [[package]]
 name = "nami-core"
 version = "0.3.3"
-source = "git+https://github.com/water-rs/nami?rev=5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425#5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425"
+source = "git+https://github.com/water-rs/nami?rev=1a3711e4f93515098bc6414a80dbe9640bf19a2b#1a3711e4f93515098bc6414a80dbe9640bf19a2b"
+dependencies = [
+ "kurbo",
+]
 
 [[package]]
 name = "nami-derive"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/nami?rev=5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425#5dc2d92e4ee9a236afdf71aaf4ef5b26a6990425"
+source = "git+https://github.com/water-rs/nami?rev=1a3711e4f93515098bc6414a80dbe9640bf19a2b#1a3711e4f93515098bc6414a80dbe9640bf19a2b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6712,6 +6716,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50596ddc09eb5ad5f75cacd40209568e66df71baf86e1499a0e99c4cff12a5a6"
 dependencies = [
  "arrayvec",
+ "libm",
 ]
 
 [[package]]
