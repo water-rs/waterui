@@ -51,7 +51,7 @@ pub use input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
 pub use scene::picture::Picture;
-pub use scene::resources::{ImageUploads, Scene, SceneResources};
+pub use scene::resources::{Scene, SceneBackend, SceneResources};
 pub use scene::scene_view::{
     SceneContent, SceneInvalidator, SceneView, invalidate_on_change, resolve_scene_proposal,
     scene_stretch_axis,

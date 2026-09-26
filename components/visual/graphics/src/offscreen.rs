@@ -23,7 +23,7 @@ use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_gpu::{Gpu, GpuConfig};
 use image::ImageEncoder as _;
 
-use crate::scene::resources::{ImageUploads, Scene, SceneResources};
+use crate::scene::resources::{Scene, SceneBackend, SceneResources};
 use crate::scene::scene_view::SceneContent;
 
 /// A non-empty pixel size for an offscreen target.
@@ -222,7 +222,7 @@ impl OffscreenRenderer<Raster> {
     }
 }
 
-impl<B: ImageUploads> OffscreenRenderer<B> {
+impl<B: SceneBackend> OffscreenRenderer<B> {
     /// Creates an engine with an explicit backend configuration.
     ///
     /// # Errors

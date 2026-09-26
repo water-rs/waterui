@@ -18,11 +18,9 @@ use cherenkov_cpu::Raster;
 
 /// Mints engine-owned resource handles for content that records against it.
 ///
-/// Implemented by every `Engine<B>` whose backend has an [`ImageUploads`] policy; a
-/// backend hands its engine to the content it hosts. Shader paints need the
-/// backend's `ShaderPaint` capability, which no `cherenkov-gpu` build carries
-/// yet, so [`SceneResources::shader`] fails on such an engine rather than
-/// drawing nothing.
+/// Implemented by engines whose backend defines its scene resource policy.
+/// GPU backends register shaders through Cherenkov's capability contract;
+/// CPU backends report unsupported GPU resources explicitly.
 pub trait SceneResources: 'static {
     /// Registers a font from raw data.
     ///
@@ -43,9 +41,8 @@ pub trait SceneResources: 'static {
     fn shader(&self, source: ShaderSource) -> Result<Shader, ResourceError>;
 }
 
-/// How an engine takes `Rgba8` image uploads: through the backend's
-/// `Uploads` capability, or not at all.
-pub trait ImageUploads: Backend {
+/// Resource operations available to backend-independent scene content.
+pub trait SceneBackend: Backend {
     /// Uploads `image` to the engine.
     ///
     /// # Errors
@@ -54,20 +51,30 @@ pub trait ImageUploads: Backend {
         engine: &Engine<Self>,
         image: ImageData<Rgba8>,
     ) -> Result<Image<Rgba8>, ResourceError>;
+
+    /// Registers a shader paint with this backend.
+    ///
+    /// # Errors
+    /// Returns the backend's shader compilation or capability error.
+    fn shader(engine: &Engine<Self>, source: ShaderSource) -> Result<Shader, ResourceError>;
 }
 
 #[cfg(feature = "gpu")]
-impl ImageUploads for cherenkov_gpu::Gpu {
+impl SceneBackend for cherenkov_gpu::Gpu {
     fn upload(
         engine: &Engine<Self>,
         image: ImageData<Rgba8>,
     ) -> Result<Image<Rgba8>, ResourceError> {
         Engine::<Self>::image(engine, image)
     }
+
+    fn shader(engine: &Engine<Self>, source: ShaderSource) -> Result<Shader, ResourceError> {
+        Engine::<Self>::shader(engine, source)
+    }
 }
 
 #[cfg(feature = "cpu")]
-impl ImageUploads for Raster {
+impl SceneBackend for Raster {
     fn upload(
         _engine: &Engine<Self>,
         _image: ImageData<Rgba8>,
@@ -76,11 +83,17 @@ impl ImageUploads for Raster {
             "the CPU raster backend takes no image uploads",
         ))
     }
+
+    fn shader(_engine: &Engine<Self>, _source: ShaderSource) -> Result<Shader, ResourceError> {
+        Err(ResourceError::Unsupported(
+            "the CPU raster backend runs no shader paints",
+        ))
+    }
 }
 
 impl<B> SceneResources for Engine<B>
 where
-    B: ImageUploads,
+    B: SceneBackend,
 {
     fn font(&self, source: FontSource) -> Result<Font, ResourceError> {
         Self::font(self, source)
@@ -90,10 +103,8 @@ where
         B::upload(self, image)
     }
 
-    fn shader(&self, _source: ShaderSource) -> Result<Shader, ResourceError> {
-        Err(ResourceError::Unsupported(
-            "this engine's backend runs no shader paints",
-        ))
+    fn shader(&self, source: ShaderSource) -> Result<Shader, ResourceError> {
+        B::shader(self, source)
     }
 }
 
