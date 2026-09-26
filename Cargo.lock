@@ -9608,7 +9608,7 @@ dependencies = [
 [[package]]
 name = "waterkit-audio"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-channel",
  "cpal 0.18.2",
@@ -9644,7 +9644,7 @@ dependencies = [
 [[package]]
 name = "waterkit-build"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "jni 0.22.4",
  "ndk-context",
@@ -9655,7 +9655,7 @@ dependencies = [
 [[package]]
 name = "waterkit-camera"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-channel",
  "core-graphics-types",
@@ -9691,7 +9691,7 @@ dependencies = [
 [[package]]
 name = "waterkit-clipboard"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "arboard",
  "async-channel",
@@ -9713,7 +9713,7 @@ dependencies = [
 [[package]]
 name = "waterkit-codec"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "avif-parse",
  "cfg_aliases",
@@ -9749,7 +9749,7 @@ dependencies = [
 [[package]]
 name = "waterkit-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "executor-core",
  "jiff",
@@ -9761,7 +9761,7 @@ dependencies = [
 [[package]]
 name = "waterkit-dialog"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -9777,7 +9777,7 @@ dependencies = [
 [[package]]
 name = "waterkit-fs"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-fs",
  "dirs 6.0.0",
@@ -9795,7 +9795,7 @@ dependencies = [
 [[package]]
 name = "waterkit-haptic"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "futures",
  "jni 0.22.4",
@@ -9811,7 +9811,7 @@ dependencies = [
 [[package]]
 name = "waterkit-location"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-channel",
  "async-io",
@@ -9833,7 +9833,7 @@ dependencies = [
 [[package]]
 name = "waterkit-permission"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-channel",
  "futures",
@@ -9853,7 +9853,7 @@ dependencies = [
 [[package]]
 name = "waterkit-screen"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-channel",
  "blocking",
@@ -9877,7 +9877,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "waterkit-video-container",
  "waterkit-video-core",
@@ -9888,7 +9888,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-container"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "broadcast-common",
  "byteorder",
@@ -9903,7 +9903,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-core"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -9911,7 +9911,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-player"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "aes",
  "async-channel",
@@ -9934,7 +9934,7 @@ dependencies = [
 [[package]]
 name = "waterkit-video-streaming"
 version = "0.1.4"
-source = "git+https://github.com/water-rs/waterkit?rev=123b0581c908d424826c4f07cd25d5c0cc0d07ec#123b0581c908d424826c4f07cd25d5c0cc0d07ec"
+source = "git+https://github.com/water-rs/waterkit?rev=e5290913ee8adb22843fd60047f6a845f2391c5b#e5290913ee8adb22843fd60047f6a845f2391c5b"
 dependencies = [
  "async-fs",
  "base64 0.22.1",
@@ -10406,7 +10406,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=324c75acb1228808fe3facb7a4b2ce7a18748610#324c75acb1228808fe3facb7a4b2ce7a18748610"
+source = "git+https://github.com/water-rs/image?rev=5625b8a224600c57fd8f9d464762bf78792a40fc#5625b8a224600c57fd8f9d464762bf78792a40fc"
 dependencies = [
  "half",
  "image",
