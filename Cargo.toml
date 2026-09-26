@@ -607,3 +607,14 @@ waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "123
 waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "123b0581c908d424826c4f07cd25d5c0cc0d07ec" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f2000d36225e72662a653b5751182" }
+
+# The published backend crates still read the pre-rename signal API — their
+# `nami` requirements (`^0.11.2` and peers) cannot resolve beside the pinned
+# nami 0.11.1 — so a scaffolded project selects their migration heads, whose
+# manifests declare the `=0.11.1` pin this table carries. The pins satisfy the
+# `[workspace.dependencies]` requirements (`0.2.1`, `0.1.0`, `0.3.0`), keeping
+# the stable channel's registry scaffolds untouched. Drop the entries once
+# each backend releases a migrated version.
+waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "b0361024e98e3cd7d9d23993e133b70a663bfd19" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "641c3c2985aad60d90eb60554a0e6f5b3aa7e4b7" }

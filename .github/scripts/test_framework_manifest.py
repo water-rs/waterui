@@ -101,3 +101,24 @@ def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
     assert scaffold[f"{name}-git"] == dependency["git"]
     assert scaffold[f"{name}-rev"] == dependency["rev"]
     assert experimental == {}
+
+
+def test_nami_pinned_backends_resolve_through_patch_pins():
+    """A scaffolded graph carries this workspace's nami pin, which the
+    published `waterui-dew`/`waterui-gtk`/`waterui-winui` cannot satisfy —
+    their releases still require the nami line that kept `Signal::get`
+    (nami#26). Until each backend releases a migrated version, its
+    `[patch.crates-io]` pin is what keeps a generated project resolving;
+    without it `water fetch` fails resolution before scaffolding finishes.
+    Drop this test with the pins."""
+    patches = FRAMEWORK["patch"]["crates-io"]
+    for name in ("waterui-dew", "waterui-gtk", "waterui-winui"):
+        dependency = patches.get(name)
+        assert isinstance(dependency, dict), (
+            f"[patch.crates-io] must pin {name} to its nami-migration head"
+        )
+        rev = dependency.get("rev", "")
+        assert len(rev) == 40 and all(c in "0123456789abcdef" for c in rev), (
+            f"[patch.crates-io].{name} must pin an immutable revision"
+        )
+        assert dependency["git"].startswith("https://github.com/water-rs/")
