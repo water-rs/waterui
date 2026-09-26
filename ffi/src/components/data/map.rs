@@ -43,8 +43,8 @@ impl IntoFFI for Coordinate {
     type FFI = WuiCoordinate;
     fn into_ffi(self) -> Self::FFI {
         WuiCoordinate {
-            latitude: self.latitude.snapshot(),
-            longitude: self.longitude.snapshot(),
+            latitude: self.latitude.get(),
+            longitude: self.longitude.get(),
         }
     }
 }
@@ -333,3 +333,16 @@ crate::ffi_computed!(
 crate::ffi_computed!(Option<Location>, WuiLocation, user_location);
 #[cfg(feature = "c-api")]
 crate::ffi_binding!(MapStatus, WuiMapStatus, map_status);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coordinate_into_ffi_carries_degrees() {
+        let coordinate = Coordinate::from_degrees(37.7749, -122.4194).expect("valid coordinate");
+        let ffi = coordinate.into_ffi();
+        assert_eq!(ffi.latitude.to_bits(), 37.7749_f64.to_bits());
+        assert_eq!(ffi.longitude.to_bits(), (-122.4194_f64).to_bits());
+    }
+}
