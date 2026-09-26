@@ -12450,3 +12450,18 @@ dependencies = [
  "syn 3.0.6",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "waterui-dew"
+version = "0.3.0"
+source = "git+https://github.com/water-rs/dew?rev=1b683d0daab9a119396fb3b31d31bc2445f39bc9#1b683d0daab9a119396fb3b31d31bc2445f39bc9"
+
+[[patch.unused]]
+name = "waterui-gtk"
+version = "0.2.1"
+source = "git+https://github.com/water-rs/gtk-backend?rev=cc7a9737b1d1acd3117e39833e60f4b575fe4155#cc7a9737b1d1acd3117e39833e60f4b575fe4155"
+
+[[patch.unused]]
+name = "waterui-winui"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/waterui-winui?rev=641c3c2985aad60d90eb60554a0e6f5b3aa7e4b7#641c3c2985aad60d90eb60554a0e6f5b3aa7e4b7"
