@@ -29,7 +29,7 @@ crate root, so import the types explicitly:
 
 ```rust
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 ```
 
@@ -130,14 +130,22 @@ pointing hand by default. Like hover, cursors exist only on pointer platforms.
 
 ## Drag and drop
 
-Three modifiers, one payload type. `DragData::text(..)` / `DragData::url(..)` accept
-`impl Into<Str>`, so runtime `String`s are fine:
+Three modifiers; a drag carries one typed value. `.draggable(value)` takes any
+`Transferable` type, and a destination accepts exactly the type of its handler's first
+argument. `Str`, `Url` and `Files` also cross to other applications; an app type marked
+`Transferable` stays in the process:
 
 ```rust
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::Transferable;
+use waterui::reactive::impl_constant;
+
+#[derive(Debug, Clone, PartialEq)]
+struct Fruit(&'static str);
+impl Transferable for Fruit {}
+impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
 fn fruit_card(name: &'static str) -> impl View {
-    text(name).padding().draggable(DragData::text(name))
+    text(name).padding().draggable(Fruit(name))
 }
 
 // `+ use<>` keeps the borrowed parameters out of the returned view's lifetime (they are
@@ -146,8 +154,8 @@ fn basket(collected: &Binding<Vec<String>>, hovering: &Binding<bool>) -> impl Vi
     vstack((text("Basket"), text!("{count} items", count = collected.map(|v| v.len()))))
         .padding()
         .drop_destination(
-            |State(collected): State<Binding<Vec<String>>>, data: DragData| {
-                collected.with_mut(|v| v.push(data.as_str().to_string()));
+            |fruit: Fruit, State(collected): State<Binding<Vec<String>>>| {
+                collected.with_mut(|v| v.push(fruit.0.to_string()));
             },
         )
         .drop_hover(hovering)
@@ -157,16 +165,18 @@ fn basket(collected: &Binding<Vec<String>>, hovering: &Binding<bool>) -> impl Vi
 
 The parts an agent cannot guess:
 
-- **The dropped payload arrives as a handler parameter.** `DragData` is an extractor, so
-  `data: DragData` sits alongside `State<T>` parameters in any order. There is no
-  `|data| ...` callback form.
+- **The dropped value is the handler's first parameter, and its type is the filter.**
+  `|text: Str| ..` accepts text drags only, `|files: Files| ..` file drags only,
+  `|fruit: Fruit| ..` in-process `Fruit` drags only; any other drag is neither
+  highlighted nor delivered. Extractors such as `State<T>` follow it.
 - **`.drop_hover(&binding)` must chain directly on `.drop_destination(..)`.** It exists
   only on the value that call returns; inserting another modifier between them is a
   compile error. It sets the binding `true` on drag-enter, `false` on exit — feed it to
   a background or scale signal for a highlight. `.on_enter(f)` / `.on_exit(f)` chain in
   the same position and *add* handlers rather than replacing them.
-- `.draggable(..)` takes `impl IntoComputed<DragData>`, so the payload may itself be
-  reactive.
+- `.draggable(..)` takes `impl IntoComputed<T>`, so the payload may itself be reactive;
+  a plain value of your own type needs `impl_constant!` (as above). Text is
+  `.draggable(Str::from(..))`.
 - The initiating gesture is platform-defined: click-drag on macOS, long-press-drag on
   iOS and Android. Do not add your own long-press recognizer on top.
 

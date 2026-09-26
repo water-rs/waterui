@@ -10,7 +10,7 @@ use waterui::prelude::*;
 // file relies on.
 // ---------------------------------------------------------------------------
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 
 // ---------------------------------------------------------------------------
@@ -170,10 +170,16 @@ pub fn interaction_cursor_variants_prose() {
 pub mod interaction_block_07 {
     use waterui::prelude::*;
 
-    use waterui::drag_drop::DragData;
+    use waterui::drag_drop::Transferable;
+    use waterui::reactive::impl_constant;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Fruit(&'static str);
+    impl Transferable for Fruit {}
+    impl_constant!(Fruit); // lets a plain `Fruit` value be passed to `.draggable(..)`
 
     fn fruit_card(name: &'static str) -> impl View {
-        text(name).padding().draggable(DragData::text(name))
+        text(name).padding().draggable(Fruit(name))
     }
 
     // `+ use<>` keeps the borrowed parameters out of the returned view's lifetime (they are
@@ -185,8 +191,8 @@ pub mod interaction_block_07 {
         ))
         .padding()
         .drop_destination(
-            |State(collected): State<Binding<Vec<String>>>, data: DragData| {
-                collected.with_mut(|v| v.push(data.as_str().to_string()));
+            |fruit: Fruit, State(collected): State<Binding<Vec<String>>>| {
+                collected.with_mut(|v| v.push(fruit.0.to_string()));
             },
         )
         .drop_hover(hovering)
@@ -203,17 +209,24 @@ pub mod interaction_block_07 {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Drag and drop" (prose): `DragData::url(..)`, and
-// `.on_enter(f)` / `.on_exit(f)` chaining in the same position as
-// `.drop_hover(..)`. Not counted as a rust block.
+// interaction.md § "## Drag and drop" (prose): typed destinations for
+// `Str` and `Files`, `.draggable(Str::from(..))`, and `.on_enter(f)` /
+// `.on_exit(f)` chaining in the same position as `.drop_hover(..)`. Not
+// counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn interaction_drop_extras_prose() {
-    let _ = DragData::url("https://waterui.dev");
+    let _ = text("copy me").draggable(Str::from("payload"));
+    let _ = Divider.drop_destination(|_text: Str| ());
     let _ = Divider
-        .drop_destination(|_data: DragData| ())
+        .drop_destination(|_files: Files| ())
         .on_enter(|| ())
         .on_exit(|| ());
 }
+
+/// Glue: keeps the module-scope `Transferable` import proven to resolve.
+#[derive(Debug, Clone)]
+pub struct GlueTransferable;
+impl Transferable for GlueTransferable {}
 
 // ---------------------------------------------------------------------------
 // interaction.md § "## Reactive pressed/hover visuals" — rust block 8/8

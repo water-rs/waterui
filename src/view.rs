@@ -48,7 +48,7 @@ use crate::{
     },
     background::IntoBackground,
     border::Border,
-    drag_drop::{DragData, Draggable, DropDestination},
+    drag_drop::{Draggable, DropDestination, Transferable},
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
@@ -1175,42 +1175,47 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Retain::new(value))
     }
 
-    /// Makes this view draggable with the specified data.
+    /// Makes this view draggable, carrying `payload`.
     ///
     /// When the user drags this view (click-drag on macOS, long-press-drag on iOS/Android),
-    /// the data will be transferred to any compatible drop destination.
+    /// the payload travels to drop destinations that accept its type. [`Str`](crate::Str),
+    /// [`Url`](crate::Url) and [`Files`](crate::drag_drop::Files) also reach other
+    /// applications; an application's own [`Transferable`] types stay in the process.
     ///
     /// # Arguments
-    /// * `data` - The data to transfer when dragging (can be reactive)
+    /// * `payload` - The value to transfer when dragging (can be reactive); it is read when
+    ///   the drag begins
     ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::drag_drop::DragData;
+    /// use waterui::Str;
     ///
     /// text!("Drag me")
-    ///     .draggable(DragData::text("Hello!"));
+    ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable(self, data: impl IntoComputed<DragData>) -> Metadata<Draggable> {
-        Metadata::new(self, Draggable::new(data))
+    fn draggable<T: Transferable>(self, payload: impl IntoComputed<T>) -> Metadata<Draggable> {
+        Metadata::new(self, Draggable::new(payload))
     }
 
-    /// Makes this view a drop destination for dragged content.
+    /// Makes this view a drop destination for dragged values.
     ///
-    /// For simple cases without state, pass a handler directly. To inject
-    /// local state, use [`ViewExt::state`] and extract it in the handler.
+    /// The handler's first argument is the dropped value, and its type is the type this
+    /// destination accepts: a drag carrying any other type is neither highlighted nor
+    /// delivered. The remaining arguments are extractors, so local state injected with
+    /// [`ViewExt::state`] composes.
     ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::drag_drop::DragData;
+    /// use waterui::Str;
     ///
-    /// // Simple usage without state
+    /// // Accepts plain text only.
     /// text!("Drop here")
-    ///     .drop_destination(|data: DragData| {
-    ///         let _ = data;
+    ///     .drop_destination(|text: Str| {
+    ///         let _ = text;
     ///     });
     ///
     /// // With injected state
@@ -1220,17 +1225,18 @@ pub trait ViewExt: View + Sized {
     ///     .state(&items)
     ///     .state(&count)
     ///     .drop_destination(
-    ///         |State(items): State<Binding<Vec<String>>>,
-    ///          State(count): State<Binding<i32>>,
-    ///          data: DragData| {
-    ///             items.get_mut().push(data.as_str().to_string());
+    ///         |text: Str,
+    ///          State(items): State<Binding<Vec<String>>>,
+    ///          State(count): State<Binding<i32>>| {
+    ///             items.get_mut().push(text.to_string());
     ///             *count.get_mut() += 1;
     ///         },
     ///     );
     /// ```
-    fn drop_destination<H, Args>(self, on_drop: H) -> Metadata<DropDestination>
+    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination>
     where
-        H: Handler<Args, ()>,
+        T: Transferable,
+        H: EventHandler<T, Args>,
     {
         Metadata::new(self, DropDestination::new(on_drop))
     }

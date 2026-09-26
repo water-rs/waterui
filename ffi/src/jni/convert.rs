@@ -925,9 +925,10 @@ impl ToJavaStruct for crate::WuiMetadataDraggable {
     }
 }
 
-/// `MetadataDropDestinationStruct(contentPtr: Long, destinationPtr: Long)`
+/// `MetadataDropDestinationStruct(contentPtr: Long, destinationPtr: Long, acceptedKind: Int)`
 ///
 /// The `WuiDropDestination` is boxed for the same reason as `WuiDraggable`.
+/// `acceptedKind` is the `WuiTransferKind` ordinal the destination accepts.
 impl ToJavaStruct for crate::WuiMetadataDropDestination {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -935,37 +936,18 @@ impl ToJavaStruct for crate::WuiMetadataDropDestination {
                 "dev/waterui/android/runtime/MetadataDropDestinationStruct"
             ))
             .expect("MetadataDropDestinationStruct class not found");
+        let accepted_kind = self.value.accepted_kind as jint;
         let destination = Box::into_raw(Box::new(self.value));
         env.new_object(
             &class,
-            jni_sig!("(JJ)V"),
+            jni_sig!("(JJI)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(destination as jlong),
+                JValue::Int(accepted_kind),
             ],
         )
         .expect("Failed to create MetadataDropDestinationStruct")
-    }
-}
-
-/// `DragDataStruct(tag: Int, value: String)`
-impl ToJavaStruct for crate::drag_drop::WuiDragData {
-    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        // SAFETY: this `WuiStr` is owned here, so reclaiming the Rust string
-        // behind it happens exactly once.
-        let value: waterui::Str = unsafe { crate::IntoRust::into_rust(self.value) };
-        let text = env
-            .new_string(value.as_str())
-            .expect("Failed to create drag data string");
-        let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/DragDataStruct"))
-            .expect("DragDataStruct class not found");
-        env.new_object(
-            &class,
-            jni_sig!("(ILjava/lang/String;)V"),
-            &[JValue::Int(self.tag as jint), JValue::Object(&text)],
-        )
-        .expect("Failed to create DragDataStruct")
     }
 }
 

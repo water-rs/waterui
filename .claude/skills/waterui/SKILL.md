@@ -207,7 +207,7 @@ use waterui::component::lazy::Lazy;                    // reactive stacks over a
 use waterui::views::ForEach;                           // the collection itself
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with;                                // scope a value to a subtree
 use waterui::task::{sleep, spawn_local};               // async utilities
 ```

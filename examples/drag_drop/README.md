@@ -4,10 +4,10 @@ This example demonstrates WaterUI's native drag and drop capabilities.
 
 ## Features
 
-- **Draggable Views**: Make any view draggable with text or URL data
-- **Drop Destinations**: Accept dropped content with handlers
+- **Draggable Views**: Make any view draggable with a typed value
+- **Typed Drop Destinations**: A destination accepts exactly the type its handler takes
 - **Drop Events**: Handle on_enter, on_exit, and on_drop events
-- **Data Types**: Supports Text and URL data
+- **Value Types**: Text (`Str`), URLs (`Url`) and files (`Files`) cross applications; app types stay in the process
 
 ## Running
 
@@ -20,13 +20,22 @@ water run android # Android
 ## Usage
 
 ```rust
-// Make a view draggable
+// Plain text travels to other applications too
 text!("Drag me")
-    .draggable(DragData::text("Hello!"));
+    .draggable(Str::from("Hello!"));
 
-// Create a drop destination
+// The handler's first argument type is the accepted type
 text!("Drop here")
-    .drop_destination(|Use(data): Use<DragData>| {
-        println!("Received: {}", data.as_str());
+    .drop_destination(|text: Str| {
+        tracing::info!("received {text}");
     });
+
+// An app type travels within the process only
+#[derive(Debug, Clone, PartialEq)]
+struct Fruit { emoji: &'static str, label: &'static str }
+impl Transferable for Fruit {}
+impl_constant!(Fruit);
+
+fruit_card.draggable(Fruit { emoji: "🍎", label: "Apple" });
+basket.drop_destination(|fruit: Fruit| { /* only fruit drags land here */ });
 ```
