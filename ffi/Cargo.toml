@@ -13,6 +13,7 @@ keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
 categories = ["gui", "api-bindings"]
 
 [dependencies]
+arc-swap = { workspace = true, optional = true }
 # Not workspace-inherited: the workspace entry carries default features (gpu
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
@@ -109,6 +110,7 @@ webview = ["dep:waterui-webview", "dep:cookie", "dep:base64"]
 # `waterui_*` symbols, so an app that opts out of `waterui/gpu` is not
 # silently re-rooted through the FFI crate.
 gpu = [
+    "dep:arc-swap",
     "waterui/gpu",
     "waterui-graphics/gpu",
     "dep:waterui-svg",

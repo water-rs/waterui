@@ -129,7 +129,7 @@ pub struct WuiGpuContentState {
     clock: FrameClock,
     redraw: RedrawHandle,
     /// The redraw waker installed by the host; the handle above fires it.
-    waker: Arc<std::sync::Mutex<Option<ForeignRedrawTarget>>>,
+    waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>>,
     /// Whether the content asked for a frame since the last render.
     dirty: Arc<core::sync::atomic::AtomicBool>,
 }
@@ -293,14 +293,14 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
     let env = unsafe { &*env }.0.clone();
     let runtime = super::gpu_runtime::gpu_runtime(&env);
 
-    let waker: Arc<std::sync::Mutex<Option<ForeignRedrawTarget>>> = Arc::default();
+    let waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>> = Arc::default();
     let dirty = Arc::new(core::sync::atomic::AtomicBool::new(false));
     let redraw = {
         let waker = Arc::clone(&waker);
         let dirty = Arc::clone(&dirty);
         RedrawHandle::new(move || {
             if !dirty.swap(true, core::sync::atomic::Ordering::AcqRel)
-                && let Some(target) = waker.lock().expect("redraw waker poisoned").as_ref()
+                && let Some(target) = waker.load().as_ref()
             {
                 target.wake();
             }
@@ -346,10 +346,11 @@ pub unsafe extern "C" fn waterui_gpu_content_set_redraw_callback(
         wake,
         drop: drop_callback,
     };
-    let pending = state.dirty.load(core::sync::atomic::Ordering::Acquire);
-    *state.waker.lock().expect("redraw waker poisoned") = Some(target);
-    if pending {
-        state.redraw.request_redraw();
+    state.waker.store(Some(Arc::new(target)));
+    if state.dirty.load(core::sync::atomic::Ordering::Acquire)
+        && let Some(target) = state.waker.load().as_ref()
+    {
+        target.wake();
     }
 }
 
@@ -776,7 +777,7 @@ pub unsafe extern "C" fn waterui_gpu_content_drop(state: *mut WuiGpuContentState
     // scope releases the backend's context first.
     unsafe {
         let state = Box::from_raw(state);
-        state.waker.lock().expect("redraw waker poisoned").take();
+        state.waker.store(None);
     }
 }
 

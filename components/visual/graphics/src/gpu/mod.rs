@@ -305,6 +305,21 @@ impl GpuContentView {
         self.value.as_deref()
     }
 
+    /// Transfers this producer to a Cherenkov GPU layer.
+    ///
+    /// `wake` schedules the host's display link or event loop when asynchronous
+    /// producer work finishes. The UI hooks and input handlers stay in this view.
+    ///
+    /// # Panics
+    /// Panics if the content has already been transferred.
+    #[must_use]
+    pub fn take_engine_content(
+        &mut self,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> cherenkov_gpu::interop::GpuContentBox {
+        cherenkov_gpu::interop::GpuContentBox::new(EngineContent(self.take_content()), wake)
+    }
+
     /// Takes the content out for installation on a layer.
     ///
     /// # Panics
@@ -334,5 +349,42 @@ impl View for GpuContentView {
 
     fn stretch_axis(&self) -> StretchAxis {
         NativeView::stretch_axis(self)
+    }
+}
+
+/// Projects WaterUI's producer contract onto the engine's render context.
+struct EngineContent(Box<dyn GpuContent>);
+
+impl cherenkov_gpu::interop::GpuContent for EngineContent {
+    fn setup(
+        &mut self,
+        gpu: &cherenkov_gpu::interop::wgpu::Context<'_>,
+    ) -> impl core::future::Future<Output = ()> {
+        let redraw = gpu.redraw.clone();
+        self.0.setup(&Context {
+            adapter: gpu.adapter,
+            device: gpu.device,
+            queue: gpu.queue,
+            format: gpu.format,
+            redraw: RedrawHandle::new(move || redraw.request_redraw()),
+        });
+        core::future::ready(())
+    }
+
+    fn render(&mut self, gpu: &mut cherenkov_gpu::interop::wgpu::Frame<'_>) {
+        let mut frame = Frame::new(
+            gpu.device,
+            gpu.queue,
+            gpu.texture,
+            gpu.view,
+            gpu.format,
+            (gpu.width, gpu.height),
+            gpu.scale,
+            (gpu.elapsed, gpu.delta),
+        );
+        self.0.render(&mut frame);
+        if frame.redraw_requested() {
+            gpu.request_redraw();
+        }
     }
 }

@@ -30,7 +30,7 @@ gpu = [
 cpu = ["dep:cherenkov-cpu", "dep:thiserror", "dep:image"]
 
 [dependencies]
-arc-swap = { version = "1.9.2", optional = true }
+arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
 nami.workspace = true
 cherenkov.workspace = true
