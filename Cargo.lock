@@ -167,6 +167,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "anchored-overlay-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "android_clipboard"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10241,6 +10248,7 @@ dependencies = [
  "waterkit-audio",
  "waterkit-screen",
  "waterui",
+ "waterui-backend-core",
  "waterui-browser-cef",
  "waterui-chromium",
  "waterui-controls",

@@ -22,6 +22,9 @@ categories = ["gui", "api-bindings"]
 # of what the application resolved. This crate only needs the inspector.
 waterui = { version = "0.5.2", path = "..", default-features = false, features = ["inspector"] }
 waterui-core.workspace = true
+# The shared anchored-overlay placement contract the metadata and
+# `waterui_anchored_overlay_place` expose to native backends.
+waterui-backend-core = { workspace = true, features = ["overlay"] }
 waterui-text.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true

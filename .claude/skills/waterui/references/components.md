@@ -170,6 +170,37 @@ is simpler — sizing follows the base:
 overlay(player, buffering_indicator).height(360.0)
 ```
 
+## Anchored overlays (popovers, tooltips)
+
+`.anchored_overlay(...)` presents content next to the view it modifies — above all other
+content in the window — while its `Binding<bool>` is true. The backend places it against
+the anchor's declared edge, flips to the opposite edge when the preferred side has no
+room, and clamps it inside the window; a tap outside writes `false` back to the binding:
+
+```rust
+use waterui::metadata::anchored_overlay::{
+    AnchoredOverlay, AnchorEdge, EdgeAlignment, Clamp, Dismissal,
+};
+
+let open = binding(false);
+button("Options")
+    .action({ let open = open.clone(); move || open.toggle() })
+    .anchored_overlay(
+        AnchoredOverlay::new(&open, popover_body())   // AnyView content, measured at ideal size
+            .edge(AnchorEdge::Top)                     // Top / Bottom / Leading / Trailing
+            .alignment(EdgeAlignment::Center)          // Start / Center / End along the edge
+            .gap(4.0)                                  // points away from the anchor
+            .flip(true)                                // flip to the opposite edge on overflow
+            .clamp(Clamp::Window { margin: 2.0 })      // stay inside the window
+            .dismissal(Dismissal::OutsideInteraction), // or Manual — only the binding closes it
+    )
+```
+
+Leading/trailing follow the layout direction; `Start`/`End` are leading/trailing along
+the top and bottom edges and top/bottom along the leading and trailing edges. Unlike
+`.context_menu`, the overlay takes arbitrary `impl View` content — this is the popover
+primitive (the M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
+
 ## Scrolling
 
 ```rust

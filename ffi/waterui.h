@@ -166,6 +166,113 @@ typedef enum WuiCommandRole {
 } WuiCommandRole;
 
 /**
+ * C ABI mirror of [`AnchorEdge`].
+ */
+typedef enum WuiAnchorEdge {
+  /**
+   * Above the anchor.
+   */
+  WuiAnchorEdge_Top = 0,
+  /**
+   * Below the anchor.
+   */
+  WuiAnchorEdge_Bottom = 1,
+  /**
+   * Before the anchor in the layout direction.
+   */
+  WuiAnchorEdge_Leading = 2,
+  /**
+   * After the anchor in the layout direction.
+   */
+  WuiAnchorEdge_Trailing = 3,
+} WuiAnchorEdge;
+
+/**
+ * C ABI mirror of [`waterui_backend_core::overlay::PhysicalEdge`]: the
+ * physical side of the anchor an overlay landed on — `Leading`/`Trailing`
+ * already resolved under the layout direction.
+ */
+typedef enum WuiPhysicalEdge {
+  /**
+   * Above the anchor.
+   */
+  WuiPhysicalEdge_Top = 0,
+  /**
+   * Below the anchor.
+   */
+  WuiPhysicalEdge_Bottom = 1,
+  /**
+   * To the anchor's left.
+   */
+  WuiPhysicalEdge_Left = 2,
+  /**
+   * To the anchor's right.
+   */
+  WuiPhysicalEdge_Right = 3,
+} WuiPhysicalEdge;
+
+/**
+ * C ABI mirror of [`EdgeAlignment`].
+ */
+typedef enum WuiEdgeAlignment {
+  /**
+   * The overlay's start side lines up with the anchor's start side.
+   */
+  WuiEdgeAlignment_Start = 0,
+  /**
+   * The overlay is centered on the anchor.
+   */
+  WuiEdgeAlignment_Center = 1,
+  /**
+   * The overlay's end side lines up with the anchor's end side.
+   */
+  WuiEdgeAlignment_End = 2,
+} WuiEdgeAlignment;
+
+/**
+ * The tag half of [`WuiClamp`].
+ */
+typedef enum WuiClampTag {
+  /**
+   * The overlay may extend past the window's edges.
+   */
+  WuiClampTag_Off = 0,
+  /**
+   * The overlay is shifted to stay `margin` points inside the window.
+   */
+  WuiClampTag_Window = 1,
+} WuiClampTag;
+
+/**
+ * C ABI mirror of [`Dismissal`].
+ */
+typedef enum WuiDismissal {
+  /**
+   * Only setting the binding to `false` closes the overlay.
+   */
+  WuiDismissal_Manual = 0,
+  /**
+   * The backend also closes the overlay, writing `false` to its binding,
+   * when the user interacts outside it.
+   */
+  WuiDismissal_OutsideInteraction = 1,
+} WuiDismissal;
+
+/**
+ * C ABI mirror of [`LayoutDirection`].
+ */
+typedef enum WuiLayoutDirection {
+  /**
+   * Leading is the physical left edge.
+   */
+  WuiLayoutDirection_LeftToRight = 0,
+  /**
+   * Leading is the physical right edge.
+   */
+  WuiLayoutDirection_RightToLeft = 1,
+} WuiLayoutDirection;
+
+/**
  * FFI-safe representation of a material blur style.
  *
  * Maps to `SwiftUI`'s Material types on Apple platforms.
@@ -3590,6 +3697,91 @@ typedef struct WuiMetadata_WuiContextMenu {
 typedef struct WuiMetadata_WuiContextMenu WuiMetadataContextMenu;
 
 /**
+ * C ABI mirror of [`Clamp`]: a flat tagged struct — `margin` only applies
+ * when `tag` is [`WuiClampTag::Window`].
+ */
+typedef struct WuiClamp {
+  /**
+   * Whether and how the overlay is kept inside the window.
+   */
+  enum WuiClampTag tag;
+  /**
+   * The minimum distance from the window's edges, in points.
+   */
+  float margin;
+} WuiClamp;
+
+/**
+ * C ABI mirror of [`AnchorPlacement`].
+ */
+typedef struct WuiAnchorPlacement {
+  /**
+   * The edge of the anchor the overlay is placed against.
+   */
+  enum WuiAnchorEdge edge;
+  /**
+   * How the overlay lines up with the anchor along that edge.
+   */
+  enum WuiEdgeAlignment alignment;
+  /**
+   * The distance between the anchor and the overlay, in points.
+   */
+  float gap;
+  /**
+   * Whether the overlay moves to the opposite edge when the preferred
+   * edge has no room for it.
+   */
+  bool flip;
+  /**
+   * How the overlay is kept inside the window.
+   */
+  struct WuiClamp clamp;
+} WuiAnchorPlacement;
+
+/**
+ * FFI-safe representation of an anchored overlay.
+ */
+typedef struct WuiAnchoredOverlay {
+  /**
+   * The view presented next to the anchor.
+   */
+  struct WuiAnyView *content;
+  /**
+   * Whether the overlay is presented; the backend writes `false` when it
+   * dismisses the overlay itself.
+   */
+  WuiBinding_bool *is_presented;
+  /**
+   * Where the overlay sits relative to the anchor.
+   */
+  struct WuiAnchorPlacement placement;
+  /**
+   * What besides the binding closes the overlay.
+   */
+  enum WuiDismissal dismissal;
+} WuiAnchoredOverlay;
+
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_WuiAnchoredOverlay {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  struct WuiAnchoredOverlay value;
+} WuiMetadata_WuiAnchoredOverlay;
+
+/**
+ * Type alias for `Metadata<AnchoredOverlay>` FFI struct
+ */
+typedef struct WuiMetadata_WuiAnchoredOverlay WuiMetadataAnchoredOverlay;
+
+/**
  * FFI-safe representation of a Menu component.
  */
 typedef struct WuiMenu {
@@ -5225,6 +5417,23 @@ typedef struct WuiRect {
   struct WuiPoint origin;
   struct WuiSize size;
 } WuiRect;
+
+/**
+ * C ABI mirror of [`waterui_backend_core::overlay::AnchoredOverlayPlacement`]:
+ * the overlay's frame in window space and the anchor edge it was placed
+ * against after any flip.
+ */
+typedef struct WuiAnchoredOverlayPlacement {
+  /**
+   * The overlay's frame in window space.
+   */
+  struct WuiRect frame;
+  /**
+   * The physical edge of the anchor the overlay was placed against, after
+   * flipping.
+   */
+  enum WuiPhysicalEdge edge;
+} WuiAnchoredOverlayPlacement;
 
 /**
  * C ABI mirror of [`EdgeInsets`]: the space between a rectangle's edges and
@@ -8287,6 +8496,48 @@ struct WuiTypeId waterui_metadata_context_menu_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataContextMenu waterui_force_as_metadata_context_menu(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_metadata_anchored_overlay_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataAnchoredOverlay waterui_force_as_metadata_anchored_overlay(struct WuiAnyView *view);
+
+/**
+ * Computes an anchored overlay's frame in window space.
+ *
+ * The same placement contract the Rust backends implement — so a native
+ * backend that positions the overlay itself (a `PopupWindow`, a borderless
+ * child window, a `GtkPopover` GTK cannot steer) calls this instead of
+ * re-implementing it.
+ *
+ * `overlay` is the content's ideal size; `window` is the window's bounds and
+ * `anchor` the anchor's frame, both in the same window coordinate space.
+ * `direction` resolves `Leading`/`Trailing` edges and `Start`/`End`
+ * alignments. Pass `NULL` for `env` to compute with the default
+ * left-to-right direction; when non-null the environment's layout direction
+ * wins over `direction`.
+ *
+ * # Safety
+ *
+ * `env` must be `NULL` or a valid `WuiEnv` pointer; all other inputs are
+ * plain-data FFI mirrors.
+ */
+struct WuiAnchoredOverlayPlacement waterui_anchored_overlay_place(struct WuiRect anchor,
+                                                                  struct WuiRect window,
+                                                                  struct WuiSize overlay,
+                                                                  struct WuiAnchorPlacement placement,
+                                                                  enum WuiLayoutDirection direction,
+                                                                  const struct WuiEnv *env);
 
 /**
  * # Safety

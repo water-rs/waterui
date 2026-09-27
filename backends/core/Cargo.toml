@@ -24,6 +24,9 @@ widgets = [
 # Gesture recognition state machines; pulls the `waterui` facade where the
 # gesture event types are defined.
 gestures = ["dep:waterui"]
+# Anchored-overlay window-space placement shared by every backend; pulls the
+# `waterui` facade where `AnchorPlacement` and the overlay metadata are defined.
+overlay = ["dep:waterui"]
 
 [dependencies]
 waterui = { version = "0.5.2", path = "../..", default-features = false, optional = true }
