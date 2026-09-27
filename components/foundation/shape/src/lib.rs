@@ -767,7 +767,7 @@ impl MetadataKey for ClipShape {}
 // ============================================================================
 
 /// The kind of shape for backend rendering optimization.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum ShapeKind {
     /// Rectangle with sharp corners.
     #[default]

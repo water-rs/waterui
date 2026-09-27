@@ -123,14 +123,14 @@ mod tests {
             .downcast::<Metadata<ClipShape>>()
             .expect("inside the ambient shadow is the clip shape");
         let clip_kind = clip.value.kind();
-        assert!(
-            matches!(clip_kind, ShapeKind::RoundedRect { corner_radius } if corner_radius == 0.4),
-            "Floating clips with RoundedRectangle::new(clip_radius), got {clip_kind:?}"
+        assert_eq!(
+            clip_kind,
+            ShapeKind::RoundedRect { corner_radius: 0.4 },
+            "Floating clips with RoundedRectangle::new(clip_radius)"
         );
         for (name, kind) in [("key", key_kind), ("ambient", ambient_kind)] {
             assert_eq!(
-                format!("{kind:?}"),
-                format!("{clip_kind:?}"),
+                kind, clip_kind,
                 "the {name} shadow's silhouette must be the clip's shape"
             );
         }
