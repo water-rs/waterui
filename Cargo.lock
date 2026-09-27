@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=ec4e6fd3ff2da5fbb3effecc9a0bebea69b5f155#ec4e6fd3ff2da5fbb3effecc9a0bebea69b5f155"
+source = "git+https://github.com/water-rs/hydrolysis?rev=926424bc7f501863c51c9028c8d735bfcb0cdc7d#926424bc7f501863c51c9028c8d735bfcb0cdc7d"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3529,6 +3529,8 @@ dependencies = [
  "tracing-subscriber",
  "unicode-segmentation",
  "vello",
+ "vello_common",
+ "vello_cpu 0.2.0 (git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b)",
  "waterkit-clipboard",
  "waterui",
  "waterui-assets",
@@ -3551,7 +3553,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=29c821ad297d61ad8f7e42c474652eef92c56768#29c821ad297d61ad8f7e42c474652eef92c56768"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=631ba9d656c23280138eb272e11104fed40dce11#631ba9d656c23280138eb272e11104fed40dce11"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -9433,6 +9435,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vello_cpu"
+version = "0.2.0"
+source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
+dependencies = [
+ "bytemuck",
+ "glifo",
+ "hashbrown 0.17.1",
+ "vello_common",
+]
+
+[[package]]
 name = "vello_encoding"
 version = "0.9.0"
 source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
@@ -10336,7 +10349,7 @@ dependencies = [
  "tracing",
  "vello",
  "vello_common",
- "vello_cpu",
+ "vello_cpu 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "vello_hybrid",
  "waterui",
  "waterui-core",
