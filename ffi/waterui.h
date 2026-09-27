@@ -2917,6 +2917,223 @@ typedef struct WuiIgnorableMetadataAccessibilityState {
 } WuiIgnorableMetadataAccessibilityState;
 
 /**
+ * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
+ * per-corner radii used only by the rounded-rect variants.
+ */
+typedef struct WuiShapeKind {
+  /**
+   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
+   * (uniform radius, normalized to the shorter side), 4 = uneven rounded
+   * rect (per-corner normalized radii), 5 = capsule, 6 = custom path,
+   * 7 = fixed rounded rect (uniform radius in logical points),
+   * 8 = fixed uneven rounded rect (per-corner radii in logical points).
+   */
+  int32_t tag;
+  /**
+   * Top-left corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float top_left;
+  /**
+   * Top-right corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float top_right;
+  /**
+   * Bottom-right corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float bottom_right;
+  /**
+   * Bottom-left corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float bottom_left;
+} WuiShapeKind;
+
+/**
+ * FFI-safe representation of a path command.
+ * All coordinates are normalized (0.0-1.0) and scale with view bounds.
+ */
+typedef enum WuiPathCommand_Tag {
+  /**
+   * Move to a position without drawing.
+   */
+  WuiPathCommand_MoveTo,
+  /**
+   * Draw a straight line to a position.
+   */
+  WuiPathCommand_LineTo,
+  /**
+   * Draw a quadratic bezier curve.
+   */
+  WuiPathCommand_QuadTo,
+  /**
+   * Draw a cubic bezier curve.
+   */
+  WuiPathCommand_CubicTo,
+  /**
+   * Draw an arc.
+   */
+  WuiPathCommand_Arc,
+  /**
+   * Close the current subpath.
+   */
+  WuiPathCommand_Close,
+} WuiPathCommand_Tag;
+
+typedef struct WuiPathCommand_MoveTo_Body {
+  /**
+   * Target X coordinate.
+   */
+  float x;
+  /**
+   * Target Y coordinate.
+   */
+  float y;
+} WuiPathCommand_MoveTo_Body;
+
+typedef struct WuiPathCommand_LineTo_Body {
+  /**
+   * Target X coordinate.
+   */
+  float x;
+  /**
+   * Target Y coordinate.
+   */
+  float y;
+} WuiPathCommand_LineTo_Body;
+
+typedef struct WuiPathCommand_QuadTo_Body {
+  /**
+   * Control point X coordinate.
+   */
+  float cx;
+  /**
+   * Control point Y coordinate.
+   */
+  float cy;
+  /**
+   * End point X coordinate.
+   */
+  float x;
+  /**
+   * End point Y coordinate.
+   */
+  float y;
+} WuiPathCommand_QuadTo_Body;
+
+typedef struct WuiPathCommand_CubicTo_Body {
+  /**
+   * First control point X coordinate.
+   */
+  float c1x;
+  /**
+   * First control point Y coordinate.
+   */
+  float c1y;
+  /**
+   * Second control point X coordinate.
+   */
+  float c2x;
+  /**
+   * Second control point Y coordinate.
+   */
+  float c2y;
+  /**
+   * End point X coordinate.
+   */
+  float x;
+  /**
+   * End point Y coordinate.
+   */
+  float y;
+} WuiPathCommand_CubicTo_Body;
+
+typedef struct WuiPathCommand_Arc_Body {
+  /**
+   * Center X coordinate.
+   */
+  float cx;
+  /**
+   * Center Y coordinate.
+   */
+  float cy;
+  /**
+   * Radius along the X axis.
+   */
+  float rx;
+  /**
+   * Radius along the Y axis.
+   */
+  float ry;
+  /**
+   * Start angle in radians.
+   */
+  float start;
+  /**
+   * Sweep angle in radians.
+   */
+  float sweep;
+} WuiPathCommand_Arc_Body;
+
+typedef struct WuiPathCommand {
+  WuiPathCommand_Tag tag;
+  union {
+    WuiPathCommand_MoveTo_Body move_to;
+    WuiPathCommand_LineTo_Body line_to;
+    WuiPathCommand_QuadTo_Body quad_to;
+    WuiPathCommand_CubicTo_Body cubic_to;
+    WuiPathCommand_Arc_Body arc;
+  };
+} WuiPathCommand;
+
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
+typedef struct WuiArraySlice_WuiPathCommand {
+  struct WuiPathCommand *head;
+  uintptr_t len;
+} WuiArraySlice_WuiPathCommand;
+
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
+typedef struct WuiArrayVTable_WuiPathCommand {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiPathCommand (*slice)(const void*);
+} WuiArrayVTable_WuiPathCommand;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiPathCommand {
+  NonNull data;
+  struct WuiArrayVTable_WuiPathCommand vtable;
+} WuiArray_WuiPathCommand;
+
+/**
+ * FFI-safe representation of a clip shape.
+ * Contains the structured kind plus the path commands defining the mask.
+ */
+typedef struct WuiClipShape {
+  /**
+   * Shape kind for backend-side rendering. Prefer this over `commands`:
+   * the commands are in unit space, where a corner radius stretches with
+   * the clipped rect's aspect ratio.
+   */
+  struct WuiShapeKind kind;
+  /**
+   * Array of path commands defining the shape.
+   */
+  struct WuiArray_WuiPathCommand commands;
+} WuiClipShape;
+
+/**
  * FFI-safe representation of a shadow.
  */
 typedef struct WuiShadow {
@@ -2937,9 +3154,9 @@ typedef struct WuiShadow {
    */
   float radius;
   /**
-   * Corner radius of the element casting the shadow.
+   * Shape of the element casting the shadow; the shadow blurs this shape.
    */
-  float corner_radius;
+  struct WuiClipShape silhouette;
 } WuiShadow;
 
 /**
@@ -3290,223 +3507,6 @@ typedef struct WuiMetadata_WuiRetain {
  * Type alias for `Metadata<Retain>` FFI struct
  */
 typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
-
-/**
- * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
- * per-corner radii used only by the rounded-rect variants.
- */
-typedef struct WuiShapeKind {
-  /**
-   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
-   * (uniform radius, normalized to the shorter side), 4 = uneven rounded
-   * rect (per-corner normalized radii), 5 = capsule, 6 = custom path,
-   * 7 = fixed rounded rect (uniform radius in logical points),
-   * 8 = fixed uneven rounded rect (per-corner radii in logical points).
-   */
-  int32_t tag;
-  /**
-   * Top-left corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float top_left;
-  /**
-   * Top-right corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float top_right;
-  /**
-   * Bottom-right corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float bottom_right;
-  /**
-   * Bottom-left corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float bottom_left;
-} WuiShapeKind;
-
-/**
- * FFI-safe representation of a path command.
- * All coordinates are normalized (0.0-1.0) and scale with view bounds.
- */
-typedef enum WuiPathCommand_Tag {
-  /**
-   * Move to a position without drawing.
-   */
-  WuiPathCommand_MoveTo,
-  /**
-   * Draw a straight line to a position.
-   */
-  WuiPathCommand_LineTo,
-  /**
-   * Draw a quadratic bezier curve.
-   */
-  WuiPathCommand_QuadTo,
-  /**
-   * Draw a cubic bezier curve.
-   */
-  WuiPathCommand_CubicTo,
-  /**
-   * Draw an arc.
-   */
-  WuiPathCommand_Arc,
-  /**
-   * Close the current subpath.
-   */
-  WuiPathCommand_Close,
-} WuiPathCommand_Tag;
-
-typedef struct WuiPathCommand_MoveTo_Body {
-  /**
-   * Target X coordinate.
-   */
-  float x;
-  /**
-   * Target Y coordinate.
-   */
-  float y;
-} WuiPathCommand_MoveTo_Body;
-
-typedef struct WuiPathCommand_LineTo_Body {
-  /**
-   * Target X coordinate.
-   */
-  float x;
-  /**
-   * Target Y coordinate.
-   */
-  float y;
-} WuiPathCommand_LineTo_Body;
-
-typedef struct WuiPathCommand_QuadTo_Body {
-  /**
-   * Control point X coordinate.
-   */
-  float cx;
-  /**
-   * Control point Y coordinate.
-   */
-  float cy;
-  /**
-   * End point X coordinate.
-   */
-  float x;
-  /**
-   * End point Y coordinate.
-   */
-  float y;
-} WuiPathCommand_QuadTo_Body;
-
-typedef struct WuiPathCommand_CubicTo_Body {
-  /**
-   * First control point X coordinate.
-   */
-  float c1x;
-  /**
-   * First control point Y coordinate.
-   */
-  float c1y;
-  /**
-   * Second control point X coordinate.
-   */
-  float c2x;
-  /**
-   * Second control point Y coordinate.
-   */
-  float c2y;
-  /**
-   * End point X coordinate.
-   */
-  float x;
-  /**
-   * End point Y coordinate.
-   */
-  float y;
-} WuiPathCommand_CubicTo_Body;
-
-typedef struct WuiPathCommand_Arc_Body {
-  /**
-   * Center X coordinate.
-   */
-  float cx;
-  /**
-   * Center Y coordinate.
-   */
-  float cy;
-  /**
-   * Radius along the X axis.
-   */
-  float rx;
-  /**
-   * Radius along the Y axis.
-   */
-  float ry;
-  /**
-   * Start angle in radians.
-   */
-  float start;
-  /**
-   * Sweep angle in radians.
-   */
-  float sweep;
-} WuiPathCommand_Arc_Body;
-
-typedef struct WuiPathCommand {
-  WuiPathCommand_Tag tag;
-  union {
-    WuiPathCommand_MoveTo_Body move_to;
-    WuiPathCommand_LineTo_Body line_to;
-    WuiPathCommand_QuadTo_Body quad_to;
-    WuiPathCommand_CubicTo_Body cubic_to;
-    WuiPathCommand_Arc_Body arc;
-  };
-} WuiPathCommand;
-
-/**
- * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
- */
-typedef struct WuiArraySlice_WuiPathCommand {
-  struct WuiPathCommand *head;
-  uintptr_t len;
-} WuiArraySlice_WuiPathCommand;
-
-/**
- * The pair of function pointers `WuiArray` uses to view and free its backing storage.
- *
- * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
- * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
- */
-typedef struct WuiArrayVTable_WuiPathCommand {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiPathCommand (*slice)(const void*);
-} WuiArrayVTable_WuiPathCommand;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- *
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiPathCommand {
-  NonNull data;
-  struct WuiArrayVTable_WuiPathCommand vtable;
-} WuiArray_WuiPathCommand;
-
-/**
- * FFI-safe representation of a clip shape.
- * Contains the structured kind plus the path commands defining the mask.
- */
-typedef struct WuiClipShape {
-  /**
-   * Shape kind for backend-side rendering. Prefer this over `commands`:
-   * the commands are in unit space, where a corner radius stretches with
-   * the clipped rect's aspect ratio.
-   */
-  struct WuiShapeKind kind;
-  /**
-   * Array of path commands defining the shape.
-   */
-  struct WuiArray_WuiPathCommand commands;
-} WuiClipShape;
 
 /**
  * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
