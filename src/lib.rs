@@ -207,7 +207,7 @@ pub use waterui_core::{
     extract::{self, Extractor, State, Use},
     handler::{self, Handler, HandlerOnce},
     id::{self, Identifiable},
-    impl_extractor, raw_view,
+    impl_extractor, key, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
 };

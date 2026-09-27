@@ -68,6 +68,7 @@ use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
+use waterui_core::key::{KeyHandling, OnKeyPress};
 
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
@@ -429,6 +430,39 @@ pub trait ViewExt: View + Sized {
         H: Handler<Args, ()>,
     {
         self.event(Event::HoverExit, handler)
+    }
+
+    /// Handles key presses that the focused view inside this one leaves
+    /// unconsumed.
+    ///
+    /// The keyboard goes to the focused view first. A key it does not use —
+    /// Escape, or an arrow in a single-line text field — bubbles to its
+    /// ancestors, nearest first, until a handler returns
+    /// [`KeyHandling::Handled`](crate::key::KeyHandling::Handled). The handler
+    /// reads the key with `Use<KeyPress>`.
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::key::{KeyHandling, KeyPress, NamedKey, Key};
+    ///
+    /// let open = binding::<bool>(true);
+    /// let query = binding::<Str>(Str::default());
+    /// let search = field("Search", &query).on_key_press(
+    ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+    ///         if press.key == Key::Named(NamedKey::Escape) {
+    ///             open.set(false);
+    ///             KeyHandling::Handled
+    ///         } else {
+    ///             KeyHandling::Ignored
+    ///         }
+    ///     },
+    /// ).state(&open);
+    /// ```
+    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress>
+    where
+        H: Handler<Args, KeyHandling>,
+    {
+        Metadata::new(self, OnKeyPress::new(handler))
     }
 
     /// Sets the cursor style when hovering over this view.
