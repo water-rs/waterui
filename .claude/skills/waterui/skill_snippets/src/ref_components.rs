@@ -274,6 +274,7 @@ pub fn components_block_12() {
     let level = Binding::f64(0.5);
     let count = Binding::i32(1);
     let address = Binding::container(Str::from(""));
+    let query = Binding::container(Str::from(""));
     let name = Binding::container(Str::from(""));
     let fraction = 0.5_f64;
 
@@ -311,6 +312,10 @@ pub fn components_block_12() {
     };
     let _ = {
         field("Email", &address) // &Binding<Str>
+    };
+    let _ = {
+        // Return in a line-limited field runs it
+        field("Search", &query).on_submit(handler)
     };
     let _ = {
         // placeholder ≠ label

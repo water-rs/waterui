@@ -256,6 +256,7 @@ slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeIncl
 stepper("Quantity", &count)                 // &Binding<i32>
 stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
 field("Email", &address)                    // &Binding<Str>
+field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
