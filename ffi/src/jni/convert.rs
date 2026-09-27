@@ -575,25 +575,55 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityState {
     }
 }
 
-/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float, cornerRadius: Float)`
+/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float, silhouetteKind: ShapeKindStruct, silhouetteCommands: Array<PathCommandStruct>)`
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // The silhouette rides the same (kind, commands) pair a clip shape
+        // does: the kind says what the caster is, the unit-space commands are
+        // the fallback for `ShapeKind::CustomPath`.
+        let commands = self.value.silhouette.commands.as_slice();
+        let path_command_class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/PathCommandStruct"))
+            .expect("PathCommandStruct class not found");
+
+        let java_array = env
+            .new_object_array(
+                super::array_len(commands.len()),
+                &path_command_class,
+                JObject::null(),
+            )
+            .expect("Failed to create PathCommandStruct array");
+
+        for (i, cmd) in commands.iter().enumerate() {
+            let path_cmd = create_path_command_struct(env, cmd);
+            java_array
+                .set_element(env, i, &path_cmd)
+                .expect("Failed to set path command element");
+        }
+
+        let kind = self.value.silhouette.kind.to_java_struct(env);
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/MetadataShadowStruct"))
             .expect("MetadataShadowStruct class not found");
-        env.new_object(
-            &class,
-            jni_sig!("(JJFFFF)V"),
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.color as jlong),
-                JValue::Float(self.value.offset_x),
-                JValue::Float(self.value.offset_y),
-                JValue::Float(self.value.radius),
-                JValue::Float(self.value.corner_radius),
-            ],
-        )
-        .expect("Failed to create MetadataShadowStruct")
+        let object = env
+            .new_object(
+                &class,
+                jni_sig!(
+                    "(JJFFFLdev/waterui/android/runtime/ShapeKindStruct;[Ldev/waterui/android/runtime/PathCommandStruct;)V"
+                ),
+                &[
+                    JValue::Long(self.content as jlong),
+                    JValue::Long(self.value.color as jlong),
+                    JValue::Float(self.value.offset_x),
+                    JValue::Float(self.value.offset_y),
+                    JValue::Float(self.value.radius),
+                    JValue::Object(&kind),
+                    JValue::Object(&java_array),
+                ],
+            )
+            .expect("Failed to create MetadataShadowStruct");
+        self.value.silhouette.commands.consume();
+        object
     }
 }
 

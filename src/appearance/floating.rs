@@ -72,13 +72,13 @@ where
             style.ambient_shadow_color.clone(),
             Vector::new(0.0, style.ambient_shadow_offset_y),
             style.ambient_shadow_radius,
-            style.clip_radius,
+            shape,
         );
         let key_shadow = Shadow::new(
             style.key_shadow_color.clone(),
             Vector::new(0.0, style.key_shadow_offset_y),
             style.key_shadow_radius,
-            style.clip_radius,
+            shape,
         );
 
         self.content
@@ -87,5 +87,52 @@ where
             .clip(shape)
             .shadow(ambient_shadow)
             .shadow(key_shadow)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waterui_core::{AnyView, Environment, Metadata, View};
+    use waterui_shape::{ClipShape, ShapeKind};
+    use waterui_text::Text;
+
+    use super::{Floating, FloatingStyle};
+    use crate::style::Shadow;
+
+    /// A floating surface fills, clips, and shadows with one shape, so each
+    /// shadow's silhouette must carry the clip's `ShapeKind` — a normalized
+    /// `clip_radius` can no longer be read back as an absolute shadow radius.
+    #[test]
+    fn shadows_carry_the_clip_silhouette() {
+        let style = FloatingStyle {
+            clip_radius: 0.4,
+            ..FloatingStyle::default()
+        };
+        let view = Floating::with_style(Text::new("label"), style).body(&Environment::new());
+        let key = *AnyView::new(view)
+            .downcast::<Metadata<Shadow>>()
+            .expect("the outermost floating layer is the key shadow");
+        let key_kind = key.value.silhouette.kind();
+        let ambient = *key
+            .content
+            .downcast::<Metadata<Shadow>>()
+            .expect("inside the key shadow is the ambient shadow");
+        let ambient_kind = ambient.value.silhouette.kind();
+        let clip = *ambient
+            .content
+            .downcast::<Metadata<ClipShape>>()
+            .expect("inside the ambient shadow is the clip shape");
+        let clip_kind = clip.value.kind();
+        assert_eq!(
+            clip_kind,
+            ShapeKind::RoundedRect { corner_radius: 0.4 },
+            "Floating clips with RoundedRectangle::new(clip_radius)"
+        );
+        for (name, kind) in [("key", key_kind), ("ambient", ambient_kind)] {
+            assert_eq!(
+                kind, clip_kind,
+                "the {name} shadow's silhouette must be the clip's shape"
+            );
+        }
     }
 }
