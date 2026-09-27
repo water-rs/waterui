@@ -17,6 +17,7 @@ mod context_menu_presentation;
 mod dynamic_remeasure;
 #[cfg(not(target_arch = "wasm32"))]
 mod emoji_atlas;
+mod gesture_buttons;
 mod gesture_capture;
 mod gesture_env;
 mod gesture_retention;

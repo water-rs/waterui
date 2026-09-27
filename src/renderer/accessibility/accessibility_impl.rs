@@ -7,6 +7,8 @@ use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 #[cfg(feature = "accessibility")]
+use waterui::gesture::PointerButton as WuiPointerButton;
+#[cfg(feature = "accessibility")]
 use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
@@ -1176,8 +1178,13 @@ impl SemanticCore {
                 })
         }) {
             let at = self.frame_instant;
-            let mut changed = self.gesture_engine.handle_pointer_down(centre, at, env);
-            changed |= self.gesture_engine.handle_pointer_up(centre, at, env);
+            // An assistive-technology activation is a primary press.
+            let mut changed =
+                self.gesture_engine
+                    .handle_pointer_down(centre, at, WuiPointerButton::Primary, env);
+            changed |=
+                self.gesture_engine
+                    .handle_pointer_up(centre, at, WuiPointerButton::Primary, env);
             if let Some(index) = self
                 .hit_test
                 .pointer_targets

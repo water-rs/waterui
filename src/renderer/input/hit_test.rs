@@ -1,6 +1,7 @@
 use super::*;
 use nami::{Computed, Signal as _};
 use waterui::drag_drop::DragData;
+use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_backend_core::widget::{
     InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
@@ -260,6 +261,10 @@ pub(crate) struct HitTestState {
     pub(crate) pointer_targets: Vec<PointerTarget>,
     pub(crate) active_pointer_target: Option<PointerTarget>,
     pub(crate) active_pointer: Option<(u64, PointerKind)>,
+    /// The button that opened the active pointer sequence. Moves and
+    /// releases report it to the gesture engine, which keeps a sequence to
+    /// exactly one button (water-rs/waterui#1290).
+    pub(crate) active_pointer_button: Option<PointerButton>,
     pub(crate) pending_pointer_press: Option<PendingPointerPress>,
     /// A touch/pen press-and-hold running toward the context-menu
     /// threshold, armed where a secondary press would resolve a menu.
@@ -740,6 +745,20 @@ impl SemanticCore {
     }
 }
 
+/// The gesture engine's button vocabulary is a subset of the platform's:
+/// `Other(u16)` has no counterpart and stays unrouted
+/// (water-rs/waterui#1290).
+fn gesture_button(button: PointerButton) -> Option<WuiPointerButton> {
+    Some(match button {
+        PointerButton::Primary => WuiPointerButton::Primary,
+        PointerButton::Secondary => WuiPointerButton::Secondary,
+        PointerButton::Middle => WuiPointerButton::Middle,
+        PointerButton::Back => WuiPointerButton::Back,
+        PointerButton::Forward => WuiPointerButton::Forward,
+        PointerButton::Other(_) => return None,
+    })
+}
+
 impl HydrolysisRenderer {
     pub fn handle_pointer_down(
         &mut self,
@@ -768,6 +787,7 @@ impl HydrolysisRenderer {
             return false;
         }
         self.hit_test.active_pointer = Some((pointer_id, pointer_kind));
+        self.hit_test.active_pointer_button = Some(button);
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.pointer_position = Some(point);
         self.hit_test.pointer_press_origin = Some(point);
@@ -830,9 +850,6 @@ impl HydrolysisRenderer {
             "pointer down begin"
         );
 
-        let gesture_changed = self.gesture_engine.handle_pointer_down(point, at, env);
-        refresh_requested |= gesture_changed;
-
         let mut pointer_indices: Vec<usize> = self
             .hit_test
             .pointer_targets
@@ -857,6 +874,41 @@ impl HydrolysisRenderer {
             let target = &self.text_editing.text_input_targets[index];
             SemanticCore::target_hit_priority(target.depth, target.order, index)
         });
+        let focus_wins = matches!(
+            (focused_priority, top_pointer_priority),
+            (Some(focus_priority), Some(pointer_priority)) if focus_priority > pointer_priority
+        ) || matches!((focused_priority, top_pointer_priority), (Some(_), None));
+
+        // A secondary press a context menu will claim — one enclosing an
+        // embedded surface, the focused text input's own menu, or the
+        // topmost `.context_menu` region at the point — opens that menu
+        // instead of arming recognizers (water-rs/waterui#1290).
+        let context_menu_claims_secondary = button == PointerButton::Secondary
+            && !in_context_menu_presentation
+            && if let Some((_, surface, _)) =
+                self.embedded_target_wins_at(point, top_pointer_priority, focused_priority)
+            {
+                let surface_bounds = surface.to_window_rect(vello::kurbo::Rect::from_origin_size(
+                    vello::kurbo::Point::ORIGIN,
+                    surface.local_bounds.size(),
+                ));
+                self.topmost_context_menu_target_enclosing(point, surface_bounds)
+                    .is_some_and(|target| !popup_menu_nodes(&target.items.snapshot()).is_empty())
+            } else {
+                (focus_wins && focused.is_some())
+                    || self
+                        .topmost_context_menu_target_at_point(point)
+                        .is_some_and(|target| {
+                            !popup_menu_nodes(&target.items.snapshot()).is_empty()
+                        })
+            };
+        let gesture_changed = gesture_button(button).is_some_and(|mapped| {
+            !context_menu_claims_secondary
+                && self
+                    .gesture_engine
+                    .handle_pointer_down(point, at, mapped, env)
+        });
+        refresh_requested |= gesture_changed;
         // A touch or pen primary press on a `.context_menu` region is a
         // pending press-and-hold, armed exactly where a secondary press
         // would resolve a menu: an embedded surface yields only to a menu
@@ -944,10 +996,6 @@ impl HydrolysisRenderer {
             // surface's keyboard-focus slot clears with it.
             self.set_keyboard_focus(None, false);
         }
-        let focus_wins = matches!(
-            (focused_priority, top_pointer_priority),
-            (Some(focus_priority), Some(pointer_priority)) if focus_priority > pointer_priority
-        ) || matches!((focused_priority, top_pointer_priority), (Some(_), None));
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -1041,14 +1089,25 @@ impl HydrolysisRenderer {
                     return refresh_requested || visual_changed || changed;
                 }
             }
-            if self.set_focused_text_input(focused) {
-                refresh_requested = true;
+            if matches!(button, PointerButton::Other(_)) {
+                if self.set_focused_text_input(focused) {
+                    refresh_requested = true;
+                }
+                return refresh_requested || visual_changed;
             }
-            return refresh_requested || visual_changed;
+            // `Other` stays unrouted; a secondary press no menu claimed and
+            // Middle/Back/Forward fall through to the pointer targets below
+            // with the gesture engine already armed on the button.
         }
 
         for index in pointer_indices {
             let target = self.hit_test.pointer_targets[index].clone();
+            if button != PointerButton::Primary && target.press_slot.is_some() {
+                // Press slots are primary-only: a `Button` commits on a
+                // primary release, never on a middle or secondary one
+                // (water-rs/waterui#1290).
+                continue;
+            }
             if target.press_slot.is_some()
                 && self
                     .hit_test
@@ -1216,6 +1275,7 @@ impl HydrolysisRenderer {
             target.sink.pointer_move(position);
             target.sink.pointer_button(false, button, position);
             self.hit_test.active_pointer = None;
+            self.hit_test.active_pointer_button = None;
             return true;
         }
         let at = self.frame_instant();
@@ -1256,6 +1316,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
         self.hit_test.active_pointer = None;
+        self.hit_test.active_pointer_button = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
             self.request_refresh();
@@ -1263,7 +1324,10 @@ impl HydrolysisRenderer {
             self.request_redraw();
         }
         changed |= press_clear.visual_changed || press_clear.chrome_changed;
-        let gesture_changed = self.gesture_engine.handle_pointer_up(point, at, env);
+        let gesture_changed = gesture_button(button).is_some_and(|mapped| {
+            self.gesture_engine
+                .handle_pointer_up(point, at, mapped, env)
+        });
         changed |= gesture_changed;
         tracing::trace!(
             target: "waterui::hydrolysis::input",
@@ -1325,7 +1389,14 @@ impl HydrolysisRenderer {
         // Same first look the press path gives: an active recognizer
         // receives the move before any embedded surface can claim it, so a
         // gesture in flight is not starved by whatever sits under the pointer.
-        let gesture_changed = self.gesture_engine.handle_pointer_move(point, at, env);
+        let move_button = self
+            .hit_test
+            .active_pointer_button
+            .and_then(gesture_button)
+            .unwrap_or(WuiPointerButton::Primary);
+        let gesture_changed = self
+            .gesture_engine
+            .handle_pointer_move(point, at, move_button, env);
         if self.handle_embedded_pointer_move(point) {
             return true;
         }
@@ -2443,6 +2514,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_embedded_target = None;
         self.hit_test.active_pointer = None;
+        self.hit_test.active_pointer_button = None;
         self.hit_test.pending_pointer_press = None;
         self.hit_test.pending_context_menu_hold = None;
         self.hit_test.active_press_bounds = None;
