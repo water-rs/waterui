@@ -334,6 +334,10 @@ pub struct HydrolysisRenderer {
     frame_applied_filter_effect: Duration,
     /// The per-frame atlas every filtered subtree is captured through.
     subtree_captures: SubtreeCaptures,
+    /// Bounded cache of CPU-rasterized blurred shadow silhouettes — shared
+    /// `Blob`s let vello keep the atlas texture across frames; see
+    /// `metadata::BlurredSilhouetteCache`.
+    blurred_silhouettes: metadata::BlurredSilhouetteCache,
     navigation_captures: Vec<NavigationSceneCapture>,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
@@ -515,6 +519,7 @@ impl HydrolysisRenderer {
             frame_applied_filter_capture: Duration::ZERO,
             frame_applied_filter_effect: Duration::ZERO,
             subtree_captures: SubtreeCaptures::default(),
+            blurred_silhouettes: metadata::BlurredSilhouetteCache::new(),
             navigation_captures: Vec::new(),
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
@@ -529,6 +534,14 @@ impl HydrolysisRenderer {
     /// `Rc` so callers may hold it across further `&mut self` calls.
     pub(crate) fn theme(&self) -> Rc<dyn crate::engine::WidgetTheme> {
         Rc::clone(&self.theme)
+    }
+
+    /// How many blurred shadow silhouettes have been CPU-rasterized so far —
+    /// the hook a test uses to prove a moved caster hits the silhouette cache
+    /// instead of re-rasterizing.
+    #[cfg(test)]
+    pub(crate) fn blurred_silhouette_rasterizations(&self) -> usize {
+        self.blurred_silhouettes.rasterizations
     }
 
     /// Runs `f` with accessibility-node registration suppressed. For a control
