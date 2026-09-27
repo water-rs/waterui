@@ -286,6 +286,34 @@ pub(crate) fn popup_menu_size(
     (width, height)
 }
 
+/// A menu command row: a borderless `Button` that closes the menu group and
+/// runs the command on press. A `disabled` row draws its label at Material's
+/// disabled contrast — on-surface at 38% opacity, which here is the menu's
+/// `Foreground` token at 0.38 — while its press stays inert (the action's
+/// early return also gates it).
+fn popup_menu_command_row(
+    label: SemanticLabel,
+    action: SharedAction<()>,
+    disabled: bool,
+) -> AnyView {
+    let button = Button::new(label).style(ButtonStyle::Borderless).action(
+        move |group: PopupMenuStateGroup, env: Environment| {
+            if disabled {
+                return;
+            }
+            group.close_all();
+            call_action_discarding_result(&action, &env);
+        },
+    );
+    if disabled {
+        AnyView::new(
+            button.foreground(Color::new(waterui::theme::color::Foreground).with_opacity(0.38)),
+        )
+    } else {
+        AnyView::new(button)
+    }
+}
+
 /// The menu's row content shared by the popup-window and the drawn
 /// `.context_menu` presentation: one row per node — borderless commands,
 /// dividers and submenu items — padded by the theme's vertical padding. The
@@ -317,15 +345,7 @@ pub(crate) fn popup_menu_content(
                 disabled,
                 ..
             } => {
-                let button = Button::new(label).style(ButtonStyle::Borderless).action(
-                    move |group: PopupMenuStateGroup, env: Environment| {
-                        if disabled {
-                            return;
-                        }
-                        group.close_all();
-                        call_action_discarding_result(&action, &env);
-                    },
-                );
+                let button = popup_menu_command_row(label, action, disabled);
                 // The button sizes to its label: a leading-aligned frame puts
                 // the content-width row at the menu's leading edge, so every
                 // row's label shares one leading x regardless of kind.
@@ -488,15 +508,7 @@ pub(crate) fn semantic_popup_menu_window(
                     disabled,
                     ..
                 } => {
-                    let button = Button::new(label).style(ButtonStyle::Borderless).action(
-                        move |group: PopupMenuStateGroup, env: Environment| {
-                            if disabled {
-                                return;
-                            }
-                            group.close_all();
-                            call_action_discarding_result(&action, &env);
-                        },
-                    );
+                    let button = popup_menu_command_row(label, action, disabled);
                     rows.push(AnyView::new(button));
                 }
                 PopupMenuNode::Divider => rows.push(AnyView::new(Divider)),
@@ -1428,6 +1440,7 @@ impl SemanticCore {
             return;
         }
         let order = self.hit_test.next_hit_test_order();
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         self.hit_test.context_menu_targets.push(ContextMenuTarget {
             bounds,
             depth,

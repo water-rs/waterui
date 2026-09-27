@@ -152,6 +152,7 @@ impl HydrolysisRenderer {
             // register.
             let depth = self.render_depth;
             let order = self.hit_test.next_hit_test_order();
+            let frame = self.hit_test.clip_hit_bounds(frame);
             self.hit_test.pointer_targets.push(PointerTarget {
                 bounds: frame,
                 captures_drag: false,

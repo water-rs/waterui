@@ -3,6 +3,35 @@ use vello::kurbo::{
     Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2,
 };
 
+/// Closes the scene's current clip layer, then re-arms the encoding's
+/// transform/style force flags.
+///
+/// `pop_layer`/`encode_end_clip` emits a dummy `PATH` with no transform or
+/// style — nothing re-arms the encoder's force flags at the boundary, so a
+/// path drawn next dedups its transform against the encoding's last entry.
+/// Once the resolver splices a glyph run's transform entries into the packed
+/// stream ahead of that path, the path's `trans_ix` lands on the run's paint
+/// transform instead of its own (water-rs/hydrolysis#250). Re-arming the
+/// force flags keeps every post-clip path carrying its own transform.
+pub(crate) fn pop_scene_layer(scene: &mut vello::Scene) {
+    scene.pop_layer();
+    scene.encoding_mut().force_next_transform_and_style();
+}
+
+/// Appends a child scene, then re-arms the encoding's transform/style force
+/// flags: `Encoding::append` copies the child's `flags` verbatim, so a force
+/// pending in this encoding is silently dropped for the next encode — the
+/// same clip-boundary hole [`pop_scene_layer`] covers
+/// (water-rs/hydrolysis#250).
+pub(crate) fn append_scene(
+    scene: &mut vello::Scene,
+    child: &vello::Scene,
+    transform: Option<Affine>,
+) {
+    scene.append(child, transform);
+    scene.encoding_mut().force_next_transform_and_style();
+}
+
 pub struct VelloDrawContext<'a> {
     scene: &'a mut vello::Scene,
     transform_stack: Vec<Affine>,
@@ -154,7 +183,7 @@ impl DrawContext for VelloDrawContext<'_> {
     }
 
     fn pop_layer(&mut self) {
-        self.scene.pop_layer();
+        pop_scene_layer(self.scene);
     }
 
     fn push_transform(&mut self, affine: Affine) {

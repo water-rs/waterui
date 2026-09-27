@@ -30,7 +30,8 @@ use waterui_graphics::input::{
 use waterui_graphics::{
     GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneInvalidator, SceneView,
 };
-use waterui_layout::stack::vstack;
+use waterui_layout::scroll::scroll;
+use waterui_layout::stack::{vstack, zstack};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -1309,5 +1310,64 @@ fn secondary_button_reaches_an_input_surface_without_a_context_menu() {
             },
         ],
         "the secondary button reaches the surface when no menu claims it"
+    );
+}
+
+/// water-rs/hydrolysis#249 — scroll targets carried no depth/order, so the
+/// wheel handler consulted the embedded surface first and the topmost
+/// overlay never saw the delta. A scroll view stacked above an
+/// input-receiving surface must win the wheel and the trackpad pan.
+#[test]
+fn a_scroll_view_stacked_above_a_surface_receives_the_wheel_and_pan() {
+    let log = ProbeLog::default();
+    let mut runtime = runtime_with(zstack((
+        GpuSurface::new(InputProbe {
+            log: log.clone(),
+            caret: None,
+        }),
+        scroll(().size(SURFACE_WIDTH, 1_500.0)),
+    )));
+    let start = Instant::now();
+    settled(&mut runtime, start);
+    let _ = log.drain();
+
+    let (x, y) = window_point(20.0, 20.0);
+    runtime.push_input_event(InputEvent::Scroll {
+        x,
+        y,
+        dx: 0.0,
+        dy: -40.0,
+        is_line_delta: false,
+    });
+    runtime.push_input_event(InputEvent::TrackpadPan {
+        x,
+        y,
+        dx: 0.0,
+        dy: -40.0,
+        phase: TouchPhase::Moved,
+    });
+    runtime.push_input_event(InputEvent::TrackpadPan {
+        x,
+        y,
+        dx: 0.0,
+        dy: 0.0,
+        phase: TouchPhase::Ended,
+    });
+    let _ = runtime.pump_at(false, start + Duration::from_millis(100));
+
+    let metrics = runtime
+        .renderer()
+        .scroll_metrics_at(x, y)
+        .expect("the overlay scroll registers a scroll target");
+    assert!(
+        metrics.offset_y > 0.0,
+        "the topmost scroll view must scroll; before the fix the surface \
+         swallowed the deltas: {metrics:?}"
+    );
+    assert!(
+        !log.drain()
+            .iter()
+            .any(|event| matches!(event, SurfaceInputEvent::Scroll { .. })),
+        "the surface beneath the scroll view must see none of its deltas"
     );
 }

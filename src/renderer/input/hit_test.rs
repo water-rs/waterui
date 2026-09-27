@@ -157,12 +157,20 @@ pub(crate) struct ScrollTarget {
     /// The scroll view's offset handle, ticked per frame while a smoothed
     /// wheel scroll glides toward its target.
     pub(crate) handle: crate::scroll::ScrollHandle,
+    /// The stacking key every target carries: a scroll region painted above
+    /// an embedded surface wins the wheel through the same (order, depth)
+    /// priority pointer and text targets already sort by.
+    pub(crate) depth: usize,
+    pub(crate) order: usize,
 }
 
 #[derive(Clone)]
 pub(crate) struct TrackpadPanTarget {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) action: TrackpadPanAction,
+    /// See [`ScrollTarget::depth`].
+    pub(crate) depth: usize,
+    pub(crate) order: usize,
 }
 
 /// A native subview the host platform hit-tests for itself, together with the
@@ -310,6 +318,36 @@ pub(crate) struct HitTestState {
     /// gesture engine owns the recognizers but not a bounds query the press
     /// path needs.
     pub(crate) gesture_regions: Vec<GestureRegion>,
+    /// The clip stack of the paint layers currently open, in window hit-test
+    /// space. Every entry is already intersected with the ones below it, so
+    /// the top is the effective clip. [`HydrolysisRenderer::push_layer_rect`]
+    /// pushes the same rect it clips paint to and `pop_layer` pops it, so a
+    /// hit region flushed inside a scroll viewport can't outlive the paint
+    /// clip (water-rs/hydrolysis#252).
+    pub(crate) hit_clip_stack: Vec<vello::kurbo::Rect>,
+}
+
+impl HitTestState {
+    /// Intersects `rect` — already in window hit-test space — with the clip
+    /// stack the open paint layers pushed.
+    pub(crate) fn clip_hit_bounds(&self, rect: vello::kurbo::Rect) -> vello::kurbo::Rect {
+        self.hit_clip_stack
+            .last()
+            .map_or(rect, |clip| rect.intersect(*clip))
+    }
+
+    /// Pushes a clip rect in window hit-test space, intersected with the
+    /// enclosing clips so the top of the stack is always the effective clip.
+    pub(crate) fn push_hit_clip(&mut self, rect: vello::kurbo::Rect) {
+        let clip = self.clip_hit_bounds(rect);
+        self.hit_clip_stack.push(clip);
+    }
+
+    pub(crate) fn pop_hit_clip(&mut self) {
+        self.hit_clip_stack
+            .pop()
+            .expect("hydrolysis renderer: hit clip stack underflow");
+    }
 }
 
 impl HitTestState {
@@ -325,11 +363,13 @@ impl HitTestState {
         self.scroll_targets.clear();
         self.trackpad_pan_targets.clear();
         self.modal_interaction = None;
+        self.hit_clip_stack.clear();
     }
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.hit_test_opacity = 1.0;
         self.hit_test_order = 0;
+        self.hit_clip_stack.clear();
         self.focus_dropped_this_frame = false;
         self.interaction.begin_rebuild_frame();
     }
@@ -2454,7 +2494,20 @@ impl HydrolysisRenderer {
         // A discrete wheel notch is complete on its own; a pixel-precise wheel
         // delta arriving through this path carries no phase, so neither ends a
         // gesture that the surface should settle.
-        if self.handle_embedded_scroll(point, dx, dy, unit, is_line_delta) {
+        let scroll_priority = self
+            .hit_test
+            .scroll_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .map(|(index, target)| {
+                SemanticCore::target_hit_priority(target.depth, target.order, index)
+            })
+            .max();
+        if let Some((_, target, position)) =
+            self.embedded_target_wins_at(point, scroll_priority, None)
+        {
+            target.sink.scroll(position, dx, dy, unit, is_line_delta);
             return true;
         }
         // Newest-registered first: every scroll container registers its target
@@ -2508,7 +2561,33 @@ impl HydrolysisRenderer {
     ) -> bool {
         let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let finished = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
-        if self.handle_embedded_scroll(point, dx, dy, ScrollUnit::Pixel, finished) {
+        let pan_priority = self
+            .hit_test
+            .trackpad_pan_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .map(|(index, target)| {
+                SemanticCore::target_hit_priority(target.depth, target.order, index)
+            })
+            .max();
+        let scroll_priority = self
+            .hit_test
+            .scroll_targets
+            .iter()
+            .enumerate()
+            .filter(|(_, target)| target.bounds.contains(point))
+            .map(|(index, target)| {
+                SemanticCore::target_hit_priority(target.depth, target.order, index)
+            })
+            .max();
+        let contender_priority = pan_priority.max(scroll_priority);
+        if let Some((_, target, position)) =
+            self.embedded_target_wins_at(point, contender_priority, None)
+        {
+            target
+                .sink
+                .scroll(position, dx, dy, ScrollUnit::Pixel, finished);
             return true;
         }
         for target in self.hit_test.trackpad_pan_targets.iter_mut().rev() {
@@ -2561,6 +2640,7 @@ impl SemanticCore {
     ) {
         // The subview claims a slot in the same order every hit-test target
         // uses, which is what makes "registered later" mean "painted above".
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         self.hit_test
             .native_view_occlusions
@@ -2582,6 +2662,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         let interaction = press_slot
             .as_ref()
@@ -2615,6 +2696,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
@@ -2685,6 +2767,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         self.hit_test.drop_targets.push(DropTarget {
             bounds,
@@ -2817,6 +2900,7 @@ impl HydrolysisRenderer {
         // re-flush (not just a re-present of the stale scene).
         handles.mark_chrome_state_dependent();
         if !disabled && self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
+            let bounds = self.hit_test.clip_hit_bounds(bounds);
             self.hit_test.hover_targets.push(HoverTarget {
                 bounds,
                 slot: hover_slot,
@@ -2868,6 +2952,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
@@ -2899,6 +2984,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
@@ -2957,6 +3043,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         self.hit_test
             .cursor_targets
             .push(CursorTarget { bounds, style });
@@ -2985,6 +3072,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let (slot, _hovering) = self.hit_test.interaction.bind_hover(&key);
         self.hit_test.hover_targets.push(HoverTarget {
             bounds,
@@ -3040,10 +3128,14 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
+        let order = self.hit_test.next_hit_test_order();
         self.hit_test.scroll_targets.push(ScrollTarget {
             bounds,
             action: Rc::new(RefCell::new(action)),
             handle,
+            depth: self.render_depth,
+            order,
         });
     }
 
@@ -3054,9 +3146,13 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
+        let order = self.hit_test.next_hit_test_order();
         self.hit_test.trackpad_pan_targets.push(TrackpadPanTarget {
             bounds,
             action: Rc::new(RefCell::new(action)),
+            depth: self.render_depth,
+            order,
         });
     }
 

@@ -265,7 +265,14 @@ impl HydrolysisRenderer {
         self.subtree_captures.depth = depth + 1;
         // The slot clip keeps a child that paints outside its bounds (a shadow,
         // an overflowing transform) from bleeding into its neighbours' slots.
-        self.push_layer_rect(1.0, slot_transform, local_bounds);
+        self.push_layer_rect(
+            1.0,
+            LayerTransforms {
+                paint: slot_transform,
+                hit: local_ctx.hit_transform,
+            },
+            local_bounds,
+        );
         child.flush(self, local_ctx, env);
         self.pop_layer();
         self.subtree_captures.depth = depth;

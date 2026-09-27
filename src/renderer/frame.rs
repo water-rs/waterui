@@ -2,6 +2,17 @@
 //! stack management, frame triggers, and per-frame statistics.
 
 use super::*;
+use vello::kurbo::Shape as _;
+
+/// The two transforms a clip layer is pushed under: `paint` positions the
+/// vello scene layer, `hit` positions the matching hit-test clip — they diverge
+/// where paint and hit spaces differ (e.g. a filter-atlas capture paints into
+/// slot space but keeps window hit space).
+#[derive(Clone, Copy)]
+pub(crate) struct LayerTransforms {
+    pub(crate) paint: vello::kurbo::Affine,
+    pub(crate) hit: vello::kurbo::Affine,
+}
 
 /// What one frame's window pass was made of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -419,7 +430,7 @@ impl HydrolysisRenderer {
     pub(crate) fn push_layer_rect(
         &mut self,
         alpha: f32,
-        transform: vello::kurbo::Affine,
+        transforms: LayerTransforms,
         rect: vello::kurbo::Rect,
     ) {
         self.record_clip_layer_push();
@@ -427,12 +438,17 @@ impl HydrolysisRenderer {
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             alpha,
-            transform,
+            transforms.paint,
             &rect,
         );
+        // The same clip paint uses bounds the hit regions flushed inside the
+        // layer: a row straddling a scroll viewport keeps only the part of its
+        // hit bounds that is actually painted (water-rs/hydrolysis#252).
+        self.hit_test
+            .push_hit_clip(transformed_rect(transforms.hit, rect));
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
-            transform,
+            transform: transforms.paint,
             shape: LayerShape::Rect(rect),
         });
     }
@@ -440,7 +456,7 @@ impl HydrolysisRenderer {
     pub(super) fn push_layer_path(
         &mut self,
         alpha: f32,
-        transform: vello::kurbo::Affine,
+        transforms: LayerTransforms,
         path: vello::kurbo::BezPath,
     ) {
         self.record_clip_layer_push();
@@ -448,12 +464,14 @@ impl HydrolysisRenderer {
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             alpha,
-            transform,
+            transforms.paint,
             &path,
         );
+        self.hit_test
+            .push_hit_clip(transformed_rect(transforms.hit, path.bounding_box()));
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
-            transform,
+            transform: transforms.paint,
             shape: LayerShape::Path(path),
         });
     }
@@ -461,7 +479,7 @@ impl HydrolysisRenderer {
     pub(super) fn push_layer_rounded_rect(
         &mut self,
         alpha: f32,
-        transform: vello::kurbo::Affine,
+        transforms: LayerTransforms,
         path: vello::kurbo::BezPath,
         rect: vello::kurbo::Rect,
         corner_width: f64,
@@ -472,12 +490,14 @@ impl HydrolysisRenderer {
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
             alpha,
-            transform,
+            transforms.paint,
             &path,
         );
+        self.hit_test
+            .push_hit_clip(transformed_rect(transforms.hit, rect));
         self.compositor.active_scene_layers.push(ActiveSceneLayer {
             alpha,
-            transform,
+            transform: transforms.paint,
             shape: LayerShape::RoundedRect {
                 path,
                 rect,
@@ -488,11 +508,12 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn pop_layer(&mut self) {
-        self.scene.pop_layer();
+        crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
         self.compositor
             .active_scene_layers
             .pop()
             .expect("hydrolysis renderer: pop_layer underflow");
+        self.hit_test.pop_hit_clip();
     }
 
     pub(super) fn record_clip_layer_push(&mut self) {
@@ -515,7 +536,7 @@ impl HydrolysisRenderer {
         );
 
         for _ in 0..self.compositor.active_scene_layers.len() {
-            self.scene.pop_layer();
+            crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
         }
 
         if !scene_has_content(&self.scene) {

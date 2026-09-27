@@ -446,7 +446,8 @@ impl HydrolysisRenderer {
                 );
             },
         );
-        scene.append(
+        crate::engine::vello_backend::append_scene(
+            scene,
             &fragment,
             Some(ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
         );
@@ -482,7 +483,8 @@ impl HydrolysisRenderer {
                 Self::encode_text_layout(state.text.as_ref(), fragment, layout, effective, Some(1));
             },
         );
-        scene.append(
+        crate::engine::vello_backend::append_scene(
+            scene,
             &fragment,
             Some(ctx.transform * vello::kurbo::Affine::translate((x, y))),
         );

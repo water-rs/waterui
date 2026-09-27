@@ -221,6 +221,10 @@ waterui-icons-lucide = "0.5.1"
 waterui-chart = "0.3.0"
 # Drives the text-measure bench (`benches/text_measure.rs`).
 criterion = "0.8"
+# The clip-boundary transform test resolves a scene's packed tag stream; it is
+# the same fork rev the patch table pins for `vello`, so the `Encoding` and
+# `Resolver` types are the ones `vello::Scene` exposes.
+vello_encoding = { git = "https://github.com/lexoliu/vello", rev = "76724fcf31f19ec7b5cf0c58b8b45699d491a5f6" }
 
 # The text-measure bench rides the real layout path; `harness = false` hands
 # the binary's `main` to criterion.

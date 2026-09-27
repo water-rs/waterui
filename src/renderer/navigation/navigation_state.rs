@@ -26,7 +26,7 @@ impl NavigationCapturedScene {
     pub(crate) fn composed(&self) -> vello::Scene {
         let mut scene = self.scene.clone();
         for element in self.sources.values().chain(self.destinations.values()) {
-            scene.append(&element.scene, None);
+            crate::engine::vello_backend::append_scene(&mut scene, &element.scene, None);
         }
         scene
     }
@@ -35,12 +35,12 @@ impl NavigationCapturedScene {
         let mut scene = self.scene.clone();
         for (element_id, element) in &self.sources {
             if !source || *element_id != id {
-                scene.append(&element.scene, None);
+                crate::engine::vello_backend::append_scene(&mut scene, &element.scene, None);
             }
         }
         for (element_id, element) in &self.destinations {
             if source || *element_id != id {
-                scene.append(&element.scene, None);
+                crate::engine::vello_backend::append_scene(&mut scene, &element.scene, None);
             }
         }
         scene

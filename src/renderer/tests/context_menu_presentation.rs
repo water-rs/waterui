@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use accesskit::{Role, TreeUpdate};
+use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
@@ -880,6 +880,68 @@ fn the_plain_popup_draws_the_theme_panel() {
         below[3] > 16 && below[0] < 90,
         "the panel's shadow draws in the window's margin ring, got {below:?}"
     );
+}
+
+/// water-rs/hydrolysis#248: a disabled menu command's label draws at
+/// Material's disabled contrast — on-surface at 38% opacity — not at the
+/// enabled row's full contrast, and its press stays inert.
+#[test]
+fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
+    let copied = Binding::container(false);
+    let copied_for_view = copied.clone();
+    let mut runtime = runtime(move || {
+        let copied = copied_for_view.clone();
+        ContextMenu::new(vec![
+            "Copy".action(move || copied.set(true)).disabled(true),
+            "Paste".action(|| {}),
+        ])
+    });
+    let (_, update) = secondary_click_label(&mut runtime, "host");
+    let pop = runtime.popup_frame(0).expect("the popup mounts");
+
+    // Rows lay out under the panel margin: first the disabled `Copy`, then
+    // `Paste` — each `row_height` tall inside `vertical_padding`.
+    let metrics = MinimalTestTheme::default().text_context_menu_metrics();
+    let margin = crate::renderer::POPUP_MENU_PANEL_MARGIN as u32;
+    let row_top = margin + metrics.vertical_padding as u32;
+    let row_bottom = row_top + metrics.row_height as u32;
+    let (x0, x1) = (margin + 2, pop.width - margin - 2);
+    let darkest_ink = |y0: u32, y1: u32| -> u32 {
+        let mut darkest = u32::MAX;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let px = pixel(&pop, x, y);
+                darkest = darkest.min((px[0] as u32 + px[1] as u32 + px[2] as u32) / 3);
+            }
+        }
+        darkest
+    };
+    let disabled_ink = darkest_ink(row_top, row_bottom);
+    let enabled_ink = darkest_ink(row_bottom, row_bottom + metrics.row_height as u32);
+
+    assert!(
+        enabled_ink < 80,
+        "the enabled row's label draws at full contrast, got darkest {enabled_ink}"
+    );
+    assert!(
+        disabled_ink > enabled_ink + 60,
+        "the disabled row's label draws at 38% on-surface, got darkest {disabled_ink} \
+         vs enabled {enabled_ink}"
+    );
+
+    // The press stays inert: invoking the disabled row runs nothing and the
+    // menu stays open.
+    let (copy_id, _) =
+        find_by_label(&update, Role::Button, "Copy").expect("the disabled row stays in the tree");
+    runtime.perform_accessibility_action(ActionRequest {
+        action: Action::Click,
+        target_node: copy_id,
+        target_tree: TreeId::ROOT,
+        data: None,
+    });
+    let _ = pump_until_settled(&mut runtime);
+    assert!(!copied.snapshot(), "the disabled row's press stays inert");
+    assert_eq!(runtime.popup_frames().len(), 1, "the menu stays open");
 }
 
 /// A destructive command draws in the theme's error colour on the plain

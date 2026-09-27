@@ -1600,7 +1600,7 @@ fn render_navigation_page_scene(
         None,
         &bounds,
     );
-    scene.append(&captured.scene, None);
+    crate::engine::vello_backend::append_scene(&mut scene, &captured.scene, None);
     if identity != 0 {
         core::mem::swap(renderer.scene_mut(), &mut scene);
         let context = RenderContext::with_transforms(

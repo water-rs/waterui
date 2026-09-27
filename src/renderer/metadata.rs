@@ -166,7 +166,14 @@ impl HydrolysisRenderer {
         {
             match regular_clip {
                 RegularClipShape::Rect(rect) => {
-                    renderer.push_layer_rect(1.0, ctx.transform, rect);
+                    renderer.push_layer_rect(
+                        1.0,
+                        LayerTransforms {
+                            paint: ctx.transform,
+                            hit: ctx.hit_transform,
+                        },
+                        rect,
+                    );
                 }
                 RegularClipShape::RoundedRect {
                     rect,
@@ -174,7 +181,10 @@ impl HydrolysisRenderer {
                     corner_height,
                 } => renderer.push_layer_rounded_rect(
                     1.0,
-                    ctx.transform,
+                    LayerTransforms {
+                        paint: ctx.transform,
+                        hit: ctx.hit_transform,
+                    },
                     clip_path,
                     rect,
                     corner_width,
@@ -182,7 +192,14 @@ impl HydrolysisRenderer {
                 ),
             }
         } else {
-            renderer.push_layer_path(1.0, ctx.transform, clip_path);
+            renderer.push_layer_path(
+                1.0,
+                LayerTransforms {
+                    paint: ctx.transform,
+                    hit: ctx.hit_transform,
+                },
+                clip_path,
+            );
         }
         render_content(renderer);
         renderer.pop_layer();

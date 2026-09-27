@@ -1,3 +1,4 @@
+mod clip_transform;
 mod collection_update;
 use super::*;
 use std::borrow::Cow;
@@ -45,6 +46,7 @@ mod retained_scene;
 mod scene_offer;
 #[cfg(feature = "accessibility")]
 mod scroll_frames;
+mod scroll_hit_clip;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod semantic_runtime;
 mod shadow;

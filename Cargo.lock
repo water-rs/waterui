@@ -2985,6 +2985,7 @@ dependencies = [
  "vello",
  "vello_common",
  "vello_cpu",
+ "vello_encoding",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-clipboard",

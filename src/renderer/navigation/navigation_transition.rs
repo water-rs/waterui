@@ -199,8 +199,8 @@ fn append_matched_element(
         transform,
         &target,
     );
-    scene.append(&element.scene, Some(transform * local));
-    scene.pop_layer();
+    crate::engine::vello_backend::append_scene(scene, &element.scene, Some(transform * local));
+    crate::engine::vello_backend::pop_scene_layer(scene);
 }
 
 fn append_scene_with_opacity(
@@ -247,8 +247,8 @@ fn append_scene_layer(
         transform,
         &transformed_bounds,
     );
-    scene.append(content, Some(transform * local));
-    scene.pop_layer();
+    crate::engine::vello_backend::append_scene(scene, content, Some(transform * local));
+    crate::engine::vello_backend::pop_scene_layer(scene);
 }
 
 #[cfg(test)]

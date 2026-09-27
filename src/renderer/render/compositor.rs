@@ -1506,7 +1506,7 @@ impl HydrolysisRenderer {
             &vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
         );
         for _ in 0..active_layers.len() {
-            mask_scene.pop_layer();
+            crate::engine::vello_backend::pop_scene_layer(&mut mask_scene);
         }
         self.render_vello_layer_to_texture(device, queue, &mask_scene, width, height)
     }

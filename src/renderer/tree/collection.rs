@@ -570,7 +570,14 @@ impl CollectionNode {
             ),
             None => bounds,
         };
-        renderer.push_layer_rect(factor, child_ctx.transform, clip);
+        renderer.push_layer_rect(
+            factor,
+            LayerTransforms {
+                paint: child_ctx.transform,
+                hit: child_ctx.hit_transform,
+            },
+            clip,
+        );
         let previous_opacity = renderer.hit_test.hit_test_opacity;
         renderer.hit_test.hit_test_opacity = previous_opacity * factor;
         entry.node.flush(renderer, child_ctx, env);

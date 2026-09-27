@@ -236,6 +236,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return None;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         self.hit_test.gesture_regions.push(GestureRegion {
             bounds,
@@ -270,6 +271,7 @@ impl SemanticCore {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
         self.hit_test.gesture_regions.push(GestureRegion {
             bounds,
@@ -322,7 +324,7 @@ impl SemanticCore {
         self.text_editing.text_input_targets.push(TextInputTarget {
             interaction_key: data.target.interaction_key,
             modal: data.target.modal,
-            bounds: data.target.bounds,
+            bounds: self.hit_test.clip_hit_bounds(data.target.bounds),
             cursor_area: data.target.cursor_area,
             text_bounds: data.target.text_bounds,
             text_clip_bounds: data.target.text_clip_bounds,
