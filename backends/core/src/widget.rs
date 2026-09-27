@@ -845,6 +845,9 @@ pub struct TabsMetrics {
     pub active_indicator_height: f64,
     /// Selected tab active indicator corner radius.
     pub active_indicator_radius: f64,
+    /// Gap between a tab item's icon and its label: vertical space when the
+    /// icon sits above the label, horizontal space when it sits beside it.
+    pub icon_label_spacing: f64,
 }
 
 impl TabsMetrics {
@@ -856,6 +859,7 @@ impl TabsMetrics {
         button_horizontal_inset: f64,
         active_indicator_height: f64,
         active_indicator_radius: f64,
+        icon_label_spacing: f64,
     ) -> Self {
         Self {
             bar_height,
@@ -863,6 +867,7 @@ impl TabsMetrics {
             button_horizontal_inset,
             active_indicator_height,
             active_indicator_radius,
+            icon_label_spacing,
         }
     }
 }
