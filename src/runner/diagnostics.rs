@@ -3,15 +3,14 @@
 use super::*;
 
 pub(super) const DEFAULT_RENDER_DIAG_INTERVAL_MS: u64 = 1_000;
-pub(super) const DEFAULT_RENDER_DIAG_SLOW_FRAME_MS: u64 = 16;
 
 #[derive(Clone, Copy)]
 pub(super) struct RenderDiagnosticsConfig {
     pub(super) enabled: bool,
     pub(super) interval: Duration,
     /// Explicit slow-frame threshold from the env var, when the operator sets one.
-    /// `None` means "derive from the display refresh rate" (one frame budget), with the
-    /// 16ms constant used only as the no-monitor fallback.
+    /// `None` means "derive from the display refresh rate" (one frame budget), with
+    /// [`crate::TARGET_FRAME_INTERVAL`] as the no-monitor fallback.
     pub(super) slow_frame_threshold_override: Option<Duration>,
 }
 
@@ -23,14 +22,11 @@ impl RenderDiagnosticsConfig {
             "WATERUI_HYDROLYSIS_RENDER_DIAG_INTERVAL_MS",
             DEFAULT_RENDER_DIAG_INTERVAL_MS,
         );
-        let slow_frame_threshold_override =
-            std::env::var_os("WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS").map(|_| {
-                Duration::from_millis(parse_positive_u64_env(
-                    "hydrolysis runner",
-                    "WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS",
-                    DEFAULT_RENDER_DIAG_SLOW_FRAME_MS,
-                ))
-            });
+        let slow_frame_threshold_override = parse_optional_positive_u64_env(
+            "hydrolysis runner",
+            "WATERUI_HYDROLYSIS_RENDER_DIAG_SLOW_FRAME_MS",
+        )
+        .map(Duration::from_millis);
 
         Self {
             enabled,
@@ -89,7 +85,7 @@ impl RenderDiagnostics {
         Self {
             slow_frame_threshold: config
                 .slow_frame_threshold_override
-                .unwrap_or_else(|| Duration::from_millis(DEFAULT_RENDER_DIAG_SLOW_FRAME_MS)),
+                .unwrap_or(crate::TARGET_FRAME_INTERVAL),
             config,
             report_started_at: Instant::now(),
             totals: RenderPhaseTotals::default(),

@@ -13,6 +13,12 @@ pub(crate) fn parse_bool_env(component: &str, name: &str, default: bool) -> bool
 }
 
 pub(crate) fn parse_positive_u64_env(component: &str, name: &str, default: u64) -> u64 {
+    parse_optional_positive_u64_env(component, name).unwrap_or(default)
+}
+
+/// A positive integer from environment variable `name`, or `None` when it is
+/// not set. A set but invalid value panics.
+pub(crate) fn parse_optional_positive_u64_env(component: &str, name: &str) -> Option<u64> {
     match std::env::var(name) {
         Ok(raw) => {
             let parsed = raw
@@ -22,9 +28,9 @@ pub(crate) fn parse_positive_u64_env(component: &str, name: &str, default: u64) 
             if parsed == 0 {
                 panic!("{component}: {name} must be > 0");
             }
-            parsed
+            Some(parsed)
         }
-        Err(std::env::VarError::NotPresent) => default,
+        Err(std::env::VarError::NotPresent) => None,
         Err(error) => panic!("{component}: invalid {name} environment value: {error}"),
     }
 }

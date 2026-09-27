@@ -66,7 +66,7 @@ pub use window::HeadlessSnapshot;
 pub(crate) use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
-use crate::env::{parse_bool_env, parse_positive_u64_env};
+use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
