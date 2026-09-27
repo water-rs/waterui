@@ -3,6 +3,7 @@
 use super::*;
 #[cfg(feature = "frame-profile")]
 use crate::platform::SurfaceProvider as _;
+use crate::renderer::MenuShortcutRegistry;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
@@ -414,6 +415,11 @@ impl HeadlessRuntime {
             HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&theme))
         };
         super::seed_core(&mut renderer, &fonts);
+        renderer.set_window_id(
+            env.get::<MenuShortcutRegistry>()
+                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .mint_window_id(),
+        );
 
         Self {
             env,
@@ -454,6 +460,12 @@ impl HeadlessRuntime {
             HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
         };
         super::seed_core(&mut renderer, &self.fonts);
+        renderer.set_window_id(
+            self.env
+                .get::<MenuShortcutRegistry>()
+                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .mint_window_id(),
+        );
         RuntimeWindow::new(
             window,
             platform,

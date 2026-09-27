@@ -73,7 +73,7 @@ use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
 use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery};
-use crate::renderer::{HydrolysisTextContextMenuMode, PopupWindowManager};
+use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
 use crate::time::Instant;
 
 /// The global executor every runner installs before anything can spawn.
@@ -149,6 +149,7 @@ fn install_headless_window_managers(
     env.insert(PopupWindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
+    env.insert(MenuShortcutRegistry::default());
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
@@ -193,6 +194,10 @@ pub fn run(app: App, style: impl crate::Style) {
     // system's fonts for itself.
     let fonts = FontCollection::new(native_resource_fonts());
     fonts.clone().install(&mut env);
+    let shortcuts = env
+        .get::<MenuShortcutRegistry>()
+        .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+        .clone();
     let mut pending_windows = VecDeque::from(windows);
     while let Some(window) = pending_windows.pop_front() {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
@@ -206,6 +211,7 @@ pub fn run(app: App, style: impl crate::Style) {
             HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&theme))
         };
         seed_core(&mut renderer, &fonts);
+        renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         render_window(&mut runtime, &env, &mut || local_executor.drain());
         pending_windows.extend(pending_window_queue.borrow_mut().drain(..));

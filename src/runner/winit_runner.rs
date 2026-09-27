@@ -34,7 +34,8 @@ use winit::window::{Window as NativeWindow, WindowId};
 
 use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
 use crate::renderer::{
-    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin, PopupWindowManager,
+    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
+    MenuShortcutRegistry, PopupWindowManager,
 };
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
@@ -250,6 +251,11 @@ pub fn run(
             let _ = event_proxy.send_event(RunnerEvent::MountPendingWindows);
         }
     }));
+    // Every window of the app resolves menu chords through the shared
+    // registry: a compositor that hands a popup window keyboard focus routes
+    // the menu's chords to that window's dispatch, which must resolve them
+    // while the menu is open (water-rs/hydrolysis#247).
+    env.insert(MenuShortcutRegistry::default());
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
@@ -505,6 +511,9 @@ impl WinitRunner {
         super::seed_core(&mut renderer, &self.fonts);
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
+        runtime
+            .renderer
+            .set_window_id(crate::renderer::WindowId::Winit(runtime.platform.id()));
         if !activates {
             self.popup_window_ids.insert(runtime.platform.id());
         }

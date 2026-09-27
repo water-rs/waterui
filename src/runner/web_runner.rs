@@ -29,7 +29,7 @@ use web_sys::Response;
 
 use super::fonts::ResourceFontFamilies;
 use crate::platform::{BrowserWindow, PlatformWindow};
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode};
+use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
@@ -312,6 +312,9 @@ pub fn run(app: App, style: impl crate::Style) {
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
         super::install_native_component_hooks(&mut env);
+        // Every runner seeds the chord table so mounted menus resolve
+        // shortcuts through the same path (water-rs/hydrolysis#247).
+        env.insert(MenuShortcutRegistry::default());
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
@@ -336,6 +339,11 @@ pub fn run(app: App, style: impl crate::Style) {
         let fonts = FontCollection::new(font_cx);
         fonts.clone().install(&mut env);
         super::fonts::seed_core(&mut renderer, &fonts);
+        renderer.set_window_id(
+            env.get::<MenuShortcutRegistry>()
+                .expect("the web runner seeds MenuShortcutRegistry")
+                .mint_window_id(),
+        );
         let runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);
         let accessibility_actions = Rc::new(RefCell::new(VecDeque::new()));
         let accessibility_bridge =

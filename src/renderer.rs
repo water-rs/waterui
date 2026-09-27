@@ -238,6 +238,11 @@ pub struct SemanticCore {
     next_gesture_group_id: usize,
     text_editing: TextEditingState,
     popup_menu: PopupMenuState,
+    /// The identity the runner gave the window this core renders — menu-chord
+    /// dispatch scopes mounted `Menu` sources by it (water-rs/hydrolysis#247).
+    /// Renderers no runner claimed — embedded GPU hosts, direct test
+    /// construction — keep [`WindowId::Orphan`].
+    window_id: WindowId,
     render_depth: usize,
     /// The retained nodes whose subtrees are currently flushing, innermost
     /// last — the ancestry chain input registration reads to tell a gesture
@@ -375,6 +380,13 @@ const TEXT_SELECTION_MULTI_CLICK_DISTANCE: f64 = 6.0;
 const TEXT_CONTEXT_MENU_WINDOW_TITLE: &str = "";
 
 impl SemanticCore {
+    /// Assigns the identity the runner minted for the window this core
+    /// renders — called once when the runner creates the window
+    /// (water-rs/hydrolysis#247).
+    pub(crate) fn set_window_id(&mut self, window_id: WindowId) {
+        self.window_id = window_id;
+    }
+
     pub(crate) fn new(frame_instant: Instant) -> Self {
         Self {
             state: HydroState::default(),
@@ -384,6 +396,7 @@ impl SemanticCore {
             next_gesture_group_id: 0,
             text_editing: TextEditingState::default(),
             popup_menu: PopupMenuState::default(),
+            window_id: WindowId::Orphan,
             render_depth: 0,
             owner_stack: Vec::new(),
             signals: FrameSignals::new(frame_instant),

@@ -36,6 +36,8 @@ mod list_row_focus;
 mod list_row_hit;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_row_metrics;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod menu_shortcuts;
 mod mid_flush_subview;
 mod perf_full_rebuild;
 mod perf_scroll;
@@ -55,6 +57,8 @@ mod shadow;
 mod teardown_order;
 mod text_ink;
 mod tree;
+mod when_payload;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 #[cfg(not(target_arch = "wasm32"))]
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
@@ -199,6 +203,9 @@ fn themed_test_environment() -> Environment {
     let mut env = Environment::new();
     crate::testing::install_theme(&mut env);
     crate::localization::install(&mut env);
+    // The runners seed the chord table; a test that mounts menus resolves
+    // shortcuts through the same path (water-rs/hydrolysis#247).
+    env.insert(crate::renderer::MenuShortcutRegistry::default());
     env.insert(BadgeDrawLog(Rc::new(RefCell::new(Vec::new()))));
     env
 }

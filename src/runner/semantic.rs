@@ -13,7 +13,7 @@
 
 use super::executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
 use super::*;
-use crate::renderer::SemanticCore;
+use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
@@ -44,8 +44,9 @@ struct SemanticWindow {
 }
 
 impl SemanticWindow {
-    fn new(window: Window, fonts: &FontCollection) -> Self {
+    fn new(window: Window, fonts: &FontCollection, window_id: WindowId) -> Self {
         let mut core = SemanticCore::new(Instant::now());
+        core.set_window_id(window_id);
         seed_core(&mut core, fonts);
         #[cfg(feature = "accessibility")]
         {
@@ -193,9 +194,13 @@ impl SemanticRuntime {
             waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),
         ));
 
+        let window_id = env
+            .get::<MenuShortcutRegistry>()
+            .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+            .mint_window_id();
         Self {
             env,
-            window: SemanticWindow::new(window, &fonts),
+            window: SemanticWindow::new(window, &fonts, window_id),
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
@@ -390,7 +395,13 @@ impl SemanticRuntime {
             .collect::<Vec<_>>();
         for window in pending {
             let fonts = self.fonts.clone();
-            self.popup_windows.push(SemanticWindow::new(window, &fonts));
+            let window_id = self
+                .env
+                .get::<MenuShortcutRegistry>()
+                .expect("install_headless_window_managers seeds MenuShortcutRegistry")
+                .mint_window_id();
+            self.popup_windows
+                .push(SemanticWindow::new(window, &fonts, window_id));
         }
     }
 

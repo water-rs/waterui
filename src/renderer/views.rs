@@ -36,34 +36,32 @@ pub(crate) fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
             // custom content fills the row's label slot and aligns it leading —
             // plain and subtitled rows share one leading edge.
             let semantic_text = command.semantic_label.semantic_text().clone();
-            let label = match command.subtitle.clone() {
-                Some(subtitle) => SemanticLabel::new(semantic_text, move || {
-                    AnyView::new(
-                        waterui_layout::frame::Frame::new(
-                            waterui_layout::stack::vstack((
-                                Text::new(styled.clone()),
-                                waterui_text::text(subtitle.clone()).caption().muted(),
-                            ))
-                            .alignment(HorizontalAlignment::Leading)
-                            .spacing(0.0),
-                        )
+            let subtitle = command.subtitle.clone();
+            let shortcut = command.shortcut.clone();
+            let label = SemanticLabel::new(semantic_text, move || {
+                let leading = match subtitle.clone() {
+                    Some(subtitle) => AnyView::new(
+                        waterui_layout::stack::vstack((
+                            Text::new(styled.clone()),
+                            waterui_text::text(subtitle).caption().muted(),
+                        ))
+                        .alignment(HorizontalAlignment::Leading)
+                        .spacing(0.0),
+                    ),
+                    None => AnyView::new(Text::new(styled.clone())),
+                };
+                AnyView::new(
+                    waterui_layout::frame::Frame::new(leading)
                         .alignment(waterui_layout::alignment::Leading)
                         .max_width(f32::INFINITY),
-                    )
-                }),
-                None => SemanticLabel::new(semantic_text, move || {
-                    AnyView::new(
-                        waterui_layout::frame::Frame::new(Text::new(styled.clone()))
-                            .alignment(waterui_layout::alignment::Leading)
-                            .max_width(f32::INFINITY),
-                    )
-                }),
-            };
+                )
+            });
             PopupMenuNode::Command {
                 label,
                 plain_label,
                 action: command.action,
-                disabled: command.disabled.snapshot(),
+                disabled: command.disabled,
+                shortcut,
                 subtitle: command.subtitle,
             }
         }

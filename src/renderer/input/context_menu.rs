@@ -308,7 +308,14 @@ impl HydrolysisRenderer {
         // takes them as before.
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
-        let text = self.popup_menu_text_metrics(&nodes, metrics, env);
+        // The menu's chords publish to the app's shared registry — live while
+        // any menu in the group is open — so a popup window that took
+        // keyboard focus still resolves them (water-rs/hydrolysis#247).
+        env.get::<MenuShortcutRegistry>()
+            .expect(MISSING_MENU_SHORTCUT_REGISTRY)
+            .register_popup(&nodes, &group, env);
+        let theme = self.theme();
+        let text = self.popup_menu_text_metrics(&nodes, metrics, env, &theme);
         let (menu_width, menu_height) = popup_menu_size(&nodes, metrics, &text);
 
         let presentation = opened_by_hold
@@ -353,16 +360,8 @@ impl HydrolysisRenderer {
             let menu_state = Binding::container(WindowState::Normal);
             group.push(menu_state.clone());
             let menu = RetainedSubview::new(AnyView::new(
-                popup_menu_content(
-                    nodes,
-                    0,
-                    metrics,
-                    text,
-                    popup_origin.x,
-                    popup_origin.y,
-                    menu_width,
-                )
-                .with(group.clone()),
+                popup_menu_content(nodes, 0, metrics, text, popup_origin, menu_width, &theme)
+                    .with(group.clone()),
             ));
             self.popup_menu.context_menu_presentation = Some(ContextMenuPresentation {
                 source_bounds,
@@ -403,7 +402,7 @@ impl HydrolysisRenderer {
             self.request_refresh();
         } else {
             let (window, state) =
-                popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text);
+                popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, &theme);
             group.push(state);
             env.get::<PopupWindowManager>()
                 .expect("hydrolysis popup menus require PopupWindowManager in environment")

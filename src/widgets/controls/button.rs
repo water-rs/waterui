@@ -397,6 +397,7 @@ pub(crate) fn menu_accessibility(
             (
                 LayoutPoint::new(bounds.x0 as f32, bounds.y1 as f32),
                 theme.text_context_menu_metrics(),
+                theme.clone(),
             )
         });
         let items = state.borrow().items.clone();
@@ -410,8 +411,8 @@ pub(crate) fn menu_accessibility(
                     let nodes = popup_menu_nodes(&items.snapshot());
                     let env = menu_env.layered_on(env);
                     match &request {
-                        Some((anchor, metrics)) => {
-                            renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env);
+                        Some((anchor, metrics, theme)) => {
+                            renderer.show_popup_menu_nodes(nodes, *anchor, *metrics, &env, theme);
                         }
                         None => {
                             renderer.activate_popup_menu_nodes(nodes, &env);
@@ -725,8 +726,14 @@ pub(crate) fn render_menu_parts(
     // Watch the items so a change schedules a frame (the popup re-reads live items
     // on open, but a change still re-presents the trigger).
     let _ = ctx.renderer_mut().read_signal(&items);
+    // A mounted `Menu` arms its commands' chords on the window's scope while
+    // mounted (water-rs/hydrolysis#247); unmount drops the render state and
+    // the registration with it.
+    ctx.renderer_mut()
+        .register_menu_shortcuts(Rc::downgrade(state), items.clone(), env.clone());
     let anchor = LayoutPoint::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
     let menu_metrics = theme.text_context_menu_metrics();
+    let menu_theme = theme.clone();
     // The popup opens in the trigger node's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let menu_env = env.clone();
@@ -740,6 +747,7 @@ pub(crate) fn render_menu_parts(
                 anchor,
                 menu_metrics,
                 &env,
+                &menu_theme,
             )
         },
     );

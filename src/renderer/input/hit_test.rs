@@ -2274,6 +2274,17 @@ impl SemanticCore {
             }
             return true;
         }
+        // Menu chords are consulted before the modifier early return and
+        // before focused text input sees the key: a matching shortcut claims
+        // the event (water-rs/hydrolysis#247). The runner seeds the registry
+        // into every window's environment — a missing one is a bug in the
+        // runner, not an absent table.
+        let registry = env
+            .get::<MenuShortcutRegistry>()
+            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
+        if registry.dispatch(self.window_id, key, modifiers, env) {
+            return true;
+        }
         if !activates || modifiers.control || modifiers.alt || modifiers.super_key {
             return false;
         }

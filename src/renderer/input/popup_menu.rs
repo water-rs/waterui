@@ -9,6 +9,7 @@ use waterui::theme::color::Surface;
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle, PickerMetrics};
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::label::LabelDisplayMode;
+use waterui_controls::menu::Shortcut;
 use waterui_controls::{Stepper, button, stepper::stepper};
 use waterui_core::metadata::{Metadata, MetadataKey};
 use waterui_core::{SignalExt as _, id::Id};
@@ -91,7 +92,13 @@ pub(crate) enum PopupMenuNode {
         label: SemanticLabel,
         plain_label: String,
         action: SharedAction<()>,
-        disabled: bool,
+        /// The live disabled signal — the row draws the snapshot it was built
+        /// with; the window's shortcut table reads it at dispatch time so a
+        /// command enabled while its menu is mounted fires again.
+        disabled: nami::Computed<bool>,
+        /// The command's keyboard chord: drawn as the row's trailing hint and
+        /// registered on the window's shortcut table while the menu is open.
+        shortcut: Option<Shortcut>,
         /// A secondary line under the label, drawn in the muted supporting
         /// text style; the row grows to fit it.
         subtitle: Option<Str>,
@@ -244,6 +251,9 @@ pub(crate) fn popup_menu_divider_height(metrics: TextContextMenuMetrics) -> f64 
     metrics.separator_thickness + metrics.vertical_padding * 2.0
 }
 
+/// The horizontal gap between a row's label and its shortcut hint.
+const MENU_SHORTCUT_HINT_GAP: f64 = 12.0;
+
 /// The text measurements [`popup_menu_size`] consumes: every row's intrinsic
 /// label/supporting-line width (the widest wins), the supporting line's
 /// intrinsic height, and the row's horizontal label inset — the theme's
@@ -255,6 +265,9 @@ pub(crate) struct PopupMenuTextMetrics {
     /// The widest label or supporting line across the menu, measured
     /// intrinsically — a row never wraps mid-word into a clipped column.
     pub(crate) max_row_text_width: f64,
+    /// The widest shortcut hint across the menu, `0.0` when no command
+    /// carries one — measured in the label-large supporting style.
+    pub(crate) max_hint_width: f64,
     /// The horizontal inset between a row's edge and its label —
     /// `md.comp.menu.list-item.leading-space`/`trailing-space` (12 dp in M3).
     pub(crate) row_inset: f64,
@@ -266,7 +279,13 @@ pub(crate) fn popup_menu_size(
     text: &PopupMenuTextMetrics,
 ) -> (f64, f64) {
     // `md.comp.menu.container.min-width`/`max-width` (112/280 dp).
-    let width = (text.row_inset * 2.0 + text.max_row_text_width)
+    // Shortcut hints widen the menu so a row never overlaps its label.
+    let hint_width = if text.max_hint_width > 0.0 {
+        text.max_hint_width + MENU_SHORTCUT_HINT_GAP
+    } else {
+        0.0
+    };
+    let width = (text.row_inset * 2.0 + text.max_row_text_width + hint_width)
         .clamp(metrics.min_width, metrics.max_width);
     // `md.comp.menu.list-item.container.height` (48 dp) per row — a
     // subtitled row grows by its supporting line — plus the container's
@@ -314,6 +333,32 @@ fn popup_menu_command_row(
     }
 }
 
+/// A row's trailing shortcut hint in the theme's menu-label treatment: the
+/// borderless-button label font the row's own label resolves through
+/// [`crate::engine::WidgetTheme::button_label_font`] — label-large in the
+/// Material mapping — over the muted (on-surface-variant) colour, dimmed
+/// with the row's label when the command is disabled. The drawn row and
+/// [`SemanticCore::popup_menu_text_metrics`] share it so the two cannot
+/// drift (water-rs/hydrolysis#247).
+fn shortcut_hint_styled(
+    shortcut: &Shortcut,
+    disabled: bool,
+    theme: &Rc<dyn crate::engine::WidgetTheme>,
+) -> StyledStr {
+    let mut styled = StyledStr::plain(shortcut_hint_text(shortcut)).foreground({
+        let color = Color::new(waterui::theme::color::MutedForeground);
+        if disabled {
+            color.with_opacity(0.38)
+        } else {
+            color
+        }
+    });
+    if let Some(font) = theme.button_label_font(ButtonStyle::Borderless) {
+        styled = styled.font(font);
+    }
+    styled
+}
+
 /// The menu's row content shared by the popup-window and the drawn
 /// `.context_menu` presentation: one row per node — borderless commands,
 /// dividers and submenu items — padded by the theme's vertical padding. The
@@ -324,9 +369,9 @@ pub(crate) fn popup_menu_content(
     depth: usize,
     metrics: TextContextMenuMetrics,
     text: PopupMenuTextMetrics,
-    popup_origin_x: f32,
-    popup_origin_y: f32,
+    popup_origin: LayoutPoint,
     width: f64,
+    theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> AnyView {
     let mut rows = Vec::with_capacity(nodes.len());
     let mut row_top = metrics.vertical_padding;
@@ -343,14 +388,36 @@ pub(crate) fn popup_menu_content(
                 label,
                 action,
                 disabled,
+                shortcut,
                 ..
             } => {
+                let disabled = disabled.snapshot();
                 let button = popup_menu_command_row(label, action, disabled);
-                // The button sizes to its label: a leading-aligned frame puts
-                // the content-width row at the menu's leading edge, so every
-                // row's label shares one leading x regardless of kind.
+                // The chord's trailing hint is a sibling pinned to the row's
+                // trailing inset by a spacer, styled by the shared builder
+                // (water-rs/hydrolysis#247).
+                let row_content = match shortcut {
+                    Some(shortcut) => AnyView::new(
+                        hstack((
+                            AnyView::new(button),
+                            spacer(),
+                            waterui_text::text(shortcut_hint_styled(&shortcut, disabled, theme))
+                                .padding_with(EdgeInsets::new(
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                    metrics.horizontal_padding as f32,
+                                )),
+                        ))
+                        .spacing(0.0),
+                    ),
+                    None => AnyView::new(button),
+                };
+                // A leading-aligned frame puts the content-width row at the
+                // menu's leading edge, so every row's label shares one leading
+                // x regardless of kind.
                 rows.push(AnyView::new(
-                    Frame::new(button)
+                    Frame::new(row_content)
                         .height(row_height as f32)
                         .max_width(f32::INFINITY)
                         .alignment(waterui_layout::alignment::Leading),
@@ -365,10 +432,11 @@ pub(crate) fn popup_menu_content(
             PopupMenuNode::Menu { label, items, .. } => {
                 let next_depth = depth + 1;
                 let child_origin = LayoutPoint::new(
-                    popup_origin_x + width as f32,
-                    popup_origin_y + row_top as f32,
+                    popup_origin.x + width as f32,
+                    popup_origin.y + row_top as f32,
                 );
-                let button = Button::new(label).style(ButtonStyle::Borderless).action(
+                let button = Button::new(label).style(ButtonStyle::Borderless).action({
+                    let theme = theme.clone();
                     move |group: PopupMenuStateGroup, env: Environment| {
                         if items.is_empty() {
                             return;
@@ -381,6 +449,7 @@ pub(crate) fn popup_menu_content(
                             next_depth,
                             metrics,
                             text,
+                            &theme,
                         );
                         group.push(child_state);
                         env.get::<PopupWindowManager>()
@@ -388,8 +457,8 @@ pub(crate) fn popup_menu_content(
                                 "hydrolysis popup menus require PopupWindowManager in environment",
                             )
                             .show(window, &env);
-                    },
-                );
+                    }
+                });
                 // The button sizes to its label: a leading-aligned frame puts
                 // the content-width row at the menu's leading edge, so every
                 // row's label shares one leading x regardless of kind.
@@ -433,12 +502,14 @@ pub(crate) fn popup_menu_window(
     depth: usize,
     metrics: TextContextMenuMetrics,
     text: PopupMenuTextMetrics,
+    theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, height) = popup_menu_size(&nodes, metrics, &text);
     let group_for_content = group.clone();
     let state_for_content = state.clone();
     let nodes_for_content = nodes.clone();
+    let theme = theme.clone();
     let popup_content = move || {
         AnyView::new(animated_popup_panel(
             Metadata::new(
@@ -447,9 +518,9 @@ pub(crate) fn popup_menu_window(
                     depth,
                     metrics,
                     text,
-                    origin.x,
-                    origin.y,
+                    origin,
                     width,
+                    &theme,
                 ),
                 PopupMenuSurface,
             )
@@ -508,7 +579,7 @@ pub(crate) fn semantic_popup_menu_window(
                     disabled,
                     ..
                 } => {
-                    let button = popup_menu_command_row(label, action, disabled);
+                    let button = popup_menu_command_row(label, action, disabled.snapshot());
                     rows.push(AnyView::new(button));
                 }
                 PopupMenuNode::Divider => rows.push(AnyView::new(Divider)),
@@ -1081,7 +1152,8 @@ impl SemanticCore {
                     inspector.inspect_node(waterui_inspector_protocol::NodeId(node.0));
                 },
             ),
-            disabled: false,
+            disabled: nami::Computed::constant(false),
+            shortcut: None,
             subtitle: None,
         });
     }
@@ -1166,9 +1238,11 @@ impl SemanticCore {
         nodes: &[PopupMenuNode],
         metrics: TextContextMenuMetrics,
         env: &Environment,
+        theme: &Rc<dyn crate::engine::WidgetTheme>,
     ) -> PopupMenuTextMetrics {
         let row_inset = metrics.horizontal_padding;
         let mut max_row_text_width = 0.0_f64;
+        let mut max_hint_width = 0.0_f64;
         for node in nodes {
             let mut consider = |state: &mut HydroState, styled: StyledStr| {
                 let size = HydrolysisRenderer::measure_text_intrinsic_size(state, styled, env);
@@ -1178,6 +1252,8 @@ impl SemanticCore {
                 PopupMenuNode::Command {
                     plain_label,
                     subtitle,
+                    shortcut,
+                    disabled,
                     ..
                 } => {
                     consider(&mut self.state, StyledStr::plain(plain_label.clone()));
@@ -1186,6 +1262,16 @@ impl SemanticCore {
                             &mut self.state,
                             StyledStr::plain(subtitle.clone()).font(waterui_text::font::Caption),
                         );
+                    }
+                    if let Some(shortcut) = shortcut {
+                        // Colour does not change intrinsic width, so the
+                        // enabled treatment measures the hint's true extent.
+                        let size = HydrolysisRenderer::measure_text_intrinsic_size(
+                            &mut self.state,
+                            shortcut_hint_styled(shortcut, disabled.snapshot(), theme),
+                            env,
+                        );
+                        max_hint_width = max_hint_width.max(f64::from(size.width));
                     }
                 }
                 PopupMenuNode::Menu { plain_label, .. } => {
@@ -1197,6 +1283,7 @@ impl SemanticCore {
         PopupMenuTextMetrics {
             subtitle_height: self.popup_menu_subtitle_height(env),
             max_row_text_width,
+            max_hint_width,
             row_inset,
         }
     }
@@ -1207,6 +1294,7 @@ impl SemanticCore {
         origin: LayoutPoint,
         metrics: TextContextMenuMetrics,
         env: &Environment,
+        theme: &Rc<dyn crate::engine::WidgetTheme>,
     ) -> bool {
         if nodes.is_empty() {
             return false;
@@ -1214,9 +1302,9 @@ impl SemanticCore {
         self.dismiss_active_popup_menu();
         let group = PopupMenuStateGroup::new();
         let popup_origin = popup_window_origin(origin, env);
-        let text = self.popup_menu_text_metrics(&nodes, metrics, env);
+        let text = self.popup_menu_text_metrics(&nodes, metrics, env, theme);
         let (window, state) =
-            popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text);
+            popup_menu_window(nodes, popup_origin, group.clone(), 0, metrics, text, theme);
         group.push(state);
         env.get::<PopupWindowManager>()
             .expect("hydrolysis popup menus require PopupWindowManager in environment")
