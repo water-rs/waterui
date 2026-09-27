@@ -11,6 +11,8 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
+#[cfg(test)]
+use std::sync::{Condvar, Mutex};
 
 use executor_core::LocalExecutor;
 use executor_core::async_task::{AsyncTask, Runnable};
@@ -24,6 +26,14 @@ pub(crate) struct HeadlessMainThreadExecutor {
     /// hand-off instant — the safe direction for a settledness probe. Atomic
     /// because wakers clone the sender onto arbitrary threads.
     pending: Arc<AtomicUsize>,
+    /// Count of runnables ever delivered to the channel, bumped under the
+    /// mutex and signaled on the condvar by the wake path. Tests wait on this
+    /// edge — a real timer re-queueing its task — instead of guessing the
+    /// reactor thread's latency with a fixed sleep. The count trails `pending`
+    /// deliberately: it moves only once the runnable is in the channel, so a
+    /// waiter that wakes on it can drain immediately.
+    #[cfg(test)]
+    queued: Arc<(Mutex<usize>, Condvar)>,
 }
 
 thread_local! {
@@ -46,6 +56,8 @@ impl HeadlessMainThreadExecutor {
             runnable_tx,
             runnable_rx: Rc::new(runnable_rx),
             pending: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            queued: Arc::new((Mutex::new(0), Condvar::new())),
         }
     }
 
@@ -76,6 +88,39 @@ impl HeadlessMainThreadExecutor {
     pub(super) fn has_pending(&self) -> bool {
         self.pending.load(Ordering::SeqCst) > 0
     }
+
+    /// Blocks until a waker delivers a runnable to the queue, returning
+    /// whether one arrived within `timeout`.
+    ///
+    /// Tests that arm a real timer — `debounce`'s `async_io::Timer` — must
+    /// wait on this wake edge rather than a fixed sleep: a loaded runner can
+    /// take arbitrarily long to fire the wake, while an idle one answers in
+    /// microseconds. False means the timer never re-queued its task.
+    #[cfg(test)]
+    pub(super) fn wait_queued(&self, timeout: core::time::Duration) -> bool {
+        let (lock, queued) = &*self.queued;
+        let deadline = std::time::Instant::now() + timeout;
+        // The counter — not `pending` — is the arrival edge: `pending` is
+        // incremented before the send, so it can report a runnable the
+        // channel does not yet hold. Bump and notify share one lock hold, so
+        // a waiter holding the lock across its check and `wait_timeout` can
+        // never miss a signal.
+        let mut queued_count = lock.lock().unwrap();
+        let baseline = *queued_count;
+        loop {
+            if *queued_count > baseline || self.has_pending() {
+                return true;
+            }
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
+            let (guard, result) = queued.wait_timeout(queued_count, remaining).unwrap();
+            queued_count = guard;
+            if result.timed_out() {
+                return self.has_pending();
+            }
+        }
+    }
 }
 
 impl LocalExecutor for HeadlessMainThreadExecutor {
@@ -87,17 +132,29 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
     {
         let runnable_tx = self.runnable_tx.clone();
         let pending = Arc::clone(&self.pending);
+        #[cfg(test)]
+        let queued = Arc::clone(&self.queued);
         let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
             pending.fetch_add(1, Ordering::SeqCst);
-            if let Err(unsent) = runnable_tx.send(runnable) {
-                pending.fetch_sub(1, Ordering::SeqCst);
-                // Teardown race: a waker held by another thread (decoder,
-                // audio, dispatch callback) fired after the runtime dropped
-                // the receiver. The task can never run again, and dropping a
-                // `spawn_local` runnable off its spawning thread panics by
-                // design (async-task's thread check), so leak it instead —
-                // bounded to shutdown, reclaimed at process exit.
-                std::mem::forget(unsent);
+            match runnable_tx.send(runnable) {
+                Ok(()) => {
+                    #[cfg(test)]
+                    {
+                        let (lock, queued) = &*queued;
+                        *lock.lock().unwrap() += 1;
+                        queued.notify_all();
+                    }
+                }
+                Err(unsent) => {
+                    pending.fetch_sub(1, Ordering::SeqCst);
+                    // Teardown race: a waker held by another thread (decoder,
+                    // audio, dispatch callback) fired after the runtime dropped
+                    // the receiver. The task can never run again, and dropping a
+                    // `spawn_local` runnable off its spawning thread panics by
+                    // design (async-task's thread check), so leak it instead —
+                    // bounded to shutdown, reclaimed at process exit.
+                    std::mem::forget(unsent);
+                }
             }
         });
         runnable.schedule();

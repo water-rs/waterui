@@ -867,6 +867,7 @@ fn debounced_on_change_fires_after_the_quiet_period() {
     };
     let mut runtime =
         crate::HeadlessRuntime::new_for_tests(env, builder, 200, 120, MinimalTestTheme::default());
+    let executor = super::executor::HeadlessMainThreadExecutor::thread_shared();
 
     // The mount pump builds the view, installs the watch, and drops the
     // `Debounce` value — where a buggy subscription died with it.
@@ -875,8 +876,17 @@ fn debounced_on_change_fires_after_the_quiet_period() {
     // The first drain polls the spawned task once, arming the real
     // `async_io::Timer`; its reactor-thread wake re-queues the runnable.
     let _ = runtime.pump_offscreen();
-    std::thread::sleep(Duration::from_millis(80));
-    let _ = runtime.pump_offscreen();
+    // Wait on the wake edge itself: the executor signals when the reactor
+    // thread re-queues the runnable, however long that takes a loaded
+    // runner. The deadline fails the test only when the timer never fires.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while fired.borrow().is_empty() {
+        assert!(
+            executor.wait_queued(deadline.saturating_duration_since(Instant::now())),
+            "the debounce timer never re-queued its runnable on the local executor"
+        );
+        let _ = runtime.pump_offscreen();
+    }
 
     assert_eq!(
         fired.borrow().as_slice(),
