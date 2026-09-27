@@ -654,6 +654,9 @@ pub(crate) struct AnchoredOverlayEffect {
     pub(crate) placement: waterui::metadata::anchored_overlay::AnchorPlacement,
     /// What besides the binding closes the overlay.
     pub(crate) dismissal: waterui::metadata::anchored_overlay::Dismissal,
+    /// Written with the logical `AnchorEdge` the overlay was placed against
+    /// after any flip, on every placement.
+    pub(crate) placed_edge: nami::Binding<waterui::metadata::anchored_overlay::AnchorEdge>,
     /// Identity shared with the registration, so the render pass can match an
     /// open overlay to the anchor that emitted it — and tell that an anchor
     /// that stopped registering left the tree.

@@ -342,6 +342,7 @@ impl RenderNode {
                 let AnchoredOverlay {
                     content: overlay_content,
                     is_presented,
+                    placed_edge,
                     placement,
                     dismissal,
                 } = value;
@@ -349,6 +350,7 @@ impl RenderNode {
                     WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
                         content: Rc::new(RefCell::new(Some(RetainedSubview::new(overlay_content)))),
                         is_presented,
+                        placed_edge,
                         placement,
                         dismissal,
                         marker: Rc::new(()),

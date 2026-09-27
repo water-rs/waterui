@@ -8,12 +8,14 @@
 //! Placement assertions read `HeadlessRuntime::anchored_overlay_frames()` —
 //! the hit-space rects the post-flush pass drew the overlays into.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use accesskit::Role;
 use nami::Binding;
 use nami::Signal as _;
+use nami::SignalExt as _;
 use waterui::ViewExt as _;
+use waterui::animation::Animation;
 use waterui::component::text;
 use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
@@ -21,6 +23,7 @@ use waterui::metadata::anchored_overlay::{
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
 
@@ -395,5 +398,387 @@ fn a_long_overlay_wraps_inside_the_window() {
         frame.x0 >= f64::from(MARGIN) - 0.5
             && frame.y1 <= f64::from(WINDOW.1) - f64::from(MARGIN) + 0.5,
         "the wrapped overlay stays inside the window margins, got {frame:?}"
+    );
+}
+
+/// A scale animation the content starts when `is_presented` turns false
+/// plays to completion on screen — the exit waits on the content's own
+/// animation slots, never on a timeout.
+#[test]
+fn a_closing_overlays_exit_animation_plays_to_completion() {
+    let open = Binding::container(true);
+    let open_for_view = open.clone();
+    let scale = Binding::f32(1.0);
+    let scale_for_view = scale.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        let scale = scale_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(
+                &open,
+                AnyView::new(
+                    Frame::new(
+                        text("tip").scale(
+                            scale
+                                .clone()
+                                .with(Animation::linear(Duration::from_millis(1_000))),
+                            scale
+                                .clone()
+                                .with(Animation::linear(Duration::from_millis(1_000))),
+                        ),
+                    )
+                    .width(OVERLAY.0)
+                    .height(OVERLAY.1),
+                ),
+            )
+            .edge(AnchorEdge::Bottom)
+            .gap(GAP),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    assert_eq!(
+        runtime.anchored_overlay_frames().len(),
+        1,
+        "the overlay is presented"
+    );
+
+    // Anchor the frame clock at `start` before dismissing: signal updates
+    // apply with the last pump's instant, so an unanchored `set` would let
+    // wall time since that pump count toward the animation's elapsed.
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    // Close, then shrink the content: the exit must keep the overlay drawn
+    // until that animation finishes.
+    open.set(false);
+    scale.set(0.0);
+
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert_eq!(
+        runtime.anchored_overlay_frames().len(),
+        1,
+        "mid-exit the overlay is still on screen"
+    );
+
+    let _ = runtime.pump_at(false, start + Duration::from_millis(600));
+    assert_eq!(
+        runtime.anchored_overlay_frames().len(),
+        1,
+        "the exit animation is still running"
+    );
+
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_500));
+    pump_until_settled(&mut runtime);
+    assert!(
+        runtime.anchored_overlay_frames().is_empty(),
+        "once the exit animation finishes the overlay is gone"
+    );
+}
+
+/// A dismissed overlay whose content starts no animation in response is gone
+/// on the dismissal frame itself — the exit draws nothing once the scope has
+/// no slot left to animate.
+#[test]
+fn an_overlay_with_no_exit_animation_is_gone_on_the_dismissal_frame() {
+    let open = Binding::container(true);
+    let open_for_view = open.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(&open, overlay_content())
+                .edge(AnchorEdge::Bottom)
+                .gap(GAP),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    assert_eq!(
+        runtime.anchored_overlay_frames().len(),
+        1,
+        "the overlay is presented"
+    );
+
+    open.set(false);
+    let _ = runtime.pump_at(false, Instant::now());
+    assert!(
+        runtime.anchored_overlay_frames().is_empty(),
+        "no exit animation started — the overlay is gone on the dismissal frame"
+    );
+}
+
+/// Visual evidence of the exit contract: halfway through a content scale
+/// animation the dismissed overlay is still drawn, mid-flight at scale 0.5.
+/// The frame lands under
+/// `<artifacts>/hydrolysis/anchored_overlay_exit/mid-flight.png`.
+#[test]
+fn the_exiting_overlay_draws_its_animation_mid_flight() {
+    let open = Binding::container(true);
+    let open_for_view = open.clone();
+    let scale = Binding::f32(1.0);
+    let scale_for_view = scale.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        let scale = scale_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(
+                &open,
+                AnyView::new(
+                    Frame::new(
+                        Color::srgb(30, 120, 220).scale(
+                            scale
+                                .clone()
+                                .with(Animation::linear(Duration::from_millis(1_000))),
+                            scale
+                                .clone()
+                                .with(Animation::linear(Duration::from_millis(1_000))),
+                        ),
+                    )
+                    .width(OVERLAY.0)
+                    .height(OVERLAY.1),
+                ),
+            )
+            .edge(AnchorEdge::Bottom)
+            .gap(GAP),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    let presented = presented_frame(&runtime);
+
+    // Anchor the frame clock the same way, so the capture lands at scale 0.5
+    // exactly instead of wherever wall time since the last pump left it.
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    open.set(false);
+    scale.set(0.0);
+    let result = runtime.pump_at(true, start + Duration::from_millis(500));
+    let snapshot = result
+        .snapshot
+        .expect("a mid-exit frame must be capturable");
+    let path = waterui_testing::TestArtifacts::new("hydrolysis")
+        .snapshot_path("anchored_overlay_exit", "mid-flight");
+    std::fs::create_dir_all(path.parent().expect("the case directory"))
+        .expect("the capture directory must be creatable");
+    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
+        .expect("snapshot dimensions must match the rgba buffer")
+        .save(&path)
+        .expect("the mid-exit frame must be writable");
+
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented],
+        "mid-exit the overlay still draws at its placed frame"
+    );
+}
+
+/// An overlay mid-exit is inert: a press landing inside its frame — on the
+/// button the content carries — reaches the content underneath instead.
+#[test]
+fn input_during_the_exit_reaches_the_content_underneath() {
+    let open = Binding::container(true);
+    let open_for_view = open.clone();
+    let scale = Binding::f32(1.0);
+    let scale_for_view = scale.clone();
+    let inner = Binding::container(false);
+    let inner_for_view = inner.clone();
+    let under_pressed = Binding::container(false);
+    let under_for_view = under_pressed.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        let scale = scale_for_view.clone();
+        let inner = inner_for_view.clone();
+        let under = under_for_view.clone();
+        AnyView::new(vstack((
+            button("host").action(|| {}).anchored_overlay(
+                AnchoredOverlay::new(
+                    &open,
+                    AnyView::new(
+                        button("in")
+                            .action(move || {
+                                inner.set(true);
+                            })
+                            .scale(
+                                scale
+                                    .clone()
+                                    .with(Animation::linear(Duration::from_millis(1_000))),
+                                scale
+                                    .clone()
+                                    .with(Animation::linear(Duration::from_millis(1_000))),
+                            ),
+                    ),
+                )
+                .edge(AnchorEdge::Bottom)
+                .gap(GAP),
+            ),
+            button("under").action(move || {
+                under.set(true);
+            }),
+        )))
+    });
+    let mut runtime = runtime(view);
+    let under = bounds_of(&mut runtime, "under");
+    pump_until_settled(&mut runtime);
+    let frame = presented_frame(&runtime);
+
+    // Presented, a press inside the frame lands on the overlay's own button.
+    let point = vello::kurbo::Point::new((frame.x0 + frame.x1) / 2.0, (frame.y0 + frame.y1) / 2.0);
+    assert!(
+        under.contains(accesskit::Point::new(point.x, point.y)),
+        "the 'under' button must reach into the overlay's frame for this test"
+    );
+    for event in primary_click(point.x as f32, point.y as f32) {
+        runtime.push_input_event(event);
+    }
+    pump_until_settled(&mut runtime);
+    assert!(
+        inner.snapshot(),
+        "a presented overlay's content takes the press inside its frame"
+    );
+    assert!(
+        !under_pressed.snapshot(),
+        "the press did not reach the content underneath"
+    );
+
+    // Close with an exit animation running: the same press now lands on the
+    // content below the still-drawn overlay. The clock anchor keeps the
+    // animation's epoch synthetic — see the exit-playout test above.
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    open.set(false);
+    scale.set(0.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert_eq!(
+        runtime.anchored_overlay_frames().len(),
+        1,
+        "the exiting overlay is still drawn"
+    );
+
+    for event in primary_click(point.x as f32, point.y as f32) {
+        runtime.push_input_event(event);
+    }
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    assert!(
+        under_pressed.snapshot(),
+        "the exiting overlay no longer intercepts input"
+    );
+}
+
+/// `is_presented` back to `true` mid-exit keeps the same overlay presented —
+/// the exit is cancelled, not restarted.
+#[test]
+fn re_presenting_mid_exit_keeps_the_overlay_presented() {
+    let open = Binding::container(true);
+    let open_for_view = open.clone();
+    let scale = Binding::f32(1.0);
+    let scale_for_view = scale.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        let scale = scale_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(
+                &open,
+                AnyView::new(
+                    Frame::new(
+                        text("tip").scale(
+                            scale
+                                .clone()
+                                .with(Animation::linear(Duration::from_millis(1_000))),
+                            scale
+                                .clone()
+                                .with(Animation::linear(Duration::from_millis(1_000))),
+                        ),
+                    )
+                    .width(OVERLAY.0)
+                    .height(OVERLAY.1),
+                ),
+            )
+            .edge(AnchorEdge::Bottom)
+            .gap(GAP),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    let before = presented_frame(&runtime);
+
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    open.set(false);
+    scale.set(0.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+
+    open.set(true);
+    scale.set(1.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(300));
+    pump_until_settled(&mut runtime);
+
+    let after = presented_frame(&runtime);
+    assert_eq!(
+        before, after,
+        "the re-presented overlay keeps the same subtree at the same frame"
+    );
+}
+
+/// `placed_edge` reports the logical edge after any flip: a `Top` overlay that
+/// flipped reads `Bottom`, and `Leading` under RTL reads `Leading` — the
+/// physical right side converted back.
+#[test]
+fn placed_edge_reports_the_logical_edge_after_a_flip() {
+    let open = Binding::container(true);
+    let placed = Binding::container(AnchorEdge::Top);
+    let (open_for_view, placed_for_view) = (open.clone(), placed.clone());
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        let placed = placed_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(&open, overlay_content())
+                .edge(AnchorEdge::Top)
+                .alignment(EdgeAlignment::Center)
+                .gap(GAP)
+                .flip(true)
+                .placed_edge(&placed),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    assert_eq!(
+        placed.snapshot(),
+        AnchorEdge::Bottom,
+        "edge Top with no room above flipped to Bottom"
+    );
+
+    // RTL: `Leading` resolves to the anchor's physical right side, then reads
+    // back as `Leading`.
+    let mut env = test_environment();
+    env.insert(waterui_core::layout::LayoutDirection::RightToLeft);
+    let open = Binding::container(true);
+    let placed = Binding::container(AnchorEdge::Top);
+    let (open_for_view, placed_for_view) = (open.clone(), placed.clone());
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        let placed = placed_for_view.clone();
+        AnyView::new(vstack((
+            ().size(0.0, 100.0),
+            button("host").action(|| {}).anchored_overlay(
+                AnchoredOverlay::new(&open, overlay_content())
+                    .edge(AnchorEdge::Leading)
+                    .alignment(EdgeAlignment::Center)
+                    .gap(GAP)
+                    .placed_edge(&placed),
+            ),
+        )))
+    });
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, view, WINDOW.0, WINDOW.1, MinimalTestTheme::default());
+    let anchor = bounds_of(&mut runtime, "host");
+    pump_until_settled(&mut runtime);
+    let frame = presented_frame(&runtime);
+    assert_eq!(
+        placed.snapshot(),
+        AnchorEdge::Leading,
+        "the written-back edge is logical: Leading, not the physical Right"
+    );
+    assert!(
+        frame.x0 >= anchor.x1 - 0.5,
+        "under RTL, Leading sits to the anchor's right, got {frame:?} for anchor {anchor:?}"
     );
 }

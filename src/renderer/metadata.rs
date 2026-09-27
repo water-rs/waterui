@@ -953,6 +953,7 @@ impl HydrolysisRenderer {
                 dismissal: value.dismissal,
                 presented,
                 is_presented: value.is_presented.clone(),
+                placed_edge: value.placed_edge.clone(),
                 env: env.clone(),
                 content: Rc::clone(&value.content),
                 marker: Rc::clone(&value.marker),

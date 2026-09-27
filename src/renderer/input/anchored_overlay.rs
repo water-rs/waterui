@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use nami::Binding;
-use waterui::metadata::anchored_overlay::{AnchorPlacement, Clamp, Dismissal};
+use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Dismissal};
 use waterui_core::Environment;
 use waterui_core::layout::layout_direction;
 
@@ -39,6 +39,9 @@ pub(crate) struct RegisteredAnchoredOverlay {
     /// The binding the renderer writes `false` to on outside dismissal, and
     /// the anchor's environment the overlay content is built and flushed in.
     pub(crate) is_presented: Binding<bool>,
+    /// Written on every placement with the logical edge the overlay was
+    /// placed against after any flip.
+    pub(crate) placed_edge: Binding<AnchorEdge>,
     /// The node's environment — the overlay content inherits `.state` and
     /// plugin values from where the anchor declared it.
     pub(crate) env: Environment,
@@ -62,6 +65,13 @@ pub(crate) struct PresentedAnchoredOverlay {
     pub(crate) dismissal: Dismissal,
     /// The binding outside interaction writes `false` to.
     pub(crate) is_presented: Binding<bool>,
+    /// Whether `is_presented` already read `false`: the overlay is leaving —
+    /// still drawn, but ignored by hit testing and outside-dismissal until
+    /// the content's running animations finish.
+    pub(crate) exiting: bool,
+    /// The animation-controller scope the subtree's slots are attributed to —
+    /// the retained content's marker pointer.
+    pub(crate) scope: u64,
 }
 
 impl SemanticCore {
@@ -72,7 +82,9 @@ impl SemanticCore {
     /// `Manual` overlays are never closed here.
     pub(crate) fn dismiss_anchored_overlays_outside(&mut self, point: vello::kurbo::Point) {
         for overlay in &self.popup_menu.presented_anchored_overlays {
-            if overlay.dismissal == Dismissal::OutsideInteraction && !overlay.frame.contains(point)
+            if !overlay.exiting
+                && overlay.dismissal == Dismissal::OutsideInteraction
+                && !overlay.frame.contains(point)
             {
                 overlay.is_presented.set(false);
             }
@@ -101,21 +113,36 @@ impl HydrolysisRenderer {
         let last_presented = core::mem::take(&mut self.popup_menu.presented_anchored_overlays);
         let mut presented = Vec::with_capacity(last_presented.len());
 
-        // An anchor that presented last frame but registered nothing this
-        // frame left the tree: close it through its binding.
-        for overlay in last_presented {
+        // An anchor that drew last frame but registered nothing this frame
+        // left the tree: close it through its binding and drop an exit still
+        // in flight with it — the contract closes the overlay with the anchor.
+        for overlay in &last_presented {
             if !registered
                 .iter()
                 .any(|entry| Rc::ptr_eq(&entry.marker, &overlay.marker))
             {
                 overlay.is_presented.set(false);
+                self.animation_controller
+                    .drop_animation_scope(overlay.scope);
             }
         }
 
         let window = self.window_bounds;
+        let now = self.frame_instant;
         for entry in registered {
-            if !entry.presented {
-                continue;
+            let scope = Rc::as_ptr(&entry.marker) as usize as u64;
+            // `is_presented` turned false on an overlay that drew last frame:
+            // the exit lifecycle. The content stays on screen — ignored by hit
+            // testing and outside dismissal — until the animations it started
+            // inside its subtree finish, then it leaves at once.
+            let exiting = !entry.presented;
+            if exiting {
+                let drew_last_frame = last_presented
+                    .iter()
+                    .any(|overlay| Rc::ptr_eq(&overlay.marker, &entry.marker));
+                if !drew_last_frame || entry.content.borrow().is_none() {
+                    continue;
+                }
             }
             let Some(mut content) = entry.content.borrow_mut().take() else {
                 continue;
@@ -132,7 +159,9 @@ impl HydrolysisRenderer {
                 Some((window.width() - margin).max(0.0) as f32),
                 Some((window.height() - margin).max(0.0) as f32),
             );
+            self.animation_controller.begin_animation_scope(scope);
             let (ideal, _stretch) = content.patch_and_measure(self, &entry.env, proposal);
+            self.animation_controller.end_animation_scope();
             let overlay_size = waterui_core::layout::Size::new(
                 ideal.width.min(window.width() as f32),
                 ideal.height.min(window.height() as f32),
@@ -147,28 +176,67 @@ impl HydrolysisRenderer {
             );
             let frame = rect_to_kurbo(placement.frame);
 
-            // A press inside the overlay belongs to its own content, not the
-            // page below — the same swallow the drawn context-menu panels
-            // register.
-            let depth = self.render_depth;
-            let order = self.hit_test.next_hit_test_order();
+            // Every placement writes back the logical edge the overlay was
+            // placed against — the physical edge resolved under the layout
+            // direction, so `Leading`/`Trailing` read back correctly in RTL.
+            let logical = waterui_backend_core::overlay::logical_edge(placement.edge, direction);
+            if entry.placed_edge.snapshot() != logical {
+                entry.placed_edge.set(logical);
+            }
+
+            // Hit regions clip to the open paint clip stack; the clipped
+            // frame feeds the pointer target, the flush and the recorded
+            // frame alike.
             let frame = self.hit_test.clip_hit_bounds(frame);
-            self.hit_test.pointer_targets.push(PointerTarget {
-                bounds: frame,
-                captures_drag: false,
-                depth,
-                order,
-                press_slot: None,
-                claim_owner: None,
-                interaction: None,
-                action: Rc::new(RefCell::new(
-                    |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| false,
-                )),
-                keyboard_step: None,
-                keyboard_focusable: false,
-                modal: false,
+
+            if !exiting {
+                // A press inside the overlay belongs to its own content, not
+                // the page below — the same swallow the drawn context-menu
+                // panels register. An exiting overlay registers none, so its
+                // frame stops intercepting input the moment it starts leaving.
+                let depth = self.render_depth;
+                let order = self.hit_test.next_hit_test_order();
+                self.hit_test.pointer_targets.push(PointerTarget {
+                    bounds: frame,
+                    captures_drag: false,
+                    depth,
+                    order,
+                    press_slot: None,
+                    claim_owner: None,
+                    interaction: None,
+                    action: Rc::new(RefCell::new(
+                        |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| false,
+                    )),
+                    keyboard_step: None,
+                    keyboard_focusable: false,
+                    modal: false,
+                });
+            }
+
+            // A slot binds only when its node encodes — an animation the
+            // content started in response to the dismissal does not exist in
+            // the controller until this frame's flush. So an exiting overlay
+            // swaps the window scene for a scratch scene, flushes into it
+            // with hit testing suppressed, and only then decides: a scope
+            // with a running slot commits the frame and keeps the overlay
+            // presented; one with nothing left animating discards it — the
+            // overlay draws no frame past its last animation.
+            let scratch = exiting.then(|| {
+                let hit_test_opacity = self.hit_test.hit_test_opacity;
+                self.hit_test.hit_test_opacity = 0.0;
+                (
+                    hit_test_opacity,
+                    core::mem::take(&mut self.scene),
+                    core::mem::take(&mut self.compositor.render_layers),
+                    core::mem::take(&mut self.compositor.active_scene_layers),
+                    self.transient_scene.take(),
+                )
             });
 
+            // Flush inside the overlay's animation scope so every slot the
+            // content binds is attributed to it — that attribution is what
+            // the exit lifecycle waits on.
+            self.animation_controller.begin_animation_scope(scope);
             content.flush_in_rect(
                 self,
                 RenderContext::with_transforms(window, transform, vello::kurbo::Affine::IDENTITY),
@@ -176,14 +244,53 @@ impl HydrolysisRenderer {
                 bounded_proposal(frame),
                 frame,
             );
+            self.animation_controller.end_animation_scope();
+
+            if let Some((
+                hit_test_opacity,
+                parent_scene,
+                parent_render_layers,
+                parent_active_layers,
+                parent_transient_scene,
+            )) = scratch
+            {
+                self.hit_test.hit_test_opacity = hit_test_opacity;
+                let overlay_scene = core::mem::replace(&mut self.scene, parent_scene);
+                let overlay_render_layers =
+                    core::mem::replace(&mut self.compositor.render_layers, parent_render_layers);
+                debug_assert!(
+                    self.compositor.active_scene_layers.is_empty(),
+                    "hydrolysis anchored overlay exit left an unclosed scene layer"
+                );
+                self.compositor.active_scene_layers = parent_active_layers;
+                let overlay_transient_scene = self.transient_scene.take();
+                self.transient_scene = parent_transient_scene;
+
+                if !self.animation_controller.scope_is_active(scope, now) {
+                    self.animation_controller.drop_animation_scope(scope);
+                    *entry.content.borrow_mut() = Some(content);
+                    continue;
+                }
+                crate::engine::vello_backend::append_scene(&mut self.scene, &overlay_scene, None);
+                self.compositor.render_layers.extend(overlay_render_layers);
+                if let Some(transient) = overlay_transient_scene {
+                    match &mut self.transient_scene {
+                        Some(parent) => {
+                            crate::engine::vello_backend::append_scene(parent, &transient, None);
+                        }
+                        None => self.transient_scene = Some(transient),
+                    }
+                }
+            }
             *entry.content.borrow_mut() = Some(content);
 
-            let marker = entry.marker.clone();
             presented.push(PresentedAnchoredOverlay {
-                marker,
+                marker: entry.marker.clone(),
                 frame,
                 dismissal: entry.dismissal,
                 is_presented: entry.is_presented.clone(),
+                exiting,
+                scope,
             });
         }
         self.popup_menu.presented_anchored_overlays = presented;
