@@ -293,6 +293,34 @@ impl HeadlessRuntime {
         )
     }
 
+    /// Same as [`Self::new_for_tests`] but loads the fonts the windowed
+    /// runners use — the system font collection plus `resources/fonts` — via
+    /// [`native_resource_fonts`] instead of the bundled deterministic set.
+    ///
+    /// Text-measurement fidelity tests belong here: the deterministic fonts
+    /// shape snugly, so a measure-versus-paint divergence that only appears on
+    /// the real font stack (different advances, fallback runs, hinting) is
+    /// invisible to [`Self::new_for_tests`].
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_for_tests_native_fonts(
+        env: Environment,
+        content: AnyViewBuilder<AnyView>,
+        width: u32,
+        height: u32,
+        style: impl crate::Style,
+    ) -> Self {
+        Self::on_gpu_context(
+            OffscreenGpuContext::new_for_tests_blocking(),
+            env,
+            default_window(content),
+            width,
+            height,
+            style,
+            super::fonts::native_test_fonts,
+        )
+    }
+
     /// Creates a test runtime on an already-requested [`OffscreenGpuContext`].
     ///
     /// A wgpu device is expensive to request and, on a runner whose only

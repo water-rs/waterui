@@ -50,6 +50,7 @@ mod semantic_runtime;
 mod shadow;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod teardown_order;
+mod text_ink;
 mod tree;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_background;

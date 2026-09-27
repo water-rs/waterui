@@ -28,8 +28,8 @@ pub use state::HydroState;
 pub(crate) use subtree_capture::SubtreeCaptures;
 pub(crate) use subview::HydroSubview;
 pub(crate) use text_service::{
-    ResolvedTextLayoutInput, TailMark, TextMeasureService, resolve_text_layout_input,
-    text_dimensions_from_layout,
+    ResolvedTextLayoutInput, TailMark, TextMeasureService, layout_ink_extent,
+    resolve_text_layout_input, text_dimensions_from_layout,
 };
 pub(crate) use view_helpers::*;
 pub(crate) use view_helpers::{

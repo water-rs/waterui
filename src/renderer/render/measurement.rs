@@ -1,6 +1,7 @@
 use super::*;
 use crate::engine::WidgetTheme;
 use std::rc::Rc;
+use std::sync::Arc;
 use waterui_core::handler::BoxedAction;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
@@ -436,7 +437,13 @@ impl HydrolysisRenderer {
             Some(ctx.bounds.width() as f32),
             tail,
             |layout, effective, fragment| {
-                Self::encode_text_layout(fragment, layout, effective, tail.parts().0);
+                Self::encode_text_layout(
+                    state.text.as_ref(),
+                    fragment,
+                    layout,
+                    effective,
+                    tail.parts().0,
+                );
             },
         );
         scene.append(
@@ -458,7 +465,12 @@ impl HydrolysisRenderer {
             return;
         };
         let metrics = line.metrics();
-        let width = f64::from(metrics.advance);
+        // Center the measured frame — advance widened to cover overhanging
+        // ink — matching what `text_dimensions_from_layout` reports for it.
+        let width = layout_ink_extent(state.text.as_ref(), &layout, Some(1)).map_or_else(
+            || f64::from(metrics.advance),
+            |(ink_min, ink_max)| f64::from(metrics.advance.max(ink_max) - ink_min.min(0.0)),
+        );
         let height = f64::from(metrics.line_height);
         let x = ((ctx.bounds.width() - width) * 0.5).max(0.0);
         let y = ((ctx.bounds.height() - height) * 0.5).max(0.0);
@@ -467,7 +479,7 @@ impl HydrolysisRenderer {
             None,
             TailMark::Clip(1),
             |layout, effective, fragment| {
-                Self::encode_text_layout(fragment, layout, effective, Some(1));
+                Self::encode_text_layout(state.text.as_ref(), fragment, layout, effective, Some(1));
             },
         );
         scene.append(
@@ -480,21 +492,28 @@ impl HydrolysisRenderer {
     /// caller positions the result by appending it under a transform, which is
     /// what makes the encoded fragment reusable across frames.
     fn encode_text_layout(
+        service: &TextMeasureService,
         scene: &mut vello::Scene,
-        layout: &parley::Layout<[u8; 4]>,
+        layout: &Arc<parley::Layout<[u8; 4]>>,
         input: &ResolvedTextLayoutInput,
         max_lines: Option<usize>,
     ) {
         if layout.is_empty() {
             return;
         }
+        // `text_dimensions_from_layout` widens the measured frame so it covers
+        // glyph ink that overhangs the pen advance (`layout_ink_extent`); the
+        // same left-edge correction shifts the encoded glyphs so that ink
+        // starts at the frame origin instead of painting left of it.
+        let ink_shift = layout_ink_extent(service, layout, max_lines)
+            .map_or(0.0, |(ink_min, _)| -ink_min.min(0.0));
         let paint_backgrounds = input.has_background();
         for (index, line) in layout.lines().enumerate() {
             if max_lines.is_some_and(|limit| index >= limit) {
                 break;
             }
             if paint_backgrounds {
-                Self::encode_line_backgrounds(scene, &line, input);
+                Self::encode_line_backgrounds(scene, &line, input, ink_shift);
             }
             for item in line.items() {
                 if let parley::PositionedLayoutItem::GlyphRun(glyph_run) = item {
@@ -503,7 +522,7 @@ impl HydrolysisRenderer {
                     let brush = rgba8_to_peniko(style.brush);
                     let normalized_coords = run.normalized_coords();
 
-                    let mut run_x = glyph_run.offset();
+                    let mut run_x = glyph_run.offset() + ink_shift;
                     let run_y = glyph_run.baseline();
                     let glyphs = glyph_run.glyphs().map(move |glyph| {
                         let x = run_x + glyph.x;
@@ -540,13 +559,14 @@ impl HydrolysisRenderer {
         scene: &mut vello::Scene,
         line: &parley::Line<'_, [u8; 4]>,
         input: &ResolvedTextLayoutInput,
+        ink_shift: f32,
     ) {
         let metrics = line.metrics();
         let (top, bottom) = (
             f64::from(metrics.block_min_coord),
             f64::from(metrics.block_max_coord),
         );
-        let mut cursor = metrics.inline_min_coord + metrics.offset;
+        let mut cursor = metrics.inline_min_coord + metrics.offset + ink_shift;
         // Adjacent clusters with the same background merge into one fill.
         let mut open: Option<(f32, [u8; 4])> = None;
         for run in line.runs() {
@@ -609,7 +629,7 @@ impl HydrolysisRenderer {
     ) -> ViewDimensions {
         let input = resolve_text_layout_input(&styled, alignment, env);
         let layout = state.text.shape_limited(&input, max_width, max_lines);
-        text_dimensions_from_layout(&layout, max_lines)
+        text_dimensions_from_layout(state.text.as_ref(), &layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(

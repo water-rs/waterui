@@ -50,6 +50,10 @@ vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa
 # `LayoutContext`, and without them its word segmenter logs `No segmentation
 # model for complex script` per CJK run on every layout pass.
 parley = { version = "0.11", default-features = false, features = ["system", "complex-scripts"] }
+# Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
+# parley's advance metrics stop at the pen advance, so the measure path reads
+# the real outline extents through the same font stack version parley uses.
+skrifa = "0.44"
 # `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
 # route through the `emoji` generic family first.
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
@@ -215,6 +219,15 @@ tracing-log = "0.2"
 # the real pipeline.
 waterui-icons-lucide = "0.5.1"
 waterui-chart = "0.3.0"
+# Drives the text-measure bench (`benches/text_measure.rs`).
+criterion = "0.8"
+
+# The text-measure bench rides the real layout path; `harness = false` hands
+# the binary's `main` to criterion.
+[[bench]]
+name = "text_measure"
+harness = false
+required-features = ["testing"]
 
 # `WKWebView` is `MainThreadOnly` and libtest runs tests on worker threads, so
 # the macOS real-engine suite owns its `main` and pumps the main run loop.
