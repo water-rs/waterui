@@ -400,6 +400,7 @@ impl HydrolysisRenderer {
             let encode_started_at = Instant::now();
             tree.flush(self, ctx, env);
             self.flush_subtree_captures(0);
+            self.render_anchored_overlays(transform);
             #[cfg(feature = "frame-profile")]
             {
                 self.frame_stage_times.encode += encode_started_at.elapsed();
@@ -426,6 +427,7 @@ impl HydrolysisRenderer {
         let encode_started_at = Instant::now();
         node.flush(self, ctx, env);
         self.flush_subtree_captures(0);
+        self.render_anchored_overlays(transform);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();
@@ -507,6 +509,10 @@ impl HydrolysisRenderer {
         // lifted preview and anchored accessory re-encode per frame and the
         // pass is where dismiss_requests/menu-close is observed.
         self.render_context_menu_presentation(transform);
+        // Anchored overlays (`.anchored_overlay`) draw above all content: the
+        // flush registered each anchor's live bounds, so the placement
+        // contract re-runs per frame and the overlay follows moves/resizes.
+        self.render_anchored_overlays(transform);
         self.flush_vello_scene_layer();
         drop(_encode_span);
         #[cfg(feature = "frame-profile")]

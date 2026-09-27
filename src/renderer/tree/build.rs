@@ -336,6 +336,30 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<AnchoredOverlay>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let AnchoredOverlay {
+                    content: overlay_content,
+                    is_presented,
+                    placement,
+                    dismissal,
+                } = value;
+                return RenderNode::build_wrapper(
+                    WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
+                        content: Rc::new(RefCell::new(Some(RetainedSubview::new(overlay_content)))),
+                        is_presented,
+                        placement,
+                        dismissal,
+                        marker: Rc::new(()),
+                    }),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Metadata<PopupMenuSurface>>() {
             Ok(meta) => {
                 return RenderNode::build_wrapper(

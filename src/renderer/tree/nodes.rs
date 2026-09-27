@@ -613,6 +613,31 @@ pub(super) enum WrapperEffect {
     /// fill (water-rs/hydrolysis#200). Draws nothing on targets that lack a
     /// `draw_text_context_menu_panel` implementation.
     PopupMenuSurface,
+    /// An `.anchored_overlay(...)` (water-rs/waterui#1275): every flush the
+    /// wrapper registers the anchor's live bounds plus the effect's handles
+    /// for the post-flush `render_anchored_overlays` pass, which measures,
+    /// places and draws the open overlay at window level above all content.
+    AnchoredOverlay(AnchoredOverlayEffect),
+}
+
+/// The node-owned state of an `.anchored_overlay(...)` wrapper. The content
+/// slot is `Rc`-shared because the post-flush render pass — not this node —
+/// measures and flushes it, and the node keeps it built across closes.
+pub(crate) struct AnchoredOverlayEffect {
+    /// The overlay content, lazily built on first open.
+    pub(crate) content: Rc<RefCell<Option<RetainedSubview>>>,
+    /// The presentation binding: read every flush (subscribing the frame to
+    /// it), written `false` by outside-interaction dismissal and by the
+    /// anchor leaving the tree.
+    pub(crate) is_presented: nami::Binding<bool>,
+    /// The placement contract.
+    pub(crate) placement: waterui::metadata::anchored_overlay::AnchorPlacement,
+    /// What besides the binding closes the overlay.
+    pub(crate) dismissal: waterui::metadata::anchored_overlay::Dismissal,
+    /// Identity shared with the registration, so the render pass can match an
+    /// open overlay to the anchor that emitted it — and tell that an anchor
+    /// that stopped registering left the tree.
+    pub(crate) marker: Rc<()>,
 }
 
 /// The node-owned state of a `.context_menu(...)` wrapper: the resolved menu

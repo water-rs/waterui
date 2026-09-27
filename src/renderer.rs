@@ -115,6 +115,7 @@ use waterui::drag_drop::{Draggable, DropDestination};
 use waterui::filter::Opacity;
 use waterui::gesture::{Gesture, GestureObserver};
 use waterui::interaction::Hittable;
+use waterui::metadata::anchored_overlay::AnchoredOverlay;
 use waterui::metadata::context_menu::{ContextMenu, ResolvedContextMenu};
 use waterui::metadata::secure::{HighDynamicRange, Secure, StandardDynamicRange};
 use waterui::navigation::tab::{NativeTabStyle, TabsLayout};

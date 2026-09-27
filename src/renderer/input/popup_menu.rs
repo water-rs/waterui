@@ -119,6 +119,14 @@ pub(crate) struct PopupMenuState {
     /// (outside click) — it is Rc-pruned, never flush-order-indexed, so a dropped
     /// picker's handle falls out by strong count and the live ones are deduplicated.
     pub(crate) node_picker_menus: Vec<Rc<Cell<bool>>>,
+    /// The anchored overlays this frame's flush registered — each anchor's live
+    /// hit-space bounds, placement and handles. The post-flush
+    /// `render_anchored_overlays` drains it.
+    pub(crate) anchored_overlays: Vec<RegisteredAnchoredOverlay>,
+    /// The anchored overlays drawn this frame — bounds, dismissal mode and
+    /// binding — for the pointer-down outside-interaction dismissal and the
+    /// anchor-left-the-tree close.
+    pub(crate) presented_anchored_overlays: Vec<PresentedAnchoredOverlay>,
 }
 
 #[derive(Clone)]

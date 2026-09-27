@@ -215,6 +215,17 @@ impl RenderNode {
                             node.child.flush(r, ctx, child_env);
                         });
                     }
+                    WrapperEffect::AnchoredOverlay(value) => {
+                        HydrolysisRenderer::apply_anchored_overlay(
+                            renderer,
+                            ctx,
+                            child_env,
+                            value,
+                            |r| {
+                                node.child.flush(r, ctx, child_env);
+                            },
+                        );
+                    }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
                         node.child.flush(renderer, ctx, child_env);

@@ -775,6 +775,10 @@ impl HydrolysisRenderer {
         if !in_context_menu_presentation {
             self.dismiss_active_popup_menu();
         }
+        // Anchored overlays with `OutsideInteraction` dismissal write `false`
+        // when the press lands outside them; the press still reaches its
+        // target below, exactly like the menu dismissals above.
+        self.dismiss_anchored_overlays_outside(point);
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,

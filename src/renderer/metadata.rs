@@ -633,6 +633,38 @@ impl HydrolysisRenderer {
         render_content(renderer);
     }
 
+    /// Register the anchor's live bounds and the overlay's handles for the
+    /// post-flush render pass, then render the anchor content. Shared by the
+    /// dispatch handler and the retained `Wrapper` node. The binding is read
+    /// through [`HydrolysisRenderer::read_signal`], so a value change
+    /// schedules the refresh that opens or closes the overlay; re-registering
+    /// every frame is also what lets the render pass follow an anchor that
+    /// moved or detect one that left the tree.
+    pub(super) fn apply_anchored_overlay(
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        value: &AnchoredOverlayEffect,
+        render_content: impl FnOnce(&mut HydrolysisRenderer),
+    ) {
+        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let presented = renderer.read_signal(&value.is_presented);
+        renderer
+            .popup_menu
+            .anchored_overlays
+            .push(RegisteredAnchoredOverlay {
+                anchor: bounds,
+                placement: value.placement,
+                dismissal: value.dismissal,
+                presented,
+                is_presented: value.is_presented.clone(),
+                env: env.clone(),
+                content: Rc::clone(&value.content),
+                marker: Rc::clone(&value.marker),
+            });
+        render_content(renderer);
+    }
+
     /// Register the draggable hit-target, then render the given content. Shared by
     /// the dispatch handler and the retained `Wrapper` node. The node owns the
     /// [`Draggable`] by reference, so the data provider is cloned for registration.

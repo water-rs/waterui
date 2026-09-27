@@ -654,6 +654,13 @@ impl HeadlessRuntime {
         self.runtime.renderer.context_menu_row_frames()
     }
 
+    /// The drawn frames of the presented `.anchored_overlay` overlays, in hit
+    /// order — empty when none is presented.
+    #[cfg(test)]
+    pub(crate) fn anchored_overlay_frames(&self) -> Vec<vello::kurbo::Rect> {
+        self.runtime.renderer.anchored_overlay_frames()
+    }
+
     /// The lifted preview's frame in the open drawn `.context_menu`
     /// presentation — the source's rect unless fitting the stack moved or
     /// cropped it — or `None` when none is open.
