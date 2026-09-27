@@ -1228,6 +1228,43 @@ pub enum Event {
 /// `State<T>` / `Environment` extractor machinery used by [`Button::action`].
 type OnEvent = waterui_core::handler::BoxedEventAction<Event>;
 
+/// Serializes event delivery to the user handler: an event emitted while the
+/// handler still runs — typically because it wrote a playback signal the video
+/// watches — is queued and delivered after it returns, in order, rather than
+/// re-entering the handler.
+struct QueuedVideoEvents {
+    handler: core::cell::RefCell<OnEvent>,
+    pending: core::cell::RefCell<std::collections::VecDeque<Event>>,
+    dispatching: core::cell::Cell<bool>,
+    env: Environment,
+}
+
+impl QueuedVideoEvents {
+    fn new(handler: OnEvent, env: Environment) -> Self {
+        Self {
+            handler: core::cell::RefCell::new(handler),
+            pending: core::cell::RefCell::new(std::collections::VecDeque::new()),
+            dispatching: core::cell::Cell::new(false),
+            env,
+        }
+    }
+
+    fn emit(&self, event: Event) {
+        self.pending.borrow_mut().push_back(event);
+        if self.dispatching.replace(true) {
+            return;
+        }
+        loop {
+            let next = self.pending.borrow_mut().pop_front();
+            let Some(event) = next else {
+                break;
+            };
+            (self.handler.borrow_mut())(event, &self.env);
+        }
+        self.dispatching.set(false);
+    }
+}
+
 /// An event handler that has not yet been bound to a rendering environment.
 ///
 /// This is part of the public configuration type only so native resolution can
@@ -1251,16 +1288,13 @@ impl VideoEventHandler {
     #[doc(hidden)]
     #[must_use]
     pub fn bind_callback(self, env: Environment) -> std::rc::Rc<dyn Fn(Event)> {
-        let handler = core::cell::RefCell::new(self.0);
-        std::rc::Rc::new(move |event| {
-            (handler.borrow_mut())(event, &env);
-        })
+        let events = std::rc::Rc::new(QueuedVideoEvents::new(self.0, env));
+        std::rc::Rc::new(move |event| events.emit(event))
     }
 
     fn bind(self, env: &Environment) -> BoundVideoEventHandler {
         BoundVideoEventHandler {
-            handler: core::cell::RefCell::new(self.0),
-            env: env.clone(),
+            handler: QueuedVideoEvents::new(self.0, env.clone()),
         }
     }
 }
@@ -1268,8 +1302,7 @@ impl VideoEventHandler {
 /// A video event handler bound to the environment of its rendered view.
 #[doc(hidden)]
 pub struct BoundVideoEventHandler {
-    handler: core::cell::RefCell<OnEvent>,
-    env: Environment,
+    handler: QueuedVideoEvents,
 }
 
 impl fmt::Debug for BoundVideoEventHandler {
@@ -1283,7 +1316,7 @@ impl BoundVideoEventHandler {
     /// Dispatches an event using the rendering environment captured during
     /// native view resolution.
     pub fn call(&self, event: Event) {
-        (self.handler.borrow_mut())(event, &self.env);
+        self.handler.emit(event);
     }
 }
 
@@ -1764,6 +1797,82 @@ pub fn video_player(item: impl Into<MediaItem>) -> VideoPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An event emitted while the handler still runs must queue behind the
+    /// in-flight call instead of re-entering the handler.
+    #[test]
+    fn a_nested_event_is_delivered_after_the_handler_returns() {
+        use core::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let callback_slot = Rc::new(RefCell::new(None::<Rc<dyn Fn(Event)>>));
+        let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
+        let inside = Cell::new(false);
+        let once = Cell::new(false);
+        let handler: OnEvent = Box::new({
+            let callback_slot = Rc::clone(&callback_slot);
+            let delivered = Rc::clone(&delivered);
+            move |event, _env| {
+                assert!(
+                    !inside.replace(true),
+                    "the handler must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(format!("{event:?}"));
+                if !once.replace(true) {
+                    callback_slot.borrow().as_ref().expect("callback installed")(Event::Ended);
+                }
+                inside.set(false);
+            }
+        });
+        let callback = VideoEventHandler::new(handler).bind_callback(Environment::new());
+        *callback_slot.borrow_mut() = Some(callback.clone());
+
+        callback(Event::ReadyToPlay);
+
+        assert_eq!(&*delivered.borrow(), &["ReadyToPlay", "Ended"]);
+    }
+
+    /// The bound-handler surface used by native resolution queues nested
+    /// events the same way.
+    #[test]
+    fn a_nested_call_on_the_bound_handler_is_delivered_after_it_returns() {
+        use core::cell::{Cell, RefCell};
+        use std::rc::Rc;
+
+        let handler_slot = Rc::new(RefCell::new(None::<BoundVideoEventHandler>));
+        let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
+        let inside = Cell::new(false);
+        let once = Cell::new(false);
+        let handler: OnEvent = Box::new({
+            let handler_slot = Rc::clone(&handler_slot);
+            let delivered = Rc::clone(&delivered);
+            move |event, _env| {
+                assert!(
+                    !inside.replace(true),
+                    "the handler must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(format!("{event:?}"));
+                if !once.replace(true) {
+                    handler_slot
+                        .borrow()
+                        .as_ref()
+                        .expect("handler installed")
+                        .call(Event::Ended);
+                }
+                inside.set(false);
+            }
+        });
+        let bound = VideoEventHandler::new(handler).bind(&Environment::new());
+        *handler_slot.borrow_mut() = Some(bound);
+
+        handler_slot
+            .borrow()
+            .as_ref()
+            .expect("handler installed")
+            .call(Event::ReadyToPlay);
+
+        assert_eq!(&*delivered.borrow(), &["ReadyToPlay", "Ended"]);
+    }
 
     #[test]
     fn volume_preserves_valid_level() {

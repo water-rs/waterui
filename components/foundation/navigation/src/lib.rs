@@ -16,7 +16,12 @@ pub mod split;
 pub mod tab;
 mod transition;
 
-use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    rc::Rc,
+    vec,
+    vec::Vec,
+};
 use core::{
     any::TypeId,
     cell::{Cell, RefCell},
@@ -223,6 +228,10 @@ struct NavigationControllerState {
     pending_transaction_id: Cell<Option<NavigationTransactionId>>,
     path_pop_handler: RefCell<Option<PathPopHandler>>,
     native_applied_pops: Cell<usize>,
+    /// Transactions queued while the receiver's `apply` is still running; they
+    /// are delivered after it returns, in order, rather than re-entering it.
+    outbox: RefCell<VecDeque<NavigationTransaction>>,
+    committing: Cell<bool>,
 }
 
 /// A receiver that handles navigation actions.
@@ -256,6 +265,8 @@ impl NavigationController {
                 path_depth: Cell::new(0),
                 next_transaction_id: Cell::new(1),
                 pending_transaction_id: Cell::new(None),
+                outbox: RefCell::new(VecDeque::new()),
+                committing: Cell::new(false),
                 path_pop_handler: RefCell::new(None),
                 native_applied_pops: Cell::new(0),
             }),
@@ -342,16 +353,34 @@ impl NavigationController {
             id.checked_add(1)
                 .expect("navigation transaction identifier overflowed"),
         );
-        self.state.pending_transaction_id.set(Some(id));
         self.state
-            .receiver
+            .outbox
             .borrow_mut()
-            .apply(NavigationTransaction {
+            .push_back(NavigationTransaction {
                 id,
                 retained_prefix,
                 removed,
                 inserted,
             });
+        self.drain_outbox();
+    }
+
+    /// Delivers queued transactions to the backend receiver. A mutation issued
+    /// while `apply` is still running only enqueues; the drain in flight picks
+    /// it up once `apply` returns, so the receiver is never called re-entrantly.
+    fn drain_outbox(&self) {
+        if self.state.committing.replace(true) {
+            return;
+        }
+        loop {
+            let transaction = self.state.outbox.borrow_mut().pop_front();
+            let Some(transaction) = transaction else {
+                break;
+            };
+            self.state.pending_transaction_id.set(Some(transaction.id));
+            self.state.receiver.borrow_mut().apply(transaction);
+        }
+        self.state.committing.set(false);
     }
 
     /// Records successful completion of the current backend transaction.
@@ -1183,15 +1212,31 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
     let current_path = Rc::new(RefCell::new(Vec::new()));
+    let pending = Rc::new(RefCell::new(VecDeque::new()));
+    let dispatching = Rc::new(Cell::new(false));
     let receiver = receiver.clone();
     path.watch(move |next_path| {
-        reconcile_navigation_path(
-            &receiver,
-            &mut current_path.borrow_mut(),
-            next_path,
-            &same,
-            &build,
-        );
+        // A path write issued while a reconcile still runs lands here
+        // re-entrantly; queue it and let the dispatch in flight drain it once
+        // the current reconcile returns, keeping snapshots in order.
+        pending.borrow_mut().push_back(next_path);
+        if dispatching.replace(true) {
+            return;
+        }
+        loop {
+            let next = pending.borrow_mut().pop_front();
+            let Some(next_path) = next else {
+                break;
+            };
+            reconcile_navigation_path(
+                &receiver,
+                &mut current_path.borrow_mut(),
+                next_path,
+                &same,
+                &build,
+            );
+        }
+        dispatching.set(false);
     })
 }
 
@@ -1652,6 +1697,111 @@ mod tests {
             2,
             "replacing the route must remove both the route entry and the link entry above it"
         );
+    }
+
+    /// A receiver that writes the watched path while `apply` is still running.
+    struct PathWritingNavigationController {
+        path: Rc<RefCell<Option<NavigationPath<u8>>>>,
+        inside: Cell<bool>,
+        applies: Cell<usize>,
+        applied: Rc<RefCell<alloc::vec::Vec<(usize, usize, usize)>>>,
+    }
+
+    impl CustomNavigationController for PathWritingNavigationController {
+        fn apply(&mut self, transaction: NavigationTransaction) {
+            assert!(
+                !self.inside.replace(true),
+                "the receiver must not run re-entrantly"
+            );
+            self.applied.borrow_mut().push((
+                transaction.retained_prefix,
+                transaction.removed,
+                transaction.inserted.len(),
+            ));
+            self.applies.set(self.applies.get() + 1);
+            // The write must happen on a post-registration delivery: the
+            // collection watcher fires its initial snapshot before it is
+            // registered, so a write during the first apply can never notify.
+            if self.applies.get() == 2 {
+                self.path
+                    .borrow()
+                    .as_ref()
+                    .expect("the test installs the path")
+                    .replace([9_u8, 8]);
+            }
+            self.inside.set(false);
+        }
+    }
+
+    /// A path mutation issued while the backend receiver is applying a
+    /// transaction must reconcile after `apply` returns, not re-enter it.
+    #[test]
+    fn a_path_write_during_apply_is_reconciled_after_apply_returns() {
+        let path = NavigationPath::from(vec![0_u8]);
+        let path_slot = Rc::new(RefCell::new(None));
+        let applied = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let controller = NavigationController::new(PathWritingNavigationController {
+            path: Rc::clone(&path_slot),
+            inside: Cell::new(false),
+            applies: Cell::new(0),
+            applied: Rc::clone(&applied),
+        });
+        *path_slot.borrow_mut() = Some(path.clone());
+
+        let _guard = subscribe_navigation_path(&path, &controller, equal, route_destination);
+        path.push(1);
+
+        assert_eq!(
+            &*applied.borrow(),
+            &[(0, 0, 1), (1, 0, 1), (0, 2, 2)],
+            "the nested replace reconciles against the state left by the in-flight apply"
+        );
+        assert_eq!(path.snapshot(), vec![9, 8]);
+    }
+
+    /// A receiver that commits another mutation while `apply` is still running.
+    struct CommittingNavigationController {
+        controller: Rc<RefCell<Option<NavigationController>>>,
+        inside: Cell<bool>,
+        fired: Cell<bool>,
+        ids: Rc<RefCell<alloc::vec::Vec<u64>>>,
+    }
+
+    impl CustomNavigationController for CommittingNavigationController {
+        fn apply(&mut self, transaction: NavigationTransaction) {
+            assert!(
+                !self.inside.replace(true),
+                "the receiver must not run re-entrantly"
+            );
+            self.ids.borrow_mut().push(transaction.id);
+            if !self.fired.replace(true) {
+                self.controller
+                    .borrow()
+                    .as_ref()
+                    .expect("the test installs the controller")
+                    .push_builder(AnyViewBuilder::new(|| NavigationView::new("Nested", ())));
+            }
+            self.inside.set(false);
+        }
+    }
+
+    /// A commit issued while the backend receiver is applying a transaction
+    /// must be delivered after `apply` returns, in order, not re-entrantly.
+    #[test]
+    fn a_commit_during_apply_is_delivered_after_apply_returns() {
+        let slot = Rc::new(RefCell::new(None));
+        let ids = Rc::new(RefCell::new(alloc::vec::Vec::new()));
+        let controller = NavigationController::new(CommittingNavigationController {
+            controller: Rc::clone(&slot),
+            inside: Cell::new(false),
+            fired: Cell::new(false),
+            ids: Rc::clone(&ids),
+        });
+        *slot.borrow_mut() = Some(controller.clone());
+
+        controller.push_builder(AnyViewBuilder::new(|| NavigationView::new("Outer", ())));
+
+        assert_eq!(&*ids.borrow(), &[1, 2]);
     }
 
     /// A native interactive pop is reported after the platform already removed

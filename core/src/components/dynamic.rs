@@ -22,9 +22,9 @@
 //! });
 use crate::components::metadata::Retain;
 use crate::{AnyView, Environment, Metadata, View};
-use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::rc::Rc;
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::marker::PhantomData;
 use nami::watcher::Context;
 use nami::{Signal, watcher::Metadata as WatcherMetadata};
@@ -50,7 +50,15 @@ raw_view!(Dynamic);
 /// `State<DynamicHandler>` ones.
 #[state]
 #[derive(Clone)]
-pub struct DynamicHandler(Rc<RefCell<DynamicHandlerState>>);
+pub struct DynamicHandler(Rc<RefCell<DynamicHandlerInner>>);
+
+struct DynamicHandlerInner {
+    state: DynamicHandlerState,
+    /// Updates queued while a receiver call is in flight; they are delivered
+    /// after it returns, in order, rather than re-entering the receiver.
+    pending: VecDeque<(AnyView, WatcherMetadata)>,
+    dispatching: bool,
+}
 
 enum DynamicHandlerState {
     /// Connected to a receiver (Swift/native side).
@@ -62,7 +70,7 @@ enum DynamicHandlerState {
     Unconnected(Option<AnyView>),
 }
 
-type Receiver = Box<dyn Fn(Context<AnyView>)>;
+type Receiver = Rc<dyn Fn(Context<AnyView>)>;
 
 /// Metadata marker for the body-time snapshot installed by [`Dynamic::watch`].
 #[derive(Clone, Copy, Debug)]
@@ -79,16 +87,58 @@ impl DynamicHandler {
     /// * `view` - The new view to display
     /// * `metadata` - Additional metadata associated with the update
     pub fn set_with_metadata(&self, view: impl View, metadata: WatcherMetadata) {
-        let mut state = self.0.borrow_mut();
-        let view = AnyView::new(view);
-        match &mut *state {
-            DynamicHandlerState::Connected { receiver, .. } => {
-                receiver(Context::new(view, metadata));
-            }
-            DynamicHandlerState::Unconnected(temp_view) => {
-                *temp_view = Some(view);
+        self.set_any_with_metadata(AnyView::new(view), metadata);
+    }
+
+    fn set_any_with_metadata(&self, view: AnyView, metadata: WatcherMetadata) {
+        {
+            let mut inner = self.0.borrow_mut();
+            match &mut inner.state {
+                DynamicHandlerState::Connected { .. } => {
+                    inner.pending.push_back((view, metadata));
+                }
+                DynamicHandlerState::Unconnected(temp_view) => {
+                    *temp_view = Some(view);
+                    return;
+                }
             }
         }
+        self.dispatch_pending();
+    }
+
+    /// Drains queued updates into the receiver. A `set` that lands while the
+    /// receiver runs only enqueues; the dispatch already in flight picks it up
+    /// once the receiver returns, so the receiver is never called re-entrantly.
+    fn dispatch_pending(&self) {
+        {
+            let mut inner = self.0.borrow_mut();
+            if inner.dispatching {
+                return;
+            }
+            inner.dispatching = true;
+        }
+        loop {
+            let next = {
+                let mut inner = self.0.borrow_mut();
+                inner
+                    .pending
+                    .pop_front()
+                    .and_then(|(view, metadata)| match &mut inner.state {
+                        DynamicHandlerState::Connected { receiver, .. } => {
+                            Some((Rc::clone(receiver), view, metadata))
+                        }
+                        DynamicHandlerState::Unconnected(temp_view) => {
+                            *temp_view = Some(view);
+                            None
+                        }
+                    })
+            };
+            let Some((receiver, view, metadata)) = next else {
+                break;
+            };
+            receiver(Context::new(view, metadata));
+        }
+        self.0.borrow_mut().dispatching = false;
     }
 
     /// Sets the content of the Dynamic view with the provided view.
@@ -112,9 +162,11 @@ impl Dynamic {
     /// A tuple containing the [`DynamicHandler`] and Dynamic view
     #[must_use]
     pub fn new() -> (DynamicHandler, Self) {
-        let handler = DynamicHandler(Rc::new(RefCell::new(DynamicHandlerState::Unconnected(
-            None,
-        ))));
+        let handler = DynamicHandler(Rc::new(RefCell::new(DynamicHandlerInner {
+            state: DynamicHandlerState::Unconnected(None),
+            pending: VecDeque::new(),
+            dispatching: false,
+        })));
         (handler.clone(), Self(handler))
     }
 
@@ -179,19 +231,28 @@ impl Dynamic {
         pending_view_slot: Option<Rc<RefCell<Option<AnyView>>>>,
         receiver: impl Fn(Context<AnyView>) + 'static,
     ) {
-        let mut state = self.0.0.borrow_mut();
+        let initial = {
+            let mut inner = self.0.0.borrow_mut();
 
-        match &mut *state {
-            DynamicHandlerState::Unconnected(temp_view) => {
-                if let Some(view) = temp_view.take() {
-                    receiver(Context::new(view, WatcherMetadata::new()));
+            match &mut inner.state {
+                DynamicHandlerState::Unconnected(temp_view) => {
+                    let initial = temp_view.take();
+                    inner.state = DynamicHandlerState::Connected {
+                        receiver: Rc::new(receiver),
+                        pending_view_slot,
+                    };
+                    initial
                 }
-                *state = DynamicHandlerState::Connected {
-                    receiver: Box::new(receiver),
-                    pending_view_slot,
-                };
+                DynamicHandlerState::Connected { .. } => {
+                    unreachable!("Dynamic already connected")
+                }
             }
-            DynamicHandlerState::Connected { .. } => unreachable!("Dynamic already connected"),
+        };
+
+        // The pre-connection view is delivered through the queue so a set from
+        // inside the receiver cannot re-enter it.
+        if let Some(view) = initial {
+            self.0.set_any_with_metadata(view, WatcherMetadata::new());
         }
     }
 
@@ -206,8 +267,8 @@ impl Dynamic {
     ///
     /// Returns `None` when the node is already connected to a backend receiver.
     pub fn with_unconnected_view<R>(&self, f: impl FnOnce(Option<&AnyView>) -> R) -> Option<R> {
-        let state = self.0.0.borrow();
-        match &*state {
+        let inner = self.0.0.borrow();
+        match &inner.state {
             DynamicHandlerState::Unconnected(view) => Some(f(view.as_ref())),
             DynamicHandlerState::Connected { .. } => None,
         }
@@ -220,8 +281,8 @@ impl Dynamic {
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
     ) -> Option<R> {
-        let mut state = self.0.0.borrow_mut();
-        match &mut *state {
+        let mut inner = self.0.0.borrow_mut();
+        match &mut inner.state {
             DynamicHandlerState::Unconnected(view) => Some(f(view)),
             DynamicHandlerState::Connected { .. } => None,
         }
@@ -235,8 +296,8 @@ impl Dynamic {
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
     ) -> Option<R> {
-        let mut state = self.0.0.borrow_mut();
-        match &mut *state {
+        let mut inner = self.0.0.borrow_mut();
+        match &mut inner.state {
             DynamicHandlerState::Unconnected(view) => Some(f(view)),
             DynamicHandlerState::Connected {
                 pending_view_slot: Some(slot),
@@ -255,8 +316,8 @@ impl Dynamic {
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
     ) -> Option<R> {
-        let mut state = self.0.0.borrow_mut();
-        match &mut *state {
+        let mut inner = self.0.0.borrow_mut();
+        match &mut inner.state {
             DynamicHandlerState::Connected {
                 pending_view_slot: Some(slot),
                 ..
@@ -294,7 +355,27 @@ where
 
         let guard = self.value.watch({
             let f = Rc::clone(&f);
-            move |value| handle.set(f(value.into_value()))
+            let pending = RefCell::new(None);
+            let dispatching = Cell::new(false);
+            move |context| {
+                let value = context.into_value();
+                // A write the builder makes right now lands here re-entrantly;
+                // keep the latest value and let the dispatch in flight drain it
+                // once the builder and the receiver return.
+                if dispatching.replace(true) {
+                    *pending.borrow_mut() = Some(value);
+                    return;
+                }
+                let mut next = value;
+                loop {
+                    handle.set(f(next));
+                    let Some(queued) = pending.borrow_mut().take() else {
+                        break;
+                    };
+                    next = queued;
+                }
+                dispatching.set(false);
+            }
         });
 
         Metadata::new(dynamic, Retain::new((guard, self.value)))
@@ -318,4 +399,97 @@ where
     S: Signal<Output = T> + 'static,
 {
     Dynamic::watch(value, f)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+    use core::cell::Cell;
+
+    use nami::Binding;
+
+    use super::*;
+    use crate::metadata::MetadataKey;
+
+    /// Marks the payload of a delivered view so a test can observe ordering.
+    struct Probe(usize);
+    impl MetadataKey for Probe {}
+
+    fn probe_of(view: AnyView) -> usize {
+        view.downcast::<Metadata<Probe>>()
+            .expect("the delivered view carries a Probe")
+            .value
+            .0
+    }
+
+    /// A `set` issued while the receiver still runs must queue behind the
+    /// current delivery instead of re-entering the receiver.
+    #[test]
+    fn a_nested_set_is_delivered_after_the_receiver_returns() {
+        let (handle, dynamic) = Dynamic::new();
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let delivering = Cell::new(false);
+        let nested = Cell::new(false);
+        dynamic.connect({
+            let handle = handle.clone();
+            let delivered = Rc::clone(&delivered);
+            move |context| {
+                assert!(
+                    !delivering.replace(true),
+                    "the receiver must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(probe_of(context.into_value()));
+                if !nested.replace(true) {
+                    handle.set(Metadata::new((), Probe(2)));
+                }
+                delivering.set(false);
+            }
+        });
+
+        handle.set(Metadata::new((), Probe(1)));
+
+        assert_eq!(&*delivered.borrow(), &[1, 2]);
+    }
+
+    /// A `Dynamic::watch` builder that writes the watched signal queues that
+    /// write as the pending value and runs again once it has returned.
+    #[test]
+    fn watch_drains_a_nested_write_after_the_builder_returns() {
+        let source = Binding::i32(1);
+        let delivered = Rc::new(RefCell::new(Vec::new()));
+        let view = Dynamic::watch(source.clone(), {
+            let source = source.clone();
+            move |value| {
+                if value == 2 {
+                    source.set(3);
+                }
+                #[allow(clippy::cast_sign_loss)]
+                Metadata::new((), Probe(value as usize))
+            }
+        });
+
+        let body = AnyView::new(view.body(&Environment::new()));
+        // The retain value owns the watcher guard; it must outlive the
+        // notifications this test drives.
+        let Metadata {
+            content,
+            value: _retained,
+        } = *body
+            .downcast::<Metadata<Retain>>()
+            .expect("the watched dynamic body carries its retain guard");
+        let dynamic = content
+            .downcast::<Dynamic>()
+            .expect("the watched dynamic body resolves to a Dynamic");
+        dynamic.connect({
+            let delivered = Rc::clone(&delivered);
+            move |context| {
+                delivered.borrow_mut().push(probe_of(context.into_value()));
+            }
+        });
+
+        source.set(2);
+
+        assert_eq!(&*delivered.borrow(), &[1, 2, 3]);
+        assert_eq!(source.snapshot(), 3);
+    }
 }

@@ -1,4 +1,8 @@
-use std::{cell::RefCell, fmt, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    fmt,
+    rc::Rc,
+};
 
 use nami::Signal;
 use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
@@ -72,17 +76,34 @@ where
         let env = env.clone();
         let handler = RefCell::new(handler);
         let cache = Rc::new(RefCell::new(None));
+        let pending = RefCell::new(None);
+        let dispatching = Cell::new(false);
         let guard = source.watch({
             let cache = Rc::clone(&cache);
             move |context| {
                 let value = context.into_value();
-                let changed = cache
-                    .borrow_mut()
-                    .replace(value.clone())
-                    .is_none_or(|cached| cached != value);
-                if changed {
-                    handler.borrow_mut()(value, &env);
+                // A write the handler is making right now lands here
+                // re-entrantly; keep the latest value and let the dispatch in
+                // flight drain it once the handler returns.
+                if dispatching.replace(true) {
+                    *pending.borrow_mut() = Some(value);
+                    return;
                 }
+                let mut next = value;
+                loop {
+                    let changed = cache
+                        .borrow_mut()
+                        .replace(next.clone())
+                        .is_none_or(|cached| cached != next);
+                    if changed {
+                        handler.borrow_mut()(next.clone(), &env);
+                    }
+                    let Some(queued) = pending.borrow_mut().take() else {
+                        break;
+                    };
+                    next = queued;
+                }
+                dispatching.set(false);
             }
         });
         if cache.borrow().is_none() {
@@ -200,6 +221,65 @@ mod tests {
         source.set(3);
 
         assert_eq!(total.snapshot(), 5);
+    }
+
+    /// A handler that writes its own watched binding must not panic on the
+    /// nested notification: the write is delivered after the handler returns,
+    /// and the handler stops once the value settles.
+    #[test]
+    fn handler_writing_watched_binding_runs_again_then_settles() {
+        let source = Binding::i32(0);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let env = Environment::new();
+
+        let _mounted = mount(
+            OnChange::new((), &source, {
+                let seen = Rc::clone(&seen);
+                let source = source.clone();
+                move |value: i32| {
+                    seen.borrow_mut().push(value);
+                    if value == 1 {
+                        source.set(7);
+                    } else if value == 7 {
+                        // Rewriting the value the handler already saw must not
+                        // run it again.
+                        source.set(7);
+                    }
+                }
+            }),
+            &env,
+        );
+
+        source.set(1);
+        assert_eq!(&*seen.borrow(), &[1, 7]);
+        assert_eq!(source.snapshot(), 7);
+    }
+
+    /// Each write the handler makes is delivered back to it, so a handler that
+    /// keeps moving the value forward converges instead of panicking.
+    #[test]
+    fn self_writes_chain_until_the_value_settles() {
+        let source = Binding::i32(0);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let env = Environment::new();
+
+        let _mounted = mount(
+            OnChange::new((), &source, {
+                let seen = Rc::clone(&seen);
+                let source = source.clone();
+                move |value: i32| {
+                    seen.borrow_mut().push(value);
+                    if value < 3 {
+                        source.set(value + 1);
+                    }
+                }
+            }),
+            &env,
+        );
+
+        source.set(1);
+        assert_eq!(&*seen.borrow(), &[1, 2, 3]);
+        assert_eq!(source.snapshot(), 3);
     }
 
     #[test]

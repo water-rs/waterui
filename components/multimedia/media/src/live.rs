@@ -1,4 +1,5 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
@@ -151,22 +152,45 @@ impl View for LivePhoto {
 /// moved into one of them.
 #[derive(Clone)]
 struct LivePhotoReporter {
-    handler: Rc<RefCell<Option<BoxedEventAction<Event>>>>,
+    inner: Rc<LivePhotoReporterInner>,
+}
+
+struct LivePhotoReporterInner {
+    handler: RefCell<Option<BoxedEventAction<Event>>>,
+    /// Events queued while the handler still runs; they are delivered after it
+    /// returns, in order, rather than re-entering it.
+    pending: RefCell<VecDeque<Event>>,
+    dispatching: Cell<bool>,
     env: Environment,
 }
 
 impl LivePhotoReporter {
     fn new(handler: Option<BoxedEventAction<Event>>, env: Environment) -> Self {
         Self {
-            handler: Rc::new(RefCell::new(handler)),
-            env,
+            inner: Rc::new(LivePhotoReporterInner {
+                handler: RefCell::new(handler),
+                pending: RefCell::new(VecDeque::new()),
+                dispatching: Cell::new(false),
+                env,
+            }),
         }
     }
 
     fn emit(&self, event: Event) {
-        if let Some(handler) = self.handler.borrow_mut().as_mut() {
-            handler(event, &self.env);
+        self.inner.pending.borrow_mut().push_back(event);
+        if self.inner.dispatching.replace(true) {
+            return;
         }
+        loop {
+            let next = self.inner.pending.borrow_mut().pop_front();
+            let Some(event) = next else {
+                break;
+            };
+            if let Some(handler) = self.inner.handler.borrow_mut().as_mut() {
+                handler(event, &self.inner.env);
+            }
+        }
+        self.inner.dispatching.set(false);
     }
 }
 
@@ -193,4 +217,38 @@ fn live_photo_video(
             _ => {}
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An event emitted while the handler still runs must queue behind the
+    /// in-flight call instead of re-entering the handler.
+    #[test]
+    fn a_nested_emit_is_delivered_after_the_handler_returns() {
+        let reporter = LivePhotoReporter::new(None, Environment::new());
+        let delivered = Rc::new(RefCell::new(Vec::<String>::new()));
+        let inside = Cell::new(false);
+        let once = Cell::new(false);
+        *reporter.inner.handler.borrow_mut() = Some(Box::new({
+            let reporter = reporter.clone();
+            let delivered = Rc::clone(&delivered);
+            move |event: Event, _env: &Environment| {
+                assert!(
+                    !inside.replace(true),
+                    "the handler must not run re-entrantly"
+                );
+                delivered.borrow_mut().push(format!("{event:?}"));
+                if !once.replace(true) {
+                    reporter.emit(Event::MotionEnded);
+                }
+                inside.set(false);
+            }
+        }));
+
+        reporter.emit(Event::MotionStarted);
+
+        assert_eq!(&*delivered.borrow(), &["MotionStarted", "MotionEnded"]);
+    }
 }
