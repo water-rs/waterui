@@ -482,6 +482,26 @@ impl ToJavaStruct for crate::WuiMetadataOnEvent {
     }
 }
 
+/// `MetadataOnKeyPressStruct(contentPtr: Long, handlerPtr: Long)`
+impl ToJavaStruct for crate::WuiMetadataOnKeyPress {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataOnKeyPressStruct"
+            ))
+            .expect("MetadataOnKeyPressStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.value as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataOnKeyPressStruct")
+    }
+}
+
 /// `MetadataCursorStruct(contentPtr: Long, stylePtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataCursor {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
@@ -1378,7 +1398,7 @@ impl ToJavaStruct for crate::components::button::WuiButton {
     }
 }
 
-/// `WuiTextField -> TextFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr, promptPtr, promptAlignmentPtr, keyboardType, selectionMenuItemsPtr, lineLimit)`
+/// `WuiTextField -> TextFieldStruct(labelPtr, accessibilityLabelPtr, valuePtr, promptPtr, promptAlignmentPtr, keyboardType, selectionMenuItemsPtr, lineLimit, onSubmitPtr)`
 impl ToJavaStruct for crate::components::form::WuiTextField {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1386,7 +1406,7 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
             .expect("TextFieldStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJJJIJI)V"),
+            jni_sig!("(JJJJJIJIJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -1396,6 +1416,7 @@ impl ToJavaStruct for crate::components::form::WuiTextField {
                 JValue::Int(self.keyboard as i32),
                 JValue::Long(self.selection_menu as jlong),
                 JValue::Int(i32::try_from(self.line_limit).unwrap_or(i32::MAX)),
+                JValue::Long(self.on_submit as jlong),
             ],
         )
         .expect("Failed to create TextFieldStruct")

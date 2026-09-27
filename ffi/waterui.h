@@ -90,6 +90,36 @@ typedef struct WuiArray {
 #define WUI_SURFACE_MODIFIER_NUM_LOCK 128
 
 /**
+ * Modifier bit for the Shift key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_SHIFT 512
+
+/**
+ * Modifier bit for the Control key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_CONTROL 8
+
+/**
+ * Modifier bit for the Alt/Option key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_ALT 1
+
+/**
+ * Modifier bit for the Meta/Command key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_META 64
+
+/**
+ * Modifier bit for the Caps Lock state in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_CAPS_LOCK 4
+
+/**
+ * Modifier bit for the Num Lock state in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_NUM_LOCK 128
+
+/**
  * The default layout priority of a flexible gap, below ordinary content.
  */
 #define Spacer_DEFAULT_LAYOUT_PRIORITY INT32_MIN
@@ -2076,6 +2106,11 @@ typedef struct WuiMoveAction WuiMoveAction;
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
 /**
+ * Opaque FFI handle owning a `RetainedCallback<OnKeyPress>`.
+ */
+typedef struct WuiOnKeyPress WuiOnKeyPress;
+
+/**
  * Opaque handle owning a `Picture`.
  */
 typedef struct WuiPictureHandle WuiPictureHandle;
@@ -2812,6 +2847,67 @@ typedef struct WuiMetadata_WuiOnEvent {
  * Type alias for `Metadata<OnEvent>` FFI struct
  */
 typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
+
+/**
+ * Whether a key handler consumed a key, as `KeyHandling` crosses the ABI.
+ */
+typedef enum WuiKeyHandling {
+  /**
+   * The key was consumed; bubbling stops here.
+   */
+  WuiKeyHandling_Handled,
+  /**
+   * The key was not used; it keeps bubbling to the next ancestor.
+   */
+  WuiKeyHandling_Ignored,
+} WuiKeyHandling;
+
+/**
+ * A key press handed to a native `OnKeyPress` handler.
+ *
+ * `key` and `code` are owned strings: the caller hands over ownership and
+ * this crate frees them during `waterui_call_on_key_press`. A host builds
+ * them through its usual `WuiStr` constructor — never a zeroed struct, which
+ * has no valid array vtable.
+ */
+typedef struct WuiKeyPress {
+  /**
+   * The W3C `KeyboardEvent.key` name — `"a"`, `"Enter"`, `"Escape"`.
+   */
+  struct WuiStr key;
+  /**
+   * The W3C `KeyboardEvent.code` name — `"KeyA"`, `"Escape"`.
+   */
+  struct WuiStr code;
+  /**
+   * The modifier chord, as `WUI_KEY_MODIFIER_*` bits.
+   */
+  uint32_t modifiers;
+  /**
+   * Whether the platform generated this press by auto-repeat.
+   */
+  bool repeat;
+} WuiKeyPress;
+
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_WuiOnKeyPress {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  struct WuiOnKeyPress *value;
+} WuiMetadata_WuiOnKeyPress;
+
+/**
+ * Type alias for `Metadata<OnKeyPress>` FFI struct.
+ */
+typedef struct WuiMetadata_WuiOnKeyPress WuiMetadataOnKeyPress;
 
 /**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
@@ -4936,6 +5032,13 @@ typedef struct WuiTextField {
    * exceed the limit rather than truncating the existing value.
    */
   uintptr_t line_limit;
+  /**
+   * Action fired when the field is submitted (Return in a single-line
+   * field). NULL means no submit action and Return is left unconsumed so it
+   * keeps bubbling. A field without a line limit never submits. Free with
+   * `waterui_drop_shared_action`.
+   */
+  struct WuiSharedAction *on_submit;
 } WuiTextField;
 
 /**
@@ -8200,6 +8303,21 @@ WuiMetadataOnEvent waterui_force_as_metadata_on_event(struct WuiAnyView *view);
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
+struct WuiTypeId waterui_metadata_on_key_press_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataOnKeyPress waterui_force_as_metadata_on_key_press(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
 struct WuiTypeId waterui_metadata_cursor_id(void);
 
 /**
@@ -9175,6 +9293,31 @@ void waterui_call_on_hover_event(const struct WuiOnEventHandler *handler,
  * * `handler` must be a valid pointer to a `WuiOnEventHandler`.
  */
 void waterui_drop_on_event(struct WuiOnEventHandler *handler);
+
+/**
+ * Calls an `OnKeyPress` handler with the key press.
+ *
+ * The handler runs with `press` in its environment, readable as
+ * `Use<KeyPress>`; its `WuiKeyHandling` answer says whether the key keeps
+ * bubbling to the next ancestor. This handler can be called multiple times.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer returned by
+ *   `waterui_force_as_metadata_on_key_press`.
+ * * `env` must be a valid pointer to a `WuiEnv`.
+ * * `press` is consumed by this call — its strings must not be used
+ *   afterwards.
+ */
+enum WuiKeyHandling waterui_call_on_key_press(const struct WuiOnKeyPress *handler,
+                                              const struct WuiEnv *env,
+                                              struct WuiKeyPress press);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_on_key_press(struct WuiOnKeyPress *value);
 
 /**
  * Drops a `WuiGesture`, recursively freeing any composite variants.

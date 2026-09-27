@@ -49,6 +49,13 @@ pub struct WuiTextField {
     /// means the field has no line limit. Backends must reject input that would
     /// exceed the limit rather than truncating the existing value.
     pub line_limit: usize,
+    /// The action run when the user submits the field with Return or Enter.
+    ///
+    /// `NULL` means the field has no submit action, and a single-line field
+    /// leaves Return unconsumed so it bubbles to the field's ancestors. A
+    /// field without a line limit consumes Return as a line break and never
+    /// submits. Free with `waterui_drop_shared_action`.
+    pub on_submit: *mut crate::WuiSharedAction,
 }
 
 impl IntoFFI for ResolvedTextFieldConfig {
@@ -62,6 +69,7 @@ impl IntoFFI for ResolvedTextFieldConfig {
             keyboard: self.keyboard.into_ffi(),
             selection_menu: crate::menu_items_views(self.selection_menu),
             line_limit: self.line_limit.map_or(0, core::num::NonZeroUsize::get),
+            on_submit: self.on_submit.into_ffi(),
         }
     }
 }

@@ -1043,6 +1043,19 @@ pub type WuiMetadataOnEvent = WuiMetadata<WuiOnEvent>;
 // Generate waterui_metadata_on_event_id() and waterui_force_as_metadata_on_event()
 ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
 
+// ========== Metadata<OnKeyPress> FFI ==========
+// Key bubbling: a handler attached to a container sees the keys a focused
+// descendant leaves unconsumed, nearest ancestor first.
+
+use crate::events::key::WuiOnKeyPress;
+use waterui_core::key::OnKeyPress;
+
+/// Type alias for `Metadata<OnKeyPress>` FFI struct.
+pub type WuiMetadataOnKeyPress = WuiMetadata<*mut WuiOnKeyPress>;
+
+// Generate waterui_metadata_on_key_press_id() and waterui_force_as_metadata_on_key_press()
+ffi_metadata!(OnKeyPress, WuiMetadataOnKeyPress, on_key_press);
+
 // ========== Metadata<Cursor> FFI ==========
 // Used to set cursor style when hovering over views
 

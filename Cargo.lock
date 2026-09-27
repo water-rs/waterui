@@ -10217,6 +10217,7 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
+ "keyboard-types",
  "nami",
  "num-traits",
  "serde",

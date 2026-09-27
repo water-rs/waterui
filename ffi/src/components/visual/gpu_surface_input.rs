@@ -191,11 +191,11 @@ pub struct WuiSurfaceInputEvent {
 }
 
 /// Reads the modifier chord, rejecting bits this ABI does not carry.
-fn modifiers_from_ffi(bits: u32) -> Modifiers {
+pub(crate) fn modifiers_from_ffi(context: &str, bits: u32) -> Modifiers {
     assert_eq!(
         bits & !SUPPORTED_MODIFIERS,
         0,
-        "waterui_gpu_surface_send_input_event: unsupported modifier bits {:#x}",
+        "{context}: unsupported modifier bits {:#x}",
         bits & !SUPPORTED_MODIFIERS
     );
     Modifiers::from_bits(bits).expect("supported modifier bits are a subset of `Modifiers`")
@@ -259,7 +259,10 @@ impl IntoRust for WuiSurfaceInputEvent {
         match kind {
             WuiSurfaceInputEventKind::Focus => SurfaceInputEvent::Focus(focused),
             WuiSurfaceInputEventKind::Modifiers => {
-                SurfaceInputEvent::Modifiers(modifiers_from_ffi(modifiers))
+                SurfaceInputEvent::Modifiers(modifiers_from_ffi(
+                    "waterui_gpu_surface_send_input_event",
+                    modifiers,
+                ))
             }
             WuiSurfaceInputEventKind::PointerMove => SurfaceInputEvent::PointerMove { position },
             WuiSurfaceInputEventKind::PointerButton => SurfaceInputEvent::PointerButton {
@@ -286,7 +289,10 @@ impl IntoRust for WuiSurfaceInputEvent {
                         "waterui_gpu_surface_send_input_event: {code:?} is not a W3C KeyboardEvent.code name"
                     )
                 }),
-                modifiers: modifiers_from_ffi(modifiers),
+                modifiers: modifiers_from_ffi(
+                    "waterui_gpu_surface_send_input_event",
+                    modifiers,
+                ),
                 repeat,
             },
             WuiSurfaceInputEventKind::TextInput => SurfaceInputEvent::TextInput(text),
