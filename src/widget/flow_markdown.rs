@@ -1,6 +1,6 @@
 use std::{
-    cell::{Cell, RefCell},
-    collections::{HashMap, HashSet, VecDeque},
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     ops::Range,
     rc::Rc,
     time::Duration,
@@ -17,7 +17,7 @@ use native_executor::sleep;
 use suiteki::Str;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{
-    AnyView, Metadata, Retain, View,
+    AnyView, Metadata, Retain, SerialDispatch, View,
     dynamic::{Dynamic, DynamicHandler},
     id::Identifiable,
 };
@@ -141,8 +141,7 @@ impl View for FlowMarkdown {
                 config.snapshot(),
                 blocks.clone(),
             ))),
-            pending: RefCell::new(VecDeque::new()),
-            dispatching: Cell::new(false),
+            updates: SerialDispatch::new(),
         });
         let state = Rc::clone(&runtime.state);
 
@@ -198,21 +197,12 @@ enum FlowMarkdownUpdate {
 /// Such updates queue here and are applied once the in-flight update returns.
 struct FlowMarkdownRuntime {
     state: Rc<RefCell<FlowMarkdownState>>,
-    pending: RefCell<VecDeque<FlowMarkdownUpdate>>,
-    dispatching: Cell<bool>,
+    updates: SerialDispatch<FlowMarkdownUpdate>,
 }
 
 impl FlowMarkdownRuntime {
-    fn dispatch(self: &Rc<Self>, update: FlowMarkdownUpdate) {
-        self.pending.borrow_mut().push_back(update);
-        if self.dispatching.replace(true) {
-            return;
-        }
-        loop {
-            let next = self.pending.borrow_mut().pop_front();
-            let Some(update) = next else {
-                break;
-            };
+    fn dispatch(&self, update: FlowMarkdownUpdate) {
+        self.updates.deliver(update, |update| {
             let applied = {
                 let mut state = self.state.borrow_mut();
                 match update {
@@ -225,8 +215,7 @@ impl FlowMarkdownRuntime {
                 }
             };
             spawn_typewriter_reveal_if_needed(&self.state, applied.typewriter);
-        }
-        self.dispatching.set(false);
+        });
     }
 }
 
@@ -1842,6 +1831,8 @@ fn advance_point(mut point: Point, text: &str) -> Point {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use waterui_text::styled::Style;
 
     use super::*;
@@ -1889,8 +1880,7 @@ mod tests {
                 FlowMarkdownConfig::default(),
                 slots.clone(),
             ))),
-            pending: RefCell::new(VecDeque::new()),
-            dispatching: Cell::new(false),
+            updates: SerialDispatch::new(),
         });
 
         // `List::watch` invokes the watcher once with the current contents

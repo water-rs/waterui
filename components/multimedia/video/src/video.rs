@@ -24,7 +24,8 @@ use nami::{Signal as _, SignalExt as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 use waterui_core::{
-    Binding, Computed, Environment, NativeView, binding, configurable, layout::StretchAxis,
+    Binding, Computed, Environment, NativeView, SerialDispatch, binding, configurable,
+    layout::StretchAxis,
 };
 
 use crate::{
@@ -1234,8 +1235,7 @@ type OnEvent = waterui_core::handler::BoxedEventAction<Event>;
 /// re-entering the handler.
 struct QueuedVideoEvents {
     handler: core::cell::RefCell<OnEvent>,
-    pending: core::cell::RefCell<std::collections::VecDeque<Event>>,
-    dispatching: core::cell::Cell<bool>,
+    events: SerialDispatch<Event>,
     env: Environment,
 }
 
@@ -1243,25 +1243,15 @@ impl QueuedVideoEvents {
     fn new(handler: OnEvent, env: Environment) -> Self {
         Self {
             handler: core::cell::RefCell::new(handler),
-            pending: core::cell::RefCell::new(std::collections::VecDeque::new()),
-            dispatching: core::cell::Cell::new(false),
+            events: SerialDispatch::new(),
             env,
         }
     }
 
     fn emit(&self, event: Event) {
-        self.pending.borrow_mut().push_back(event);
-        if self.dispatching.replace(true) {
-            return;
-        }
-        loop {
-            let next = self.pending.borrow_mut().pop_front();
-            let Some(event) = next else {
-                break;
-            };
+        self.events.deliver(event, |event| {
             (self.handler.borrow_mut())(event, &self.env);
-        }
-        self.dispatching.set(false);
+        });
     }
 }
 

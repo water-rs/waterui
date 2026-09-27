@@ -5,4 +5,5 @@ pub mod id;
 pub mod main_thread;
 pub mod plugin;
 pub mod resolve;
+pub mod serial;
 pub mod signal;

@@ -16,12 +16,7 @@ pub mod split;
 pub mod tab;
 mod transition;
 
-use alloc::{
-    collections::{BTreeMap, VecDeque},
-    rc::Rc,
-    vec,
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
 use core::{
     any::TypeId,
     cell::{Cell, RefCell},
@@ -33,8 +28,8 @@ use waterui_controls::{ButtonStyle, IntoLabel, button};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, Handler, boxed_action};
 use waterui_core::{
     AnyView, Environment, Error, IgnorableMetadata, IntoSignal, Metadata, Native, NativeView,
-    Retain, Str, View, env::use_env, extract::ExtractionState, extract::Extractor, extract::State,
-    flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
+    Retain, SerialDispatch, Str, View, env::use_env, extract::ExtractionState, extract::Extractor,
+    extract::State, flatten_signal, handler::ViewBuilder, impl_extractor, layout::StretchAxis,
     metadata::MetadataKey, raw_view,
 };
 use waterui_graphics::color::{Color, ResolvedColor};
@@ -228,10 +223,9 @@ struct NavigationControllerState {
     pending_transaction_id: Cell<Option<NavigationTransactionId>>,
     path_pop_handler: RefCell<Option<PathPopHandler>>,
     native_applied_pops: Cell<usize>,
-    /// Transactions queued while the receiver's `apply` is still running; they
+    /// Transactions issued while the receiver's `apply` is still running; they
     /// are delivered after it returns, in order, rather than re-entering it.
-    outbox: RefCell<VecDeque<NavigationTransaction>>,
-    committing: Cell<bool>,
+    outbox: SerialDispatch<NavigationTransaction>,
 }
 
 /// A receiver that handles navigation actions.
@@ -265,8 +259,7 @@ impl NavigationController {
                 path_depth: Cell::new(0),
                 next_transaction_id: Cell::new(1),
                 pending_transaction_id: Cell::new(None),
-                outbox: RefCell::new(VecDeque::new()),
-                committing: Cell::new(false),
+                outbox: SerialDispatch::new(),
                 path_pop_handler: RefCell::new(None),
                 native_applied_pops: Cell::new(0),
             }),
@@ -353,34 +346,21 @@ impl NavigationController {
             id.checked_add(1)
                 .expect("navigation transaction identifier overflowed"),
         );
-        self.state
-            .outbox
-            .borrow_mut()
-            .push_back(NavigationTransaction {
+        // A mutation issued while `apply` is still running only enqueues; the
+        // delivery in flight drains it once `apply` returns, so the receiver is
+        // never called re-entrantly.
+        self.state.outbox.deliver(
+            NavigationTransaction {
                 id,
                 retained_prefix,
                 removed,
                 inserted,
-            });
-        self.drain_outbox();
-    }
-
-    /// Delivers queued transactions to the backend receiver. A mutation issued
-    /// while `apply` is still running only enqueues; the drain in flight picks
-    /// it up once `apply` returns, so the receiver is never called re-entrantly.
-    fn drain_outbox(&self) {
-        if self.state.committing.replace(true) {
-            return;
-        }
-        loop {
-            let transaction = self.state.outbox.borrow_mut().pop_front();
-            let Some(transaction) = transaction else {
-                break;
-            };
-            self.state.pending_transaction_id.set(Some(transaction.id));
-            self.state.receiver.borrow_mut().apply(transaction);
-        }
-        self.state.committing.set(false);
+            },
+            |transaction| {
+                self.state.pending_transaction_id.set(Some(transaction.id));
+                self.state.receiver.borrow_mut().apply(transaction);
+            },
+        );
     }
 
     /// Records successful completion of the current backend transaction.
@@ -1212,22 +1192,13 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
     let current_path = Rc::new(RefCell::new(Vec::new()));
-    let pending = Rc::new(RefCell::new(VecDeque::new()));
-    let dispatching = Rc::new(Cell::new(false));
+    // A path write issued while a reconcile still runs lands here
+    // re-entrantly; queue it and let the dispatch in flight drain it once the
+    // current reconcile returns, keeping snapshots in order.
+    let pending = SerialDispatch::new();
     let receiver = receiver.clone();
     path.watch(move |next_path| {
-        // A path write issued while a reconcile still runs lands here
-        // re-entrantly; queue it and let the dispatch in flight drain it once
-        // the current reconcile returns, keeping snapshots in order.
-        pending.borrow_mut().push_back(next_path);
-        if dispatching.replace(true) {
-            return;
-        }
-        loop {
-            let next = pending.borrow_mut().pop_front();
-            let Some(next_path) = next else {
-                break;
-            };
+        pending.deliver(next_path, |next_path| {
             reconcile_navigation_path(
                 &receiver,
                 &mut current_path.borrow_mut(),
@@ -1235,8 +1206,7 @@ fn subscribe_navigation_path<R: Clone + 'static>(
                 &same,
                 &build,
             );
-        }
-        dispatching.set(false);
+        });
     })
 }
 

@@ -1,12 +1,8 @@
-use std::{
-    cell::{Cell, RefCell},
-    fmt,
-    rc::Rc,
-};
+use std::{cell::RefCell, fmt, rc::Rc};
 
 use nami::Signal;
 use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
-use waterui_core::{Environment, Metadata, Retain, View};
+use waterui_core::{Environment, LatestDispatch, Metadata, Retain, View};
 
 /// A view that runs an [`EventHandler`] whenever a signal's value changes.
 ///
@@ -76,34 +72,22 @@ where
         let env = env.clone();
         let handler = RefCell::new(handler);
         let cache = Rc::new(RefCell::new(None));
-        let pending = RefCell::new(None);
-        let dispatching = Cell::new(false);
+        // A write the handler is making right now lands here re-entrantly;
+        // keep the latest value and let the dispatch in flight drain it once
+        // the handler returns.
+        let serial = LatestDispatch::new();
         let guard = source.watch({
             let cache = Rc::clone(&cache);
             move |context| {
-                let value = context.into_value();
-                // A write the handler is making right now lands here
-                // re-entrantly; keep the latest value and let the dispatch in
-                // flight drain it once the handler returns.
-                if dispatching.replace(true) {
-                    *pending.borrow_mut() = Some(value);
-                    return;
-                }
-                let mut next = value;
-                loop {
+                serial.deliver(context.into_value(), |next| {
                     let changed = cache
                         .borrow_mut()
                         .replace(next.clone())
                         .is_none_or(|cached| cached != next);
                     if changed {
-                        handler.borrow_mut()(next.clone(), &env);
+                        handler.borrow_mut()(next, &env);
                     }
-                    let Some(queued) = pending.borrow_mut().take() else {
-                        break;
-                    };
-                    next = queued;
-                }
-                dispatching.set(false);
+                });
             }
         });
         if cache.borrow().is_none() {

@@ -1,12 +1,11 @@
-use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use waterui_core::gesture::{GestureObserver, LongPressGesture};
 use waterui_core::handler::{BoxedEventAction, EventHandler, boxed_event_handler};
 use waterui_core::{
-    AnyView, Binding, Computed, Dynamic, Environment, Metadata, Signal, SignalExt, View,
-    layout::StretchAxis, reactive::signal::IntoComputed,
+    AnyView, Binding, Computed, Dynamic, Environment, Metadata, SerialDispatch, Signal, SignalExt,
+    View, layout::StretchAxis, reactive::signal::IntoComputed,
 };
 use waterui_layout::overlay;
 
@@ -157,10 +156,9 @@ struct LivePhotoReporter {
 
 struct LivePhotoReporterInner {
     handler: RefCell<Option<BoxedEventAction<Event>>>,
-    /// Events queued while the handler still runs; they are delivered after it
-    /// returns, in order, rather than re-entering it.
-    pending: RefCell<VecDeque<Event>>,
-    dispatching: Cell<bool>,
+    /// Events emitted while the handler still runs; they are delivered after
+    /// it returns, in order, rather than re-entering it.
+    events: SerialDispatch<Event>,
     env: Environment,
 }
 
@@ -169,28 +167,18 @@ impl LivePhotoReporter {
         Self {
             inner: Rc::new(LivePhotoReporterInner {
                 handler: RefCell::new(handler),
-                pending: RefCell::new(VecDeque::new()),
-                dispatching: Cell::new(false),
+                events: SerialDispatch::new(),
                 env,
             }),
         }
     }
 
     fn emit(&self, event: Event) {
-        self.inner.pending.borrow_mut().push_back(event);
-        if self.inner.dispatching.replace(true) {
-            return;
-        }
-        loop {
-            let next = self.inner.pending.borrow_mut().pop_front();
-            let Some(event) = next else {
-                break;
-            };
+        self.inner.events.deliver(event, |event| {
             if let Some(handler) = self.inner.handler.borrow_mut().as_mut() {
                 handler(event, &self.inner.env);
             }
-        }
-        self.inner.dispatching.set(false);
+        });
     }
 }
 
@@ -222,6 +210,7 @@ fn live_photo_video(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     /// An event emitted while the handler still runs must queue behind the
     /// in-flight call instead of re-entering the handler.

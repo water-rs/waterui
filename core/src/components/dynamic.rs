@@ -21,10 +21,9 @@
 //!     if show { "Details" } else { "Summary" }
 //! });
 use crate::components::metadata::Retain;
-use crate::{AnyView, Environment, Metadata, View};
-use alloc::collections::VecDeque;
+use crate::{AnyView, Environment, LatestDispatch, Metadata, SerialDispatch, View};
 use alloc::rc::Rc;
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 use core::marker::PhantomData;
 use nami::watcher::Context;
 use nami::{Signal, watcher::Metadata as WatcherMetadata};
@@ -50,14 +49,13 @@ raw_view!(Dynamic);
 /// `State<DynamicHandler>` ones.
 #[state]
 #[derive(Clone)]
-pub struct DynamicHandler(Rc<RefCell<DynamicHandlerInner>>);
+pub struct DynamicHandler(Rc<DynamicHandlerInner>);
 
 struct DynamicHandlerInner {
-    state: DynamicHandlerState,
-    /// Updates queued while a receiver call is in flight; they are delivered
-    /// after it returns, in order, rather than re-entering the receiver.
-    pending: VecDeque<(AnyView, WatcherMetadata)>,
-    dispatching: bool,
+    state: RefCell<DynamicHandlerState>,
+    /// Updates issued while a receiver call is in flight are delivered after
+    /// it returns, in order, rather than re-entering the receiver.
+    dispatch: SerialDispatch<(AnyView, WatcherMetadata)>,
 }
 
 enum DynamicHandlerState {
@@ -91,54 +89,24 @@ impl DynamicHandler {
     }
 
     fn set_any_with_metadata(&self, view: AnyView, metadata: WatcherMetadata) {
-        {
-            let mut inner = self.0.borrow_mut();
-            match &mut inner.state {
-                DynamicHandlerState::Connected { .. } => {
-                    inner.pending.push_back((view, metadata));
-                }
-                DynamicHandlerState::Unconnected(temp_view) => {
-                    *temp_view = Some(view);
-                    return;
-                }
-            }
-        }
-        self.dispatch_pending();
-    }
-
-    /// Drains queued updates into the receiver. A `set` that lands while the
-    /// receiver runs only enqueues; the dispatch already in flight picks it up
-    /// once the receiver returns, so the receiver is never called re-entrantly.
-    fn dispatch_pending(&self) {
-        {
-            let mut inner = self.0.borrow_mut();
-            if inner.dispatching {
-                return;
-            }
-            inner.dispatching = true;
-        }
-        loop {
-            let next = {
-                let mut inner = self.0.borrow_mut();
-                inner
-                    .pending
-                    .pop_front()
-                    .and_then(|(view, metadata)| match &mut inner.state {
-                        DynamicHandlerState::Connected { receiver, .. } => {
-                            Some((Rc::clone(receiver), view, metadata))
-                        }
+        // A `set` that lands while the receiver runs only enqueues; the
+        // delivery in flight drains it once the receiver returns, so the
+        // receiver is never called re-entrantly.
+        self.0
+            .dispatch
+            .deliver((view, metadata), |(view, metadata)| {
+                let receiver = {
+                    let mut inner = self.0.state.borrow_mut();
+                    match &mut *inner {
+                        DynamicHandlerState::Connected { receiver, .. } => Rc::clone(receiver),
                         DynamicHandlerState::Unconnected(temp_view) => {
                             *temp_view = Some(view);
-                            None
+                            return;
                         }
-                    })
-            };
-            let Some((receiver, view, metadata)) = next else {
-                break;
-            };
-            receiver(Context::new(view, metadata));
-        }
-        self.0.borrow_mut().dispatching = false;
+                    }
+                };
+                receiver(Context::new(view, metadata));
+            });
     }
 
     /// Sets the content of the Dynamic view with the provided view.
@@ -162,11 +130,10 @@ impl Dynamic {
     /// A tuple containing the [`DynamicHandler`] and Dynamic view
     #[must_use]
     pub fn new() -> (DynamicHandler, Self) {
-        let handler = DynamicHandler(Rc::new(RefCell::new(DynamicHandlerInner {
-            state: DynamicHandlerState::Unconnected(None),
-            pending: VecDeque::new(),
-            dispatching: false,
-        })));
+        let handler = DynamicHandler(Rc::new(DynamicHandlerInner {
+            state: RefCell::new(DynamicHandlerState::Unconnected(None)),
+            dispatch: SerialDispatch::new(),
+        }));
         (handler.clone(), Self(handler))
     }
 
@@ -232,12 +199,12 @@ impl Dynamic {
         receiver: impl Fn(Context<AnyView>) + 'static,
     ) {
         let initial = {
-            let mut inner = self.0.0.borrow_mut();
+            let mut inner = self.0.0.state.borrow_mut();
 
-            match &mut inner.state {
+            match &mut *inner {
                 DynamicHandlerState::Unconnected(temp_view) => {
                     let initial = temp_view.take();
-                    inner.state = DynamicHandlerState::Connected {
+                    *inner = DynamicHandlerState::Connected {
                         receiver: Rc::new(receiver),
                         pending_view_slot,
                     };
@@ -267,8 +234,8 @@ impl Dynamic {
     ///
     /// Returns `None` when the node is already connected to a backend receiver.
     pub fn with_unconnected_view<R>(&self, f: impl FnOnce(Option<&AnyView>) -> R) -> Option<R> {
-        let inner = self.0.0.borrow();
-        match &inner.state {
+        let inner = self.0.0.state.borrow();
+        match &*inner {
             DynamicHandlerState::Unconnected(view) => Some(f(view.as_ref())),
             DynamicHandlerState::Connected { .. } => None,
         }
@@ -281,8 +248,8 @@ impl Dynamic {
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
     ) -> Option<R> {
-        let mut inner = self.0.0.borrow_mut();
-        match &mut inner.state {
+        let mut inner = self.0.0.state.borrow_mut();
+        match &mut *inner {
             DynamicHandlerState::Unconnected(view) => Some(f(view)),
             DynamicHandlerState::Connected { .. } => None,
         }
@@ -296,8 +263,8 @@ impl Dynamic {
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
     ) -> Option<R> {
-        let mut inner = self.0.0.borrow_mut();
-        match &mut inner.state {
+        let mut inner = self.0.0.state.borrow_mut();
+        match &mut *inner {
             DynamicHandlerState::Unconnected(view) => Some(f(view)),
             DynamicHandlerState::Connected {
                 pending_view_slot: Some(slot),
@@ -316,8 +283,8 @@ impl Dynamic {
         &self,
         f: impl FnOnce(&mut Option<AnyView>) -> R,
     ) -> Option<R> {
-        let mut inner = self.0.0.borrow_mut();
-        match &mut inner.state {
+        let mut inner = self.0.0.state.borrow_mut();
+        match &mut *inner {
             DynamicHandlerState::Connected {
                 pending_view_slot: Some(slot),
                 ..
@@ -355,26 +322,12 @@ where
 
         let guard = self.value.watch({
             let f = Rc::clone(&f);
-            let pending = RefCell::new(None);
-            let dispatching = Cell::new(false);
+            // A write the builder makes right now lands here re-entrantly;
+            // keep the latest value and let the dispatch in flight drain it
+            // once the builder and the receiver return.
+            let updates = LatestDispatch::new();
             move |context| {
-                let value = context.into_value();
-                // A write the builder makes right now lands here re-entrantly;
-                // keep the latest value and let the dispatch in flight drain it
-                // once the builder and the receiver return.
-                if dispatching.replace(true) {
-                    *pending.borrow_mut() = Some(value);
-                    return;
-                }
-                let mut next = value;
-                loop {
-                    handle.set(f(next));
-                    let Some(queued) = pending.borrow_mut().take() else {
-                        break;
-                    };
-                    next = queued;
-                }
-                dispatching.set(false);
+                updates.deliver(context.into_value(), |next| handle.set(f(next)));
             }
         });
 
@@ -463,8 +416,10 @@ mod tests {
                 if value == 2 {
                     source.set(3);
                 }
-                #[allow(clippy::cast_sign_loss)]
-                Metadata::new((), Probe(value as usize))
+                Metadata::new(
+                    (),
+                    Probe(usize::try_from(value).expect("watch values are non-negative")),
+                )
             }
         });
 
