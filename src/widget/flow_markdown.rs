@@ -17,7 +17,7 @@ use native_executor::sleep;
 use suiteki::Str;
 use tree_sitter::{InputEdit, Parser, Point, Tree};
 use waterui_core::{
-    AnyView, Metadata, Retain, View,
+    AnyView, Metadata, Retain, SerialDispatch, View,
     dynamic::{Dynamic, DynamicHandler},
     id::Identifiable,
 };
@@ -136,10 +136,14 @@ impl View for FlowMarkdown {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         let Self { source, config } = self;
         let blocks = ReactiveList::new();
-        let state = Rc::new(RefCell::new(FlowMarkdownState::new(
-            config.snapshot(),
-            blocks.clone(),
-        )));
+        let runtime = Rc::new(FlowMarkdownRuntime {
+            state: Rc::new(RefCell::new(FlowMarkdownState::new(
+                config.snapshot(),
+                blocks.clone(),
+            ))),
+            updates: SerialDispatch::new(),
+        });
+        let state = Rc::clone(&runtime.state);
 
         let initial = source.snapshot();
         let initial_update = state
@@ -150,20 +154,17 @@ impl View for FlowMarkdown {
         let guard_source = source.clone();
         let guard_config = config.clone();
         let source_guard = source.watch({
-            let state = Rc::clone(&state);
+            let runtime = Rc::clone(&runtime);
             move |ctx: Context<Str>| {
                 let metadata = ctx.metadata().clone();
-                let markdown = ctx.into_value();
-                let update = state.borrow_mut().recompute(markdown.as_str(), metadata);
-                spawn_typewriter_reveal_if_needed(&state, update.typewriter);
+                runtime.dispatch(FlowMarkdownUpdate::Source(ctx.into_value(), metadata));
             }
         });
         let config_guard = config.watch({
-            let state = Rc::clone(&state);
+            let runtime = Rc::clone(&runtime);
             move |ctx: Context<FlowMarkdownConfig>| {
                 let metadata = ctx.metadata().clone();
-                let update = state.borrow_mut().reconfigure(ctx.into_value(), metadata);
-                spawn_typewriter_reveal_if_needed(&state, update.typewriter);
+                runtime.dispatch(FlowMarkdownUpdate::Config(ctx.into_value(), metadata));
             }
         });
 
@@ -179,6 +180,42 @@ impl View for FlowMarkdown {
                 state,
             )),
         )
+    }
+}
+
+/// One queued `source`/`config` notification for [`FlowMarkdownState`].
+enum FlowMarkdownUpdate {
+    Source(Str, WatcherMetadata),
+    Config(FlowMarkdownConfig, WatcherMetadata),
+}
+
+/// Serializes `source`/`config` notifications onto [`FlowMarkdownState`].
+///
+/// `recompute`/`reconfigure` synchronously notify the block-list watchers, so
+/// an update that arrives while one is still running — a slot watcher writing
+/// the `source` signal, for example — would re-enter `state.borrow_mut()`.
+/// Such updates queue here and are applied once the in-flight update returns.
+struct FlowMarkdownRuntime {
+    state: Rc<RefCell<FlowMarkdownState>>,
+    updates: SerialDispatch<FlowMarkdownUpdate>,
+}
+
+impl FlowMarkdownRuntime {
+    fn dispatch(&self, update: FlowMarkdownUpdate) {
+        self.updates.deliver(update, |update| {
+            let applied = {
+                let mut state = self.state.borrow_mut();
+                match update {
+                    FlowMarkdownUpdate::Source(markdown, metadata) => {
+                        state.recompute(markdown.as_str(), metadata)
+                    }
+                    FlowMarkdownUpdate::Config(config, metadata) => {
+                        state.reconfigure(config, metadata)
+                    }
+                }
+            };
+            spawn_typewriter_reveal_if_needed(&self.state, applied.typewriter);
+        });
     }
 }
 
@@ -1794,6 +1831,8 @@ fn advance_point(mut point: Point, text: &str) -> Point {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use waterui_text::styled::Style;
 
     use super::*;
@@ -1826,6 +1865,50 @@ mod tests {
             .expect("group should keep visible content");
         assert_eq!(remaining, 0);
         assert_eq!(rich_text_element_text_len(&truncated), 4);
+    }
+
+    /// A block-list watcher that dispatches another update while a recompute
+    /// still runs must not re-enter the shared state; the queued update is
+    /// applied after the in-flight recompute returns.
+    #[test]
+    fn a_nested_update_is_applied_after_the_in_flight_recompute_returns() {
+        use nami::collection::Collection as _;
+
+        let slots = ReactiveList::new();
+        let runtime = Rc::new(FlowMarkdownRuntime {
+            state: Rc::new(RefCell::new(FlowMarkdownState::new(
+                FlowMarkdownConfig::default(),
+                slots.clone(),
+            ))),
+            updates: SerialDispatch::new(),
+        });
+
+        // `List::watch` invokes the watcher once with the current contents
+        // before it is registered; only post-registration changes dispatch the
+        // nested update.
+        let initial_call = Cell::new(true);
+        let nested = Cell::new(false);
+        let _guard = slots.watch(.., {
+            let runtime = Rc::clone(&runtime);
+            move |_, _| {
+                if initial_call.replace(false) {
+                    return;
+                }
+                if !nested.replace(true) {
+                    runtime.dispatch(FlowMarkdownUpdate::Source(
+                        Str::from("# nested"),
+                        WatcherMetadata::new(),
+                    ));
+                }
+            }
+        });
+
+        runtime.dispatch(FlowMarkdownUpdate::Source(
+            Str::from("first"),
+            WatcherMetadata::new(),
+        ));
+
+        assert_eq!(runtime.state.borrow().source, "# nested");
     }
 
     #[test]

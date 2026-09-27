@@ -32,6 +32,8 @@ use waterui_chromium::{
     CdpError, ChromiumConfiguration, ChromiumEvent, ChromiumPageHandle, ChromiumProfile,
     CustomChromiumController, PageMode, ScreenshotFormat,
 };
+#[cfg(feature = "chromium")]
+use waterui_core::SerialDispatch;
 #[cfg(feature = "webview")]
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
@@ -245,7 +247,7 @@ pub enum CefPageEvent {
 }
 
 #[cfg(feature = "chromium")]
-type PageWatcher = Box<dyn Fn(CefPageEvent)>;
+type PageWatcher = Rc<dyn Fn(CefPageEvent)>;
 
 struct PageState {
     mode: CefPageMode,
@@ -255,6 +257,10 @@ struct PageState {
     accelerated_paint_received: Cell<bool>,
     #[cfg(feature = "chromium")]
     watchers: RefCell<Vec<PageWatcher>>,
+    /// Events emitted while a watcher still runs; they are delivered after it
+    /// returns, in order, rather than re-entering it.
+    #[cfg(feature = "chromium")]
+    page_events: SerialDispatch<CefPageEvent>,
     #[cfg(feature = "webview")]
     webview_watchers: WatcherSet<BackendEvent>,
     #[cfg(feature = "webview")]
@@ -279,6 +285,8 @@ impl PageState {
             accelerated_paint_received: Cell::new(false),
             #[cfg(feature = "chromium")]
             watchers: RefCell::new(Vec::new()),
+            #[cfg(feature = "chromium")]
+            page_events: SerialDispatch::new(),
             #[cfg(feature = "webview")]
             webview_watchers: WatcherSet::new(),
             #[cfg(feature = "webview")]
@@ -296,9 +304,14 @@ impl PageState {
 
     #[cfg(feature = "chromium")]
     fn emit(&self, event: &CefPageEvent) {
-        for watcher in self.watchers.borrow().iter() {
-            watcher(event.clone());
-        }
+        self.page_events.deliver(event.clone(), |event| {
+            // Snapshot under a short borrow: a watcher that registers another
+            // watcher must not collide with a borrow held across the calls.
+            let watchers = self.watchers.borrow().clone();
+            for watcher in &watchers {
+                watcher(event.clone());
+            }
+        });
     }
 
     #[cfg(feature = "chromium")]
@@ -318,7 +331,7 @@ impl PageState {
             watcher(CefPageEvent::Closed);
             return;
         }
-        self.watchers.borrow_mut().push(Box::new(watcher));
+        self.watchers.borrow_mut().push(Rc::new(watcher));
     }
 
     #[cfg(feature = "chromium")]
