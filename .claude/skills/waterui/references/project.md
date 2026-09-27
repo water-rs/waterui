@@ -230,7 +230,7 @@ water run --logs debug                 # stream device logs at debug and above
 water run --native-logs                # include native platform logs too — noisy
 
 water build <target>                   # compile the Rust library for a platform
-water package                          # package artifacts for distribution
+water package                          # package the production (release) build; --debug for an unoptimized one
 water devices                          # list simulators and devices
 water doctor                           # check the toolchain
 water clean

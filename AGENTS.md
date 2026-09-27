@@ -413,7 +413,7 @@ The `water` CLI orchestrates builds across platforms and lives in its own reposi
 - `water create` - Scaffold new project (supports `--mode playground` for quick experiments)
 - `water run` - Build and deploy to device/simulator
 - `water build --platform <platform>` - Build the project for the selected platform and backend
-- `water package` - Package built artifacts for distribution
+- `water package` - Package the production (release) build; `--debug` packages an unoptimized one
 - `water clean` - Remove build artifacts
 - `water doctor` - Check development environment
 - `water devices` - List available devices and simulators
