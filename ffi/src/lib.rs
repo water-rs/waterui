@@ -309,6 +309,23 @@ const fn display_refresh_rate() -> waterui::task::RefreshRate {
 /// # Safety
 /// Must run on the platform main thread exactly once.
 unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
+    // A Rust cdylib loaded by a foreign main never runs `lang_start`, so std's
+    // usual SIGPIPE ignore is never installed. A host that pipes this
+    // process's output and exits first would otherwise kill it with SIGPIPE
+    // on the next write; a failed write must surface as `EPIPE` instead, as
+    // it does in a normal Rust binary.
+    #[cfg(unix)]
+    // SAFETY: `signal` only swaps the process-wide SIGPIPE disposition for
+    // `SIG_IGN`; no handler runs Rust code, and init runs once on the main
+    // thread.
+    unsafe {
+        let previous = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        assert_ne!(
+            previous,
+            libc::SIG_ERR,
+            "libc::signal(SIGPIPE, SIG_IGN) failed"
+        );
+    }
     #[cfg(target_os = "android")]
     // SAFETY: `register_android_main_thread` records the calling thread as the
     // platform main thread, which is only correct when called once from that
