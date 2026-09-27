@@ -157,7 +157,7 @@ impl<T: 'static + Clone> Extractor for State<T> {
             || {
                 Err(Error::msg(format!(
                     "Environment state `{}` not found; install the value with \
-                     `.state(&value)` on an ancestor of the handler's view",
+                     `.state(&value)` in the handler's modifier chain or on an ancestor",
                     type_name::<T>()
                 )))
             },
@@ -171,8 +171,8 @@ impl<T: 'static + Clone> Extractor for State<T> {
             || {
                 Err(Error::msg(format!(
                     "Environment state `{}` not found at position {}; install \
-                     the value with `.state(&value)` on an ancestor of the \
-                     handler's view",
+                     the value with `.state(&value)` in the handler's modifier \
+                     chain or on an ancestor",
                     type_name::<T>(),
                     position
                 )))

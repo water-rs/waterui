@@ -1345,10 +1345,12 @@ pub trait ViewExt: View + Sized {
     /// [`waterui_core::extract::State`] in their handler parameters — or bare,
     /// as `value: T`, when `T` is an owned type marked `#[state]`.
     ///
-    /// A handler sees the environment of the view it is attached to, so the
-    /// state must be installed on an ancestor of that view: apply `.state`
-    /// after the handler modifiers, as below. A value installed between the
-    /// view and its handler is not visible to the handler.
+    /// A handler sees the environment its modified view resolves in, so a
+    /// `.state` install reaches the handler wherever it sits in the same
+    /// modifier chain — `.state(&v).on_hover_exit(h)` and
+    /// `.on_hover_exit(h).state(&v)` deliver the same value. State injected
+    /// inside the view's own body is not part of the chain and stays invisible
+    /// to the handler.
     ///
     /// # Example
     ///
@@ -1357,7 +1359,11 @@ pub trait ViewExt: View + Sized {
     ///
     /// let hover_count = binding::<i32>(0);
     /// let is_hovered = binding::<bool>(false);
+    ///
+    /// // The installs may sit before the handlers in the chain…
     /// let hoverable = text!("Hover Me!")
+    ///     .state(&hover_count)
+    ///     .state(&is_hovered)
     ///     .on_hover_enter(
     ///         |State(count): State<Binding<i32>>, State(hovered): State<Binding<bool>>| {
     ///             *count.get_mut() += 1;
@@ -1366,9 +1372,14 @@ pub trait ViewExt: View + Sized {
     ///     )
     ///     .on_hover_exit(|State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
+    ///     });
+    ///
+    /// // …or after them — both spellings resolve to the same environment.
+    /// let equivalent = text!("Hover Me!")
+    ///     .on_hover_enter(|State(count): State<Binding<i32>>| {
+    ///         *count.get_mut() += 1;
     ///     })
-    ///     .state(&hover_count)
-    ///     .state(&is_hovered);
+    ///     .state(&hover_count);
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))
