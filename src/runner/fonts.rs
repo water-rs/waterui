@@ -19,6 +19,7 @@ use waterui_text::FontCollection;
 #[derive(Default)]
 pub(super) struct ResourceFontFamilies {
     generic: Vec<FamilyId>,
+    emoji: Vec<FamilyId>,
     hani_simplified: Vec<FamilyId>,
     hani_traditional: Vec<FamilyId>,
     hani_japanese: Vec<FamilyId>,
@@ -51,7 +52,9 @@ impl ResourceFontFamilies {
     /// family names (`Noto Sans CJK SC`).
     pub(super) fn classify(&mut self, name: &str, families: &[(FamilyId, Vec<FontInfo>)]) {
         let key = name.to_ascii_lowercase().replace(' ', "");
-        if key.contains("roboto") {
+        if key.contains("emoji") {
+            extend_family_ids(&mut self.emoji, families);
+        } else if key.contains("roboto") {
             extend_family_ids(&mut self.generic, families);
         } else if key.contains("notosanscjksc") {
             extend_family_ids(&mut self.hani_simplified, families);
@@ -80,6 +83,9 @@ impl ResourceFontFamilies {
             collection
                 .set_generic_families(GenericFamily::UiSansSerif, self.generic.iter().copied());
             collection.set_generic_families(GenericFamily::SystemUi, self.generic.iter().copied());
+        }
+        if !self.emoji.is_empty() {
+            collection.set_generic_families(GenericFamily::Emoji, self.emoji.iter().copied());
         }
 
         let hani = Script::from_str_unchecked("Hani");
@@ -170,6 +176,13 @@ const TEST_FALLBACK_FONTS: &[(&str, &[u8])] = &[
     (
         "NotoSansDevanagari-Regular.ttf",
         include_bytes!("../../test-fonts/NotoSansDevanagari-Regular.ttf"),
+    ),
+    // The colour-emoji face a host carries: classifies into the `emoji`
+    // generic family so emoji-presentation clusters shape — and rasterize
+    // through the bitmap image atlas — the way they do in production.
+    (
+        "NotoColorEmojiSubset.ttf",
+        include_bytes!("../../test-fonts/NotoColorEmojiSubset.ttf"),
     ),
 ];
 

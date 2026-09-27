@@ -12,6 +12,8 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 mod context_menu_presentation;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod dynamic_remeasure;
+#[cfg(not(target_arch = "wasm32"))]
+mod emoji_atlas;
 mod gesture_capture;
 mod gesture_env;
 mod gesture_retention;

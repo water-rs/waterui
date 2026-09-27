@@ -7931,7 +7931,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
+source = "git+https://github.com/lexoliu/vello?rev=76724fcf31f19ec7b5cf0c58b8b45699d491a5f6#76724fcf31f19ec7b5cf0c58b8b45699d491a5f6"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -7963,7 +7963,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
+source = "git+https://github.com/lexoliu/vello?rev=76724fcf31f19ec7b5cf0c58b8b45699d491a5f6#76724fcf31f19ec7b5cf0c58b8b45699d491a5f6"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -7990,7 +7990,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
+source = "git+https://github.com/lexoliu/vello?rev=76724fcf31f19ec7b5cf0c58b8b45699d491a5f6#76724fcf31f19ec7b5cf0c58b8b45699d491a5f6"
 dependencies = [
  "bytemuck",
  "log",
