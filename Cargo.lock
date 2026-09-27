@@ -10266,6 +10266,9 @@ name = "waterui-ffi-generator"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
+ "prettyplease 0.2.37",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

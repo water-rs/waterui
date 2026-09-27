@@ -7573,6 +7573,14 @@ typedef void (*ViewRenderFn)(void *context,
                              struct ViewRenderCallback callback);
 
 /**
+ * Raw handles transferred from the exported app entry point to Android JNI.
+ */
+typedef struct WuiAndroidAppHandles {
+  void *content;
+  void *env;
+} WuiAndroidAppHandles;
+
+/**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
  */
 typedef struct WuiArraySlice_WuiWindow {
@@ -12529,6 +12537,10 @@ void waterui_env_install_view_renderer(struct WuiEnv *env,
                                        void *context,
                                        ViewRenderFn render_fn,
                                        void (*drop_context)(void*));
+
+extern void *waterui_android_init(void);
+
+extern struct WuiAndroidAppHandles waterui_android_app(void *env);
 
 WuiEnv* waterui_init(void);
 

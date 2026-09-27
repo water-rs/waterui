@@ -17,7 +17,7 @@ inputs:
 runs:
   using: composite
   steps:
-    # The one place the header toolchain is named. cbindgen expands the
+    # The one place the header toolchain is named. The generator expands the
     # macro-generated exports through `cargo rustc -- -Zunpretty=expanded`, so
     # this is the only nightly in the repository — and it is a fixed date
     # rather than the channel, because rust-cache keys on the rustc version and
@@ -25,6 +25,11 @@ runs:
     - uses: dtolnay/rust-toolchain@master
       with:
         toolchain: nightly-2026-09-09
+        # The generator expands `waterui-ffi` once per shipped backend target
+        # and unions the results, so every triple it names must be installed
+        # or it fails. The host target's std rides along with the toolchain;
+        # these are the rest.
+        targets: aarch64-apple-ios, aarch64-linux-android, x86_64-unknown-linux-gnu
     # The expansion is a check-profile build of the `waterui-ffi` graph, whose
     # rmeta artifacts are a fraction of the 0.8 GB dev-profile tarball this job
     # used to measure. It gets its own key because it is the only nightly
@@ -40,7 +45,18 @@ runs:
     # `+nightly-2026-09-09` is named rather than inherited: `rust-toolchain.toml`
     # pins the repository to stable and overrides what the action above sets, so
     # an ambient `cargo run` here would generate the header with the wrong
-    # channel and cbindgen would lose the macro expansion.
+    # channel and the expansion would lose the macros.
+    #
+    # Two non-host expansions run `cc`/pkg-config probes against the target's
+    # system libraries: the script stages the header sets and compiler shims
+    # they read (nothing links — this is a check build), and `kotlinc` is what
+    # the WaterKit build-script shims invoke for the Android expansion.
+    - name: Provision cross-target expansion dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        brew install kotlin pkgconf
+        "$GITHUB_ACTION_PATH/provision-cross-target-deps.sh"
     - name: Regenerate the header
       shell: bash
       run: cargo +nightly-2026-09-09 run --manifest-path ffi/generator/Cargo.toml
@@ -51,7 +67,7 @@ runs:
         status=0
         check() {
           if ! git -C "$1" diff --exit-code -- "$2"; then
-            echo "::error file=$2::$2 is stale; on macOS run 'cargo +nightly run --manifest-path ffi/generator/Cargo.toml' and commit the result"
+            echo "::error file=$2::$2 is stale; run 'cargo +nightly run --manifest-path ffi/generator/Cargo.toml' and commit the result"
             status=1
           fi
         }

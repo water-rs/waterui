@@ -33,9 +33,9 @@ env:
 jobs:
   warm:
     name: FFI Header Cache
-    # The header is platform-dependent: the Apple exports (Metal, CEF) only
-    # appear when cbindgen expands on an Apple target, so the cache has to be
-    # warmed on the same host that generates it.
+    # The generator unions one expansion per backend target, so the header no
+    # longer depends on the host — but the Apple-target expansions still need
+    # Xcode's clang, so macOS remains the cheapest host that can run all four.
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
