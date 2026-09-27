@@ -21,7 +21,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use hydrolysis::{HeadlessRuntime, OffscreenGpuContext};
+use hydrolysis::{HeadlessRuntime, OffscreenGpuContext, TARGET_FRAME_INTERVAL};
 use hydrolysis_m3::{
     Material3, OutlinedSegmentedButton, OutlinedSegmentedButtonSet, assist_chip, extended_fab, fab,
     filter_chip, icon_button, input_chip, material_badge, material_card, material_divider,
@@ -48,8 +48,9 @@ use waterui_layout::stack::{VStack, hstack, vstack};
 const WINDOW_WIDTH: u32 = 390;
 const WINDOW_HEIGHT: u32 = 844;
 const SCALE_FACTOR: f64 = 2.625;
-/// Frame instants step at 16ms so animation sampling sees a 60Hz timeline.
-const FRAME_STEP: Duration = Duration::from_millis(16);
+/// Frame instants step at the 120 Hz target interval, so animation sampling
+/// sees the timeline a high-refresh display drives.
+const FRAME_STEP: Duration = TARGET_FRAME_INTERVAL;
 
 fn ns(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).expect("frame stage exceeds u64 nanoseconds")

@@ -21,7 +21,13 @@ mod widgets;
 pub(crate) use waterui_backend_core::{animation, gesture, scroll, time};
 
 pub use engine::{Brush, DrawContext, IconOnlyButtonLabel, WidgetTheme};
+use std::time::Duration;
 use waterui_core::Environment;
+
+/// The frame interval Hydrolysis budgets for: 120 Hz, because current devices
+/// have high-refresh panels. It stands in for the display's own refresh rate
+/// wherever that is not known (headless and offscreen paths, the first frame).
+pub const TARGET_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 
 /// A presentation style for the rendered Hydrolysis runtime.
 ///

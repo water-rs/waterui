@@ -705,7 +705,7 @@ impl EmbeddedGpuSurfaceRuntime {
         let start = *self.start_time.get_or_insert(now);
         let elapsed = now.saturating_duration_since(start);
         let delta = self.last_frame_time.map_or_else(
-            || Duration::from_secs_f32(1.0 / 60.0),
+            || crate::TARGET_FRAME_INTERVAL,
             |last| {
                 now.saturating_duration_since(last)
                     .min(Duration::from_millis(100))
