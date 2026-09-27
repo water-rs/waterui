@@ -28,7 +28,7 @@ use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
 use waterui_graphics::Color;
 use waterui_layout::{Point, Rect, Size};
 
-use crate::app::application_name;
+use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarManager;
 use crate::{
@@ -99,6 +99,22 @@ pub struct Window {
     /// Native backends may require an explicit maximum. Same platform support
     /// notes as [`Self::min_size`].
     pub max_size: Option<Computed<Size>>,
+    /// The identity the desktop groups this window under.
+    ///
+    /// Window-manager rules, desktop-file matching, startup notification and
+    /// dock or taskbar grouping all key off this value: the X11 `WM_CLASS`
+    /// (both its instance and class part) and the Wayland `xdg_toplevel`
+    /// `app_id`.
+    ///
+    /// When `None` (the default), the window carries the application's own
+    /// identifier, [`application_identifier`](crate::app::application_identifier);
+    /// when that is empty too, the platform's default applies (the executable
+    /// name under X11 and Wayland).
+    ///
+    /// Platform support: X11 and Wayland through the hydrolysis backend.
+    /// macOS, iOS, Android and Windows identify an application by its bundle
+    /// or package, not per window, and ignore this.
+    pub app_id: Option<Str>,
 }
 
 /// The state of a window.
@@ -252,6 +268,7 @@ impl Window {
             background: WindowBackground::default(),
             min_size: None,
             max_size: None,
+            app_id: None,
         }
     }
 
@@ -272,6 +289,16 @@ impl Window {
     #[must_use]
     pub fn max_size(mut self, size: impl IntoComputed<Size>) -> Self {
         self.max_size = Some(size.into_computed());
+        self
+    }
+
+    /// Set the identity the desktop groups this window under — its X11
+    /// `WM_CLASS` and Wayland `app_id`.
+    ///
+    /// See [`Self::app_id`] for the default and platform support notes.
+    #[must_use]
+    pub fn app_id(mut self, app_id: impl Into<Str>) -> Self {
+        self.app_id = Some(app_id.into());
         self
     }
 
@@ -377,6 +404,17 @@ impl Window {
                 }
             })
             .into_computed()
+    }
+
+    /// The identity to give the window, which is what a backend should set.
+    ///
+    /// A window that declares no [`app_id`](Self::app_id) of its own carries
+    /// the application's identifier, resolved here so that every backend
+    /// identifies a window the same way. The result is empty when neither was
+    /// given, which leaves the decision to the platform.
+    #[must_use]
+    pub fn display_app_id(&self) -> Str {
+        self.app_id.clone().unwrap_or_else(application_identifier)
     }
 
     /// Get a handle to control the window after showing it.
