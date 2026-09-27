@@ -396,7 +396,7 @@ fn native_window_attributes(
         window.state.snapshot(),
         waterui::window::WindowState::Fullscreen
     );
-    NativeWindow::default_attributes()
+    let attributes = NativeWindow::default_attributes()
         .with_window_icon(icon)
         .with_title(window.display_title().snapshot().as_str())
         .with_resizable(window.resizable)
@@ -418,7 +418,28 @@ fn native_window_attributes(
         .with_position(winit::dpi::LogicalPosition::new(
             frame.x() as f64,
             frame.y() as f64,
-        ))
+        ));
+
+    // The window's desktop identity: the X11 `WM_CLASS` (instance and class
+    // alike) and the Wayland `app_id`, so window-manager rules, desktop-file
+    // matching and dock grouping land on the identifier the build compiled
+    // in as `WATERUI_APP_ID` or the window declared itself. An empty
+    // identity leaves winit's default (the executable name) in place.
+    #[cfg(hydrolysis_wayland_platform)]
+    let attributes = {
+        let app_id = window.display_app_id();
+        if app_id.is_empty() {
+            attributes
+        } else {
+            use winit::platform::{
+                wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11,
+            };
+            let attributes =
+                WindowAttributesExtX11::with_name(attributes, app_id.as_str(), app_id.as_str());
+            WindowAttributesExtWayland::with_name(attributes, app_id.as_str(), app_id.as_str())
+        }
+    };
+    attributes
 }
 
 impl WinitRunner {
