@@ -49,6 +49,10 @@ pub struct AnimationController {
     active_slots: BTreeSet<AnimationKey>,
     active_radio_indicator_slots: BTreeSet<AnimationKey>,
     active_repeating_slots: BTreeSet<AnimationKey>,
+    /// Scopes pushed by the backend while a subtree binds its slots — the
+    /// anchored overlay's exit waits on the slots its content owns.
+    scope_stack: Vec<u64>,
+    scoped_keys: BTreeMap<u64, BTreeSet<AnimationKey>>,
 }
 
 /// Stable identity of one animation slot across structural rebuilds.
@@ -273,6 +277,7 @@ impl AnimationController {
             "animation scalar key used with mismatched scope"
         );
         self.active_slots.insert(key);
+        self.note_key(key);
         let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
             state: Rc::new(RefCell::new(AnimatedScalarState::new(observed_value, now))),
         });
@@ -312,6 +317,7 @@ impl AnimationController {
             "animation scalar target key used with mismatched scope"
         );
         self.active_slots.insert(key);
+        self.note_key(key);
         let slot = self.slots.entry(key).or_insert_with(|| AnimatedScalarSlot {
             state: Rc::new(RefCell::new(AnimatedScalarState::new(target, now))),
         });
@@ -349,6 +355,7 @@ impl AnimationController {
             "animation radio indicator key used with mismatched scope"
         );
         self.active_radio_indicator_slots.insert(key);
+        self.note_key(key);
         let slot =
             self.radio_indicator_slots
                 .entry(key)
@@ -466,6 +473,7 @@ impl AnimationController {
             "animation repeating key used with mismatched scope"
         );
         self.active_repeating_slots.insert(key);
+        self.note_key(key);
         let slot = self
             .repeating_slots
             .entry(key)
@@ -481,6 +489,66 @@ impl AnimationController {
         }
         let elapsed = now.saturating_duration_since(slot.started_at);
         if repeat { elapsed } else { elapsed.min(cycle) }
+    }
+
+    /// Marks the start of a subtree whose animation slots belong to `scope`
+    /// until the matching [`end_animation_scope`](Self::end_animation_scope).
+    ///
+    /// A backend that keeps content alive past dismissal — the anchored
+    /// overlay's exit — waits on that subtree's running animations through
+    /// [`scope_is_active`](Self::scope_is_active) instead of guessing a delay.
+    pub fn begin_animation_scope(&mut self, scope: u64) {
+        self.scope_stack.push(scope);
+    }
+
+    /// Pops the scope opened by [`begin_animation_scope`](Self::begin_animation_scope).
+    ///
+    /// # Panics
+    ///
+    /// Panics when no scope is open.
+    pub fn end_animation_scope(&mut self) {
+        self.scope_stack
+            .pop()
+            .expect("end_animation_scope without a matching begin");
+    }
+
+    /// Attributes `key` to every open scope; called by each `bind_*`.
+    fn note_key(&mut self, key: AnimationKey) {
+        for &scope in &self.scope_stack {
+            self.scoped_keys.entry(scope).or_default().insert(key);
+        }
+    }
+
+    /// Whether any slot attributed to `scope` is still animating at `now`.
+    #[must_use]
+    pub fn scope_is_active(&self, scope: u64, now: Instant) -> bool {
+        let Some(keys) = self.scoped_keys.get(&scope) else {
+            return false;
+        };
+        keys.iter().any(|key| self.key_is_active(*key, now))
+    }
+
+    /// Drops `scope`'s attributions; call when the owning subtree is gone so
+    /// its keys stop accumulating here.
+    pub fn drop_animation_scope(&mut self, scope: u64) {
+        self.scoped_keys.remove(&scope);
+    }
+
+    /// Whether `key`'s slot is still animating at `now`, across every scope.
+    fn key_is_active(&self, key: AnimationKey, now: Instant) -> bool {
+        match key.scope {
+            AnimationKeyScope::Scalar | AnimationKeyScope::RendererLocalScalar => self
+                .slots
+                .get(&key)
+                .is_some_and(|slot| slot.state.borrow().is_active()),
+            AnimationKeyScope::RadioIndicator => self
+                .radio_indicator_slots
+                .get(&key)
+                .is_some_and(|slot| slot.state.borrow().is_active()),
+            AnimationKeyScope::Repeating => self.repeating_slots.get(&key).is_some_and(|slot| {
+                slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle
+            }),
+        }
     }
 }
 

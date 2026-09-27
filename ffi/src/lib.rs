@@ -2275,6 +2275,15 @@ impl IntoRust for WuiAnchorEdge {
     }
 }
 
+// A `WuiBinding<WuiAnchorEdge>` (C API) / `BindingAnchorEdge` handle (JNI)
+// carries `AnchoredOverlay::placed_edge`.
+ffi_binding!(AnchorEdge, WuiAnchorEdge, anchor_edge);
+#[cfg(feature = "c-api")]
+ffi_watcher!(AnchorEdge, WuiAnchorEdge, anchor_edge);
+
+#[cfg(feature = "android-jni")]
+jni_binding_primitive!(AnchorEdge, anchor_edge);
+
 /// C ABI mirror of [`EdgeAlignment`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2497,6 +2506,9 @@ pub struct WuiAnchoredOverlay {
     pub placement: WuiAnchorPlacement,
     /// What besides the binding closes the overlay.
     pub dismissal: WuiDismissal,
+    /// The edge the overlay was placed against after any flip. The backend
+    /// writes it on every placement.
+    pub placed_edge: *mut WuiBinding<AnchorEdge>,
 }
 
 impl IntoFFI for AnchoredOverlay {
@@ -2507,6 +2519,7 @@ impl IntoFFI for AnchoredOverlay {
             is_presented: self.is_presented.into_ffi(),
             placement: self.placement.into_ffi(),
             dismissal: self.dismissal.into_ffi(),
+            placed_edge: self.placed_edge.into_ffi(),
         }
     }
 }
@@ -2533,6 +2546,9 @@ pub struct WuiAnchoredOverlayPlacement {
     /// The physical edge of the anchor the overlay was placed against, after
     /// flipping.
     pub edge: WuiPhysicalEdge,
+    /// `edge` converted back to a logical [`AnchorEdge`] under the resolved
+    /// layout direction — what the backend writes to `placed_edge`.
+    pub logical_edge: WuiAnchorEdge,
 }
 
 /// Computes an anchored overlay's frame in window space.
@@ -2565,7 +2581,7 @@ pub unsafe extern "C" fn waterui_anchored_overlay_place(
 ) -> WuiAnchoredOverlayPlacement {
     // SAFETY: all by-value inputs are plain-data FFI mirrors consumed once;
     // `env`/`direction` follow the caller contract of `resolve_layout_direction`.
-    let placed = unsafe {
+    let (placed, logical_edge) = unsafe {
         let (anchor, window, placement) = (
             anchor.into_rust(),
             window.into_rust(),
@@ -2584,6 +2600,7 @@ pub unsafe extern "C" fn waterui_anchored_overlay_place(
     WuiAnchoredOverlayPlacement {
         frame: placed.frame.into_ffi(),
         edge: placed.edge.into_ffi(),
+        logical_edge: logical_edge.into_ffi(),
     }
 }
 
@@ -2606,7 +2623,8 @@ unsafe fn resolve_layout_direction(
 }
 
 /// The shared core of `waterui_anchored_overlay_place` and the JNI
-/// entrypoint: Rust-side inputs in, the placement out.
+/// entrypoint: Rust-side inputs in, the placement plus the logical edge a
+/// backend writes to `placed_edge` out.
 ///
 /// # Safety
 ///
@@ -2619,12 +2637,17 @@ pub(crate) unsafe fn anchored_overlay_place(
     placement: AnchorPlacement,
     direction: LayoutDirection,
     env: *const WuiEnv,
-) -> waterui_backend_core::overlay::AnchoredOverlayPlacement {
+) -> (
+    waterui_backend_core::overlay::AnchoredOverlayPlacement,
+    AnchorEdge,
+) {
     // SAFETY: forwarded caller contract.
     let direction = unsafe { resolve_layout_direction(env, direction) };
-    waterui_backend_core::overlay::place_anchored_overlay(
+    let placed = waterui_backend_core::overlay::place_anchored_overlay(
         anchor, window, overlay, placement, direction,
-    )
+    );
+    let logical = waterui_backend_core::overlay::logical_edge(placed.edge, direction);
+    (placed, logical)
 }
 
 // ========== Menu FFI ==========

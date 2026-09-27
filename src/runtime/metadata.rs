@@ -242,6 +242,18 @@ pub mod anchored_overlay {
     /// set, then keeps it inside the window as [`clamp`](AnchorPlacement::clamp)
     /// asks. Tooltips, popovers and dropdowns are built on it.
     ///
+    /// The edge the backend actually used is written to
+    /// [`placed_edge`](Self::placed_edge) on every placement, so content can
+    /// grow out of, or point at, the anchor from the right side after a flip.
+    ///
+    /// When `is_presented` becomes `false` the overlay leaves the screen the
+    /// way it arrived: the backend keeps the content in place, ignoring input,
+    /// until the animations that change started inside it have finished, and
+    /// only then removes it. Content that animates its own exit — a tooltip
+    /// scaling down — therefore plays it in full; content without one is
+    /// removed at once. Setting `is_presented` back to `true` during the exit
+    /// keeps the same content presented.
+    ///
     /// # Example
     ///
     /// ```rust
@@ -268,6 +280,13 @@ pub mod anchored_overlay {
         pub placement: AnchorPlacement,
         /// What besides the binding closes the overlay.
         pub dismissal: Dismissal,
+        /// The edge the overlay was placed against after any flip. The backend
+        /// writes it on every placement; until the first placement it holds
+        /// [`placement.edge`](AnchorPlacement::edge) as it was when
+        /// [`new`](Self::new) ran, or the value a binding passed to
+        /// [`placed_edge`](Self::placed_edge) already held. `Leading` and
+        /// `Trailing` keep their layout-direction meaning.
+        pub placed_edge: Binding<AnchorEdge>,
     }
 
     impl MetadataKey for AnchoredOverlay {}
@@ -285,6 +304,7 @@ pub mod anchored_overlay {
                 is_presented: is_presented.clone(),
                 placement: AnchorPlacement::default(),
                 dismissal: Dismissal::OutsideInteraction,
+                placed_edge: nami::binding(AnchorPlacement::default().edge),
             }
         }
 
@@ -328,6 +348,37 @@ pub mod anchored_overlay {
         #[must_use]
         pub const fn dismissal(mut self, dismissal: Dismissal) -> Self {
             self.dismissal = dismissal;
+            self
+        }
+
+        /// Reports the edge the overlay was placed against, after any flip,
+        /// into `placed_edge`.
+        ///
+        /// # Example
+        ///
+        /// ```rust
+        /// use waterui::style::Anchor;
+        /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+        /// use waterui::prelude::*;
+        ///
+        /// let shown = binding(false);
+        /// let placed = binding(AnchorEdge::Top);
+        /// // A tooltip that grows out of the anchor: from its bottom edge when
+        /// // it sits above the anchor, from its top edge after a flip below.
+        /// let origin = placed.map(|edge| match edge {
+        ///     AnchorEdge::Bottom => Anchor::new(0.5, 0.0),
+        ///     _ => Anchor::new(0.5, 1.0),
+        /// });
+        /// text!("?").anchored_overlay(
+        ///     AnchoredOverlay::new(&shown, text!("Help"))
+        ///         .edge(AnchorEdge::Top)
+        ///         .placed_edge(&placed),
+        /// );
+        /// # let _ = origin;
+        /// ```
+        #[must_use]
+        pub fn placed_edge(mut self, placed_edge: &Binding<AnchorEdge>) -> Self {
+            self.placed_edge = placed_edge.clone();
             self
         }
     }

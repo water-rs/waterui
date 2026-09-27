@@ -127,6 +127,25 @@ const fn physical_edge(edge: AnchorEdge, direction: LayoutDirection) -> Physical
     }
 }
 
+/// The inverse of [`physical_edge`]: the logical `AnchorEdge` for a resolved
+/// `PhysicalEdge`.
+///
+/// What a backend writes to `AnchoredOverlay::placed_edge` after `placed.edge`
+/// was resolved — and possibly flipped — under `direction`. `Left`/`Right`
+/// map back to `Leading`/`Trailing`; `Top` and `Bottom` are already
+/// direction-independent.
+#[must_use]
+pub const fn logical_edge(edge: PhysicalEdge, direction: LayoutDirection) -> AnchorEdge {
+    match edge {
+        PhysicalEdge::Top => AnchorEdge::Top,
+        PhysicalEdge::Bottom => AnchorEdge::Bottom,
+        PhysicalEdge::Left if direction.is_right_to_left() => AnchorEdge::Trailing,
+        PhysicalEdge::Left => AnchorEdge::Leading,
+        PhysicalEdge::Right if direction.is_right_to_left() => AnchorEdge::Leading,
+        PhysicalEdge::Right => AnchorEdge::Trailing,
+    }
+}
+
 /// Whether `overlay` fits between `anchor` and the window on `edge`, leaving
 /// `gap` points against the anchor. The usable window edge is inset by
 /// `margin`, so under `Clamp::Window` an overlay that would land within the
@@ -407,6 +426,44 @@ mod tests {
         ] {
             let placed = place(MIDDLE, OVERLAY, placement(edge, EdgeAlignment::Center));
             assert_eq!(placed.edge, physical);
+        }
+    }
+
+    #[test]
+    fn logical_edge_inverts_physical_edge() {
+        for (physical, direction, expected) in [
+            (
+                PhysicalEdge::Top,
+                LayoutDirection::LeftToRight,
+                AnchorEdge::Top,
+            ),
+            (
+                PhysicalEdge::Bottom,
+                LayoutDirection::LeftToRight,
+                AnchorEdge::Bottom,
+            ),
+            (
+                PhysicalEdge::Left,
+                LayoutDirection::LeftToRight,
+                AnchorEdge::Leading,
+            ),
+            (
+                PhysicalEdge::Right,
+                LayoutDirection::LeftToRight,
+                AnchorEdge::Trailing,
+            ),
+            (
+                PhysicalEdge::Left,
+                LayoutDirection::RightToLeft,
+                AnchorEdge::Trailing,
+            ),
+            (
+                PhysicalEdge::Right,
+                LayoutDirection::RightToLeft,
+                AnchorEdge::Leading,
+            ),
+        ] {
+            assert_eq!(logical_edge(physical, direction), expected);
         }
     }
 
