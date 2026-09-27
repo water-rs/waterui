@@ -282,10 +282,9 @@ jobs:
     name: FFI Header
     needs: changes
     if: needs.changes.outputs.ffi == 'true'
-    # The header is platform-dependent: the Apple exports (Metal, CEF) only
-    # appear when cbindgen expands on an Apple target, and the committed header
-    # contains them. Regenerating anywhere else would delete them and break the
-    # Apple backend, so macOS is the canonical generation host.
+    # The generator unions one expansion per shipped backend target, so the
+    # header is host-independent — but the Apple-target expansions still need
+    # Xcode's clang, so macOS remains the cheapest host that can run all four.
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
