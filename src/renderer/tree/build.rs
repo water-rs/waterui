@@ -736,18 +736,51 @@ impl RenderNode {
 
     /// Build a transparent wrapper node: capture the per-flush effect and recurse
     /// into the child so reactive descendants reach their own dedicated nodes.
+    ///
+    /// A handler-carrying effect (hover/`on_tap`/gesture, drop destination,
+    /// context menu, anchored overlay, lifecycle hook — the ones capturing `env`
+    /// for a callback) stores the environment its *content* resolves in, not the
+    /// env at the wrapper itself: `.state(&s)` between the view and the handler
+    /// is part of the handler's environment, so `v.state(&s).on_x(h)` and
+    /// `v.on_x(h).state(&s)` dispatch identically (water-rs/waterui#1292). The
+    /// stored env is also handed to the child at flush/measure — a peeled `Env`
+    /// or handler child carries that same env on its own node, and an unpeeled
+    /// first node means the env is unchanged, so the child sees no new scope.
     fn build_wrapper(
         effect: WrapperEffect,
         content: AnyView,
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> RenderNode {
+        let child = RenderNode::build(content, env, renderer);
+        let env = if effect.captures_environment() {
+            Self::resolved_handler_env(&child, env).clone()
+        } else {
+            env.clone()
+        };
         RenderNode::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
             effect,
-            env: env.clone(),
-            child: RenderNode::build(content, env, renderer),
+            env,
+            child,
         }))
+    }
+
+    /// The environment a metadata-carried callback captures: the one its
+    /// modified view resolves in. Walks down the child's leading env-only
+    /// wrappers — `Env` nodes (`With`/`Metadata<Environment>` installs and
+    /// env-scoped metadata) and handler wrappers of the same modifier chain —
+    /// until the first node that is neither. Resolving on the *built* node
+    /// means each `With` was already expanded exactly once into the `Env` node
+    /// that carries its scoped env.
+    fn resolved_handler_env<'a>(node: &'a RenderNode, env: &'a Environment) -> &'a Environment {
+        match node {
+            RenderNode::Env(node) => Self::resolved_handler_env(&node.child, &node.env),
+            RenderNode::Wrapper(node) if node.effect.captures_environment() => {
+                Self::resolved_handler_env(&node.child, &node.env)
+            }
+            _ => env,
+        }
     }
 
     /// Build a node-owned lifecycle hook wrapper. An appear hook is retained until
@@ -755,12 +788,18 @@ impl RenderNode {
     /// before the callback can update them. A disappear hook is retained in the
     /// effect and fired from its `Drop` when the node leaves the retained tree. No
     /// frame-diff slot cursor — structural presence/removal drives both events.
+    ///
+    /// The hook's environment is the one the content resolves in — the same
+    /// resolution `build_wrapper` applies to the other handler effects — so a
+    /// `.state(&s)` between the view and `.on_appear` reaches the hook.
     fn build_lifecycle(
         hook: LifeCycleHook,
         content: AnyView,
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> RenderNode {
+        let child = RenderNode::build(content, env, renderer);
+        let env = Self::resolved_handler_env(&child, env).clone();
         let effect = match hook.lifecycle() {
             LifeCycle::Appear => LifeCycleEffect {
                 appear: Cell::new(Some(DeferredLifeCycleHook::new(hook, env.clone()))),
@@ -772,7 +811,12 @@ impl RenderNode {
             },
             _ => panic!("hydrolysis lifecycle variant is not supported"),
         };
-        RenderNode::build_wrapper(WrapperEffect::LifeCycle(effect), content, env, renderer)
+        RenderNode::Wrapper(Box::new(WrapperNode {
+            accessibility_identity: Rc::new(()),
+            effect: WrapperEffect::LifeCycle(effect),
+            env,
+            child,
+        }))
     }
 
     /// Build a retained reactive collection (non-virtualized): materialize every

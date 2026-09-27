@@ -620,6 +620,26 @@ pub(super) enum WrapperEffect {
     AnchoredOverlay(AnchoredOverlayEffect),
 }
 
+impl WrapperEffect {
+    /// Whether this effect carries a callback that captures an environment —
+    /// a hover/`on_tap`/gesture handler, a drop destination, a context menu,
+    /// an anchored overlay or a lifecycle hook. Such a handler resolves against
+    /// the environment its *content* resolves in (water-rs/waterui#1292), and a
+    /// handler wrapper is itself transparent to that resolution when it sits in
+    /// an outer handler's modifier chain.
+    pub(super) const fn captures_environment(&self) -> bool {
+        matches!(
+            self,
+            Self::OnEvent(_)
+                | Self::GestureObserver(_)
+                | Self::DropDestination(_)
+                | Self::ContextMenu(_)
+                | Self::AnchoredOverlay(_)
+                | Self::LifeCycle(_)
+        )
+    }
+}
+
 /// The node-owned state of an `.anchored_overlay(...)` wrapper. The content
 /// slot is `Rc`-shared because the post-flush render pass — not this node —
 /// measures and flushes it, and the node keeps it built across closes.

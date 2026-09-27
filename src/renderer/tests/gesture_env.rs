@@ -1,31 +1,28 @@
-//! water-rs/hydrolysis#177 — the action environment contract is **ancestor
-//! order**: a `.gesture`/`.action`/`on_hover_enter` handler sees `.state(&v)`
-//! installed *outside* the handler's modifier, never inside it.
+//! water-rs/hydrolysis#177 + water-rs/waterui#1292 — the action environment
+//! contract is **order-independent within a modifier chain**: a
+//! `.gesture`/`.action`/`on_hover_*` handler sees the environment its modified
+//! view resolves in, so `.state(&v)` extracts whether it is applied before or
+//! after the handler modifier in the chain.
 //!
-//! The contract is decided on three independent fronts:
+//! The contract is decided on two fronts:
 //!
-//! - the canonical idiom in `waterui/docs/api-style.md` is
-//!   `.action(|State(c): State<Binding<i32>>| *c.get_mut() += 1).state(&counter)`
-//!   — the state install wraps the handler;
-//! - the extractor's own panic says where to install: "install the value with
-//!   `.state(&value)` on an ancestor of the handler's view"
-//!   (waterui `core/src/foundation/extract.rs`);
+//! - `extract`'s panic names the requirement: "install the value with
+//!   `.state(&value)` on the handler's view or one of its ancestors"
+//!   (waterui `core/src/foundation/extract.rs`) — position inside the chain no
+//!   longer matters;
 //! - every dispatch path in this backend resolves the handler against the env
-//!   the observer saw at apply time — `apply_gesture_observer`,
-//!   `emit_gesture_observer_accessibility`, `apply_on_event`, the press path
-//!   and keyboard activation all capture `env.clone()` at the metadata node
-//!   and invoke `captured_env.layered_on(runtime_env)`.
+//!   the observer's content resolved in — the wrapper node stores the
+//!   environment walked down through the content's leading env-only wrappers
+//!   (`With`/a11y scope installs and nested handler layers), and
+//!   `apply_gesture_observer`, `emit_gesture_observer_accessibility`,
+//!   `apply_on_event`, the press path and keyboard activation invoke
+//!   `captured_env.layered_on(runtime_env)` with it.
 //!
-//! What actually regressed in 1ec6cd4d..4332751c is dispatch order, not
-//! environment resolution: `metadata.rs` and the waterui env code are
-//! byte-identical across the range, and the same inside-order view panics
-//! identically on 1ec6cd4d (verified: this file's tests run there and fail
-//! the same way). fd112e8 (#170) moved `gesture_engine.handle_pointer_move`
-//! ahead of `handle_embedded_pointer_move`, so a recognizer pending on the
-//! handle is no longer starved by a move that lands on an input-receiving
-//! neighbour. Before #170 a drag off the narrow handle was claimed by the
-//! adjacent pane on its first move and the action simply never ran — a leak
-//! of non-execution that looked like the contract allowing inside order.
+//! What regressed in 1ec6cd4d..4332751c (#177) was dispatch order, not
+//! environment resolution, and what #1292 adds is that installs *between* the
+//! view and its handler are part of the resolved environment too — the handler
+//! wrapper peels the content's leading `With`/handler layers once at build and
+//! keeps the resolved env.
 //!
 //! Each test below pins one dispatch path on one runtime against both
 //! modifier orders.
@@ -54,12 +51,11 @@ const WINDOW_HEIGHT: u32 = 600;
 const HANDLE_WIDTH: f32 = 20.0;
 
 /// What the action records per fire: `(sizes[0], grab)`. `None` entries mark a
-/// fire that ran but could not extract the `State` — possible because the
-/// handler asks for `Option<State<_>>`.
+/// fire that ran but could not extract the `State` — the `Option` keeps the
+/// action alive on builds where the env cannot satisfy the extractor so a
+/// missing install is a wrong answer, not a panic.
 type Fired = Rc<RefCell<Vec<(Option<f32>, Option<f32>)>>>;
 
-/// `Option` so the action still runs when the env cannot satisfy the extractor
-/// — exactly what inside order produces.
 type OptState<T> = Option<State<Binding<T>>>;
 
 fn fired_sink() -> Fired {
@@ -149,7 +145,7 @@ fn split(handle: AnyView) -> AnyView {
 
 /// The drag action body both orders share: extract `State` optionally so the
 /// action still runs when the environment cannot satisfy the extractor —
-/// which is exactly what inside order produces.
+/// which is what a regression to the old contract produces.
 fn drag_action(fired: Fired) -> impl Fn(Use<DragEvent>, OptState<Vec<f32>>, OptState<f32>) {
     move |_drag: Use<DragEvent>, sizes: OptState<Vec<f32>>, grab: OptState<f32>| {
         fired.borrow_mut().push((
@@ -184,19 +180,7 @@ fn assert_all_extracted(fired: &Fired, path: &str) {
     );
     assert!(
         fires.iter().all(|fire| *fire == (Some(400.0), Some(0.0))),
-        "{path}: every fire must extract the ancestor `.state` values, got {fires:?}"
-    );
-}
-
-fn assert_all_missing(fired: &Fired, path: &str) {
-    let fires = fired.borrow();
-    assert!(
-        !fires.is_empty(),
-        "{path}: the action never fired — inside order still runs it"
-    );
-    assert!(
-        fires.iter().all(|fire| *fire == (None, None)),
-        "{path}: inside-order `.state` must be invisible, got {fires:?}"
+        "{path}: every fire must extract the `.state` values, got {fires:?}"
     );
 }
 
@@ -204,11 +188,10 @@ fn assert_all_missing(fired: &Fired, path: &str) {
 // Rendered runtime — `KeyboardActivation::PressRelease` (hit_test.rs:166-178).
 // ---------------------------------------------------------------------------
 
-/// The issue's order verbatim: `.state` between the view and `.gesture`. The
-/// drag fires — and extracts nothing — because the installs sit inside the
-/// observer, not on an ancestor.
+/// `.state` between the view and `.gesture` — the #1292 order: the installs
+/// sit inside the observer's own modifier chain and must extract identically.
 #[test]
-fn drag_gesture_cannot_extract_state_installed_between_view_and_gesture() {
+fn drag_gesture_extracts_state_installed_between_view_and_gesture() {
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
     let fired_for_view = Rc::clone(&fired);
@@ -221,11 +204,11 @@ fn drag_gesture_cannot_extract_state_installed_between_view_and_gesture() {
     pointer_down(&mut runtime, 400.0, 300.0);
     pointer_move(&mut runtime, 430.0, 300.0);
 
-    assert_all_missing(&fired, "drag gesture, inside order");
+    assert_all_extracted(&fired, "drag gesture, state-then-handler order");
 }
 
-/// Canonical order: `.gesture` first, `.state` after — the installs land on an
-/// ancestor of the handler's view and every fire extracts them.
+/// `.gesture` first, `.state` after — the installs land on an ancestor of the
+/// handler's view and every fire extracts them.
 #[test]
 fn drag_gesture_extracts_state_installed_on_an_ancestor() {
     let fired = fired_sink();
@@ -239,7 +222,7 @@ fn drag_gesture_extracts_state_installed_on_an_ancestor() {
     pointer_down(&mut runtime, 400.0, 300.0);
     pointer_move(&mut runtime, 430.0, 300.0);
 
-    assert_all_extracted(&fired, "drag gesture, ancestor order");
+    assert_all_extracted(&fired, "drag gesture, handler-then-state order");
 }
 
 /// Tap resolves through the same captured-env `layered_action` (metadata.rs).
@@ -256,7 +239,43 @@ fn tap_gesture_extracts_state_installed_on_an_ancestor() {
     pointer_down(&mut runtime, 400.0, 300.0);
     pointer_up(&mut runtime, 400.0, 300.0);
 
-    assert_all_extracted(&fired, "tap gesture, ancestor order");
+    assert_all_extracted(&fired, "tap gesture, handler-then-state order");
+}
+
+/// Tap with the installs between the view and `.gesture` — same action env as
+/// the ancestor order.
+#[test]
+fn tap_gesture_extracts_state_installed_between_view_and_gesture() {
+    let fired = fired_sink();
+    let (sizes, grab) = state_bindings();
+    let view = handle()
+        .state(&sizes)
+        .state(&grab)
+        .gesture(TapGesture::new(), tap_action(Rc::clone(&fired)));
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_down(&mut runtime, 400.0, 300.0);
+    pointer_up(&mut runtime, 400.0, 300.0);
+
+    assert_all_extracted(&fired, "tap gesture, state-then-handler order");
+}
+
+/// `on_tap` is a `TapGesture` observer spelled without the gesture argument —
+/// the state-then-handler order extracts identically here too.
+#[test]
+fn on_tap_extracts_state_installed_between_view_and_handler() {
+    let fired = fired_sink();
+    let (sizes, grab) = state_bindings();
+    let view = handle()
+        .state(&sizes)
+        .state(&grab)
+        .on_tap(tap_action(Rc::clone(&fired)));
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_down(&mut runtime, 400.0, 300.0);
+    pointer_up(&mut runtime, 400.0, 300.0);
+
+    assert_all_extracted(&fired, "on_tap, state-then-handler order");
 }
 
 /// Press/keyboard: with an `InteractionStyle` installed, a tap activates
@@ -281,7 +300,30 @@ fn press_activation_extracts_state_installed_on_an_ancestor() {
     pointer_down(&mut runtime, 400.0, 300.0);
     pointer_up(&mut runtime, 400.0, 300.0);
 
-    assert_all_extracted(&fired, "press activation, ancestor order");
+    assert_all_extracted(&fired, "press activation, handler-then-state order");
+}
+
+/// Press activation with the installs between the view and `.gesture`.
+#[test]
+fn press_activation_extracts_state_installed_between_view_and_gesture() {
+    let mut env = test_environment();
+    env.install(InteractionStyle::new(
+        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
+        Color::srgb(0, 0, 0),
+        0.0_f64,
+    ));
+    let fired = fired_sink();
+    let (sizes, grab) = state_bindings();
+    let view = handle()
+        .state(&sizes)
+        .state(&grab)
+        .gesture(TapGesture::new(), tap_action(Rc::clone(&fired)));
+    let mut runtime = runtime_with_env(env, split(AnyView::new(view)));
+
+    pointer_down(&mut runtime, 400.0, 300.0);
+    pointer_up(&mut runtime, 400.0, 300.0);
+
+    assert_all_extracted(&fired, "press activation, state-then-handler order");
 }
 
 /// Keyboard: the pointer-down focus handoff (hit_test.rs) then Enter release
@@ -316,7 +358,7 @@ fn keyboard_activation_extracts_state_installed_on_an_ancestor() {
     );
     pointer_up(&mut runtime, 400.0, 300.0);
 
-    assert_all_extracted(&fired, "keyboard activation, ancestor order");
+    assert_all_extracted(&fired, "keyboard activation, handler-then-state order");
 }
 
 /// `on_hover_enter` is `Metadata<OnEvent>` — a different observer type than
@@ -333,7 +375,117 @@ fn hover_enter_extracts_state_installed_on_an_ancestor() {
 
     pointer_move(&mut runtime, 400.0, 300.0);
 
-    assert_all_extracted(&fired, "hover enter, ancestor order");
+    assert_all_extracted(&fired, "hover enter, handler-then-state order");
+}
+
+/// `on_hover_enter` with the installs between the view and the handler.
+#[test]
+fn hover_enter_extracts_state_installed_between_view_and_handler() {
+    let fired = fired_sink();
+    let (sizes, grab) = state_bindings();
+    let view = handle()
+        .state(&sizes)
+        .state(&grab)
+        .on_hover_enter(tap_action(Rc::clone(&fired)));
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_move(&mut runtime, 400.0, 300.0);
+
+    assert_all_extracted(&fired, "hover enter, state-then-handler order");
+}
+
+/// water-rs/waterui#1292's exact repro: `v.state(&b).on_hover_exit(h)` —
+/// exiting the handle must deliver `b`, not panic in `extract_or_panic`.
+/// The handler extracts `State` non-optionally, so the old contract panics on
+/// dispatch instead of recording a missing extraction.
+#[test]
+fn hover_exit_delivers_state_installed_between_view_and_handler() {
+    let fired: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+    let hovered: Binding<i32> = nami::binding(0_i32);
+    let fired_for_view = Rc::clone(&fired);
+    let view = handle()
+        .state(&hovered)
+        .on_hover_exit(move |State(count): State<Binding<i32>>| {
+            fired_for_view.borrow_mut().push(*count.get_mut());
+        });
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_move(&mut runtime, 400.0, 300.0);
+    pointer_move(&mut runtime, 10.0, 10.0);
+
+    assert_eq!(
+        *fired.borrow(),
+        vec![0],
+        "hover exit must deliver the `.state` value installed between the view and the handler"
+    );
+}
+
+/// The reverse spelling — `v.on_hover_exit(h).state(&b)` — resolves to the
+/// same environment.
+#[test]
+fn hover_exit_delivers_state_installed_on_an_ancestor() {
+    let fired: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+    let hovered: Binding<i32> = nami::binding(0_i32);
+    let fired_for_view = Rc::clone(&fired);
+    let view = handle()
+        .on_hover_exit(move |State(count): State<Binding<i32>>| {
+            fired_for_view.borrow_mut().push(*count.get_mut());
+        })
+        .state(&hovered);
+    let mut runtime = runtime_with(split(AnyView::new(view)));
+
+    pointer_move(&mut runtime, 400.0, 300.0);
+    pointer_move(&mut runtime, 10.0, 10.0);
+
+    assert_eq!(
+        *fired.borrow(),
+        vec![0],
+        "hover exit must deliver the ancestor `.state` value"
+    );
+}
+
+/// Repeated `.state` of the same type binds positionally — `.state(&a)` feeds
+/// the first `State<Binding<i32>>` parameter, `.state(&b)` the second — and the
+/// order is identical whether the installs sit inside or outside the handler.
+#[test]
+fn repeated_state_binding_order_is_identical_in_both_placements() {
+    let first: Binding<i32> = nami::binding(1_i32);
+    let second: Binding<i32> = nami::binding(2_i32);
+    let record = |sink: Rc<RefCell<Vec<(i32, i32)>>>| {
+        move |State(a): State<Binding<i32>>, State(b): State<Binding<i32>>| {
+            sink.borrow_mut().push((*a.get_mut(), *b.get_mut()));
+        }
+    };
+
+    let inside_fired: Rc<RefCell<Vec<(i32, i32)>>> = Rc::new(RefCell::new(Vec::new()));
+    let inside = handle()
+        .state(&first)
+        .state(&second)
+        .on_hover_exit(record(Rc::clone(&inside_fired)));
+    let mut runtime = runtime_with(split(AnyView::new(inside)));
+    pointer_move(&mut runtime, 400.0, 300.0);
+    pointer_move(&mut runtime, 10.0, 10.0);
+
+    let outside_fired: Rc<RefCell<Vec<(i32, i32)>>> = Rc::new(RefCell::new(Vec::new()));
+    let outside = handle()
+        .on_hover_exit(record(Rc::clone(&outside_fired)))
+        .state(&first)
+        .state(&second);
+    let mut runtime = runtime_with(split(AnyView::new(outside)));
+    pointer_move(&mut runtime, 400.0, 300.0);
+    pointer_move(&mut runtime, 10.0, 10.0);
+
+    let inside_fires = inside_fired.borrow().clone();
+    let outside_fires = outside_fired.borrow().clone();
+    assert_eq!(
+        inside_fires, outside_fires,
+        "positional `State<Binding<i32>>` binding order must not depend on placement"
+    );
+    assert_eq!(
+        inside_fires,
+        vec![(1, 2)],
+        "the first `.state` call feeds the first parameter in both spellings"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -424,11 +576,13 @@ fn semantic_activate_extracts_state_installed_on_an_ancestor() {
     let node = first_of_role(&update, Role::Button);
     semantic_action(&mut runtime, Action::Click, node);
 
-    assert_all_extracted(&fired, "semantic activate, ancestor order");
+    assert_all_extracted(&fired, "semantic activate, handler-then-state order");
 }
 
+/// The #1292 order on the semantic path: installs between the view and
+/// `.gesture` reach the Activate action's captured env too.
 #[test]
-fn semantic_activate_cannot_extract_state_installed_between_view_and_gesture() {
+fn semantic_activate_extracts_state_installed_between_view_and_gesture() {
     let fired = fired_sink();
     let (sizes, grab) = state_bindings();
     let view = handle()
@@ -442,7 +596,7 @@ fn semantic_activate_cannot_extract_state_installed_between_view_and_gesture() {
     let node = first_of_role(&update, Role::Button);
     semantic_action(&mut runtime, Action::Click, node);
 
-    assert_all_missing(&fired, "semantic activate, inside order");
+    assert_all_extracted(&fired, "semantic activate, state-then-handler order");
 }
 
 /// Semantic keyboard dispatch: Enter on the focused node goes through the same
@@ -463,5 +617,8 @@ fn semantic_keyboard_activate_extracts_state_installed_on_an_ancestor() {
     semantic_action(&mut runtime, Action::Focus, node);
     semantic_key(&mut runtime, KeyCode::Named("Enter".into()));
 
-    assert_all_extracted(&fired, "semantic keyboard activate, ancestor order");
+    assert_all_extracted(
+        &fired,
+        "semantic keyboard activate, handler-then-state order",
+    );
 }
