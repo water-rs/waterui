@@ -157,7 +157,9 @@ impl RenderNode {
             RenderNode::Retain(node) => node.child.take_layout_dirty(),
             RenderNode::Env(node) => node.child.take_layout_dirty(),
             RenderNode::Wrapper(node) => node.child.take_layout_dirty(),
-            RenderNode::Dynamic(node) => node.child.borrow_mut().take_layout_dirty(),
+            RenderNode::Dynamic(node) => {
+                node.layout_dirty.replace(false) | node.child.borrow_mut().take_layout_dirty()
+            }
             RenderNode::Scroll(node) => {
                 let dirty = node.child.take_layout_dirty();
                 if dirty {

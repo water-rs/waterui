@@ -249,6 +249,12 @@ pub(crate) struct LazyStackNode {
     /// the only rows that need exact pre-layout remeasurement on a reactive
     /// height change; all other rows keep their virtual estimate.
     pub(super) visible_range: RefCell<Range<usize>>,
+    /// The main-axis span (in this stack's coordinates) the previous flush
+    /// resolved as visible. `patch_visible` reuses it to materialize the
+    /// window's items — including ids a membership change slid into it — while
+    /// the patch walk is still running, so a builder's reactive writes land in
+    /// the patch phase rather than mid-encode (water-rs/hydrolysis#226).
+    pub(super) visible_span: Cell<Option<(f64, f64)>>,
     /// Estimated extent for not-yet-measured items, seeded from the first measure;
     /// used to size the scroll content without measuring the whole collection.
     pub(super) estimate: Cell<f64>,
@@ -720,7 +726,12 @@ fn place_on_axis(rect: Rect, axis: TransitionAxis, main_position: f32) -> Rect {
 
 impl LazyStackNode {
     /// Applies structural updates owned by the currently visible retained items
-    /// before the parent scroll view measures this stack.
+    /// before the parent scroll view measures this stack. Items whose ids the
+    /// stored viewport window covers but that were never materialized — e.g.
+    /// slid into view by the same membership change being patched — are built
+    /// here too: their builders run inside the patch phase, so a `set()` they
+    /// perform lands its `Dynamic` pending while the walk can still reach the
+    /// host's patch arm, instead of mid-encode inside `flush`.
     pub(super) fn patch_visible(&self, renderer: &mut SemanticCore) -> bool {
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
         if !replaced.is_empty() {
@@ -729,12 +740,50 @@ impl LazyStackNode {
             // data when the visible window next fills them.
             self.item_cache.borrow_mut().invalidate_ids(&replaced);
         }
+        let mut materialized = false;
+        let count = self.views.len().snapshot();
+        if count > 0
+            && let Some((visible_start, visible_end)) = self.visible_span.get()
+        {
+            let estimate = self.estimate.get();
+            let spacing = self.spacing();
+            {
+                let mut extent_index = self.extent_index.borrow_mut();
+                if estimate > 0.0 && !extent_index.matches(count, estimate, spacing) {
+                    extent_index.reset(count, estimate, spacing);
+                }
+            }
+            let window = self
+                .extent_index
+                .borrow()
+                .visible_window(visible_start, visible_end);
+            let views = &self.views;
+            let env = &self.env;
+            let mut cache = self.item_cache.borrow_mut();
+            for index in window.start..window.end.min(count) {
+                let id = views
+                    .get_id(index)
+                    .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
+                if cache.get(&id).is_none() {
+                    let view = views.get_view(index).unwrap_or_else(|| {
+                        panic!("hydrolysis LazyStack failed to materialize item {index}")
+                    });
+                    // Build now, not at flush: a cached-but-unbuilt entry
+                    // measures as zero and is skipped by `patch_for_parent`,
+                    // so the row would place at a collapsed rect this frame.
+                    cache
+                        .materialize(id, || normalize_layout_view(view, env))
+                        .ensure_built(renderer, env);
+                    materialized = true;
+                }
+            }
+        }
         let changed = self.item_cache.borrow_mut().patch_for_parent(renderer);
-        if changed {
+        if changed || materialized {
             self.estimate_sample.set(None);
             self.floor_sample.set(None);
         }
-        changed
+        changed | materialized
     }
 
     fn spacing(&self) -> f64 {
@@ -773,7 +822,9 @@ impl LazyStackNode {
             .views
             .get_id(index)
             .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
-        if let Some(item) = self.item_cache.borrow().get(&id) {
+        if let Some(item) = self.item_cache.borrow().get(&id)
+            && item.is_built()
+        {
             return (
                 item.measure_built_with_proposal(state, &self.env, theme, proposal),
                 item.stretch_axis(),
@@ -982,6 +1033,7 @@ impl LazyStackNode {
                 (visible.x0 - ctx.bounds.x0, visible.x1 - ctx.bounds.x0)
             }
         };
+        self.visible_span.set(Some((visible_start, visible_end)));
         let spacing = self.spacing();
         let window = self
             .extent_index

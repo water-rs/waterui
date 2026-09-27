@@ -871,6 +871,7 @@ impl RenderNode {
             extent_index: RefCell::new(VirtualExtentIndex::default()),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
             visible_range: RefCell::new(0..0),
+            visible_span: Cell::new(None),
             estimate: Cell::new(0.0),
             estimate_sample: Cell::new(None),
             floor_sample: Cell::new(None),
@@ -998,6 +999,7 @@ impl RenderNode {
             pending,
             env: env.clone(),
             child,
+            layout_dirty: Cell::new(false),
         }))
     }
 }

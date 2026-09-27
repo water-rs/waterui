@@ -145,7 +145,21 @@ impl RenderNode {
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
             RenderNode::Dynamic(node) => {
-                node.apply_pending_mid_pass(renderer);
+                if node.apply_pending_mid_pass(renderer) {
+                    // The parent placed this host before the pending existed,
+                    // so the new child has no placements yet: lay it out inside
+                    // the host's assigned rect so it encodes a self-consistent
+                    // subtree this frame. `apply_pending_mid_pass` already
+                    // marked the host layout-dirty, so the enclosing retained
+                    // sub-view re-lays out (re-placing this host) before its
+                    // next flush.
+                    #[allow(clippy::cast_possible_truncation)]
+                    let size = Size::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
+                    let proposal = ProposalSize::new(Some(size.width), Some(size.height));
+                    node.child
+                        .borrow_mut()
+                        .layout(renderer, &node.env, proposal, size);
+                }
                 node.child.borrow().flush(renderer, ctx, env);
             }
             RenderNode::Retain(node) => node.child.flush(renderer, ctx, env),

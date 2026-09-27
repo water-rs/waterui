@@ -433,6 +433,19 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
             .or_insert_with(|| RetainedSubview::new(build()))
     }
 
+    /// Insert the sub-view for `key` without marking it visible this frame —
+    /// the patch-time materialization of an item the visible window covers.
+    /// An id the frame's flush never reaches is still evicted by `end_frame`.
+    pub(crate) fn materialize(
+        &mut self,
+        key: K,
+        build: impl FnOnce() -> AnyView,
+    ) -> &mut RetainedSubview {
+        self.entries
+            .entry(key)
+            .or_insert_with(|| RetainedSubview::new(build()))
+    }
+
     /// Look up an already-retained item without marking it visible this frame.
     pub(crate) fn get(&self, key: &K) -> Option<&RetainedSubview> {
         self.entries.get(key)
@@ -1049,6 +1062,12 @@ pub(crate) struct DynamicHostNode {
     /// meets the connected `Dynamic` can re-measure this child for the real
     /// proposal.
     pub(super) child: Rc<RefCell<RenderNode>>,
+    /// A mid-pass swap changed the child after the parent's layout already
+    /// placed this host. Read through [`RenderNode::take_layout_dirty`], it
+    /// propagates the invalidation to the enclosing retained sub-view, which
+    /// re-lays out its tree before its next flush — the caller-imposed rect a
+    /// `RetainedSubview` flushes at never renegotiates itself.
+    pub(super) layout_dirty: Cell<bool>,
 }
 
 impl DynamicHostNode {
@@ -1082,10 +1101,13 @@ impl DynamicHostNode {
     /// already folded into the window's structural bookkeeping: the change is
     /// reported to the renderer like `RetainedSubview::patch_built` reports
     /// widget-owned patches, so the next refresh runs the prune cycle for the
-    /// dropped subtree's animation/measurement slots.
+    /// dropped subtree's animation/measurement slots. The swap also marks this
+    /// host layout-dirty — the parent's placement of this node preceded the
+    /// new child, so an ancestor must re-lay out to size it.
     pub(super) fn apply_pending_mid_pass(&self, renderer: &mut SemanticCore) -> bool {
         let applied = self.apply_pending(renderer);
         if applied {
+            self.layout_dirty.set(true);
             renderer.note_subview_structural_change();
         }
         applied
