@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=06003fdfd05094c58ed2f615f60d0074d8561bcd#06003fdfd05094c58ed2f615f60d0074d8561bcd"
+source = "git+https://github.com/water-rs/hydrolysis?rev=ec4e6fd3ff2da5fbb3effecc9a0bebea69b5f155#ec4e6fd3ff2da5fbb3effecc9a0bebea69b5f155"
 dependencies = [
  "accesskit",
  "async-task",
@@ -10230,6 +10230,7 @@ dependencies = [
  "jiff",
  "jni 0.22.4",
  "kurbo",
+ "libc",
  "nami",
  "native-executor",
  "ndk-context",
