@@ -36,12 +36,11 @@
 //! `GpuContext` during setup, which fires the host's installed redraw callback.
 
 use waterui_core::layout::{Point as LayoutPoint, Rect as LayoutRect, Size as LayoutSize};
-use waterui_graphics::input::{
-    Code, Key, Modifiers, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
-};
+use waterui_graphics::input::{Code, Key, ScrollUnit, SurfaceInputEvent, SurfacePointerButton};
 
 use super::gpu_surface::{WuiGpuSurfaceState, with_semantic_input};
 use crate::components::layouting::layout::WuiRect;
+use crate::events::key::modifiers_from_ffi;
 use crate::{IntoFFI, IntoRust, WuiStr};
 
 /// `Modifiers::SHIFT` — a shift key is held.
@@ -57,17 +56,12 @@ pub const WUI_SURFACE_MODIFIER_CAPS_LOCK: u32 = 0x4;
 /// `Modifiers::NUM_LOCK` — num lock is latched on.
 pub const WUI_SURFACE_MODIFIER_NUM_LOCK: u32 = 0x80;
 
-/// Every modifier bit this ABI carries.
-///
-/// The W3C model has more (`AltGraph`, `Fn`, `Symbol`, the scroll and symbol
-/// locks); no host forwards them today and no GPU view reads them, so they are
-/// rejected rather than silently dropped.
-const SUPPORTED_MODIFIERS: u32 = WUI_SURFACE_MODIFIER_SHIFT
-    | WUI_SURFACE_MODIFIER_CONTROL
-    | WUI_SURFACE_MODIFIER_ALT
-    | WUI_SURFACE_MODIFIER_META
-    | WUI_SURFACE_MODIFIER_CAPS_LOCK
-    | WUI_SURFACE_MODIFIER_NUM_LOCK;
+// Every modifier bit this ABI carries lives in `crate::events::key`: the
+// `WUI_KEY_MODIFIER_*` set has the same bit values, and
+// `crate::events::key::modifiers_from_ffi` is the single conversion both ABIs
+// use. The W3C model has more (`AltGraph`, `Fn`, `Symbol`, the scroll and
+// symbol locks); no host forwards them today and no GPU view reads them, so
+// they are rejected rather than silently dropped.
 
 /// Which event a [`WuiSurfaceInputEvent`] carries.
 ///
@@ -190,17 +184,6 @@ pub struct WuiSurfaceInputEvent {
     pub caret: i64,
 }
 
-/// Reads the modifier chord, rejecting bits this ABI does not carry.
-pub(crate) fn modifiers_from_ffi(context: &str, bits: u32) -> Modifiers {
-    assert_eq!(
-        bits & !SUPPORTED_MODIFIERS,
-        0,
-        "{context}: unsupported modifier bits {:#x}",
-        bits & !SUPPORTED_MODIFIERS
-    );
-    Modifiers::from_bits(bits).expect("supported modifier bits are a subset of `Modifiers`")
-}
-
 /// Reads a `CompositionUpdate` caret, where `-1` is "the platform reported none".
 fn caret_from_ffi(caret: i64, text: &str) -> Option<usize> {
     if caret < 0 {
@@ -259,10 +242,7 @@ impl IntoRust for WuiSurfaceInputEvent {
         match kind {
             WuiSurfaceInputEventKind::Focus => SurfaceInputEvent::Focus(focused),
             WuiSurfaceInputEventKind::Modifiers => {
-                SurfaceInputEvent::Modifiers(modifiers_from_ffi(
-                    "waterui_gpu_surface_send_input_event",
-                    modifiers,
-                ))
+                SurfaceInputEvent::Modifiers(modifiers_from_ffi(modifiers))
             }
             WuiSurfaceInputEventKind::PointerMove => SurfaceInputEvent::PointerMove { position },
             WuiSurfaceInputEventKind::PointerButton => SurfaceInputEvent::PointerButton {
@@ -289,10 +269,7 @@ impl IntoRust for WuiSurfaceInputEvent {
                         "waterui_gpu_surface_send_input_event: {code:?} is not a W3C KeyboardEvent.code name"
                     )
                 }),
-                modifiers: modifiers_from_ffi(
-                    "waterui_gpu_surface_send_input_event",
-                    modifiers,
-                ),
+                modifiers: modifiers_from_ffi(modifiers),
                 repeat,
             },
             WuiSurfaceInputEventKind::TextInput => SurfaceInputEvent::TextInput(text),

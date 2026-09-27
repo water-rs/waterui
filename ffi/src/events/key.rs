@@ -51,37 +51,22 @@ const SUPPORTED_MODIFIERS: u32 = WUI_KEY_MODIFIER_SHIFT
     | WUI_KEY_MODIFIER_CAPS_LOCK
     | WUI_KEY_MODIFIER_NUM_LOCK;
 
-/// Converts the `WUI_KEY_MODIFIER_*` bit set into `Modifiers`.
+/// Converts the `WUI_KEY_MODIFIER_*` / `WUI_SURFACE_MODIFIER_*` bit set into
+/// `Modifiers`. Both ABIs carry the same bits — `Modifiers`' own bit values —
+/// so `gpu_surface_input` (feature-gated) shares this ungated conversion.
 ///
 /// # Panics
 ///
-/// Panics when `bits` carries a bit outside `WUI_KEY_MODIFIER_*` — a host
+/// Panics when `bits` carries a bit outside the supported set — a host
 /// passing unknown bits has a translation bug.
-fn modifiers_from_ffi(bits: u32) -> Modifiers {
-    assert!(
-        bits & !SUPPORTED_MODIFIERS == 0,
-        "waterui_call_on_key_press: unsupported modifier bits {bits:#x}"
+pub fn modifiers_from_ffi(bits: u32) -> Modifiers {
+    assert_eq!(
+        bits & !SUPPORTED_MODIFIERS,
+        0,
+        "unsupported modifier bits {:#x}",
+        bits & !SUPPORTED_MODIFIERS
     );
-    let mut modifiers = Modifiers::empty();
-    if bits & WUI_KEY_MODIFIER_SHIFT != 0 {
-        modifiers |= Modifiers::SHIFT;
-    }
-    if bits & WUI_KEY_MODIFIER_CONTROL != 0 {
-        modifiers |= Modifiers::CONTROL;
-    }
-    if bits & WUI_KEY_MODIFIER_ALT != 0 {
-        modifiers |= Modifiers::ALT;
-    }
-    if bits & WUI_KEY_MODIFIER_META != 0 {
-        modifiers |= Modifiers::META;
-    }
-    if bits & WUI_KEY_MODIFIER_CAPS_LOCK != 0 {
-        modifiers |= Modifiers::CAPS_LOCK;
-    }
-    if bits & WUI_KEY_MODIFIER_NUM_LOCK != 0 {
-        modifiers |= Modifiers::NUM_LOCK;
-    }
-    modifiers
+    Modifiers::from_bits(bits).expect("supported modifier bits are a subset of `Modifiers`")
 }
 
 /// A key press handed to a native `OnKeyPress` handler.
