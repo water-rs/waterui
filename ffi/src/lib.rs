@@ -315,6 +315,9 @@ unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
     // on the next write; a failed write must surface as `EPIPE` instead, as
     // it does in a normal Rust binary.
     #[cfg(unix)]
+    // SAFETY: `signal` only swaps the process-wide SIGPIPE disposition for
+    // `SIG_IGN`; no handler runs Rust code, and init runs once on the main
+    // thread.
     unsafe {
         let previous = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
         assert_ne!(
