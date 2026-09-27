@@ -396,6 +396,36 @@ jobs:
     with:
       full: false
 
+  # The one required check for the Test workflow. A pull request that changes
+  # no code skips the `test` call above, and a skipped reusable-workflow call
+  # reports a single `Test` check, never the nested `Test / <job>` names, so
+  # requiring those names left such a pull request pending forever. This job
+  # passes when `test` succeeded or was skipped by the path filter, and fails
+  # on anything else, including a failed `changes` job.
+  test-result:
+    name: Test result
+    needs: [changes, test]
+    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Test to have passed or been skipped by the path filter
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          if [ "$CHANGES" != success ]; then
+            echo "::error::Changes finished as $CHANGES, so the Test selection is unknown"
+            exit 1
+          fi
+          case "$TEST" in
+            success | skipped) ;;
+            *)
+              echo "::error::Test finished as $TEST"
+              exit 1
+              ;;
+          esac
+
   # The nightly is the only run of the full suite, so its result gates the
   # release: a pull request into `main` merges only a certified `dev`.
   # `nightly.yml`'s promote job records a green run as an immutable
