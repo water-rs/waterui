@@ -188,30 +188,6 @@ typedef enum WuiAnchorEdge {
 } WuiAnchorEdge;
 
 /**
- * C ABI mirror of [`waterui_backend_core::overlay::PhysicalEdge`]: the
- * physical side of the anchor an overlay landed on — `Leading`/`Trailing`
- * already resolved under the layout direction.
- */
-typedef enum WuiPhysicalEdge {
-  /**
-   * Above the anchor.
-   */
-  WuiPhysicalEdge_Top = 0,
-  /**
-   * Below the anchor.
-   */
-  WuiPhysicalEdge_Bottom = 1,
-  /**
-   * To the anchor's left.
-   */
-  WuiPhysicalEdge_Left = 2,
-  /**
-   * To the anchor's right.
-   */
-  WuiPhysicalEdge_Right = 3,
-} WuiPhysicalEdge;
-
-/**
  * C ABI mirror of [`EdgeAlignment`].
  */
 typedef enum WuiEdgeAlignment {
@@ -257,6 +233,30 @@ typedef enum WuiDismissal {
    */
   WuiDismissal_OutsideInteraction = 1,
 } WuiDismissal;
+
+/**
+ * C ABI mirror of [`waterui_backend_core::overlay::PhysicalEdge`]: the
+ * physical side of the anchor an overlay landed on — `Leading`/`Trailing`
+ * already resolved under the layout direction.
+ */
+typedef enum WuiPhysicalEdge {
+  /**
+   * Above the anchor.
+   */
+  WuiPhysicalEdge_Top = 0,
+  /**
+   * Below the anchor.
+   */
+  WuiPhysicalEdge_Bottom = 1,
+  /**
+   * To the anchor's left.
+   */
+  WuiPhysicalEdge_Left = 2,
+  /**
+   * To the anchor's right.
+   */
+  WuiPhysicalEdge_Right = 3,
+} WuiPhysicalEdge;
 
 /**
  * C ABI mirror of [`LayoutDirection`].
@@ -3782,6 +3782,60 @@ typedef struct WuiMetadata_WuiAnchoredOverlay {
 typedef struct WuiMetadata_WuiAnchoredOverlay WuiMetadataAnchoredOverlay;
 
 /**
+ *C ABI mirror of `Point`.
+ */
+typedef struct WuiPoint {
+  /**
+   *Mirrors the `x` field of `Point`.
+   */
+  float x;
+  /**
+   *Mirrors the `y` field of `Point`.
+   */
+  float y;
+} WuiPoint;
+
+/**
+ *C ABI mirror of `Size`.
+ */
+typedef struct WuiSize {
+  /**
+   *Mirrors the `width` field of `Size`.
+   */
+  float width;
+  /**
+   *Mirrors the `height` field of `Size`.
+   */
+  float height;
+} WuiSize;
+
+/**
+ * C ABI mirror of [`Rect`]: an axis-aligned rectangle expressed as an
+ * origin point and a size, relative to its parent's coordinate space.
+ */
+typedef struct WuiRect {
+  struct WuiPoint origin;
+  struct WuiSize size;
+} WuiRect;
+
+/**
+ * C ABI mirror of [`waterui_backend_core::overlay::AnchoredOverlayPlacement`]:
+ * the overlay's frame in window space and the anchor edge it was placed
+ * against after any flip.
+ */
+typedef struct WuiAnchoredOverlayPlacement {
+  /**
+   * The overlay's frame in window space.
+   */
+  struct WuiRect frame;
+  /**
+   * The physical edge of the anchor the overlay was placed against, after
+   * flipping.
+   */
+  enum WuiPhysicalEdge edge;
+} WuiAnchoredOverlayPlacement;
+
+/**
  * FFI-safe representation of a Menu component.
  */
 typedef struct WuiMenu {
@@ -5380,60 +5434,6 @@ typedef struct WuiContainer {
  * Native callback invoked when a reactive layout input changes.
  */
 typedef void (*WuiLayoutInvalidationCallback)(void *context);
-
-/**
- *C ABI mirror of `Size`.
- */
-typedef struct WuiSize {
-  /**
-   *Mirrors the `width` field of `Size`.
-   */
-  float width;
-  /**
-   *Mirrors the `height` field of `Size`.
-   */
-  float height;
-} WuiSize;
-
-/**
- *C ABI mirror of `Point`.
- */
-typedef struct WuiPoint {
-  /**
-   *Mirrors the `x` field of `Point`.
-   */
-  float x;
-  /**
-   *Mirrors the `y` field of `Point`.
-   */
-  float y;
-} WuiPoint;
-
-/**
- * C ABI mirror of [`Rect`]: an axis-aligned rectangle expressed as an
- * origin point and a size, relative to its parent's coordinate space.
- */
-typedef struct WuiRect {
-  struct WuiPoint origin;
-  struct WuiSize size;
-} WuiRect;
-
-/**
- * C ABI mirror of [`waterui_backend_core::overlay::AnchoredOverlayPlacement`]:
- * the overlay's frame in window space and the anchor edge it was placed
- * against after any flip.
- */
-typedef struct WuiAnchoredOverlayPlacement {
-  /**
-   * The overlay's frame in window space.
-   */
-  struct WuiRect frame;
-  /**
-   * The physical edge of the anchor the overlay was placed against, after
-   * flipping.
-   */
-  enum WuiPhysicalEdge edge;
-} WuiAnchoredOverlayPlacement;
 
 /**
  * C ABI mirror of [`EdgeInsets`]: the space between a rectangle's edges and
