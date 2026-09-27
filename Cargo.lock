@@ -10223,6 +10223,7 @@ dependencies = [
  "jiff",
  "jni 0.22.4",
  "kurbo",
+ "libc",
  "nami",
  "native-executor",
  "ndk-context",
