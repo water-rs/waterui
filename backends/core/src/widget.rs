@@ -3,8 +3,8 @@
 use core::time::Duration;
 use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii, Vec2};
 use nami::signal::IntoComputed;
-use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_controls::toggle::ToggleStyle;
+use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
@@ -1134,7 +1134,7 @@ pub trait WidgetTheme {
     fn navigation_motion(&self) -> NavigationMotion;
 
     /// Return metrics for a button style.
-    fn button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics;
+    fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
     /// Return metrics for a button whose label presents only its icon.
     ///
     /// Resolved by the backend when the label's own configuration — its
@@ -1144,7 +1144,7 @@ pub trait WidgetTheme {
     /// the chrome draws the smaller icon-button container centred inside
     /// them. The default returns the text-button metrics, so a theme with
     /// no icon-button presentation is unchanged.
-    fn icon_button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics {
+    fn icon_button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics {
         self.button_metrics(style, size)
     }
     /// Optional button label foreground override. `disabled` selects the
