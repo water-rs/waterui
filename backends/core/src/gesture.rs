@@ -18,7 +18,7 @@ use std::rc::Rc;
 use num_traits::ToPrimitive;
 use waterui::gesture::{
     DragEvent, Gesture, GesturePhase, GesturePoint, LongPressEvent, MagnificationEvent,
-    RotationEvent, TapEvent,
+    PointerButton, PointerButtons, RotationEvent, TapEvent,
 };
 use waterui_core::Environment;
 use waterui_core::handler::BoxedAction;
@@ -95,6 +95,7 @@ enum GestureInput {
     PointerDown {
         point: kurbo::Point,
         at: Instant,
+        button: PointerButton,
     },
     PointerMove {
         point: kurbo::Point,
@@ -256,6 +257,11 @@ fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> Ges
 pub struct GestureEngine {
     targets: Vec<GestureTarget>,
     active_recognizers: Vec<GestureTarget>,
+    /// The button whose press opened the active pointer sequence; `None`
+    /// while no pointer sequence is in flight. A press from a different
+    /// button mid-sequence does not join it, and pinch/rotation activations
+    /// — which carry no button — run with `None` so they are not filtered.
+    active_button: Option<PointerButton>,
 }
 
 impl GestureEngine {
@@ -343,40 +349,60 @@ impl GestureEngine {
         self.targets.push(target);
     }
 
-    /// Handles a pointer press: cancels any recognizers left active from a
-    /// previous sequence, activates the recognizers hit at `point`, and feeds
-    /// them the down event. Returns whether any action fired.
+    /// Handles a pointer press by `button`: cancels any recognizers left
+    /// active from a previous sequence, activates the recognizers hit at
+    /// `point` whose [`PointerButtons`] accept the button, and feeds them the
+    /// down event. A pointer sequence belongs to one button — a press from a
+    /// different button while a sequence is in flight does not join it.
+    /// Returns whether any action fired.
     pub fn handle_pointer_down(
         &mut self,
         point: kurbo::Point,
         at: Instant,
+        button: PointerButton,
         env: &Environment,
     ) -> bool {
+        if self.active_button.is_some_and(|active| active != button) {
+            return false;
+        }
+        self.active_button = Some(button);
         let mut changed = self.replace_active_recognizers(point, at, env);
-        changed |=
-            self.dispatch_to_active_recognizers(GestureInput::PointerDown { point, at }, env);
+        changed |= self
+            .dispatch_to_active_recognizers(GestureInput::PointerDown { point, at, button }, env);
         changed
     }
 
-    /// Feeds a pointer move to the active recognizers (drag updates, tap and
-    /// long-press slop checks). Returns whether any action fired.
+    /// Feeds a pointer move from `button` to the active recognizers (drag
+    /// updates, tap and long-press slop checks). Moves from a button other
+    /// than the one that opened the sequence are ignored. Returns whether
+    /// any action fired.
     pub fn handle_pointer_move(
         &mut self,
         point: kurbo::Point,
         at: Instant,
+        button: PointerButton,
         env: &Environment,
     ) -> bool {
+        if self.active_button.is_some_and(|active| active != button) {
+            return false;
+        }
         self.dispatch_to_active_recognizers(GestureInput::PointerMove { point, at }, env)
     }
 
-    /// Feeds the pointer release to the active recognizers and ends the
-    /// sequence, deactivating them. Returns whether any action fired.
+    /// Feeds the release of `button` to the active recognizers and ends the
+    /// sequence, deactivating them. A release of a button that did not open
+    /// the sequence is ignored. Returns whether any action fired.
     pub fn handle_pointer_up(
         &mut self,
         point: kurbo::Point,
         at: Instant,
+        button: PointerButton,
         env: &Environment,
     ) -> bool {
+        if self.active_button != Some(button) {
+            return false;
+        }
+        self.active_button = None;
         let active = core::mem::take(&mut self.active_recognizers);
         Self::dispatch_to_recognizers(&active, GestureInput::PointerUp { point, at }, env)
     }
@@ -385,6 +411,7 @@ impl GestureEngine {
     /// takeover): in-flight drags emit a `Cancelled` phase, pending taps and
     /// long presses fail. Returns whether any action fired.
     pub fn handle_pointer_cancel(&mut self, at: Instant, env: &Environment) -> bool {
+        self.active_button = None;
         self.cancel_active_recognizers(at, env)
     }
 
@@ -404,6 +431,10 @@ impl GestureEngine {
     ) -> bool {
         let mut changed = false;
         if phase == TouchPhase::Started {
+            // A pinch carries no button: any held pointer sequence is
+            // superseded, and its button must not filter the recognizers the
+            // pinch activates.
+            self.active_button = None;
             changed |= self.replace_active_recognizers(center, at, env);
         }
         changed |= self.dispatch_to_active_recognizers(
@@ -435,6 +466,7 @@ impl GestureEngine {
     ) -> bool {
         let mut changed = false;
         if phase == TouchPhase::Started {
+            self.active_button = None;
             changed |= self.replace_active_recognizers(center, at, env);
         }
         changed |= self.dispatch_to_active_recognizers(
@@ -534,7 +566,13 @@ impl GestureEngine {
             .targets
             .iter()
             .enumerate()
-            .filter(|(_, target)| target.group_id == group_id && target.bounds.contains(point))
+            .filter(|(_, target)| {
+                target.group_id == group_id
+                    && target.bounds.contains(point)
+                    && self.active_button.is_none_or(|button| {
+                        gesture_buttons(&target.recognizer.borrow().gesture).accepts(button)
+                    })
+            })
             .collect();
         targets.sort_by(|(left_index, left), (right_index, right)| {
             Self::target_priority(right, *right_index)
@@ -604,17 +642,21 @@ impl GestureEngine {
 
 struct TapDetector {
     required_count: u32,
-    pressed_point: Option<kurbo::Point>,
+    buttons: PointerButtons,
+    /// The press in flight: its point and the button that pressed it. A down
+    /// from a button `buttons` does not accept is not recorded at all.
+    pressed: Option<(kurbo::Point, PointerButton)>,
     streak: u32,
     last_tap_at: Option<Instant>,
     last_tap_point: Option<kurbo::Point>,
 }
 
 impl TapDetector {
-    fn new(required_count: u32) -> Self {
+    fn new(required_count: u32, buttons: PointerButtons) -> Self {
         Self {
             required_count: required_count.max(1),
-            pressed_point: None,
+            buttons,
+            pressed: None,
             streak: 0,
             last_tap_at: None,
             last_tap_point: None,
@@ -625,12 +667,15 @@ impl TapDetector {
 impl GestureDetector for TapDetector {
     fn input(&mut self, input: GestureInput) -> GestureDetection {
         match input {
-            GestureInput::PointerDown { point, .. } => {
-                self.pressed_point = Some(point);
+            GestureInput::PointerDown { point, button, .. } => {
+                if !self.buttons.accepts(button) {
+                    return GestureDetection::default();
+                }
+                self.pressed = Some((point, button));
                 GestureDetection::default()
             }
             GestureInput::PointerMove { point, .. } => {
-                let Some(pressed_point) = self.pressed_point else {
+                let Some((pressed_point, _)) = self.pressed else {
                     return GestureDetection::default();
                 };
                 if (point.x - pressed_point.x).hypot(point.y - pressed_point.y)
@@ -642,9 +687,9 @@ impl GestureDetector for TapDetector {
                 GestureDetection::failed()
             }
             GestureInput::PointerUp { point, at } => {
-                if self.pressed_point.take().is_none() {
+                let Some((_, button)) = self.pressed.take() else {
                     return GestureDetection::default();
-                }
+                };
 
                 let within_time = self
                     .last_tap_at
@@ -672,10 +717,11 @@ impl GestureDetector for TapDetector {
                 GestureDetection::recognized(GesturePayload::Tap(TapEvent {
                     location: gesture_point(point),
                     count: self.required_count,
+                    button,
                 }))
             }
             GestureInput::PointerCancel { .. } => {
-                self.pressed_point = None;
+                self.pressed = None;
                 GestureDetection::failed()
             }
             _ => GestureDetection::default(),
@@ -683,24 +729,25 @@ impl GestureDetector for TapDetector {
     }
 
     fn reset(&mut self) {
-        self.pressed_point = None;
+        self.pressed = None;
         self.streak = 0;
     }
 }
 
 struct LongPressDetector {
     duration: Duration,
-    started_at: Option<Instant>,
-    started_point: Option<kurbo::Point>,
+    buttons: PointerButtons,
+    /// The press in flight: when it started, where, and with which button.
+    press: Option<(Instant, kurbo::Point, PointerButton)>,
     fired: bool,
 }
 
 impl LongPressDetector {
-    const fn new(duration: Duration) -> Self {
+    const fn new(duration: Duration, buttons: PointerButtons) -> Self {
         Self {
             duration,
-            started_at: None,
-            started_point: None,
+            buttons,
+            press: None,
             fired: false,
         }
     }
@@ -709,9 +756,11 @@ impl LongPressDetector {
 impl GestureDetector for LongPressDetector {
     fn input(&mut self, input: GestureInput) -> GestureDetection {
         match input {
-            GestureInput::PointerDown { point, at } => {
-                self.started_at = Some(at);
-                self.started_point = Some(point);
+            GestureInput::PointerDown { point, at, button } => {
+                if !self.buttons.accepts(button) {
+                    return GestureDetection::default();
+                }
+                self.press = Some((at, point, button));
                 self.fired = false;
                 GestureDetection::default()
             }
@@ -719,7 +768,7 @@ impl GestureDetector for LongPressDetector {
                 if self.fired {
                     return GestureDetection::default();
                 }
-                let Some(start_point) = self.started_point else {
+                let Some((_, start_point, _)) = self.press else {
                     return GestureDetection::default();
                 };
                 if (point.x - start_point.x).hypot(point.y - start_point.y) <= LONG_PRESS_SLOP {
@@ -729,7 +778,7 @@ impl GestureDetector for LongPressDetector {
                 GestureDetection::failed()
             }
             GestureInput::PointerUp { point, at } => {
-                let Some(started_at) = self.started_at else {
+                let Some((started_at, _, button)) = self.press else {
                     return GestureDetection::default();
                 };
                 if self.fired {
@@ -745,12 +794,13 @@ impl GestureDetector for LongPressDetector {
                 let payload = GesturePayload::LongPress(LongPressEvent {
                     location: gesture_point(point),
                     duration: duration_ms,
+                    button,
                 });
                 self.reset();
                 GestureDetection::recognized(payload)
             }
             GestureInput::PointerCancel { .. } => {
-                if self.started_at.is_some() && !self.fired {
+                if self.press.is_some() && !self.fired {
                     self.reset();
                     return GestureDetection::failed();
                 }
@@ -758,8 +808,7 @@ impl GestureDetector for LongPressDetector {
                 GestureDetection::default()
             }
             GestureInput::Tick { at } => {
-                let (Some(started_at), Some(started_point)) = (self.started_at, self.started_point)
-                else {
+                let Some((started_at, started_point, button)) = self.press else {
                     return GestureDetection::default();
                 };
                 if self.fired || at.duration_since(started_at) < self.duration {
@@ -770,6 +819,7 @@ impl GestureDetector for LongPressDetector {
                 GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent {
                     location: gesture_point(started_point),
                     duration: duration_ms,
+                    button,
                 }))
             }
             _ => GestureDetection::default(),
@@ -780,49 +830,87 @@ impl GestureDetector for LongPressDetector {
         if self.fired {
             return None;
         }
-        self.started_at.map(|started_at| started_at + self.duration)
+        self.press
+            .map(|(started_at, _, _)| started_at + self.duration)
     }
 
     fn reset(&mut self) {
-        self.started_at = None;
-        self.started_point = None;
+        self.press = None;
         self.fired = false;
     }
 }
 
 struct DragDetector {
     min_distance: f32,
-    start_point: Option<kurbo::Point>,
+    buttons: PointerButtons,
+    /// The accepted press opening the in-flight drag: its point and button.
+    start: Option<(kurbo::Point, PointerButton)>,
     last_point: Option<kurbo::Point>,
     last_at: Option<Instant>,
     started: bool,
 }
 
 impl DragDetector {
-    const fn new(min_distance: f32) -> Self {
+    const fn new(min_distance: f32, buttons: PointerButtons) -> Self {
         Self {
             min_distance,
-            start_point: None,
+            buttons,
+            start: None,
             last_point: None,
             last_at: None,
             started: false,
         }
+    }
+
+    fn event(
+        phase: GesturePhase,
+        point: kurbo::Point,
+        button: PointerButton,
+        translation: GesturePoint,
+        velocity: GesturePoint,
+    ) -> GesturePayload {
+        GesturePayload::Drag(DragEvent {
+            phase,
+            location: gesture_point(point),
+            translation,
+            velocity,
+            button,
+        })
+    }
+
+    fn velocity(
+        point: kurbo::Point,
+        previous_point: kurbo::Point,
+        previous_at: Instant,
+        at: Instant,
+    ) -> GesturePoint {
+        let dt = at
+            .duration_since(previous_at)
+            .as_secs_f32()
+            .max(f32::EPSILON);
+        GesturePoint::new(
+            logical_coordinate(point.x - previous_point.x) / dt,
+            logical_coordinate(point.y - previous_point.y) / dt,
+        )
     }
 }
 
 impl GestureDetector for DragDetector {
     fn input(&mut self, input: GestureInput) -> GestureDetection {
         match input {
-            GestureInput::PointerDown { point, at } => {
-                self.start_point = Some(point);
+            GestureInput::PointerDown { point, at, button } => {
+                if !self.buttons.accepts(button) {
+                    return GestureDetection::default();
+                }
+                self.start = Some((point, button));
                 self.last_point = Some(point);
                 self.last_at = Some(at);
                 self.started = false;
                 GestureDetection::default()
             }
             GestureInput::PointerMove { point, at } => {
-                let (Some(start_point), Some(previous_point), Some(previous_at)) =
-                    (self.start_point, self.last_point, self.last_at)
+                let (Some((start_point, button)), Some(previous_point), Some(previous_at)) =
+                    (self.start, self.last_point, self.last_at)
                 else {
                     return GestureDetection::default();
                 };
@@ -830,14 +918,7 @@ impl GestureDetector for DragDetector {
                 let dx = logical_coordinate(point.x - start_point.x);
                 let dy = logical_coordinate(point.y - start_point.y);
                 let distance = dx.hypot(dy);
-                let dt = at
-                    .duration_since(previous_at)
-                    .as_secs_f32()
-                    .max(f32::EPSILON);
-                let velocity = GesturePoint::new(
-                    logical_coordinate(point.x - previous_point.x) / dt,
-                    logical_coordinate(point.y - previous_point.y) / dt,
-                );
+                let velocity = Self::velocity(point, previous_point, previous_at, at);
 
                 self.last_point = Some(point);
                 self.last_at = Some(at);
@@ -846,51 +927,47 @@ impl GestureDetector for DragDetector {
                         return GestureDetection::default();
                     }
                     self.started = true;
-                    return GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                        phase: GesturePhase::Started,
-                        location: gesture_point(point),
-                        translation: GesturePoint::new(dx, dy),
+                    return GestureDetection::recognized(Self::event(
+                        GesturePhase::Started,
+                        point,
+                        button,
+                        GesturePoint::new(dx, dy),
                         velocity,
-                    }));
+                    ));
                 }
 
-                GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                    phase: GesturePhase::Updated,
-                    location: gesture_point(point),
-                    translation: GesturePoint::new(dx, dy),
+                GestureDetection::recognized(Self::event(
+                    GesturePhase::Updated,
+                    point,
+                    button,
+                    GesturePoint::new(dx, dy),
                     velocity,
-                }))
+                ))
             }
             GestureInput::PointerUp { point, at } => {
-                let Some(start_point) = self.start_point else {
+                let Some((start_point, button)) = self.start else {
                     return GestureDetection::default();
                 };
                 let previous_point = self.last_point.unwrap_or(start_point);
                 let previous_at = self.last_at.unwrap_or(at);
                 let dx = logical_coordinate(point.x - start_point.x);
                 let dy = logical_coordinate(point.y - start_point.y);
-                let dt = at
-                    .duration_since(previous_at)
-                    .as_secs_f32()
-                    .max(f32::EPSILON);
-                let velocity = GesturePoint::new(
-                    logical_coordinate(point.x - previous_point.x) / dt,
-                    logical_coordinate(point.y - previous_point.y) / dt,
-                );
+                let velocity = Self::velocity(point, previous_point, previous_at, at);
                 if !self.started {
                     self.reset();
                     return GestureDetection::failed();
                 }
                 self.reset();
-                GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                    phase: GesturePhase::Ended,
-                    location: gesture_point(point),
-                    translation: GesturePoint::new(dx, dy),
+                GestureDetection::recognized(Self::event(
+                    GesturePhase::Ended,
+                    point,
+                    button,
+                    GesturePoint::new(dx, dy),
                     velocity,
-                }))
+                ))
             }
             GestureInput::PointerCancel { .. } => {
-                let Some(start_point) = self.start_point else {
+                let Some((start_point, button)) = self.start else {
                     return GestureDetection::default();
                 };
                 if !self.started {
@@ -901,19 +978,20 @@ impl GestureDetector for DragDetector {
                 let dx = logical_coordinate(point.x - start_point.x);
                 let dy = logical_coordinate(point.y - start_point.y);
                 self.reset();
-                GestureDetection::recognized(GesturePayload::Drag(DragEvent {
-                    phase: GesturePhase::Cancelled,
-                    location: gesture_point(point),
-                    translation: GesturePoint::new(dx, dy),
-                    velocity: GesturePoint::new(0.0, 0.0),
-                }))
+                GestureDetection::recognized(Self::event(
+                    GesturePhase::Cancelled,
+                    point,
+                    button,
+                    GesturePoint::new(dx, dy),
+                    GesturePoint::new(0.0, 0.0),
+                ))
             }
             _ => GestureDetection::default(),
         }
     }
 
     fn reset(&mut self) {
-        self.start_point = None;
+        self.start = None;
         self.last_point = None;
         self.last_at = None;
         self.started = false;
@@ -1246,6 +1324,27 @@ const fn map_touch_phase_to_gesture_phase(phase: TouchPhase) -> GesturePhase {
     }
 }
 
+/// The union of the buttons a gesture's leaf recognizers respond to; a
+/// recognizer activates on a press only when this set accepts its button.
+/// Pinch and rotation gestures are not driven by buttons, so they report an
+/// empty set — they activate through `handle_magnification`/`handle_rotation`,
+/// which run the hit-test with no button filter.
+fn gesture_buttons(gesture: &Gesture) -> PointerButtons {
+    match gesture {
+        Gesture::Tap(tap) => tap.buttons,
+        Gesture::LongPress(long_press) => long_press.buttons,
+        Gesture::Drag(drag) => drag.buttons,
+        Gesture::Then(pair) => gesture_buttons(pair.first()) | gesture_buttons(pair.then()),
+        Gesture::Simultaneous(pair) => {
+            gesture_buttons(pair.first()) | gesture_buttons(pair.second())
+        }
+        Gesture::Exclusive(pair) => gesture_buttons(pair.first()) | gesture_buttons(pair.second()),
+        // Magnification and rotation carry no button set, as does any leaf
+        // added later that does not derive from a press.
+        _ => PointerButtons::empty(),
+    }
+}
+
 const fn gesture_input_instant(input: GestureInput) -> Instant {
     match input {
         GestureInput::PointerDown { at, .. }
@@ -1260,11 +1359,12 @@ const fn gesture_input_instant(input: GestureInput) -> Instant {
 
 fn build_gesture_detector(gesture: &Gesture) -> Box<dyn GestureDetector> {
     match gesture {
-        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count)),
-        Gesture::LongPress(long_press) => Box::new(LongPressDetector::new(Duration::from_millis(
-            u64::from(long_press.duration),
-        ))),
-        Gesture::Drag(drag) => Box::new(DragDetector::new(drag.min_distance)),
+        Gesture::Tap(tap) => Box::new(TapDetector::new(tap.count, tap.buttons)),
+        Gesture::LongPress(long_press) => Box::new(LongPressDetector::new(
+            Duration::from_millis(u64::from(long_press.duration)),
+            long_press.buttons,
+        )),
+        Gesture::Drag(drag) => Box::new(DragDetector::new(drag.min_distance, drag.buttons)),
         Gesture::Magnification(magnification) => {
             Box::new(MagnificationDetector::new(magnification.initial_scale))
         }
@@ -1291,11 +1391,16 @@ mod tests {
 
     #[test]
     fn long_press_fires_after_tick_deadline() {
-        let mut detector = LongPressDetector::new(Duration::from_millis(300));
+        let mut detector =
+            LongPressDetector::new(Duration::from_millis(300), PointerButtons::PRIMARY);
         let start = Instant::now();
         let point = kurbo::Point::new(12.0, 24.0);
 
-        let down = detector.input(GestureInput::PointerDown { point, at: start });
+        let down = detector.input(GestureInput::PointerDown {
+            point,
+            at: start,
+            button: PointerButton::Primary,
+        });
         assert!(down.recognized.is_none());
 
         let before_deadline = detector.input(GestureInput::Tick {
@@ -1314,13 +1419,14 @@ mod tests {
 
     #[test]
     fn drag_waits_for_min_distance_then_emits_phases() {
-        let mut detector = DragDetector::new(10.0);
+        let mut detector = DragDetector::new(10.0, PointerButtons::PRIMARY);
         let start = Instant::now();
         let origin = kurbo::Point::new(0.0, 0.0);
 
         detector.input(GestureInput::PointerDown {
             point: origin,
             at: start,
+            button: PointerButton::Primary,
         });
 
         let below_threshold = detector.input(GestureInput::PointerMove {
@@ -1414,13 +1520,20 @@ mod tests {
     #[test]
     fn then_detector_requires_second_gesture_after_first() {
         let mut detector = ThenDetector::new(
-            Box::new(TapDetector::new(1)),
-            Box::new(LongPressDetector::new(Duration::from_millis(100))),
+            Box::new(TapDetector::new(1, PointerButtons::PRIMARY)),
+            Box::new(LongPressDetector::new(
+                Duration::from_millis(100),
+                PointerButtons::PRIMARY,
+            )),
         );
         let start = Instant::now();
         let point = kurbo::Point::new(5.0, 7.0);
 
-        detector.input(GestureInput::PointerDown { point, at: start });
+        detector.input(GestureInput::PointerDown {
+            point,
+            at: start,
+            button: PointerButton::Primary,
+        });
         let first = detector.input(GestureInput::PointerUp {
             point,
             at: start + Duration::from_millis(10),
@@ -1430,6 +1543,7 @@ mod tests {
         detector.input(GestureInput::PointerDown {
             point,
             at: start + Duration::from_millis(20),
+            button: PointerButton::Primary,
         });
         let second = detector.input(GestureInput::Tick {
             at: start + Duration::from_millis(120),
@@ -1445,13 +1559,20 @@ mod tests {
     #[test]
     fn simultaneous_detector_fires_when_any_child_recognizes() {
         let mut detector = SimultaneousDetector::new(
-            Box::new(TapDetector::new(1)),
-            Box::new(LongPressDetector::new(Duration::from_millis(100))),
+            Box::new(TapDetector::new(1, PointerButtons::PRIMARY)),
+            Box::new(LongPressDetector::new(
+                Duration::from_millis(100),
+                PointerButtons::PRIMARY,
+            )),
         );
         let start = Instant::now();
         let point = kurbo::Point::new(2.0, 3.0);
 
-        detector.input(GestureInput::PointerDown { point, at: start });
+        detector.input(GestureInput::PointerDown {
+            point,
+            at: start,
+            button: PointerButton::Primary,
+        });
         let recognized = detector.input(GestureInput::PointerUp {
             point,
             at: start + Duration::from_millis(10),
@@ -1508,7 +1629,7 @@ mod tests {
 
     #[test]
     fn tap_fails_after_pointer_moves_beyond_spatial_tolerance() {
-        let mut detector = TapDetector::new(1);
+        let mut detector = TapDetector::new(1, PointerButtons::PRIMARY);
         let start = Instant::now();
         let origin = kurbo::Point::new(0.0, 0.0);
         let moved_point = kurbo::Point::new(TAP_SPATIAL_TOLERANCE + 1.0, 0.0);
@@ -1516,6 +1637,7 @@ mod tests {
         detector.input(GestureInput::PointerDown {
             point: origin,
             at: start,
+            button: PointerButton::Primary,
         });
         let moved = detector.input(GestureInput::PointerMove {
             point: moved_point,
@@ -1577,9 +1699,19 @@ mod tests {
         let start = Instant::now();
         let origin = kurbo::Point::new(16.0, 16.0);
         let moved = kurbo::Point::new(48.0, 16.0);
-        assert!(!engine.handle_pointer_down(origin, start, &env));
-        assert!(engine.handle_pointer_move(moved, start + Duration::from_millis(16), &env));
-        assert!(engine.handle_pointer_up(moved, start + Duration::from_millis(32), &env));
+        assert!(!engine.handle_pointer_down(origin, start, PointerButton::Primary, &env));
+        assert!(engine.handle_pointer_move(
+            moved,
+            start + Duration::from_millis(16),
+            PointerButton::Primary,
+            &env
+        ));
+        assert!(engine.handle_pointer_up(
+            moved,
+            start + Duration::from_millis(32),
+            PointerButton::Primary,
+            &env
+        ));
         assert_eq!(tap_hits.get(), 0);
         assert_eq!(drag_hits.get(), 2);
     }
@@ -1646,5 +1778,207 @@ mod tests {
         ));
         assert_eq!(drag_hits.get(), 0);
         assert_eq!(magnify_hits.get(), 3);
+    }
+
+    #[test]
+    fn middle_button_fires_middle_tap_but_not_default_tap() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::TapGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let default_hits = Rc::new(Cell::new(0u32));
+        let middle_hits = Rc::new(Cell::new(0u32));
+        let middle_button = Rc::new(Cell::new(Option::<PointerButton>::None));
+
+        {
+            let default_hits = Rc::clone(&default_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    default_hits.set(default_hits.get() + 1);
+                }),
+                0,
+                2,
+                7,
+            );
+        }
+        {
+            let middle_hits = Rc::clone(&middle_hits);
+            let middle_button = Rc::clone(&middle_button);
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
+                boxed_action(move |env: Environment| {
+                    let event = env
+                        .get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    middle_button.set(Some(event.button));
+                    middle_hits.set(middle_hits.get() + 1);
+                }),
+                0,
+                1,
+                7,
+            );
+        }
+
+        let start = Instant::now();
+        let point = kurbo::Point::new(16.0, 16.0);
+        engine.handle_pointer_down(point, start, PointerButton::Middle, &env);
+        assert!(engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(16),
+            PointerButton::Middle,
+            &env
+        ));
+        assert_eq!(default_hits.get(), 0);
+        assert_eq!(middle_hits.get(), 1);
+        assert_eq!(middle_button.get(), Some(PointerButton::Middle));
+    }
+
+    #[test]
+    fn primary_button_does_not_fire_middle_only_tap() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::TapGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let middle_hits = Rc::new(Cell::new(0u32));
+
+        {
+            let middle_hits = Rc::clone(&middle_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    middle_hits.set(middle_hits.get() + 1);
+                }),
+                0,
+                1,
+                7,
+            );
+        }
+
+        let start = Instant::now();
+        let point = kurbo::Point::new(16.0, 16.0);
+        assert!(!engine.handle_pointer_down(point, start, PointerButton::Primary, &env));
+        assert!(!engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(16),
+            PointerButton::Primary,
+            &env
+        ));
+        assert_eq!(middle_hits.get(), 0);
+    }
+
+    #[test]
+    fn second_button_mid_sequence_does_not_join() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::TapGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let hits = Rc::new(Cell::new(0u32));
+
+        {
+            let hits = Rc::clone(&hits);
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    hits.set(hits.get() + 1);
+                }),
+                0,
+                1,
+                7,
+            );
+        }
+
+        let start = Instant::now();
+        let point = kurbo::Point::new(16.0, 16.0);
+        engine.handle_pointer_down(point, start, PointerButton::Primary, &env);
+        // A press from another button mid-sequence is not part of it.
+        assert!(!engine.handle_pointer_down(
+            point,
+            start + Duration::from_millis(8),
+            PointerButton::Middle,
+            &env
+        ));
+        assert!(!engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(16),
+            PointerButton::Middle,
+            &env
+        ));
+        assert!(engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(24),
+            PointerButton::Primary,
+            &env
+        ));
+        assert_eq!(hits.get(), 1);
+    }
+
+    #[test]
+    fn drag_event_reports_the_pressing_button() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::DragGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let last_button = Rc::new(Cell::new(Option::<PointerButton>::None));
+
+        {
+            let last_button = Rc::clone(&last_button);
+            engine.register_target(
+                bounds,
+                Gesture::Drag(
+                    DragGesture::new(8.0).buttons(PointerButtons::PRIMARY | PointerButtons::MIDDLE),
+                ),
+                boxed_action(move |env: Environment| {
+                    let event = env
+                        .get::<DragEvent>()
+                        .expect("drag action missing DragEvent in environment");
+                    last_button.set(Some(event.button));
+                }),
+                0,
+                1,
+                7,
+            );
+        }
+
+        let start = Instant::now();
+        let origin = kurbo::Point::new(16.0, 16.0);
+        let moved = kurbo::Point::new(48.0, 16.0);
+        engine.handle_pointer_down(origin, start, PointerButton::Middle, &env);
+        engine.handle_pointer_move(
+            moved,
+            start + Duration::from_millis(16),
+            PointerButton::Middle,
+            &env,
+        );
+        assert_eq!(last_button.get(), Some(PointerButton::Middle));
+        engine.handle_pointer_up(
+            moved,
+            start + Duration::from_millis(32),
+            PointerButton::Middle,
+            &env,
+        );
+        assert_eq!(last_button.get(), Some(PointerButton::Middle));
     }
 }

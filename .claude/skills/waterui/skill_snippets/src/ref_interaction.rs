@@ -68,6 +68,21 @@ pub fn interaction_block_03() {
 }
 
 // ---------------------------------------------------------------------------
+// interaction.md § "## Gesture recognizers" — pointer buttons
+// Listing: restrict a recognizer to a non-primary button.
+// ---------------------------------------------------------------------------
+pub fn interaction_gesture_buttons() {
+    use waterui::gesture::PointerButtons;
+
+    let handler = || ();
+    let view = Divider;
+    let _ = view.gesture(
+        TapGesture::new().buttons(PointerButtons::MIDDLE), // middle click only
+        handler,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // interaction.md § "## Gesture recognizers" (prose): `MagnificationGesture::new`
 // and `RotationGesture::new` "complete the set". Not counted as a rust block.
 // ---------------------------------------------------------------------------
