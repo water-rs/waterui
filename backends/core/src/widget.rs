@@ -1499,9 +1499,10 @@ pub trait WidgetTheme {
     /// Draw a navigation back button.
     fn draw_navigation_back_button(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
-    /// How the tab bar lays out its items when it is `bar_width` wide and
-    /// holds `item_count` items. Themes without a horizontal layout keep the
-    /// default.
+    /// How the tab bar lays out its items when the bar itself is
+    /// `bar_width` wide and holds `item_count` items. `bar_width` is the
+    /// bar's own extent, not the tab container's: a sidebar strip passes its
+    /// strip width. Themes without a horizontal layout keep the default.
     fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
         let _ = (bar_width, item_count);
         TabItemLayout::Vertical
@@ -1512,13 +1513,15 @@ pub trait WidgetTheme {
     fn draw_tabs_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool);
     /// Draw the selected tab highlight of an item laid out as `layout`.
     fn draw_tabs_highlight(&self, draw: &mut dyn DrawContext, bounds: Rect, layout: TabItemLayout);
-    /// Draw a tab button state layer.
+    /// Draw the state layer of a tab button whose item is laid out as
+    /// `layout`.
     fn draw_tabs_button_state_layer(
         &self,
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
         _selected: bool,
         _state: WidgetInteractionState,
+        _layout: TabItemLayout,
     ) {
     }
 
