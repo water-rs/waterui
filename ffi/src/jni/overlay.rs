@@ -71,7 +71,7 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anchoredOv
         // SAFETY: the caller contract makes `env_ptr` either 0 or a valid
         // `WuiEnv` pointer; `LeftToRight` is only a fallback for a null env
         // (the environment's own direction wins when it carries one).
-        let placed = unsafe {
+        let (placed, logical_edge) = unsafe {
             crate::anchored_overlay_place(
                 Rect::new(
                     Point::new(anchor_x, anchor_y),
@@ -91,13 +91,14 @@ pub unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anchoredOv
             .expect("AnchoredOverlayPlacementStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(FFFFI)V"),
+            jni_sig!("(FFFFII)V"),
             &[
                 JValue::Float(placed.frame.x()),
                 JValue::Float(placed.frame.y()),
                 JValue::Float(placed.frame.width()),
                 JValue::Float(placed.frame.height()),
                 JValue::Int(placed.edge as jint),
+                JValue::Int(crate::IntoFFI::into_ffi(logical_edge) as jint),
             ],
         )
         .expect("Failed to create AnchoredOverlayPlacementStruct")

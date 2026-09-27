@@ -108,6 +108,23 @@ impl JniPrimitive for f64 {
     }
 }
 
+// `AnchorEdge` crosses JNI as its `WuiAnchorEdge` ordinal.
+impl JniPrimitive for waterui::metadata::anchored_overlay::AnchorEdge {
+    type Jni = jint;
+    fn to_jni(self) -> Self::Jni {
+        crate::IntoFFI::into_ffi(self) as jint
+    }
+    fn from_jni(val: Self::Jni) -> Self {
+        match val {
+            0 => Self::Top,
+            1 => Self::Bottom,
+            2 => Self::Leading,
+            3 => Self::Trailing,
+            other => panic!("invalid AnchorEdge ordinal {other} from JNI"),
+        }
+    }
+}
+
 // ============================================================================
 // Pointer conversions
 // ============================================================================
@@ -908,8 +925,9 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
 
 /// `MetadataAnchoredOverlayStruct(contentPtr: Long, overlayContentPtr: Long,
 /// isPresentedPtr: Long, edge: Int, alignment: Int, gap: Float, flip: Boolean,
-/// clampTag: Int, clampMargin: Float, dismissal: Int)`. `clampTag` is 0 for
-/// `Clamp::Off` and 1 for `Clamp::Window`, when `clampMargin` applies.
+/// clampTag: Int, clampMargin: Float, dismissal: Int, placedEdgePtr: Long)`.
+/// `clampTag` is 0 for `Clamp::Off` and 1 for `Clamp::Window`, when
+/// `clampMargin` applies.
 impl ToJavaStruct for crate::WuiMetadataAnchoredOverlay {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let placement = self.value.placement;
@@ -920,7 +938,7 @@ impl ToJavaStruct for crate::WuiMetadataAnchoredOverlay {
             .expect("MetadataAnchoredOverlayStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJIIFZIFI)V"),
+            jni_sig!("(JJJIIFZIFIJ)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.value.content as jlong),
@@ -932,6 +950,7 @@ impl ToJavaStruct for crate::WuiMetadataAnchoredOverlay {
                 JValue::Int(placement.clamp.tag as jint),
                 JValue::Float(placement.clamp.margin),
                 JValue::Int(self.value.dismissal as jint),
+                JValue::Long(self.value.placed_edge as jlong),
             ],
         )
         .expect("Failed to create MetadataAnchoredOverlayStruct")
