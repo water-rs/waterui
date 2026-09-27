@@ -76,6 +76,18 @@ Two argument types are traps:
 complete the set. All gesture structs are `#[non_exhaustive]` — construct them only
 through these constructors.
 
+`.buttons(..)` restricts tap, long-press, and drag recognizers to a `PointerButtons`
+mask (default `PRIMARY`). A recognizer activates only when the pressing
+`PointerButton` is in the mask; a pointer sequence belongs to one button, so a
+second button pressed mid-sequence does not join it. `TapEvent`, `LongPressEvent`,
+and `DragEvent` carry the pressing `button`.
+
+```rust
+use waterui::gesture::PointerButtons;
+
+view.gesture(TapGesture::new().buttons(PointerButtons::MIDDLE), handler) // middle click
+```
+
 ## Combining gestures
 
 `.then(..)` sequences gestures; the handler fires only after the whole sequence succeeds:

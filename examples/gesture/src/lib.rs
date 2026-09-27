@@ -6,13 +6,16 @@
 //! - Drag gestures
 //! - Gesture chaining with `.then()`
 //! - Using `on_tap` convenience method
+//! - Non-primary pointer buttons (middle-click closes a tab)
 
+use waterui::Identifiable;
 use waterui::app::App;
-use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
+use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::Binding;
+use waterui::reactive::collection::List as ReactiveList;
 
 const TAP_COLOR: Srgb = Srgb::from_hex("#2196F3");
 const DOUBLE_TAP_COLOR: Srgb = Srgb::from_hex("#4CAF50");
@@ -117,6 +120,48 @@ fn chained_section(chained_status: &Binding<&'static str>) -> impl View {
     .padding()
 }
 
+/// One tab chip in the middle-click demo strip.
+#[derive(Clone, Identifiable)]
+struct TabChip {
+    #[id]
+    id: u32,
+    title: &'static str,
+}
+
+/// A tab strip where a middle click closes a tab: each chip's
+/// `MIDDLE`-only tap runs alongside its primary selection tap without
+/// competing for the same press.
+fn middle_click_tab_section(tabs: &ReactiveList<TabChip>, open_tabs: &Binding<i32>) -> impl View {
+    let tabs_for_rows = tabs.clone();
+    let open_tabs_for_handler = open_tabs.clone();
+    vstack((
+        text("Middle Click").headline(),
+        "Middle-click a tab to close it",
+        text!("{count} open tabs", count = open_tabs.clone()),
+        HStack::for_each(tabs.clone(), move |tab| {
+            let tab_id = tab.id;
+            text(tab.title)
+                .padding()
+                .background(Srgb::from_hex("#607D8B").with_opacity(0.3))
+                .gesture(
+                    TapGesture::new().buttons(PointerButtons::MIDDLE),
+                    move |State(tabs): State<ReactiveList<TabChip>>,
+                          State(open_tabs): State<Binding<i32>>| {
+                        if let Some(index) = tabs.snapshot().iter().position(|tab| tab.id == tab_id)
+                        {
+                            let _ = tabs.remove(index);
+                            *open_tabs.get_mut() -= 1;
+                        }
+                    },
+                )
+                .state(&tabs_for_rows)
+                .state(&open_tabs_for_handler)
+        })
+        .spacing(8.0),
+    ))
+    .padding()
+}
+
 /// Section demonstrating on_tap shorthand
 fn on_tap_section(tap_count: &Binding<i32>) -> impl View {
     vstack((
@@ -139,6 +184,17 @@ pub fn demo() -> impl View {
     let long_press_count = Binding::i32(0);
     let drag_count = Binding::i32(0);
     let chained_status = Binding::container("Waiting for tap...");
+    let open_tabs = Binding::i32(4);
+    let tabs = ReactiveList::from(
+        ["Overview", "Details", "Activity", "Settings"]
+            .iter()
+            .enumerate()
+            .map(|(id, title)| TabChip {
+                id: id as u32,
+                title,
+            })
+            .collect::<Vec<_>>(),
+    );
 
     scroll(
         vstack((
@@ -158,7 +214,11 @@ pub fn demo() -> impl View {
             Divider,
             chained_section(&chained_status),
             Divider,
-            on_tap_section(&tap_count),
+            // Grouped to stay under the tuple arity limit.
+            vstack((
+                middle_click_tab_section(&tabs, &open_tabs),
+                on_tap_section(&tap_count),
+            )),
         ))
         .padding_with(16.0),
     )

@@ -258,37 +258,68 @@ impl ToJavaStruct for crate::WuiMetadataLifecycleHook {
 /// `MetadataGestureStruct(contentPtr: Long, gestureType: Int, gestureData: GestureDataStruct, actionPtr: Long)`
 ///
 /// Note: `WuiGestureObserver` has `gesture: WuiGesture` and `action: *mut WuiAction`
-fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f32, f32, i64, i64) {
+fn gesture_parts(
+    gesture: &crate::gesture::WuiGesture,
+) -> (i32, i32, i32, f32, f32, f32, i32, i64, i64) {
     match gesture {
-        crate::gesture::WuiGesture::Tap { count } => (
+        crate::gesture::WuiGesture::Tap { count, buttons } => (
             0i32,
             count.cast_signed(),
             0i32,
             0.0f32,
             0.0f32,
             0.0f32,
+            i32::from(*buttons),
             0i64,
             0i64,
         ),
-        crate::gesture::WuiGesture::LongPress { duration } => (
+        crate::gesture::WuiGesture::LongPress { duration, buttons } => (
             1i32,
             0i32,
             duration.cast_signed(),
             0.0f32,
             0.0f32,
             0.0f32,
+            i32::from(*buttons),
             0i64,
             0i64,
         ),
-        crate::gesture::WuiGesture::Drag { min_distance } => {
-            (2i32, 0i32, 0i32, *min_distance, 0.0f32, 0.0f32, 0i64, 0i64)
-        }
-        crate::gesture::WuiGesture::Magnification { initial_scale } => {
-            (3i32, 0i32, 0i32, 0.0f32, *initial_scale, 0.0f32, 0i64, 0i64)
-        }
-        crate::gesture::WuiGesture::Rotation { initial_angle } => {
-            (4i32, 0i32, 0i32, 0.0f32, 0.0f32, *initial_angle, 0i64, 0i64)
-        }
+        crate::gesture::WuiGesture::Drag {
+            min_distance,
+            buttons,
+        } => (
+            2i32,
+            0i32,
+            0i32,
+            *min_distance,
+            0.0f32,
+            0.0f32,
+            i32::from(*buttons),
+            0i64,
+            0i64,
+        ),
+        crate::gesture::WuiGesture::Magnification { initial_scale } => (
+            3i32,
+            0i32,
+            0i32,
+            0.0f32,
+            *initial_scale,
+            0.0f32,
+            0i32,
+            0i64,
+            0i64,
+        ),
+        crate::gesture::WuiGesture::Rotation { initial_angle } => (
+            4i32,
+            0i32,
+            0i32,
+            0.0f32,
+            0.0f32,
+            *initial_angle,
+            0i32,
+            0i64,
+            0i64,
+        ),
         crate::gesture::WuiGesture::Then { first, then } => (
             5i32,
             0i32,
@@ -296,6 +327,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
             0.0f32,
             0.0f32,
             0.0f32,
+            0i32,
             *first as jlong,
             *then as jlong,
         ),
@@ -306,6 +338,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
             0.0f32,
             0.0f32,
             0.0f32,
+            0i32,
             *first as jlong,
             *second as jlong,
         ),
@@ -316,6 +349,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
             0.0f32,
             0.0f32,
             0.0f32,
+            0i32,
             *first as jlong,
             *second as jlong,
         ),
@@ -334,19 +368,21 @@ fn gesture_data_to_java<'local>(
         drag_min_distance,
         magnification_scale,
         rotation_angle,
+        buttons,
         first_ptr,
         second_ptr,
     ) = gesture_parts(gesture);
 
     env.new_object(
         gesture_data_class,
-        jni_sig!("(IIFFFJJ)V"),
+        jni_sig!("(IIFFFIJJ)V"),
         &[
             JValue::Int(tap_count),
             JValue::Int(long_press_duration),
             JValue::Float(drag_min_distance),
             JValue::Float(magnification_scale),
             JValue::Float(rotation_angle),
+            JValue::Int(buttons),
             JValue::Long(first_ptr),
             JValue::Long(second_ptr),
         ],
@@ -370,7 +406,7 @@ pub(super) fn gesture_to_java<'local>(
     let class = env
         .find_class(jni_str!("dev/waterui/android/runtime/GestureStruct"))
         .expect("GestureStruct class not found");
-    let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(gesture);
+    let (gesture_type, ..) = gesture_parts(gesture);
     let gesture_data = gesture_data_to_java(env, &gesture_data_class, gesture);
     env.new_object(
         &class,
@@ -386,7 +422,7 @@ impl ToJavaStruct for crate::WuiMetadataGesture {
         let gesture_data_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/GestureDataStruct"))
             .expect("GestureDataStruct class not found");
-        let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(&self.value.gesture);
+        let (gesture_type, ..) = gesture_parts(&self.value.gesture);
         let gesture_data = gesture_data_to_java(env, &gesture_data_class, &self.value.gesture);
 
         let class = env
