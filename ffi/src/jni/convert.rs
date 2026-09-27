@@ -840,6 +840,38 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
     }
 }
 
+/// `MetadataAnchoredOverlayStruct(contentPtr: Long, overlayContentPtr: Long,
+/// isPresentedPtr: Long, edge: Int, alignment: Int, gap: Float, flip: Boolean,
+/// clampTag: Int, clampMargin: Float, dismissal: Int)`. `clampTag` is 0 for
+/// `Clamp::Off` and 1 for `Clamp::Window`, when `clampMargin` applies.
+impl ToJavaStruct for crate::WuiMetadataAnchoredOverlay {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let placement = self.value.placement;
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataAnchoredOverlayStruct"
+            ))
+            .expect("MetadataAnchoredOverlayStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJJIIFZIFI)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.value.content as jlong),
+                JValue::Long(self.value.is_presented as jlong),
+                JValue::Int(placement.edge as jint),
+                JValue::Int(placement.alignment as jint),
+                JValue::Float(placement.gap),
+                JValue::Bool(placement.flip),
+                JValue::Int(placement.clamp.tag as jint),
+                JValue::Float(placement.clamp.margin),
+                JValue::Int(self.value.dismissal as jint),
+            ],
+        )
+        .expect("Failed to create MetadataAnchoredOverlayStruct")
+    }
+}
+
 /// `MetadataHittableStruct(contentPtr: Long, enabledPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataHittable {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {

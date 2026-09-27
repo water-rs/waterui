@@ -1088,6 +1088,36 @@ pub trait ViewExt: View + Sized {
         }
     }
 
+    /// Presents `overlay` next to this view, above all other content in the
+    /// window, while its binding is `true`.
+    ///
+    /// The backend places it against the preferred edge of this view, flips
+    /// it to the opposite edge when there is no room, and keeps it inside the
+    /// window, as the overlay's
+    /// [`AnchorPlacement`](crate::metadata::anchored_overlay::AnchorPlacement)
+    /// declares.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+    /// use waterui::prelude::*;
+    ///
+    /// let open = binding(false);
+    /// let trigger = button("Options")
+    ///     .action({
+    ///         let open = open.clone();
+    ///         move || open.set(true)
+    ///     })
+    ///     .anchored_overlay(AnchoredOverlay::new(&open, text!("Popover")).edge(AnchorEdge::Bottom));
+    /// ```
+    fn anchored_overlay(
+        self,
+        overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
+    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
+        Metadata::new(self, overlay)
+    }
+
     /// Sets the minimum row height of every list inside this view, in points.
     ///
     /// Replaces the theme's one-line row height as the floor rows are measured

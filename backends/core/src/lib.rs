@@ -39,6 +39,8 @@ pub mod frame_signals;
 #[cfg(feature = "gestures")]
 pub mod gesture;
 pub mod input;
+#[cfg(feature = "overlay")]
+pub mod overlay;
 pub mod scroll;
 pub mod time;
 #[cfg(feature = "widgets")]
