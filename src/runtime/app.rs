@@ -34,6 +34,20 @@ pub fn application_name() -> Str {
     std::env::var("WATERUI_APP_NAME").map_or_else(|_| Str::default(), Str::from)
 }
 
+/// This application's identifier, or empty when the build was not told it.
+///
+/// The identifier is the reverse-DNS name the project gave itself
+/// (`bundle_identifier` in `Water.toml`), the same one its bundle, package or
+/// desktop entry carries. It is a property of the build rather than of the
+/// launch, so the `water` CLI compiles it in through `WATERUI_APP_ID`: a
+/// packaged application started from its desktop entry knows it as well as one
+/// started by `water run`. A build made by other means reports nothing and
+/// leaves the question to the platform.
+#[must_use]
+pub fn application_identifier() -> Str {
+    Str::from(option_env!("WATERUI_APP_ID").unwrap_or_default())
+}
+
 impl App {
     /// Create a new application with the given main content view and environment.
     ///
