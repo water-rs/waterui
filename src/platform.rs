@@ -550,10 +550,8 @@ impl OffscreenGpuContext {
         )
     )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter =
-            request_hydrolysis_adapter(&instance, None, "hydrolysis offscreen surface", selection)
-                .await;
+        let (_instance, adapter) =
+            request_instance_and_adapter("hydrolysis offscreen surface", selection).await;
 
         ensure_compute_capable_adapter(
             &adapter,
@@ -800,27 +798,40 @@ fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
         && limits.max_compute_workgroups_per_dimension > 0
 }
 
-async fn request_hydrolysis_adapter(
+/// The wgpu backend masks Hydrolysis probes for an adapter, in order.
+///
+/// `WGPU_BACKEND` is an absolute override — its mask is the only tier probed.
+/// Without it, `PRIMARY` (Vulkan, Metal, DX12, browser WebGPU) probes first and
+/// `GL` follows only when no primary adapter is acceptable, so wgpu
+/// instantiates the GL backend's EGL driver stack only on hosts that need it —
+/// a headless CI box where Mesa llvmpipe supplies GL 4.5 compute shaders —
+/// never alongside a Vulkan adapter it would sit idle next to.
+#[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
+    match wgpu::Backends::from_env() {
+        Some(backends) => vec![backends],
+        None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
+    }
+}
+
+fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backends;
+    descriptor
+}
+
+/// Probe `instance` over `backends` for the best adapter that is
+/// surface-compatible, not `Noop`, software only when `selection` allows it,
+/// and compute-capable. `None` means this tier satisfied nothing; the
+/// inspected list comes back either way for the no-adapter panic.
+#[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+async fn probe_adapters(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
     context: &str,
     selection: AdapterSelection,
-) -> wgpu::Adapter {
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
-    {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface,
-                force_fallback_adapter: selection.force_fallback_adapter(),
-            })
-            .await
-            .expect("hydrolysis adapter selection: failed to find web adapter");
-        log_selected_adapter(context, &adapter);
-        adapter
-    }
-
-    #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+    backends: wgpu::Backends,
+) -> (Option<wgpu::Adapter>, Vec<String>) {
     {
         // The diagnostics escape hatch widens which adapters are eligible
         // (`AdapterSelection::allow_software_adapter`); it does not hand the
@@ -828,7 +839,6 @@ async fn request_hydrolysis_adapter(
         // fallback adapter directly skipped the compute-capability filter and
         // the ranking below, which is how a CPU adapter that cannot run the
         // compute pipelines reached vello's shader init.
-        let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all());
         let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
         let mut inspected_adapters: Vec<String> = Vec::new();
 
@@ -887,26 +897,96 @@ async fn request_hydrolysis_adapter(
             }
         }
 
-        let (_, adapter) = best_candidate.unwrap_or_else(|| {
-            if inspected_adapters.is_empty() {
-                panic!(
-                    "{context}: failed to find a surface-compatible wgpu adapter for requested backends {:?}. \
-Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.",
-                    backends
-                );
-            }
+        (
+            best_candidate.map(|(_, adapter)| adapter),
+            inspected_adapters,
+        )
+    }
+}
 
-            panic!(
-                "{context}: this host has no GPU Hydrolysis can use. \
+#[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
+    if inspected_adapters.is_empty() {
+        panic!(
+            "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
+Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
+        );
+    }
+
+    panic!(
+        "{context}: this host has no GPU Hydrolysis can use. \
 Surface-compatible adapters inspected: {}. \
 {GPU_REQUIRED_GUIDANCE}",
-                inspected_adapters.join("; ")
-            );
-        });
+        inspected_adapters.join("; ")
+    );
+}
 
+/// Probe each backend tier on a fresh instance until one yields an adapter
+/// Hydrolysis can use. The instance is returned because a wgpu `Surface` must
+/// be created on the instance that produced its adapter — the caller keeps
+/// both, or recreates its surface on the returned instance.
+async fn request_instance_and_adapter(
+    context: &str,
+    selection: AdapterSelection,
+) -> (wgpu::Instance, wgpu::Adapter) {
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    {
+        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(
+            wgpu::Backends::from_env().unwrap_or(wgpu::Backends::BROWSER_WEBGPU),
+        ));
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: selection.force_fallback_adapter(),
+            })
+            .await
+            .expect("hydrolysis adapter selection: failed to find web adapter");
         log_selected_adapter(context, &adapter);
-        adapter
+        (instance, adapter)
     }
+
+    #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+    {
+        let tiers = hydrolysis_backend_tiers();
+        let mut inspected_adapters = Vec::new();
+        for &backends in &tiers {
+            let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+            let (adapter, inspected) =
+                probe_adapters(&instance, None, context, selection, backends).await;
+            inspected_adapters.extend(inspected);
+            if let Some(adapter) = adapter {
+                log_selected_adapter(context, &adapter);
+                return (instance, adapter);
+            }
+        }
+        fail_no_adapter(context, inspected_adapters, &tiers);
+    }
+}
+
+/// The winit side of [`request_instance_and_adapter`]: the surface has to be
+/// created on the instance that produced the adapter, so each tier creates its
+/// own surface before probing and the winning tier returns both.
+#[cfg(feature = "winit")]
+async fn request_instance_surface_adapter(
+    context: &str,
+    selection: AdapterSelection,
+    make_surface: impl Fn(&wgpu::Instance) -> wgpu::Surface<'static>,
+) -> (wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter) {
+    let tiers = hydrolysis_backend_tiers();
+    let mut inspected_adapters = Vec::new();
+    for &backends in &tiers {
+        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+        let surface = make_surface(&instance);
+        let (adapter, inspected) =
+            probe_adapters(&instance, Some(&surface), context, selection, backends).await;
+        inspected_adapters.extend(inspected);
+        if let Some(adapter) = adapter {
+            log_selected_adapter(context, &adapter);
+            return (instance, surface, adapter);
+        }
+    }
+    fail_no_adapter(context, inspected_adapters, &tiers);
 }
 
 fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
@@ -1484,16 +1564,14 @@ mod winit_impl {
                     (gpu.clone(), surface)
                 }
                 None => {
-                    let instance =
-                        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-                    let surface = instance
-                        .create_surface(window.clone())
-                        .expect("hydrolysis winit surface: failed to create surface");
-                    let adapter = super::request_hydrolysis_adapter(
-                        &instance,
-                        Some(&surface),
+                    let (instance, surface, adapter) = super::request_instance_surface_adapter(
                         "hydrolysis winit surface",
                         super::AdapterSelection::PRODUCTION,
+                        |instance| {
+                            instance
+                                .create_surface(window.clone())
+                                .expect("hydrolysis winit surface: failed to create surface")
+                        },
                     )
                     .await;
 
