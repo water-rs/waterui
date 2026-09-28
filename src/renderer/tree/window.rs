@@ -360,9 +360,9 @@ impl HydrolysisRenderer {
         &mut self,
         content: AnyView,
         env: &Environment,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        hit_transform: vello::kurbo::Affine,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
     ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         let size = Size::new(bounds.width() as f32, bounds.height() as f32);
@@ -442,9 +442,9 @@ impl HydrolysisRenderer {
     pub fn flush_window_tree(
         &mut self,
         env: &Environment,
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        hit_transform: vello::kurbo::Affine,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
     ) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;

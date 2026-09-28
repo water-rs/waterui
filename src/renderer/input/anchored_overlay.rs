@@ -29,7 +29,7 @@ use super::*;
 /// the anchor's own reconcile.
 pub(crate) struct RegisteredAnchoredOverlay {
     /// The anchor's frame in hit space this frame.
-    pub(crate) anchor: vello::kurbo::Rect,
+    pub(crate) anchor: kurbo::Rect,
     /// The placement contract from the metadata.
     pub(crate) placement: AnchorPlacement,
     /// How the overlay closes.
@@ -60,7 +60,7 @@ pub(crate) struct PresentedAnchoredOverlay {
     /// Identity matching [`RegisteredAnchoredOverlay::marker`].
     pub(crate) marker: Rc<()>,
     /// The frame the overlay drew into, in hit space.
-    pub(crate) frame: vello::kurbo::Rect,
+    pub(crate) frame: kurbo::Rect,
     /// How the overlay closes.
     pub(crate) dismissal: Dismissal,
     /// The binding outside interaction writes `false` to.
@@ -80,7 +80,7 @@ impl SemanticCore {
     /// The press itself continues to its target, exactly like the
     /// context-menu outside dismissal in `handle_pointer_down_with_source`.
     /// `Manual` overlays are never closed here.
-    pub(crate) fn dismiss_anchored_overlays_outside(&mut self, point: vello::kurbo::Point) {
+    pub(crate) fn dismiss_anchored_overlays_outside(&mut self, point: kurbo::Point) {
         for overlay in &self.popup_menu.presented_anchored_overlays {
             if !overlay.exiting
                 && overlay.dismissal == Dismissal::OutsideInteraction
@@ -94,7 +94,7 @@ impl SemanticCore {
     /// The drawn frames of every presented anchored overlay, in hit order —
     /// the test harness reads these to assert the placement contract.
     #[cfg(test)]
-    pub(crate) fn anchored_overlay_frames(&self) -> Vec<vello::kurbo::Rect> {
+    pub(crate) fn anchored_overlay_frames(&self) -> Vec<kurbo::Rect> {
         self.popup_menu
             .presented_anchored_overlays
             .iter()
@@ -108,7 +108,7 @@ impl HydrolysisRenderer {
     /// above all content, at the placement contract's frame. Called after the
     /// tree flush: the registrations it collected during the flush carry the
     /// anchors' live bounds, so the placement follows moves and resizes.
-    pub(crate) fn render_anchored_overlays(&mut self, transform: vello::kurbo::Affine) {
+    pub(crate) fn render_anchored_overlays(&mut self, transform: kurbo::Affine) {
         let registered = core::mem::take(&mut self.popup_menu.anchored_overlays);
         let last_presented = core::mem::take(&mut self.popup_menu.presented_anchored_overlays);
         let mut presented = Vec::with_capacity(last_presented.len());
@@ -224,7 +224,7 @@ impl HydrolysisRenderer {
             self.animation_controller.begin_animation_scope(scope);
             content.flush_in_rect(
                 self,
-                RenderContext::with_transforms(window, transform, vello::kurbo::Affine::IDENTITY),
+                RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
                 &entry.env,
                 bounded_proposal(frame),
                 frame,
@@ -282,16 +282,16 @@ impl HydrolysisRenderer {
     }
 }
 
-fn kurbo_to_rect(rect: vello::kurbo::Rect) -> waterui_core::layout::Rect {
+fn kurbo_to_rect(rect: kurbo::Rect) -> waterui_core::layout::Rect {
     waterui_core::layout::Rect::new(
         waterui_core::layout::Point::new(rect.x0 as f32, rect.y0 as f32),
         waterui_core::layout::Size::new(rect.width() as f32, rect.height() as f32),
     )
 }
 
-fn rect_to_kurbo(rect: waterui_core::layout::Rect) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::from_origin_size(
-        vello::kurbo::Point::new(f64::from(rect.x()), f64::from(rect.y())),
-        vello::kurbo::Size::new(f64::from(rect.width()), f64::from(rect.height())),
+fn rect_to_kurbo(rect: waterui_core::layout::Rect) -> kurbo::Rect {
+    kurbo::Rect::from_origin_size(
+        kurbo::Point::new(f64::from(rect.x()), f64::from(rect.y())),
+        kurbo::Size::new(f64::from(rect.width()), f64::from(rect.height())),
     )
 }

@@ -175,7 +175,7 @@ pub(crate) fn render_badge_parts(
         ctx.bounds.x1 - offset_x
     };
     let y0 = ctx.bounds.y0 + offset_y - badge_height;
-    let rect = vello::kurbo::Rect::new(x0, y0, x0 + badge_width, y0 + badge_height);
+    let rect = kurbo::Rect::new(x0, y0, x0 + badge_width, y0 + badge_height);
 
     let Some((label, text_size)) = large else {
         let mut draw = ctx.draw_context();
@@ -200,7 +200,7 @@ pub(crate) fn render_badge_parts(
     }
 
     let text_height = f64::from(text_size.height);
-    let text_rect = vello::kurbo::Rect::new(
+    let text_rect = kurbo::Rect::new(
         rect.x0,
         rect.y0 + (rect.height() - text_height) * 0.5,
         rect.x1,

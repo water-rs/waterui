@@ -742,7 +742,7 @@ fn a_source_near_the_bottom_edge_stacks_without_overlap() {
     let lift = runtime
         .context_menu_lift_frame()
         .expect("the lift frame is laid out");
-    let window = vello::kurbo::Rect::new(0.0, 0.0, 320.0, 480.0);
+    let window = kurbo::Rect::new(0.0, 0.0, 320.0, 480.0);
     for frame in [menu, accessory, lift] {
         assert!(
             frame.x0 >= window.x0
@@ -777,7 +777,7 @@ fn a_source_near_the_top_edge_stacks_without_overlap() {
     let lift = runtime
         .context_menu_lift_frame()
         .expect("the lift frame is laid out");
-    let window = vello::kurbo::Rect::new(0.0, 0.0, 320.0, 480.0);
+    let window = kurbo::Rect::new(0.0, 0.0, 320.0, 480.0);
     for frame in [menu, accessory, lift] {
         assert!(
             frame.x0 >= window.x0

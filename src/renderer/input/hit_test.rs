@@ -18,7 +18,7 @@ pub(crate) struct DropTargetKey {
 
 #[derive(Clone)]
 pub(crate) struct DropTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) key: DropTargetKey,
     pub(crate) env: Environment,
     pub(crate) destination: Rc<RefCell<DropDestination>>,
@@ -78,7 +78,7 @@ pub(crate) enum OsFileDragPhase {
 /// back out.
 pub(crate) struct GestureRegion {
     /// Hit-test rectangle in window coordinates.
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     /// The shared hit-test order taken at registration — comparable to a
     /// pointer target's `order`, so a gesture region registered after a press
     /// outranks it.
@@ -92,7 +92,7 @@ pub(crate) struct GestureRegion {
 
 #[derive(Clone)]
 pub(crate) struct PointerTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) captures_drag: bool,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -133,7 +133,7 @@ pub(crate) struct ScrollbarDrag {
 #[derive(Clone)]
 pub(crate) struct PendingPointerPress {
     pub(crate) slot: PressSlot,
-    pub(crate) origin: vello::kurbo::Point,
+    pub(crate) origin: kurbo::Point,
     pub(crate) starts_at: Instant,
     pub(crate) chrome_state_dependent: bool,
 }
@@ -150,7 +150,7 @@ pub(crate) struct PendingPointerPress {
 #[derive(Clone, Copy)]
 pub(crate) struct PendingContextMenuHold {
     /// The press origin in window hit-test space — the menu anchors there.
-    pub(crate) point: vello::kurbo::Point,
+    pub(crate) point: kurbo::Point,
     /// The press's start instant in frame time.
     pub(crate) started_at: Instant,
 }
@@ -161,13 +161,13 @@ pub(crate) const CONTEXT_MENU_HOLD_DURATION: Duration = Duration::from_millis(50
 
 #[derive(Clone)]
 pub(crate) struct CursorTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) style: CursorStyle,
 }
 
 #[derive(Clone)]
 pub(crate) struct HoverTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) slot: HoverSlot,
     /// Replayable state-layer handles for the widget owning this target, so
     /// hover feedback animates without a structural rebuild.
@@ -179,7 +179,7 @@ pub(crate) struct HoverTarget {
 
 #[derive(Clone)]
 pub(crate) struct ScrollTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) action: ScrollAction,
     /// The scroll view's offset handle, ticked per frame while a smoothed
     /// wheel scroll glides toward its target.
@@ -193,7 +193,7 @@ pub(crate) struct ScrollTarget {
 
 #[derive(Clone)]
 pub(crate) struct TrackpadPanTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) action: TrackpadPanAction,
     /// See [`ScrollTarget::depth`].
     pub(crate) depth: usize,
@@ -217,12 +217,12 @@ pub(crate) struct TrackpadPanTarget {
 /// decided here.
 pub(crate) struct NativeViewOcclusion {
     /// The subview's rect in window hit-test space.
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     /// The hit-test order the subview was flushed at. Anything registered later
     /// paints above it.
     pub(crate) order: usize,
     /// Shared with the platform's view host. Rects are in window hit-test space.
-    pub(crate) sink: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+    pub(crate) sink: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
 /// Outcome of synchronizing hover targets against a pointer position.
@@ -237,10 +237,10 @@ pub(crate) struct HoverSync {
 }
 
 pub(crate) type PointerAction =
-    Rc<RefCell<dyn FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool>>;
+    Rc<RefCell<dyn FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool>>;
 pub(crate) type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub(crate) type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
-pub(crate) type HoverMoveAction = Rc<RefCell<dyn FnMut(vello::kurbo::Point, &Environment) -> bool>>;
+pub(crate) type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
 pub(crate) type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 pub(crate) type TrackpadPanAction = Rc<RefCell<dyn FnMut(f32, f32, TouchPhase) -> bool>>;
 
@@ -331,16 +331,16 @@ pub(crate) struct HitTestState {
     pub(crate) os_file_drag: Option<OsFileDrag>,
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     pub(crate) interaction: InteractionEngine,
-    pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
-    pub(crate) active_press_origin: Option<vello::kurbo::Point>,
+    pub(crate) active_press_bounds: Option<kurbo::Rect>,
+    pub(crate) active_press_origin: Option<kurbo::Point>,
     /// Last observed pointer position in window hit-test space, kept across
     /// frames so embedded GPU surfaces can derive their surface-local
     /// [`PointerState`](waterui_graphics::PointerState) at composite time.
-    pub(crate) pointer_position: Option<vello::kurbo::Point>,
+    pub(crate) pointer_position: Option<kurbo::Point>,
     /// Where the current press started, tracked independently of widget press
     /// slots: a bare `GpuSurface` has no interaction slot, but its renderer
     /// still receives hit state through `GpuFrame::pointer`.
-    pub(crate) pointer_press_origin: Option<vello::kurbo::Point>,
+    pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
     pub(crate) trackpad_pan_targets: Vec<TrackpadPanTarget>,
     pub(crate) hit_test_opacity: f32,
@@ -369,20 +369,20 @@ pub(crate) struct HitTestState {
     /// recognizer it carries: when the gesture engine picks its candidates
     /// at pointer-down, registrations with an order below the highest
     /// covering occluder's do not exist (water-rs/hydrolysis#260).
-    pub(crate) gesture_occluders: Vec<(vello::kurbo::Rect, usize)>,
+    pub(crate) gesture_occluders: Vec<(kurbo::Rect, usize)>,
     /// The clip stack of the paint layers currently open, in window hit-test
     /// space. Every entry is already intersected with the ones below it, so
     /// the top is the effective clip. [`HydrolysisRenderer::push_layer_rect`]
     /// pushes the same rect it clips paint to and `pop_layer` pops it, so a
     /// hit region flushed inside a scroll viewport can't outlive the paint
     /// clip (water-rs/hydrolysis#252).
-    pub(crate) hit_clip_stack: Vec<vello::kurbo::Rect>,
+    pub(crate) hit_clip_stack: Vec<kurbo::Rect>,
 }
 
 impl HitTestState {
     /// Intersects `rect` — already in window hit-test space — with the clip
     /// stack the open paint layers pushed.
-    pub(crate) fn clip_hit_bounds(&self, rect: vello::kurbo::Rect) -> vello::kurbo::Rect {
+    pub(crate) fn clip_hit_bounds(&self, rect: kurbo::Rect) -> kurbo::Rect {
         self.hit_clip_stack
             .last()
             .map_or(rect, |clip| rect.intersect(*clip))
@@ -390,7 +390,7 @@ impl HitTestState {
 
     /// Pushes a clip rect in window hit-test space, intersected with the
     /// enclosing clips so the top of the stack is always the effective clip.
-    pub(crate) fn push_hit_clip(&mut self, rect: vello::kurbo::Rect) {
+    pub(crate) fn push_hit_clip(&mut self, rect: kurbo::Rect) {
         let clip = self.clip_hit_bounds(rect);
         self.hit_clip_stack.push(clip);
     }
@@ -522,12 +522,12 @@ impl HitTestState {
     /// `WaterUI`-drawn interactive content sits above it.
     fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget]) {
         for occlusion in &self.native_view_occlusions {
-            let above = |order: usize, bounds: vello::kurbo::Rect| {
+            let above = |order: usize, bounds: kurbo::Rect| {
                 (order > occlusion.order)
                     .then(|| bounds.intersect(occlusion.bounds))
                     .filter(|overlap| !overlap.is_zero_area())
             };
-            let rects: Vec<vello::kurbo::Rect> = self
+            let rects: Vec<kurbo::Rect> = self
                 .pointer_targets
                 .iter()
                 .filter_map(|target| above(target.order, target.bounds))
@@ -559,7 +559,7 @@ impl HitTestState {
         order
     }
 
-    pub(crate) fn cursor_style_at(&self, point: vello::kurbo::Point) -> CursorStyle {
+    pub(crate) fn cursor_style_at(&self, point: kurbo::Point) -> CursorStyle {
         self.cursor_targets
             .iter()
             .rev()
@@ -569,7 +569,7 @@ impl HitTestState {
 
     pub(crate) fn sync_hover_targets(
         &mut self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         env: &Environment,
         dispatch_move: bool,
         now: Instant,
@@ -614,7 +614,7 @@ impl HitTestState {
     /// neither hovered nor delivered.
     fn topmost_drop_target_index_at_point(
         &self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         payload: &DragPayload,
     ) -> Option<usize> {
         self.drop_targets
@@ -651,7 +651,7 @@ impl SemanticCore {
         target.env.layered_on(runtime_env)
     }
 
-    fn sync_active_drag_hover(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+    fn sync_active_drag_hover(&mut self, point: kurbo::Point, env: &Environment) -> bool {
         let Some(active_drag) = self.hit_test.active_drag.as_ref() else {
             return false;
         };
@@ -688,7 +688,7 @@ impl SemanticCore {
     fn begin_or_update_drag(
         &mut self,
         payload: DragPayload,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         env: &Environment,
     ) -> bool {
         if let Some(active_drag) = self.hit_test.active_drag.as_mut() {
@@ -702,7 +702,7 @@ impl SemanticCore {
         self.sync_active_drag_hover(point, env)
     }
 
-    fn finish_active_drag(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+    fn finish_active_drag(&mut self, point: kurbo::Point, env: &Environment) -> bool {
         let Some(active_drag) = self.hit_test.active_drag.take() else {
             return false;
         };
@@ -897,7 +897,7 @@ impl SemanticCore {
 
     pub(crate) fn sync_active_pointer_drag_target_after_layout(
         &mut self,
-        pointer: Option<vello::kurbo::Point>,
+        pointer: Option<kurbo::Point>,
     ) {
         let Some(active) = self.hit_test.active_pointer_drag_target.as_ref() else {
             return;
@@ -994,7 +994,7 @@ impl HydrolysisRenderer {
         }
         self.hit_test.active_pointer = Some((pointer_id, pointer_kind));
         self.hit_test.active_pointer_button = Some(button);
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.pointer_position = Some(point);
         self.hit_test.pointer_press_origin = Some(point);
         let at = self.frame_instant();
@@ -1094,8 +1094,8 @@ impl HydrolysisRenderer {
             && if let Some((_, surface, _)) =
                 self.embedded_target_wins_at(point, top_pointer_priority, focused_priority)
             {
-                let surface_bounds = surface.to_window_rect(vello::kurbo::Rect::from_origin_size(
-                    vello::kurbo::Point::ORIGIN,
+                let surface_bounds = surface.to_window_rect(kurbo::Rect::from_origin_size(
+                    kurbo::Point::ORIGIN,
                     surface.local_bounds.size(),
                 ));
                 self.topmost_context_menu_target_enclosing(point, surface_bounds)
@@ -1128,8 +1128,8 @@ impl HydrolysisRenderer {
             let menu_present = if let Some((_, surface, _)) =
                 self.embedded_target_wins_at(point, top_pointer_priority, focused_priority)
             {
-                let surface_bounds = surface.to_window_rect(vello::kurbo::Rect::from_origin_size(
-                    vello::kurbo::Point::ORIGIN,
+                let surface_bounds = surface.to_window_rect(kurbo::Rect::from_origin_size(
+                    kurbo::Point::ORIGIN,
                     surface.local_bounds.size(),
                 ));
                 self.topmost_context_menu_target_enclosing(point, surface_bounds)
@@ -1162,8 +1162,8 @@ impl HydrolysisRenderer {
             // with no enclosing menu, or whose menu has no items, receives the
             // secondary button as before.
             if button == PointerButton::Secondary {
-                let surface_bounds = target.to_window_rect(vello::kurbo::Rect::from_origin_size(
-                    vello::kurbo::Point::ORIGIN,
+                let surface_bounds = target.to_window_rect(kurbo::Rect::from_origin_size(
+                    kurbo::Point::ORIGIN,
                     target.local_bounds.size(),
                 ));
                 if let Some(menu_target) =
@@ -1510,7 +1510,7 @@ impl HydrolysisRenderer {
         if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
             return false;
         }
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         if let Some(target) = self.hit_test.active_embedded_target.take() {
             let position = target.local_position_unclamped(point);
             target.sink.pointer_move(position);
@@ -1617,7 +1617,7 @@ impl HydrolysisRenderer {
         env: &Environment,
         pointer_kind: PointerKind,
     ) -> bool {
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.pointer_position = Some(point);
         let at = self.frame_instant();
         // The hold dies when the press leaves the recognizer's slop — the
@@ -1693,7 +1693,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
         let hover = self.hit_test.sync_hover_targets(point, env, false, at);
         if hover.visual_changed {
@@ -1911,7 +1911,7 @@ impl SemanticCore {
     pub(crate) fn set_keyboard_focus_for_press(
         &mut self,
         key: Option<InteractionKey>,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
     ) -> bool {
         #[cfg(feature = "accessibility")]
         {
@@ -2720,7 +2720,7 @@ impl HydrolysisRenderer {
     /// press-and-hold resolves here once it earns the gesture, so it takes
     /// the drawn presentation: the source lifts and the menu sits beside it.
     /// Returns whether a menu opened.
-    fn open_context_menu_at(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
+    fn open_context_menu_at(&mut self, point: kurbo::Point, env: &Environment) -> bool {
         let pointer_priority = self
             .hit_test
             .pointer_targets
@@ -2738,8 +2738,8 @@ impl HydrolysisRenderer {
         let menu_target = if let Some((_, surface, _)) =
             self.embedded_target_wins_at(point, pointer_priority, text_priority)
         {
-            let surface_bounds = surface.to_window_rect(vello::kurbo::Rect::from_origin_size(
-                vello::kurbo::Point::ORIGIN,
+            let surface_bounds = surface.to_window_rect(kurbo::Rect::from_origin_size(
+                kurbo::Point::ORIGIN,
                 surface.local_bounds.size(),
             ));
             self.topmost_context_menu_target_enclosing(point, surface_bounds)
@@ -2838,7 +2838,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let unit = if is_line_delta {
             ScrollUnit::Line
         } else {
@@ -2895,7 +2895,7 @@ impl HydrolysisRenderer {
 
     #[cfg(test)]
     pub(crate) fn scroll_metrics_at(&self, x: f32, y: f32) -> Option<crate::scroll::ScrollMetrics> {
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test
             .scroll_targets
             .iter()
@@ -2912,7 +2912,7 @@ impl HydrolysisRenderer {
         dy: f32,
         phase: TouchPhase,
     ) -> bool {
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let finished = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
         let pan_priority = self
             .hit_test
@@ -2969,9 +2969,9 @@ impl SemanticCore {
         chain
     }
 
-    pub(crate) fn register_pointer_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    pub(crate) fn register_pointer_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
-        F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
     {
         self.register_pointer_target_action(
             bounds,
@@ -2982,9 +2982,9 @@ impl SemanticCore {
         );
     }
 
-    pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
-        F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
     {
         self.register_pointer_target_action(
             bounds,
@@ -3004,8 +3004,8 @@ impl SemanticCore {
     #[cfg(hydrolysis_macos_system_webview)]
     pub(crate) fn register_native_view_occlusion(
         &mut self,
-        bounds: vello::kurbo::Rect,
-        sink: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+        bounds: kurbo::Rect,
+        sink: Rc<RefCell<Vec<kurbo::Rect>>>,
     ) {
         // The subview claims a slot in the same order every hit-test target
         // uses, which is what makes "registered later" mean "painted above".
@@ -3022,7 +3022,7 @@ impl SemanticCore {
 
     pub(crate) fn register_pointer_target_action(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         captures_drag: bool,
         press_slot: Option<PressSlot>,
         action: PointerAction,
@@ -3072,7 +3072,7 @@ impl SemanticCore {
     /// panel's painted rect in hit space; a press outside it is the
     /// dismiss-and-pass-through the overlay already implements, which this
     /// target must not shadow.
-    pub(crate) fn register_hit_test_occluder(&mut self, bounds: vello::kurbo::Rect) {
+    pub(crate) fn register_hit_test_occluder(&mut self, bounds: kurbo::Rect) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
@@ -3088,7 +3088,7 @@ impl SemanticCore {
             owners: self.owner_stack.clone(),
             interaction: None,
             action: Rc::new(RefCell::new(
-                |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| true,
+                |_: &mut SemanticCore, _: kurbo::Point, _: &Environment| true,
             )),
             keyboard_step: None,
             keyboard_focusable: false,
@@ -3126,7 +3126,7 @@ impl SemanticCore {
     /// the armed set and the restored list are the same state machines.
     pub(crate) fn with_unoccluded_gesture_targets<R>(
         &mut self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         f: impl FnOnce(&mut crate::gesture::GestureEngine) -> R,
     ) -> R {
         let cutoff = self
@@ -3176,12 +3176,9 @@ impl SemanticCore {
     /// Registers a scrollbar-gutter drag target: it captures the press like any
     /// drag target, but its changes are transform-level (a scroll offset), so
     /// they schedule a re-encode instead of a layout refresh.
-    pub(crate) fn register_scrollbar_drag_target<F>(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        action: F,
-    ) where
-        F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
+    pub(crate) fn register_scrollbar_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
+    where
+        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
     {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -3231,7 +3228,7 @@ impl SemanticCore {
     /// so a binding-backed payload carries its current value.
     pub(crate) fn register_draggable_target(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         draggable: Rc<Draggable>,
     ) {
         self.register_pointer_target_action(
@@ -3239,9 +3236,7 @@ impl SemanticCore {
             true,
             None,
             Rc::new(RefCell::new(
-                move |renderer: &mut SemanticCore,
-                      point: vello::kurbo::Point,
-                      env: &Environment| {
+                move |renderer: &mut SemanticCore, point: kurbo::Point, env: &Environment| {
                     renderer.begin_or_update_drag(draggable.payload(), point, env)
                 },
             )),
@@ -3255,7 +3250,7 @@ impl SemanticCore {
     /// reference and cannot move the handlers out each frame).
     pub(crate) fn register_drop_destination_handles(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         handles: &DropDestinationHandles,
         env: &Environment,
     ) {
@@ -3280,7 +3275,7 @@ impl HydrolysisRenderer {
     pub(crate) fn bind_interaction_target(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
     ) -> (
         WidgetInteractionState,
@@ -3297,7 +3292,7 @@ impl HydrolysisRenderer {
     pub(crate) fn bind_control_interaction_target(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
         disabled: bool,
     ) -> (
@@ -3311,7 +3306,7 @@ impl HydrolysisRenderer {
     pub(crate) fn bind_focused_control_interaction_target(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
         focused: bool,
         disabled: bool,
@@ -3332,7 +3327,7 @@ impl HydrolysisRenderer {
     fn bind_interaction_target_with_focus(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
         focus: Option<InteractionFocus>,
         disabled: bool,
@@ -3424,23 +3419,23 @@ impl SemanticCore {
 
     pub(crate) fn register_interactive_pointer_target<F>(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         press_slot: PressSlot,
         action: F,
     ) where
-        F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
     {
         self.register_interactive_pointer_target_with_keyboard(bounds, press_slot, true, action);
     }
 
     pub(crate) fn register_interactive_pointer_target_with_keyboard<F>(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         press_slot: PressSlot,
         keyboard_focusable: bool,
         action: F,
     ) where
-        F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
     {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -3468,12 +3463,12 @@ impl SemanticCore {
 
     pub(crate) fn register_interactive_pointer_drag_target<F, K>(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         press_slot: PressSlot,
         action: F,
         keyboard_step: K,
     ) where
-        F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
         K: 'static + FnMut(bool) -> bool,
     {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
@@ -3524,19 +3519,11 @@ impl SemanticCore {
         }
     }
 
-    pub(crate) fn register_cursor_target(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        style: CursorStyle,
-    ) {
+    pub(crate) fn register_cursor_target(&mut self, bounds: kurbo::Rect, style: CursorStyle) {
         self.register_cursor_target_style(bounds, style);
     }
 
-    pub(crate) fn register_cursor_target_style(
-        &mut self,
-        bounds: vello::kurbo::Rect,
-        style: CursorStyle,
-    ) {
+    pub(crate) fn register_cursor_target_style(&mut self, bounds: kurbo::Rect, style: CursorStyle) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
         }
@@ -3549,7 +3536,7 @@ impl SemanticCore {
     pub(crate) fn register_hover_target(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         on_enter: Option<HoverAction>,
         on_move: Option<HoverMoveAction>,
         on_exit: Option<HoverAction>,
@@ -3560,7 +3547,7 @@ impl SemanticCore {
     pub(crate) fn register_hover_target_with_handles(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         handles: Option<Rc<InteractionLayerHandles>>,
         on_enter: Option<HoverAction>,
         on_move: Option<HoverMoveAction>,
@@ -3584,7 +3571,7 @@ impl SemanticCore {
     pub(crate) fn register_hover_enter_target<F>(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         action: F,
     ) where
         F: 'static + FnMut(&Environment) -> bool,
@@ -3595,7 +3582,7 @@ impl SemanticCore {
     pub(crate) fn register_hover_exit_target<F>(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         action: F,
     ) where
         F: 'static + FnMut(&Environment) -> bool,
@@ -3606,17 +3593,17 @@ impl SemanticCore {
     pub(crate) fn register_hover_move_target<F>(
         &mut self,
         key: InteractionKey,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         action: F,
     ) where
-        F: 'static + FnMut(vello::kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(kurbo::Point, &Environment) -> bool,
     {
         self.register_hover_target(key, bounds, None, Some(Rc::new(RefCell::new(action))), None);
     }
 
     pub(crate) fn register_scroll_target<F>(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         handle: crate::scroll::ScrollHandle,
         action: F,
     ) where
@@ -3636,7 +3623,7 @@ impl SemanticCore {
         });
     }
 
-    pub(crate) fn register_trackpad_pan_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
+    pub(crate) fn register_trackpad_pan_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
         F: 'static + FnMut(f32, f32, TouchPhase) -> bool,
     {
@@ -3677,15 +3664,15 @@ impl SemanticCore {
 mod tests {
     use super::*;
 
-    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::new(x0, y0, x1, y1)
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> kurbo::Rect {
+        kurbo::Rect::new(x0, y0, x1, y1)
     }
 
     #[test]
     fn cursor_style_falls_back_to_arrow_outside_all_targets() {
         let state = HitTestState::default();
         assert_eq!(
-            state.cursor_style_at(vello::kurbo::Point::new(5.0, 5.0)),
+            state.cursor_style_at(kurbo::Point::new(5.0, 5.0)),
             CursorStyle::Arrow
         );
     }
@@ -3704,12 +3691,12 @@ mod tests {
 
         // Inside both: the later (topmost-drawn) target wins.
         assert_eq!(
-            state.cursor_style_at(vello::kurbo::Point::new(50.0, 50.0)),
+            state.cursor_style_at(kurbo::Point::new(50.0, 50.0)),
             CursorStyle::IBeam
         );
         // Inside only the first.
         assert_eq!(
-            state.cursor_style_at(vello::kurbo::Point::new(10.0, 10.0)),
+            state.cursor_style_at(kurbo::Point::new(10.0, 10.0)),
             CursorStyle::PointingHand
         );
     }

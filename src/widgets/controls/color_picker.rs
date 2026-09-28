@@ -4,10 +4,10 @@ use crate::renderer::AccessibilityActionTarget;
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use kurbo::{Rect, RoundedRectRadii};
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
-use vello::kurbo::{Rect, RoundedRectRadii};
 use waterui_backend_core::widget::{Brush, DrawContext as _};
 #[cfg(feature = "accessibility")]
 use waterui_core::layout::Point as LayoutPoint;

@@ -59,7 +59,7 @@ pub(crate) struct WebViewRenderState {
     /// Where `WaterUI` content covers the native view, republished every frame
     /// and read by the AppKit view host when it hit-tests. Owned here so it
     /// lives exactly as long as the node the native view belongs to.
-    occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+    occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
 #[cfg(hydrolysis_macos_system_webview)]

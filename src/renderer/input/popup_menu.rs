@@ -67,7 +67,7 @@ pub(crate) fn window_in_opening_environment(mut window: Window, env: &Environmen
 
 #[derive(Clone)]
 pub(crate) struct ContextMenuTarget {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
@@ -490,7 +490,7 @@ pub(crate) fn popup_menu_content(
             .install(InteractionStyle::new(
                 ButtonMetrics::new(metrics.horizontal_padding, 0.0, 0.0, 0.0),
                 Color::new(waterui::theme::color::Foreground),
-                vello::kurbo::RoundedRectRadii::from(0.0),
+                kurbo::RoundedRectRadii::from(0.0),
             )),
     )
 }
@@ -1127,7 +1127,7 @@ impl SemanticCore {
     pub(crate) fn append_inspect_element_item(
         &self,
         items: &mut Vec<PopupMenuNode>,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
     ) {
         if !cfg!(debug_assertions) {
             return;
@@ -1165,7 +1165,7 @@ impl SemanticCore {
     pub(crate) fn append_inspect_element_item(
         &self,
         _items: &mut Vec<PopupMenuNode>,
-        _point: vello::kurbo::Point,
+        _point: kurbo::Point,
     ) {
     }
 
@@ -1178,8 +1178,8 @@ impl SemanticCore {
     /// claim its secondary press.
     pub(crate) fn topmost_context_menu_target_enclosing(
         &self,
-        point: vello::kurbo::Point,
-        rect: vello::kurbo::Rect,
+        point: kurbo::Point,
+        rect: kurbo::Rect,
     ) -> Option<ContextMenuTarget> {
         self.hit_test
             .context_menu_targets
@@ -1202,7 +1202,7 @@ impl SemanticCore {
 
     pub(crate) fn topmost_context_menu_target_at_point(
         &self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
     ) -> Option<ContextMenuTarget> {
         self.hit_test
             .context_menu_targets
@@ -1495,7 +1495,7 @@ impl SemanticCore {
 
     pub(crate) fn register_context_menu_target(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         items: nami::Computed<Vec<ResolvedMenuItem>>,
         env: &Environment,
         dismiss_requests: nami::Computed<i32>,
@@ -1516,7 +1516,7 @@ impl SemanticCore {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register_context_menu_target_data(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         items: nami::Computed<Vec<ResolvedMenuItem>>,
         depth: usize,
         env: &Environment,

@@ -619,30 +619,29 @@ pub(crate) fn estimate_layout_intrinsic<'a>(
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
 }
 
-pub(crate) fn resolved_color_to_peniko(color: ResolvedColor) -> vello::peniko::Color {
+pub(crate) fn resolved_color_to_peniko(color: ResolvedColor) -> peniko::Color {
     let srgb = color.to_srgb_with_headroom();
-    vello::peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity])
+    peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity])
 }
 
 pub(crate) fn resolved_gradient_to_brush(
     gradient: &ResolvedGradient,
-    bounds: vello::kurbo::Rect,
-) -> vello::peniko::Brush {
-    let mut stops: Vec<vello::peniko::ColorStop> =
-        gradient.stops.iter().map(to_peniko_stop).collect();
+    bounds: kurbo::Rect,
+) -> peniko::Brush {
+    let mut stops: Vec<peniko::ColorStop> = gradient.stops.iter().map(to_peniko_stop).collect();
 
     let brush = match gradient.gradient_type {
         GradientType::Linear => {
             let start = resolved_point_to_kurbo(gradient.start_point, bounds);
             let end = resolved_point_to_kurbo(gradient.end_point, bounds);
-            vello::peniko::Gradient::new_linear(start, end).with_stops(&*stops)
+            peniko::Gradient::new_linear(start, end).with_stops(&*stops)
         }
         GradientType::Radial => {
             let center = resolved_point_to_kurbo(gradient.start_point, bounds);
             let radius_scale = bounds.width().min(bounds.height()) as f32;
             let start_radius = gradient.start_value * radius_scale;
             let end_radius = gradient.end_value * radius_scale;
-            vello::peniko::Gradient::new_two_point_radial(center, start_radius, center, end_radius)
+            peniko::Gradient::new_two_point_radial(center, start_radius, center, end_radius)
                 .with_stops(&*stops)
         }
         GradientType::Angular => {
@@ -656,36 +655,35 @@ pub(crate) fn resolved_gradient_to_brush(
                 for stop in &mut stops {
                     stop.offset = (f64::from(stop.offset) * sweep_fraction) as f32;
                 }
-                stops.push(vello::peniko::ColorStop {
+                stops.push(peniko::ColorStop {
                     offset: sweep_fraction as f32,
                     color: last_color,
                 });
-                stops.push(vello::peniko::ColorStop {
+                stops.push(peniko::ColorStop {
                     offset: 1.0,
                     color: last_color,
                 });
             }
             let center = resolved_point_to_kurbo(gradient.start_point, bounds);
-            vello::peniko::Gradient::new_sweep(center, gradient.start_value, 0.0)
-                .with_stops(&*stops)
+            peniko::Gradient::new_sweep(center, gradient.start_value, 0.0).with_stops(&*stops)
         }
         GradientType::Mesh => {
             panic!("resolved mesh gradient must not be dispatched through ResolvedGradient")
         }
     };
 
-    vello::peniko::Brush::Gradient(brush)
+    peniko::Brush::Gradient(brush)
 }
 
-fn resolved_point_to_kurbo(point: [f32; 2], bounds: vello::kurbo::Rect) -> vello::kurbo::Point {
-    vello::kurbo::Point::new(
+fn resolved_point_to_kurbo(point: [f32; 2], bounds: kurbo::Rect) -> kurbo::Point {
+    kurbo::Point::new(
         f64::from(point[0]) * bounds.width(),
         f64::from(point[1]) * bounds.height(),
     )
 }
 
-fn to_peniko_stop(stop: &ResolvedGradientStop) -> vello::peniko::ColorStop {
-    vello::peniko::ColorStop {
+fn to_peniko_stop(stop: &ResolvedGradientStop) -> peniko::ColorStop {
+    peniko::ColorStop {
         offset: stop.position,
         color: resolved_color_to_peniko(stop.color).into(),
     }
@@ -699,21 +697,15 @@ fn to_peniko_stop(stop: &ResolvedGradientStop) -> vello::peniko::ColorStop {
 /// non-uniformly instead (the `CustomPath` fallback) stretches corner arcs
 /// into ellipse segments on wide containers, which violates the Material
 /// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
-pub(crate) fn resolved_shape_to_path(
-    shape: &ResolvedShape,
-    bounds: vello::kurbo::Rect,
-) -> vello::kurbo::BezPath {
+pub(crate) fn resolved_shape_to_path(shape: &ResolvedShape, bounds: kurbo::Rect) -> kurbo::BezPath {
     shape_kind_path(shape.kind, bounds)
         .unwrap_or_else(|| path_commands_to_path(&shape.commands, bounds))
 }
 
 /// Bounds-aware path for the structured shape kinds; `None` for custom paths,
 /// which only exist as unit-space commands.
-pub(crate) fn shape_kind_path(
-    kind: ShapeKind,
-    bounds: vello::kurbo::Rect,
-) -> Option<vello::kurbo::BezPath> {
-    use vello::kurbo::Shape as _;
+pub(crate) fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::BezPath> {
+    use kurbo::Shape as _;
     const PATH_TOLERANCE: f64 = 0.05;
     let min_side = bounds.width().min(bounds.height()).max(0.0) as f32;
     match kind {
@@ -725,11 +717,9 @@ pub(crate) fn shape_kind_path(
         | ShapeKind::Capsule => Some(rounded_rect_path(bounds, shape_kind_radii(kind, min_side))),
         ShapeKind::Circle => {
             let radius = bounds.width().min(bounds.height()).max(0.0) / 2.0;
-            Some(vello::kurbo::Circle::new(bounds.center(), radius).into_path(PATH_TOLERANCE))
+            Some(kurbo::Circle::new(bounds.center(), radius).into_path(PATH_TOLERANCE))
         }
-        ShapeKind::Ellipse => {
-            Some(vello::kurbo::Ellipse::from_rect(bounds).into_path(PATH_TOLERANCE))
-        }
+        ShapeKind::Ellipse => Some(kurbo::Ellipse::from_rect(bounds).into_path(PATH_TOLERANCE)),
         ShapeKind::CustomPath => None,
     }
 }
@@ -737,8 +727,8 @@ pub(crate) fn shape_kind_path(
 pub(crate) fn resolved_morph_shape_to_path(
     shape: &ResolvedMorphShape,
     progress: f32,
-    bounds: vello::kurbo::Rect,
-) -> vello::kurbo::BezPath {
+    bounds: kurbo::Rect,
+) -> kurbo::BezPath {
     let min_side = bounds.width().min(bounds.height()).max(0.0) as f32;
     let from = shape_kind_radii(shape.from, min_side);
     let to = shape_kind_radii(shape.to, min_side);
@@ -793,17 +783,17 @@ fn shape_kind_radii(kind: ShapeKind, min_side: f32) -> [f32; 4] {
     }
 }
 
-fn rounded_rect_path(bounds: vello::kurbo::Rect, radii: [f32; 4]) -> vello::kurbo::BezPath {
+fn rounded_rect_path(bounds: kurbo::Rect, radii: [f32; 4]) -> kurbo::BezPath {
     const KAPPA: f64 = 0.552_284_749_830_793_6;
     let limit = bounds.width().min(bounds.height()).max(0.0) / 2.0;
     let [tl, tr, br, bl] = radii.map(|radius| f64::from(radius.max(0.0)).min(limit));
-    let mut path = vello::kurbo::BezPath::new();
+    let mut path = kurbo::BezPath::new();
 
     path.move_to((bounds.x0 + tl, bounds.y0));
     path.line_to((bounds.x1 - tr, bounds.y0));
     append_corner(
         &mut path,
-        vello::kurbo::Point::new(bounds.x1 - tr, bounds.y0 + tr),
+        kurbo::Point::new(bounds.x1 - tr, bounds.y0 + tr),
         tr,
         -core::f64::consts::FRAC_PI_2,
         0.0,
@@ -812,7 +802,7 @@ fn rounded_rect_path(bounds: vello::kurbo::Rect, radii: [f32; 4]) -> vello::kurb
     path.line_to((bounds.x1, bounds.y1 - br));
     append_corner(
         &mut path,
-        vello::kurbo::Point::new(bounds.x1 - br, bounds.y1 - br),
+        kurbo::Point::new(bounds.x1 - br, bounds.y1 - br),
         br,
         0.0,
         core::f64::consts::FRAC_PI_2,
@@ -821,7 +811,7 @@ fn rounded_rect_path(bounds: vello::kurbo::Rect, radii: [f32; 4]) -> vello::kurb
     path.line_to((bounds.x0 + bl, bounds.y1));
     append_corner(
         &mut path,
-        vello::kurbo::Point::new(bounds.x0 + bl, bounds.y1 - bl),
+        kurbo::Point::new(bounds.x0 + bl, bounds.y1 - bl),
         bl,
         core::f64::consts::FRAC_PI_2,
         core::f64::consts::PI,
@@ -830,7 +820,7 @@ fn rounded_rect_path(bounds: vello::kurbo::Rect, radii: [f32; 4]) -> vello::kurb
     path.line_to((bounds.x0, bounds.y0 + tl));
     append_corner(
         &mut path,
-        vello::kurbo::Point::new(bounds.x0 + tl, bounds.y0 + tl),
+        kurbo::Point::new(bounds.x0 + tl, bounds.y0 + tl),
         tl,
         core::f64::consts::PI,
         core::f64::consts::PI + core::f64::consts::FRAC_PI_2,
@@ -841,8 +831,8 @@ fn rounded_rect_path(bounds: vello::kurbo::Rect, radii: [f32; 4]) -> vello::kurb
 }
 
 fn append_corner(
-    path: &mut vello::kurbo::BezPath,
-    center: vello::kurbo::Point,
+    path: &mut kurbo::BezPath,
+    center: kurbo::Point,
     radius: f64,
     start: f64,
     end: f64,
@@ -851,17 +841,16 @@ fn append_corner(
     if radius <= 0.0 {
         return;
     }
-    let start_point = vello::kurbo::Point::new(
+    let start_point = kurbo::Point::new(
         center.x + radius * start.cos(),
         center.y + radius * start.sin(),
     );
-    let end_point =
-        vello::kurbo::Point::new(center.x + radius * end.cos(), center.y + radius * end.sin());
-    let c1 = vello::kurbo::Point::new(
+    let end_point = kurbo::Point::new(center.x + radius * end.cos(), center.y + radius * end.sin());
+    let c1 = kurbo::Point::new(
         start_point.x - radius * kappa * start.sin(),
         start_point.y + radius * kappa * start.cos(),
     );
-    let c2 = vello::kurbo::Point::new(
+    let c2 = kurbo::Point::new(
         end_point.x + radius * kappa * end.sin(),
         end_point.y - radius * kappa * end.cos(),
     );
@@ -874,17 +863,17 @@ fn lerp(from: f32, to: f32, progress: f32) -> f32 {
 
 pub(crate) fn path_commands_to_path(
     commands: &[PathCommand],
-    bounds: vello::kurbo::Rect,
-) -> vello::kurbo::BezPath {
+    bounds: kurbo::Rect,
+) -> kurbo::BezPath {
     let width = bounds.width();
     let height = bounds.height();
-    let mut path = vello::kurbo::BezPath::new();
+    let mut path = kurbo::BezPath::new();
     let mut has_current = false;
 
     for command in commands {
         match command {
             PathCommand::MoveTo { x, y } => {
-                path.move_to(vello::kurbo::Point::new(
+                path.move_to(kurbo::Point::new(
                     f64::from(*x) * width,
                     f64::from(*y) * height,
                 ));
@@ -895,7 +884,7 @@ pub(crate) fn path_commands_to_path(
                     has_current,
                     "PathCommand::LineTo requires an active current point"
                 );
-                path.line_to(vello::kurbo::Point::new(
+                path.line_to(kurbo::Point::new(
                     f64::from(*x) * width,
                     f64::from(*y) * height,
                 ));
@@ -906,8 +895,8 @@ pub(crate) fn path_commands_to_path(
                     "PathCommand::QuadTo requires an active current point"
                 );
                 path.quad_to(
-                    vello::kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
-                    vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
+                    kurbo::Point::new(f64::from(*cx) * width, f64::from(*cy) * height),
+                    kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
                 );
             }
             PathCommand::CubicTo {
@@ -923,9 +912,9 @@ pub(crate) fn path_commands_to_path(
                     "PathCommand::CubicTo requires an active current point"
                 );
                 path.curve_to(
-                    vello::kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
-                    vello::kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),
-                    vello::kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
+                    kurbo::Point::new(f64::from(*c1x) * width, f64::from(*c1y) * height),
+                    kurbo::Point::new(f64::from(*c2x) * width, f64::from(*c2y) * height),
+                    kurbo::Point::new(f64::from(*x) * width, f64::from(*y) * height),
                 );
             }
             PathCommand::Arc {
@@ -943,7 +932,7 @@ pub(crate) fn path_commands_to_path(
                 let start = f64::from(*start);
                 let step = f64::from(*sweep) / 32.0;
 
-                let start_point = vello::kurbo::Point::new(
+                let start_point = kurbo::Point::new(
                     center_x + radius_x * start.cos(),
                     center_y + radius_y * start.sin(),
                 );
@@ -957,7 +946,7 @@ pub(crate) fn path_commands_to_path(
                 let mut angle = start;
                 for _ in 0..32 {
                     angle += step;
-                    path.line_to(vello::kurbo::Point::new(
+                    path.line_to(kurbo::Point::new(
                         center_x + radius_x * angle.cos(),
                         center_y + radius_y * angle.sin(),
                     ));
@@ -973,11 +962,8 @@ pub(crate) fn path_commands_to_path(
     path
 }
 
-pub(crate) fn anchor_point(
-    bounds: vello::kurbo::Rect,
-    anchor: waterui::style::Anchor,
-) -> vello::kurbo::Point {
-    vello::kurbo::Point::new(
+pub(crate) fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurbo::Point {
+    kurbo::Point::new(
         bounds.x0 + bounds.width() * f64::from(anchor.x),
         bounds.y0 + bounds.height() * f64::from(anchor.y),
     )
@@ -993,8 +979,8 @@ pub(crate) fn resolved_color_to_rgba8(color: ResolvedColor) -> [u8; 4] {
     ]
 }
 
-pub(crate) fn rgba8_to_peniko(color: [u8; 4]) -> vello::peniko::Color {
-    vello::peniko::Color::new([
+pub(crate) fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
+    peniko::Color::new([
         f32::from(color[0]) / 255.0,
         f32::from(color[1]) / 255.0,
         f32::from(color[2]) / 255.0,
@@ -1034,15 +1020,12 @@ pub(crate) fn parley_alignment(
     }
 }
 
-pub(crate) fn transformed_rect(
-    transform: vello::kurbo::Affine,
-    rect: vello::kurbo::Rect,
-) -> vello::kurbo::Rect {
+pub(crate) fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::Rect {
     let points = [
-        transform * vello::kurbo::Point::new(rect.x0, rect.y0),
-        transform * vello::kurbo::Point::new(rect.x1, rect.y0),
-        transform * vello::kurbo::Point::new(rect.x0, rect.y1),
-        transform * vello::kurbo::Point::new(rect.x1, rect.y1),
+        transform * kurbo::Point::new(rect.x0, rect.y0),
+        transform * kurbo::Point::new(rect.x1, rect.y0),
+        transform * kurbo::Point::new(rect.x0, rect.y1),
+        transform * kurbo::Point::new(rect.x1, rect.y1),
     ];
     let min_x = points
         .iter()
@@ -1056,29 +1039,29 @@ pub(crate) fn transformed_rect(
     let max_y = points
         .iter()
         .fold(f64::NEG_INFINITY, |acc, point| acc.max(point.y));
-    vello::kurbo::Rect::new(min_x, min_y, max_x, max_y)
+    kurbo::Rect::new(min_x, min_y, max_x, max_y)
 }
 
 pub(crate) fn circle_arc_path(
-    center: vello::kurbo::Point,
+    center: kurbo::Point,
     radius: f64,
     start_angle: f64,
     sweep: f64,
-) -> vello::kurbo::BezPath {
-    let mut path = vello::kurbo::BezPath::new();
+) -> kurbo::BezPath {
+    let mut path = kurbo::BezPath::new();
     if sweep == 0.0 {
         return path;
     }
     let segments = 64usize;
     let step = sweep / segments as f64;
     let mut angle = start_angle;
-    path.move_to(vello::kurbo::Point::new(
+    path.move_to(kurbo::Point::new(
         center.x + radius * angle.cos(),
         center.y + radius * angle.sin(),
     ));
     for _ in 0..segments {
         angle += step;
-        path.line_to(vello::kurbo::Point::new(
+        path.line_to(kurbo::Point::new(
             center.x + radius * angle.cos(),
             center.y + radius * angle.sin(),
         ));

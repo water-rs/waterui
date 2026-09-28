@@ -408,7 +408,7 @@ pub(crate) fn render_tabs_parts(
                     let content_x1 =
                         icon_rect.map_or(label_rect.x1, |rect| rect.x1.max(label_rect.x1));
                     let inset = theme_metrics.button_horizontal_inset;
-                    vello::kurbo::Rect::new(
+                    kurbo::Rect::new(
                         (content_x0 - inset).max(button_rect.x0),
                         button_rect.y0,
                         (content_x1 + inset).min(button_rect.x1),
@@ -588,12 +588,12 @@ pub(crate) fn tabs_item_natural_width(
 /// Places a tab item's icon and label inside its button rect. Vertical stacks
 /// the icon above the label; horizontal puts the icon beside the label.
 fn tabs_item_content_rects(
-    button_rect: vello::kurbo::Rect,
+    button_rect: kurbo::Rect,
     icon_size: Option<LayoutSize>,
     label_size: LayoutSize,
     metrics: &waterui_backend_core::widget::TabsMetrics,
     layout: TabItemLayout,
-) -> (Option<vello::kurbo::Rect>, vello::kurbo::Rect) {
+) -> (Option<kurbo::Rect>, kurbo::Rect) {
     let Some(icon_size) = icon_size else {
         return (None, tabs_label_rect(button_rect, label_size, metrics));
     };
@@ -608,13 +608,13 @@ fn tabs_item_content_rects(
             let total_height = icon_height + metrics.icon_label_spacing + label_height;
             let y0 = button_rect.y0 + (button_rect.height() - total_height).max(0.0) * 0.5;
             (
-                Some(vello::kurbo::Rect::new(
+                Some(kurbo::Rect::new(
                     button_rect.x0 + (button_rect.width() - icon_width) * 0.5,
                     y0,
                     button_rect.x0 + (button_rect.width() + icon_width) * 0.5,
                     y0 + icon_height,
                 )),
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     button_rect.x0 + (button_rect.width() - label_width) * 0.5,
                     y0 + icon_height + metrics.icon_label_spacing,
                     button_rect.x0 + (button_rect.width() + label_width) * 0.5,
@@ -631,13 +631,13 @@ fn tabs_item_content_rects(
             let total_width = icon_width + metrics.icon_label_spacing + label_width;
             let x0 = button_rect.x0 + (button_rect.width() - total_width).max(0.0) * 0.5;
             (
-                Some(vello::kurbo::Rect::new(
+                Some(kurbo::Rect::new(
                     x0,
                     button_rect.y0 + (button_rect.height() - icon_height) * 0.5,
                     x0 + icon_width,
                     button_rect.y0 + (button_rect.height() + icon_height) * 0.5,
                 )),
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     x0 + icon_width + metrics.icon_label_spacing,
                     button_rect.y0 + (button_rect.height() - label_height) * 0.5,
                     x0 + icon_width + metrics.icon_label_spacing + label_width,
@@ -649,38 +649,38 @@ fn tabs_item_content_rects(
 }
 
 fn tabs_label_rect(
-    button_rect: vello::kurbo::Rect,
+    button_rect: kurbo::Rect,
     label_size: waterui_core::layout::Size,
     metrics: &waterui_backend_core::widget::TabsMetrics,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let max_width = (button_rect.width() - metrics.button_horizontal_inset * 2.0).max(0.0);
     let width = f64::from(label_size.width).min(max_width);
     let height = f64::from(label_size.height).min(button_rect.height());
     let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;
     let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
-    vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+    kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 fn tabs_highlight_rect(
-    button_rect: vello::kurbo::Rect,
+    button_rect: kurbo::Rect,
     style: NativeTabStyle,
     thickness: f64,
     label_extent: f64,
     layout: TabItemLayout,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     // Horizontal items highlight the whole item; the theme's metric supplies
     // the indicator's thickness centered on the item.
     if matches!(layout, TabItemLayout::Horizontal) {
         let height = thickness.min(button_rect.height());
         let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
-        return vello::kurbo::Rect::new(button_rect.x0, y0, button_rect.x1, y0 + height);
+        return kurbo::Rect::new(button_rect.x0, y0, button_rect.x1, y0 + height);
     }
     match style {
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
             let width = label_extent.clamp(0.0, button_rect.width());
             let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;
             let x1 = x0 + width;
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 x0,
                 button_rect.y0,
                 x1,
@@ -690,7 +690,7 @@ fn tabs_highlight_rect(
         NativeTabStyle::Sidebar => {
             let height = label_extent.clamp(0.0, button_rect.height());
             let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 (button_rect.x1 - thickness).max(button_rect.x0),
                 y0,
                 button_rect.x1,

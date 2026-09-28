@@ -82,7 +82,7 @@ fn encode_vello_layers_parallel(
             });
 
         let params = vello::RenderParams {
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color: peniko::Color::TRANSPARENT,
             width,
             height,
             antialiasing_method: vello::AaConfig::Area,
@@ -132,7 +132,7 @@ pub(crate) struct Compositor {
     pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
     pub(crate) render_layers: Vec<RenderLayer>,
     pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
-    pub(crate) active_filter_images: Vec<vello::peniko::ImageData>,
+    pub(crate) active_filter_images: Vec<peniko::ImageData>,
 }
 
 pub(crate) struct PooledLayerTexture {
@@ -276,9 +276,9 @@ struct EmbeddedGpuSurfaceSetup {
 
 #[derive(Clone)]
 pub(crate) enum LayerShape {
-    Rect(vello::kurbo::Rect),
+    Rect(kurbo::Rect),
     RoundedRect {
-        path: vello::kurbo::BezPath,
+        path: kurbo::BezPath,
         #[cfg_attr(
             not(hydrolysis_macos_system_webview),
             expect(
@@ -286,7 +286,7 @@ pub(crate) enum LayerShape {
                 reason = "rounded geometry is consumed by macOS native-view clipping"
             )
         )]
-        rect: vello::kurbo::Rect,
+        rect: kurbo::Rect,
         #[cfg_attr(
             not(hydrolysis_macos_system_webview),
             expect(
@@ -304,13 +304,13 @@ pub(crate) enum LayerShape {
         )]
         corner_height: f64,
     },
-    Path(vello::kurbo::BezPath),
+    Path(kurbo::BezPath),
 }
 
 #[derive(Clone)]
 pub(crate) struct ActiveSceneLayer {
     pub(crate) alpha: f32,
-    pub(crate) transform: vello::kurbo::Affine,
+    pub(crate) transform: kurbo::Affine,
     pub(crate) shape: LayerShape,
 }
 
@@ -326,11 +326,11 @@ pub(crate) enum GpuSurfaceSource {
 #[derive(Clone)]
 pub(crate) struct GpuSurfaceLayer {
     pub(crate) source: GpuSurfaceSource,
-    pub(crate) transform: vello::kurbo::Affine,
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) transform: kurbo::Affine,
+    pub(crate) bounds: kurbo::Rect,
     /// The surface's rect in window hit-test space, used to project the
     /// window pointer into surface-local coordinates at composite time.
-    pub(crate) hit_rect: vello::kurbo::Rect,
+    pub(crate) hit_rect: kurbo::Rect,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
     pub(crate) direct_to_target: bool,
 }
@@ -339,15 +339,15 @@ pub(crate) struct GpuSurfaceLayer {
 #[derive(Clone)]
 pub(crate) struct NativeViewLayer {
     pub(crate) view: Retained<WKWebView>,
-    pub(crate) transform: vello::kurbo::Affine,
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) transform: kurbo::Affine,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
     /// Where `WaterUI`-drawn interactive content covers this view, in window
     /// hit-test space, refreshed every frame by
     /// [`NativeViewOcclusion`](crate::renderer::NativeViewOcclusion). The view
     /// host refuses AppKit hits inside these rects so the content on top gets
     /// the click it visibly deserves.
-    pub(crate) occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+    pub(crate) occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
 pub(crate) enum RenderLayer {
@@ -394,7 +394,7 @@ pub struct HydrolysisRenderTarget<'a> {
     pub format: wgpu::TextureFormat,
     pub width: u32,
     pub height: u32,
-    pub base_color: vello::peniko::Color,
+    pub base_color: peniko::Color,
 }
 
 pub(crate) struct DirectGpuSurfaceTarget<'a> {
@@ -414,14 +414,14 @@ pub(crate) struct DirectGpuSurfaceTarget<'a> {
 pub(crate) struct EmbeddedLayerTarget {
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) transform: vello::kurbo::Affine,
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) transform: kurbo::Affine,
+    pub(crate) bounds: kurbo::Rect,
     /// The surface's rect in window hit-test space; the pointer is projected
     /// into surface-local pixels inside `prepare_layer`, which is where the
     /// layer's output pixel size is decided.
-    pub(crate) hit_rect: vello::kurbo::Rect,
-    pub(crate) pointer_position: Option<vello::kurbo::Point>,
-    pub(crate) pointer_press_origin: Option<vello::kurbo::Point>,
+    pub(crate) hit_rect: kurbo::Rect,
+    pub(crate) pointer_position: Option<kurbo::Point>,
+    pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) now: Instant,
 }
 
@@ -432,9 +432,9 @@ pub(crate) struct EmbeddedLayerTarget {
 /// while inside the rect; the press origin maps only when the press started on
 /// this surface, so a drag that leaves the bounds keeps reporting its origin.
 pub(crate) fn project_pointer_into_surface(
-    pointer_position: Option<vello::kurbo::Point>,
-    pointer_press_origin: Option<vello::kurbo::Point>,
-    hit_rect: vello::kurbo::Rect,
+    pointer_position: Option<kurbo::Point>,
+    pointer_press_origin: Option<kurbo::Point>,
+    hit_rect: kurbo::Rect,
     width: u32,
     height: u32,
 ) -> PointerState {
@@ -442,7 +442,7 @@ pub(crate) fn project_pointer_into_surface(
         return PointerState::default();
     }
     #[allow(clippy::cast_possible_truncation)]
-    let map = |point: vello::kurbo::Point| {
+    let map = |point: kurbo::Point| {
         waterui_core::layout::Point::new(
             ((point.x - hit_rect.x0) / hit_rect.width() * f64::from(width)) as f32,
             ((point.y - hit_rect.y0) / hit_rect.height() * f64::from(height)) as f32,
@@ -473,8 +473,8 @@ impl ActiveSceneLayer {
         match &self.shape {
             LayerShape::Rect(rect) => {
                 scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
+                    peniko::Fill::NonZero,
+                    peniko::BlendMode::default(),
                     self.alpha,
                     self.transform,
                     rect,
@@ -482,8 +482,8 @@ impl ActiveSceneLayer {
             }
             LayerShape::RoundedRect { path, .. } | LayerShape::Path(path) => {
                 scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
+                    peniko::Fill::NonZero,
+                    peniko::BlendMode::default(),
                     self.alpha,
                     self.transform,
                     path,
@@ -803,7 +803,7 @@ impl EmbeddedGpuSurfaceRuntime {
     }
 
     /// The view's text caret, in logical surface-local coordinates.
-    pub(crate) fn ime_caret(&self) -> Option<vello::kurbo::Rect> {
+    pub(crate) fn ime_caret(&self) -> Option<kurbo::Rect> {
         self.surface.as_ref().and_then(GpuSurface::ime_caret)
     }
 
@@ -881,14 +881,10 @@ impl EmbeddedGpuSurfaceRuntime {
         queue: &wgpu::Queue,
         target: EmbeddedLayerTarget,
     ) -> PreparedGpuSurfaceLayer {
-        let top_left =
-            target.transform * vello::kurbo::Point::new(target.bounds.x0, target.bounds.y0);
-        let top_right =
-            target.transform * vello::kurbo::Point::new(target.bounds.x1, target.bounds.y0);
-        let bottom_right =
-            target.transform * vello::kurbo::Point::new(target.bounds.x1, target.bounds.y1);
-        let bottom_left =
-            target.transform * vello::kurbo::Point::new(target.bounds.x0, target.bounds.y1);
+        let top_left = target.transform * kurbo::Point::new(target.bounds.x0, target.bounds.y0);
+        let top_right = target.transform * kurbo::Point::new(target.bounds.x1, target.bounds.y0);
+        let bottom_right = target.transform * kurbo::Point::new(target.bounds.x1, target.bounds.y1);
+        let bottom_left = target.transform * kurbo::Point::new(target.bounds.x0, target.bounds.y1);
 
         let layer_width =
             edge_length_in_pixels(top_left, top_right, target.width, target.height).max(1);
@@ -1198,7 +1194,7 @@ fn select_embedded_surface_format(
     target_format.remove_srgb_suffix()
 }
 
-fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2] {
+fn point_to_clip(point: kurbo::Point, width: u32, height: u32) -> [f32; 2] {
     assert!(
         width != 0 && height != 0,
         "hydrolysis compositor target size must be non-zero"
@@ -1221,7 +1217,7 @@ fn point_to_clip(point: vello::kurbo::Point, width: u32, height: u32) -> [f32; 2
 /// from the rounded pixel ratio keeps the value steady at `2.0` on a Retina
 /// display instead of jittering by a rounding step as the layer resizes, and it
 /// matches what the browser widgets already publish to their own viewports.
-fn layer_device_scale(transform: vello::kurbo::Affine) -> f64 {
+fn layer_device_scale(transform: kurbo::Affine) -> f64 {
     transform.determinant().abs().sqrt()
 }
 
@@ -1241,10 +1237,7 @@ fn layer_device_scale(transform: vello::kurbo::Affine) -> f64 {
 /// identity. Translation is not rejected outright either; it simply has to come
 /// out matching the viewport, which the caller checks against the rect returned
 /// here.
-fn direct_target_rect(
-    transform: vello::kurbo::Affine,
-    bounds: vello::kurbo::Rect,
-) -> Option<vello::kurbo::Rect> {
+fn direct_target_rect(transform: kurbo::Affine, bounds: kurbo::Rect) -> Option<kurbo::Rect> {
     let [x_scale, shear_y, shear_x, y_scale, ..] = transform.as_coeffs();
     // Comparing the transform's linear part against a pure non-uniform scale is
     // the "no rotation, no skew" test, taken at the same tolerance every other
@@ -1252,8 +1245,8 @@ fn direct_target_rect(
     // both sides: where the surface lands is the caller's question, not this
     // one's.
     if !affine_near(
-        vello::kurbo::Affine::new([x_scale, shear_y, shear_x, y_scale, 0.0, 0.0]),
-        vello::kurbo::Affine::scale_non_uniform(x_scale, y_scale),
+        kurbo::Affine::new([x_scale, shear_y, shear_x, y_scale, 0.0, 0.0]),
+        kurbo::Affine::scale_non_uniform(x_scale, y_scale),
     ) {
         return None;
     }
@@ -1269,9 +1262,9 @@ fn direct_target_rect(
 /// Whether a layer's transformed bounds cover `viewport` exactly, in physical
 /// pixels — the geometric half of the direct-to-target decision.
 pub(crate) fn covers_viewport_directly(
-    transform: vello::kurbo::Affine,
-    bounds: vello::kurbo::Rect,
-    viewport: vello::kurbo::Rect,
+    transform: kurbo::Affine,
+    bounds: kurbo::Rect,
+    viewport: kurbo::Rect,
 ) -> bool {
     direct_target_rect(transform, bounds).is_some_and(|rect| rect_near(rect, viewport))
 }
@@ -1279,7 +1272,7 @@ pub(crate) fn covers_viewport_directly(
 /// The whole-pixel size of a direct-to-target layer, taken from the same
 /// transformed bounds the decision was made on rather than assumed from the
 /// window.
-fn direct_target_size(transform: vello::kurbo::Affine, bounds: vello::kurbo::Rect) -> (u32, u32) {
+fn direct_target_size(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let rect = direct_target_rect(transform, bounds)
         .expect("hydrolysis direct GpuSurface layer must have a direct-renderable transform");
     #[expect(
@@ -1294,8 +1287,8 @@ fn direct_target_size(transform: vello::kurbo::Affine, bounds: vello::kurbo::Rec
 }
 
 fn edge_length_in_pixels(
-    start: vello::kurbo::Point,
-    end: vello::kurbo::Point,
+    start: kurbo::Point,
+    end: kurbo::Point,
     target_width: u32,
     target_height: u32,
 ) -> u32 {
@@ -1497,7 +1490,7 @@ impl HydrolysisRenderer {
     ) -> PooledLayerTexture {
         let leased = self.compositor.acquire_layer_texture(device, width, height);
         let params = vello::RenderParams {
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color: peniko::Color::TRANSPARENT,
             width,
             height,
             antialiasing_method: vello::AaConfig::Area,
@@ -1526,11 +1519,11 @@ impl HydrolysisRenderer {
             layer.push_to_scene(&mut mask_scene);
         }
         mask_scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
-            vello::peniko::Color::WHITE,
+            peniko::Fill::NonZero,
+            kurbo::Affine::IDENTITY,
+            peniko::Color::WHITE,
             None,
-            &vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
         );
         for _ in 0..active_layers.len() {
             crate::engine::vello_backend::pop_scene_layer(&mut mask_scene);
@@ -1558,7 +1551,7 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
-        base_color: vello::peniko::Color,
+        base_color: peniko::Color,
         encoding: TargetEncoding,
         premultiply_alpha: bool,
     ) {

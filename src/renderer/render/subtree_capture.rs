@@ -252,14 +252,13 @@ impl HydrolysisRenderer {
         let parent_window_bounds = self.window_bounds;
         let parent_window_root_transform = self.window_root_transform;
 
-        let local_bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
-        let slot_transform =
-            vello::kurbo::Affine::translate((f64::from(origin.0), f64::from(origin.1)));
+        let local_bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let slot_transform = kurbo::Affine::translate((f64::from(origin.0), f64::from(origin.1)));
         self.set_window_viewport(local_bounds, slot_transform);
         let local_ctx = RenderContext::with_transforms(
             local_bounds,
             slot_transform,
-            ctx.hit_transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+            ctx.hit_transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
         );
 
         self.subtree_captures.depth = depth + 1;
@@ -402,13 +401,13 @@ impl HydrolysisRenderer {
         let parent_window_bounds = self.window_bounds;
         let parent_window_root_transform = self.window_root_transform;
         self.set_window_viewport(
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 0.0,
                 0.0,
                 f64::from(texture.width),
                 f64::from(texture.height),
             ),
-            vello::kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
         );
         let device_loss = self.state().frame_device_loss().clone();
         self.render_scene_to_texture(HydrolysisRenderTarget {
@@ -421,7 +420,7 @@ impl HydrolysisRenderer {
             format: wgpu::TextureFormat::Rgba8Unorm,
             width: texture.width,
             height: texture.height,
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color: peniko::Color::TRANSPARENT,
         });
         assert!(
             self.compositor.active_scene_layers.is_empty(),

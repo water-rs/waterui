@@ -132,7 +132,7 @@ fn is_ink(px: [u8; 4]) -> bool {
 }
 
 /// The rightmost ink column inside `row` in the captured frame, if any.
-fn rightmost_ink(snapshot: &crate::HeadlessSnapshot, row: vello::kurbo::Rect) -> Option<u32> {
+fn rightmost_ink(snapshot: &crate::HeadlessSnapshot, row: kurbo::Rect) -> Option<u32> {
     let x0 = row.x0.max(0.0) as u32;
     let x1 = (row.x1 as u32).min(snapshot.width - 1);
     let y0 = row.y0.max(0.0) as u32;
@@ -194,13 +194,13 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
         runtime.context_menu_presentation_frames().is_some(),
         "the accessory menu opens the drawn presentation"
     );
-    let rows: Vec<vello::kurbo::Rect> = ["Copy", "Paste", "Cut"]
+    let rows: Vec<kurbo::Rect> = ["Copy", "Paste", "Cut"]
         .iter()
         .map(|label| {
             let (_, node) = find_by_label(&update, Role::Button, label)
                 .unwrap_or_else(|| panic!("{label} must emit a menu row"));
             let rect = node.bounds().expect("a menu row has bounds");
-            vello::kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
+            kurbo::Rect::new(rect.x0, rect.y0, rect.x1, rect.y1)
         })
         .collect();
     let snapshot = capture_until_settled(&mut runtime);
@@ -213,11 +213,9 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
 
     // The a11y row bounds wrap the label content, so scan the full panel
     // width inside each row's band for the trailing ink edge.
-    let scan_rows: Vec<vello::kurbo::Rect> = rows
+    let scan_rows: Vec<kurbo::Rect> = rows
         .iter()
-        .map(|row| {
-            vello::kurbo::Rect::new(menu_frame.x0 + 1.0, row.y0, menu_frame.x1 - 1.0, row.y1)
-        })
+        .map(|row| kurbo::Rect::new(menu_frame.x0 + 1.0, row.y0, menu_frame.x1 - 1.0, row.y1))
         .collect();
     let trailing: Vec<u32> = scan_rows
         .iter()

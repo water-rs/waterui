@@ -208,7 +208,7 @@ pub(crate) fn render_progress_parts(
                 0.0
             };
             if label_height > 0.0 {
-                let label_rect = vello::kurbo::Rect::new(
+                let label_rect = kurbo::Rect::new(
                     ctx.bounds.x0,
                     ctx.bounds.y0,
                     ctx.bounds.x1,
@@ -231,7 +231,7 @@ pub(crate) fn render_progress_parts(
             }
 
             let bar_y = ctx.bounds.y0 + label_height + metrics.bar_top_offset;
-            let bar_rect = vello::kurbo::Rect::new(
+            let bar_rect = kurbo::Rect::new(
                 ctx.bounds.x0 + metrics.bar_horizontal_inset,
                 bar_y,
                 ctx.bounds.x1 - metrics.bar_horizontal_inset,
@@ -252,7 +252,7 @@ pub(crate) fn render_progress_parts(
                 } else {
                     clamped
                 };
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     bar_rect.x0,
                     bar_rect.y0,
                     bar_rect.x0 + bar_rect.width() * f64::from(animated.clamp(0.0, 1.0)),
@@ -279,7 +279,7 @@ pub(crate) fn render_progress_parts(
             }
 
             if finite {
-                let value_label_rect = vello::kurbo::Rect::new(
+                let value_label_rect = kurbo::Rect::new(
                     ctx.bounds.x0,
                     bar_rect.y1 + metrics.value_label_top_spacing,
                     ctx.bounds.x1,
@@ -305,7 +305,7 @@ pub(crate) fn render_progress_parts(
         }
         ProgressStyle::Circular => {
             let metrics = theme.progress_metrics(ProgressIndicatorStyle::Circular);
-            let center = vello::kurbo::Point::new(
+            let center = kurbo::Point::new(
                 ctx.bounds.x0 + ctx.bounds.width() / 2.0,
                 ctx.bounds.y0 + ctx.bounds.height() / 2.0,
             );

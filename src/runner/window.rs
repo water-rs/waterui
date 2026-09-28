@@ -330,12 +330,12 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     runtime.renderer.migration_counters_mut().host_wakeups += 1;
 }
 
-pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello::kurbo::Rect {
+pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo::Rect {
     assert!(
         scale_factor.is_finite() && scale_factor > 0.0,
         "hydrolysis runner: invalid scale factor {scale_factor}"
     );
-    vello::kurbo::Rect::new(
+    kurbo::Rect::new(
         0.0,
         0.0,
         f64::from(width) / scale_factor,
@@ -343,7 +343,7 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> vello
     )
 }
 
-pub(super) fn window_clear_color(window: &Window, env: &Environment) -> vello::peniko::Color {
+pub(super) fn window_clear_color(window: &Window, env: &Environment) -> peniko::Color {
     match &window.background {
         WindowBackground::Opaque => {
             resolve_window_clear_color(Color::new(theme::color::Background), env)
@@ -352,10 +352,10 @@ pub(super) fn window_clear_color(window: &Window, env: &Environment) -> vello::p
     }
 }
 
-pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> vello::peniko::Color {
+pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> peniko::Color {
     let resolved = color.resolve(env).snapshot();
     let srgb = resolved.to_srgb_with_headroom();
-    vello::peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
+    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
 }
 
 #[cfg(feature = "winit")]
@@ -417,10 +417,10 @@ fn refresh_window_scene<P: PlatformWindow>(
     let scale_factor = runtime.platform.scale_factor();
     let (width, height) = runtime.platform.surface().size();
     let bounds = create_bounds(width, height, scale_factor);
-    let transform = vello::kurbo::Affine::scale(scale_factor);
+    let transform = kurbo::Affine::scale(scale_factor);
     runtime
         .renderer
-        .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY);
+        .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY);
     // An in-flight press/drag must follow the re-laid-out widget, and hover must be
     // re-evaluated at the pointer so a reflow that moved a widget under the cursor
     // updates its hover chrome.
@@ -443,8 +443,8 @@ fn refresh_window_scene<P: PlatformWindow>(
 fn build_window_scene<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
-    bounds: vello::kurbo::Rect,
-    root_transform: vello::kurbo::Affine,
+    bounds: kurbo::Rect,
+    root_transform: kurbo::Affine,
     drain_local_tasks: &mut dyn FnMut() -> bool,
     phases: &mut FramePhases,
 ) {
@@ -460,7 +460,7 @@ fn build_window_scene<P: PlatformWindow>(
         env,
         bounds,
         root_transform,
-        vello::kurbo::Affine::IDENTITY,
+        kurbo::Affine::IDENTITY,
     );
     runtime
         .renderer
@@ -494,7 +494,7 @@ pub(super) fn pump_window_scene<P: PlatformWindow>(
     let surface = runtime.platform.surface();
     let (width, height) = surface.size();
     let bounds = create_bounds(width, height, scale_factor);
-    let root_transform = vello::kurbo::Affine::scale(scale_factor);
+    let root_transform = kurbo::Affine::scale(scale_factor);
     runtime.renderer.set_frame_resources(
         surface.adapter(),
         surface.device(),
@@ -616,13 +616,11 @@ pub(super) fn pump_window_semantics<P: PlatformWindow>(
         let scale_factor = runtime.platform.scale_factor();
         let (width, height) = runtime.platform.surface().size();
         let bounds = create_bounds(width, height, scale_factor);
-        let transform = vello::kurbo::Affine::scale(scale_factor);
-        let flushed = runtime.renderer.flush_window_tree(
-            env,
-            bounds,
-            transform,
-            vello::kurbo::Affine::IDENTITY,
-        );
+        let transform = kurbo::Affine::scale(scale_factor);
+        let flushed =
+            runtime
+                .renderer
+                .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY);
         assert!(
             flushed,
             "hydrolysis runner: retained render tree vanished during semantics pump"
@@ -660,7 +658,7 @@ struct SurfaceRenderResult {
 fn render_to_surface(
     renderer: &mut HydrolysisRenderer,
     surface: &mut dyn crate::platform::SurfaceProvider,
-    clear_color: vello::peniko::Color,
+    clear_color: peniko::Color,
     capture_snapshot: bool,
     render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::HydrolysisRenderTarget<'_>, bool),
 ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
@@ -774,7 +772,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         apply_window_size_limits(runtime, env);
         let clear_color = window_clear_color(&runtime.window, env);
 
-        let root_transform = vello::kurbo::Affine::scale(runtime.platform.scale_factor());
+        let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
         #[cfg(hydrolysis_macos_system_webview)]
         let (width, height) = runtime.platform.surface().size();
         // The redraw-only filter refresh exists for frames that present without
@@ -826,7 +824,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 let segment_clear_color = if index == 0 {
                     clear_color
                 } else {
-                    vello::peniko::Color::TRANSPARENT
+                    peniko::Color::TRANSPARENT
                 };
                 match render_to_surface(
                     &mut runtime.renderer,
@@ -1117,11 +1115,11 @@ fn refresh_pending_input_geometry<P: PlatformWindow>(
         .renderer
         .set_frame_resources(&adapter, &device, &queue, &device_loss);
     let bounds = create_bounds(width, height, scale_factor);
-    let transform = vello::kurbo::Affine::scale(scale_factor);
+    let transform = kurbo::Affine::scale(scale_factor);
     assert!(
         runtime
             .renderer
-            .flush_window_tree(env, bounds, transform, vello::kurbo::Affine::IDENTITY,),
+            .flush_window_tree(env, bounds, transform, kurbo::Affine::IDENTITY,),
         "hydrolysis input geometry refresh lost the retained window tree"
     );
     apply_window_size_limits(runtime, env);

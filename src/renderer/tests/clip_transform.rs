@@ -20,8 +20,8 @@
 
 use std::sync::Arc;
 
-use vello::kurbo::{Affine, Rect};
-use vello::peniko::{Blob, Color, Fill, FontData};
+use kurbo::{Affine, Rect};
+use peniko::{Blob, Color, Fill, FontData};
 use vello_encoding::{PathTag, Resolver, Transform};
 
 use crate::engine::vello_backend::{VelloDrawContext, append_scene};

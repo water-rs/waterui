@@ -716,21 +716,21 @@ impl HeadlessRuntime {
     #[cfg(test)]
     pub(crate) fn context_menu_presentation_frames(
         &self,
-    ) -> Option<(vello::kurbo::Rect, Option<vello::kurbo::Rect>)> {
+    ) -> Option<(kurbo::Rect, Option<kurbo::Rect>)> {
         self.runtime.renderer.context_menu_presentation_frames()
     }
 
     /// The row frames inside the open drawn menu, in hit order — empty when
     /// no drawn presentation is open.
     #[cfg(test)]
-    pub(crate) fn context_menu_row_frames(&self) -> Vec<vello::kurbo::Rect> {
+    pub(crate) fn context_menu_row_frames(&self) -> Vec<kurbo::Rect> {
         self.runtime.renderer.context_menu_row_frames()
     }
 
     /// The drawn frames of the presented `.anchored_overlay` overlays, in hit
     /// order — empty when none is presented.
     #[cfg(test)]
-    pub(crate) fn anchored_overlay_frames(&self) -> Vec<vello::kurbo::Rect> {
+    pub(crate) fn anchored_overlay_frames(&self) -> Vec<kurbo::Rect> {
         self.runtime.renderer.anchored_overlay_frames()
     }
 
@@ -738,7 +738,7 @@ impl HeadlessRuntime {
     /// presentation — the source's rect unless fitting the stack moved or
     /// cropped it — or `None` when none is open.
     #[cfg(test)]
-    pub(crate) fn context_menu_lift_frame(&self) -> Option<vello::kurbo::Rect> {
+    pub(crate) fn context_menu_lift_frame(&self) -> Option<kurbo::Rect> {
         self.runtime.renderer.context_menu_lift_frame()
     }
 

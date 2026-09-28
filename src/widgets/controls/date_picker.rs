@@ -226,7 +226,7 @@ pub(crate) fn render_date_picker_parts(
         0.0
     };
     if label_height > 0.0 {
-        let label_bounds = vello::kurbo::Rect::new(
+        let label_bounds = kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
             ctx.bounds.x1,
@@ -242,7 +242,7 @@ pub(crate) fn render_date_picker_parts(
         );
     }
 
-    let field_bounds = vello::kurbo::Rect::new(
+    let field_bounds = kurbo::Rect::new(
         ctx.bounds.x0,
         ctx.bounds.y0 + label_height,
         ctx.bounds.x1,
@@ -277,7 +277,7 @@ pub(crate) fn render_date_picker_parts(
         input_metrics.horizontal_inset,
         input_metrics.vertical_inset,
     );
-    let text_bounds = vello::kurbo::Rect::new(
+    let text_bounds = kurbo::Rect::new(
         text_bounds.x0,
         text_bounds.y0,
         (text_bounds.x1 - metrics.indicator_space).max(text_bounds.x0),

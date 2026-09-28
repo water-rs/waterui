@@ -119,13 +119,13 @@ where
         if should_rebuild {
             renderer.reset_scene();
             renderer.begin_rebuild_frame();
-            let bounds = vello::kurbo::Rect::new(0.0, 0.0, frame.width as f64, frame.height as f64);
+            let bounds = kurbo::Rect::new(0.0, 0.0, frame.width as f64, frame.height as f64);
             renderer.capture_window_tree(
                 waterui_core::AnyView::new(self.view.clone()),
                 env,
                 bounds,
-                vello::kurbo::Affine::IDENTITY,
-                vello::kurbo::Affine::IDENTITY,
+                kurbo::Affine::IDENTITY,
+                kurbo::Affine::IDENTITY,
             );
             renderer.finish_rebuild_frame();
             self.needs_rebuild = false;
@@ -141,7 +141,7 @@ where
             format: frame.format,
             width: frame.width,
             height: frame.height,
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color: peniko::Color::TRANSPARENT,
         });
         // Work raised during this render — a structural request or a reactive
         // patch — needs another frame. The patch bit is only peeked (not taken)

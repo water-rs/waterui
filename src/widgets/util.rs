@@ -13,8 +13,8 @@ pub(crate) fn widget_disabled(env: &Environment) -> Computed<bool> {
         .map_or_else(|| Computed::constant(false), |scope| scope.signal().clone())
 }
 
-pub(crate) fn inset_rect(rect: vello::kurbo::Rect, dx: f64, dy: f64) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::new(
+pub(crate) fn inset_rect(rect: kurbo::Rect, dx: f64, dy: f64) -> kurbo::Rect {
+    kurbo::Rect::new(
         rect.x0 + dx,
         rect.y0 + dy,
         (rect.x1 - dx).max(rect.x0 + dx),
@@ -27,14 +27,14 @@ pub(crate) fn inset_rect(rect: vello::kurbo::Rect, dx: f64, dy: f64) -> vello::k
 /// rect sits in the middle — the same centred-content placement Compose
 /// applies inside a button's minimum bounds.
 pub(crate) fn centered_label_rect(
-    rect: vello::kurbo::Rect,
+    rect: kurbo::Rect,
     size: waterui_core::layout::Size,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let width = f64::from(size.width).min(rect.width());
     let height = f64::from(size.height).min(rect.height());
     let x0 = rect.x0 + (rect.width() - width) * 0.5;
     let y0 = rect.y0 + (rect.height() - height) * 0.5;
-    vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+    kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
 /// The rect for a label that sits beside its control on a row — a toggle's
@@ -46,11 +46,11 @@ pub(crate) fn centered_label_rect(
 pub(crate) fn label_beside_control_bounds(
     x0: f64,
     x1: f64,
-    row: vello::kurbo::Rect,
-    control: vello::kurbo::Rect,
+    row: kurbo::Rect,
+    control: kurbo::Rect,
     label_height: f64,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let height = label_height.min(row.height());
     let y0 = (control.y0 + control.y1 - height) * 0.5;
-    vello::kurbo::Rect::new(x0, y0, x1, y0 + height)
+    kurbo::Rect::new(x0, y0, x1, y0 + height)
 }

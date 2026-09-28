@@ -291,7 +291,7 @@ pub(crate) struct AccessibilityBuilder {
     owner_ordinals: BTreeMap<RetainedIdentity, u64>,
     owner_stack: Vec<RetainedIdentity>,
     fallback_owner: Rc<()>,
-    pub(crate) root_bounds: vello::kurbo::Rect,
+    pub(crate) root_bounds: kurbo::Rect,
     pub(crate) root_label: String,
     pub(crate) focus: AccessibilityNodeId,
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
@@ -307,7 +307,7 @@ pub(crate) struct AccessibilityBuilder {
     /// the element box rather than the frame it was stretched into — the same
     /// contract `collapse_single_child_container` keeps when a real child
     /// exists.
-    suppressed_leaf_bounds: BTreeMap<AccessibilityNodeId, vello::kurbo::Rect>,
+    suppressed_leaf_bounds: BTreeMap<AccessibilityNodeId, kurbo::Rect>,
     pub(crate) pending_tree_update: Option<AccessibilityTreeUpdate>,
 }
 
@@ -327,7 +327,7 @@ impl Default for AccessibilityBuilder {
             owner_ordinals: BTreeMap::new(),
             owner_stack: Vec::new(),
             fallback_owner: Rc::new(()),
-            root_bounds: vello::kurbo::Rect::ZERO,
+            root_bounds: kurbo::Rect::ZERO,
             root_label: String::from("WaterUI Window"),
             focus: ACCESSIBILITY_ROOT_NODE_ID,
             pending_text_input_nodes: VecDeque::new(),
@@ -389,7 +389,7 @@ impl AccessibilityBuilder {
     /// one — the element a user pointing at that spot means.
     pub(crate) fn node_at_point_where(
         &self,
-        point: vello::kurbo::Point,
+        point: kurbo::Point,
         include: impl Fn(&AccessibilityNode) -> bool,
     ) -> Option<AccessibilityNodeId> {
         self.nodes
@@ -413,7 +413,7 @@ impl AccessibilityBuilder {
     /// through `node_at_point_where` instead, which compiles everywhere the
     /// accessibility feature does.
     #[cfg(any(not(target_arch = "wasm32"), test))]
-    pub(crate) fn node_at_point(&self, point: vello::kurbo::Point) -> Option<AccessibilityNodeId> {
+    pub(crate) fn node_at_point(&self, point: kurbo::Point) -> Option<AccessibilityNodeId> {
         self.node_at_point_where(point, |_| true)
     }
 
@@ -529,7 +529,7 @@ impl AccessibilityBuilder {
     pub(crate) fn register_node_internal(
         &mut self,
         mut node: AccessibilityNode,
-        bounds: Option<vello::kurbo::Rect>,
+        bounds: Option<kurbo::Rect>,
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
         attach_to_root: bool,
@@ -1198,10 +1198,7 @@ impl SemanticCore {
                 .then(|| node.bounds())
                 .flatten()
                 .map(|bounds| {
-                    vello::kurbo::Point::new(
-                        (bounds.x0 + bounds.x1) / 2.0,
-                        (bounds.y0 + bounds.y1) / 2.0,
-                    )
+                    kurbo::Point::new((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0)
                 })
         }) {
             let at = self.frame_instant;
@@ -1376,7 +1373,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn begin_accessibility_container(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
     ) -> AccessibilityContainerScope {
         self.begin_accessibility_container_inner(Some(bounds), env)
@@ -1396,7 +1393,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     fn begin_accessibility_container_inner(
         &mut self,
-        bounds: Option<vello::kurbo::Rect>,
+        bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope {
         debug_assert!(
@@ -1620,7 +1617,7 @@ impl SemanticCore {
     pub(crate) fn register_accessibility_node(
         &mut self,
         node: AccessibilityNode,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
@@ -1711,7 +1708,7 @@ impl SemanticCore {
     pub(crate) fn register_accessibility_child_node(
         &mut self,
         node: AccessibilityNode,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
@@ -1743,7 +1740,7 @@ impl SemanticCore {
         &mut self,
         semantic_key: i64,
         node: AccessibilityNode,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
@@ -2357,7 +2354,7 @@ fn handle_accessibility_picker_select_action(
 #[cfg(all(test, feature = "accessibility"))]
 mod inspect_tests {
     use super::*;
-    use vello::kurbo::{Point, Rect};
+    use kurbo::{Point, Rect};
 
     /// Registers a node covering `bounds` and returns its id.
     fn push(builder: &mut AccessibilityBuilder, bounds: Rect) -> AccessibilityNodeId {

@@ -9,8 +9,8 @@ pub(crate) struct LazyState {
 /// Viewport geometry with the coordinate transform of its scroll content.
 #[derive(Clone, Copy)]
 pub(crate) struct LazyViewport {
-    pub(crate) bounds: vello::kurbo::Rect,
-    pub(crate) transform: vello::kurbo::Affine,
+    pub(crate) bounds: kurbo::Rect,
+    pub(crate) transform: kurbo::Affine,
 }
 
 impl LazyState {
@@ -104,9 +104,9 @@ pub(crate) fn place_lazy_stack_item(
     axis_config: &LazyStackAxisConfig,
     stretch_axis: StretchAxis,
     size: waterui_core::layout::Size,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     cursor: f64,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     match axis_config {
         LazyStackAxisConfig::Vertical { alignment, .. } => {
             assert!(
@@ -138,7 +138,7 @@ pub(crate) fn place_lazy_stack_item(
             } else {
                 logical_x
             };
-            vello::kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
+            kurbo::Rect::new(x, cursor, x + child_width, cursor + child_height)
         }
         LazyStackAxisConfig::Horizontal { alignment, .. } => {
             assert!(
@@ -170,7 +170,7 @@ pub(crate) fn place_lazy_stack_item(
             } else {
                 cursor
             };
-            vello::kurbo::Rect::new(x, y, x + child_width, y + child_height)
+            kurbo::Rect::new(x, y, x + child_width, y + child_height)
         }
     }
 }
@@ -447,11 +447,11 @@ mod tests {
             &axis,
             StretchAxis::None,
             Size::new(20.0, 10.0),
-            vello::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
             8.0,
         );
 
-        assert_eq!(rect, vello::kurbo::Rect::new(80.0, 8.0, 100.0, 18.0));
+        assert_eq!(rect, kurbo::Rect::new(80.0, 8.0, 100.0, 18.0));
     }
 
     #[test]
@@ -466,10 +466,10 @@ mod tests {
             &axis,
             StretchAxis::None,
             Size::new(20.0, 10.0),
-            vello::kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
+            kurbo::Rect::new(0.0, 0.0, 100.0, 100.0),
             0.0,
         );
 
-        assert_eq!(rect, vello::kurbo::Rect::new(80.0, 0.0, 100.0, 10.0));
+        assert_eq!(rect, kurbo::Rect::new(80.0, 0.0, 100.0, 10.0));
     }
 }

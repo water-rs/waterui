@@ -9,8 +9,8 @@ use super::{NavigationCapturedScene, NavigationMatchedElement};
 
 pub(crate) struct NavigationTransitionFrame<'a> {
     pub(crate) scene: &'a mut vello::Scene,
-    pub(crate) transform: vello::kurbo::Affine,
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) transform: kurbo::Affine,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) style: AnyNavigationTransition,
     pub(crate) motion: NavigationMotion,
     pub(crate) direction: NavigationTransitionDirection,
@@ -162,13 +162,9 @@ fn draw_matched_navigation_transition(
     );
 }
 
-fn interpolate_rect(
-    from: vello::kurbo::Rect,
-    to: vello::kurbo::Rect,
-    progress: f64,
-) -> vello::kurbo::Rect {
+fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo::Rect {
     let interpolate = |from: f64, to: f64| from + (to - from) * progress;
-    vello::kurbo::Rect::new(
+    kurbo::Rect::new(
         interpolate(from.x0, to.x0),
         interpolate(from.y0, to.y0),
         interpolate(from.x1, to.x1),
@@ -178,23 +174,23 @@ fn interpolate_rect(
 
 fn append_matched_element(
     scene: &mut vello::Scene,
-    transform: vello::kurbo::Affine,
+    transform: kurbo::Affine,
     element: &NavigationMatchedElement,
-    target: vello::kurbo::Rect,
+    target: kurbo::Rect,
     opacity: f32,
 ) {
     if opacity <= 0.0 {
         return;
     }
-    let local = vello::kurbo::Affine::translate((target.x0, target.y0))
-        * vello::kurbo::Affine::scale_non_uniform(
+    let local = kurbo::Affine::translate((target.x0, target.y0))
+        * kurbo::Affine::scale_non_uniform(
             target.width() / element.bounds.width(),
             target.height() / element.bounds.height(),
         )
-        * vello::kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
+        * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
     scene.push_layer(
-        vello::peniko::Fill::NonZero,
-        vello::peniko::BlendMode::default(),
+        peniko::Fill::NonZero,
+        peniko::BlendMode::default(),
         opacity,
         transform,
         &target,
@@ -205,8 +201,8 @@ fn append_matched_element(
 
 fn append_scene_with_opacity(
     scene: &mut vello::Scene,
-    transform: vello::kurbo::Affine,
-    clip_bounds: vello::kurbo::Rect,
+    transform: kurbo::Affine,
+    clip_bounds: kurbo::Rect,
     content: &vello::Scene,
     opacity: f32,
 ) {
@@ -224,8 +220,8 @@ fn append_scene_with_opacity(
 
 fn append_scene_layer(
     scene: &mut vello::Scene,
-    transform: vello::kurbo::Affine,
-    clip_bounds: vello::kurbo::Rect,
+    transform: kurbo::Affine,
+    clip_bounds: kurbo::Rect,
     content: &vello::Scene,
     layer: NavigationTransitionLayer,
 ) {
@@ -233,16 +229,16 @@ fn append_scene_layer(
         return;
     }
     let center = clip_bounds.center();
-    let local = vello::kurbo::Affine::translate((
+    let local = kurbo::Affine::translate((
         f64::from(layer.offset_x) * clip_bounds.width(),
         f64::from(layer.offset_y) * clip_bounds.height(),
-    )) * vello::kurbo::Affine::translate((center.x, center.y))
-        * vello::kurbo::Affine::scale(f64::from(layer.scale))
-        * vello::kurbo::Affine::translate((-center.x, -center.y));
+    )) * kurbo::Affine::translate((center.x, center.y))
+        * kurbo::Affine::scale(f64::from(layer.scale))
+        * kurbo::Affine::translate((-center.x, -center.y));
     let transformed_bounds = local.transform_rect_bbox(clip_bounds);
     scene.push_layer(
-        vello::peniko::Fill::NonZero,
-        vello::peniko::BlendMode::default(),
+        peniko::Fill::NonZero,
+        peniko::BlendMode::default(),
         layer.opacity,
         transform,
         &transformed_bounds,

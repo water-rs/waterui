@@ -234,7 +234,7 @@ pub(crate) fn navigation_view_accessibility(
                     let metrics = theme.navigation_metrics();
                     let bar_height =
                         navigation_base_bar_height_for_display_mode(display_mode, theme);
-                    let bar_rect = vello::kurbo::Rect::new(
+                    let bar_rect = kurbo::Rect::new(
                         ctx.bounds.x0,
                         ctx.bounds.y0,
                         ctx.bounds.x1,
@@ -252,7 +252,7 @@ pub(crate) fn navigation_view_accessibility(
                         bar_rect.y0 + (bar_height - title_height) * 0.5
                     };
                     let title_leading = navigation_leading_reserve(env);
-                    let title_rect = vello::kurbo::Rect::new(
+                    let title_rect = kurbo::Rect::new(
                         if title_leading > 0.0 {
                             bar_rect.x0 + metrics.horizontal_inset + title_leading
                         } else {
@@ -507,7 +507,7 @@ pub(crate) fn render_navigation_view_parts(
 
     if top_bar_height > 0.0 {
         let base_bar_height = navigation_base_bar_height_for_display_mode(display_mode, &theme);
-        let bar_rect = vello::kurbo::Rect::new(
+        let bar_rect = kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
             ctx.bounds.x1,
@@ -518,7 +518,7 @@ pub(crate) fn render_navigation_view_parts(
             let theme = ctx.theme();
             let mut draw = ctx.draw_context();
             theme.draw_navigation_bar(&mut draw, bar_rect, &Brush::from(bar_color));
-            let separator = vello::kurbo::Rect::new(
+            let separator = kurbo::Rect::new(
                 bar_rect.x0,
                 (bar_rect.y1 - 1.0).max(bar_rect.y0),
                 bar_rect.x1,
@@ -545,13 +545,13 @@ pub(crate) fn render_navigation_view_parts(
         };
         let leading_width = f64::from(leading_size.width);
         let trailing_width = f64::from(trailing_size.width);
-        let leading_rect = vello::kurbo::Rect::new(
+        let leading_rect = kurbo::Rect::new(
             bar_rect.x0 + metrics.horizontal_inset,
             bar_rect.y0,
             (bar_rect.x0 + metrics.horizontal_inset + leading_width).min(bar_rect.x1),
             (bar_rect.y0 + base_bar_height).min(bar_rect.y1),
         );
-        let trailing_rect = vello::kurbo::Rect::new(
+        let trailing_rect = kurbo::Rect::new(
             (bar_rect.x1 - metrics.horizontal_inset - trailing_width).max(bar_rect.x0),
             bar_rect.y0,
             bar_rect.x1 - metrics.horizontal_inset,
@@ -596,7 +596,7 @@ pub(crate) fn render_navigation_view_parts(
         } else {
             bar_rect.x1 - metrics.title_trailing_inset
         };
-        let title_rect = vello::kurbo::Rect::new(
+        let title_rect = kurbo::Rect::new(
             title_x0.min(bar_rect.x1),
             title_y0,
             title_x1.max(bar_rect.x0),
@@ -628,7 +628,7 @@ pub(crate) fn render_navigation_view_parts(
         }
 
         if search.is_some() {
-            let search_rect = vello::kurbo::Rect::new(
+            let search_rect = kurbo::Rect::new(
                 bar_rect.x0 + metrics.horizontal_inset,
                 bar_rect.y0 + base_bar_height + metrics.search_vertical_inset,
                 bar_rect.x1 - metrics.horizontal_inset,
@@ -653,7 +653,7 @@ pub(crate) fn render_navigation_view_parts(
         }
     }
 
-    let content_rect = vello::kurbo::Rect::new(
+    let content_rect = kurbo::Rect::new(
         ctx.bounds.x0,
         (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
         ctx.bounds.x1,
@@ -671,7 +671,7 @@ pub(crate) fn render_navigation_view_parts(
     }
 
     if bottom_bar_height > 0.0 {
-        let bottom_rect = vello::kurbo::Rect::new(
+        let bottom_rect = kurbo::Rect::new(
             ctx.bounds.x0,
             (ctx.bounds.y1 - bottom_bar_height).max(ctx.bounds.y0),
             ctx.bounds.x1,
@@ -724,7 +724,7 @@ fn flush_toolbar_group(
     ctx: &mut WidgetRenderContext<'_>,
     group: &mut [RetainedSubview],
     env: &Environment,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     alignment: ToolbarAlignment,
 ) {
     if group.is_empty() || bounds.width() <= 0.0 || bounds.height() <= 0.0 {
@@ -747,7 +747,7 @@ fn flush_toolbar_group(
         let width = f64::from(size.width).min((bounds.x1 - x).max(0.0));
         let height = f64::from(size.height).min(bounds.height());
         let y = bounds.y0 + (bounds.height() - height) * 0.5;
-        let rect = vello::kurbo::Rect::new(x, y, x + width, y + height);
+        let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
             item.flush_in_rect(
@@ -766,18 +766,18 @@ fn flush_toolbar_group(
 /// group — the same split `flush_title_and_subtitle` draws at, so the a11y
 /// node's bounds match the painted text.
 fn title_and_subtitle_rects(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     title_size: LayoutSize,
     subtitle_size: LayoutSize,
-) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+) -> (kurbo::Rect, kurbo::Rect) {
     let total_height =
         (f64::from(title_size.height) + f64::from(subtitle_size.height)).min(bounds.height());
     let mut y = bounds.y0 + (bounds.height() - total_height) * 0.5;
     let title_height = f64::from(title_size.height).min((bounds.y1 - y).max(0.0));
-    let title_rect = vello::kurbo::Rect::new(bounds.x0, y, bounds.x1, y + title_height);
+    let title_rect = kurbo::Rect::new(bounds.x0, y, bounds.x1, y + title_height);
     y += title_height;
     let subtitle_height = f64::from(subtitle_size.height).min((bounds.y1 - y).max(0.0));
-    let subtitle_rect = vello::kurbo::Rect::new(bounds.x0, y, bounds.x1, y + subtitle_height);
+    let subtitle_rect = kurbo::Rect::new(bounds.x0, y, bounds.x1, y + subtitle_height);
     (title_rect, subtitle_rect)
 }
 
@@ -785,7 +785,7 @@ fn flush_title_and_subtitle(
     ctx: &mut WidgetRenderContext<'_>,
     state: &mut NavigationViewRenderState,
     env: &Environment,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
 ) {
     let title_size = state.title.measure_intrinsic(ctx.renderer_mut(), env);
     let subtitle_size = if state.subtitle_present {
@@ -1302,24 +1302,24 @@ pub(crate) fn render_navigation_split_parts(
 
     let (primary_rect, content_rect, detail_rect) = if three_column && show_all {
         let primary_rect =
-            vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + column_width, bounds.y1);
-        let content_rect = vello::kurbo::Rect::new(
+            kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + column_width, bounds.y1);
+        let content_rect = kurbo::Rect::new(
             primary_rect.x1,
             bounds.y0,
             primary_rect.x1 + column_width,
             bounds.y1,
         );
-        let detail_rect = vello::kurbo::Rect::new(content_rect.x1, bounds.y0, bounds.x1, bounds.y1);
+        let detail_rect = kurbo::Rect::new(content_rect.x1, bounds.y0, bounds.x1, bounds.y1);
         (Some(primary_rect), Some(content_rect), detail_rect)
     } else if three_column {
         let content_rect =
-            vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + column_width, bounds.y1);
-        let detail_rect = vello::kurbo::Rect::new(content_rect.x1, bounds.y0, bounds.x1, bounds.y1);
+            kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + column_width, bounds.y1);
+        let detail_rect = kurbo::Rect::new(content_rect.x1, bounds.y0, bounds.x1, bounds.y1);
         (None, Some(content_rect), detail_rect)
     } else {
         let primary_rect =
-            vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + column_width, bounds.y1);
-        let detail_rect = vello::kurbo::Rect::new(primary_rect.x1, bounds.y0, bounds.x1, bounds.y1);
+            kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + column_width, bounds.y1);
+        let detail_rect = kurbo::Rect::new(primary_rect.x1, bounds.y0, bounds.x1, bounds.y1);
         (Some(primary_rect), None, detail_rect)
     };
 
@@ -1426,7 +1426,7 @@ fn render_split_content(
     env: &Environment,
     selected: Option<Id>,
     compact: bool,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
 ) {
     if let Some(selected) = selected {
         let mut state = state.borrow_mut();
@@ -1462,7 +1462,7 @@ fn render_split_detail(
     env: &Environment,
     selected: Option<Id>,
     compact: bool,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
 ) {
     if let Some(selected) = selected {
         let mut state = state.borrow_mut();
@@ -1592,10 +1592,10 @@ fn render_navigation_page_scene(
         }
     };
     let mut scene = vello::Scene::new();
-    let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
+    let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     scene.fill(
-        vello::peniko::Fill::NonZero,
-        vello::kurbo::Affine::IDENTITY,
+        peniko::Fill::NonZero,
+        kurbo::Affine::IDENTITY,
         resolved_color_to_peniko(renderer.read_signal(&background)),
         None,
         &bounds,
@@ -1605,8 +1605,8 @@ fn render_navigation_page_scene(
         core::mem::swap(renderer.scene_mut(), &mut scene);
         let context = RenderContext::with_transforms(
             bounds,
-            vello::kurbo::Affine::IDENTITY,
-            vello::kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
         );
         {
             let theme = renderer.theme();
@@ -1807,7 +1807,7 @@ pub(crate) fn render_navigation_stack_parts(
     let transform = ctx.transform;
     let bounds = ctx.bounds;
     ctx.renderer_mut().scene_mut().fill(
-        vello::peniko::Fill::NonZero,
+        peniko::Fill::NonZero,
         transform,
         background,
         None,
@@ -2057,7 +2057,7 @@ pub(crate) fn render_navigation_stack_parts(
     });
 
     let metrics = ctx.theme().navigation_metrics();
-    let edge_rect = vello::kurbo::Rect::new(
+    let edge_rect = kurbo::Rect::new(
         ctx.bounds.x0,
         ctx.bounds.y0,
         (ctx.bounds.x0 + metrics.back_button_size).min(ctx.bounds.x1),

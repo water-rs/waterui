@@ -1860,13 +1860,13 @@ mod winit_impl {
     #[cfg(hydrolysis_macos_system_webview)]
     #[derive(Clone, Copy)]
     struct MacRoundedClip {
-        rect: vello::kurbo::Rect,
+        rect: kurbo::Rect,
         corner_width: f64,
         corner_height: f64,
     }
 
     #[cfg(hydrolysis_macos_system_webview)]
-    fn assert_axis_aligned_positive(transform: vello::kurbo::Affine, operation: &str) -> [f64; 6] {
+    fn assert_axis_aligned_positive(transform: kurbo::Affine, operation: &str) -> [f64; 6] {
         let coefficients = transform.as_coeffs();
         let epsilon = f64::EPSILON * 64.0;
         assert!(
@@ -1885,7 +1885,7 @@ mod winit_impl {
 
     #[cfg(hydrolysis_macos_system_webview)]
     fn appkit_root_rect(
-        physical_rect: vello::kurbo::Rect,
+        physical_rect: kurbo::Rect,
         logical_height: f64,
         scale_factor: f64,
         flipped: bool,

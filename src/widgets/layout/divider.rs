@@ -38,14 +38,14 @@ pub(crate) fn render_divider_parts(
     let metrics = theme.divider_metrics();
     let vertical = matches!(env.get::<StackAxis>(), Some(StackAxis::Horizontal));
     let rect = if vertical {
-        vello::kurbo::Rect::new(
+        kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
             ctx.bounds.x0 + metrics.thickness,
             ctx.bounds.y1,
         )
     } else {
-        vello::kurbo::Rect::new(
+        kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
             ctx.bounds.x1,

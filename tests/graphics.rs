@@ -6,8 +6,8 @@
 //! it asserted there, mounted under `Material3::defaults()` on the rendered
 //! runtime.
 
-use vello::kurbo::{Affine, Rect, Shape as _};
-use vello::peniko::{Brush, Color, Fill};
+use kurbo::{Affine, Rect, Shape as _};
+use peniko::{Brush, Color, Fill};
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::text;

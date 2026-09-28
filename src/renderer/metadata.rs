@@ -18,10 +18,10 @@ const BLURRED_SILHOUETTE_CACHE_CAP: NonZeroUsize = NonZeroUsize::new(64).unwrap(
 struct BlurredSilhouette {
     /// The blurred premultiplied pixels. Cache hits share the `Blob`, so vello
     /// keeps the atlas texture instead of re-uploading identical bytes.
-    image: vello::peniko::ImageData,
+    image: peniko::ImageData,
     /// Top-left of the image in linear space: the silhouette rect's origin
     /// under the linear part of the transform, plus the raster bounds' origin.
-    delta: vello::kurbo::Affine,
+    delta: kurbo::Affine,
 }
 
 /// Everything that determines a blurred silhouette's pixels and placement —
@@ -227,8 +227,8 @@ impl HydrolysisRenderer {
 
         if border.edges.all() && border.corner_radius > 0.0 {
             let rounded =
-                vello::kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
-            let stroke = vello::kurbo::Stroke::new(width);
+                kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
+            let stroke = kurbo::Stroke::new(width);
             renderer
                 .scene
                 .stroke(&stroke, ctx.transform, brush, None, &rounded);
@@ -236,64 +236,48 @@ impl HydrolysisRenderer {
         }
 
         if border.edges.top {
-            let top = vello::kurbo::Rect::new(
+            let top = kurbo::Rect::new(
                 ctx.bounds.x0,
                 ctx.bounds.y0,
                 ctx.bounds.x1,
                 ctx.bounds.y0 + width,
             );
-            renderer.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                brush,
-                None,
-                &top,
-            );
+            renderer
+                .scene
+                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &top);
         }
         if border.edges.bottom {
-            let bottom = vello::kurbo::Rect::new(
+            let bottom = kurbo::Rect::new(
                 ctx.bounds.x0,
                 ctx.bounds.y1 - width,
                 ctx.bounds.x1,
                 ctx.bounds.y1,
             );
-            renderer.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                brush,
-                None,
-                &bottom,
-            );
+            renderer
+                .scene
+                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &bottom);
         }
         if border.edges.leading {
-            let leading = vello::kurbo::Rect::new(
+            let leading = kurbo::Rect::new(
                 ctx.bounds.x0,
                 ctx.bounds.y0,
                 ctx.bounds.x0 + width,
                 ctx.bounds.y1,
             );
-            renderer.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                brush,
-                None,
-                &leading,
-            );
+            renderer
+                .scene
+                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &leading);
         }
         if border.edges.trailing {
-            let trailing = vello::kurbo::Rect::new(
+            let trailing = kurbo::Rect::new(
                 ctx.bounds.x1 - width,
                 ctx.bounds.y0,
                 ctx.bounds.x1,
                 ctx.bounds.y1,
             );
-            renderer.scene.fill(
-                vello::peniko::Fill::NonZero,
-                ctx.transform,
-                brush,
-                None,
-                &trailing,
-            );
+            renderer
+                .scene
+                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &trailing);
         }
     }
 
@@ -310,7 +294,7 @@ impl HydrolysisRenderer {
         let blur = f64::from(shadow.radius.max(0.0));
         let offset_x = f64::from(shadow.offset.x);
         let offset_y = f64::from(shadow.offset.y);
-        let shadow_rect = vello::kurbo::Rect::new(
+        let shadow_rect = kurbo::Rect::new(
             ctx.bounds.x0 + offset_x,
             ctx.bounds.y0 + offset_y,
             ctx.bounds.x1 + offset_x,
@@ -359,17 +343,17 @@ impl HydrolysisRenderer {
     /// work runs at all.
     fn draw_blurred_silhouette(
         renderer: &mut HydrolysisRenderer,
-        transform: vello::kurbo::Affine,
+        transform: kurbo::Affine,
         silhouette: &ClipShape,
-        rect: vello::kurbo::Rect,
-        color: vello::peniko::Color,
+        rect: kurbo::Rect,
+        color: peniko::Color,
         blur: f64,
     ) {
         // The same resolution `apply_clip_shape` performs — structured kind
         // first, unit-space commands only for a custom path — but against the
         // rect normalized to the origin: the rect's own position is applied
         // at draw time, keeping it out of the cache key.
-        let local_rect = vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
+        let local_rect = kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
         let local_path = shape_kind_path(silhouette.kind(), local_rect)
             .unwrap_or_else(|| path_commands_to_path(silhouette.commands(), local_rect));
 
@@ -378,12 +362,12 @@ impl HydrolysisRenderer {
         // and the translation applies only when the cached image is drawn.
         let [a, b, c, d, e, f] = transform.as_coeffs();
         let translation = (e, f);
-        let linear = vello::kurbo::Affine::new([a, b, c, d, 0.0, 0.0]);
+        let linear = kurbo::Affine::new([a, b, c, d, 0.0, 0.0]);
 
         if blur <= 0.0 {
             renderer.scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform * vello::kurbo::Affine::translate((rect.x0, rect.y0)),
+                peniko::Fill::NonZero,
+                transform * kurbo::Affine::translate((rect.x0, rect.y0)),
                 color,
                 None,
                 &local_path,
@@ -410,8 +394,8 @@ impl HydrolysisRenderer {
             let (image, delta) = (hit.image.clone(), hit.delta);
             renderer.state.counters.image_registrations += 1;
             renderer.scene.draw_image(
-                &vello::peniko::ImageBrush::new(image),
-                vello::kurbo::Affine::translate(translation) * delta,
+                &peniko::ImageBrush::new(image),
+                kurbo::Affine::translate(translation) * delta,
             );
             return;
         }
@@ -420,7 +404,7 @@ impl HydrolysisRenderer {
         // The blur's impulse response is cut off at 2.5σ, matching
         // `draw_blurred_rounded_rect`, so the pixmap covers the full falloff.
         let margin = 2.5 * blur + 1.0;
-        let bounds = vello::kurbo::Shape::bounding_box(&linear_path).inflate(margin, margin);
+        let bounds = kurbo::Shape::bounding_box(&linear_path).inflate(margin, margin);
         let width = bounds.width().ceil() as u32;
         let height = bounds.height().ceil() as u32;
         if width == 0 || height == 0 {
@@ -432,7 +416,7 @@ impl HydrolysisRenderer {
             .expect("blurred shadow silhouette rasterizes taller than u16::MAX pixels");
 
         let mut raster = vello_cpu::RenderContext::new(width, height);
-        raster.set_transform(vello::kurbo::Affine::translate((-bounds.x0, -bounds.y0)));
+        raster.set_transform(kurbo::Affine::translate((-bounds.x0, -bounds.y0)));
         raster.push_filter_layer(vello_common::filter_effects::Filter::from_primitive(
             vello_common::filter_effects::FilterPrimitive::GaussianBlur {
                 std_deviation: blur as f32,
@@ -444,24 +428,24 @@ impl HydrolysisRenderer {
         raster.pop_layer();
         let mut pixmap = vello_cpu::Pixmap::new(width, height);
         raster.render(&mut pixmap, &mut vello_cpu::Resources::default());
-        let image = vello::peniko::ImageData {
-            data: vello::peniko::Blob::from(pixmap.data_as_u8_slice().to_vec()),
-            format: vello::peniko::ImageFormat::Rgba8,
-            alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+        let image = peniko::ImageData {
+            data: peniko::Blob::from(pixmap.data_as_u8_slice().to_vec()),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
             width: u32::from(width),
             height: u32::from(height),
         };
 
         // The image's top-left corner in linear space: the rect's origin under
         // the linear part, plus the inflated raster bounds' origin.
-        let delta = vello::kurbo::Affine::translate((
+        let delta = kurbo::Affine::translate((
             a * rect.x0 + c * rect.y0 + bounds.x0,
             b * rect.x0 + d * rect.y0 + bounds.y0,
         ));
         renderer.state.counters.image_registrations += 1;
         renderer.scene.draw_image(
-            &vello::peniko::ImageBrush::new(image.clone()),
-            vello::kurbo::Affine::translate(translation) * delta,
+            &peniko::ImageBrush::new(image.clone()),
+            kurbo::Affine::translate(translation) * delta,
         );
         renderer
             .blurred_silhouettes
@@ -1009,9 +993,9 @@ impl HydrolysisRenderer {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RegularClipShape {
-    Rect(vello::kurbo::Rect),
+    Rect(kurbo::Rect),
     RoundedRect {
-        rect: vello::kurbo::Rect,
+        rect: kurbo::Rect,
         corner_width: f64,
         corner_height: f64,
     },
@@ -1021,7 +1005,7 @@ enum RegularClipShape {
 ///
 /// A normalized radius resolves against the shorter side, so corners stay
 /// circular and a fully-rounded shape is a stadium rather than an ellipse.
-fn kind_clip_shape(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<RegularClipShape> {
+fn kind_clip_shape(kind: ShapeKind, bounds: kurbo::Rect) -> Option<RegularClipShape> {
     let min_side = bounds.width().min(bounds.height()).max(0.0);
     let rounded = |corner: f64| {
         Some(RegularClipShape::RoundedRect {
@@ -1058,7 +1042,7 @@ fn kind_clip_shape(kind: ShapeKind, bounds: vello::kurbo::Rect) -> Option<Regula
 #[cfg(test)]
 mod clip_shape_tests {
     use super::{RegularClipShape, ShapeKind, kind_clip_shape};
-    use vello::kurbo::Rect;
+    use kurbo::Rect;
 
     /// A square circle is exactly a rounded rect whose corner is half the
     /// side, so the fast clip is allowed to take it.
@@ -1156,14 +1140,11 @@ mod clip_shape_tests {
     }
 }
 
-fn regular_clip_shape(
-    commands: &[PathCommand],
-    bounds: vello::kurbo::Rect,
-) -> Option<RegularClipShape> {
+fn regular_clip_shape(commands: &[PathCommand], bounds: kurbo::Rect) -> Option<RegularClipShape> {
     regular_rect(commands, bounds).or_else(|| regular_rounded_rect(commands, bounds))
 }
 
-fn regular_rect(commands: &[PathCommand], bounds: vello::kurbo::Rect) -> Option<RegularClipShape> {
+fn regular_rect(commands: &[PathCommand], bounds: kurbo::Rect) -> Option<RegularClipShape> {
     let [
         PathCommand::MoveTo { x: x0, y: y0 },
         PathCommand::LineTo { x: x1, y: top_y },
@@ -1191,10 +1172,7 @@ fn regular_rect(commands: &[PathCommand], bounds: vello::kurbo::Rect) -> Option<
 }
 
 #[allow(clippy::too_many_lines)]
-fn regular_rounded_rect(
-    commands: &[PathCommand],
-    bounds: vello::kurbo::Rect,
-) -> Option<RegularClipShape> {
+fn regular_rounded_rect(commands: &[PathCommand], bounds: kurbo::Rect) -> Option<RegularClipShape> {
     let [
         PathCommand::MoveTo { x: start_x, y: y0 },
         PathCommand::LineTo {
@@ -1305,14 +1283,8 @@ fn regular_rounded_rect(
     })
 }
 
-fn resolve_normalized_rect(
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    bounds: vello::kurbo::Rect,
-) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::new(
+fn resolve_normalized_rect(x0: f32, y0: f32, x1: f32, y1: f32, bounds: kurbo::Rect) -> kurbo::Rect {
+    kurbo::Rect::new(
         f64::from(x0) * bounds.width(),
         f64::from(y0) * bounds.height(),
         f64::from(x1) * bounds.width(),
@@ -1334,7 +1306,7 @@ mod regular_clip_tests {
 
     use super::*;
 
-    const BOUNDS: vello::kurbo::Rect = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 100.0);
+    const BOUNDS: kurbo::Rect = kurbo::Rect::new(0.0, 0.0, 200.0, 100.0);
 
     #[test]
     fn recognizes_axis_aligned_rectangle() {

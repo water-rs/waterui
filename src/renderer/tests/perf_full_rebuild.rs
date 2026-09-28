@@ -32,8 +32,8 @@ use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, OffscreenGpuContext};
 
-use vello::kurbo::Affine;
-use vello::peniko::{Brush, Color, Fill};
+use kurbo::Affine;
+use peniko::{Brush, Color, Fill};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, ProposalSize, Rect as LayoutRect, Size, StretchAxis, SubView,
     VerticalAlignment, ViewDimensions,
@@ -218,7 +218,7 @@ fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (
 /// primitives into a fresh `vello::Scene` every frame.
 #[test]
 fn pure_vello_encode_floor() {
-    use vello::kurbo::{Circle as KurboCircle, Rect, RoundedRect};
+    use kurbo::{Circle as KurboCircle, Rect, RoundedRect};
 
     let white = Brush::Solid(Color::new([1.0, 1.0, 1.0, 1.0]));
     let blue = Brush::Solid(Color::new([0.23, 0.51, 0.96, 1.0]));
@@ -444,12 +444,8 @@ impl ProtoNode {
     fn flush(&self, scene: &mut vello::Scene, transform: Affine, size: Size) {
         match self {
             ProtoNode::Color { brush, .. } => {
-                let rect = vello::kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(size.width),
-                    f64::from(size.height),
-                );
+                let rect =
+                    kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
                 scene.fill(Fill::NonZero, transform, brush, None, &rect);
             }
             ProtoNode::Container {
