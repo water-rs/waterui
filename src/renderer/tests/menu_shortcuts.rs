@@ -414,3 +414,104 @@ fn the_most_recently_mounted_menu_wins_a_chord_conflict() {
     );
     assert_eq!(second.snapshot(), 1, "the newest registration wins it");
 }
+
+/// The app's `menu_bar` arms its chords with no `Menu` mounted: the runner
+/// registers the resolved menus as an app-scoped source on the shared
+/// registry, so `Ctrl+W` reaches the command in a window whose content is a
+/// plain view. (watergram DOGFOOD r43-1)
+#[test]
+fn menu_bar_chord_fires_without_a_mounted_menu() {
+    let fired = Binding::container(0_i32);
+    let menu_bar = {
+        let fired = fired.clone();
+        nami::Computed::constant(vec![Menu::new(
+            "App",
+            "Quit"
+                .action(move || fired.set(fired.snapshot() + 1))
+                .shortcut(Shortcut::new("w").control()),
+        )])
+    };
+    let env = test_environment();
+    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+
+    key_chord(&mut runtime, "w", ctrl());
+    assert_eq!(
+        fired.snapshot(),
+        1,
+        "the app menu bar's chord dispatches with no Menu mounted"
+    );
+}
+
+/// With the app bar and a mounted `Menu` claiming the same chord, the
+/// mounted menu — the newer registration — wins while it is up, and the
+/// app bar answers again once it unmounts (watergram DOGFOOD r43-1;
+/// `the_most_recently_mounted_menu_wins_a_chord_conflict` for the
+/// mounted-vs-mounted order).
+#[test]
+fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
+    let bar_fired = Binding::container(0_i32);
+    let menu_fired = Binding::container(0_i32);
+    let menu_bar = {
+        let bar_fired = bar_fired.clone();
+        nami::Computed::constant(vec![Menu::new(
+            "App",
+            "Quit"
+                .action(move || bar_fired.set(bar_fired.snapshot() + 1))
+                .shortcut(Shortcut::new("w").control()),
+        )])
+    };
+    let mounted = Binding::container(false);
+    let env = test_environment();
+    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let view = {
+        let menu_fired = menu_fired.clone();
+        let mounted = mounted.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            let menu_fired = menu_fired.clone();
+            let mounted = mounted.clone();
+            AnyView::new(vstack((
+                button("plain").action(|| {}),
+                when(mounted.clone(), move || {
+                    let menu_fired = menu_fired.clone();
+                    Menu::new(
+                        "Conflicting",
+                        "Bump"
+                            .action(move || menu_fired.set(menu_fired.snapshot() + 1))
+                            .shortcut(Shortcut::new("w").control()),
+                    )
+                }),
+            )))
+        })
+    };
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, view, WINDOW.0, WINDOW.1, MinimalTestTheme::default());
+    let _ = pump_until_settled(&mut runtime);
+
+    mounted.set(true);
+    let _ = pump_until_settled(&mut runtime);
+    key_chord(&mut runtime, "w", ctrl());
+    assert_eq!(
+        menu_fired.snapshot(),
+        1,
+        "the freshly mounted menu wins the shared chord"
+    );
+    assert_eq!(bar_fired.snapshot(), 0, "the app bar yields to it");
+
+    mounted.set(false);
+    let _ = pump_until_settled(&mut runtime);
+    key_chord(&mut runtime, "w", ctrl());
+    assert_eq!(
+        bar_fired.snapshot(),
+        1,
+        "the app bar answers again once the menu unmounts"
+    );
+    assert_eq!(menu_fired.snapshot(), 1, "the unmounted menu is inert");
+}

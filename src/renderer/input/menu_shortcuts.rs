@@ -235,13 +235,16 @@ fn collect_popup_shortcuts(nodes: &[PopupMenuNode], out: &mut Vec<MenuShortcut>)
     }
 }
 
-/// A source of chords: either a mounted `Menu` trigger (live while mounted,
+/// A source of chords: a mounted `Menu` trigger (live while mounted,
 /// resolved from its items signal so edits apply, and answering only to the
-/// window that mounted it) or an open popup menu (live while any menu in its
+/// window that mounted it), an open popup menu (live while any menu in its
 /// group is open, answering to whichever window holds focus — a popup window
-/// that took keyboard focus dispatches into the same registry). `seq` orders
-/// sources by registration, so the most recently registered one wins a chord
-/// conflict however the windows interleave.
+/// that took keyboard focus dispatches into the same registry), or the
+/// application's `menu_bar` (live for the app's duration — the runner owns
+/// the registry for exactly as long — and answering to whichever window
+/// dispatches, since app-level commands are not scoped to one window).
+/// `seq` orders sources by registration, so the most recently registered one
+/// wins a chord conflict however the windows interleave.
 enum MenuShortcutSource {
     Mounted {
         /// The window the chords dispatch on — the one the `Menu` mounted in.
@@ -260,12 +263,19 @@ enum MenuShortcutSource {
         env: Environment,
         seq: u64,
     },
+    /// The application-level `App::menu_bar`: resolved to items once by the
+    /// runner and kept reactive, so item edits apply on the next lookup.
+    AppBar {
+        items: Computed<Vec<ResolvedMenuItem>>,
+        env: Environment,
+        seq: u64,
+    },
 }
 
 impl MenuShortcutSource {
     fn seq(&self) -> u64 {
         match self {
-            Self::Mounted { seq, .. } | Self::Popup { seq, .. } => *seq,
+            Self::Mounted { seq, .. } | Self::Popup { seq, .. } | Self::AppBar { seq, .. } => *seq,
         }
     }
 
@@ -277,6 +287,9 @@ impl MenuShortcutSource {
                 .borrow()
                 .iter()
                 .any(|state| state.snapshot() != WindowState::Closed),
+            // The menu bar lives for the app's duration — the same span the
+            // runner owns this registry for.
+            Self::AppBar { .. } => true,
         }
     }
 }
@@ -353,6 +366,27 @@ impl MenuShortcutRegistry {
         }
     }
 
+    /// Register the application `menu_bar`'s chords — live for the app's
+    /// duration and answering to whichever window dispatches, since app-level
+    /// commands are not scoped to one window. The runner resolves the menus
+    /// once (`resolve_menu_bar_items` keeps the signal reactive, so item
+    /// edits apply on the next lookup) and registers once; re-registration
+    /// replaces the source rather than stacking it.
+    pub(crate) fn register_menu_bar(
+        &self,
+        items: Computed<Vec<ResolvedMenuItem>>,
+        env: Environment,
+    ) {
+        let mut inner = self.0.borrow_mut();
+        inner
+            .sources
+            .retain(|source| !matches!(source, MenuShortcutSource::AppBar { .. }));
+        let seq = inner.next_source_seq();
+        inner
+            .sources
+            .push(MenuShortcutSource::AppBar { items, env, seq });
+    }
+
     /// Register an open menu's chords — live while any menu in `group` is
     /// open (the `.context_menu` contract). Popup sources are not window
     /// scoped: a menu that opened as its own window may hold keyboard focus,
@@ -415,6 +449,9 @@ impl MenuShortcutRegistry {
                     MenuShortcutSource::Popup { shortcuts, .. } => {
                         entries.clone_from(shortcuts);
                     }
+                    MenuShortcutSource::AppBar { items, .. } => {
+                        collect_menu_shortcuts(&items.snapshot(), &mut entries);
+                    }
                 }
                 for entry in entries {
                     if entry.matches(pressed, modifiers) {
@@ -422,7 +459,8 @@ impl MenuShortcutRegistry {
                             conflicts.push(entry.label.clone());
                         } else {
                             let (group, env) = match source {
-                                MenuShortcutSource::Mounted { env, .. } => (None, env.clone()),
+                                MenuShortcutSource::Mounted { env, .. }
+                                | MenuShortcutSource::AppBar { env, .. } => (None, env.clone()),
                                 MenuShortcutSource::Popup { group, env, .. } => {
                                     (Some(group.clone()), env.clone())
                                 }

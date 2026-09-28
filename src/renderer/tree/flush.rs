@@ -331,6 +331,10 @@ impl RenderNode {
                     )
                 };
                 renderer.push_render_owner(&node.accessibility_identity);
+                #[allow(
+                    clippy::let_unit_value,
+                    reason = "without the accessibility feature the stub returns (); with it the binding carries the focus id into the input-target registration below"
+                )]
                 let _focus_node = emit_graphics_image_accessibility(
                     renderer,
                     Some(ctx),
@@ -391,6 +395,10 @@ impl RenderNode {
                     )
                 };
                 renderer.push_render_owner(&node.accessibility_identity);
+                #[allow(
+                    clippy::let_unit_value,
+                    reason = "without the accessibility feature the stub returns (); with it the binding carries the focus id into node.flush below"
+                )]
                 let _focus_node = emit_graphics_image_accessibility(
                     renderer,
                     Some(ctx),

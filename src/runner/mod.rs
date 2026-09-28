@@ -37,6 +37,7 @@ mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 pub(crate) mod ime;
+pub(crate) mod menu_bar;
 mod semantic;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -150,7 +151,7 @@ fn install_headless_window_managers(
     env.insert(PopupWindowManager::new(move |window| {
         pending_windows.borrow_mut().push(window);
     }));
-    env.insert(MenuShortcutRegistry::default());
+    let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
@@ -176,13 +177,16 @@ pub fn run(app: App, style: impl crate::Style) {
     // Locale changes reach views through a mailbox, whose pump needs the
     // executor installed just above.
     waterui_locale::start_system_locale_listener();
-    let (windows, _menu_bar, env) = app.into_parts();
+    let (windows, menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
     install_native_component_hooks(&mut env);
     install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
+    // App-level menu bar: arms its chords on the shared registry. The
+    // headless host renders no chrome, so there is no surface to draw.
+    menu_bar::register_menu_bar(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);

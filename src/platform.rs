@@ -1356,6 +1356,9 @@ mod web_impl;
 #[cfg(all(feature = "winit", target_os = "macos"))]
 mod macos_display_link;
 
+#[cfg(all(feature = "winit", any(target_os = "macos", target_os = "windows")))]
+pub(crate) mod native_menu_bar;
+
 #[cfg(feature = "winit")]
 mod winit_impl {
     #[cfg(hydrolysis_macos_system_webview)]

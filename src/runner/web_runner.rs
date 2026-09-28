@@ -299,7 +299,7 @@ pub fn run(app: App, style: impl crate::Style) {
             None,
         ));
 
-        let (windows, _menu_bar, env) = app.into_parts();
+        let (windows, menu_bar, env) = app.into_parts();
         let mut windows = windows.into_iter();
         let window = windows
             .next()
@@ -314,7 +314,10 @@ pub fn run(app: App, style: impl crate::Style) {
         super::install_native_component_hooks(&mut env);
         // Every runner seeds the chord table so mounted menus resolve
         // shortcuts through the same path (water-rs/hydrolysis#247).
-        env.insert(MenuShortcutRegistry::default());
+        let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
+        // A browser page cannot own the browser's menu bar, so the app menus
+        // contribute their chords only — nothing renders.
+        super::menu_bar::register_menu_bar(&menu_bar, &env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);

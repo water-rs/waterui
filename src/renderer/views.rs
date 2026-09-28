@@ -7,7 +7,7 @@ pub(crate) fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }
 
-pub(super) fn call_action_discarding_result<T: 'static>(
+pub(crate) fn call_action_discarding_result<T: 'static>(
     action: &SharedAction<T>,
     env: &Environment,
 ) {

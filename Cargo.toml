@@ -152,6 +152,12 @@ objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, 
 ] }
 serde_json = { version = "1", optional = true }
 
+# The native app menu-bar surface (`App::menu_bar`): muda builds the real
+# NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
+# (Windows). See src/platform/native_menu_bar.rs.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+muda = { version = "0.20", optional = true, default-features = false }
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The web runner fetches its fonts while the GPU device comes up; `join!` and
 # `join_all` are the whole of what it needs from futures.
@@ -278,6 +284,7 @@ winit = [
     "dep:objc2-core-graphics",
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
+    "dep:muda",
 ]
 web = [
     "accessibility",

@@ -224,7 +224,7 @@ pub fn run(
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
-    let (windows, _menu_bar, env) = app.into_parts();
+    let (windows, menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
@@ -257,7 +257,23 @@ pub fn run(
     // registry: a compositor that hands a popup window keyboard focus routes
     // the menu's chords to that window's dispatch, which must resolve them
     // while the menu is open (water-rs/hydrolysis#247).
-    env.insert(MenuShortcutRegistry::default());
+    let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
+    // The app's menu bar: its command chords arm on the shared registry,
+    // and the native menu-bar surface installs where the platform has
+    // one — see `menu_bar` for the per-platform contract (the two chord
+    // paths see disjoint keys, so dispatch stays exactly-once).
+    // Only the winit runner turns the resolved menus into a native
+    // surface: `NSApp.mainMenu` on macOS, an `HMENU` per application
+    // window on Windows. Every other runner just arms the chords. The
+    // event loop is the main thread, which is what the install's
+    // `MainThreadMarker` contract needs.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
+        super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &env,
+    );
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    super::menu_bar::register_menu_bar(&menu_bar, &env);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
@@ -275,6 +291,8 @@ pub fn run(
         theme,
         fonts,
         window_icon,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        native_menu_bar,
         pending_windows: windows
             .into_iter()
             .map(PendingWindow::application)
@@ -316,6 +334,12 @@ struct WinitRunner {
     /// X11 and Windows honor it; macOS uses the bundle's icns and Wayland
     /// resolves icons through the desktop entry instead.
     window_icon: Option<winit::window::Icon>,
+    /// The installed `App::menu_bar` native surface (macOS
+    /// `NSApp.mainMenu`, Windows per-window `HMENU`): kept alive for the
+    /// app's duration and pumped on every event-loop pass. Linux has no
+    /// surface — the chords are still armed (see `menu_bar`).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    native_menu_bar: crate::platform::native_menu_bar::NativeMenuBar,
     pending_windows: Vec<PendingWindow>,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
@@ -512,6 +536,17 @@ impl WinitRunner {
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
+        #[cfg(target_os = "windows")]
+        if activates {
+            // Windows' menu bar lives on the window: attach the app bar's
+            // HMENU to this HWND (see `menu_bar` for the platform contract).
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = native_window.window_handle()
+                && let RawWindowHandle::Win32(win) = handle.as_raw()
+            {
+                self.native_menu_bar.attach_hwnd(win.hwnd.get());
+            }
+        }
         let (mut platform, gpu_context) = pollster::block_on(WinitWindow::new_with_shared_gpu(
             native_window,
             self.gpu_context.as_ref(),
@@ -623,6 +658,19 @@ impl WinitRunner {
         })
     }
 
+    /// Lets the native menu bar forget a closing window's HWND before
+    /// the winit window (and its HWND) is destroyed, so `init_for_hwnd`
+    /// and `remove_for_hwnd` only ever run on live handles.
+    #[cfg(target_os = "windows")]
+    fn detach_menu_bar_hwnd(&self, runtime: &RuntimeWindow<WinitWindow>) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if let Ok(handle) = runtime.platform.native_window().window_handle()
+            && let RawWindowHandle::Win32(win) = handle.as_raw()
+        {
+            self.native_menu_bar.detach_hwnd(win.hwnd.get());
+        }
+    }
+
     fn remove_closed_windows(&mut self, event_loop: &ActiveEventLoop) {
         let mut close_ids = Vec::new();
         for (id, runtime) in &mut self.windows {
@@ -633,6 +681,10 @@ impl WinitRunner {
         }
 
         for id in close_ids {
+            #[cfg(target_os = "windows")]
+            if let Some(runtime) = self.windows.get(&id) {
+                self.detach_menu_bar_hwnd(runtime);
+            }
             self.windows.remove(&id);
             self.popup_window_ids.remove(&id);
             self.accesskit_adapters.remove(&id);
@@ -702,6 +754,10 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         self.flush_cross_window_rebuild_requests();
 
         if should_close {
+            #[cfg(target_os = "windows")]
+            if let Some(runtime) = self.windows.get(&window_id) {
+                self.detach_menu_bar_hwnd(runtime);
+            }
             self.windows.remove(&window_id);
             self.popup_window_ids.remove(&window_id);
             self.accesskit_adapters.remove(&window_id);
@@ -742,6 +798,10 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _ = self.drain_local_executor_queue();
+        // Native menu-bar clicks: muda posts them on its channel from the
+        // main thread — drain here so each dispatches on the event loop.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.native_menu_bar.pump_menu_events();
         self.mount_pending_windows(event_loop);
         let now = Instant::now();
         let mut next_gesture_deadline: Option<Instant> = None;
