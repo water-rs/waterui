@@ -17,6 +17,8 @@ pub use menu::{
     Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, Shortcut,
     ShortcutModifiers,
 };
+pub mod size;
+pub use size::ControlSize;
 pub mod slider;
 
 pub use slider::{Slider, slider};

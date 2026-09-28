@@ -199,9 +199,9 @@ mod token_probe {
     use vello::kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::{ResolvedColor, Srgb};
-    use waterui::component::button::{ButtonSize, ButtonStyle};
     use waterui::component::text;
     use waterui::component::toggle::ToggleStyle;
+    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
     use waterui::reactive::constant;
@@ -312,7 +312,7 @@ mod token_probe {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ButtonSize) -> ButtonMetrics {
+        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
             ButtonMetrics {
                 padding_x: 1.0,
                 padding_y: 2.0,
