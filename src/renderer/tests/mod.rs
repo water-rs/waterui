@@ -16,6 +16,7 @@ mod anchored_overlay;
 mod context_menu_occlusion;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_presentation;
+mod drag_drop;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod dynamic_remeasure;
 #[cfg(not(target_arch = "wasm32"))]
@@ -808,17 +809,17 @@ fn gpu_surface_external_redraw_is_consumed_during_continuous_frames() {
 }
 
 #[test]
-fn draggable_metadata_delivers_drag_data_to_drop_destination() {
+fn draggable_metadata_delivers_typed_payload_to_drop_destination() {
     use std::{cell::RefCell, rc::Rc};
-    use waterui::drag_drop::DragData;
+    use waterui::Str;
     use waterui::prelude::hstack;
 
     let dropped = Rc::new(RefCell::new(None::<String>));
     let dropped_target = Rc::clone(&dropped);
     let view = hstack((
-        ().size(60.0, 60.0).draggable(DragData::text("🍎 Apple")),
-        ().size(60.0, 60.0).drop_destination(move |data: DragData| {
-            *dropped_target.borrow_mut() = Some(data.as_str().to_owned());
+        ().size(60.0, 60.0).draggable(Str::from("🍎 Apple")),
+        ().size(60.0, 60.0).drop_destination(move |text: Str| {
+            *dropped_target.borrow_mut() = Some(text.to_string());
         }),
     ))
     .spacing(20.0);

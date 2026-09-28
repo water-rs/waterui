@@ -974,15 +974,16 @@ impl HydrolysisRenderer {
 
     /// Register the draggable hit-target, then render the given content. Shared by
     /// the dispatch handler and the retained `Wrapper` node. The node owns the
-    /// [`Draggable`] by reference, so the data provider is cloned for registration.
+    /// [`Draggable`] in an `Rc`, so the registration clones the handle and the
+    /// payload reads live at the moment the drag begins.
     pub(super) fn apply_draggable(
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        value: &Draggable,
+        value: &Rc<Draggable>,
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        renderer.register_draggable_target(bounds, value.data.clone());
+        renderer.register_draggable_target(bounds, Rc::clone(value));
         render_content(renderer);
     }
 

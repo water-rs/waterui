@@ -1465,7 +1465,37 @@ where
                 );
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            InputEvent::FileHovered { path } => {
+                let event_env = input_env(runtime, env);
+                let changed = runtime.renderer.handle_file_hovered(path, &event_env);
+                schedule_redraw_or_refresh(runtime, changed);
+            }
+            InputEvent::FileDropped { path } => {
+                // The file joins the drag's collected list on the renderer;
+                // delivery is deferred to `finish_os_file_drop` below —
+                // winit reports one event per file and a drop's files can
+                // outlive a single batch.
+                runtime.renderer.handle_file_dropped(path);
+            }
+            InputEvent::FileHoverCancelled => {
+                let event_env = input_env(runtime, env);
+                let changed = runtime.renderer.handle_file_hover_cancelled(&event_env);
+                schedule_redraw_or_refresh(runtime, changed);
+            }
         }
+    }
+    {
+        let event_env = input_env(runtime, env);
+        let changed = runtime.renderer.finish_os_file_drop(&event_env);
+        if runtime.renderer.os_file_drop_pending() {
+            // The drop's files may still be landing and winit sends no
+            // drop-end marker, so the drain that will deliver it exists only
+            // if the runner asks for it — request one follow-up pump through
+            // the platform redraw request, the same wake a signal change
+            // triggers (platform.rs's signal waker calls `request_redraw`).
+            runtime.platform.request_redraw();
+        }
+        schedule_redraw_or_refresh(runtime, changed);
     }
     runtime
         .platform

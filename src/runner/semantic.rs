@@ -526,6 +526,11 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 window.core.update_embedded_modifiers(modifiers);
                 false
             }
+            // Drop destinations resolve through laid-out hit-test bounds,
+            // which the semantic runtime does not track.
+            InputEvent::FileHovered { .. }
+            | InputEvent::FileDropped { .. }
+            | InputEvent::FileHoverCancelled => false,
             geometric => {
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",

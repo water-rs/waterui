@@ -1,6 +1,8 @@
 use super::*;
-use nami::{Computed, Signal as _};
-use waterui::drag_drop::DragData;
+use nami::Signal as _;
+use std::path::PathBuf;
+use waterui::Url;
+use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_backend_core::widget::{
@@ -19,39 +21,54 @@ pub(crate) struct DropTarget {
     pub(crate) bounds: vello::kurbo::Rect,
     pub(crate) key: DropTargetKey,
     pub(crate) env: Environment,
-    pub(crate) on_drop: Rc<RefCell<BoxedAction<()>>>,
-    pub(crate) on_enter: Option<Rc<RefCell<BoxedAction<()>>>>,
-    pub(crate) on_exit: Option<Rc<RefCell<BoxedAction<()>>>>,
+    pub(crate) destination: Rc<RefCell<DropDestination>>,
 }
 
-/// Shareable, pre-wrapped drop-destination handlers. A [`DropDestination`]'s
-/// boxed closures are wrapped in `Rc<RefCell<…>>` once (the form the hit-test
-/// stores), so a retained `Wrapper` node can hold them by value and re-register
-/// the same handles on every flush without moving the closures out.
+/// A shareable drop destination. The [`DropDestination`] is wrapped in
+/// `Rc<RefCell<…>>` once (the form the hit-test stores), so a retained
+/// `Wrapper` node can hold it by value and re-register the same handle on
+/// every flush.
 #[derive(Clone)]
 pub(crate) struct DropDestinationHandles {
-    on_drop: Rc<RefCell<BoxedAction<()>>>,
-    on_enter: Option<Rc<RefCell<BoxedAction<()>>>>,
-    on_exit: Option<Rc<RefCell<BoxedAction<()>>>>,
+    destination: Rc<RefCell<DropDestination>>,
 }
 
 impl DropDestinationHandles {
     pub(crate) fn from_destination(destination: DropDestination) -> Self {
         Self {
-            on_drop: Rc::new(RefCell::new(destination.on_drop)),
-            on_enter: destination
-                .on_enter
-                .map(|handler| Rc::new(RefCell::new(handler))),
-            on_exit: destination
-                .on_exit
-                .map(|handler| Rc::new(RefCell::new(handler))),
+            destination: Rc::new(RefCell::new(destination)),
         }
     }
 }
 
 pub(crate) struct ActiveDrag {
-    pub(crate) data: DragData,
+    pub(crate) payload: DragPayload,
     pub(crate) hovered_target: Option<DropTargetKey>,
+}
+
+/// An in-flight OS file drag. The path list lives here rather than in the
+/// event batch: winit reports the files of a drag one `HoveredFile` /
+/// `DroppedFile` event at a time, and nothing guarantees they all arrive in
+/// one batch, so the list must survive the lifetime of the drag — from the
+/// first `HoveredFile` until the drop is delivered or the hover cancelled.
+pub(crate) struct OsFileDrag {
+    /// Every path winit has reported for this drag.
+    pub(crate) paths: Vec<PathBuf>,
+    /// Where the drag is in its lifetime — see [`OsFileDragPhase`].
+    pub(crate) phase: OsFileDragPhase,
+}
+
+/// How far an [`OsFileDrag`] has progressed. Once a `DroppedFile` arrives the
+/// drag can only be `Dropping`, so the impossible "collected a file while not
+/// dropping" state is unwritable.
+pub(crate) enum OsFileDragPhase {
+    /// Only `HoveredFile`s have arrived; no drop has begun.
+    Hovering,
+    /// A `DroppedFile` arrived and the drop is collecting its files.
+    /// `collected_this_drain` stays set while the drain that received the
+    /// last `DroppedFile` is open; the first drain that closes without
+    /// adding one ends the drop and delivers.
+    Dropping { collected_this_drain: bool },
 }
 
 #[derive(Clone)]
@@ -310,6 +327,8 @@ pub(crate) struct HitTestState {
     pub(crate) hover_targets: Vec<HoverTarget>,
     pub(crate) drop_targets: Vec<DropTarget>,
     pub(crate) active_drag: Option<ActiveDrag>,
+    /// The in-flight OS file drag, if any — see [`OsFileDrag`].
+    pub(crate) os_file_drag: Option<OsFileDrag>,
     pub(crate) context_menu_targets: Vec<ContextMenuTarget>,
     pub(crate) interaction: InteractionEngine,
     pub(crate) active_press_bounds: Option<vello::kurbo::Rect>,
@@ -590,11 +609,20 @@ impl HitTestState {
         sync
     }
 
-    fn topmost_drop_target_index_at_point(&self, point: vello::kurbo::Point) -> Option<usize> {
+    /// The topmost drop target under `point` that accepts `payload`. A
+    /// destination that does not accept the drag's payload is skipped — it is
+    /// neither hovered nor delivered.
+    fn topmost_drop_target_index_at_point(
+        &self,
+        point: vello::kurbo::Point,
+        payload: &DragPayload,
+    ) -> Option<usize> {
         self.drop_targets
             .iter()
             .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
+            .filter(|(_, target)| {
+                target.bounds.contains(point) && target.destination.borrow().accepts(payload)
+            })
             .max_by(|(left_index, left), (right_index, right)| {
                 SemanticCore::target_hit_priority(left.key.depth, left.key.order, *left_index).cmp(
                     &SemanticCore::target_hit_priority(
@@ -616,26 +644,22 @@ impl HitTestState {
 }
 
 impl SemanticCore {
-    fn call_drop_action(
-        action: &Rc<RefCell<BoxedAction<()>>>,
-        captured_env: &Environment,
-        runtime_env: &Environment,
-        data: &DragData,
-    ) {
-        let drag_env = runtime_env.extending(data.clone());
-        let action_env = captured_env.layered_on(&drag_env);
-        (action.borrow_mut())(&action_env);
+    /// The environment a drop destination's callbacks run in: the
+    /// environment captured where the destination was declared, layered over
+    /// the runtime's.
+    fn drop_target_env(target: &DropTarget, runtime_env: &Environment) -> Environment {
+        target.env.layered_on(runtime_env)
     }
 
     fn sync_active_drag_hover(&mut self, point: vello::kurbo::Point, env: &Environment) -> bool {
         let Some(active_drag) = self.hit_test.active_drag.as_ref() else {
             return false;
         };
-        let data = active_drag.data.clone();
+        let payload = active_drag.payload.clone();
         let previous_key = active_drag.hovered_target;
         let current_target = self
             .hit_test
-            .topmost_drop_target_index_at_point(point)
+            .topmost_drop_target_index_at_point(point, &payload)
             .map(|index| self.hit_test.drop_targets[index].clone());
         let current_key = current_target.as_ref().map(|target| target.key);
         if previous_key == current_key {
@@ -648,16 +672,14 @@ impl SemanticCore {
         }
 
         let mut changed = previous_key.is_some() || current_key.is_some();
-        if let Some(target) = previous_target
-            && let Some(on_exit) = target.on_exit.as_ref()
-        {
-            Self::call_drop_action(on_exit, &target.env, env, &data);
+        if let Some(target) = previous_target {
+            let action_env = Self::drop_target_env(&target, env);
+            target.destination.borrow_mut().exit(&action_env);
             changed = true;
         }
-        if let Some(target) = current_target
-            && let Some(on_enter) = target.on_enter.as_ref()
-        {
-            Self::call_drop_action(on_enter, &target.env, env, &data);
+        if let Some(target) = current_target {
+            let action_env = Self::drop_target_env(&target, env);
+            target.destination.borrow_mut().enter(&action_env);
             changed = true;
         }
         changed
@@ -665,15 +687,15 @@ impl SemanticCore {
 
     fn begin_or_update_drag(
         &mut self,
-        data: DragData,
+        payload: DragPayload,
         point: vello::kurbo::Point,
         env: &Environment,
     ) -> bool {
         if let Some(active_drag) = self.hit_test.active_drag.as_mut() {
-            active_drag.data = data;
+            active_drag.payload = payload;
         } else {
             self.hit_test.active_drag = Some(ActiveDrag {
-                data,
+                payload,
                 hovered_target: None,
             });
         }
@@ -686,7 +708,7 @@ impl SemanticCore {
         };
         let drop_target = self
             .hit_test
-            .topmost_drop_target_index_at_point(point)
+            .topmost_drop_target_index_at_point(point, &active_drag.payload)
             .map(|index| self.hit_test.drop_targets[index].clone());
         let exit_target = active_drag
             .hovered_target
@@ -694,32 +716,183 @@ impl SemanticCore {
 
         let mut changed = false;
         if let Some(target) = drop_target {
-            Self::call_drop_action(&target.on_drop, &target.env, env, &active_drag.data);
+            let action_env = Self::drop_target_env(&target, env);
+            target
+                .destination
+                .borrow_mut()
+                .deliver(active_drag.payload.clone(), &action_env);
             changed = true;
         }
-        if let Some(target) = exit_target
-            && let Some(on_exit) = target.on_exit.as_ref()
-        {
-            Self::call_drop_action(on_exit, &target.env, env, &active_drag.data);
+        if let Some(target) = exit_target {
+            let action_env = Self::drop_target_env(&target, env);
+            target.destination.borrow_mut().exit(&action_env);
             changed = true;
         }
         changed
     }
 
     fn cancel_active_drag(&mut self, env: &Environment) -> bool {
+        self.hit_test.os_file_drag = None;
         let Some(active_drag) = self.hit_test.active_drag.take() else {
             return false;
         };
         let exit_target = active_drag
             .hovered_target
             .and_then(|key| self.hit_test.drop_target_with_key(key));
-        if let Some(target) = exit_target
-            && let Some(on_exit) = target.on_exit.as_ref()
-        {
-            Self::call_drop_action(on_exit, &target.env, env, &active_drag.data);
+        if let Some(target) = exit_target {
+            let action_env = Self::drop_target_env(&target, env);
+            target.destination.borrow_mut().exit(&action_env);
             return true;
         }
         false
+    }
+
+    /// The drag's collected files as a [`Files`] payload of `file://` URLs.
+    /// `Url::from_file_path` is infallible on any bytes, so non-UTF-8 paths
+    /// cannot panic here.
+    fn os_file_payload(paths: &[PathBuf]) -> DragPayload {
+        DragPayload::new(Files::new(paths.iter().map(Url::from_file_path)))
+    }
+
+    /// Appends `path` to the drag's collected files if it is not already
+    /// there — winit reports every file of a drag twice, once as
+    /// `HoveredFile` and again as `DroppedFile`, so a naive append would
+    /// deliver each URL twice.
+    fn collect_os_file_drag_path(&mut self, path: PathBuf) -> &mut OsFileDrag {
+        let state = self
+            .hit_test
+            .os_file_drag
+            .get_or_insert_with(|| OsFileDrag {
+                paths: Vec::new(),
+                phase: OsFileDragPhase::Hovering,
+            });
+        if !state.paths.contains(&path) {
+            state.paths.push(path);
+        }
+        state
+    }
+
+    /// A file of an OS drag hovered the window (winit `HoveredFile`, one
+    /// event per file). The path joins the drag's collected files and the
+    /// [`Files`] payload is rebuilt over all of them, so a destination that
+    /// accepts [`Files`] sees the hover and one that does not is never
+    /// entered.
+    ///
+    /// winit's file events carry no position; the hover resolves at the last
+    /// position the window saw (`hit_test.pointer_position`).
+    pub fn handle_file_hovered(&mut self, path: PathBuf, env: &Environment) -> bool {
+        let payload = {
+            let state = self.collect_os_file_drag_path(path);
+            Self::os_file_payload(&state.paths)
+        };
+        let Some(point) = self.hit_test.pointer_position else {
+            self.hit_test.active_drag = Some(ActiveDrag {
+                payload,
+                hovered_target: None,
+            });
+            return false;
+        };
+        self.begin_or_update_drag(payload, point, env)
+    }
+
+    /// A file of an OS drag was dropped on the window (winit `DroppedFile`,
+    /// one event per file). The path joins the drag's collected files; the
+    /// drop itself is delivered once by [`Self::finish_os_file_drop`], at the
+    /// end of the first drain that adds no more files.
+    pub fn handle_file_dropped(&mut self, path: PathBuf) {
+        let state = self.collect_os_file_drag_path(path);
+        state.phase = OsFileDragPhase::Dropping {
+            collected_this_drain: true,
+        };
+    }
+
+    /// Whether an OS file drop is collecting files and owes the runner one
+    /// more drain to deliver it — the runner turns this into a scheduled
+    /// follow-up pump so the drop lands even if no further input arrives.
+    pub(crate) fn os_file_drop_pending(&self) -> bool {
+        matches!(
+            self.hit_test.os_file_drag.as_ref().map(|drag| &drag.phase),
+            Some(OsFileDragPhase::Dropping { .. })
+        )
+    }
+
+    /// Ends an OS file drag's drop if one has fully landed.
+    ///
+    /// winit emits no drop-end event — only `DroppedFile` per file — so a
+    /// drop ends with the first drain that adds no file. That is sound
+    /// because every backend emits a drop's whole file set inside a single
+    /// platform callback, which lands entirely within one drain: on X11 the
+    /// `XdndDrop` handler loops `for path in path_list` emitting one
+    /// `DroppedFile` each (winit 0.30.13
+    /// `platform_impl/linux/x11/event_processor.rs`), on macOS
+    /// `performDragOperation:` queues every file at once
+    /// (`platform_impl/macos/window_delegate.rs`), and on Windows
+    /// `IDropTarget::Drop` iterates the HDROP's files in one call
+    /// (`platform_impl/windows/drop_handler.rs`). Keeping the collection on
+    /// the drag rather than the batch means a set that does straddle drains
+    /// still delivers once, with every file it carried.
+    ///
+    /// The drain that ends a drop only exists because the runner asked for
+    /// it: when this leaves the drag [`OsFileDragPhase::Dropping`], the
+    /// caller requests one follow-up pump through
+    /// `PlatformWindow::request_redraw` — the same wake a signal change
+    /// triggers — so the drop lands even if no further input ever arrives.
+    ///
+    /// The drop resolves at the last position the window saw; if the pointer
+    /// was never observed entering, the drop is discarded with an error —
+    /// never silently.
+    pub fn finish_os_file_drop(&mut self, env: &Environment) -> bool {
+        let Some(state) = self.hit_test.os_file_drag.as_mut() else {
+            return false;
+        };
+        match state.phase {
+            OsFileDragPhase::Hovering => return false,
+            OsFileDragPhase::Dropping {
+                collected_this_drain: true,
+            } => {
+                // This drain just collected files — a drop may still be
+                // landing; the runner schedules the follow-up drain that
+                // delivers it.
+                state.phase = OsFileDragPhase::Dropping {
+                    collected_this_drain: false,
+                };
+                return false;
+            }
+            OsFileDragPhase::Dropping {
+                collected_this_drain: false,
+            } => {}
+        }
+        let state = self
+            .hit_test
+            .os_file_drag
+            .take()
+            .expect("os_file_drag presence checked above");
+        let payload = Self::os_file_payload(&state.paths);
+        match self.hit_test.active_drag.as_mut() {
+            Some(active_drag) => active_drag.payload = payload,
+            None => {
+                self.hit_test.active_drag = Some(ActiveDrag {
+                    payload,
+                    hovered_target: None,
+                });
+            }
+        }
+        let Some(point) = self.hit_test.pointer_position else {
+            tracing::error!(
+                target: "waterui::hydrolysis::input",
+                paths = ?state.paths,
+                "OS file drop discarded: no pointer position has ever been reported"
+            );
+            return self.cancel_active_drag(env);
+        };
+        self.finish_active_drag(point, env)
+    }
+
+    /// An OS file drag left the window or ended without a drop (winit
+    /// `HoveredFileCancelled`).
+    pub fn handle_file_hover_cancelled(&mut self, env: &Environment) -> bool {
+        self.hit_test.os_file_drag = None;
+        self.cancel_active_drag(env)
     }
 
     pub(crate) fn sync_active_pointer_drag_target_after_layout(
@@ -1483,6 +1656,15 @@ impl HydrolysisRenderer {
             drag_changed |= pointer_drag_changed;
             refresh_requested |= pointer_drag_changed;
         }
+        // An OS file drag has no pointer target driving it — its hover sync
+        // happens here. For an in-app drag this repeats the sync the
+        // drag-target action just ran, a no-op while the target is unchanged.
+        let drag_hover_changed = self.sync_active_drag_hover(point, env);
+        if drag_hover_changed {
+            self.request_refresh();
+        }
+        drag_changed |= drag_hover_changed;
+        refresh_requested |= drag_hover_changed;
         let hover = if pointer_kind == PointerKind::Mouse {
             self.hit_test.sync_hover_targets(point, env, true, at)
         } else {
@@ -3040,10 +3222,13 @@ impl SemanticCore {
             .is_some_and(|drag| drag.key == key)
     }
 
+    /// Register the drag source for `draggable`. The payload is read when
+    /// the drag begins — the action snapshots the [`Draggable`]'s signal then,
+    /// so a binding-backed payload carries its current value.
     pub(crate) fn register_draggable_target(
         &mut self,
         bounds: vello::kurbo::Rect,
-        data: Computed<DragData>,
+        draggable: Rc<Draggable>,
     ) {
         self.register_pointer_target_action(
             bounds,
@@ -3053,7 +3238,7 @@ impl SemanticCore {
                 move |renderer: &mut SemanticCore,
                       point: vello::kurbo::Point,
                       env: &Environment| {
-                    renderer.begin_or_update_drag(data.snapshot(), point, env)
+                    renderer.begin_or_update_drag(draggable.payload(), point, env)
                 },
             )),
             self.render_depth,
@@ -3082,9 +3267,7 @@ impl SemanticCore {
                 order,
             },
             env: env.clone(),
-            on_drop: Rc::clone(&handles.on_drop),
-            on_enter: handles.on_enter.clone(),
-            on_exit: handles.on_exit.clone(),
+            destination: Rc::clone(&handles.destination),
         });
     }
 }

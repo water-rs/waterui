@@ -401,7 +401,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::build_wrapper(
-                    WrapperEffect::Draggable(value),
+                    WrapperEffect::Draggable(Rc::new(value)),
                     content,
                     env,
                     renderer,

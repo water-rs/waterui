@@ -251,8 +251,8 @@ impl SemanticCore {
 
     /// Whether the renderer has scheduled work that will still change layout,
     /// semantics, or reactive state on a future frame: pending patches or
-    /// rebuilds, active animations, armed gesture deadlines, or gliding smooth
-    /// scrolls.
+    /// rebuilds, active animations, armed gesture deadlines, gliding smooth
+    /// scrolls, or an OS file drop awaiting its delivering drain.
     ///
     /// Visual-only redraw requests (caret blink, the visible-window present
     /// cadence) are deliberately excluded: they repaint pixels without moving
@@ -261,6 +261,7 @@ impl SemanticCore {
     #[must_use]
     pub fn has_scheduled_semantic_work(&self) -> bool {
         self.has_pending_semantic_update()
+            || self.os_file_drop_pending()
             || self.animations_active()
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()

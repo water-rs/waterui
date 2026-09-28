@@ -582,7 +582,10 @@ pub(super) enum WrapperEffect {
     Border(Border),
     Shadow(Shadow),
     Cursor(Cursor),
-    Draggable(Draggable),
+    /// A drag source. The `Rc` lets the registered hit-test action read the
+    /// payload live — `Draggable::payload` snapshots its signal at the moment
+    /// the drag begins.
+    Draggable(Rc<Draggable>),
     DropDestination(DropDestinationHandles),
     ContextMenu(ContextMenuEffect),
     /// Conditional hit-testing: renders the child, then truncates the interaction

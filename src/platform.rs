@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use nami::Signal;
 use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
@@ -223,6 +225,22 @@ pub enum InputEvent {
     /// terminal's DECSET 1004 focus tracking, for one).
     Focused(bool),
     CloseRequested,
+    /// One file of an OS file drag is hovering the window (winit
+    /// `WindowEvent::HoveredFile`). winit emits one event per file of the
+    /// drag; the runner collects them into the drag's single `Files`
+    /// payload.
+    FileHovered {
+        path: PathBuf,
+    },
+    /// An OS file drag left the window or ended without a drop (winit
+    /// `WindowEvent::HoveredFileCancelled`).
+    FileHoverCancelled,
+    /// One file of an OS file drag was dropped on the window (winit
+    /// `WindowEvent::DroppedFile`). winit emits one event per file of the
+    /// drop.
+    FileDropped {
+        path: PathBuf,
+    },
 }
 
 /// Errors raised by surface acquisition/presentation.
@@ -2427,6 +2445,17 @@ mod winit_impl {
                 }
                 WindowEvent::Focused(focused) => {
                     self.pending_events.push(InputEvent::Focused(*focused));
+                }
+                WindowEvent::HoveredFile(path) => {
+                    self.pending_events
+                        .push(InputEvent::FileHovered { path: path.clone() });
+                }
+                WindowEvent::HoveredFileCancelled => {
+                    self.pending_events.push(InputEvent::FileHoverCancelled);
+                }
+                WindowEvent::DroppedFile(path) => {
+                    self.pending_events
+                        .push(InputEvent::FileDropped { path: path.clone() });
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     self.pointer_position =
