@@ -212,9 +212,9 @@ mod token_probe {
         BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
         InteractionMotion, ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics,
         ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-        RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
-        WidgetTheme,
+        RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TabItemLayout,
+        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        WidgetInteractionState, WidgetTheme,
     };
 
     use crate::Style;
@@ -622,17 +622,24 @@ mod token_probe {
 
         fn draw_navigation_bar_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
         fn draw_navigation_back_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn tabs_metrics(&self) -> TabsMetrics {
+        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
             TabsMetrics {
                 bar_height: 48.0,
                 button_min_width: 48.0,
                 button_horizontal_inset: 16.0,
                 active_indicator_height: 3.0,
                 active_indicator_radius: 3.0,
+                icon_label_spacing: 4.0,
             }
         }
         fn draw_tabs_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _top_edge: bool) {}
-        fn draw_tabs_highlight(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_tabs_highlight(
+            &self,
+            _draw: &mut dyn DrawContext,
+            _bounds: Rect,
+            _layout: TabItemLayout,
+        ) {
+        }
         fn draw_scroll_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {
