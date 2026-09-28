@@ -60,36 +60,6 @@ typedef struct WuiArray {
 #define WATERUI_POINTER_BUTTON_FORWARD (1 << 4)
 
 /**
- * `Modifiers::SHIFT` — a shift key is held.
- */
-#define WUI_SURFACE_MODIFIER_SHIFT 512
-
-/**
- * `Modifiers::CONTROL` — a control key is held.
- */
-#define WUI_SURFACE_MODIFIER_CONTROL 8
-
-/**
- * `Modifiers::ALT` — an alt/option key is held.
- */
-#define WUI_SURFACE_MODIFIER_ALT 1
-
-/**
- * `Modifiers::META` — a meta/command/Windows key is held.
- */
-#define WUI_SURFACE_MODIFIER_META 64
-
-/**
- * `Modifiers::CAPS_LOCK` — caps lock is latched on.
- */
-#define WUI_SURFACE_MODIFIER_CAPS_LOCK 4
-
-/**
- * `Modifiers::NUM_LOCK` — num lock is latched on.
- */
-#define WUI_SURFACE_MODIFIER_NUM_LOCK 128
-
-/**
  * Modifier bit for the Shift key in `WuiKeyPress::modifiers`.
  */
 #define WUI_KEY_MODIFIER_SHIFT 512
@@ -118,6 +88,36 @@ typedef struct WuiArray {
  * Modifier bit for the Num Lock state in `WuiKeyPress::modifiers`.
  */
 #define WUI_KEY_MODIFIER_NUM_LOCK 128
+
+/**
+ * `Modifiers::SHIFT` — a shift key is held.
+ */
+#define WUI_SURFACE_MODIFIER_SHIFT 512
+
+/**
+ * `Modifiers::CONTROL` — a control key is held.
+ */
+#define WUI_SURFACE_MODIFIER_CONTROL 8
+
+/**
+ * `Modifiers::ALT` — an alt/option key is held.
+ */
+#define WUI_SURFACE_MODIFIER_ALT 1
+
+/**
+ * `Modifiers::META` — a meta/command/Windows key is held.
+ */
+#define WUI_SURFACE_MODIFIER_META 64
+
+/**
+ * `Modifiers::CAPS_LOCK` — caps lock is latched on.
+ */
+#define WUI_SURFACE_MODIFIER_CAPS_LOCK 4
+
+/**
+ * `Modifiers::NUM_LOCK` — num lock is latched on.
+ */
+#define WUI_SURFACE_MODIFIER_NUM_LOCK 128
 
 /**
  * The default layout priority of a flexible gap, below ordinary content.
@@ -474,6 +474,20 @@ typedef enum WuiDragDataTag {
    */
   WuiDragDataTag_Url = 1,
 } WuiDragDataTag;
+
+/**
+ * Whether a key handler consumed a key, as `KeyHandling` crosses the ABI.
+ */
+typedef enum WuiKeyHandling {
+  /**
+   * The key was consumed; bubbling stops here.
+   */
+  WuiKeyHandling_Handled,
+  /**
+   * The key was not used; it keeps bubbling to the next ancestor.
+   */
+  WuiKeyHandling_Ignored,
+} WuiKeyHandling;
 
 /**
  * Color scheme enum for FFI.
@@ -2106,7 +2120,7 @@ typedef struct WuiMoveAction WuiMoveAction;
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
 /**
- * Opaque FFI handle owning a `RetainedCallback<OnKeyPress>`.
+ *Opaque FFI handle owning a `RetainedCallback<OnKeyPress>`.
  */
 typedef struct WuiOnKeyPress WuiOnKeyPress;
 
@@ -2849,51 +2863,10 @@ typedef struct WuiMetadata_WuiOnEvent {
 typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
 
 /**
- * Whether a key handler consumed a key, as `KeyHandling` crosses the ABI.
- */
-typedef enum WuiKeyHandling {
-  /**
-   * The key was consumed; bubbling stops here.
-   */
-  WuiKeyHandling_Handled,
-  /**
-   * The key was not used; it keeps bubbling to the next ancestor.
-   */
-  WuiKeyHandling_Ignored,
-} WuiKeyHandling;
-
-/**
- * A key press handed to a native `OnKeyPress` handler.
- *
- * `key` and `code` are owned strings: the caller hands over ownership and
- * this crate frees them during `waterui_call_on_key_press`. A host builds
- * them through its usual `WuiStr` constructor — never a zeroed struct, which
- * has no valid array vtable.
- */
-typedef struct WuiKeyPress {
-  /**
-   * The W3C `KeyboardEvent.key` name — `"a"`, `"Enter"`, `"Escape"`.
-   */
-  struct WuiStr key;
-  /**
-   * The W3C `KeyboardEvent.code` name — `"KeyA"`, `"Escape"`.
-   */
-  struct WuiStr code;
-  /**
-   * The modifier chord, as `WUI_KEY_MODIFIER_*` bits.
-   */
-  uint32_t modifiers;
-  /**
-   * Whether the platform generated this press by auto-repeat.
-   */
-  bool repeat;
-} WuiKeyPress;
-
-/**
  * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
  * attached metadata value.
  */
-typedef struct WuiMetadata_WuiOnKeyPress {
+typedef struct WuiMetadata_____WuiOnKeyPress {
   /**
    * The view content wrapped by this metadata node.
    */
@@ -2902,12 +2875,12 @@ typedef struct WuiMetadata_WuiOnKeyPress {
    * The metadata value attached to `content`.
    */
   struct WuiOnKeyPress *value;
-} WuiMetadata_WuiOnKeyPress;
+} WuiMetadata_____WuiOnKeyPress;
 
 /**
  * Type alias for `Metadata<OnKeyPress>` FFI struct.
  */
-typedef struct WuiMetadata_WuiOnKeyPress WuiMetadataOnKeyPress;
+typedef struct WuiMetadata_____WuiOnKeyPress WuiMetadataOnKeyPress;
 
 /**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
@@ -4393,6 +4366,33 @@ typedef struct WuiDragData {
 } WuiDragData;
 
 /**
+ * A key press handed to a native `OnKeyPress` handler.
+ *
+ * `key` and `code` are owned strings: the caller hands over ownership and
+ * this crate frees them during [`waterui_call_on_key_press`]. A host builds
+ * them through its usual `WuiStr` constructor — never a zeroed struct, which
+ * has no valid array vtable.
+ */
+typedef struct WuiKeyPress {
+  /**
+   * The W3C `KeyboardEvent.key` name — `"a"`, `"Enter"`, `"Escape"`.
+   */
+  struct WuiStr key;
+  /**
+   * The W3C `KeyboardEvent.code` name — `"KeyA"`, `"Escape"`.
+   */
+  struct WuiStr code;
+  /**
+   * The modifier chord, as `WUI_KEY_MODIFIER_*` bits.
+   */
+  uint32_t modifiers;
+  /**
+   * Whether the platform generated this press by auto-repeat.
+   */
+  bool repeat;
+} WuiKeyPress;
+
+/**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_binding_*`,
@@ -5033,10 +5033,12 @@ typedef struct WuiTextField {
    */
   uintptr_t line_limit;
   /**
-   * Action fired when the field is submitted (Return in a single-line
-   * field). NULL means no submit action and Return is left unconsumed so it
-   * keeps bubbling. A field without a line limit never submits. Free with
-   * `waterui_drop_shared_action`.
+   * The action run when the user submits the field with Return or Enter.
+   *
+   * `NULL` means the field has no submit action, and a single-line field
+   * leaves Return unconsumed so it bubbles to the field's ancestors. A
+   * field without a line limit consumes Return as a line break and never
+   * submits. Free with `waterui_drop_shared_action`.
    */
   struct WuiSharedAction *on_submit;
 } WuiTextField;
@@ -9295,23 +9297,13 @@ void waterui_call_on_hover_event(const struct WuiOnEventHandler *handler,
 void waterui_drop_on_event(struct WuiOnEventHandler *handler);
 
 /**
- * Calls an `OnKeyPress` handler with the key press.
- *
- * The handler runs with `press` in its environment, readable as
- * `Use<KeyPress>`; its `WuiKeyHandling` answer says whether the key keeps
- * bubbling to the next ancestor. This handler can be called multiple times.
+ * Drops a `WuiGesture`, recursively freeing any composite variants.
  *
  * # Safety
  *
- * * `handler` must be a valid pointer returned by
- *   `waterui_force_as_metadata_on_key_press`.
- * * `env` must be a valid pointer to a `WuiEnv`.
- * * `press` is consumed by this call — its strings must not be used
- *   afterwards.
+ * The gesture pointer must be valid and properly initialized.
  */
-enum WuiKeyHandling waterui_call_on_key_press(const struct WuiOnKeyPress *handler,
-                                              const struct WuiEnv *env,
-                                              struct WuiKeyPress press);
+void waterui_drop_gesture(struct WuiGesture *gesture);
 
 /**
  * # Safety
@@ -9320,13 +9312,23 @@ enum WuiKeyHandling waterui_call_on_key_press(const struct WuiOnKeyPress *handle
 void waterui_drop_on_key_press(struct WuiOnKeyPress *value);
 
 /**
- * Drops a `WuiGesture`, recursively freeing any composite variants.
+ * Calls an `OnKeyPress` handler with the key press.
+ *
+ * The handler runs with `press` in its environment, readable as
+ * `Use<KeyPress>`; its [`WuiKeyHandling`] answer says whether the key keeps
+ * bubbling to the next ancestor. This handler can be called multiple times.
  *
  * # Safety
  *
- * The gesture pointer must be valid and properly initialized.
+ * * `handler` must be a valid pointer returned by
+ *   [`waterui_force_as_metadata_on_key_press`](crate::waterui_force_as_metadata_on_key_press).
+ * * `env` must be a valid pointer to a `WuiEnv`.
+ * * `press` is consumed by this call — its strings must not be used
+ *   afterwards.
  */
-void waterui_drop_gesture(struct WuiGesture *gesture);
+enum WuiKeyHandling waterui_call_on_key_press(const struct WuiOnKeyPress *handler,
+                                              const struct WuiEnv *env,
+                                              struct WuiKeyPress press);
 
 /**
  * # Safety
