@@ -3,8 +3,8 @@ use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
-    HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_slider_intrinsic,
-    slider_value_epsilon, transformed_rect,
+    HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
+    measure_slider_intrinsic, slider_value_epsilon, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -14,13 +14,15 @@ use core::ops::RangeInclusive;
 use nami::{Binding, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
+use waterui_controls::ControlSize;
 use waterui_controls::label::Label;
-use waterui_controls::slider::SliderConfig;
+use waterui_controls::slider::{SliderConfig, ValueFormatter};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::layout::{ProposalSize, ViewDimensions};
+use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
+use waterui_text::styled::StyledStr;
 
 use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
@@ -40,6 +42,8 @@ pub(crate) struct SliderRenderState {
     max_value_label: RetainedSubview,
     range: RangeInclusive<f64>,
     value: Binding<f64>,
+    size: ControlSize,
+    value_indicator: Option<ValueFormatter>,
 }
 
 impl SliderRenderState {
@@ -50,6 +54,8 @@ impl SliderRenderState {
             max_value_label,
             range,
             value,
+            size,
+            value_indicator,
             ..
         } = config;
         Self {
@@ -59,6 +65,8 @@ impl SliderRenderState {
             max_value_label: RetainedSubview::new(max_value_label),
             range,
             value,
+            size,
+            value_indicator,
         }
     }
 
@@ -154,7 +162,7 @@ pub(crate) fn measure_slider_node(
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> ViewDimensions {
-    let metrics = theme.slider_metrics();
+    let metrics = theme.slider_metrics(render_state.size);
     let label_size = render_state.label_view.measure_built(state, env, theme);
     let min_label_size = render_state
         .min_value_label
@@ -218,8 +226,8 @@ pub(crate) fn render_slider_parts(
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let theme = ctx.theme();
-    let metrics = theme.slider_metrics();
     let mut state = state.borrow_mut();
+    let metrics = theme.slider_metrics(state.size);
     // Reading the disabled signal watches it, so a change schedules a frame
     // and this persistent node re-renders (and re-registers input) with the
     // new state.
@@ -393,21 +401,85 @@ pub(crate) fn render_slider_parts(
         disabled,
     );
     let thumb_center = vello::kurbo::Point::new(fill_right, track_center_y);
+    let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
-        let interaction = local_interaction_state(interaction, ctx.hit_transform);
         let mut draw = ctx.draw_context();
-        theme.draw_slider_track(&mut draw, track_rect, fill_rect, interaction);
+        theme.draw_slider_track(&mut draw, track_rect, fill_rect, state.size, interaction);
         theme.draw_slider_thumb(
             &mut draw,
             thumb_center,
             metrics.handle_overhang(),
+            state.size,
             interaction,
         );
         theme.draw_slider_thumb_state_layer(
             &mut draw,
             thumb_center,
             metrics.handle_overhang(),
+            state.size,
             interaction,
+        );
+    }
+
+    // The value indicator floats above the thumb while the pointer holds the
+    // drag; the theme draws the chrome and the renderer lays the formatted
+    // value inside it. It stays visual-only — the slider node already carries
+    // the live numeric value to assistive technology.
+    if interaction.pressed
+        && let Some(formatter) = &state.value_indicator
+    {
+        let indicator_metrics = theme.slider_value_indicator_metrics();
+        let label = StyledStr::plain(formatter.format(clamped))
+            .font(theme.slider_value_indicator_font())
+            .foreground(theme.slider_value_indicator_color());
+        let text_size = HydrolysisRenderer::measure_text_dimensions(
+            ctx.state_mut(),
+            label.clone(),
+            HorizontalAlignment::Center,
+            env,
+            None,
+            Some(1),
+        )
+        .size;
+        let bubble_width = (f64::from(text_size.width) + indicator_metrics.padding_x * 2.0)
+            .max(indicator_metrics.min_width);
+        let bubble_height = (f64::from(text_size.height) + indicator_metrics.padding_y * 2.0)
+            .max(indicator_metrics.min_height);
+        let thumb_top = track_center_y - metrics.handle_height / 2.0;
+        let bubble_bottom = thumb_top - indicator_metrics.thumb_gap;
+        let bubble_center_x = thumb_center.x.clamp(
+            ctx.bounds.x0 + bubble_width / 2.0,
+            ctx.bounds.x1 - bubble_width / 2.0,
+        );
+        let bubble = vello::kurbo::Rect::new(
+            bubble_center_x - bubble_width / 2.0,
+            bubble_bottom - bubble_height,
+            bubble_center_x + bubble_width / 2.0,
+            bubble_bottom,
+        );
+        {
+            let mut draw = ctx.draw_context();
+            theme.draw_slider_value_indicator(&mut draw, bubble);
+        }
+        let text_rect = vello::kurbo::Rect::new(
+            bubble.x0,
+            bubble.y0 + (bubble.height() - f64::from(text_size.height)) * 0.5,
+            bubble.x1,
+            bubble.y1,
+        );
+        let text_ctx = RenderContext {
+            transform: ctx.transform,
+            hit_transform: ctx.hit_transform,
+            bounds: text_rect,
+        };
+        let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
+        HydrolysisRenderer::render_styled_text(
+            hydro,
+            scene,
+            text_ctx,
+            label,
+            HorizontalAlignment::Center,
+            env,
         );
     }
     let usable_track = track_right - track_left;

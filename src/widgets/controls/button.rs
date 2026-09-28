@@ -16,7 +16,8 @@ use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
-use waterui_controls::button::{ButtonConfig, ButtonSize, ButtonStyle};
+use waterui_controls::ControlSize;
+use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::layout::Point as LayoutPoint;
@@ -453,7 +454,7 @@ pub(crate) fn measure_menu_node(
     let metrics = button_metrics(
         theme,
         MENU_TRIGGER_STYLE,
-        ButtonSize::default(),
+        ControlSize::Small,
         state.icon_only,
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
@@ -672,7 +673,7 @@ pub(crate) fn render_menu_parts(
     let metrics = button_metrics(
         &theme,
         style,
-        ButtonSize::default(),
+        ControlSize::Small,
         icon_only,
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
@@ -784,7 +785,7 @@ pub(crate) fn measure_menu_intrinsic(
     let metrics = button_metrics(
         theme,
         MENU_TRIGGER_STYLE,
-        ButtonSize::default(),
+        ControlSize::Small,
         icon_only,
         env.get::<InteractionStyle>(),
         env.get::<FloatingScope>().map(|scope| &scope.0),
@@ -855,7 +856,7 @@ fn disabled_aware_label_color(
 fn button_metrics(
     theme: &Rc<dyn crate::engine::WidgetTheme>,
     style: ButtonStyle,
-    size: ButtonSize,
+    size: ControlSize,
     icon_only: bool,
     interaction_style: Option<&InteractionStyle>,
     floating_style: Option<&FloatingStyle>,

@@ -1312,7 +1312,7 @@ pub(crate) fn measure_slider_intrinsic(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let metrics = theme.slider_metrics();
+    let metrics = theme.slider_metrics(slider.size);
     let label_size = measure_label_intrinsic(&slider.label, state, env, theme);
     let min_label_size = measure_view_intrinsic(&slider.min_value_label, state, env, theme);
     let max_label_size = measure_view_intrinsic(&slider.max_value_label, state, env, theme);

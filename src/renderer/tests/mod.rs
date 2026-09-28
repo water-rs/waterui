@@ -1,5 +1,6 @@
 mod clip_transform;
 mod collection_update;
+mod slider_size_indicator;
 use super::*;
 use std::borrow::Cow;
 use std::cell::RefCell;
@@ -74,7 +75,8 @@ use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
 use waterui_canvas::Canvas;
-use waterui_controls::button::{ButtonSize, ButtonStyle, button};
+use waterui_controls::ControlSize;
+use waterui_controls::button::{ButtonStyle, button};
 use waterui_controls::label::{LabelDisplayMode, label};
 use waterui_controls::slider::slider;
 #[cfg(feature = "accessibility")]
@@ -96,8 +98,9 @@ use waterui_backend_core::widget::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
-    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd, StepperMetrics,
+    TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics,
+    ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -2218,6 +2221,13 @@ pub(crate) struct MinimalTestTheme {
     /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
     /// up — a width-class theme like M3's medium-width boundary.
     horizontal_from_width: Option<f64>,
+    /// Every value-indicator chrome rect the theme was asked to draw — the
+    /// renderer reaches the hook only while the slider is pressed.
+    slider_value_indicator_draws: Rc<RefCell<Vec<Rect>>>,
+    /// The `ControlSize` each `slider_metrics` call was asked for.
+    slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
+    /// Every slider track rect the theme was asked to draw.
+    slider_track_draws: Rc<RefCell<Vec<Rect>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2272,7 +2282,7 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn button_metrics(&self, _style: ButtonStyle, _size: ButtonSize) -> ButtonMetrics {
+    fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
         ButtonMetrics {
             padding_x: 1.0,
             padding_y: 2.0,
@@ -2281,7 +2291,7 @@ impl WidgetTheme for MinimalTestTheme {
         }
     }
 
-    fn icon_button_metrics(&self, _style: ButtonStyle, _size: ButtonSize) -> ButtonMetrics {
+    fn icon_button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
         ButtonMetrics::new(0.0, 0.0, 41.0, 43.0)
     }
 
@@ -2462,13 +2472,16 @@ impl WidgetTheme for MinimalTestTheme {
     ) {
     }
 
-    fn slider_metrics(&self) -> SliderMetrics {
+    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics {
+        self.slider_metric_sizes.borrow_mut().push(size);
         SliderMetrics {
             horizontal_inset: 12.0,
             horizontal_spacing: 8.0,
             vertical_spacing: 6.0,
             min_track_width: 72.0,
-            track_height: 6.0,
+            // A 6pt track for the ExtraSmall default, four points deeper per
+            // size — the per-size tests read this back off the drawn track.
+            track_height: 6.0 + 4.0 * size as u8 as f64,
             handle_width: 4.0,
             handle_height: 44.0,
         }
@@ -2477,10 +2490,12 @@ impl WidgetTheme for MinimalTestTheme {
     fn draw_slider_track(
         &self,
         _draw: &mut dyn DrawContext,
-        _track_rect: Rect,
+        track_rect: Rect,
         _fill_rect: Rect,
+        _size: ControlSize,
         _state: WidgetInteractionState,
     ) {
+        self.slider_track_draws.borrow_mut().push(track_rect);
     }
 
     fn draw_slider_thumb(
@@ -2488,8 +2503,25 @@ impl WidgetTheme for MinimalTestTheme {
         _draw: &mut dyn DrawContext,
         _center: Point,
         _radius: f64,
+        _size: ControlSize,
         _state: WidgetInteractionState,
     ) {
+    }
+
+    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
+        SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
+    }
+
+    fn slider_value_indicator_color(&self) -> Color {
+        Color::srgb(255, 255, 255)
+    }
+
+    fn slider_value_indicator_font(&self) -> waterui_text::font::Font {
+        waterui_text::font::Font::default()
+    }
+
+    fn draw_slider_value_indicator(&self, _draw: &mut dyn DrawContext, bounds: Rect) {
+        self.slider_value_indicator_draws.borrow_mut().push(bounds);
     }
 
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
