@@ -2324,6 +2324,10 @@ mod winit_impl {
         frame: waterui_core::layout::Rect,
     }
 
+    /// A monitor's logical rect: `(position, extent)` — the shape
+    /// `clamp_frame_to_monitors` judges a frame write against.
+    type MonitorRect = (LogicalPosition<f64>, LogicalSize<f64>);
+
     #[derive(Debug)]
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
@@ -2460,42 +2464,125 @@ mod winit_impl {
             }
         }
 
-        /// The origin honored for a window's initial placement. A frame that
-        /// intersects any monitor — including one a second display occupies —
-        /// is honored as written; only a frame entirely outside every display
-        /// is pulled onto the nearest monitor's bounds, so a first-mapped
-        /// window can never open where nothing can reach it. With no monitor
-        /// information at all the request stands.
-        fn initial_placement_position(
-            requested: LogicalPosition<f64>,
-            size: LogicalSize<f64>,
-            monitors: &[(LogicalPosition<f64>, LogicalSize<f64>)],
-        ) -> LogicalPosition<f64> {
-            let intersects = monitors.iter().any(|(position, extent)| {
-                requested.x < position.x + extent.width
-                    && requested.x + size.width > position.x
-                    && requested.y < position.y + extent.height
-                    && requested.y + size.height > position.y
-            });
-            if intersects {
-                return requested;
-            }
-            monitors
-                .iter()
-                .map(|(position, extent)| {
-                    let max_x = (position.x + extent.width - size.width).max(position.x);
-                    let max_y = (position.y + extent.height - size.height).max(position.y);
-                    LogicalPosition::new(
-                        requested.x.clamp(position.x, max_x),
-                        requested.y.clamp(position.y, max_y),
+        /// Every monitor winit reports as a `(position, extent)` pair in
+        /// logical points, plus the index of the window's current monitor
+        /// when winit reports one. Shared by `clamp_frame_to_monitors` for
+        /// the first-map placement and every later frame write.
+        fn monitor_layout(&self) -> (Vec<MonitorRect>, Option<usize>) {
+            let scale_factor = self.window.scale_factor();
+            let monitors = self
+                .window
+                .available_monitors()
+                .map(|monitor| {
+                    (
+                        monitor.position().to_logical::<f64>(scale_factor),
+                        monitor.size().to_logical::<f64>(scale_factor),
                     )
                 })
-                .min_by(|a, b| {
-                    let distance_a = (a.x - requested.x).powi(2) + (a.y - requested.y).powi(2);
-                    let distance_b = (b.x - requested.x).powi(2) + (b.y - requested.y).powi(2);
-                    distance_a.total_cmp(&distance_b)
+                .collect::<Vec<_>>();
+            let current = self.window.current_monitor().and_then(|monitor| {
+                let position = monitor.position().to_logical::<f64>(scale_factor);
+                let extent = monitor.size().to_logical::<f64>(scale_factor);
+                monitors.iter().position(|m| *m == (position, extent))
+            });
+            (monitors, current)
+        }
+
+        /// A frame write clamped so it can never leave every monitor the
+        /// window can see: the size is capped at the target monitor's
+        /// extent and a frame that ends up entirely outside every monitor
+        /// is pulled onto the target monitor's bounds. The target monitor
+        /// is the window's current one, falling back to the monitor
+        /// containing the requested origin and then the nearest. A frame
+        /// that intersects any monitor — including one a second display
+        /// occupies — keeps its origin, so intentional off-screen
+        /// positions (slide-out animations, water-rs/hydrolysis#270)
+        /// still reach the window server, while an oversized request can
+        /// no longer wrap X11's CARD16 geometry field into a pixel-sized
+        /// window — the screen edge is the ceiling, which is also the
+        /// reference terminal's own bound.
+        ///
+        /// The same rule bounds the first-map placement — a not-yet-mapped
+        /// window simply has no current monitor to start from — and every
+        /// later write, so post-map frames cannot escape the screen either.
+        /// With no monitor information at all the request stands.
+        fn clamp_frame_to_monitors(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            monitors: &[MonitorRect],
+            current: Option<usize>,
+        ) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+            let target = current
+                .filter(|index| *index < monitors.len())
+                .or_else(|| {
+                    monitors.iter().position(|(position, extent)| {
+                        requested.x >= position.x
+                            && requested.x < position.x + extent.width
+                            && requested.y >= position.y
+                            && requested.y < position.y + extent.height
+                    })
                 })
-                .unwrap_or(requested)
+                .or_else(|| {
+                    monitors
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| {
+                            let distance_a = Self::clamp_distance(requested, size, a.0, a.1);
+                            let distance_b = Self::clamp_distance(requested, size, b.0, b.1);
+                            distance_a.total_cmp(&distance_b)
+                        })
+                        .map(|(index, _)| index)
+                });
+            let Some(target) = target else {
+                return (requested, size);
+            };
+            let (position, extent) = monitors[target];
+            // The window server carries geometry in CARD16/INT16 fields;
+            // a request larger than the monitor it lands on used to wrap
+            // modulo 65536 and map as a pixel-sized window.
+            let size = LogicalSize::new(
+                size.width.clamp(1.0, extent.width.max(1.0)),
+                size.height.clamp(1.0, extent.height.max(1.0)),
+            );
+            let intersects = monitors.iter().any(|(p, e)| {
+                requested.x < p.x + e.width
+                    && requested.x + size.width > p.x
+                    && requested.y < p.y + e.height
+                    && requested.y + size.height > p.y
+            });
+            if intersects {
+                return (requested, size);
+            }
+            (Self::pull_inside(requested, size, position, extent), size)
+        }
+
+        /// `requested` clamped so the frame fits inside the monitor rect
+        /// `(position, extent)` — the monitor's bounds, never a constant.
+        fn pull_inside(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            position: LogicalPosition<f64>,
+            extent: LogicalSize<f64>,
+        ) -> LogicalPosition<f64> {
+            let max_x = (position.x + extent.width - size.width).max(position.x);
+            let max_y = (position.y + extent.height - size.height).max(position.y);
+            LogicalPosition::new(
+                requested.x.clamp(position.x, max_x),
+                requested.y.clamp(position.y, max_y),
+            )
+        }
+
+        /// Squared distance between `requested` and the point it would be
+        /// pulled to inside `(position, extent)` — picks the nearest
+        /// monitor for a frame outside all of them.
+        fn clamp_distance(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            position: LogicalPosition<f64>,
+            extent: LogicalSize<f64>,
+        ) -> f64 {
+            let pulled = Self::pull_inside(requested, size, position, extent);
+            (pulled.x - requested.x).powi(2) + (pulled.y - requested.y).powi(2)
         }
 
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
@@ -2828,37 +2915,32 @@ mod winit_impl {
             // window is visible the app-requested setup was already
             // enforced and further changes just flow through the ordinary
             // path.
-            let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
+            let size_changed = applied.is_none_or(|p| *p.frame.size() != *frame.size());
+            let origin_changed = applied.is_none_or(|p| p.frame.origin() != frame.origin());
+            let mut target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
             let mut target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
             let visible = self.window.is_visible();
-            // One guard survives, and only for the initial placement: a
-            // first-mapped window whose frame lies entirely outside every
-            // display would open where nothing can reach it, so it is pulled
-            // onto the nearest monitor — the union of `available_monitors`,
-            // not the current one, so a frame on a second display passes
-            // through. Once a mapped event has been seen the frame binding
-            // is the app's word: an off-screen or cross-monitor origin
-            // reaches the window server exactly as written
-            // (water-rs/hydrolysis#270).
-            if self.pending_mapped_request.is_initial_placement(visible) {
-                let scale_factor = self.window.scale_factor();
-                let monitors = self
-                    .window
-                    .available_monitors()
-                    .map(|monitor| {
-                        (
-                            monitor.position().to_logical::<f64>(scale_factor),
-                            monitor.size().to_logical::<f64>(scale_factor),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                target_position =
-                    Self::initial_placement_position(target_position, target_size, &monitors);
+            // Every frame write — the first-map placement and each later
+            // one alike — is clamped to the monitors winit reports: the
+            // size is capped at the window's current monitor (the monitor
+            // containing the requested origin, or the nearest, when there
+            // is no current one) and a frame entirely outside every
+            // monitor is pulled back onto it. Frames that intersect a
+            // display still pass as written, so off-screen slide positions
+            // keep working (water-rs/hydrolysis#270), but an oversized
+            // request no longer wraps X11's CARD16 geometry field into a
+            // pixel-sized window. Monitor enumeration is skipped on pumps
+            // where no frame write can go out.
+            if self.pending_mapped_request.is_initial_placement(visible)
+                || size_changed
+                || origin_changed
+            {
+                let (monitors, current) = self.monitor_layout();
+                (target_position, target_size) =
+                    Self::clamp_frame_to_monitors(target_position, target_size, &monitors, current);
             }
             self.pending_mapped_request
                 .arm(visible, target_position, target_size, state);
-            let size_changed = applied.is_none_or(|p| *p.frame.size() != *frame.size());
-            let origin_changed = applied.is_none_or(|p| p.frame.origin() != frame.origin());
             if size_changed || origin_changed {
                 let current_position = self
                     .window
@@ -3623,8 +3705,8 @@ mod winit_impl {
             let requested = LogicalPosition::new(120.0, -36.0);
             let size = LogicalSize::new(800.0, 600.0);
             assert_eq!(
-                super::WinitWindow::initial_placement_position(requested, size, &monitors),
-                requested,
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, None),
+                (requested, size),
                 "a partially off-screen origin must reach the window server as written"
             );
         }
@@ -3648,8 +3730,8 @@ mod winit_impl {
             let requested = LogicalPosition::new(2200.0, 400.0);
             let size = LogicalSize::new(800.0, 600.0);
             assert_eq!(
-                super::WinitWindow::initial_placement_position(requested, size, &monitors),
-                requested,
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, None),
+                (requested, size),
                 "a frame on a second display must reach the window server as written"
             );
         }
@@ -3664,11 +3746,13 @@ mod winit_impl {
                 LogicalSize::new(1920.0, 1080.0),
             )];
             assert_eq!(
-                super::WinitWindow::initial_placement_position(
+                super::WinitWindow::clamp_frame_to_monitors(
                     LogicalPosition::new(4000.0, 3000.0),
                     size,
                     &single,
-                ),
+                    None,
+                )
+                .0,
                 LogicalPosition::new(1120.0, 480.0),
                 "a first-mapped window outside every display is pulled back in"
             );
@@ -3685,11 +3769,13 @@ mod winit_impl {
                 ),
             ];
             assert_eq!(
-                super::WinitWindow::initial_placement_position(
+                super::WinitWindow::clamp_frame_to_monitors(
                     LogicalPosition::new(2400.0, 3000.0),
                     size,
                     &monitors,
-                ),
+                    None,
+                )
+                .0,
                 LogicalPosition::new(2400.0, 840.0),
                 "the nearest display claims a window outside all of them"
             );
@@ -3697,8 +3783,103 @@ mod winit_impl {
             // With no monitor information the request stands as written.
             let requested = LogicalPosition::new(-4000.0, -3000.0);
             assert_eq!(
-                super::WinitWindow::initial_placement_position(requested, size, &[]),
-                requested,
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &[], None),
+                (requested, size),
+            );
+        }
+
+        #[test]
+        fn an_oversized_frame_write_is_capped_at_the_monitor_extent() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            // The CARD16-wrap report: a ~524292px request used to reach
+            // X11 verbatim and map modulo 65536 as a 4-pixel window. The
+            // size is capped at the target monitor while the origin —
+            // which intersects the display — passes as written, so the
+            // window lands exactly at the screen edge.
+            let monitors = [(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1600.0, 1200.0),
+            )];
+            let requested = LogicalPosition::new(0.0, 0.0);
+            let oversized = LogicalSize::new(524_292.0, 524_292.0);
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, oversized, &monitors, None,),
+                (requested, LogicalSize::new(1600.0, 1200.0)),
+                "an oversized frame write lands at the monitor's edge"
+            );
+        }
+
+        #[test]
+        fn a_post_map_write_is_measured_against_the_current_monitor() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            let size = LogicalSize::new(2000.0, 1500.0);
+            // The current monitor wins the size cap even when the
+            // requested origin sits on a larger second display.
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(
+                    LogicalPosition::new(2200.0, 100.0),
+                    size,
+                    &monitors,
+                    Some(0),
+                )
+                .1,
+                LogicalSize::new(1920.0, 1080.0),
+                "the current monitor caps the size, not the requested one"
+            );
+            // With no current monitor the one containing the requested
+            // origin takes over.
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(
+                    LogicalPosition::new(2200.0, 100.0),
+                    size,
+                    &monitors,
+                    None,
+                )
+                .1,
+                LogicalSize::new(2000.0, 1440.0),
+                "the origin's monitor caps the size when no monitor claims the window"
+            );
+        }
+
+        #[test]
+        fn a_fully_off_screen_post_map_write_returns_to_the_current_monitor() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            let size = LogicalSize::new(800.0, 600.0);
+            let requested = LogicalPosition::new(3000.0, 2000.0);
+            // Nearest would pick the second display; the current monitor
+            // claims a post-map write back.
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, Some(0),).0,
+                LogicalPosition::new(1120.0, 480.0),
+                "the pull lands on the window's current monitor"
+            );
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, None).0,
+                LogicalPosition::new(3000.0, 840.0),
+                "without a current monitor the nearest display claims it"
             );
         }
 
