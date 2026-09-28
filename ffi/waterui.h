@@ -1658,6 +1658,21 @@ typedef enum WuiScrollUnit {
 } WuiScrollUnit;
 
 /**
+ *C ABI mirror of `LastWindowPolicy`.
+ * What the native host does once the application has no open window.
+ */
+typedef enum WuiLastWindowPolicy {
+  /**
+   *Mirrors `LastWindowPolicy::Quit`.
+   */
+  WuiLastWindowPolicy_Quit,
+  /**
+   *Mirrors `LastWindowPolicy::StayResident`.
+   */
+  WuiLastWindowPolicy_StayResident,
+} WuiLastWindowPolicy;
+
+/**
  * 2D affine transform stored as a row-major 2x3 matrix.
  *
  * The transform maps a point `(x, y)` to:
@@ -8063,7 +8078,7 @@ typedef struct WuiArray_WuiWindow {
  */
 typedef struct WuiApp {
   /**
-   * Array of windows. The first window is the main window.
+   * The windows opened at startup, in declaration order; possibly none.
    */
   struct WuiArray_WuiWindow windows;
   /**
@@ -8075,6 +8090,11 @@ typedef struct WuiApp {
    * Returned to native for use during rendering.
    */
   struct WuiEnv *env;
+  /**
+   * What the host does once the application has no open window, at startup
+   * included.
+   */
+  enum WuiLastWindowPolicy last_window_policy;
 } WuiApp;
 
 

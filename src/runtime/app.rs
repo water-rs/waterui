@@ -1,6 +1,6 @@
 //! A `WaterUI` application representation.
 
-use nami::{Computed, signal::IntoComputed};
+use nami::Computed;
 use suiteki::Str;
 use waterui_core::{Environment, handler::ViewBuilder};
 
@@ -10,16 +10,63 @@ use crate::{
 };
 
 /// Represents a `WaterUI` application.
+///
+/// An application declares zero or more windows. None of them is structurally
+/// special: a runner opens every declared window at startup, and what happens
+/// once the last one closes — or when there is none to begin with — is the
+/// application's [`LastWindowPolicy`].
 #[derive(Debug)]
 pub struct App {
-    /// Main application window.
-    main_window: Window,
-    /// Additional application windows.
+    /// The windows opened at startup, in declaration order.
     windows: Vec<Window>,
+    /// What the application does once it has no window left.
+    last_window: LastWindowPolicy,
     /// Optional system menu bar menus.
     pub menu_bar: Computed<Vec<Menu>>,
     /// The application environment containing injected services.
     pub env: Environment,
+}
+
+/// What an application does once it has no open window.
+///
+/// Every runner consults this at startup and whenever a window closes. The
+/// platforms disagree on the convention, so the application states it rather
+/// than inheriting whichever one its runner happens to follow:
+///
+/// - On Linux and Windows an application conventionally ends with its last
+///   window, which is the default here on every platform.
+/// - On macOS an application conventionally stays running after its last
+///   window closes — in the Dock, with its menu bar — and opens a new window
+///   when asked. An application that follows that convention says
+///   [`StayResident`](Self::StayResident).
+/// - A status-item or tray application, or one that opens its windows on
+///   demand (a terminal started without an initial window), has no window as
+///   its primary surface and stays resident on every platform.
+/// - iOS and Android have no windowless foreground state: their runners
+///   reject an application that declares no window, whatever its policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum LastWindowPolicy {
+    /// End the application once its last window closes, and at startup when
+    /// it declares no window at all.
+    #[default]
+    Quit,
+    /// Keep the application running with no window, until it quits
+    /// explicitly or the system asks it to.
+    StayResident,
+}
+
+/// An [`App`] taken apart for a runner, see [`App::into_parts`].
+#[derive(Debug)]
+pub struct AppParts {
+    /// The windows opened at startup, in declaration order; possibly none.
+    pub windows: Vec<Window>,
+    /// The application menu bar.
+    pub menu_bar: Computed<Vec<Menu>>,
+    /// The application environment, the composition root every window renders
+    /// under.
+    pub env: Environment,
+    /// What the runner does once the application has no open window.
+    pub last_window: LastWindowPolicy,
 }
 
 /// What this application is called, or empty when nothing said.
@@ -49,30 +96,28 @@ pub fn application_identifier() -> Str {
 }
 
 impl App {
-    /// Create a new application with the given main content view and environment.
+    /// Create an application with a single window showing `content`.
     ///
-    /// The application's main window opens immediately (state is initialized
-    /// to [`WindowState::Normal`](crate::window::WindowState::Normal) rather than the type's `default()`, which is
-    /// `Closed`).
+    /// The window opens immediately (state is initialized to
+    /// [`WindowState::Normal`](crate::window::WindowState::Normal) rather than
+    /// the type's `default()`, which is `Closed`).
     ///
     /// The window is given no title of its own, which is what an empty title
     /// means: it is shown under the application's own name, which the platform
-    /// knows and this does not. Use [`Window::title`] to say something else.
+    /// knows and this does not. To title it, declare the window yourself with
+    /// [`Window::title`] and pass it to [`App::new_with_windows`].
     pub fn new(content: impl ViewBuilder, env: Environment) -> Self {
         let state = nami::binding(crate::window::WindowState::Normal);
         Self::new_with_windows([Window::new("", state, content)], env)
     }
 
-    /// Create a new application with the given windows and environment.
+    /// Create an application with the given windows and environment.
     ///
-    /// # Panics
-    ///
-    /// Panics if no windows are provided.
+    /// Any number of windows is valid, none included: an application with no
+    /// window opens its windows on demand, or lives in a status item, and
+    /// pairs this with [`LastWindowPolicy::StayResident`] so its runner keeps
+    /// it alive (see [`App::on_last_window_closed`]).
     pub fn new_with_windows(windows: impl Into<Vec<Window>>, mut env: Environment) -> Self {
-        let mut iter = windows.into().into_iter();
-        let main_window = iter
-            .next()
-            .expect("App::new_with_windows requires at least one window");
         if env
             .get::<Computed<waterui_core::layout::LayoutDirection>>()
             .is_none()
@@ -89,43 +134,52 @@ impl App {
         // is the last moment the environment is still the composition root's.
         crate::realization::install(&mut env);
         Self {
-            main_window,
-            windows: iter.collect(),
+            windows: windows.into(),
+            last_window: LastWindowPolicy::default(),
             menu_bar: Computed::constant(Vec::new()),
             env,
         }
     }
 
-    /// Get a reference to the main (first) window.
+    /// The windows opened at startup, in declaration order.
     #[must_use]
-    pub const fn main_window(&self) -> &Window {
-        &self.main_window
+    pub const fn windows(&self) -> &[Window] {
+        self.windows.as_slice()
     }
 
-    /// Get a mutable reference to the main (first) window.
+    /// Mutable access to the windows opened at startup.
     #[must_use]
-    pub const fn main_window_mut(&mut self) -> &mut Window {
-        &mut self.main_window
+    pub const fn windows_mut(&mut self) -> &mut [Window] {
+        self.windows.as_mut_slice()
     }
 
-    /// Get an iterator over all windows (main window first).
-    #[must_use = "iterators are lazy; dropping this one visits no windows"]
-    pub fn windows(&self) -> impl DoubleEndedIterator<Item = &Window> {
-        std::iter::once(&self.main_window).chain(self.windows.iter())
-    }
-
-    /// Get a mutable iterator over all windows (main window first).
-    pub fn windows_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut Window> {
-        std::iter::once(&mut self.main_window).chain(self.windows.iter_mut())
-    }
-
-    /// Add an additional window to the application.
+    /// Add a window to the application.
     ///
     /// Use this for multi-window applications on platforms that support it.
     #[must_use]
     pub fn window(mut self, window: Window) -> Self {
         self.windows.push(window);
         self
+    }
+
+    /// Sets what the application does once it has no open window.
+    ///
+    /// The default, [`LastWindowPolicy::Quit`], ends the application with its
+    /// last window — and immediately, when it declares none. An application
+    /// that follows the macOS convention of staying in the Dock, a tray
+    /// application, or one that opens its windows on demand passes
+    /// [`LastWindowPolicy::StayResident`]. See [`LastWindowPolicy`] for the
+    /// conventions of each platform.
+    #[must_use]
+    pub const fn on_last_window_closed(mut self, policy: LastWindowPolicy) -> Self {
+        self.last_window = policy;
+        self
+    }
+
+    /// What the application does once it has no open window.
+    #[must_use]
+    pub const fn last_window_policy(&self) -> LastWindowPolicy {
+        self.last_window
     }
 
     /// Sets the application system menu bar.
@@ -135,26 +189,21 @@ impl App {
         self
     }
 
-    /// Consume the app and return all windows with the main window first.
+    /// Consume the app and return its windows, in declaration order.
     #[must_use]
     pub fn into_windows(self) -> Vec<Window> {
-        self.into_parts().0
+        self.windows
     }
 
-    /// Consume the app and return `(windows, menu_bar, env)`.
+    /// Consume the app and return the parts a runner needs.
     #[must_use]
-    pub fn into_parts(self) -> (Vec<Window>, Computed<Vec<Menu>>, Environment) {
-        let mut windows = Vec::with_capacity(1 + self.windows.len());
-        windows.push(self.main_window);
-        windows.extend(self.windows);
-        (windows, self.menu_bar, self.env)
-    }
-
-    /// Set the title of the main application window.
-    #[must_use]
-    pub fn title(mut self, title: impl IntoComputed<Str>) -> Self {
-        self.main_window.title = title.into_computed();
-        self
+    pub fn into_parts(self) -> AppParts {
+        AppParts {
+            windows: self.windows,
+            menu_bar: self.menu_bar,
+            env: self.env,
+            last_window: self.last_window,
+        }
     }
 }
 
@@ -190,5 +239,25 @@ mod tests {
             layout_direction(&app.env).snapshot(),
             LayoutDirection::LeftToRight
         );
+    }
+
+    #[test]
+    fn an_application_may_declare_no_window() {
+        let app = App::new_with_windows(Vec::new(), Environment::new())
+            .on_last_window_closed(LastWindowPolicy::StayResident);
+
+        assert!(app.windows().is_empty());
+        assert_eq!(app.last_window_policy(), LastWindowPolicy::StayResident);
+        let parts = app.into_parts();
+        assert!(parts.windows.is_empty());
+        assert_eq!(parts.last_window, LastWindowPolicy::StayResident);
+    }
+
+    #[test]
+    fn an_application_quits_after_its_last_window_by_default() {
+        let app = App::new(|| (), Environment::new());
+
+        assert_eq!(app.windows().len(), 1);
+        assert_eq!(app.last_window_policy(), LastWindowPolicy::Quit);
     }
 }
