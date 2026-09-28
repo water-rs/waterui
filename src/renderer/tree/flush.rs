@@ -707,7 +707,14 @@ impl RenderNode {
                     let handle = if let Some(handle) = slot.as_mut() {
                         handle.rebind(node.axis, 0.0, 0.0, f64::INFINITY, f64::INFINITY)
                     } else {
-                        ScrollHandle::new(node.axis, 0.0, 0.0, f64::INFINITY, f64::INFINITY)
+                        ScrollHandle::new(
+                            node.axis,
+                            0.0,
+                            0.0,
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            node.offset.clone(),
+                        )
                     };
                     *slot = Some(handle.clone());
                     handle

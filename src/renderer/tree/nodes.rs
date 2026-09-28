@@ -817,6 +817,10 @@ pub(crate) struct ScrollNode {
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode,
     pub(super) controller: Option<ScrollController<Point>>,
+    /// Binding `ScrollView::report_offset` connected to this scroll view —
+    /// the scroll handle writes the content offset, in points, into it
+    /// whenever the offset changes.
+    pub(super) offset: Option<Binding<Point>>,
     pub(super) applied_scroll_generation: Cell<i32>,
     /// Scroll handle bound at layout (offset persists across frames; scroll
     /// events mutate it via the registered scroll target). `RefCell` because

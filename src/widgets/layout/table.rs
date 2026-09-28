@@ -94,6 +94,7 @@ impl TableRenderState {
                 viewport_height,
                 content_width,
                 content_height,
+                None,
             );
             *scroll = Some(handle.clone());
             handle

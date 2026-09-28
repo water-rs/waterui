@@ -475,12 +475,16 @@ impl RenderNode {
                         f64::from(content_size.height),
                     )
                 } else {
+                    // `report_offset`: the handle writes the content offset
+                    // into this binding on every change, glide frames
+                    // included, from here on.
                     ScrollHandle::new(
                         node.axis,
                         f64::from(size.width),
                         f64::from(size.height),
                         f64::from(content_size.width),
                         f64::from(content_size.height),
+                        node.offset.clone(),
                     )
                 };
                 if let Some(controller) = &node.controller {

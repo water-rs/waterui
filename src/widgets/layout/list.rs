@@ -566,6 +566,7 @@ impl ListRenderState {
                 viewport_height,
                 viewport_width,
                 content_height,
+                None,
             );
             *scroll = Some(handle.clone());
             handle

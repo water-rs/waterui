@@ -90,14 +90,14 @@ use crate::renderer::render::{MemoGate, NodeMeasureEntry};
 use crate::scroll::ScrollHandle;
 use core::cell::Cell;
 use core::ops::Range;
-use nami::Computed;
 use nami::watcher::BoxWatcherGuard;
+use nami::{Binding, Computed};
 use std::rc::Rc;
 use waterui_core::MainThreadBound;
 use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::layout::{LayoutPriority, Point, Rect, Size};
 use waterui_core::views::{AnyViews, Views};
-use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView};
+use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView, ScrollViewParts};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
 type CollectionItemId = SelfId<RawId>;

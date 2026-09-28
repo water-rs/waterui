@@ -527,7 +527,13 @@ impl RenderNode {
         };
         let view = match view.downcast::<Native<ScrollView>>() {
             Ok(scroll) => {
-                let (axis, content, controller) = (*scroll).into_inner().into_inner();
+                let ScrollViewParts {
+                    axis,
+                    content,
+                    controller,
+                    offset,
+                    ..
+                } = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
                 return RenderNode::Scroll(Box::new(ScrollNode {
                     memo_gate: Cell::default(),
@@ -536,6 +542,7 @@ impl RenderNode {
                     axis,
                     child: RenderNode::build(content, env, renderer),
                     controller,
+                    offset,
                     applied_scroll_generation: Cell::new(0),
                     handle: RefCell::new(None),
                     content_size: Size::zero(),

@@ -335,3 +335,158 @@ fn chip_rail_fills_offer_when_row_fits() {
         );
     }
 }
+
+/// `ScrollView::report_offset` (water-rs/waterui#1296): the backend writes
+/// the content offset, in points, into the binding whenever it changes —
+/// whether the user or a controller scrolled it, every frame of a glide —
+/// and stays silent while the view is idle.
+///
+/// A scroll rail with a `report_offset` binding and an accessibility label
+/// for the query surface.
+fn offset_rail(
+    offset: Binding<waterui::layout::Point>,
+    controller: Option<waterui_layout::scroll::ScrollController<waterui::layout::Point>>,
+) -> impl View {
+    let rail = scroll(
+        vstack((
+            labeled_card("First item", 120.0, 48.0, Srgb::new(1.0, 0.1, 0.1)),
+            labeled_card("Second item", 120.0, 48.0, Srgb::new(0.1, 1.0, 0.1)),
+            labeled_card("Third item", 120.0, 48.0, Srgb::new(0.1, 0.1, 1.0)),
+            labeled_card("Fourth item", 120.0, 48.0, Srgb::new(1.0, 0.8, 0.1)),
+        ))
+        .spacing(12.0),
+    )
+    .report_offset(&offset);
+    let rail = match &controller {
+        Some(controller) => rail.scroll_controller(controller),
+        None => rail,
+    };
+    rail.size(120.0, 120.0).a11y_label("offset-rail")
+}
+
+/// A `report_offset` sink that counts every write: the binding is written,
+/// never read, so writes must arrive only when the offset changes.
+fn counting_offset() -> (
+    Binding<waterui::layout::Point>,
+    std::rc::Rc<std::cell::Cell<usize>>,
+) {
+    let writes = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let counted = waterui::binding(waterui::layout::Point::zero()).filter({
+        let writes = std::rc::Rc::clone(&writes);
+        move |_| {
+            writes.set(writes.get() + 1);
+            true
+        }
+    });
+    (counted, writes)
+}
+
+// Wheel scrolling writes the offset: each `ScrollDown` step lands in the
+// binding once the glide settles.
+#[test]
+fn report_offset_writes_the_offset_as_the_view_scrolls() {
+    let (offset, writes) = counting_offset();
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            move || offset_rail(offset.clone(), None)
+        });
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::zero(),
+        "attaching writes the current offset at once"
+    );
+    let after_attach = writes.get();
+
+    app.query().label("offset-rail").scroll_down();
+    app.settle();
+    assert!(
+        offset.snapshot().y > 0.0,
+        "scrolling must write the new offset, got {:?}",
+        offset.snapshot()
+    );
+    assert!(
+        writes.get() > after_attach,
+        "scrolling wrote {after_attach} -> {} offsets",
+        writes.get()
+    );
+}
+
+// A controller `scroll_to` writes the offset the same way user input does.
+#[test]
+fn report_offset_writes_the_offset_on_controller_scroll_to() {
+    let offset = waterui::binding(waterui::layout::Point::zero());
+    let controller = waterui_layout::scroll::ScrollController::new(waterui::layout::Point::zero());
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            let controller = controller.clone();
+            move || offset_rail(offset.clone(), Some(controller.clone()))
+        });
+    app.settle();
+
+    controller.scroll_to(waterui::layout::Point::new(0.0, 60.0));
+    app.settle();
+    assert_eq!(
+        offset.snapshot(),
+        waterui::layout::Point::new(0.0, 60.0),
+        "a controller scroll_to must land in the report binding"
+    );
+}
+
+// Idle is silent: frames pump but the offset never changes, so nothing is
+// written past the attach write.
+#[test]
+fn report_offset_writes_nothing_while_idle() {
+    let (offset, writes) = counting_offset();
+    let mut app = ui()
+        .viewport(180, 180)
+        .theme(hydrolysis_m3::Material3::defaults())
+        .mount_offscreen({
+            let offset = offset.clone();
+            move || offset_rail(offset.clone(), None)
+        });
+    app.settle();
+    let baseline = writes.get();
+
+    app.pump_for(std::time::Duration::from_millis(500));
+    app.settle();
+    assert_eq!(
+        writes.get(),
+        baseline,
+        "an idle scroll view must not write the offset binding"
+    );
+    assert_eq!(offset.snapshot(), waterui::layout::Point::zero());
+}
+
+// The semantic runtime never runs layout — `emit_accessibility` births the
+// scroll handle — so the report binding must be attached there too: an
+// accessibility ScrollDown still moves the offset.
+#[test]
+fn report_offset_writes_under_the_semantic_runtime() {
+    let (offset, writes) = counting_offset();
+    let mut app = ui().viewport(180, 180).mount({
+        let offset = offset.clone();
+        move || offset_rail(offset.clone(), None)
+    });
+    app.settle();
+    let baseline = writes.get();
+
+    app.query().label("offset-rail").scroll_down();
+    app.settle();
+    assert!(
+        offset.snapshot().y > 0.0,
+        "a semantic-runtime scroll must write the offset, got {:?}",
+        offset.snapshot()
+    );
+    assert!(
+        writes.get() > baseline,
+        "semantic scrolling wrote {baseline} -> {} offsets",
+        writes.get()
+    );
+}

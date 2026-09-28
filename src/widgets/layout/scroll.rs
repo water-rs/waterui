@@ -31,8 +31,7 @@ impl HydroNativeView for Native<ScrollView> {
         env: &Environment,
         theme: &Rc<dyn crate::engine::WidgetTheme>,
     ) -> LayoutSize {
-        let (_axis, content, _controller) = view.as_inner().as_parts();
-        measure_view_intrinsic(content, state, env, theme)
+        measure_view_intrinsic(view.as_inner().content(), state, env, theme)
     }
 
     fn dimensions(
