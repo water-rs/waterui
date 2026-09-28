@@ -210,7 +210,7 @@ Handler parameters are extractors. Besides `State<T>`:
 - `impl_extractor!(ApiClient)` instead marks a `Clone` type installed as an *environment*
   value (`env.insert`/`env.with`), a different channel from `.state()`.
 - Context extractors supplied by components, e.g. `Navigator<Route>`, `ListDelete`,
-  `ListMove`, `SnackbarManager`, `WebViewProxy`, `DragData`.
+  `ListMove`, `SnackbarManager`, `WebViewProxy`.
 
 ```rust
 fn delete_row(ListDelete(index): ListDelete, state: Editor) {

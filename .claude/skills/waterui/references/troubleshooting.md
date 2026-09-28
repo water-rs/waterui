@@ -80,10 +80,11 @@ Use `app.pump_for(duration)`.
 | `cannot find function 'binding' in this scope` | not in the prelude | `use waterui::reactive::binding;` |
 | `cannot find derive macro 'Identifiable'` | the derive is not in the prelude | `use waterui::Identifiable;` |
 | `cannot find type 'ListDelete' / 'ListMove'` | not in the prelude | `use waterui::component::list::{ListDelete, ListMove};` |
-| `cannot find type 'TapGesture' / 'CursorStyle' / 'DragData'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
+| `cannot find type 'TapGesture' / 'CursorStyle' / 'Transferable'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
 | `cannot find type 'PhotoEvent'` | the real name is `photo::Event` | `use waterui::media::photo::Event as PhotoEvent;` |
 | mismatched types on `LongPressGesture::new(Duration::…)` | it takes a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `no method named 'drop_hover'` | it exists only on the value `.drop_destination(..)` returns | chain it directly after `.drop_destination` |
+| `the trait bound 'MyType: Transferable' is not satisfied` on `.draggable`/`.drop_destination` | a drag value must be marked transferable | `impl Transferable for MyType {}` (plus `impl_constant!(MyType)` to pass a plain value) |
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
 | `no method named 'linear'` found for `Gradient` (or wrong-type stops) | the prelude's `Gradient` is the background enum, not the GPU view | `use waterui_graphics::Gradient;` (crate `waterui-graphics`, feature `gpu`) |
 | type annotations needed on `.select(1.0_f32, 0.3)` | suffixed literal fights inference | `.select(1.0 as f32, 0.3)` |
