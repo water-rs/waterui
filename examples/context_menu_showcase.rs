@@ -10,7 +10,9 @@ use hydrolysis::run;
 use waterui::Environment;
 use waterui::app::App;
 use waterui::prelude::*;
+use waterui::reactive::binding;
 use waterui::theme::color::{Background, Surface};
+use waterui::window::{Window, WindowState};
 use waterui_controls::button::button;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::{hstack, vstack};
@@ -88,7 +90,14 @@ fn main_view() -> impl View {
 }
 
 fn app(env: Environment) -> App {
-    App::new(main_view, env).title("Hydrolysis Context Menu")
+    App::new_with_windows(
+        [Window::new(
+            "Hydrolysis Context Menu",
+            binding(WindowState::Normal),
+            main_view,
+        )],
+        env,
+    )
 }
 
 fn main() {

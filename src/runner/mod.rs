@@ -18,6 +18,8 @@ use std::cell::Cell;
 use std::time::Duration;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use waterui::app::App;
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+use waterui::app::AppParts;
 use waterui::component::table::TableConfig;
 use waterui::graphics::Color;
 use waterui::theme;
@@ -177,7 +179,14 @@ pub fn run(app: App, style: impl crate::Style) {
     // Locale changes reach views through a mailbox, whose pump needs the
     // executor installed just above.
     waterui_locale::start_system_locale_listener();
-    let (windows, menu_bar, env) = app.into_parts();
+    // This host renders each window once and returns, so no window's closing
+    // ends it and the last-window policy has nothing to decide.
+    let AppParts {
+        windows,
+        menu_bar,
+        env,
+        last_window: _,
+    } = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));

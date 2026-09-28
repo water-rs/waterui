@@ -21,8 +21,8 @@ use parley::fontique::{Blob, FontInfoOverride};
 use serde::Deserialize;
 use wasm_bindgen::{JsCast, closure::Closure};
 use wasm_bindgen_futures::JsFuture;
-use waterui::app::App;
-use waterui::window::WindowState;
+use waterui::app::{App, AppParts};
+use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
 use waterui_text::FontCollection;
 use web_sys::Response;
@@ -299,15 +299,22 @@ pub fn run(app: App, style: impl crate::Style) {
             None,
         ));
 
-        let (windows, menu_bar, env) = app.into_parts();
-        let mut windows = windows.into_iter();
-        let window = windows
-            .next()
-            .expect("hydrolysis web runner requires exactly one window");
-        assert!(
-            windows.next().is_none(),
-            "hydrolysis web runner supports exactly one window"
-        );
+        // The page is the application's one window: it has no windowless
+        // state to stay resident in, and closing the tab ends the application
+        // whatever its policy says.
+        let AppParts {
+            windows,
+            menu_bar,
+            env,
+            last_window: _,
+        } = app.into_parts();
+        let window_count = windows.len();
+        let Ok([window]) = <[Window; 1]>::try_from(windows) else {
+            panic!(
+                "hydrolysis web runner requires exactly one window, got {window_count}: a browser \
+                 page is the application's only window and has no windowless state"
+            );
+        };
 
         let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
         let render_diagnostics_config = RenderDiagnosticsConfig::from_env();

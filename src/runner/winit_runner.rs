@@ -20,7 +20,7 @@ use executor_core::{
     try_init_local_executor,
 };
 use nami::Signal;
-use waterui::app::App;
+use waterui::app::{App, AppParts, LastWindowPolicy};
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
@@ -127,6 +127,18 @@ fn install_termination_handler(event_proxy: &winit::event_loop::EventLoopProxy<R
     .expect("hydrolysis runner: failed to install the termination handler");
 }
 
+/// Whether the event loop ends, given the application's last-window policy
+/// and how many windows it still owns, mounted or waiting to be mounted.
+///
+/// Asked at startup, where an application that declares no window and quits
+/// after its last one has nothing to run, and again whenever a window closes.
+const fn ends_event_loop(policy: LastWindowPolicy, open_windows: usize) -> bool {
+    match policy {
+        LastWindowPolicy::Quit => open_windows == 0,
+        LastWindowPolicy::StayResident => false,
+    }
+}
+
 struct PendingWindow {
     window: Window,
     activates: bool,
@@ -202,6 +214,19 @@ pub fn run(
     style: impl crate::Style,
     inspector: Option<waterui::inspector::InspectorRuntime>,
 ) {
+    let AppParts {
+        windows,
+        menu_bar,
+        env,
+        last_window,
+    } = app.into_parts();
+    if ends_event_loop(last_window, windows.len()) {
+        tracing::info!(
+            "hydrolysis runner: the application declares no window and quits after its last one; \
+             nothing to run"
+        );
+        return;
+    }
     let mut event_loop_builder = EventLoop::<RunnerEvent>::with_user_event();
     #[cfg(target_os = "macos")]
     event_loop_builder
@@ -224,7 +249,6 @@ pub fn run(
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
-    let (windows, menu_bar, env) = app.into_parts();
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
@@ -297,6 +321,7 @@ pub fn run(
             .into_iter()
             .map(PendingWindow::application)
             .collect(),
+        last_window,
         pending_window_queue,
         windows: HashMap::new(),
         popup_window_ids: std::collections::HashSet::new(),
@@ -341,6 +366,8 @@ struct WinitRunner {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     native_menu_bar: crate::platform::native_menu_bar::NativeMenuBar,
     pending_windows: Vec<PendingWindow>,
+    /// What the application does once it has no window left.
+    last_window: LastWindowPolicy,
     pending_window_queue: Rc<RefCell<Vec<PendingWindow>>>,
     windows: HashMap<WindowId, RuntimeWindow<WinitWindow>>,
     /// Transient popup windows (mounted through `PopupWindowManager`): a
@@ -507,6 +534,17 @@ impl WinitRunner {
         waterui_locale::shutdown_current_thread_runtime_locale_state();
         let _ = self.drain_local_executor_queue();
         event_loop.exit();
+    }
+
+    /// Ends the event loop when the application's last-window policy says a
+    /// runner with no window left stops.
+    fn exit_if_last_window_closed(&self, event_loop: &ActiveEventLoop) {
+        if ends_event_loop(
+            self.last_window,
+            self.windows.len() + self.pending_windows.len(),
+        ) {
+            self.exit_after_runtime_cleanup(event_loop);
+        }
     }
 
     fn current_window_origin(runtime: &RuntimeWindow<WinitWindow>) -> HydrolysisWindowOrigin {
@@ -691,9 +729,7 @@ impl WinitRunner {
             self.last_accessibility_updates.remove(&id);
         }
 
-        if self.windows.is_empty() && self.pending_windows.is_empty() {
-            self.exit_after_runtime_cleanup(event_loop);
-        }
+        self.exit_if_last_window_closed(event_loop);
     }
 
     fn flush_cross_window_rebuild_requests(&mut self) {
@@ -762,9 +798,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             self.popup_window_ids.remove(&window_id);
             self.accesskit_adapters.remove(&window_id);
             self.last_accessibility_updates.remove(&window_id);
-            if self.windows.is_empty() && self.pending_windows.is_empty() {
-                self.exit_after_runtime_cleanup(event_loop);
-            }
+            self.exit_if_last_window_closed(event_loop);
             return;
         }
 
@@ -933,9 +967,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
 
 #[cfg(test)]
 mod tests {
-    use super::native_window_attributes;
     #[cfg(any(unix, windows))]
     use super::{TerminationAction, TerminationRequests};
+    use super::{ends_event_loop, native_window_attributes};
     use waterui::window::{Window, WindowState};
     use waterui_core::{Binding, Environment, binding};
 
@@ -947,6 +981,24 @@ mod tests {
         assert_eq!(requests.record(), TerminationAction::RequestExit);
         assert_eq!(requests.record(), TerminationAction::ForceExit);
         assert_eq!(requests.record(), TerminationAction::ForceExit);
+    }
+
+    #[test]
+    fn quit_policy_ends_the_loop_once_no_window_is_left() {
+        use waterui::app::LastWindowPolicy;
+
+        // At startup, a quitting app that declares no window has nothing to run.
+        assert!(ends_event_loop(LastWindowPolicy::Quit, 0));
+        assert!(!ends_event_loop(LastWindowPolicy::Quit, 1));
+        assert!(!ends_event_loop(LastWindowPolicy::Quit, 2));
+    }
+
+    #[test]
+    fn stay_resident_policy_keeps_the_loop_with_no_window() {
+        use waterui::app::LastWindowPolicy;
+
+        assert!(!ends_event_loop(LastWindowPolicy::StayResident, 0));
+        assert!(!ends_event_loop(LastWindowPolicy::StayResident, 1));
     }
 
     #[test]

@@ -53,7 +53,7 @@ fn token_probe() -> (TokenProbe, Rc<RefCell<CapturedTokens>>) {
 /// composition-root installs, so `env` carries the same entries a real
 /// application's environment does.
 fn app_environment(env: Environment) -> Environment {
-    App::new(|| (), env).into_parts().2
+    App::new(|| (), env).into_parts().env
 }
 
 /// Mounts a probe under the styled headless runtime — the same environment
