@@ -199,9 +199,9 @@ mod token_probe {
     use vello::kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::{ResolvedColor, Srgb};
-    use waterui::component::button::{ButtonSize, ButtonStyle};
     use waterui::component::text;
     use waterui::component::toggle::ToggleStyle;
+    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
     use waterui::reactive::constant;
@@ -212,9 +212,9 @@ mod token_probe {
         BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
         InteractionMotion, ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics,
         ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-        RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TabItemLayout,
-        TableMetrics, TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
+        RadioSelectionMotion, SliderMetrics, SliderValueIndicatorMetrics, StepperEnd,
+        StepperMetrics, TabItemLayout, TableMetrics, TabsMetrics, TextCaretMotion,
+        TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState, WidgetTheme,
     };
 
     use crate::Style;
@@ -312,7 +312,7 @@ mod token_probe {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ButtonSize) -> ButtonMetrics {
+        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
             ButtonMetrics {
                 padding_x: 1.0,
                 padding_y: 2.0,
@@ -480,7 +480,7 @@ mod token_probe {
         ) {
         }
 
-        fn slider_metrics(&self) -> SliderMetrics {
+        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
             SliderMetrics {
                 horizontal_inset: 12.0,
                 horizontal_spacing: 8.0,
@@ -497,6 +497,7 @@ mod token_probe {
             _draw: &mut dyn DrawContext,
             _track_rect: Rect,
             _fill_rect: Rect,
+            _size: ControlSize,
             _state: WidgetInteractionState,
         ) {
         }
@@ -506,9 +507,24 @@ mod token_probe {
             _draw: &mut dyn DrawContext,
             _center: Point,
             _radius: f64,
+            _size: ControlSize,
             _state: WidgetInteractionState,
         ) {
         }
+
+        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
+            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
+        }
+
+        fn slider_value_indicator_color(&self) -> Color {
+            Color::srgb(255, 255, 255)
+        }
+
+        fn slider_value_indicator_font(&self) -> Font {
+            Font::default()
+        }
+
+        fn draw_slider_value_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
         fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
             match style {

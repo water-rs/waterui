@@ -521,9 +521,23 @@ fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
 }
 
 fn slider_demo(volume: &Binding<f64>) -> impl View {
+    let sizes = [
+        ("Extra small", ControlSize::ExtraSmall),
+        ("Small", ControlSize::Small),
+        ("Medium", ControlSize::Medium),
+        ("Large", ControlSize::Large),
+        ("Extra large", ControlSize::ExtraLarge),
+    ]
+    .map(|(label, size)| {
+        slider(label, volume)
+            .range(0.0..=100.0)
+            .size(size)
+            .value_indicator(|v| Str::from(format!("{v:.0}")))
+    });
+
     vstack((
-        note("Drag the slider; the progress bar reflects the value."),
-        slider("Volume", volume).range(0.0..=100.0),
+        note("Drag a slider; the value indicator follows the thumb and the progress bar reflects the value."),
+        vstack(sizes).spacing(8.0),
         text!("Value: {volume}").body(),
         progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
     ))

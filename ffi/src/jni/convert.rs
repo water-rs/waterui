@@ -1462,7 +1462,8 @@ impl ToJavaStruct for crate::components::form::WuiToggle {
     }
 }
 
-/// `WuiSlider -> SliderStruct`
+/// `WuiSlider -> SliderStruct(labelPtr, accessibilityLabelPtr, minLabelPtr,
+/// maxLabelPtr, rangeStart, rangeEnd, bindingPtr, size, valueFormatterPtr)`
 impl ToJavaStruct for crate::components::form::WuiSlider {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1470,7 +1471,7 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
             .expect("SliderStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(JJJJDDJ)V"),
+            jni_sig!("(JJJJDDJIJ)V"),
             &[
                 JValue::Long(self.label.view as jlong),
                 JValue::Long(self.label.accessibility_label as jlong),
@@ -1479,6 +1480,8 @@ impl ToJavaStruct for crate::components::form::WuiSlider {
                 JValue::Double(self.range.start),
                 JValue::Double(self.range.end),
                 JValue::Long(self.value as jlong),
+                JValue::Int(self.size as i32),
+                JValue::Long(self.value_indicator as jlong),
             ],
         )
         .expect("Failed to create SliderStruct")

@@ -17,9 +17,7 @@ use core::ffi::c_void;
 use jni::objects::{Global, JClass, JIntArray, JObject, JObjectArray, JValue};
 #[cfg(all(target_os = "android", feature = "gpu"))]
 use jni::sys::jboolean;
-#[cfg(all(target_os = "android", feature = "gpu"))]
-use jni::sys::jdouble;
-use jni::sys::{jfloat, jint, jintArray, jlong, jobject, jobjectArray};
+use jni::sys::{jdouble, jfloat, jint, jintArray, jlong, jobject, jobjectArray};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
 use nami::SignalExt;
 use std::sync::Arc;
