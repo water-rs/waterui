@@ -3,8 +3,8 @@
 use core::time::Duration;
 use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii, Vec2};
 use nami::signal::IntoComputed;
-use waterui_controls::button::{ButtonSize, ButtonStyle};
 use waterui_controls::toggle::ToggleStyle;
+use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
@@ -740,6 +740,42 @@ impl SliderMetrics {
     }
 }
 
+/// Layout metrics of the value indicator a slider shows above its thumb while
+/// the thumb is dragged.
+#[derive(Debug, Clone, Copy)]
+pub struct SliderValueIndicatorMetrics {
+    /// Horizontal padding inside the bubble around the value text.
+    pub padding_x: f64,
+    /// Vertical padding inside the bubble around the value text.
+    pub padding_y: f64,
+    /// Gap between the top of the thumb and the bottom of the bubble.
+    pub thumb_gap: f64,
+    /// Smallest bubble width regardless of how narrow the label is.
+    pub min_width: f64,
+    /// Smallest bubble height regardless of how short the label is.
+    pub min_height: f64,
+}
+
+impl SliderValueIndicatorMetrics {
+    /// Create value indicator metrics.
+    #[must_use]
+    pub const fn new(
+        padding_x: f64,
+        padding_y: f64,
+        thumb_gap: f64,
+        min_width: f64,
+        min_height: f64,
+    ) -> Self {
+        Self {
+            padding_x,
+            padding_y,
+            thumb_gap,
+            min_width,
+            min_height,
+        }
+    }
+}
+
 /// Progress indicator layout metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct ProgressMetrics {
@@ -1150,7 +1186,7 @@ pub trait WidgetTheme {
     fn navigation_motion(&self) -> NavigationMotion;
 
     /// Return metrics for a button style.
-    fn button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics;
+    fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
     /// Return metrics for a button whose label presents only its icon.
     ///
     /// Resolved by the backend when the label's own configuration — its
@@ -1160,7 +1196,7 @@ pub trait WidgetTheme {
     /// the chrome draws the smaller icon-button container centred inside
     /// them. The default returns the text-button metrics, so a theme with
     /// no icon-button presentation is unchanged.
-    fn icon_button_metrics(&self, style: ButtonStyle, size: ButtonSize) -> ButtonMetrics {
+    fn icon_button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics {
         self.button_metrics(style, size)
     }
     /// Optional button label foreground override. `disabled` selects the
@@ -1404,23 +1440,25 @@ pub trait WidgetTheme {
     ) {
     }
 
-    /// Return slider metrics.
-    fn slider_metrics(&self) -> SliderMetrics;
-    /// Draw slider track chrome. `state` carries the disabled flag so themes
-    /// can render the inactive track.
+    /// Return slider metrics for the given control size.
+    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
+    /// Draw slider track chrome for a control of `size`. `state` carries the
+    /// disabled flag so themes can render the inactive track.
     fn draw_slider_track(
         &self,
         draw: &mut dyn DrawContext,
         track_rect: Rect,
         fill_rect: Rect,
+        size: ControlSize,
         state: WidgetInteractionState,
     );
-    /// Draw slider thumb chrome.
+    /// Draw slider thumb chrome for a control of `size`.
     fn draw_slider_thumb(
         &self,
         draw: &mut dyn DrawContext,
         center: Point,
         radius: f64,
+        size: ControlSize,
         state: WidgetInteractionState,
     );
     /// Draw slider thumb state layer.
@@ -1429,9 +1467,20 @@ pub trait WidgetTheme {
         _draw: &mut dyn DrawContext,
         _center: Point,
         _radius: f64,
+        _size: ControlSize,
         _state: WidgetInteractionState,
     ) {
     }
+    /// Return the layout metrics of the value indicator shown above the thumb
+    /// while the slider is dragged.
+    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics;
+    /// Return the value indicator's label foreground color.
+    fn slider_value_indicator_color(&self) -> Color;
+    /// Return the value indicator's label font.
+    fn slider_value_indicator_font(&self) -> Font;
+    /// Draw the value indicator's chrome behind its label. `bounds` is the
+    /// bubble rect the renderer laid out above the thumb.
+    fn draw_slider_value_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
     /// Return progress indicator metrics.
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;

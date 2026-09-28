@@ -813,6 +813,32 @@ typedef enum WuiToggleStyle {
 } WuiToggleStyle;
 
 /**
+ *C ABI mirror of `ControlSize`.
+ */
+typedef enum WuiControlSize {
+  /**
+   *Mirrors `ControlSize::ExtraSmall`.
+   */
+  WuiControlSize_ExtraSmall,
+  /**
+   *Mirrors `ControlSize::Small`.
+   */
+  WuiControlSize_Small,
+  /**
+   *Mirrors `ControlSize::Medium`.
+   */
+  WuiControlSize_Medium,
+  /**
+   *Mirrors `ControlSize::Large`.
+   */
+  WuiControlSize_Large,
+  /**
+   *Mirrors `ControlSize::ExtraLarge`.
+   */
+  WuiControlSize_ExtraLarge,
+} WuiControlSize;
+
+/**
  *C ABI mirror of `PickerStyle`.
  */
 typedef enum WuiPickerStyle {
@@ -2138,6 +2164,11 @@ typedef struct WuiSharedAction WuiSharedAction;
  *Opaque FFI handle owning a `AnyViewBuilder<NavigationView>`.
  */
 typedef struct WuiTabContent WuiTabContent;
+
+/**
+ *Opaque FFI handle owning a `ValueFormatter`.
+ */
+typedef struct WuiValueFormatter WuiValueFormatter;
 
 /**
  *Opaque FFI handle owning a `PlayerController`.
@@ -5099,6 +5130,14 @@ typedef struct WuiSlider {
    *Mirrors the `value` field of `SliderConfig`.
    */
   WuiBinding_f64 *value;
+  /**
+   *Mirrors the `size` field of `SliderConfig`.
+   */
+  enum WuiControlSize size;
+  /**
+   *Mirrors the `value_indicator` field of `SliderConfig`.
+   */
+  struct WuiValueFormatter *value_indicator;
 } WuiSlider;
 
 /**
@@ -10379,6 +10418,25 @@ struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_button_id(void);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_value_formatter(struct WuiValueFormatter *value);
+
+/**
+ * Formats a slider value through the given formatter, producing the text the
+ * value indicator shows above the thumb while it is dragged.
+ *
+ * The returned `WuiStr` is owned by the caller.
+ *
+ * # Safety
+ *
+ * * `formatter` must be a valid pointer to a `WuiValueFormatter` that stays
+ *   alive for the duration of the call; it is only borrowed.
+ */
+struct WuiStr waterui_call_value_formatter(const struct WuiValueFormatter *formatter, double value);
 
 /**
  * # Safety

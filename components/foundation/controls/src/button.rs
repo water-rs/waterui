@@ -188,6 +188,7 @@
 //! # }
 //! ```
 
+use crate::size::ControlSize;
 use core::fmt;
 use core::future::Future;
 use fmt::Debug;
@@ -306,28 +307,6 @@ pub enum ButtonStyle {
     GlassProminent,
 }
 
-/// How large a button is drawn.
-///
-/// Material 3 Expressive scales a button through five sizes that change height,
-/// padding, icon size and corner shape together — not just its height — so the
-/// size is a semantic choice, like the style, rather than a frame the caller
-/// imposes from outside.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub enum ButtonSize {
-    /// The most compact button, for dense rows of actions.
-    ExtraSmall,
-    /// The default size.
-    #[default]
-    Small,
-    /// A roomier button for a screen's main action.
-    Medium,
-    /// A prominent button, large enough to anchor a section.
-    Large,
-    /// The largest button, for hero actions on big surfaces.
-    ExtraLarge,
-}
-
 /// A button style installed on a subtree becomes the default for buttons that
 /// did not pick one, the same way [`LabelDisplayMode`] adapts labels to their
 /// surroundings.
@@ -360,7 +339,7 @@ pub struct ButtonConfig {
     /// The visual style of the button.
     pub style: ButtonStyle,
     /// How large the button is drawn.
-    pub size: ButtonSize,
+    pub size: ControlSize,
 }
 
 impl_debug!(ButtonConfig);
@@ -467,7 +446,7 @@ pub struct Button<Action> {
     label: Label,
     action: Action,
     style: ButtonStyle,
-    size: ButtonSize,
+    size: ControlSize,
 }
 
 impl<Action> Button<Action> {
@@ -485,13 +464,14 @@ impl<Action> Button<Action> {
 
     /// Returns the size this button is drawn at.
     #[must_use]
-    pub const fn button_size(&self) -> ButtonSize {
+    pub const fn button_size(&self) -> ControlSize {
         self.size
     }
 
-    /// Sets how large the button is drawn.
+    /// Sets how large the button is drawn. Buttons default to
+    /// [`ControlSize::Small`].
     #[must_use]
-    pub const fn size(mut self, size: ButtonSize) -> Self {
+    pub const fn size(mut self, size: ControlSize) -> Self {
         self.size = size;
         self
     }
@@ -544,7 +524,7 @@ impl Button<fn(&Environment)> {
             label,
             action: noop,
             style: ButtonStyle::Automatic,
-            size: ButtonSize::default(),
+            size: ControlSize::Small,
         }
     }
 }

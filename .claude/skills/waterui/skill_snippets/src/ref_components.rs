@@ -304,6 +304,13 @@ pub fn components_block_12() {
         slider("Volume", &level).range(0.0..=1.0) // &Binding<f64>; range is RangeInclusive<f64>
     };
     let _ = {
+        // ControlSize::ExtraSmall..=ExtraLarge (sliders default to ExtraSmall);
+        // value_indicator shows the formatted value above the thumb while dragging
+        slider("Volume", &level)
+            .size(ControlSize::Large)
+            .value_indicator(|v| Str::from(format!("{v:.0}")))
+    };
+    let _ = {
         stepper("Quantity", &count) // &Binding<i32>
     };
     let _ = {
