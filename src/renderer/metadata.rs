@@ -716,6 +716,10 @@ impl HydrolysisRenderer {
         let content_env = &content_env;
         #[cfg(not(feature = "accessibility"))]
         let content_env = env;
+        #[cfg(feature = "accessibility")]
+        let scope_claimed = claimed_naming_node.is_some();
+        #[cfg(not(feature = "accessibility"))]
+        let scope_claimed = false;
         let group_id = renderer.gesture_group_id_for_identity(effect.gesture_group_identity);
         let captured_env = env.clone();
         let action = Rc::clone(&effect.action);
@@ -732,7 +736,7 @@ impl HydrolysisRenderer {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
             let (interaction, press_slot, _) =
                 renderer.bind_control_interaction_target(interaction_key, bounds, env, disabled);
-            Self::render_gesture_content(renderer, env, content_env, render_content);
+            Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
                 renderer.drain_claim_scope(node_id, env);
@@ -776,7 +780,7 @@ impl HydrolysisRenderer {
                 layered_action,
             ));
         }
-        Self::render_gesture_content(renderer, env, content_env, render_content);
+        Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
         #[cfg(feature = "accessibility")]
         if let Some(node_id) = claimed_naming_node {
             renderer.drain_claim_scope(node_id, env);
@@ -787,14 +791,21 @@ impl HydrolysisRenderer {
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
         content_env: &Environment,
+        scope_claimed: bool,
         render_content: impl FnOnce(&mut HydrolysisRenderer, &Environment),
     ) {
         #[cfg(not(feature = "accessibility"))]
-        let _ = (env, content_env);
+        let _ = (env, content_env, scope_claimed);
+        // `ExcludeDescendants` belongs to the element that claims this naming
+        // scope — the claim registers its node above and suppresses its own
+        // descendants here. An observer that registers no node (a long-press,
+        // or a silenced tap) must not consume the flag: doing so suppresses
+        // the inner element the flag actually names (water-rs/hydrolysis#266).
         #[cfg(feature = "accessibility")]
-        if env
-            .get::<AccessibilityChildren>()
-            .is_some_and(AccessibilityChildren::excludes_descendants)
+        if scope_claimed
+            && env
+                .get::<AccessibilityChildren>()
+                .is_some_and(AccessibilityChildren::excludes_descendants)
         {
             renderer.push_accessibility_suppression();
             render_content(renderer, content_env);

@@ -590,9 +590,15 @@ impl RenderNode {
                         } else {
                             child_env
                         };
-                        if child_env
-                            .get::<AccessibilityChildren>()
-                            .is_some_and(AccessibilityChildren::excludes_descendants)
+                        // `ExcludeDescendants` belongs to the element that
+                        // claims this naming scope — an observer that registers
+                        // no node (a long-press, or a silenced tap) must not
+                        // consume the flag, or it suppresses the inner element
+                        // the flag names (water-rs/hydrolysis#266).
+                        if claimed_node.is_some()
+                            && child_env
+                                .get::<AccessibilityChildren>()
+                                .is_some_and(AccessibilityChildren::excludes_descendants)
                         {
                             renderer.push_accessibility_suppression();
                             node.child.emit_accessibility(renderer, walk_env);
