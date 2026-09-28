@@ -191,26 +191,11 @@ impl HydrolysisRenderer {
 
             if !exiting {
                 // A press inside the overlay belongs to its own content, not
-                // the page below — the same swallow the drawn context-menu
-                // panels register. An exiting overlay registers none, so its
-                // frame stops intercepting input the moment it starts leaving.
-                let depth = self.render_depth;
-                let order = self.hit_test.next_hit_test_order();
-                self.hit_test.pointer_targets.push(PointerTarget {
-                    bounds: frame,
-                    captures_drag: false,
-                    depth,
-                    order,
-                    press_slot: None,
-                    claim_owner: None,
-                    interaction: None,
-                    action: Rc::new(RefCell::new(
-                        |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| false,
-                    )),
-                    keyboard_step: None,
-                    keyboard_focusable: false,
-                    modal: false,
-                });
+                // the page below — the same occlusion the drawn context-menu
+                // panels register, so gesture regions under the frame do not
+                // arm either. An exiting overlay registers none, so its frame
+                // stops intercepting input the moment it starts leaving.
+                self.register_hit_test_occluder(frame);
             }
 
             // A slot binds only when its node encodes — an animation the

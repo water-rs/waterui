@@ -489,7 +489,37 @@ impl HeadlessRuntime {
         }
     }
 
+    /// Queues an input event for the next pump.
+    ///
+    /// A real windowing system delivers positional input to the topmost
+    /// window under the point: a mounted popup — a `.context_menu` floating
+    /// over the main window — owns the presses inside its frame, translated
+    /// to window-local coordinates before the popup sees them. Events outside
+    /// every popup frame keep landing on the main window's queue.
     pub fn push_input_event(&mut self, event: InputEvent) {
+        let point = match event {
+            InputEvent::PointerDown { x, y, .. }
+            | InputEvent::PointerUp { x, y, .. }
+            | InputEvent::PointerMove { x, y, .. }
+            | InputEvent::Scroll { x, y, .. }
+            | InputEvent::TrackpadPan { x, y, .. }
+            | InputEvent::Magnification { x, y, .. }
+            | InputEvent::Rotation { x, y, .. } => Some((x, y)),
+            _ => None,
+        };
+        if let Some((x, y)) = point {
+            // The last mounted popup is the topmost one.
+            for popup in self.popup_windows.iter_mut().rev() {
+                let frame = crate::platform::validated_window_frame(popup.window.frame.snapshot());
+                let (fx, fy) = (frame.x(), frame.y());
+                if x >= fx && x < fx + frame.width() && y >= fy && y < fy + frame.height() {
+                    popup
+                        .platform
+                        .push_event(translate_input_event(event, fx, fy));
+                    return;
+                }
+            }
+        }
         self.runtime.platform.push_event(event);
     }
 
@@ -877,4 +907,83 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
         target[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
     }
     target[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+}
+
+/// Re-expresses a positional event in a mounted window's local coordinate
+/// space — the subtraction the windowing system performs before an event
+/// reaches the window under the point.
+fn translate_input_event(event: InputEvent, dx: f32, dy: f32) -> InputEvent {
+    match event {
+        InputEvent::PointerDown {
+            id,
+            kind,
+            x,
+            y,
+            button,
+        } => InputEvent::PointerDown {
+            id,
+            kind,
+            x: x - dx,
+            y: y - dy,
+            button,
+        },
+        InputEvent::PointerUp {
+            id,
+            kind,
+            x,
+            y,
+            button,
+        } => InputEvent::PointerUp {
+            id,
+            kind,
+            x: x - dx,
+            y: y - dy,
+            button,
+        },
+        InputEvent::PointerMove { id, kind, x, y } => InputEvent::PointerMove {
+            id,
+            kind,
+            x: x - dx,
+            y: y - dy,
+        },
+        InputEvent::Scroll {
+            x,
+            y,
+            dx: sx,
+            dy: sy,
+            is_line_delta,
+        } => InputEvent::Scroll {
+            x: x - dx,
+            y: y - dy,
+            dx: sx,
+            dy: sy,
+            is_line_delta,
+        },
+        InputEvent::TrackpadPan {
+            x,
+            y,
+            dx: px,
+            dy: py,
+            phase,
+        } => InputEvent::TrackpadPan {
+            x: x - dx,
+            y: y - dy,
+            dx: px,
+            dy: py,
+            phase,
+        },
+        InputEvent::Magnification { x, y, delta, phase } => InputEvent::Magnification {
+            x: x - dx,
+            y: y - dy,
+            delta,
+            phase,
+        },
+        InputEvent::Rotation { x, y, delta, phase } => InputEvent::Rotation {
+            x: x - dx,
+            y: y - dy,
+            delta,
+            phase,
+        },
+        other => other,
+    }
 }

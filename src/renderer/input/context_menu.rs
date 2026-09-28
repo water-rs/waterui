@@ -593,32 +593,12 @@ impl HydrolysisRenderer {
             }
         }
 
-        // Padding presses inside either panel must not fall through to the
-        // dimmed page's targets. The swallows go in before the row/accessory
+        // Every press inside either painted panel belongs to the overlay —
+        // rows, padding, and the gesture regions the dimmed content carries
+        // beneath them alike. The occluders go in before the row/accessory
         // flushes so the real controls outrank them in hit order.
-        {
-            let depth = self.render_depth;
-            for frame in
-                std::iter::once(presentation.menu_frame).chain(presentation.accessory_frame)
-            {
-                let order = self.hit_test.next_hit_test_order();
-                let frame = self.hit_test.clip_hit_bounds(frame);
-                self.hit_test.pointer_targets.push(PointerTarget {
-                    bounds: frame,
-                    captures_drag: false,
-                    depth,
-                    order,
-                    press_slot: None,
-                    claim_owner: None,
-                    interaction: None,
-                    action: Rc::new(RefCell::new(
-                        |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| false,
-                    )),
-                    keyboard_step: None,
-                    keyboard_focusable: false,
-                    modal: false,
-                });
-            }
+        for frame in std::iter::once(presentation.menu_frame).chain(presentation.accessory_frame) {
+            self.register_hit_test_occluder(frame);
         }
 
         presentation.menu.flush_in_rect(

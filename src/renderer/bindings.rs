@@ -162,8 +162,9 @@ impl SemanticCore {
     ) -> bool {
         let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant;
-        self.gesture_engine
-            .handle_magnification(center, delta, phase, at, env)
+        self.with_unoccluded_gesture_targets(center, |engine| {
+            engine.handle_magnification(center, delta, phase, at, env)
+        })
     }
 
     pub fn apply_magnification_gesture(
@@ -193,8 +194,9 @@ impl SemanticCore {
     ) -> bool {
         let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant;
-        self.gesture_engine
-            .handle_rotation(center, delta, phase, at, env)
+        self.with_unoccluded_gesture_targets(center, |engine| {
+            engine.handle_rotation(center, delta, phase, at, env)
+        })
     }
 
     pub fn handle_gesture_tick(&mut self, at: Instant, env: &Environment) -> bool {

@@ -323,6 +323,13 @@ pub(crate) struct HitTestState {
     /// gesture engine owns the recognizers but not a bounds query the press
     /// path needs.
     pub(crate) gesture_regions: Vec<GestureRegion>,
+    /// Overlay occluders live this frame, parallel to `pointer_targets` —
+    /// `(bounds, order)` of each painted overlay panel. A press inside an
+    /// occluder must not arm a content gesture beneath it, whatever kind of
+    /// recognizer it carries: when the gesture engine picks its candidates
+    /// at pointer-down, registrations with an order below the highest
+    /// covering occluder's do not exist (water-rs/hydrolysis#260).
+    pub(crate) gesture_occluders: Vec<(vello::kurbo::Rect, usize)>,
     /// The clip stack of the paint layers currently open, in window hit-test
     /// space. Every entry is already intersected with the ones below it, so
     /// the top is the effective clip. [`HydrolysisRenderer::push_layer_rect`]
@@ -361,6 +368,7 @@ impl HitTestState {
         self.native_view_occlusions.clear();
         self.pointer_targets.clear();
         self.gesture_regions.clear();
+        self.gesture_occluders.clear();
         self.cursor_targets.clear();
         self.hover_targets.clear();
         self.drop_targets.clear();
@@ -904,9 +912,9 @@ impl HydrolysisRenderer {
             };
         let gesture_changed = gesture_button(button).is_some_and(|mapped| {
             !context_menu_claims_secondary
-                && self
-                    .gesture_engine
-                    .handle_pointer_down(point, at, mapped, env)
+                && self.with_unoccluded_gesture_targets(point, |engine| {
+                    engine.handle_pointer_down(point, at, mapped, env)
+                })
         });
         refresh_requested |= gesture_changed;
         // A touch or pen primary press on a `.context_menu` region is a
@@ -2764,6 +2772,91 @@ impl SemanticCore {
             keyboard_focusable: false,
             modal,
         });
+    }
+
+    /// Registers an opaque occlusion for `bounds`: an overlay's painted panel
+    /// must own every press inside it, whatever hit regions the content
+    /// beneath carries (water-rs/hydrolysis#260).
+    ///
+    /// The pointer target runs first in dispatch order for its rect —
+    /// `action` answers `true`, so a press inside the panel is consumed
+    /// without touching content press targets underneath. The
+    /// `gesture_occluders` record is the gesture side of the same contract:
+    /// when the engine picks its candidates at pointer-down, targets whose
+    /// order is below the covering occluder's never reach it — no recognizer
+    /// under the panel is armed, of any kind, so nothing fires on release or
+    /// hold.
+    ///
+    /// Register the occluder BEFORE the overlay's own controls flush — they
+    /// take a later order and outrank it inside the panel. `bounds` is the
+    /// panel's painted rect in hit space; a press outside it is the
+    /// dismiss-and-pass-through the overlay already implements, which this
+    /// target must not shadow.
+    pub(crate) fn register_hit_test_occluder(&mut self, bounds: vello::kurbo::Rect) {
+        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
+            return;
+        }
+        let bounds = self.hit_test.clip_hit_bounds(bounds);
+        let order = self.hit_test.next_hit_test_order();
+        self.hit_test.pointer_targets.push(PointerTarget {
+            bounds,
+            captures_drag: false,
+            depth: self.render_depth,
+            order,
+            press_slot: None,
+            claim_owner: self.owner_stack.last().cloned(),
+            interaction: None,
+            action: Rc::new(RefCell::new(
+                |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| true,
+            )),
+            keyboard_step: None,
+            keyboard_focusable: false,
+            modal: false,
+        });
+        self.hit_test.gesture_occluders.push((bounds, order));
+    }
+
+    /// Runs `f` against the gesture engine with every target an overlay
+    /// occludes at `point` filtered out of its candidate list, then restores
+    /// the list.
+    ///
+    /// The engine arms every recognizer in the topmost group under the point
+    /// — a choice it can only make among what it can see — so the candidates
+    /// it is offered for a press inside an overlay panel are exactly the
+    /// registrations that outrank the highest covering occluder: the
+    /// overlay's own gesture controls flush after the occluder and stay
+    /// armable; nothing below the panel can arm (water-rs/hydrolysis#260).
+    ///
+    /// [`GestureEngine::swap_targets`] splices the filtered list in for the
+    /// duration of the call. The clone shares each target's recognizer, so
+    /// the armed set and the restored list are the same state machines.
+    pub(crate) fn with_unoccluded_gesture_targets<R>(
+        &mut self,
+        point: vello::kurbo::Point,
+        f: impl FnOnce(&mut crate::gesture::GestureEngine) -> R,
+    ) -> R {
+        let Some(cutoff) = self
+            .hit_test
+            .gesture_occluders
+            .iter()
+            .filter(|(bounds, _)| bounds.contains(point))
+            .map(|(_, order)| *order)
+            .max()
+        else {
+            return f(&mut self.gesture_engine);
+        };
+        let mut all = Vec::new();
+        self.gesture_engine.swap_targets(&mut all);
+        let mut kept: Vec<crate::gesture::GestureTarget> = all
+            .iter()
+            .filter(|target| target.order >= cutoff)
+            .cloned()
+            .collect();
+        self.gesture_engine.swap_targets(&mut kept);
+        let out = f(&mut self.gesture_engine);
+        self.gesture_engine.swap_targets(&mut kept);
+        self.gesture_engine.swap_targets(&mut all);
+        out
     }
 
     /// Registers a scrollbar-gutter drag target: it captures the press like any
