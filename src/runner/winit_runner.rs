@@ -23,6 +23,8 @@ use nami::Signal;
 use waterui::app::App;
 use waterui::window::{Window, WindowState};
 use waterui_core::Environment;
+#[cfg(hydrolysis_wayland_platform)]
+use waterui_core::Str;
 use waterui_text::FontCollection;
 
 use winit::application::ApplicationHandler;
@@ -426,26 +428,41 @@ fn native_window_attributes(
             frame.y() as f64,
         ));
 
-    // The window's desktop identity: the X11 `WM_CLASS` (instance and class
-    // alike) and the Wayland `app_id`, so window-manager rules, desktop-file
+    // The window's desktop identity: on X11 the `WM_CLASS` pair is split
+    // between its class (winit's `general`, the window's resolved `app_id`)
+    // and its instance (`res_name`, the window's `instance_name` — which
+    // resolves to the `app_id` when undeclared); on Wayland the `app_id`
+    // alone names the `xdg_toplevel`. Window-manager rules, desktop-file
     // matching and dock grouping land on the identifier the build compiled
     // in as `WATERUI_APP_ID` or the window declared itself. An empty
     // identity leaves winit's default (the executable name) in place.
     #[cfg(hydrolysis_wayland_platform)]
     let attributes = {
-        let app_id = window.display_app_id();
-        if app_id.is_empty() {
-            attributes
-        } else {
-            use winit::platform::{
-                wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11,
-            };
-            let attributes =
-                WindowAttributesExtX11::with_name(attributes, app_id.as_str(), app_id.as_str());
-            WindowAttributesExtWayland::with_name(attributes, app_id.as_str(), app_id.as_str())
+        use winit::platform::{wayland::WindowAttributesExtWayland, x11::WindowAttributesExtX11};
+        match window_desktop_identity(window) {
+            Some((class, instance)) => WindowAttributesExtWayland::with_name(
+                WindowAttributesExtX11::with_name(attributes, class.as_str(), instance.as_str()),
+                class.as_str(),
+                instance.as_str(),
+            ),
+            None => attributes,
         }
     };
     attributes
+}
+
+/// The window's desktop identity as a `(class, instance)` pair.
+///
+/// `class` is the window's resolved `app_id` — the X11 `WM_CLASS` class
+/// part and the Wayland `app_id`; `instance` is the window's
+/// `instance_name`, resolving to the `app_id` when undeclared so a window
+/// that does not opt in keeps the historical one-name behaviour. `None`
+/// when the window and the application both leave the identity unset, so
+/// winit's default (the executable name) applies.
+#[cfg(hydrolysis_wayland_platform)]
+fn window_desktop_identity(window: &Window) -> Option<(Str, Str)> {
+    let class = window.display_app_id();
+    (!class.is_empty()).then(|| (class, window.display_instance_name()))
 }
 
 impl WinitRunner {
@@ -879,6 +896,29 @@ mod tests {
 
         assert!(native_window_attributes(&window, &env, true, None).active);
         assert!(!native_window_attributes(&window, &env, false, None).active);
+    }
+
+    #[cfg(hydrolysis_wayland_platform)]
+    #[test]
+    fn window_attributes_split_wm_class_from_instance_name() {
+        use waterui_core::Str;
+
+        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        window.app_id = Some(Str::from("myclass"));
+        window.instance_name = Some(Str::from("myinstance"));
+        assert_eq!(
+            super::window_desktop_identity(&window),
+            Some((Str::from("myclass"), Str::from("myinstance"))),
+            "WM_CLASS carries (app_id, instance_name)"
+        );
+
+        let mut window = Window::new("", binding(WindowState::Normal), || ());
+        window.app_id = Some(Str::from("myclass"));
+        assert_eq!(
+            super::window_desktop_identity(&window),
+            Some((Str::from("myclass"), Str::from("myclass"))),
+            "an undeclared instance_name resolves to the app_id"
+        );
     }
 
     #[test]
