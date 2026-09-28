@@ -5940,6 +5940,18 @@ typedef struct WuiScrollView {
    * request to the same target. Null if no controller is attached.
    */
   WuiComputed_i32 *scroll_generation;
+  /**
+   * Binding the backend writes the horizontal content offset, in points,
+   * into as the view scrolls — for `ScrollView::report_offset`. The
+   * binding is written, never read; null if none is connected.
+   */
+  WuiBinding_f32 *offset_x;
+  /**
+   * Binding the backend writes the vertical content offset, in points,
+   * into as the view scrolls — for `ScrollView::report_offset`. The
+   * binding is written, never read; null if none is connected.
+   */
+  WuiBinding_f32 *offset_y;
 } WuiScrollView;
 
 /**

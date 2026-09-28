@@ -167,7 +167,6 @@ impl ScrollView {
     }
 
     /// The scrolled content.
-    #[must_use]
     pub const fn content(&self) -> &AnyView {
         &self.content
     }
