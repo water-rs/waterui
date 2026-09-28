@@ -417,10 +417,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
             env: app_env,
             ..
         } = app.into_parts();
-        let window = windows
-            .into_iter()
-            .next()
-            .expect("UiBuilder::mount_app mounts the app's first window, and the app declares none");
+        let window = windows.into_iter().next().expect(
+            "UiBuilder::mount_app mounts the app's first window, and the app declares none",
+        );
         // The app's environment is the composition root, so it layers over
         // the builder's — what the test installed applies underneath it.
         let mut env = app_env.layered_on(&self.env);
