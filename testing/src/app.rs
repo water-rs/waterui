@@ -6,7 +6,7 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
-use waterui::app::App;
+use waterui::app::{App, AppParts};
 use waterui::window::Window;
 use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
@@ -61,8 +61,8 @@ pub fn ui() -> UiBuilder {
 /// through the styled builder instead:
 /// `ui().theme(style).viewport(w, h).mount_app(app)`.
 ///
-/// Only the main window is mounted: the headless runtime hosts a single
-/// window, so the app's menu bar and any additional windows are not mounted.
+/// Only the app's first window is mounted: the headless runtime hosts a single
+/// window, so the app's menu bar and any further windows are not mounted.
 /// Popup windows the app opens at runtime (context menus, pickers) are still
 /// merged into the accessibility tree by Hydrolysis.
 ///
@@ -72,7 +72,11 @@ pub fn ui() -> UiBuilder {
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
 pub fn mount_app(app: App, style: impl Style) -> OffscreenApp {
-    let size = *waterui_core::Signal::snapshot(&app.main_window().frame).size();
+    let window = app
+        .windows()
+        .first()
+        .expect("mount_app mounts the app's first window, and the app declares none");
+    let size = *waterui_core::Signal::snapshot(&window.frame).size();
     ui().theme(style)
         .viewport(
             frame_points_as_u32(size.width),
@@ -395,8 +399,8 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// [`Self::scale_factor`] apply; [`mount_app`](crate::mount_app) is this
     /// method with the viewport sized from the window's declared frame.
     ///
-    /// Only the main window is mounted: the headless runtime hosts a single
-    /// window, so the app's menu bar and any additional windows are not
+    /// Only the app's first window is mounted: the headless runtime hosts a
+    /// single window, so the app's menu bar and any further windows are not
     /// mounted. Popup windows the app opens at runtime (context menus,
     /// pickers) are still merged into the accessibility tree by Hydrolysis.
     ///
@@ -408,11 +412,15 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// tree.
     #[must_use]
     pub fn mount_app(self, app: App) -> OffscreenApp {
-        let (windows, _menu_bar, app_env) = app.into_parts();
+        let AppParts {
+            windows,
+            env: app_env,
+            ..
+        } = app.into_parts();
         let window = windows
             .into_iter()
             .next()
-            .expect("App::into_parts yields the main window first");
+            .expect("UiBuilder::mount_app mounts the app's first window, and the app declares none");
         // The app's environment is the composition root, so it layers over
         // the builder's — what the test installed applies underneath it.
         let mut env = app_env.layered_on(&self.env);
