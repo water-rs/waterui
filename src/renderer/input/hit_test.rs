@@ -1737,6 +1737,10 @@ struct KeyboardFocusCandidate {
 impl SemanticCore {
     /// The accessibility node `key` emitted this frame, when the widget
     /// stamped a focus link or owns a text-input target.
+    ///
+    /// `interaction_nodes` is cleared at `reset_scene`, so the map only ever
+    /// holds this flush's links — a key whose widget emitted no node resolves
+    /// to `None` here rather than to the id a previous flush registered.
     #[cfg(feature = "accessibility")]
     pub(crate) fn focus_node_for_key(&self, key: &InteractionKey) -> Option<AccessibilityNodeId> {
         self.accessibility

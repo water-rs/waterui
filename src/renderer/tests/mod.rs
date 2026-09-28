@@ -43,6 +43,8 @@ mod list_row_hit;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod list_row_metrics;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod list_visibility;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
 mod perf_full_rebuild;

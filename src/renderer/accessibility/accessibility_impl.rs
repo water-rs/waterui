@@ -272,9 +272,12 @@ pub(crate) struct AccessibilityBuilder {
     /// The accessibility node each interaction identity emitted this frame —
     /// the pointer machinery's anchor into the semantic tree: a press resolves
     /// the node keyboard focus lands on, and a widget's focus-ring state reads
-    /// the focused node back through its interaction key. Kept across frames
-    /// (pointer targets bind before the emit walk re-stamps them) and pruned
-    /// with the live node set at finalize.
+    /// the focused node back through its interaction key. Cleared at
+    /// `reset_scene` so mid-flush reads only ever see this flush's links: a
+    /// key whose widget emitted no node must not resolve to the id a previous
+    /// flush registered — `render_list_parts` puts the result on the parent
+    /// stack, where an unregistered id panics the first child attach.
+    /// `finalize_tree_update` prunes links stamped for suppressed nodes.
     pub(crate) interaction_nodes: BTreeMap<InteractionKey, AccessibilityNodeId>,
     /// The `OnKeyPress` scope chain each focusable interaction identity was
     /// registered under — how a bubble resolves the handlers of a focused
@@ -347,12 +350,22 @@ impl AccessibilityBuilder {
     /// is what `ui_focus`/`tree.focus()` compare against). Previously this only
     /// cleared the pending update, so on a geometry-static refresh flush the node
     /// list accumulated and ids drifted, desyncing UI focus.
+    ///
+    /// The focus-link maps clear here as well: every emission path resets
+    /// first, so a link a subtree did not re-stamp this flush belongs to a
+    /// node that is gone — keeping it would let a mid-flush lookup resolve a
+    /// key to an unregistered id (the `.visible(false)` `List` row panic).
+    /// Between flushes the maps hold exactly the last flush's links, which is
+    /// what the event-time readers (`set_keyboard_focus`, the key-bubble
+    /// handler lookup) need.
     pub(crate) fn reset_scene(&mut self) {
         self.pending_tree_update = None;
         self.nodes.clear();
         self.root_children.clear();
         self.actions.clear();
         self.focus_bindings.clear();
+        self.interaction_nodes.clear();
+        self.focus_key_handlers.clear();
         self.active_node_keys.clear();
         self.owner_ordinals.clear();
         self.owner_stack.clear();
