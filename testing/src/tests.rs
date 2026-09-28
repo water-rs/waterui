@@ -513,7 +513,7 @@ mod token_probe {
         }
 
         fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
-            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0)
+            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
         }
 
         fn slider_value_indicator_color(&self) -> Color {

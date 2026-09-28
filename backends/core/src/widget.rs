@@ -750,16 +750,28 @@ pub struct SliderValueIndicatorMetrics {
     pub padding_y: f64,
     /// Gap between the top of the thumb and the bottom of the bubble.
     pub thumb_gap: f64,
+    /// Smallest bubble width regardless of how narrow the label is.
+    pub min_width: f64,
+    /// Smallest bubble height regardless of how short the label is.
+    pub min_height: f64,
 }
 
 impl SliderValueIndicatorMetrics {
     /// Create value indicator metrics.
     #[must_use]
-    pub const fn new(padding_x: f64, padding_y: f64, thumb_gap: f64) -> Self {
+    pub const fn new(
+        padding_x: f64,
+        padding_y: f64,
+        thumb_gap: f64,
+        min_width: f64,
+        min_height: f64,
+    ) -> Self {
         Self {
             padding_x,
             padding_y,
             thumb_gap,
+            min_width,
+            min_height,
         }
     }
 }
