@@ -1,22 +1,34 @@
 //! Drag and Drop Example - Demonstrates WaterUI's drag and drop system
 //!
 //! This example shows:
-//! - Making views draggable with `.draggable()`
-//! - Creating stateful drop zones with `.state().drop_destination()`
+//! - Making views draggable with `.draggable()`, carrying an app-defined
+//!   `Transferable` type that travels within the process
+//! - Creating stateful drop zones with `.state().drop_destination()`; the
+//!   handler's first argument type is the type the zone accepts
 //! - Using `.drop_hover()` for visual feedback when dragging over drop zone
 //! - Spring animations on successful drop
 
 use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::Transferable;
 use waterui::prelude::font::Title;
 use waterui::prelude::*;
 use waterui::preview;
-use waterui::reactive::Binding;
+use waterui::reactive::{Binding, impl_constant};
 use waterui::task::{sleep, spawn_local};
 
 const FRUIT_CARD_WIDTH: f32 = 160.0;
+
+/// The value a fruit card's drag carries. Only the basket accepts it.
+#[derive(Debug, Clone, PartialEq)]
+struct Fruit {
+    emoji: &'static str,
+    label: &'static str,
+}
+
+impl Transferable for Fruit {}
+impl_constant!(Fruit);
 
 /// A draggable fruit card
 fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl View {
@@ -25,7 +37,7 @@ fn fruit_card(emoji: &'static str, label: &'static str, color: Color) -> impl Vi
         .padding()
         .width(FRUIT_CARD_WIDTH)
         .background(color.with_opacity(0.9))
-        .draggable(DragData::text(format!("{} {}", emoji, label)))
+        .draggable(Fruit { emoji, label })
 }
 
 /// Animated basket that collects dropped items
@@ -81,11 +93,11 @@ fn fruit_basket(
     .scale(combined_scale.clone(), combined_scale)
     .border(Color::srgb_hex("#10B981"), 3.0)
     .drop_destination(
-        |State(collected): State<Binding<Vec<String>>>,
-         State(bounce): State<Binding<f32>>,
-         data: DragData| {
+        |fruit: Fruit,
+         State(collected): State<Binding<Vec<String>>>,
+         State(bounce): State<Binding<f32>>| {
             // Add to collection
-            let dropped_item = data.as_str().to_string();
+            let dropped_item = format!("{} {}", fruit.emoji, fruit.label);
             let mut current_items = collected.snapshot();
             if !current_items.iter().any(|x| x == &dropped_item) {
                 current_items.push(dropped_item);
