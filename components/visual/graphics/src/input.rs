@@ -116,8 +116,13 @@ pub enum SurfaceInputEvent {
     },
     /// A key went down (`pressed`) or up while this surface had focus.
     ///
-    /// This is the raw key, not text: a key that produces text is followed by
-    /// a [`SurfaceInputEvent::TextInput`], exactly as the web platform does.
+    /// This is the raw key, not text. A press that produces text is followed
+    /// by *its* [`SurfaceInputEvent::TextInput`] — pressed key, then text,
+    /// then the release — the order the web platform gives `keydown` and
+    /// `beforeinput`, and the only order this vocabulary takes. Text that
+    /// follows a press belongs to that press, so "this press produced no
+    /// text" needs no timeout: the next event of any kind is the answer,
+    /// because every backend delivers its events down one ordered queue.
     Key {
         /// `true` for a key press, `false` for a release.
         pressed: bool,
@@ -131,6 +136,11 @@ pub enum SurfaceInputEvent {
         repeat: bool,
     },
     /// Text to insert at the caret, already committed by the platform.
+    ///
+    /// Following a [`SurfaceInputEvent::Key`] press it is that press's text —
+    /// the committed character a dead key or IME resolved, which wins over
+    /// the character the logical key implies. It may also arrive standalone,
+    /// for text no key produced (an injected insertion).
     TextInput(Str),
     /// An input-method composition session began.
     CompositionStart,
