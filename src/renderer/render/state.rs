@@ -8,6 +8,9 @@ pub struct HydroState {
     /// measurement via `Arc`. See [`TextMeasureService`].
     pub(crate) text: Arc<TextMeasureService>,
     pub(crate) measurement: MeasurementCaches,
+    /// Per-frame Cherenkov-migration counters; see
+    /// [`crate::renderer::MigrationCounters`].
+    pub(crate) counters: MigrationCounters,
     pub(crate) frame_adapter: Option<wgpu::Adapter>,
     pub(crate) frame_device: Option<wgpu::Device>,
     pub(crate) frame_queue: Option<wgpu::Queue>,
@@ -20,6 +23,7 @@ impl Default for HydroState {
         Self {
             text: Arc::new(TextMeasureService::new()),
             measurement: MeasurementCaches::default(),
+            counters: MigrationCounters::default(),
             frame_adapter: None,
             frame_device: None,
             frame_queue: None,

@@ -737,6 +737,7 @@ impl WinitRunner {
             if runtime.renderer.take_rebuild_request() {
                 runtime.request_refresh();
                 runtime.platform.request_redraw();
+                runtime.renderer.migration_counters_mut().host_wakeups += 1;
             }
         }
     }
@@ -746,8 +747,9 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let _ = self.drain_local_executor_queue();
         self.mount_pending_windows(event_loop);
-        for runtime in self.windows.values() {
+        for runtime in self.windows.values_mut() {
             runtime.platform.request_redraw();
+            runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
     }
 
@@ -934,6 +936,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                             );
                             runtime.request_refresh();
                             runtime.platform.request_redraw();
+                            runtime.renderer.migration_counters_mut().host_wakeups += 1;
                         }
                     }
                     AccessKitWindowEvent::ActionRequested(request) => {
@@ -951,6 +954,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                         {
                             runtime.request_refresh();
                             runtime.platform.request_redraw();
+                            runtime.renderer.migration_counters_mut().host_wakeups += 1;
                         }
                         self.flush_cross_window_rebuild_requests();
                     }

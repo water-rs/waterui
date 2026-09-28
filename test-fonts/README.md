@@ -21,3 +21,12 @@ CI image carries no CJK, Hangul, Thai, or Devanagari face at all.
 
 Production rendering is untouched: applications keep the resource fonts the
 CLI stages next to the executable, and the system fallback chain behind them.
+
+`TestVariable-ABC.ttf` (renamed from harfbuzz's `Roboto-Variable.ABC.ttf`,
+Apache License 2.0) is a variable face — `wght` 100–900 and `wdth` 75–100 —
+reachable in tests by family name `Test Variable ABC`; the rename keeps it
+out of the `roboto` filename bucket so `deterministic_test_fonts` leaves it
+unpinned. `BungeeColor-Regular.ttf` (family `Bungee Color Regular`, SIL Open
+Font License 1.1) is a COLRv0 colour face covering the layered-colour-glyph
+case. Both are registered by `TEST_FALLBACK_FONTS` for the font-fixture tests
+in `src/renderer/tests/cherenkov_migration.rs`.

@@ -595,6 +595,7 @@ impl CollectionNode {
     /// was built at rest by [`RenderNode::build_collection`]; only later
     /// changes reach here).
     pub(super) fn reconcile(&mut self, renderer: &mut SemanticCore) {
+        renderer.state.counters.structural_patches += 1;
         let env = self.env.clone();
         let len = self.views.len().snapshot();
         let now = renderer.frame_instant;
@@ -746,6 +747,7 @@ impl LazyStackNode {
             // sub-views; they re-materialize from the collection's current
             // data when the visible window next fills them.
             self.item_cache.borrow_mut().invalidate_ids(&replaced);
+            renderer.state.counters.structural_patches += 1;
         }
         let mut materialized = false;
         let count = self.views.len().snapshot();
@@ -789,6 +791,7 @@ impl LazyStackNode {
         if changed || materialized {
             self.estimate_sample.set(None);
             self.floor_sample.set(None);
+            renderer.state.counters.structural_patches += 1;
         }
         changed | materialized
     }

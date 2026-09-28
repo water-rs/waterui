@@ -167,6 +167,7 @@ impl RenderNode {
         theme: &Rc<dyn crate::engine::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
+        state.counters.measure_calls += 1;
         match self {
             RenderNode::Color(_) => ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(0.0),
@@ -392,6 +393,7 @@ impl RenderNode {
         proposal: ProposalSize,
         size: Size,
     ) {
+        renderer.state.counters.layout_calls += 1;
         // The selected proposal and resolved size are distinct layout inputs.
         // Transparent wrappers preserve both without reconstructing an offer.
         let theme = renderer.theme();

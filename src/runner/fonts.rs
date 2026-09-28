@@ -192,6 +192,22 @@ const TEST_FALLBACK_FONTS: &[(&str, &[u8])] = &[
         "NotoColorEmojiSubset.ttf",
         include_bytes!("../../test-fonts/NotoColorEmojiSubset.ttf"),
     ),
+    // A variable face (wght 100–900, wdth 75–100) named so the migration
+    // fixture shapes a variation instance deterministically on every host.
+    // Renamed family ("Test Variable ABC") keeps it out of every classify
+    // bucket and every generic pinning.
+    (
+        "TestVariable-ABC.ttf",
+        include_bytes!("../../test-fonts/TestVariable-ABC.ttf"),
+    ),
+    // A COLRv0 colour face ("Bungee Color Regular", 868 glyphs): colour
+    // glyphs take a different scene-ingest path than outline glyphs, and the
+    // migration acceptance needs that path measured on a font the fixture
+    // can name directly.
+    (
+        "BungeeColor-Regular.ttf",
+        include_bytes!("../../test-fonts/BungeeColor-Regular.ttf"),
+    ),
 ];
 
 /// The collection a test host shapes with: the bundled Roboto for everything it

@@ -407,9 +407,11 @@ impl HydrolysisRenderer {
             color: color.components.map(f32::to_bits),
         };
         if let Some(hit) = renderer.blurred_silhouettes.get(&key) {
+            let (image, delta) = (hit.image.clone(), hit.delta);
+            renderer.state.counters.image_registrations += 1;
             renderer.scene.draw_image(
-                &vello::peniko::ImageBrush::new(hit.image.clone()),
-                vello::kurbo::Affine::translate(translation) * hit.delta,
+                &vello::peniko::ImageBrush::new(image),
+                vello::kurbo::Affine::translate(translation) * delta,
             );
             return;
         }
@@ -456,6 +458,7 @@ impl HydrolysisRenderer {
             a * rect.x0 + c * rect.y0 + bounds.x0,
             b * rect.x0 + d * rect.y0 + bounds.y0,
         ));
+        renderer.state.counters.image_registrations += 1;
         renderer.scene.draw_image(
             &vello::peniko::ImageBrush::new(image.clone()),
             vello::kurbo::Affine::translate(translation) * delta,

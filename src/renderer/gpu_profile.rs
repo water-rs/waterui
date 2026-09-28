@@ -172,6 +172,7 @@ impl HydrolysisRenderer {
         slot: u32,
     ) {
         if let Some(profiler) = &self.gpu_profiler {
+            self.state.counters.gpu_submissions += 1;
             self.frame_stage_times.gpu_wait += profiler.mark(device, queue, slot);
         }
     }
@@ -184,6 +185,7 @@ impl HydrolysisRenderer {
             return;
         };
         let wait_started_at = Instant::now();
+        self.state.counters.gpu_submissions += 1;
         let [before_content, before_composite, end] = profiler.resolve(device, queue);
         self.frame_stage_times.gpu_wait += wait_started_at.elapsed();
         // Query results are device-clock ticks; the period turns them into ns

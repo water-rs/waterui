@@ -22,6 +22,7 @@ impl RenderNode {
     ) {
         match self {
             RenderNode::Color(color) => {
+                renderer.state.counters.recorded_view_contents += 1;
                 let color = resolved_color_to_peniko(renderer.read_signal(&color.color));
                 renderer.scene_mut().fill(
                     vello::peniko::Fill::NonZero,
@@ -32,6 +33,7 @@ impl RenderNode {
                 );
             }
             RenderNode::Text(text) => {
+                renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&text.accessibility_identity);
                 // Read the content/alignment signals through `read_signal` so a change
                 // re-subscribes this frame and schedules a window refresh — the same
@@ -320,6 +322,7 @@ impl RenderNode {
                 renderer.pop_render_owner();
             }
             RenderNode::SceneView(node) => {
+                renderer.state.counters.recorded_view_contents += 1;
                 // The drawing's own name and content, read every flush: content
                 // that follows a signal answers with what it currently draws.
                 let (content_label, content_value, wants_input) = {
@@ -351,7 +354,10 @@ impl RenderNode {
                 // otherwise only fail inside wgpu's `write_texture`.
                 let needs_next = {
                     let mut scene2d = VelloScene2D::new(&mut scene);
-                    let mut scene2d = crate::renderer::CheckedScene2D::new(&mut scene2d);
+                    let mut scene2d = crate::renderer::CheckedScene2D::new(
+                        &mut scene2d,
+                        &mut renderer.state.counters,
+                    );
                     #[allow(clippy::cast_possible_truncation)]
                     node.content.borrow_mut().build_scene(
                         &mut scene2d,
@@ -384,6 +390,7 @@ impl RenderNode {
                 }
             }
             RenderNode::GpuSurface(node) => {
+                renderer.state.counters.recorded_view_contents += 1;
                 // The surface view's own name and content, read every flush —
                 // it is re-asked after each frame it draws.
                 let (content_label, content_value, wants_input) = {
@@ -515,6 +522,7 @@ impl RenderNode {
             RenderNode::LazyStack(node) => node.flush(renderer, ctx, env),
             RenderNode::Collection(node) => node.flush(renderer, ctx),
             RenderNode::Widget(node) => {
+                renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&node.accessibility_identity);
                 // Re-render the leaf widget from its retained config so its handler
                 // re-reads live signals and re-emits interaction targets + a11y at the

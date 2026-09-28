@@ -436,30 +436,34 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
                 ("present_ns", ns(phases.present)),
                 ("executor_after_ns", ns(phases.executor_after)),
             ]),
-            counters: BTreeMap::from([
-                ("rebuild_iterations", u64::from(counters.rebuild_iterations)),
-                (
-                    "measurement_cache_hits",
-                    u64::from(counters.measurement_cache_hits),
-                ),
-                (
-                    "measurement_cache_misses",
-                    u64::from(counters.measurement_cache_misses),
-                ),
-                ("scene_layers", u64::from(counters.scene_layers)),
-                ("vello_scene_layers", u64::from(counters.vello_scene_layers)),
-                ("gpu_surface_layers", u64::from(counters.gpu_surface_layers)),
-                (
-                    "direct_gpu_surfaces",
-                    u64::from(counters.direct_gpu_surfaces),
-                ),
-                ("clip_layers", u64::from(counters.clip_layers)),
-                (
-                    "applied_filter_count",
-                    u64::from(counters.applied_filter_count),
-                ),
-                ("rendered", u64::from(counters.rendered)),
-            ]),
+            counters: {
+                let mut metrics = BTreeMap::from([
+                    ("rebuild_iterations", u64::from(counters.rebuild_iterations)),
+                    (
+                        "measurement_cache_hits",
+                        u64::from(counters.measurement_cache_hits),
+                    ),
+                    (
+                        "measurement_cache_misses",
+                        u64::from(counters.measurement_cache_misses),
+                    ),
+                    ("scene_layers", u64::from(counters.scene_layers)),
+                    ("vello_scene_layers", u64::from(counters.vello_scene_layers)),
+                    ("gpu_surface_layers", u64::from(counters.gpu_surface_layers)),
+                    (
+                        "direct_gpu_surfaces",
+                        u64::from(counters.direct_gpu_surfaces),
+                    ),
+                    ("clip_layers", u64::from(counters.clip_layers)),
+                    (
+                        "applied_filter_count",
+                        u64::from(counters.applied_filter_count),
+                    ),
+                    ("rendered", u64::from(counters.rendered)),
+                ]);
+                counters.migration.record_into(&mut metrics);
+                metrics
+            },
         });
     }
 

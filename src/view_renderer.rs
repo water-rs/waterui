@@ -109,6 +109,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                     height,
                     base_color: vello::peniko::Color::TRANSPARENT,
                 });
+                renderer.migration_counters_mut().gpu_submissions += 1;
                 let rgba_data =
                     readback_texture_rgba8(device, queue, frame.texture(), width, height);
                 renderer.clear_frame_resources();

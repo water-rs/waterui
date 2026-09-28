@@ -1032,6 +1032,7 @@ impl ViewEffectNode {
                 ctx.bounds.width() / f64::from(output_width),
                 ctx.bounds.height() / f64::from(output_height),
             );
+        renderer.state.counters.image_registrations += 1;
         renderer.scene.draw_image(
             &vello::peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
@@ -1094,6 +1095,7 @@ impl AppliedFilterNode {
                 ctx.bounds.width() / f64::from(image.width),
                 ctx.bounds.height() / f64::from(image.height),
             );
+        renderer.state.counters.image_registrations += 1;
         let scene = renderer.scene_mut();
         scene.draw_image(
             &vello::peniko::ImageBrush::new(image),
@@ -1150,6 +1152,7 @@ impl DynamicHostNode {
             Some(content) => {
                 let node_env = self.env.clone();
                 *self.child.borrow_mut() = RenderNode::build(content, &node_env, renderer);
+                renderer.state.counters.structural_patches += 1;
                 true
             }
             None => false,
