@@ -101,6 +101,10 @@ struct ScrollState {
 
 impl ScrollHandle {
     /// Creates the state owned by one semantic scroll view.
+    ///
+    /// `offset_report` is the binding a `ScrollView::report_offset` connected
+    /// to this scroll view, or `None` when the view reports nothing — every
+    /// handle must decide at birth, so no caller can forget to attach it.
     #[must_use]
     pub fn new(
         axis: Axis,
@@ -108,8 +112,9 @@ impl ScrollHandle {
         viewport_height: f64,
         content_width: f64,
         content_height: f64,
+        offset_report: Option<Binding<Point>>,
     ) -> Self {
-        Self {
+        let handle = Self {
             state: Rc::new(RefCell::new(ScrollState::new(
                 axis,
                 viewport_width,
@@ -118,7 +123,9 @@ impl ScrollHandle {
                 content_height,
             ))),
             generation: 1,
-        }
+        };
+        handle.set_offset_report(offset_report);
+        handle
     }
 
     /// Rebinds this scroll view to its latest layout and returns the handle
@@ -569,7 +576,7 @@ mod tests {
     use nami::Signal as _;
 
     fn vertical_handle() -> ScrollHandle {
-        ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0)
+        ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None)
     }
 
     /// A `report_offset` sink that counts every write, for asserting the
