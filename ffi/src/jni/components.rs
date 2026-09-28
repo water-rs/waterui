@@ -117,33 +117,6 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callSharedAction<'loc
     }
 }
 
-/// JNI: Formats a slider value through a `WuiValueFormatter` handle, returning
-/// the text the value indicator shows above the thumb while it is dragged.
-#[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_callValueFormatter<'local>(
-    mut env: EnvUnowned<'local>,
-    _class: JClass<'local>,
-    formatter_ptr: jlong,
-    value: jdouble,
-) -> jni::sys::jstring {
-    super::with_env(&mut env, |env| {
-        // SAFETY: Kotlin passes back a formatter handle the renderer still owns;
-        // it is only borrowed for the call.
-        let formatted = unsafe {
-            crate::components::form::waterui_call_value_formatter(
-                formatter_ptr as *const crate::components::form::WuiValueFormatter,
-                value,
-            )
-        };
-        // SAFETY: `formatted` was built from a Rust `Str`, so its bytes are UTF-8;
-        // the borrow ends before `formatted` is dropped.
-        let text = unsafe { formatted.as_str() }.to_owned();
-        env.new_string(&text)
-            .expect("callValueFormatter: failed to create the Java string")
-            .into_raw()
-    })
-}
-
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gestureFromPtr<'local>(
     mut env: EnvUnowned<'local>,
