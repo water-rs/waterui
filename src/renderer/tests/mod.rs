@@ -56,6 +56,7 @@ mod scroll_hit_clip;
 mod semantic_runtime;
 mod shadow;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
 mod tree;
@@ -93,8 +94,8 @@ use waterui_backend_core::widget::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-    RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TableMetrics, TabsMetrics,
-    TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
+    RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
+    TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
 };
 use waterui_core::EasingCurve;
 use waterui_core::handler::SharedAction;
@@ -2205,6 +2206,16 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 #[derive(Default)]
 pub(crate) struct MinimalTestTheme {
     badge_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Forces the tab item layout the theme reports; `None` defaults to
+    /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
+    forced_tab_item_layout: Option<TabItemLayout>,
+    /// `(bar_width, item_count)` arguments the theme was asked for its layout.
+    tabs_layout_queries: Rc<RefCell<Vec<(f64, usize)>>>,
+    /// `(bounds, layout)` for every `draw_tabs_highlight` call.
+    tabs_highlight_draws: Rc<RefCell<Vec<(Rect, TabItemLayout)>>>,
+    /// When set, `tabs_item_layout` answers `Horizontal` from this bar extent
+    /// up — a width-class theme like M3's medium-width boundary.
+    horizontal_from_width: Option<f64>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2586,17 +2597,42 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn draw_navigation_bar_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
     fn draw_navigation_back_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-    fn tabs_metrics(&self) -> TabsMetrics {
+    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
+        self.tabs_layout_queries
+            .borrow_mut()
+            .push((bar_width, item_count));
+        if let Some(threshold) = self.horizontal_from_width
+            && bar_width >= threshold
+        {
+            return TabItemLayout::Horizontal;
+        }
+        self.forced_tab_item_layout
+            .unwrap_or(TabItemLayout::Vertical)
+    }
+    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics {
         TabsMetrics {
             bar_height: 48.0,
             button_min_width: 48.0,
             button_horizontal_inset: 16.0,
-            active_indicator_height: 3.0,
+            active_indicator_height: match layout {
+                TabItemLayout::Vertical => 3.0,
+                TabItemLayout::Horizontal => 40.0,
+            },
             active_indicator_radius: 3.0,
+            icon_label_spacing: 4.0,
         }
     }
     fn draw_tabs_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _top_edge: bool) {}
-    fn draw_tabs_highlight(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+    fn draw_tabs_highlight(
+        &self,
+        _draw: &mut dyn DrawContext,
+        bounds: Rect,
+        layout: TabItemLayout,
+    ) {
+        self.tabs_highlight_draws
+            .borrow_mut()
+            .push((bounds, layout));
+    }
     fn draw_scroll_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
 
     fn divider_metrics(&self) -> DividerMetrics {
@@ -3278,6 +3314,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
         log.0.borrow_mut().clear();
         let mut renderer = test_renderer_with_theme(MinimalTestTheme {
             badge_draws: Rc::clone(&log.0),
+            ..Default::default()
         });
         capture_root_window(&mut renderer, view, env, bounds);
         log.0.borrow().clone()

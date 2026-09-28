@@ -1,7 +1,9 @@
 use super::*;
 use crate::engine::WidgetTheme;
+use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use std::sync::Arc;
+use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
 use waterui_form::picker::PickerStyle;
 use waterui_form::picker::date::DatePickerConfig;
@@ -777,15 +779,44 @@ pub(crate) fn measure_tabs_layout(
         "hydrolysis Tabs requires at least one tab"
     );
 
-    let metrics = theme.tabs_metrics();
+    // Labels measure title-only: the bar places the icon itself, so the label
+    // must not count it a second time.
+    let label_env = env.extending(waterui_controls::label::LabelDisplayMode::TitleOnly);
+    let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = tabs
+        .tabs
+        .iter()
+        .map(|tab| {
+            let label_size = measure_view_intrinsic(&tab.label, state, &label_env, theme);
+            let icon_size = tab.icon.as_ref().map(|icon| {
+                let icon_view = match icon {
+                    TabIcon::System(icon) => AnyView::new(icon.clone()),
+                    TabIcon::View(builder) => builder.build(),
+                };
+                measure_transient_view_with_proposal(
+                    &normalize_layout_view(icon_view, env),
+                    ProposalSize::UNSPECIFIED,
+                    state,
+                    env,
+                    theme,
+                )
+            });
+            (label_size, icon_size)
+        })
+        .collect();
+    // Decide the layout once from the bar's own extent so the measured bar
+    // and the drawn bar answer the same layout (see `tabs_decide_layout`).
+    let (layout, metrics) = tabs_decide_layout(
+        theme,
+        tabs.style,
+        proposal.width.map(f64::from),
+        &item_sizes,
+    );
     let content_proposal = tabs_content_proposal(proposal, tabs.style, metrics.bar_height);
     let mut max_content_width: f64 = 0.0;
     let mut max_content_height: f64 = 0.0;
     let mut bar_width = 0.0;
-    for tab in &tabs.tabs {
-        let label_size = measure_view_intrinsic(&tab.label, state, env, theme);
-        bar_width += (f64::from(label_size.width) + metrics.button_horizontal_inset * 2.0)
-            .max(metrics.button_min_width);
+    for (tab, (label_size, icon_size)) in tabs.tabs.iter().zip(item_sizes.iter()) {
+        bar_width += tabs_item_natural_width(*label_size, *icon_size, &metrics, layout);
 
         let content = normalize_layout_view(AnyView::new(tab.content.build()), env);
         let content_size =
