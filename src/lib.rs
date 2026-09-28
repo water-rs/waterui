@@ -61,13 +61,14 @@ pub use platform::BrowserWindow;
 #[cfg(feature = "winit")]
 pub use platform::WinitWindow;
 pub use platform::{
-    InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext, OffscreenSurface,
-    OffscreenWindow, PlatformWindow, PointerButton, PointerKind, SurfaceError, SurfaceFrame,
-    SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase,
+    GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,
+    OffscreenSurface, OffscreenWindow, PlatformWindow, PointerButton, PointerKind, SurfaceError,
+    SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase,
 };
 #[cfg(feature = "frame-profile")]
 pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
+#[cfg(not(target_os = "android"))]
 pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]

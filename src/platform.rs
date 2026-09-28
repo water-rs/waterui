@@ -422,9 +422,24 @@ pub(crate) fn validated_window_frame(
     frame
 }
 
-/// Window abstraction consumed by hydrolysis runner.
+/// Window host-services contract consumed by hydrolysis runner: window
+/// metrics, property application, input delivery, redraw wakeup, IME state
+/// sync and cursor chrome.
+///
+/// This contract carries no GPU objects — a host satisfies it without a
+/// wgpu device, a presentation surface or a render thread. The GPU
+/// painter's presentation attachment is the separate [`GpuSurfaceWindow`]
+/// boundary: only window types that implement it can drive the GPU frame
+/// pump, so a host that stays `PlatformWindow`-only can never hand the
+/// runner a wgpu surface.
 pub trait PlatformWindow: 'static {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider;
+    /// The drawable content area in physical pixels.
+    ///
+    /// Window metrics are host state: layout bounds, the semantic tree and
+    /// DPI all come from here, never from a presentation attachment, so a
+    /// host answers correctly before any surface exists and while it is
+    /// between surface generations.
+    fn content_size(&self) -> (u32, u32);
     fn apply_properties(&mut self, window: &WuiWindow);
     /// Applies the window's effective content-size limits (logical units).
     ///
@@ -456,14 +471,6 @@ pub trait PlatformWindow: 'static {
     }
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
-    /// Returns a thread-safe wake bridge for nested GPU surfaces.
-    ///
-    /// Windowed platforms override this when their native window can be woken
-    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
-    /// default and rely on their explicit render pump.
-    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-        None
-    }
     fn scale_factor(&self) -> f64;
     /// The refresh rate (Hz) of the display this window is on, if known.
     ///
@@ -475,6 +482,25 @@ pub trait PlatformWindow: 'static {
     }
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     fn set_cursor_style(&mut self, style: CursorStyle);
+}
+
+/// The GPU painter's presentation attachment: a [`PlatformWindow`] whose
+/// content is presented through a wgpu surface.
+///
+/// This is the compile-time painter boundary — the windowed frame pump is
+/// generic over this trait, so a GPU surface exists only where a painter
+/// attached one. A host implementing only [`PlatformWindow`] has no surface
+/// to give the pump, and the GPU render path is unreachable for it.
+pub trait GpuSurfaceWindow: PlatformWindow {
+    fn surface(&mut self) -> &mut dyn SurfaceProvider;
+    /// Returns a thread-safe wake bridge for nested GPU surfaces.
+    ///
+    /// Windowed platforms override this when their native window can be woken
+    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
+    /// default and rely on their explicit render pump.
+    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+        None
+    }
 }
 
 /// The adapter, device and queue an [`OffscreenSurface`] renders on.
@@ -1292,6 +1318,16 @@ impl OffscreenWindow {
         &self.surface
     }
 
+    /// The offscreen presentation attachment, directly on the concrete type.
+    ///
+    /// [`GpuSurfaceWindow::surface`] carries the same entry point on the
+    /// painter-boundary trait; this inherent form exists because downstream
+    /// test hosts (e.g. `waterui-testing`) call `surface()` on the concrete
+    /// window without importing the trait.
+    pub fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
+    }
+
     /// The last (min, max) content-size limits the runner applied, for tests.
     #[must_use]
     pub fn applied_size_limits(
@@ -1305,8 +1341,9 @@ impl OffscreenWindow {
 }
 
 impl PlatformWindow for OffscreenWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
-        &mut self.surface
+    fn content_size(&self) -> (u32, u32) {
+        // An offscreen window is exactly its render target.
+        self.surface.size()
     }
 
     fn apply_properties(&mut self, window: &WuiWindow) {
@@ -1348,6 +1385,12 @@ impl PlatformWindow for OffscreenWindow {
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
+}
+
+impl GpuSurfaceWindow for OffscreenWindow {
+    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -1398,9 +1441,9 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-        PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-        TextInputState, TouchPhase, reclaim_device, validated_window_frame,
+        CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
+        PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider,
+        TextInputPurpose, TextInputState, TouchPhase, reclaim_device, validated_window_frame,
     };
 
     #[derive(Clone)]
@@ -2946,11 +2989,9 @@ mod winit_impl {
     }
 
     impl PlatformWindow for WinitWindow {
-        fn surface(&mut self) -> &mut dyn SurfaceProvider {
-            if let Some(size) = self.pending_surface_size.take() {
-                self.surface.resize(size.width, size.height);
-            }
-            &mut self.surface
+        fn content_size(&self) -> (u32, u32) {
+            let size = self.window.inner_size();
+            (size.width, size.height)
         }
 
         fn applies_size_limits(&self) -> bool {
@@ -3082,13 +3123,6 @@ mod winit_impl {
             }
         }
 
-        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let handle = RedrawHandle::new();
-            let window = Arc::clone(&self.window);
-            handle.set_waker(Some(Arc::new(move || window.request_redraw())));
-            Some(handle)
-        }
-
         fn scale_factor(&self) -> f64 {
             self.window.scale_factor()
         }
@@ -3136,6 +3170,22 @@ mod winit_impl {
             self.current_cursor_style = style;
             self.window
                 .set_cursor(WinitCursor::Icon(map_cursor_style(style)));
+        }
+    }
+
+    impl GpuSurfaceWindow for WinitWindow {
+        fn surface(&mut self) -> &mut dyn SurfaceProvider {
+            if let Some(size) = self.pending_surface_size.take() {
+                self.surface.resize(size.width, size.height);
+            }
+            &mut self.surface
+        }
+
+        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+            let handle = RedrawHandle::new();
+            let window = Arc::clone(&self.window);
+            handle.set_waker(Some(Arc::new(move || window.request_redraw())));
+            Some(handle)
         }
     }
 

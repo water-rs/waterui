@@ -57,8 +57,8 @@ impl HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl PlatformWindow for HeadlessPlatformWindow {
-    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
-        self.inner.surface()
+    fn content_size(&self) -> (u32, u32) {
+        self.inner.content_size()
     }
 
     fn apply_properties(&mut self, window: &Window) {
@@ -95,6 +95,13 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
     fn set_cursor_style(&mut self, style: waterui::cursor::CursorStyle) {
         self.inner.set_cursor_style(style);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
+    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
+        crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
     }
 }
 

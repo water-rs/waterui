@@ -17,6 +17,10 @@ use nami::Signal as _;
 use std::cell::Cell;
 use std::time::Duration;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+#[cfg(any(
+    all(not(target_arch = "wasm32"), not(target_os = "android")),
+    all(target_arch = "wasm32", feature = "web")
+))]
 use waterui::app::App;
 #[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
 use waterui::app::AppParts;
@@ -33,6 +37,8 @@ use waterui_core::key::KeyPress;
 use waterui_core::view::Hook;
 use waterui_text::FontCollection;
 
+#[cfg(target_os = "android")]
+pub mod android;
 mod diagnostics;
 mod executor;
 mod fonts;
@@ -71,6 +77,8 @@ pub(crate) use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::platform::GpuSurfaceWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
@@ -101,7 +109,11 @@ fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> 
 /// Offscreen output is usually viewed on a HiDPI display (a preview image in
 /// docs, a snapshot opened on a laptop), where rendering one physical pixel per
 /// logical pixel looks soft. Defaults to 2.
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "winit"),
+    not(target_os = "android")
+))]
 fn offscreen_scale_factor() -> f64 {
     const VARIABLE: &str = "WATERUI_HYDROLYSIS_OFFSCREEN_SCALE";
     const DEFAULT: f64 = 2.0;
@@ -156,7 +168,16 @@ fn install_headless_window_managers(
     let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+// The headless offscreen `run` never exists on Android: `hydrolysis::run`
+// must not silently dispatch an app to the one-shot offscreen pump there.
+// The Android host's entry point is `runner::android` — a missing `run` is a
+// compile error naming the real boundary, which is the plan's "no accidental
+// Android-to-headless dispatch" made mechanical.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "winit"),
+    not(target_os = "android")
+))]
 pub fn run(app: App, style: impl crate::Style) {
     let inspector = init_main_thread_executors();
     let inspector_probe = inspector
@@ -238,13 +259,25 @@ pub fn run(app: App, style: impl crate::Style) {
     web_runner::run(app, style);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
+// The plan of record's Android host is the Kotlin `HydrolysisHostView`, not
+// winit (no NativeActivity/GameActivity): `run` is absent on Android under
+// every feature combination, so a winit-enabled Android build cannot
+// silently dispatch to a windowing model the host does not have.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "winit",
+    not(target_os = "android")
+))]
 pub fn run(app: App, style: impl crate::Style) {
     initialize_tracing_from_env();
     winit_runner::run(app, style, init_main_thread_executors());
 }
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "winit"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "winit",
+    not(target_os = "android")
+))]
 fn initialize_tracing_from_env() {
     if std::env::var_os("RUST_LOG").is_none() {
         return;

@@ -11,9 +11,9 @@ use web_sys::{
 };
 
 use super::{
-    CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-    PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
-    WindowState, WuiWindow, select_hydrolysis_surface_format,
+    CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
+    PointerButton, PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
+    TextInputState, WindowState, WuiWindow, select_hydrolysis_surface_format,
 };
 
 #[derive(Clone, Copy)]
@@ -239,8 +239,9 @@ impl BrowserWindow {
 }
 
 impl PlatformWindow for BrowserWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
-        &mut self.surface
+    fn content_size(&self) -> (u32, u32) {
+        // The canvas's backing store is exactly the drawable content area.
+        self.surface.size()
     }
 
     fn apply_properties(&mut self, window: &WuiWindow) {
@@ -338,6 +339,12 @@ impl PlatformWindow for BrowserWindow {
             .style()
             .set_property("cursor", map_cursor_style(style))
             .expect("hydrolysis web platform: failed to update cursor style");
+    }
+}
+
+impl GpuSurfaceWindow for BrowserWindow {
+    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
     }
 }
 
