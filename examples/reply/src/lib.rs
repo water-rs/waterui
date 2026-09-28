@@ -491,7 +491,10 @@ fn detail_header(thread: &'static Thread, scrolled: Computed<bool>) -> impl View
 
 fn detail_pane(thread: &'static Thread) -> impl View {
     let offset = binding(Point::zero());
-    let scrolled = offset.clone().map(|offset| offset.y > 0.0).computed();
+    let scrolled = offset
+        .clone()
+        .map(|offset: Point| offset.y > 0.0)
+        .computed();
     let mut rows = Vec::new();
     for message in thread.messages {
         rows.push(AnyView::new(
