@@ -13,6 +13,7 @@ categories = ["gui"]
 
 [dependencies]
 bitflags.workspace = true
+keyboard-types.workspace = true
 suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true

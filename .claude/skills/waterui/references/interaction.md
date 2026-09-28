@@ -182,6 +182,38 @@ The parts an agent cannot guess:
 - The initiating gesture is platform-defined: click-drag on macOS, long-press-drag on
   iOS and Android. Do not add your own long-press recognizer on top.
 
+## Key handling
+
+`.on_key_press(handler)` attaches a key handler to a view. The focused view sees each
+key first; a key it does not consume bubbles to the nearest ancestor with an
+`OnKeyPress` handler, then the next, stopping at the first `KeyHandling::Handled`. The
+handler runs with `KeyPress` in its environment — read it with `Use<KeyPress>` — and
+returns `Handled` or `Ignored`. The backend is what decides "consumed": a single-line
+`field` eats text-editing keys and submits Return through `.on_submit(..)` when one is
+set; Escape, Up/Down, PageUp/PageDown and a Return with no `on_submit` bubble out.
+
+```rust
+use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
+
+search_panel()
+    .on_key_press(|Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+        if press.key == Key::Named(NamedKey::Escape) {
+            open.set(false);
+            KeyHandling::Handled
+        } else {
+            KeyHandling::Ignored
+        }
+    })
+    .state(&open)
+```
+
+- Return `Ignored`, never a missing `Handled` — `Ignored` is what keeps the key bubbling.
+- `press.modifiers` is a `keyboard_types::Modifiers` bitset (`Modifiers::SHIFT`,
+  `Modifiers::CONTROL`, `Modifiers::ALT`, `Modifiers::META`); `press.code` is the
+  physical `Code`, `press.repeat` marks auto-repeat.
+- `field("Search", &query).on_submit(handler)` fires on Return in a line-limited
+  field; with no line limit Return inserts a newline and never submits.
+
 ## Reactive pressed/hover visuals
 
 Drive visuals from the interaction state — never rebuild the view to restyle it. Stack

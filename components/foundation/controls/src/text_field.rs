@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use nami::{Binding, Computed};
 use waterui_core::Str;
 use waterui_core::configurable;
+use waterui_core::handler::{Handler, SharedAction};
 use waterui_core::{AnyView, Environment, View, layout::StretchAxis};
 use waterui_text::{IntoText, Text, TextConfig, styled::StyledStr};
 
@@ -36,6 +37,11 @@ pub struct TextFieldConfig {
     pub selection_menu: Computed<Vec<MenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     pub line_limit: Option<NonZeroUsize>,
+    /// The action run when the user submits the field with Return or Enter.
+    ///
+    /// A field without one leaves Return unconsumed, so it bubbles to the
+    /// field's ancestors like any other key it does not use.
+    pub on_submit: Option<SharedAction>,
 }
 
 /// Native-resolved text field payload.
@@ -53,6 +59,11 @@ pub struct ResolvedTextFieldConfig {
     pub selection_menu: Computed<Vec<ResolvedMenuItem>>,
     /// Maximum number of lines the field renders. `None` removes the limit.
     pub line_limit: Option<NonZeroUsize>,
+    /// The action run when the user submits the field with Return or Enter.
+    ///
+    /// A field without one leaves Return unconsumed, so it bubbles to the
+    /// field's ancestors like any other key it does not use.
+    pub on_submit: Option<SharedAction>,
 }
 
 configurable!(
@@ -108,6 +119,7 @@ impl TextField {
             keyboard: KeyboardType::default(),
             selection_menu: Computed::constant(Vec::new()),
             line_limit: NonZeroUsize::new(1),
+            on_submit: None,
         })
     }
 
@@ -126,6 +138,16 @@ impl TextField {
     #[must_use]
     pub const fn disable_line_limit(mut self) -> Self {
         self.0.line_limit = None;
+        self
+    }
+
+    /// Runs `action` when the user submits the field with Return or Enter.
+    ///
+    /// In a field without a line limit Return inserts a line break and never
+    /// submits.
+    #[must_use]
+    pub fn on_submit<Args>(mut self, action: impl Handler<Args, ()>) -> Self {
+        self.0.on_submit = Some(SharedAction::new(action));
         self
     }
 
@@ -174,6 +196,7 @@ impl View for TextField {
             keyboard: self.0.keyboard,
             selection_menu,
             line_limit: self.0.line_limit,
+            on_submit: self.0.on_submit,
         }))
     }
 

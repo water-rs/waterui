@@ -231,12 +231,35 @@ pub fn interaction_drop_extras_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// interaction.md § "## Reactive pressed/hover visuals" — rust block 8/8
+// interaction.md § "## Key handling" — rust block 8/9
+// ---------------------------------------------------------------------------
+pub fn interaction_block_08() -> impl View {
+    use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
+
+    let open = Binding::bool(false);
+    let search_panel = || text("Search panel");
+
+    search_panel()
+        .on_key_press(
+            |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+                if press.key == Key::Named(NamedKey::Escape) {
+                    open.set(false);
+                    KeyHandling::Handled
+                } else {
+                    KeyHandling::Ignored
+                }
+            },
+        )
+        .state(&open)
+}
+
+// ---------------------------------------------------------------------------
+// interaction.md § "## Reactive pressed/hover visuals" — rust block 9/9
 // ---------------------------------------------------------------------------
 // The two layers cross-fade through complementary opacity signals — reaching
 // 0.0 here is the documented technique, not a visibility toggle.
 #[allow(unknown_lints, opacity_as_visibility)]
-pub fn interaction_block_08() -> impl View {
+pub fn interaction_block_09() -> impl View {
     let is_hovered = Binding::bool(false);
 
     use waterui::animation::Animation;
