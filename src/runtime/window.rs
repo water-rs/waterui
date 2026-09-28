@@ -115,6 +115,19 @@ pub struct Window {
     /// macOS, iOS, Android and Windows identify an application by its bundle
     /// or package, not per window, and ignore this.
     pub app_id: Option<Str>,
+    /// The per-window instance name inside the desktop identity.
+    ///
+    /// `app_id` names the application class — the X11 `WM_CLASS` class part
+    /// and the Wayland `app_id` — while `instance_name` names this window's
+    /// instance inside it, the `WM_CLASS` `res_name` window managers like
+    /// i3/sway/awesome match on for per-window rules.
+    ///
+    /// When `None` (the default), the instance name is the window's
+    /// resolved [`app_id`](Self::app_id).
+    ///
+    /// Platform support: X11 through the hydrolysis backend. Wayland carries
+    /// only `app_id`, and the bundled platforms ignore this.
+    pub instance_name: Option<Str>,
 }
 
 /// The state of a window.
@@ -269,6 +282,7 @@ impl Window {
             min_size: None,
             max_size: None,
             app_id: None,
+            instance_name: None,
         }
     }
 
@@ -299,6 +313,16 @@ impl Window {
     #[must_use]
     pub fn app_id(mut self, app_id: impl Into<Str>) -> Self {
         self.app_id = Some(app_id.into());
+        self
+    }
+
+    /// Set the window's instance name inside the desktop identity — the X11
+    /// `WM_CLASS` instance part.
+    ///
+    /// See [`Self::instance_name`] for the default and platform support notes.
+    #[must_use]
+    pub fn instance_name(mut self, instance_name: impl Into<Str>) -> Self {
+        self.instance_name = Some(instance_name.into());
         self
     }
 
@@ -415,6 +439,18 @@ impl Window {
     #[must_use]
     pub fn display_app_id(&self) -> Str {
         self.app_id.clone().unwrap_or_else(application_identifier)
+    }
+
+    /// The window's resolved instance name inside the desktop identity.
+    ///
+    /// A window that declares no [`instance_name`](Self::instance_name) of its
+    /// own carries its resolved [`app_id`](Self::display_app_id), which keeps
+    /// the platform default when that is empty too.
+    #[must_use]
+    pub fn display_instance_name(&self) -> Str {
+        self.instance_name
+            .clone()
+            .unwrap_or_else(|| self.display_app_id())
     }
 
     /// Get a handle to control the window after showing it.
