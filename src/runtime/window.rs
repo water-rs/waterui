@@ -119,7 +119,7 @@ pub struct Window {
     ///
     /// `app_id` names the application class — the X11 `WM_CLASS` class part
     /// and the Wayland `app_id` — while `instance_name` names this window's
-    /// instance inside it, the `WM_CLASS` res_name window managers like
+    /// instance inside it, the `WM_CLASS` `res_name` window managers like
     /// i3/sway/awesome match on for per-window rules.
     ///
     /// When `None` (the default), the instance name is the window's
