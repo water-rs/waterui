@@ -253,6 +253,8 @@ button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reac
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox
 slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
+slider("Volume", &level).size(ControlSize::Large)      // ExtraSmall..=ExtraLarge; sliders default ExtraSmall
+    .value_indicator(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
 stepper("Quantity", &count)                 // &Binding<i32>
 stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
 field("Email", &address)                    // &Binding<Str>
