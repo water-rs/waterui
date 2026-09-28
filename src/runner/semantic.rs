@@ -437,7 +437,13 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
     // Same ordered IME keystroke ownership as the rendered runner
     // (`ime::ime_owned_events` tracks the composition through the batch).
     let ime_owned = ime::ime_owned_events(&events, window.core.ime_composition_active());
+    // Same consumed-press suppression as the rendered runner: the press
+    // precedes its paired `TextInput`, so this flag set at the press is read
+    // by the very next `TextInput` event.
+    let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        let key_consumed = suppress_key_text;
+        suppress_key_text = false;
         let changed = match event {
             InputEvent::CloseRequested => {
                 window
@@ -466,6 +472,9 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             InputEvent::TextInput { text } => {
                 !ime_owned && window.core.handle_text_input(text.as_str())
             }
+            InputEvent::KeyText { text } => {
+                !ime_owned && !key_consumed && window.core.handle_text_input(text.as_str())
+            }
             InputEvent::Key {
                 key,
                 logical_key,
@@ -488,9 +497,11 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                         modifiers: modifiers.into(),
                         repeat,
                     };
-                    window
+                    let outcome = window
                         .core
-                        .handle_key_press(&key, modifiers, &key_env, &press)
+                        .handle_key_press(&key, modifiers, &key_env, &press);
+                    suppress_key_text = outcome == KeyPressOutcome::Consumed;
+                    outcome != KeyPressOutcome::Ignored
                 }
             }
             InputEvent::Key {
@@ -1123,6 +1134,74 @@ mod tests {
             value_for_assert.snapshot().to_string().as_str(),
             "x",
             "the character did not edit the field"
+        );
+    }
+
+    /// A keystroke that carries text arrives press-then-text — the web's
+    /// `keydown` → `beforeinput` order — and a handler that consumes the
+    /// press suppresses the paired `KeyText` (the web's `preventDefault` on
+    /// `keydown`). This is the shape winit delivers for a text-producing
+    /// key: the logical key identifies the character while `key` stays
+    /// `Unidentified`, so the field's own editing never sees it twice.
+    /// Text-first delivery was the bound-but-printable key echo an
+    /// embedded-surface application reported against this backend.
+    #[test]
+    fn a_consumed_key_press_suppresses_its_paired_text() {
+        // The ancestor consumes 'x' only; 'y' falls through to the field.
+        let hits = Binding::container(Vec::<String>::new());
+        let hits_for_view = hits.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let value_for_assert = value.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let hits = hits_for_view.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),)).on_key_press(
+                    move |Use(press): Use<KeyPress>| {
+                        let mut seen = hits.snapshot();
+                        seen.push(format!("{:?}", press.key));
+                        hits.set(seen);
+                        if matches!(&press.key, Key::Character(c) if c.as_str() == "x") {
+                            KeyHandling::Handled
+                        } else {
+                            KeyHandling::Ignored
+                        }
+                    },
+                ),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        let press_of = |ch: &str, code: Code| InputEvent::Key {
+            key: KeyCode::Unidentified,
+            logical_key: Key::Character(ch.to_string()),
+            physical_code: code,
+            repeat: false,
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        };
+
+        runtime.push_input_event(press_of("x", Code::KeyX));
+        runtime.push_input_event(InputEvent::KeyText {
+            text: "x".to_owned(),
+        });
+        runtime.push_input_event(press_of("y", Code::KeyY));
+        runtime.push_input_event(InputEvent::KeyText {
+            text: "y".to_owned(),
+        });
+        runtime.pump();
+        assert_eq!(
+            hits.snapshot().as_slice(),
+            &[
+                String::from("Character(\"x\")"),
+                String::from("Character(\"y\")")
+            ],
+            "the presses did not both reach the ancestor handler"
+        );
+        assert_eq!(
+            value_for_assert.snapshot().to_string().as_str(),
+            "y",
+            "the consumed press still typed its text, or the free one lost it"
         );
     }
 

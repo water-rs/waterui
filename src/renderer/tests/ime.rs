@@ -680,7 +680,7 @@ fn expected_surface_events(fixture: &Fixture) -> Vec<SurfaceInputEvent> {
                         });
                     }
                 }
-                InputEvent::TextInput { text } if !owned => {
+                InputEvent::TextInput { text, .. } if !owned => {
                     expected.push(SurfaceInputEvent::TextInput(text.into()));
                 }
                 _ => {}

@@ -1131,7 +1131,13 @@ where
     // activate a form or delete committed text.
     let ime_owned = ime::ime_owned_events(&events, runtime.renderer.ime_composition_active());
     let mut geometry_refreshed = false;
+    // A key press a handler consumed suppresses the `TextInput` that pairs
+    // with it — the press precedes its text in `pending_events`, so this
+    // flag set at the press is read by the very next `TextInput` event.
+    let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        let key_consumed = suppress_key_text;
+        suppress_key_text = false;
         // The preflight re-registers every hit target at the geometry a
         // pending refresh is *about to* paint, so it is reserved for the
         // input that reads scroll extents: a wheel or trackpad-pan delta
@@ -1336,6 +1342,23 @@ where
                 );
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            // The text half of a key press, suppressed when the press was
+            // consumed by a handler — the web's preventDefault on keydown
+            // cancelling beforeinput.
+            InputEvent::KeyText { text } => {
+                let changed = !ime_owned
+                    && !key_consumed
+                    && (runtime.renderer.handle_embedded_text_input(text.as_str())
+                        || runtime.renderer.handle_text_input(text.as_str()));
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "text_input",
+                    text = text.as_str(),
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_refresh(runtime, changed);
+            }
             InputEvent::Key {
                 key,
                 logical_key,
@@ -1358,15 +1381,23 @@ where
                         modifiers: modifiers.into(),
                         repeat,
                     };
-                    runtime.renderer.handle_embedded_key(&KeyDelivery {
+                    let outcome = if runtime.renderer.handle_embedded_key(&KeyDelivery {
                         pressed: true,
                         logical: &logical_key,
                         code: physical_code,
                         repeat,
                         modifiers,
-                    }) || runtime
-                        .renderer
-                        .handle_key_press(&key, modifiers, &key_env, &press)
+                    }) {
+                        // Forwarded, not consumed — the surface owns its
+                        // key+text pair; the paired text is still delivered.
+                        KeyPressOutcome::ForwardedToSurface
+                    } else {
+                        runtime
+                            .renderer
+                            .handle_key_press(&key, modifiers, &key_env, &press)
+                    };
+                    suppress_key_text = outcome == KeyPressOutcome::Consumed;
+                    outcome != KeyPressOutcome::Ignored
                 };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",

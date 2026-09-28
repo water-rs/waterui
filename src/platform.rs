@@ -181,6 +181,15 @@ pub enum InputEvent {
     TextInput {
         text: String,
     },
+    /// Text that is the `text` payload of the [`InputEvent::Key`] press
+    /// immediately preceding it — the web platform's `keydown` →
+    /// `beforeinput` pair, in that order. A press a key handler consumed
+    /// suppresses this event at dispatch. Distinct from [`TextInput`],
+    /// which carries text with no key origin (synthetic pushes, test
+    /// drivers) and is never suppressed.
+    KeyText {
+        text: String,
+    },
     Key {
         key: KeyCode,
         /// The logical key in the W3C UI Events vocabulary — what the layout
@@ -3026,20 +3035,11 @@ mod winit_impl {
             }
             return;
         }
-        if input.state == ElementState::Pressed
-            && should_emit_keyboard_text(modifiers)
-            && let Some(text) = keyboard_text_payload(input.text)
-        {
-            tracing::trace!(
-                target: "waterui::hydrolysis::input_raw",
-                event = "keyboard_text",
-                text,
-                "winit raw input event"
-            );
-            pending_events.push(InputEvent::TextInput {
-                text: text.to_string(),
-            });
-        }
+        // Press first, then its text: the web platform's `keydown` →
+        // `beforeinput` order. Text-first would deliver the text before the
+        // handler that could have consumed the press, so a bound key echoed
+        // into the focused surface anyway. With the press leading, a handler
+        // that consumes it suppresses the paired `KeyText` at dispatch.
         tracing::trace!(
             target: "waterui::hydrolysis::input_raw",
             event = "keyboard_input",
@@ -3059,6 +3059,20 @@ mod winit_impl {
             },
             modifiers,
         });
+        if input.state == ElementState::Pressed
+            && should_emit_keyboard_text(modifiers)
+            && let Some(text) = keyboard_text_payload(input.text)
+        {
+            tracing::trace!(
+                target: "waterui::hydrolysis::input_raw",
+                event = "keyboard_text",
+                text,
+                "winit raw input event"
+            );
+            pending_events.push(InputEvent::KeyText {
+                text: text.to_string(),
+            });
+        }
     }
 
     fn map_key_event(logical_key: &Key, text: Option<&str>, modifiers: Modifiers) -> KeyCode {
@@ -3309,7 +3323,12 @@ mod winit_impl {
 
             let text_inputs = events
                 .iter()
-                .filter(|event| matches!(event, InputEvent::TextInput { .. }))
+                .filter(|event| {
+                    matches!(
+                        event,
+                        InputEvent::TextInput { .. } | InputEvent::KeyText { .. }
+                    )
+                })
                 .count();
             let presses = events
                 .iter()
@@ -3334,6 +3353,41 @@ mod winit_impl {
                 "the synthetic release cancels the press it belonged to"
             );
             assert_eq!(events.len(), 3, "the synthetic press emits nothing");
+        }
+
+        /// The web platform's `keydown` → `beforeinput` order: a press leads
+        /// the text it produces, and the text is tagged `KeyText` so the
+        /// dispatch loops can suppress it when a handler consumes the press.
+        /// Text-first delivery let a bound key echo into a focused surface
+        /// before the handler could see it.
+        #[test]
+        fn a_key_press_leads_its_paired_text() {
+            let logical_a = Key::Character("a".into());
+            let press = WinitKeyInput {
+                is_synthetic: false,
+                state: ElementState::Pressed,
+                repeat: false,
+                text: Some("a"),
+                logical_key: &logical_a,
+                physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyA),
+            };
+            let mut events = Vec::new();
+            queue_keyboard_input(&mut events, Modifiers::default(), press);
+            assert!(
+                matches!(
+                    events.first(),
+                    Some(InputEvent::Key {
+                        state: KeyState::Pressed,
+                        ..
+                    })
+                ),
+                "the press does not lead the queue: {events:?}"
+            );
+            assert!(
+                matches!(events.get(1), Some(InputEvent::KeyText { .. })),
+                "the paired text does not follow its press: {events:?}"
+            );
+            assert_eq!(events.len(), 2, "a press plus its text is the whole pair");
         }
 
         #[test]

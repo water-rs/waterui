@@ -73,7 +73,7 @@ use crate::platform::{InputEvent, KeyState, PlatformWindow};
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
-use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery};
+use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome};
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
 use crate::time::Instant;
 

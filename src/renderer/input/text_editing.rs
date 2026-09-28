@@ -3,6 +3,27 @@ use crate::engine::DrawContext;
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_controls::button::button;
 
+/// What became of a key press once the framework finished with it.
+///
+/// The distinction that matters is `Consumed` vs `ForwardedToSurface`:
+/// only a consumed press suppresses the paired `TextInput` that follows it
+/// in the event queue (the web platform's `keydown` → `beforeinput` rule —
+/// `preventDefault` on the press cancels the text). A press forwarded to an
+/// embedded surface was *delivered*, not consumed: the surface owns its
+/// key+text pair, exactly as `SurfaceInputEvent` documents, and decides
+/// internally what the press meant.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum KeyPressOutcome {
+    /// No handler, editor, or surface accepted the press.
+    Ignored,
+    /// A handler consumed the press — editing action, focus traversal, or
+    /// an `OnKeyPress` ancestor reporting `KeyHandling::Handled`.
+    Consumed,
+    /// The press was forwarded to an embedded surface; its paired text is
+    /// delivered too, as the surface contract.
+    ForwardedToSurface,
+}
+
 #[derive(Clone)]
 pub(crate) enum TextInputModel {
     TextField {
@@ -1893,38 +1914,45 @@ impl SemanticCore {
             modifiers: modifiers.into(),
             repeat: false,
         };
-        self.handle_key_press(key, modifiers, env, &press)
+        self.handle_key_press(key, modifiers, env, &press) != KeyPressOutcome::Ignored
     }
 
     /// A key press with its full platform identity: the focused target's
     /// editing first, then the `OnKeyPress` bubble chain, then an enclosing
     /// embedded surface.
-    pub fn handle_key_press(
+    ///
+    /// The [`KeyPressOutcome`] distinguishes a press a handler consumed
+    /// (whose paired `KeyText` is then suppressed at dispatch) from one
+    /// forwarded to an embedded surface — delivery is not consumption: the
+    /// surface owns its key+text pair, exactly as `SurfaceInputEvent`
+    /// documents.
+    pub(crate) fn handle_key_press(
         &mut self,
         key: &KeyCode,
         modifiers: Modifiers,
         env: &Environment,
         press: &KeyPress,
-    ) -> bool {
+    ) -> KeyPressOutcome {
         if self.handle_keyboard_key_down(key, modifiers, env) {
-            return true;
+            return KeyPressOutcome::Consumed;
         }
         if self.handle_key(key, modifiers) {
-            return true;
+            return KeyPressOutcome::Consumed;
         }
         self.bubble_key_press(press)
     }
 
     /// Offers an unconsumed key to the focused node's `OnKeyPress`
     /// ancestors, nearest first, then to the topmost embedded surface
-    /// enclosing it. `true` once some scope reports [`KeyHandling::Handled`]
-    /// or a surface takes the key.
+    /// enclosing it. [`KeyPressOutcome::Consumed`] once some scope reports
+    /// [`KeyHandling::Handled`]; [`KeyPressOutcome::ForwardedToSurface`] when
+    /// a surface takes the key.
     ///
     /// The focused node is whatever `hit_test.keyboard_focus` names — a text
     /// input, a focusable control's press slot, or an embedded surface; with
     /// no focus at all the key still bubbles through the scopes enclosing
     /// every registration of the frame.
-    fn bubble_key_press(&mut self, press: &KeyPress) -> bool {
+    fn bubble_key_press(&mut self, press: &KeyPress) -> KeyPressOutcome {
         let focused_key = self.hit_test.keyboard_focus.clone();
         let mut scopes: Option<Option<Rc<KeyHandlerNode>>> = None;
         let mut bubble_center: Option<vello::kurbo::Point> = None;
@@ -1971,7 +1999,7 @@ impl SemanticCore {
                     key = ?press.key,
                     "key consumed by an on_key_press ancestor"
                 );
-                return true;
+                return KeyPressOutcome::Consumed;
             }
             node = link.parent.clone();
         }
@@ -1996,9 +2024,12 @@ impl SemanticCore {
                 modifiers: Modifiers::from(press.modifiers),
                 sink: embedded.sink,
             });
-            return true;
+            // Forwarded, not consumed: the surface owns the key+text pair
+            // and decides internally what the press meant, so its paired
+            // `TextInput` is still delivered.
+            return KeyPressOutcome::ForwardedToSurface;
         }
-        false
+        KeyPressOutcome::Ignored
     }
 
     pub fn handle_key_release_with_env(&mut self, key: &KeyCode, env: &Environment) -> bool {
