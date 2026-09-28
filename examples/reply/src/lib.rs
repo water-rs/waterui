@@ -9,11 +9,12 @@
 
 use core::num::NonZeroUsize;
 
+use waterui::Color;
 use waterui::accessibility::AccessibilityRole;
 use waterui::app::App;
 use waterui::color::signal_color;
 use waterui::component::vstack;
-use waterui::layout::ContentMode;
+use waterui::layout::{ContentMode, Point};
 use waterui::media::Photo;
 use waterui::metadata::Metadata;
 use waterui::prelude::*;
@@ -462,9 +463,14 @@ fn reply_actions() -> impl View {
         .padding_with([20.0, 8.0, 0.0, 0.0])
 }
 
-/// The detail column's app bar: subject, message count, and overflow actions,
-/// laid directly on the `inverseOnSurface` column background.
-fn detail_header(thread: &'static Thread) -> impl View {
+/// The detail column's app bar: subject, message count, and overflow actions.
+/// `scrolled` is the `offset.y > 0` signal `ScrollView::report_offset` feeds;
+/// once content scrolls under the bar its container lifts from
+/// `inverseOnSurface` to `surfaceContainer` — the M3 scrolled-state tonal
+/// elevation.
+fn detail_header(thread: &'static Thread, scrolled: Computed<bool>) -> impl View {
+    let on_scroll: Color = SurfaceContainer.into();
+    let at_rest: Color = InverseOnSurface.into();
     hstack((
         vstack((
             text(thread.subject).font(Subheadline),
@@ -480,10 +486,16 @@ fn detail_header(thread: &'static Thread) -> impl View {
     ))
     .spacing(8.0)
     .padding_with([16.0, 16.0, 20.0, 16.0])
+    .background(signal_color(scrolled.select(on_scroll, at_rest).computed()))
 }
 
 fn detail_pane(thread: &'static Thread) -> impl View {
-    let mut rows = vec![AnyView::new(detail_header(thread))];
+    let offset = binding(Point::zero());
+    let scrolled = offset
+        .clone()
+        .map(|offset: Point| offset.y > 0.0)
+        .computed();
+    let mut rows = Vec::new();
     for message in thread.messages {
         rows.push(AnyView::new(
             message_body(message)
@@ -492,12 +504,17 @@ fn detail_pane(thread: &'static Thread) -> impl View {
                 .clip(FixedRoundedRectangle::new(CARD_RADIUS)),
         ));
     }
-    scroll(
-        vstack(rows)
-            .leading()
-            .spacing(8.0)
-            .padding_with([0.0, 12.0, 16.0, 16.0]),
-    )
+    vstack((
+        detail_header(thread, scrolled),
+        scroll(
+            vstack(rows)
+                .leading()
+                .spacing(8.0)
+                .padding_with([0.0, 12.0, 16.0, 16.0]),
+        )
+        .report_offset(&offset)
+        .max_height(f32::INFINITY),
+    ))
     .background(InverseOnSurface)
     .max_width(f32::INFINITY)
     .max_height(f32::INFINITY)

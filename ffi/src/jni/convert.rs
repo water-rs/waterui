@@ -1661,7 +1661,7 @@ impl ToJavaStruct for crate::components::form::WuiMultiDatePicker {
     }
 }
 
-/// `WuiScrollView -> ScrollStruct(axis, contentPtr, targetXPtr, targetYPtr, generationPtr)`
+/// `WuiScrollView -> ScrollStruct(axis, contentPtr, targetXPtr, targetYPtr, generationPtr, offsetXPtr, offsetYPtr)`
 impl ToJavaStruct for crate::components::layout::WuiScrollView {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -1669,13 +1669,15 @@ impl ToJavaStruct for crate::components::layout::WuiScrollView {
             .expect("ScrollStruct class not found");
         env.new_object(
             &class,
-            jni_sig!("(IJJJJ)V"),
+            jni_sig!("(IJJJJJJ)V"),
             &[
                 JValue::Int(self.axis as i32),
                 JValue::Long(self.content as jlong),
                 JValue::Long(self.target_x as jlong),
                 JValue::Long(self.target_y as jlong),
                 JValue::Long(self.scroll_generation as jlong),
+                JValue::Long(self.offset_x as jlong),
+                JValue::Long(self.offset_y as jlong),
             ],
         )
         .expect("Failed to create ScrollStruct")
