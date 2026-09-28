@@ -740,6 +740,30 @@ impl SliderMetrics {
     }
 }
 
+/// Layout metrics of the value indicator a slider shows above its thumb while
+/// the thumb is dragged.
+#[derive(Debug, Clone, Copy)]
+pub struct SliderValueIndicatorMetrics {
+    /// Horizontal padding inside the bubble around the value text.
+    pub padding_x: f64,
+    /// Vertical padding inside the bubble around the value text.
+    pub padding_y: f64,
+    /// Gap between the top of the thumb and the bottom of the bubble.
+    pub thumb_gap: f64,
+}
+
+impl SliderValueIndicatorMetrics {
+    /// Create value indicator metrics.
+    #[must_use]
+    pub const fn new(padding_x: f64, padding_y: f64, thumb_gap: f64) -> Self {
+        Self {
+            padding_x,
+            padding_y,
+            thumb_gap,
+        }
+    }
+}
+
 /// Progress indicator layout metrics.
 #[derive(Debug, Clone, Copy)]
 pub struct ProgressMetrics {
@@ -1404,8 +1428,8 @@ pub trait WidgetTheme {
     ) {
     }
 
-    /// Return slider metrics.
-    fn slider_metrics(&self) -> SliderMetrics;
+    /// Return slider metrics for the given control size.
+    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
     /// Draw slider track chrome. `state` carries the disabled flag so themes
     /// can render the inactive track.
     fn draw_slider_track(
@@ -1432,6 +1456,16 @@ pub trait WidgetTheme {
         _state: WidgetInteractionState,
     ) {
     }
+    /// Return the layout metrics of the value indicator shown above the thumb
+    /// while the slider is dragged.
+    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics;
+    /// Return the value indicator's label foreground color.
+    fn slider_value_indicator_color(&self) -> Color;
+    /// Return the value indicator's label font.
+    fn slider_value_indicator_font(&self) -> Font;
+    /// Draw the value indicator's chrome behind its label. `bounds` is the
+    /// bubble rect the renderer laid out above the thumb.
+    fn draw_slider_value_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
 
     /// Return progress indicator metrics.
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;
