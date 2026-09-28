@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=4f532e83b2c771b78d7af11c3c17467ec25e57e7#4f532e83b2c771b78d7af11c3c17467ec25e57e7"
+source = "git+https://github.com/water-rs/hydrolysis?rev=bb3aec634546d2d6f742b4927856287539b5cd60#bb3aec634546d2d6f742b4927856287539b5cd60"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3547,6 +3547,7 @@ dependencies = [
  "waterui-map",
  "waterui-shape",
  "waterui-text",
+ "waterui-url",
  "waterui-webview",
  "wgpu",
 ]
