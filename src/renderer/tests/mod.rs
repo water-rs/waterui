@@ -29,6 +29,8 @@ mod gpu_surface_idle;
 mod gpu_surface_input;
 mod image_ingest;
 mod ime;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod layer_occlusion;
 mod layout_contract;
 mod lazy_cross;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]

@@ -80,11 +80,16 @@ pub(crate) struct PointerTarget {
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) press_slot: Option<PressSlot>,
-    /// The retained node of the view the press belongs to. A gesture
-    /// registered inside a strict descendant of it claims the press; one
-    /// attached to this same view coexists. `None` — a press registered
-    /// outside any retained node — is never claimed.
-    pub(crate) claim_owner: Option<RetainedIdentity>,
+    /// The owner chain the registration ran under — the retained nodes whose
+    /// subtrees were flushing, innermost last. The ancestry the press path
+    /// reads to tell a gesture registered inside a view's subtree from one
+    /// attached to a disjoint subtree painted above or below it. A gesture
+    /// registered inside a strict descendant of the press's owner claims the
+    /// press; one attached to the same view coexists; a target whose last
+    /// owner is in a gesture region's chain is an ancestor of it and never
+    /// occludes it. An empty chain — a press registered outside any retained
+    /// node — is never an ancestor and is never claimed.
+    pub(crate) owners: Vec<RetainedIdentity>,
     /// Replayable state-layer handles for the widget owning this target, so
     /// press feedback animates without a structural rebuild.
     pub(crate) interaction: Option<Rc<InteractionLayerHandles>>,
@@ -1136,6 +1141,29 @@ impl HydrolysisRenderer {
                 // (water-rs/waterui#1290).
                 continue;
             }
+            if self.hit_test.gesture_regions.iter().any(|region| {
+                region.order > target.order
+                    && region.bounds.contains(point)
+                    && !Self::gesture_region_encloses(region, &target)
+                    && !Self::gesture_claims_press(region, &target)
+            }) {
+                // A gesture region painted above this target in a subtree it
+                // does not belong to owns the press: hit-testing stops at the
+                // topmost interactive target at the point, whichever engine
+                // carries it. Regions enclosing the target (a wrapping
+                // `.on_tap`) or nested inside it (claimed via
+                // `gesture_claims_press`) are left to their own rules.
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    x,
+                    y,
+                    pointer_index = index,
+                    bounds = ?target.bounds,
+                    order = target.order,
+                    "pointer target occluded by overlying gesture region"
+                );
+                continue;
+            }
             if target.press_slot.is_some()
                 && self
                     .hit_test
@@ -1270,9 +1298,21 @@ impl HydrolysisRenderer {
     /// lands on the region's own owner — the same node, not a descendant — so
     /// the press commits alongside it, as it does today.
     fn gesture_claims_press(region: &GestureRegion, press: &PointerTarget) -> bool {
-        press.claim_owner.as_ref().is_some_and(|owner| {
+        press.owners.last().is_some_and(|owner| {
             region.owners.last() != Some(owner) && region.owners.contains(owner)
         })
+    }
+
+    /// `region` encloses `press` when the view the gesture hangs on is an
+    /// ancestor (or the very node) of the view the press belongs to: the
+    /// region's owner — the last link of its chain — sits in the press's
+    /// chain. A wrapping `.on_tap` around a control is such a region, and
+    /// never shadows the control.
+    fn gesture_region_encloses(region: &GestureRegion, press: &PointerTarget) -> bool {
+        region
+            .owners
+            .last()
+            .is_some_and(|owner| press.owners.contains(owner))
     }
 
     pub fn handle_pointer_up(
@@ -2818,7 +2858,7 @@ impl SemanticCore {
             depth,
             order,
             press_slot,
-            claim_owner: self.owner_stack.last().cloned(),
+            owners: self.owner_stack.clone(),
             interaction,
             action,
             keyboard_step: None,
@@ -2859,7 +2899,7 @@ impl SemanticCore {
             depth: self.render_depth,
             order,
             press_slot: None,
-            claim_owner: self.owner_stack.last().cloned(),
+            owners: self.owner_stack.clone(),
             interaction: None,
             action: Rc::new(RefCell::new(
                 |_: &mut SemanticCore, _: vello::kurbo::Point, _: &Environment| true,
@@ -2872,16 +2912,28 @@ impl SemanticCore {
         self.hit_test.gesture_occluders.push((bounds, order));
     }
 
-    /// Runs `f` against the gesture engine with every target an overlay
-    /// occludes at `point` filtered out of its candidate list, then restores
-    /// the list.
+    /// Runs `f` against the gesture engine with every target occluded at
+    /// `point` filtered out of its candidate list, then restores the list.
     ///
     /// The engine arms every recognizer in the topmost group under the point
-    /// — a choice it can only make among what it can see — so the candidates
-    /// it is offered for a press inside an overlay panel are exactly the
-    /// registrations that outrank the highest covering occluder: the
-    /// overlay's own gesture controls flush after the occluder and stay
-    /// armable; nothing below the panel can arm (water-rs/hydrolysis#260).
+    /// — a choice it can only make among what it can see. Two kinds of
+    /// occluder hide the targets painted underneath:
+    ///
+    /// - The explicit `gesture_occluders` an overlay registers for its painted
+    ///   panel bounds: candidates offered for a press inside the panel are
+    ///   exactly the registrations that outrank the highest covering
+    ///   occluder, so the overlay's own controls stay armable and nothing
+    ///   below the panel can arm (water-rs/hydrolysis#260).
+    /// - Every pointer target covering the point is an occluder for the
+    ///   gesture regions it outranks: a press belongs to the topmost
+    ///   hittable target at the point, whichever engine carries it, so a
+    ///   control painted over content — the layer a `when` mounts over a
+    ///   list, a sibling in a `zstack` — stops the regions beneath it
+    ///   without registering a panel occluder. Ancestry relaxes the rule:
+    ///   a press target whose owner sits in the gesture's owner chain (a
+    ///   container's press, or the view the gesture is attached to) never
+    ///   hides that gesture, since nested targets settle the press among
+    ///   themselves.
     ///
     /// [`GestureEngine::swap_targets`] splices the filtered list in for the
     /// duration of the call. The clone shares each target's recognizer, so
@@ -2891,21 +2943,41 @@ impl SemanticCore {
         point: vello::kurbo::Point,
         f: impl FnOnce(&mut crate::gesture::GestureEngine) -> R,
     ) -> R {
-        let Some(cutoff) = self
+        let cutoff = self
             .hit_test
             .gesture_occluders
             .iter()
             .filter(|(bounds, _)| bounds.contains(point))
             .map(|(_, order)| *order)
-            .max()
-        else {
+            .max();
+        let covering_pointers: Vec<&PointerTarget> = self
+            .hit_test
+            .pointer_targets
+            .iter()
+            .filter(|target| target.bounds.contains(point))
+            .collect();
+        if cutoff.is_none() && covering_pointers.is_empty() {
             return f(&mut self.gesture_engine);
+        }
+        let occluded_by_pointer = |target: &crate::gesture::GestureTarget| {
+            covering_pointers.iter().any(|pointer| {
+                pointer.order > target.order
+                    && !pointer.owners.last().is_some_and(|owner| {
+                        self.hit_test
+                            .gesture_regions
+                            .iter()
+                            .find(|region| region.order == target.order)
+                            .is_some_and(|region| region.owners.contains(owner))
+                    })
+            })
         };
         let mut all = Vec::new();
         self.gesture_engine.swap_targets(&mut all);
         let mut kept: Vec<crate::gesture::GestureTarget> = all
             .iter()
-            .filter(|target| target.order >= cutoff)
+            .filter(|target| {
+                cutoff.is_none_or(|cutoff| target.order >= cutoff) && !occluded_by_pointer(target)
+            })
             .cloned()
             .collect();
         self.gesture_engine.swap_targets(&mut kept);
@@ -2937,7 +3009,7 @@ impl SemanticCore {
             depth: self.render_depth,
             order,
             press_slot: None,
-            claim_owner: self.owner_stack.last().cloned(),
+            owners: self.owner_stack.clone(),
             interaction: None,
             action: Rc::new(RefCell::new(action)),
             keyboard_step: None,
@@ -3197,7 +3269,7 @@ impl SemanticCore {
             depth: self.render_depth,
             order,
             press_slot: Some(press_slot),
-            claim_owner: self.owner_stack.last().cloned(),
+            owners: self.owner_stack.clone(),
             interaction,
             action: Rc::new(RefCell::new(action)),
             keyboard_step: None,
@@ -3231,7 +3303,7 @@ impl SemanticCore {
             depth: self.render_depth,
             order,
             press_slot: Some(press_slot),
-            claim_owner: self.owner_stack.last().cloned(),
+            owners: self.owner_stack.clone(),
             interaction,
             action: Rc::new(RefCell::new(action)),
             keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
