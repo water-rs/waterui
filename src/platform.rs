@@ -2155,6 +2155,14 @@ mod winit_impl {
         /// never re-arms: `is_visible` can lag the real map transition, and
         /// re-arming off it would re-deliver a request the live window has
         /// already overtaken.
+        /// Whether the window is still in its initial placement — not yet
+        /// known visible, and no mapped-signal event has been seen. The same
+        /// window `arm` records requests for, so the initial-placement guard
+        /// and the post-map re-apply cover exactly the same writes.
+        fn is_initial_placement(&self, visible: Option<bool>) -> bool {
+            visible != Some(true) && !self.mapped
+        }
+
         fn arm(
             &mut self,
             visible: Option<bool>,
@@ -2162,7 +2170,7 @@ mod winit_impl {
             size: LogicalSize<f64>,
             state: WindowState,
         ) {
-            if visible != Some(true) && !self.mapped {
+            if self.is_initial_placement(visible) {
                 self.pending = Some(PendingMappedRequest {
                     position,
                     size,
@@ -2337,6 +2345,44 @@ mod winit_impl {
                     self.window.set_visible(false);
                 }
             }
+        }
+
+        /// The origin honored for a window's initial placement. A frame that
+        /// intersects any monitor — including one a second display occupies —
+        /// is honored as written; only a frame entirely outside every display
+        /// is pulled onto the nearest monitor's bounds, so a first-mapped
+        /// window can never open where nothing can reach it. With no monitor
+        /// information at all the request stands.
+        fn initial_placement_position(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            monitors: &[(LogicalPosition<f64>, LogicalSize<f64>)],
+        ) -> LogicalPosition<f64> {
+            let intersects = monitors.iter().any(|(position, extent)| {
+                requested.x < position.x + extent.width
+                    && requested.x + size.width > position.x
+                    && requested.y < position.y + extent.height
+                    && requested.y + size.height > position.y
+            });
+            if intersects {
+                return requested;
+            }
+            monitors
+                .iter()
+                .map(|(position, extent)| {
+                    let max_x = (position.x + extent.width - size.width).max(position.x);
+                    let max_y = (position.y + extent.height - size.height).max(position.y);
+                    LogicalPosition::new(
+                        requested.x.clamp(position.x, max_x),
+                        requested.y.clamp(position.y, max_y),
+                    )
+                })
+                .min_by(|a, b| {
+                    let distance_a = (a.x - requested.x).powi(2) + (a.y - requested.y).powi(2);
+                    let distance_b = (b.x - requested.x).powi(2) + (b.y - requested.y).powi(2);
+                    distance_a.total_cmp(&distance_b)
+                })
+                .unwrap_or(requested)
         }
 
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
@@ -2660,23 +2706,33 @@ mod winit_impl {
             // path.
             let target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
             let mut target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
-            if let Some(monitor) = self.window.current_monitor() {
+            let visible = self.window.is_visible();
+            // One guard survives, and only for the initial placement: a
+            // first-mapped window whose frame lies entirely outside every
+            // display would open where nothing can reach it, so it is pulled
+            // onto the nearest monitor — the union of `available_monitors`,
+            // not the current one, so a frame on a second display passes
+            // through. Once a mapped event has been seen the frame binding
+            // is the app's word: an off-screen or cross-monitor origin
+            // reaches the window server exactly as written
+            // (water-rs/hydrolysis#270).
+            if self.pending_mapped_request.is_initial_placement(visible) {
                 let scale_factor = self.window.scale_factor();
-                let monitor_position = monitor.position().to_logical::<f64>(scale_factor);
-                let monitor_size = monitor.size().to_logical::<f64>(scale_factor);
-                let max_x = (monitor_position.x + monitor_size.width - target_size.width)
-                    .max(monitor_position.x);
-                let max_y = (monitor_position.y + monitor_size.height - target_size.height)
-                    .max(monitor_position.y);
-                target_position.x = target_position.x.clamp(monitor_position.x, max_x);
-                target_position.y = target_position.y.clamp(monitor_position.y, max_y);
+                let monitors = self
+                    .window
+                    .available_monitors()
+                    .map(|monitor| {
+                        (
+                            monitor.position().to_logical::<f64>(scale_factor),
+                            monitor.size().to_logical::<f64>(scale_factor),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                target_position =
+                    Self::initial_placement_position(target_position, target_size, &monitors);
             }
-            self.pending_mapped_request.arm(
-                self.window.is_visible(),
-                target_position,
-                target_size,
-                state,
-            );
+            self.pending_mapped_request
+                .arm(visible, target_position, target_size, state);
             let size_changed = applied.is_none_or(|p| *p.frame.size() != *frame.size());
             let origin_changed = applied.is_none_or(|p| p.frame.origin() != frame.origin());
             if size_changed || origin_changed {
@@ -3381,6 +3437,126 @@ mod winit_impl {
                 retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0))),
                 None,
                 "a confirmed-visible window holds nothing"
+            );
+        }
+
+        #[test]
+        fn an_off_screen_frame_origin_passes_initial_placement_as_written() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            // A window sliding in from above the top edge still intersects
+            // the monitor, so the guard must not touch it
+            // (water-rs/hydrolysis#270).
+            let monitors = [(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1920.0, 1080.0),
+            )];
+            let requested = LogicalPosition::new(120.0, -36.0);
+            let size = LogicalSize::new(800.0, 600.0);
+            assert_eq!(
+                super::WinitWindow::initial_placement_position(requested, size, &monitors),
+                requested,
+                "a partially off-screen origin must reach the window server as written"
+            );
+        }
+
+        #[test]
+        fn a_frame_on_another_monitor_passes_initial_placement_as_written() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            // A two-monitor layout: the requested origin sits on the second
+            // display and must not be pulled back onto the first.
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            let requested = LogicalPosition::new(2200.0, 400.0);
+            let size = LogicalSize::new(800.0, 600.0);
+            assert_eq!(
+                super::WinitWindow::initial_placement_position(requested, size, &monitors),
+                requested,
+                "a frame on a second display must reach the window server as written"
+            );
+        }
+
+        #[test]
+        fn a_frame_entirely_outside_every_monitor_lands_on_the_nearest_at_placement() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            let size = LogicalSize::new(800.0, 600.0);
+            let single = [(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1920.0, 1080.0),
+            )];
+            assert_eq!(
+                super::WinitWindow::initial_placement_position(
+                    LogicalPosition::new(4000.0, 3000.0),
+                    size,
+                    &single,
+                ),
+                LogicalPosition::new(1120.0, 480.0),
+                "a first-mapped window outside every display is pulled back in"
+            );
+
+            // The pull goes to the nearest monitor, not the primary one.
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            assert_eq!(
+                super::WinitWindow::initial_placement_position(
+                    LogicalPosition::new(2400.0, 3000.0),
+                    size,
+                    &monitors,
+                ),
+                LogicalPosition::new(2400.0, 840.0),
+                "the nearest display claims a window outside all of them"
+            );
+
+            // With no monitor information the request stands as written.
+            let requested = LogicalPosition::new(-4000.0, -3000.0);
+            assert_eq!(
+                super::WinitWindow::initial_placement_position(requested, size, &[]),
+                requested,
+            );
+        }
+
+        #[test]
+        fn the_placement_guard_applies_only_until_the_first_mapped_event() {
+            use waterui::window::WindowState;
+            use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
+            use winit::event::WindowEvent;
+
+            let mut retry = super::MappedRequestRetry::default();
+            assert!(retry.is_initial_placement(Some(false)));
+            assert!(retry.is_initial_placement(None));
+            assert!(
+                !retry.is_initial_placement(Some(true)),
+                "a confirmed-visible window takes frame writes as written"
+            );
+
+            retry.arm(
+                Some(false),
+                LogicalPosition::new(12.0, 34.0),
+                LogicalSize::new(800.0, 300.0),
+                WindowState::Normal,
+            );
+            let _ = retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0)));
+            assert!(
+                !retry.is_initial_placement(None),
+                "once a mapped event has been seen, later writes are never guarded"
             );
         }
 
