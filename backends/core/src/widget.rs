@@ -1430,21 +1430,23 @@ pub trait WidgetTheme {
 
     /// Return slider metrics for the given control size.
     fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
-    /// Draw slider track chrome. `state` carries the disabled flag so themes
-    /// can render the inactive track.
+    /// Draw slider track chrome for a control of `size`. `state` carries the
+    /// disabled flag so themes can render the inactive track.
     fn draw_slider_track(
         &self,
         draw: &mut dyn DrawContext,
         track_rect: Rect,
         fill_rect: Rect,
+        size: ControlSize,
         state: WidgetInteractionState,
     );
-    /// Draw slider thumb chrome.
+    /// Draw slider thumb chrome for a control of `size`.
     fn draw_slider_thumb(
         &self,
         draw: &mut dyn DrawContext,
         center: Point,
         radius: f64,
+        size: ControlSize,
         state: WidgetInteractionState,
     );
     /// Draw slider thumb state layer.
@@ -1453,6 +1455,7 @@ pub trait WidgetTheme {
         _draw: &mut dyn DrawContext,
         _center: Point,
         _radius: f64,
+        _size: ControlSize,
         _state: WidgetInteractionState,
     ) {
     }

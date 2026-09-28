@@ -497,6 +497,7 @@ mod token_probe {
             _draw: &mut dyn DrawContext,
             _track_rect: Rect,
             _fill_rect: Rect,
+            _size: ControlSize,
             _state: WidgetInteractionState,
         ) {
         }
@@ -506,6 +507,7 @@ mod token_probe {
             _draw: &mut dyn DrawContext,
             _center: Point,
             _radius: f64,
+            _size: ControlSize,
             _state: WidgetInteractionState,
         ) {
         }
