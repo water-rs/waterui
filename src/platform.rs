@@ -5,7 +5,11 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::RedrawHandle;
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
 use waterui_graphics::gpu_surface::preferred_surface_format;
 use waterui_graphics::shared_context::reclaim_device;
 
@@ -287,6 +291,11 @@ pub enum SurfaceFrame {
         output: wgpu::SurfaceTexture,
         view: wgpu::TextureView,
     },
+    #[cfg(target_os = "android")]
+    Android {
+        output: wgpu::SurfaceTexture,
+        view: wgpu::TextureView,
+    },
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     Browser {
         output: wgpu::SurfaceTexture,
@@ -301,6 +310,8 @@ impl SurfaceFrame {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(feature = "winit")]
             Self::Window { output, .. } => &output.texture,
+            #[cfg(target_os = "android")]
+            Self::Android { output, .. } => &output.texture,
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             Self::Browser { output, .. } => &output.texture,
         }
@@ -312,14 +323,22 @@ impl SurfaceFrame {
             Self::Offscreen { view, .. } => view,
             #[cfg(feature = "winit")]
             Self::Window { view, .. } => view,
+            #[cfg(target_os = "android")]
+            Self::Android { view, .. } => view,
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             Self::Browser { view, .. } => view,
         }
     }
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
-fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+pub(crate) fn select_hydrolysis_surface_format(
+    caps: &wgpu::SurfaceCapabilities,
+) -> wgpu::TextureFormat {
     let preferred = preferred_surface_format(caps);
     if supports_hydrolysis_surface_format(preferred) {
         return normalize_surface_format(caps, preferred);
@@ -340,7 +359,11 @@ fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::T
     );
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
 fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     matches!(
         format.remove_srgb_suffix(),
@@ -351,7 +374,11 @@ fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     )
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
 fn normalize_surface_format(
     caps: &wgpu::SurfaceCapabilities,
     format: wgpu::TextureFormat,
@@ -365,8 +392,12 @@ fn normalize_surface_format(
     format
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
-fn acquire_surface_texture(
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+pub(crate) fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
     match surface.get_current_texture() {
@@ -400,6 +431,19 @@ pub trait SurfaceProvider {
         false
     }
 }
+
+/// The window's platform safe area, in logical units — the insets the host
+/// reports for regions obscured by system chrome (status bar, navigation bar,
+/// display cutout) and the IME.
+///
+/// The host owns the binding: it writes the combined insets on every change,
+/// and the windowed pipeline lays the root content out inside them while
+/// `waterui_layout::safe_area::IgnoreSafeArea` content reaches the window
+/// edge on its flagged edges. The binding lives in the session environment so
+/// an update re-lays out through the ordinary input path; hosts with no
+/// unsafe regions simply never install one.
+#[derive(Debug, Clone)]
+pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite
@@ -1108,7 +1152,7 @@ impl OffscreenSurface {
     }
 }
 
-fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+pub(crate) fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let adapter_limits = adapter.limits();
     let downlevel_caps = adapter.get_downlevel_capabilities();
     let base_limits = if downlevel_caps.is_webgpu_compliant()
@@ -1126,7 +1170,7 @@ fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
         .using_alignment(adapter_limits)
 }
 
-fn ensure_compute_capable_adapter(
+pub(crate) fn ensure_compute_capable_adapter(
     adapter: &wgpu::Adapter,
     context: &str,
     no_compute_message: &str,
@@ -1196,6 +1240,10 @@ impl SurfaceProvider for OffscreenSurface {
             #[cfg(feature = "winit")]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
+            }
+            #[cfg(target_os = "android")]
+            SurfaceFrame::Android { .. } => {
+                panic!("hydrolysis offscreen surface received an android frame");
             }
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             SurfaceFrame::Browser { .. } => {

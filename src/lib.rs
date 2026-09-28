@@ -63,11 +63,13 @@ pub use platform::WinitWindow;
 pub use platform::{
     GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,
     OffscreenSurface, OffscreenWindow, PlatformWindow, PointerButton, PointerKind, SurfaceError,
-    SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase,
+    SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, WindowSafeArea,
 };
 #[cfg(feature = "frame-profile")]
 pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
+#[cfg(target_os = "android")]
+pub use runner::android;
 #[cfg(not(target_os = "android"))]
 pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};

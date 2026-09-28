@@ -22,7 +22,11 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
     all(target_arch = "wasm32", feature = "web")
 ))]
 use waterui::app::App;
-#[cfg(all(not(target_arch = "wasm32"), not(feature = "winit")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "winit"),
+    not(target_os = "android")
+))]
 use waterui::app::AppParts;
 use waterui::component::table::TableConfig;
 use waterui::graphics::Color;

@@ -2,6 +2,7 @@
 //! signals, re-measures through [`NodeSubView`], and caches each container's
 //! child frames for the flush pass.
 
+use super::window::window_safe_area_insets;
 use super::*;
 use waterui_graphics::{resolve_scene_proposal, scene_stretch_axis};
 
@@ -432,10 +433,35 @@ impl RenderNode {
                 node.child.layout(renderer, &node_env, proposal, size);
             }
             // Layout-transparent: the child lays out at the same concrete size,
-            // under the wrapper's scoped environment.
+            // under the wrapper's scoped environment — except `.ignore_safe_area`,
+            // which releases the window's safe-area insets on its flagged edges.
             RenderNode::Wrapper(node) => {
                 let node_env = node.env.clone();
-                node.child.layout(renderer, &node_env, proposal, size);
+                if let WrapperEffect::IgnoreSafeArea(edges) = &node.effect {
+                    let insets = window_safe_area_insets(renderer, env);
+                    let width = size.width
+                        + if edges.leading { insets.leading() } else { 0.0 }
+                        + if edges.trailing {
+                            insets.trailing()
+                        } else {
+                            0.0
+                        };
+                    let height = size.height
+                        + if edges.top { insets.top() } else { 0.0 }
+                        + if edges.bottom { insets.bottom() } else { 0.0 };
+                    let child_proposal = ProposalSize::new(
+                        proposal.width.map(|_| width),
+                        proposal.height.map(|_| height),
+                    );
+                    node.child.layout(
+                        renderer,
+                        &node_env,
+                        child_proposal,
+                        Size::new(width, height),
+                    );
+                } else {
+                    node.child.layout(renderer, &node_env, proposal, size);
+                }
             }
             RenderNode::Dynamic(node) => {
                 node.child

@@ -1748,6 +1748,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
     if runtime.renderer.poll_gpu_surface_redraw_handles() {
+        tracing::debug!("wake cause: gpu surface redraw handle");
         runtime.platform.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
@@ -1756,20 +1757,26 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.
     let gesture_env = env.extending(runtime_window_origin(runtime));
     if runtime.renderer.handle_gesture_tick(now, &gesture_env) {
+        tracing::debug!("wake cause: gesture tick fired");
         runtime.request_refresh();
     }
     // Smoothed wheel scrolling eases offsets toward their targets per frame;
     // while any scroll view is still gliding, keep running full frames on the
     // redraw cadence.
     if runtime.renderer.tick_smooth_scrolls(now) {
+        tracing::debug!("wake cause: smooth scroll still gliding");
         runtime.request_refresh();
     }
     let animations_active = runtime.renderer.advance_animations();
+    if animations_active {
+        tracing::debug!("wake cause: animations active");
+    }
     schedule_animation_update(runtime, animations_active);
     // A pending fine-grained reactive patch composites through the window-refresh path,
     // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
     // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
     if runtime.renderer.take_patch_request() {
+        tracing::debug!("wake cause: reactive patch request");
         // The refresh re-flushes the retained tree, which applies the pending
         // Dynamic patch to only the affected subtree and relays out if it changed size.
         runtime.request_refresh();
@@ -1777,15 +1784,21 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     if runtime.renderer.advance_text_caret_animation(now) {
+        tracing::debug!("wake cause: text caret animation");
         runtime.renderer.request_redraw();
         runtime.platform.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     if runtime.renderer.take_rebuild_request() {
+        tracing::debug!("wake cause: rebuild request");
         runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();
+    if next_deadline.is_some() {
+        tracing::debug!(?next_deadline, "wake armed: engine deadline");
+    }
     if runtime.mode.is_pending() {
+        tracing::debug!("wake cause: frame mode still pending");
         runtime.platform.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }

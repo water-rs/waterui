@@ -4,6 +4,7 @@
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
 use super::*;
+use waterui_layout::safe_area::EdgeSet;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
 /// solution for a widget's move-only `AnyView` label sub-views (slider min/max
@@ -576,6 +577,12 @@ pub(super) enum WrapperEffect {
     /// Purely a layout hint: it changes which child a stack compresses first and
     /// draws nothing, so the flush path renders straight through it.
     LayoutPriority(LayoutPriority),
+    /// `.ignore_safe_area(edges)` — the window's `WindowSafeArea` insets are
+    /// released on the flagged edges: layout offers the child the window bounds
+    /// expanded by those edges' insets, and flush shifts its frame back the
+    /// same amount, so the subtree reaches the window edge where it meets the
+    /// safe-area boundary.
+    IgnoreSafeArea(EdgeSet),
     NavigationTransitionSource(RawId),
     NavigationTransitionDestination(RawId),
     Clip(ClipShape),

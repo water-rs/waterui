@@ -1,0 +1,21 @@
+[package]
+name = "hydrolysis-android-test-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "Debug app exercising the Hydrolysis Android host on an emulator or device"
+
+[lib]
+crate-type = ["cdylib"]
+name = "hydrolysis_test_app"
+
+[dependencies]
+hydrolysis = { path = "../../..", features = ["accessibility"] }
+waterui = { version = "0.5.0", default-features = false, features = ["gpu"] }
+waterui-controls = "0.5.0"
+waterui-core = "0.5.0"
+hydrolysis-m3 = "0.3.0"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"

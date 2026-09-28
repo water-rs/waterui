@@ -3,6 +3,49 @@
 //! ([`HydrolysisRenderer::flush_window_tree`]), plus [`RenderNode::patch`].
 
 use super::*;
+use crate::platform::WindowSafeArea;
+use waterui_layout::padding::EdgeInsets;
+
+/// The window's host-published safe-area insets in logical units, read through
+/// the renderer so the frame subscribes to them — a host write on the
+/// [`WindowSafeArea`] binding re-lays out through the ordinary input path with
+/// no explicit refresh request. An environment that carries none reports zero
+/// insets, which is also what the whole window pipeline saw before.
+pub(super) fn window_safe_area_insets(
+    renderer: &mut HydrolysisRenderer,
+    env: &Environment,
+) -> EdgeInsets {
+    env.get::<WindowSafeArea>()
+        .map(|area| renderer.read_signal(&area.0))
+        .unwrap_or_default()
+}
+
+/// `bounds` shrunk by the safe-area insets — the rect the window's root
+/// content lays out inside. Clamps per axis so insets larger than the window
+/// collapse to the origin rather than inverting the rect.
+fn window_content_rect(bounds: kurbo::Rect, insets: &EdgeInsets) -> kurbo::Rect {
+    let x0 = bounds.x0 + f64::from(insets.leading());
+    let y0 = bounds.y0 + f64::from(insets.top());
+    let x1 = (bounds.x1 - f64::from(insets.trailing())).max(x0);
+    let y1 = (bounds.y1 - f64::from(insets.bottom())).max(y0);
+    kurbo::Rect::new(x0, y0, x1, y1)
+}
+
+/// The [`RenderContext`] the window tree flushes under: `bounds` inset to the
+/// safe area, with the content rect's origin folded into the transforms so
+/// placement, drawing and hit-testing all agree the window begins at (0, 0).
+fn safe_area_context(
+    content: kurbo::Rect,
+    transform: kurbo::Affine,
+    hit_transform: kurbo::Affine,
+) -> RenderContext {
+    let shift = kurbo::Affine::translate((content.x0, content.y0));
+    RenderContext::with_transforms(
+        kurbo::Rect::new(0.0, 0.0, content.width(), content.height()),
+        transform * shift,
+        hit_transform * shift,
+    )
+}
 
 impl RenderNode {
     /// Apply pending reactive `Dynamic` content changes by rebuilding only the
@@ -365,7 +408,9 @@ impl HydrolysisRenderer {
         hit_transform: kurbo::Affine,
     ) {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
-        let size = Size::new(bounds.width() as f32, bounds.height() as f32);
+        let insets = window_safe_area_insets(self, env);
+        let content_rect = window_content_rect(bounds, &insets);
+        let size = Size::new(content_rect.width() as f32, content_rect.height() as f32);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         // The viewport is recorded here rather than by each caller: every host
         // that builds a window tree — the runner, and a `HydrolysisGpuView`
@@ -375,7 +420,7 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let update_started_at = Instant::now();
         self.set_window_viewport(bounds, transform);
-        let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
+        let ctx = safe_area_context(content_rect, transform, hit_transform);
         // The tree is built once and persists. A later "rebuild" request reuses
         // it — applying pending Dynamic patches, relaying out, and re-flushing —
         // rather than rebuilding (which would re-connect each `Dynamic`, and a
@@ -483,7 +528,9 @@ impl HydrolysisRenderer {
         self.begin_redraw_frame();
         // Layout runs every frame: geometry can never go stale against the
         // scene encoded right after it.
-        let size = Size::new(bounds.width() as f32, bounds.height() as f32);
+        let insets = window_safe_area_insets(self, env);
+        let content_rect = window_content_rect(bounds, &insets);
+        let size = Size::new(content_rect.width() as f32, content_rect.height() as f32);
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         tree.prepare_for_measure(self);
         tree.layout(self, env, proposal, size);
@@ -496,7 +543,7 @@ impl HydrolysisRenderer {
         let _encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
-        let ctx = RenderContext::with_transforms(bounds, transform, hit_transform);
+        let ctx = safe_area_context(content_rect, transform, hit_transform);
         tree.flush(self, ctx, env);
         // Every filtered subtree captured during the flush is rendered and
         // filtered now, before the scene that draws their outputs is.
