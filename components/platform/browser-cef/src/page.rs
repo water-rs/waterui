@@ -1042,6 +1042,51 @@ impl CefPageHandle {
     /// Panics when a single-unit UTF-16 character cannot be encoded or a
     /// native key code does not fit CEF's integer input ABI.
     pub fn key(&self, pressed: bool, key: CefKeyInput, modifiers: CefInputModifiers) {
+        let event = Self::key_event(key_event_type(pressed), key, modifiers);
+        self.host.send_key_event(Some(&event));
+        if pressed && event.character != 0 {
+            self.host.send_key_event(Some(&KeyEvent {
+                type_: KeyEventType::CHAR,
+                ..event
+            }));
+        }
+    }
+
+    /// Sends the `CHAR` event of a press separately from its `RAWKEYDOWN`.
+    ///
+    /// A backend that reports a press and the text it produced as two events
+    /// (the surface vocabulary's `Key` then `TextInput`, the web's `keydown`
+    /// then `beforeinput`) cannot bundle the character into the transition —
+    /// it is not known yet. This is the second half of the pair
+    /// [`key`](Self::key) sends in one call when the character is known at
+    /// press time.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `character` needs more than one UTF-16 code unit —
+    /// supplementary-plane text travels by
+    /// [`commit_text`](Self::commit_text) instead — or when a native key
+    /// code does not fit CEF's integer input ABI.
+    pub fn key_char(&self, key: CefKeyInput, character: char, modifiers: CefInputModifiers) {
+        assert!(
+            character.len_utf16() == 1,
+            "a CHAR event carries one UTF-16 code unit; commit longer text instead"
+        );
+        let event = Self::key_event(
+            KeyEventType::CHAR,
+            CefKeyInput {
+                character: Some(character),
+                ..key
+            },
+            modifiers,
+        );
+        self.host.send_key_event(Some(&event));
+    }
+
+    /// Builds the `KeyEvent` the transition and `CHAR` halves of a keystroke
+    /// share — both carry the press's keycodes so CEF correlates them with
+    /// the same physical key.
+    fn key_event(type_: KeyEventType, key: CefKeyInput, modifiers: CefInputModifiers) -> KeyEvent {
         let character = key
             .character
             .filter(|character| character.len_utf16() == 1)
@@ -1052,8 +1097,8 @@ impl CefPageHandle {
                     .copied()
                     .expect("one UTF-16 code unit must exist")
             });
-        let event = KeyEvent {
-            type_: key_event_type(pressed),
+        KeyEvent {
+            type_,
             modifiers: modifiers.bits(),
             windows_key_code: windows_key_code(key.keyval),
             native_key_code: i32::try_from(key.native_keycode)
@@ -1062,13 +1107,6 @@ impl CefPageHandle {
             character,
             unmodified_character: character,
             ..Default::default()
-        };
-        self.host.send_key_event(Some(&event));
-        if pressed && character != 0 {
-            self.host.send_key_event(Some(&KeyEvent {
-                type_: KeyEventType::CHAR,
-                ..event
-            }));
         }
     }
 
