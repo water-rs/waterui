@@ -708,9 +708,7 @@ mod tests {
             &calls[..3],
             [
                 KeyCall::Transition { pressed: true, .. },
-                KeyCall::Char {
-                    character: 'a', ..
-                },
+                KeyCall::Char { character: 'a', .. },
                 KeyCall::Transition { pressed: false, .. },
             ]
         ));
@@ -746,9 +744,7 @@ mod tests {
             &calls[..],
             [
                 KeyCall::Transition { pressed: true, .. },
-                KeyCall::Char {
-                    character: 'a', ..
-                },
+                KeyCall::Char { character: 'a', .. },
                 KeyCall::Transition { pressed: false, .. },
             ]
         ));

@@ -1086,11 +1086,7 @@ impl CefPageHandle {
     /// Builds the `KeyEvent` the transition and `CHAR` halves of a keystroke
     /// share — both carry the press's keycodes so CEF correlates them with
     /// the same physical key.
-    fn key_event(
-        type_: KeyEventType,
-        key: CefKeyInput,
-        modifiers: CefInputModifiers,
-    ) -> KeyEvent {
+    fn key_event(type_: KeyEventType, key: CefKeyInput, modifiers: CefInputModifiers) -> KeyEvent {
         let character = key
             .character
             .filter(|character| character.len_utf16() == 1)
