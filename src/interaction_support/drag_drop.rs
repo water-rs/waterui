@@ -54,7 +54,7 @@ use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::fmt;
 use nami::Computed;
-use nami::{Signal, SignalExt};
+use nami::Signal;
 use suiteki::Str;
 use waterui_core::{
     Environment,
@@ -257,7 +257,7 @@ impl Draggable {
         S::Output: Transferable,
     {
         Self {
-            payload: Computed::new(payload.map(DragPayload::new::<S::Output>)),
+            payload: Computed::new(nami::map::map(payload, DragPayload::new::<S::Output>)),
         }
     }
 
