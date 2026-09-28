@@ -559,9 +559,13 @@ impl OffscreenGpuContext {
             "failed to find compute-capable wgpu adapter",
         );
         let required_limits = required_device_limits(&adapter);
+        // PIPELINE_CACHE is requested wherever the adapter has it: without the
+        // feature `create_pipeline_cache` errors, so the persistent store in
+        // `pipeline_cache.rs` can only exist when it was requested here.
         #[cfg(not(feature = "frame-profile"))]
         let required_features =
-            waterui_graphics::shared_context::required_media_features(adapter.features());
+            waterui_graphics::shared_context::required_media_features(adapter.features())
+                | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
         // The frame profiler timestamps GPU work through timestamp queries
         // written between submits, which needs both timestamp features;
         // request them where the adapter has them and report absent where it
@@ -571,7 +575,8 @@ impl OffscreenGpuContext {
             waterui_graphics::shared_context::required_media_features(adapter.features())
                 | (adapter.features()
                     & (wgpu::Features::TIMESTAMP_QUERY
-                        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS));
+                        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                        | wgpu::Features::PIPELINE_CACHE));
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-offscreen-device"),
@@ -1584,7 +1589,7 @@ mod winit_impl {
                     let required_features =
                         waterui_graphics::shared_context::required_media_features(
                             adapter.features(),
-                        );
+                        ) | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
                     let (device, queue) = adapter
                         .request_device(&wgpu::DeviceDescriptor {
                             label: Some("hydrolysis-winit-device"),

@@ -18,17 +18,32 @@ const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
 
 /// Builds a fresh `vello::Renderer` for the parallel-encode pool, matching the main
 /// renderer's options (GPU-only, area AA, backend-appropriate init parallelism).
-fn build_pooled_vello_renderer(device: &wgpu::Device, backend: wgpu::Backend) -> vello::Renderer {
+fn build_pooled_vello_renderer(
+    device: &wgpu::Device,
+    backend: wgpu::Backend,
+    pipeline_cache: Option<wgpu::PipelineCache>,
+) -> vello::Renderer {
     vello::Renderer::new(
         device,
         vello::RendererOptions {
             use_cpu: false,
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: crate::renderer::vello_init_threads(backend),
-            pipeline_cache: None,
+            pipeline_cache,
         },
     )
     .expect("hydrolysis renderer: failed to create pooled vello renderer")
+}
+
+/// The GPU handles a pooled vello renderer encode against.
+struct PoolGpu<'a> {
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
+    backend: wgpu::Backend,
+    /// The device-wide persistent pipeline cache, when this platform has one
+    /// (see `crate::pipeline_cache`); shared with the main renderer so pooled
+    /// pipelines compile once and persist with the rest.
+    pipeline_cache: Option<wgpu::PipelineCache>,
 }
 
 /// C2: encode independent Vello layers to per-layer textures across CPU cores.
@@ -41,9 +56,7 @@ fn build_pooled_vello_renderer(device: &wgpu::Device, backend: wgpu::Backend) ->
 /// so submission order is irrelevant.
 fn encode_vello_layers_parallel(
     pool: &std::sync::Mutex<Vec<vello::Renderer>>,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    backend: wgpu::Backend,
+    gpu: PoolGpu<'_>,
     scenes: Vec<(usize, &vello::Scene, PooledLayerTexture)>,
     width: u32,
     height: u32,
@@ -51,12 +64,21 @@ fn encode_vello_layers_parallel(
     #[cfg(not(target_arch = "wasm32"))]
     use rayon::prelude::*;
 
+    let PoolGpu {
+        device,
+        queue,
+        backend,
+        pipeline_cache,
+    } = gpu;
+
     let render_layer = |(index, scene, leased): (usize, &vello::Scene, PooledLayerTexture)| {
         let mut renderer = pool
             .lock()
             .expect("hydrolysis renderer: vello renderer pool poisoned")
             .pop()
-            .unwrap_or_else(|| build_pooled_vello_renderer(device, backend));
+            .unwrap_or_else(|| {
+                build_pooled_vello_renderer(device, backend, pipeline_cache.clone())
+            });
 
         let params = vello::RenderParams {
             base_color: vello::peniko::Color::TRANSPARENT,
@@ -1843,9 +1865,12 @@ impl HydrolysisRenderer {
                     .collect();
                 for (index, leased) in encode_vello_layers_parallel(
                     &self.compositor.vello_renderer_pool,
-                    target.device,
-                    target.queue,
-                    target.adapter.get_info().backend,
+                    PoolGpu {
+                        device: target.device,
+                        queue: target.queue,
+                        backend: target.adapter.get_info().backend,
+                        pipeline_cache: self.pipeline_cache(),
+                    },
                     vello_scenes,
                     target.width,
                     target.height,

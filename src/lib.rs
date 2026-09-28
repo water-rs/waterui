@@ -7,6 +7,8 @@ mod engine;
 mod env;
 mod gpu_view;
 mod localization;
+#[cfg(hydrolysis_pipeline_cache)]
+mod pipeline_cache;
 mod platform;
 mod readback;
 mod renderer;

@@ -24,5 +24,9 @@ fn main() {
         hydrolysis_macos_system_webview: {
             all(feature = "winit", target_os = "macos", feature = "webview-system")
         },
+        // The persistent pipeline cache serialises through `std::fs` into a
+        // platform cache directory; targets without that filesystem contract
+        // (wasm, espidf, redox) compile the renderer without it.
+        hydrolysis_pipeline_cache: { any(unix, windows) },
     }
 }

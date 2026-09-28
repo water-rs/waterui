@@ -366,6 +366,29 @@ pub struct HydrolysisRenderer {
     /// byte-identical.
     #[cfg(feature = "frame-profile")]
     last_layout_signature: Option<u64>,
+    /// The device-wide pipeline cache persisted between launches; `None` where
+    /// the adapter or platform has no persistent cache (see
+    /// `pipeline_cache.rs`). Held here rather than by the `vello::Renderer` it
+    /// was handed to so pooled renderers can share it and the renderer can
+    /// write it back once early frames have run the pipelines.
+    #[cfg(hydrolysis_pipeline_cache)]
+    pipeline_cache_store: Option<Arc<crate::pipeline_cache::Store>>,
+    /// Presented frames since this renderer was created; the pipeline cache is
+    /// written back once the first frames have run the pipelines it serves.
+    #[cfg(hydrolysis_pipeline_cache)]
+    presented_frames: u32,
+}
+
+#[cfg(hydrolysis_pipeline_cache)]
+impl Drop for HydrolysisRenderer {
+    /// A clean exit writes back whatever the pipelines compiled since the
+    /// last persist; a kill mid-write still leaves a usable file because the
+    /// write renames over the previous one.
+    fn drop(&mut self) {
+        if let Some(store) = &self.pipeline_cache_store {
+            store.persist();
+        }
+    }
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -540,6 +563,16 @@ impl HydrolysisRenderer {
         theme: Rc<dyn crate::engine::WidgetTheme>,
         options: vello::RendererOptions,
     ) -> Self {
+        #[cfg(hydrolysis_pipeline_cache)]
+        let mut options = options;
+        #[cfg(hydrolysis_pipeline_cache)]
+        let pipeline_cache_store = if options.pipeline_cache.is_some() {
+            None
+        } else {
+            crate::pipeline_cache::open(device, adapter).inspect(|store| {
+                options.pipeline_cache = Some(store.cache());
+            })
+        };
         let vello_renderer =
             vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
         let frame_instant = Instant::now();
@@ -570,6 +603,10 @@ impl HydrolysisRenderer {
             gpu_profiler: GpuFrameProfiler::new(device),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
+            #[cfg(hydrolysis_pipeline_cache)]
+            pipeline_cache_store,
+            #[cfg(hydrolysis_pipeline_cache)]
+            presented_frames: 0,
         }
     }
 
@@ -577,6 +614,43 @@ impl HydrolysisRenderer {
     /// `Rc` so callers may hold it across further `&mut self` calls.
     pub(crate) fn theme(&self) -> Rc<dyn crate::engine::WidgetTheme> {
         Rc::clone(&self.theme)
+    }
+
+    /// No pipeline cache exists on targets without the persistent store; the
+    /// call site stays unconditioned.
+    #[cfg(not(hydrolysis_pipeline_cache))]
+    #[allow(dead_code)]
+    pub(crate) fn note_frame_presented(&mut self) {}
+
+    /// Record a presented frame. The pipeline cache is written back once the
+    /// second frame has let the driver compile the pipelines the first frames
+    /// needed — early enough that a killed process still leaves the cache
+    /// behind for the next launch.
+    #[cfg(hydrolysis_pipeline_cache)]
+    pub(crate) fn note_frame_presented(&mut self) {
+        self.presented_frames += 1;
+        if self.presented_frames == 2
+            && let Some(store) = &self.pipeline_cache_store
+        {
+            store.persist_on_worker();
+        }
+    }
+
+    /// The pipeline cache pooled vello renderers should compile against, when
+    /// this device has one.
+    #[cfg(hydrolysis_pipeline_cache)]
+    pub(crate) fn pipeline_cache(&self) -> Option<wgpu::PipelineCache> {
+        self.pipeline_cache_store
+            .as_ref()
+            .map(|store| store.cache())
+    }
+
+    /// No pipeline cache exists on targets without the persistent store; the
+    /// call sites stay unconditioned.
+    #[cfg(not(hydrolysis_pipeline_cache))]
+    #[allow(dead_code)]
+    pub(crate) fn pipeline_cache(&self) -> Option<wgpu::PipelineCache> {
+        None
     }
 
     /// How many blurred shadow silhouettes have been CPU-rasterized so far —

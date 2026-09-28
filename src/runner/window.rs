@@ -718,6 +718,7 @@ fn render_to_surface(
     let present_started_at = Instant::now();
     surface.present(frame);
     let present = present_started_at.elapsed();
+    renderer.note_frame_presented();
     Ok(SurfaceRenderResult {
         acquire,
         render,
