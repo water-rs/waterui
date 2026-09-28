@@ -8,7 +8,8 @@ use waterui::text::styled::StyledStr;
 use waterui::{
     Color, Str,
     component::{
-        slider::SliderConfig,
+        size::ControlSize,
+        slider::{SliderConfig, ValueFormatter},
         stepper::StepperConfig,
         text_field::{KeyboardType, ResolvedTextFieldConfig},
         toggle::{ToggleConfig, ToggleStyle},
@@ -98,6 +99,36 @@ pub struct WuiRange<T> {
     pub end: T,
 }
 
+into_ffi! {ControlSize, non_exhaustive, pub enum WuiControlSize {
+    ExtraSmall,
+    Small,
+    Medium,
+    Large,
+    ExtraLarge,
+}}
+
+opaque!(WuiValueFormatter, ValueFormatter, value_formatter);
+
+/// Formats a slider value through the given formatter, producing the text the
+/// value indicator shows above the thumb while it is dragged.
+///
+/// The returned `WuiStr` is owned by the caller.
+///
+/// # Safety
+///
+/// * `formatter` must be a valid pointer to a `WuiValueFormatter` that stays
+///   alive for the duration of the call; it is only borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_call_value_formatter(
+    formatter: *const WuiValueFormatter,
+    value: f64,
+) -> WuiStr {
+    // SAFETY: the caller contract requires `formatter` to be a valid handle that
+    // stays alive for this call; it is only borrowed.
+    let formatter = unsafe { crate::borrow_ffi(formatter) };
+    crate::IntoFFI::into_ffi(formatter.format(value))
+}
+
 into_ffi! {SliderConfig,
     pub struct WuiSlider {
         label: WuiLabel,
@@ -105,6 +136,8 @@ into_ffi! {SliderConfig,
         max_value_label: *mut WuiAnyView,
         range: WuiRange<f64>,
         value: *mut WuiBinding<f64>,
+        size: WuiControlSize,
+        value_indicator: *mut WuiValueFormatter,
     }
 }
 
