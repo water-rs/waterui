@@ -202,7 +202,7 @@ pub(crate) fn render_text_field_parts(
     // `value`/`prompt`/`selection_menu` are cloneable signals (the value is read
     // through `read_signal` below so a binding change schedules a frame). The label
     // is a retained node sub-view flushed under the animated transform each frame.
-    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw) = {
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
         let text_field = &state.config;
         (
             text_field.label.clone(),
@@ -210,6 +210,7 @@ pub(crate) fn render_text_field_parts(
             text_field.prompt.content.clone(),
             text_field.selection_menu.clone(),
             text_field.line_limit,
+            text_field.on_submit.clone(),
         )
     };
     #[cfg(feature = "accessibility")]
@@ -298,6 +299,7 @@ pub(crate) fn render_text_field_parts(
         value: value_binding.clone(),
         line_limit,
         selection_menu,
+        on_submit,
     };
     let (prompt, value, preedit, preedit_caret) = {
         let (preedit, preedit_caret) = if is_focused {
@@ -1066,7 +1068,7 @@ pub(crate) fn emit_text_field_accessibility(
         renderer.read_signal(&signal)
     };
     let mut state = state.borrow_mut();
-    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw) = {
+    let (label, value_binding, prompt_signal, selection_menu, line_limit_raw, on_submit) = {
         let text_field = &state.config;
         (
             text_field.label.clone(),
@@ -1074,6 +1076,7 @@ pub(crate) fn emit_text_field_accessibility(
             text_field.prompt.content.clone(),
             text_field.selection_menu.clone(),
             text_field.line_limit,
+            text_field.on_submit.clone(),
         )
     };
     let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
@@ -1142,6 +1145,7 @@ pub(crate) fn emit_text_field_accessibility(
                     value: value_binding.clone(),
                     line_limit,
                     selection_menu,
+                    on_submit: on_submit.clone(),
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),

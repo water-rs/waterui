@@ -85,6 +85,10 @@ pub(crate) struct EmbeddedInputTarget {
     pub(crate) depth: usize,
     pub(crate) order: usize,
     pub(crate) sink: Rc<dyn EmbeddedInputSink>,
+    /// The `OnKeyPress` scopes enclosing the view this target was registered
+    /// from, innermost first — the chain an unconsumed key bubbles through
+    /// while this surface holds keyboard focus.
+    pub(crate) key_handlers: Option<Rc<KeyHandlerNode>>,
     /// Written by `.focused(binding)` when it wraps this surface.
     pub(crate) focus_binding: Option<Binding<bool>>,
     /// The node the surface emits for the semantic tree. Keyboard traversal
@@ -124,6 +128,15 @@ impl EmbeddedInputTarget {
             local + vello::kurbo::Vec2::new(self.local_bounds.x0, self.local_bounds.y0),
         )
     }
+}
+
+/// An embedded surface that took a bubbled key press — the matching release
+/// belongs to it, not to whichever sink holds keyboard focus.
+pub(crate) struct BubbledKeySink {
+    pub(crate) logical: Key,
+    pub(crate) code: Code,
+    pub(crate) modifiers: Modifiers,
+    pub(crate) sink: Rc<dyn EmbeddedInputSink>,
 }
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
@@ -316,6 +329,7 @@ impl SemanticCore {
             order,
             "registered an embedded surface input target"
         );
+        let key_handlers = self.snapshot_key_handlers();
         self.hit_test
             .embedded_input_targets
             .push(EmbeddedInputTarget {
@@ -326,6 +340,7 @@ impl SemanticCore {
                 depth: self.render_depth,
                 order,
                 sink,
+                key_handlers,
                 focus_binding: None,
                 #[cfg(feature = "accessibility")]
                 accessibility_node_id,
@@ -356,7 +371,7 @@ impl SemanticCore {
         );
     }
 
-    fn topmost_embedded_target_at(
+    pub(super) fn topmost_embedded_target_at(
         &self,
         point: vello::kurbo::Point,
     ) -> Option<(usize, vello::kurbo::Point)> {
@@ -431,6 +446,25 @@ impl SemanticCore {
             return false;
         };
         target.sink.pointer_move(position);
+        true
+    }
+
+    /// Delivers the release of a key whose press bubbled into an embedded
+    /// surface back to that same surface — the focused sink never saw the
+    /// press, so it must not see the release either.
+    pub(crate) fn handle_bubbled_key_release(&mut self, delivery: &KeyDelivery<'_>) -> bool {
+        if delivery.pressed {
+            return false;
+        }
+        let Some(index) =
+            self.hit_test.bubbled_key_sinks.iter().position(|entry| {
+                entry.code == delivery.code && entry.logical == *delivery.logical
+            })
+        else {
+            return false;
+        };
+        self.hit_test.bubbled_key_sinks[index].sink.key(delivery);
+        self.hit_test.bubbled_key_sinks.remove(index);
         true
     }
 

@@ -1351,6 +1351,12 @@ where
                     false
                 } else {
                     let key_env = input_env(runtime, env);
+                    let press = KeyPress {
+                        key: logical_key.clone(),
+                        code: physical_code,
+                        modifiers: modifiers.into(),
+                        repeat,
+                    };
                     runtime.renderer.handle_embedded_key(&KeyDelivery {
                         pressed: true,
                         logical: &logical_key,
@@ -1359,7 +1365,7 @@ where
                         modifiers,
                     }) || runtime
                         .renderer
-                        .handle_key_with_env(&key, modifiers, &key_env)
+                        .handle_key_press(&key, modifiers, &key_env, &press)
                 };
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
@@ -1419,7 +1425,13 @@ where
                 let changed =
                     !runtime.renderer.take_ime_swallowed_release(physical_code) && !ime_owned && {
                         let key_env = input_env(runtime, env);
-                        runtime.renderer.handle_embedded_key(&KeyDelivery {
+                        runtime.renderer.handle_bubbled_key_release(&KeyDelivery {
+                            pressed: false,
+                            logical: &logical_key,
+                            code: physical_code,
+                            repeat,
+                            modifiers,
+                        }) || runtime.renderer.handle_embedded_key(&KeyDelivery {
                             pressed: false,
                             logical: &logical_key,
                             code: physical_code,

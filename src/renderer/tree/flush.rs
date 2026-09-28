@@ -285,6 +285,11 @@ impl RenderNode {
                             },
                         );
                     }
+                    WrapperEffect::OnKeyPress(handler) => {
+                        renderer.push_key_handler_scope(child_env.clone(), Rc::clone(handler));
+                        node.child.flush(renderer, ctx, child_env);
+                        renderer.pop_key_handler_scope();
+                    }
                     WrapperEffect::GestureObserver(effect) => {
                         HydrolysisRenderer::apply_gesture_observer(
                             renderer,
@@ -603,6 +608,11 @@ impl RenderNode {
                         HydrolysisRenderer::apply_focused_semantic(renderer, value, |r| {
                             node.child.emit_accessibility(r, child_env);
                         });
+                    }
+                    WrapperEffect::OnKeyPress(handler) => {
+                        renderer.push_key_handler_scope(child_env.clone(), Rc::clone(handler));
+                        node.child.emit_accessibility(renderer, child_env);
+                        renderer.pop_key_handler_scope();
                     }
                     WrapperEffect::LifeCycle(effect) => {
                         // The semantic pump is this tree's frame: an appear hook

@@ -323,6 +323,7 @@ impl SemanticCore {
             return;
         }
         let order = self.hit_test.next_hit_test_order();
+        let key_handlers = self.snapshot_key_handlers();
         self.text_editing.text_input_targets.push(TextInputTarget {
             interaction_key: data.target.interaction_key,
             modal: data.target.modal,
@@ -338,6 +339,7 @@ impl SemanticCore {
             model: data.target.model,
             selection: data.target.selection,
             env: data.target.env,
+            key_handlers,
             focus_binding: data.focus_binding,
             #[cfg(feature = "accessibility")]
             accessibility_node_id: data.accessibility_node_id,

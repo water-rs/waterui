@@ -276,6 +276,12 @@ pub(crate) struct AccessibilityBuilder {
     /// (pointer targets bind before the emit walk re-stamps them) and pruned
     /// with the live node set at finalize.
     pub(crate) interaction_nodes: BTreeMap<InteractionKey, AccessibilityNodeId>,
+    /// The `OnKeyPress` scope chain each focusable interaction identity was
+    /// registered under — how a bubble resolves the handlers of a focused
+    /// node whose registration emitted no live target this frame (the
+    /// semantic walk registers none).
+    pub(crate) focus_key_handlers:
+        BTreeMap<InteractionKey, Option<Rc<crate::renderer::KeyHandlerNode>>>,
     pub(crate) next_node_id: u64,
     node_ids: BTreeMap<AccessibilityNodeKey, AccessibilityNodeId>,
     active_node_keys: BTreeSet<AccessibilityNodeKey>,
@@ -311,6 +317,7 @@ impl Default for AccessibilityBuilder {
             actions: BTreeMap::new(),
             focus_bindings: BTreeMap::new(),
             interaction_nodes: BTreeMap::new(),
+            focus_key_handlers: BTreeMap::new(),
             next_node_id: ACCESSIBILITY_FIRST_NODE_ID,
             node_ids: BTreeMap::new(),
             active_node_keys: BTreeSet::new(),
@@ -765,6 +772,9 @@ impl AccessibilityBuilder {
             .map(|(id, _)| *id)
             .collect::<BTreeSet<_>>();
         self.interaction_nodes.retain(|_, node| live.contains(node));
+        let interaction_nodes = &self.interaction_nodes;
+        self.focus_key_handlers
+            .retain(|key, _| interaction_nodes.contains_key(key));
         self.pending_tree_update = Some(self.assembled_tree_update());
     }
 }
@@ -1144,6 +1154,10 @@ impl SemanticCore {
         key: &crate::renderer::InteractionKey,
         node_id: AccessibilityNodeId,
     ) {
+        let chain = self.snapshot_key_handlers();
+        self.accessibility
+            .focus_key_handlers
+            .insert(key.clone(), chain);
         self.accessibility
             .interaction_nodes
             .insert(key.clone(), node_id);

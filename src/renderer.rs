@@ -138,6 +138,7 @@ use waterui_controls::toggle::ToggleConfig;
 use waterui_core::dynamic::{Dynamic, DynamicInitialContent};
 use waterui_core::event::{Event, HoverEvent, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::handler::{AnyViewBuilder, BoxedAction, SharedAction};
+use waterui_core::key::{KeyHandling, KeyPress, OnKeyPress};
 use waterui_core::layout::{
     HorizontalAlignment, Layout, PlacedSubview, Point as LayoutPoint, ProposalSize,
     Rect as LayoutRect, Size as LayoutSize, StretchAxis, SubView, VerticalAlignment,
@@ -284,6 +285,13 @@ pub struct SemanticCore {
     /// frame, which then runs the full animation-slot / measurement-cache prune
     /// cycle for the dropped subtrees.
     subview_structural_change: bool,
+    /// The `OnKeyPress` scope chain enclosing the view currently flushing,
+    /// innermost first. The `WrapperEffect::OnKeyPress` arm pushes one link
+    /// around its child's walk (and the semantic walk does the same), so a
+    /// target registered anywhere inside snapshots the whole ancestor chain —
+    /// the order an unconsumed key bubbles through. As a parent-linked list
+    /// a snapshot is a single `Rc` clone rather than a per-target `Vec` copy.
+    key_handler_stack: Option<Rc<KeyHandlerNode>>,
     /// Physical codes of key presses the IME consumed while it owned input.
     /// Their releases must be swallowed too — wl_keyboard delivers the release
     /// of an IME-consumed press in a later batch, after the commit that ended
@@ -387,6 +395,27 @@ impl SemanticCore {
         self.window_id = window_id;
     }
 
+    /// Enters an `OnKeyPress` scope for the subtree now flushing; targets
+    /// registered inside snapshot it as their bubble chain.
+    pub(crate) fn push_key_handler_scope(
+        &mut self,
+        env: Environment,
+        handler: Rc<RefCell<OnKeyPress>>,
+    ) {
+        self.key_handler_stack = Some(Rc::new(KeyHandlerNode {
+            scope: KeyHandlerScope { env, handler },
+            parent: self.key_handler_stack.take(),
+        }));
+    }
+
+    /// Leaves the innermost `OnKeyPress` scope.
+    pub(crate) fn pop_key_handler_scope(&mut self) {
+        self.key_handler_stack = self
+            .key_handler_stack
+            .take()
+            .and_then(|link| link.parent.clone());
+    }
+
     pub(crate) fn new(frame_instant: Instant) -> Self {
         Self {
             state: HydroState::default(),
@@ -412,6 +441,7 @@ impl SemanticCore {
             accessibility: AccessibilityBuilder::default(),
             render_tree: None,
             subview_structural_change: false,
+            key_handler_stack: None,
             ime_swallowed_codes: Vec::new(),
             #[cfg(feature = "accessibility")]
             semantic_walk: false,

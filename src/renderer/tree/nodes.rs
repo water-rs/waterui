@@ -592,6 +592,10 @@ pub(super) enum WrapperEffect {
     /// A hover-enter/move/exit handler re-registered every flush. The handler is
     /// shared so the node can re-register the same `OnEvent` each frame.
     OnEvent(Rc<RefCell<OnEvent>>),
+    /// An `.on_key_press` ancestor scope: pushed onto the renderer's key
+    /// handler stack while the child flushes, so a focused input inside the
+    /// subtree bubbles its unconsumed keys here.
+    OnKeyPress(Rc<RefCell<OnKeyPress>>),
     /// A gesture observer (tap/long-press/drag/…). The two pieces the dispatch
     /// path derives from the (now node-owned) content are resolved at build time
     /// and stored in the effect; see [`GestureObserverEffect`].

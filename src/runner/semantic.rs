@@ -468,10 +468,11 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
             }
             InputEvent::Key {
                 key,
+                logical_key,
                 physical_code,
+                repeat,
                 state: KeyState::Pressed,
                 modifiers,
-                ..
             } => {
                 if ime_owned {
                     // Same swallowed-press tracking as the rendered runner:
@@ -481,19 +482,35 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                     false
                 } else {
                     let key_env = env.extending(semantic_window_origin(window));
-                    window.core.handle_key_with_env(&key, modifiers, &key_env)
+                    let press = KeyPress {
+                        key: logical_key,
+                        code: physical_code,
+                        modifiers: modifiers.into(),
+                        repeat,
+                    };
+                    window
+                        .core
+                        .handle_key_press(&key, modifiers, &key_env, &press)
                 }
             }
             InputEvent::Key {
                 key,
+                logical_key,
                 physical_code,
+                repeat,
                 state: KeyState::Released,
-                ..
+                modifiers,
             } => {
                 let key_env = env.extending(semantic_window_origin(window));
                 !window.core.take_ime_swallowed_release(physical_code)
                     && !ime_owned
-                    && window.core.handle_key_release_with_env(&key, &key_env)
+                    && (window.core.handle_bubbled_key_release(&KeyDelivery {
+                        pressed: false,
+                        logical: &logical_key,
+                        code: physical_code,
+                        repeat,
+                        modifiers,
+                    }) || window.core.handle_key_release_with_env(&key, &key_env))
             }
             InputEvent::ImePreedit { text, caret } => {
                 window.core.handle_ime_preedit(text.as_str(), caret)
@@ -601,7 +618,7 @@ mod tests {
     use waterui_controls::button::button;
     use waterui_controls::menu::{CommandExt, Menu, MenuItem};
     use waterui_core::handler::AnyViewBuilder;
-    use waterui_layout::stack::vstack;
+    use waterui_layout::stack::{hstack, vstack};
     use waterui_text::text;
 
     fn semantic_environment() -> Environment {
@@ -835,6 +852,368 @@ mod tests {
             value.snapshot().to_string().as_str(),
             "Jo",
             "text input did not edit the field"
+        );
+    }
+
+    // -- Key bubbling: water-rs/waterui#1265 ------------------------------
+
+    use crate::platform::{KeyCode, Modifiers};
+    use keyboard_types::Code;
+    use waterui_core::extract::Use;
+    use waterui_core::key::{Key, KeyHandling, KeyPress, NamedKey};
+
+    /// A synthetic press of a named key, carrying both the legacy `KeyCode`
+    /// the editor matches on and the W3C pair the bubble handlers read.
+    fn press_named(name: &str, code: Code) -> InputEvent {
+        InputEvent::Key {
+            key: KeyCode::Named(name.to_string()),
+            logical_key: name
+                .parse::<Key>()
+                .unwrap_or(Key::Named(NamedKey::Unidentified)),
+            physical_code: code,
+            repeat: false,
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// A synthetic press that types a character — the keys a field owns.
+    fn press_character(ch: &str, code: Code) -> InputEvent {
+        InputEvent::Key {
+            key: KeyCode::Character(ch.to_string()),
+            logical_key: Key::Character(ch.to_string()),
+            physical_code: code,
+            repeat: false,
+            state: KeyState::Pressed,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    /// Builds the runtime, focuses the single text field, and returns both.
+    fn focused_field_runtime(builder: AnyViewBuilder<AnyView>) -> (SemanticRuntime, NodeId) {
+        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let update =
+            pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
+        let (field, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::TextInput)
+            .map(|(id, node)| (*id, node))
+            .expect("the text field is missing from the semantic tree");
+        assert!(
+            runtime.perform_accessibility_action(ActionRequest {
+                action: Action::Focus,
+                target_node: field,
+                target_tree: TreeId::ROOT,
+                data: None,
+            }),
+            "focusing the text field changed nothing"
+        );
+        let _ = pump_until_settled(&mut runtime);
+        assert_eq!(runtime.focused_ui_node(), Some(field));
+        (runtime, field)
+    }
+
+    /// A counting `OnKeyPress` handler that records the `Key` it saw and
+    /// answers with the given disposition.
+    fn counting_handler(
+        hits: Binding<Vec<String>>,
+        disposition: KeyHandling,
+    ) -> impl waterui_core::handler::Handler<(Use<KeyPress>,), KeyHandling> {
+        move |Use(press): Use<KeyPress>| {
+            let mut seen = hits.snapshot();
+            seen.push(format!("{:?}", press.key));
+            hits.set(seen);
+            disposition
+        }
+    }
+
+    #[test]
+    fn unconsumed_escape_bubbles_to_ancestor_on_key_press() {
+        let hits = Binding::container(Vec::<String>::new());
+        let hits_for_view = hits.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let hits = hits_for_view.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),))
+                    .on_key_press(counting_handler(hits, KeyHandling::Handled)),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        runtime.push_input_event(press_named("Escape", Code::Escape));
+        runtime.pump();
+        assert_eq!(
+            hits.snapshot().as_slice(),
+            &[String::from("Named(Escape)")],
+            "Escape did not reach the ancestor handler"
+        );
+    }
+
+    #[test]
+    fn handled_stops_the_bubble_before_outer_handlers() {
+        let inner_hits = Binding::container(Vec::<String>::new());
+        let outer_hits = Binding::container(Vec::<String>::new());
+        let inner_for_view = inner_hits.clone();
+        let outer_for_view = outer_hits.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),))
+                    .on_key_press(counting_handler(
+                        inner_for_view.clone(),
+                        KeyHandling::Handled,
+                    ))
+                    .on_key_press(counting_handler(
+                        outer_for_view.clone(),
+                        KeyHandling::Handled,
+                    )),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        runtime.push_input_event(press_named("Escape", Code::Escape));
+        runtime.pump();
+        assert_eq!(
+            inner_hits.snapshot().len(),
+            1,
+            "inner handler missed Escape"
+        );
+        assert!(
+            outer_hits.snapshot().is_empty(),
+            "a Handled answer must stop the bubble before the outer handler"
+        );
+
+        // With the nearer handler ignoring, the same key reaches the outer one.
+        inner_hits.set(Vec::new());
+        let inner_ignores = Binding::container(Vec::<String>::new());
+        let outer_ignores = outer_hits.clone();
+        let inner_for_second = inner_ignores.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let outer = outer_ignores.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),))
+                    .on_key_press(counting_handler(
+                        inner_for_second.clone(),
+                        KeyHandling::Ignored,
+                    ))
+                    .on_key_press(counting_handler(outer.clone(), KeyHandling::Handled)),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+        runtime.push_input_event(press_named("Escape", Code::Escape));
+        runtime.pump();
+        assert_eq!(
+            inner_ignores.snapshot().len(),
+            1,
+            "inner handler missed Escape"
+        );
+        assert_eq!(
+            outer_hits.snapshot().len(),
+            1,
+            "an Ignored answer must let the bubble reach the outer handler"
+        );
+    }
+
+    #[test]
+    fn return_submits_a_line_limited_field_with_on_submit() {
+        let submitted = Binding::container(0u32);
+        let submitted_for_view = submitted.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let submitted = submitted_for_view.clone();
+            AnyView::new(vstack((waterui_controls::text_field::field(
+                "Search", &value,
+            )
+            .on_submit(move || submitted.set(submitted.snapshot() + 1)),)))
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        runtime.push_input_event(press_named("Enter", Code::Enter));
+        runtime.pump();
+        assert_eq!(submitted.snapshot(), 1, "on_submit did not fire on Return");
+    }
+
+    #[test]
+    fn return_without_on_submit_bubbles() {
+        let hits = Binding::container(Vec::<String>::new());
+        let hits_for_view = hits.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let hits = hits_for_view.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),))
+                    .on_key_press(counting_handler(hits, KeyHandling::Handled)),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        runtime.push_input_event(press_named("Enter", Code::Enter));
+        runtime.pump();
+        assert_eq!(
+            hits.snapshot().as_slice(),
+            &[String::from("Named(Enter)")],
+            "Return without on_submit did not bubble"
+        );
+    }
+
+    #[test]
+    fn arrow_up_and_down_bubble_from_a_single_line_field() {
+        let hits = Binding::container(Vec::<String>::new());
+        let hits_for_view = hits.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let hits = hits_for_view.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),))
+                    .on_key_press(counting_handler(hits, KeyHandling::Handled)),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        runtime.push_input_event(press_named("ArrowUp", Code::ArrowUp));
+        runtime.push_input_event(press_named("ArrowDown", Code::ArrowDown));
+        runtime.pump();
+        assert_eq!(
+            hits.snapshot().as_slice(),
+            &[
+                String::from("Named(ArrowUp)"),
+                String::from("Named(ArrowDown)")
+            ],
+            "Up/Down did not bubble out of the single-line field"
+        );
+    }
+
+    #[test]
+    fn characters_never_bubble() {
+        let hits = Binding::container(Vec::<String>::new());
+        let hits_for_view = hits.clone();
+        let value = Binding::container(waterui_core::Str::default());
+        let value_for_assert = value.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let value = value.clone();
+            let hits = hits_for_view.clone();
+            AnyView::new(
+                vstack((waterui_controls::text_field::field("Search", &value),))
+                    .on_key_press(counting_handler(hits, KeyHandling::Handled)),
+            )
+        });
+        let (mut runtime, _field) = focused_field_runtime(builder);
+
+        runtime.push_input_event(press_character("x", Code::KeyX));
+        runtime.pump();
+        assert!(
+            hits.snapshot().is_empty(),
+            "a consumed character bubbled to an ancestor handler"
+        );
+        assert_eq!(
+            value_for_assert.snapshot().to_string().as_str(),
+            "x",
+            "the character did not edit the field"
+        );
+    }
+
+    #[test]
+    fn escape_bubbles_from_a_focused_button_to_the_overlay_handler() {
+        // water-rs/waterui#1265: the bubble starts at whatever node holds
+        // keyboard focus, not only at text inputs — a focused button inside
+        // an `on_key_press` overlay hands Escape to the overlay's handler.
+        let hits = Binding::container(Vec::<String>::new());
+        let hits_for_view = hits.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let hits = hits_for_view.clone();
+            AnyView::new(
+                vstack((button("Dismiss").action(|| ()),))
+                    .on_key_press(counting_handler(hits, KeyHandling::Handled)),
+            )
+        });
+        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let update =
+            pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
+        let (button_node, _) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == Role::Button)
+            .map(|(id, node)| (*id, node))
+            .expect("the button is missing from the semantic tree");
+        assert!(
+            runtime.perform_accessibility_action(ActionRequest {
+                action: Action::Focus,
+                target_node: button_node,
+                target_tree: TreeId::ROOT,
+                data: None,
+            }),
+            "focusing the button changed nothing"
+        );
+        let update = pump_until_settled(&mut runtime).expect("focusing emitted no tree update");
+        assert_eq!(
+            update.focus, button_node,
+            "keyboard focus did not land on the button"
+        );
+
+        runtime.push_input_event(press_named("Escape", Code::Escape));
+        runtime.pump();
+        assert_eq!(
+            hits.snapshot().as_slice(),
+            &[String::from("Named(Escape)")],
+            "Escape did not bubble from the focused button to the overlay handler"
+        );
+    }
+
+    #[test]
+    fn an_unfocused_key_bubbles_only_through_the_shared_ancestor() {
+        // water-rs/waterui#1265: with nothing focused a key bubbles through
+        // the scopes enclosing every registration — sibling `on_key_press`
+        // handlers are not ancestors of one another, so only the shared root
+        // handler hears the key.
+        let root_hits = Binding::container(Vec::<String>::new());
+        let a_hits = Binding::container(Vec::<String>::new());
+        let b_hits = Binding::container(Vec::<String>::new());
+        let root_for_view = root_hits.clone();
+        let a_for_view = a_hits.clone();
+        let b_for_view = b_hits.clone();
+        let builder = AnyViewBuilder::<AnyView>::new(move || {
+            let root = root_for_view.clone();
+            let a = a_for_view.clone();
+            let b = b_for_view.clone();
+            AnyView::new(
+                hstack((
+                    button("A")
+                        .action(|| ())
+                        .on_key_press(counting_handler(a, KeyHandling::Handled)),
+                    button("B")
+                        .action(|| ())
+                        .on_key_press(counting_handler(b, KeyHandling::Handled)),
+                ))
+                .on_key_press(counting_handler(root, KeyHandling::Handled)),
+            )
+        });
+        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let _ = pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
+        assert_eq!(
+            runtime.focused_ui_node(),
+            None,
+            "the test needs nothing focused"
+        );
+
+        runtime.push_input_event(press_named("Escape", Code::Escape));
+        runtime.pump();
+        assert_eq!(
+            root_hits.snapshot().as_slice(),
+            &[String::from("Named(Escape)")],
+            "Escape did not reach the shared root handler"
+        );
+        assert!(
+            a_hits.snapshot().is_empty() && b_hits.snapshot().is_empty(),
+            "a sibling's on_key_press heard a key that does not bubble through it"
         );
     }
 }

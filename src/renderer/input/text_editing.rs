@@ -9,6 +9,9 @@ pub(crate) enum TextInputModel {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
         selection_menu: nami::Computed<Vec<ResolvedMenuItem>>,
+        /// `TextField::on_submit` — run on Return in a line-limited field; a
+        /// field without one leaves the key unconsumed so it bubbles.
+        on_submit: Option<SharedAction>,
     },
     SecureField {
         value: nami::Binding<FormSecure>,
@@ -157,9 +160,73 @@ pub(crate) struct TextInputTarget {
     /// The environment of the view the target was registered from — the
     /// context menu it opens runs inside it (water-rs/hydrolysis#140).
     pub(crate) env: Environment,
+    /// The `OnKeyPress` scopes enclosing the view this target was registered
+    /// from — the chain a key the field did not consume bubbles through,
+    /// innermost first at dispatch time.
+    pub(crate) key_handlers: Option<Rc<KeyHandlerNode>>,
     pub(crate) focus_binding: Option<Binding<bool>>,
     #[cfg(feature = "accessibility")]
     pub(crate) accessibility_node_id: Option<AccessibilityNodeId>,
+}
+
+/// One `OnKeyPress` ancestor scope a focused input's unconsumed keys bubble
+/// into. The scope stack is pushed while the retained tree flushes the
+/// `OnKeyPress` wrapper (outermost first), and a target snapshotting it keeps
+/// the whole chain even after the frame that produced it is gone.
+pub(crate) struct KeyHandlerScope {
+    /// The environment the `.on_key_press` view was built under — the handler
+    /// resolves `State`/`Use` extractors against it, extended with the press.
+    pub(crate) env: Environment,
+    pub(crate) handler: Rc<RefCell<OnKeyPress>>,
+}
+
+/// One link of the `OnKeyPress` scope chain: the innermost scope at a
+/// registration point plus the rest of its ancestors. Pushing a scope
+/// allocates a single node, and a target's snapshot of the chain is a single
+/// `Rc` clone, so neither the walk nor the snapshot allocates per frame.
+pub(crate) struct KeyHandlerNode {
+    pub(crate) scope: KeyHandlerScope,
+    pub(crate) parent: Option<Rc<KeyHandlerNode>>,
+}
+
+/// The innermost chain node shared by `a` and `b` — the scopes enclosing
+/// every registration the two chains were snapped from.
+pub(crate) fn common_key_handler_scope(
+    a: Option<Rc<KeyHandlerNode>>,
+    b: Option<Rc<KeyHandlerNode>>,
+) -> Option<Rc<KeyHandlerNode>> {
+    fn depth(mut node: Option<Rc<KeyHandlerNode>>) -> usize {
+        let mut depth = 0;
+        while let Some(link) = node {
+            depth += 1;
+            node = link.parent.clone();
+        }
+        depth
+    }
+    let mut a = a;
+    let mut b = b;
+    let mut a_depth = depth(a.clone());
+    let mut b_depth = depth(b.clone());
+    while a_depth > b_depth {
+        a = a.and_then(|link| link.parent.clone());
+        a_depth -= 1;
+    }
+    while b_depth > a_depth {
+        b = b.and_then(|link| link.parent.clone());
+        b_depth -= 1;
+    }
+    loop {
+        match (a, b) {
+            (Some(x), Some(y)) => {
+                if Rc::ptr_eq(&x, &y) {
+                    return Some(x);
+                }
+                a = x.parent.clone();
+                b = y.parent.clone();
+            }
+            _ => return None,
+        }
+    }
 }
 
 pub(crate) struct TextInputTargetRegistration {
@@ -1816,10 +1883,122 @@ impl SemanticCore {
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
+        // Callers without platform key data (tests, synthetic input) get a
+        // `KeyPress` rebuilt from the `KeyCode` — the winit/semantic paths
+        // carry real `logical_key`/`physical_code` and call
+        // `handle_key_press` instead.
+        let press = KeyPress {
+            key: key.to_w3c_key(),
+            code: keyboard_types::Code::Unidentified,
+            modifiers: modifiers.into(),
+            repeat: false,
+        };
+        self.handle_key_press(key, modifiers, env, &press)
+    }
+
+    /// A key press with its full platform identity: the focused target's
+    /// editing first, then the `OnKeyPress` bubble chain, then an enclosing
+    /// embedded surface.
+    pub fn handle_key_press(
+        &mut self,
+        key: &KeyCode,
+        modifiers: Modifiers,
+        env: &Environment,
+        press: &KeyPress,
+    ) -> bool {
         if self.handle_keyboard_key_down(key, modifiers, env) {
             return true;
         }
-        self.handle_key(key, modifiers)
+        if self.handle_key(key, modifiers) {
+            return true;
+        }
+        self.bubble_key_press(press)
+    }
+
+    /// Offers an unconsumed key to the focused node's `OnKeyPress`
+    /// ancestors, nearest first, then to the topmost embedded surface
+    /// enclosing it. `true` once some scope reports [`KeyHandling::Handled`]
+    /// or a surface takes the key.
+    ///
+    /// The focused node is whatever `hit_test.keyboard_focus` names — a text
+    /// input, a focusable control's press slot, or an embedded surface; with
+    /// no focus at all the key still bubbles through the scopes enclosing
+    /// every registration of the frame.
+    fn bubble_key_press(&mut self, press: &KeyPress) -> bool {
+        let focused_key = self.hit_test.keyboard_focus.clone();
+        let mut scopes: Option<Option<Rc<KeyHandlerNode>>> = None;
+        let mut bubble_center: Option<vello::kurbo::Point> = None;
+        if let Some(target) = self.text_editing.focused_target() {
+            scopes = Some(target.key_handlers.clone());
+            bubble_center = Some(target.bounds.center());
+        } else if let Some(key) = focused_key.as_ref() {
+            if let Some(target) = self.hit_test.pointer_targets.iter().find(|target| {
+                target
+                    .press_slot
+                    .as_ref()
+                    .is_some_and(|slot| &slot.key == key)
+            }) {
+                scopes = Some(target.key_handlers.clone());
+                bubble_center = Some(target.bounds.center());
+            } else if let Some(target) = self
+                .hit_test
+                .embedded_input_targets
+                .iter()
+                .find(|target| &target.interaction_key == key)
+            {
+                scopes = Some(target.key_handlers.clone());
+                bubble_center = Some(target.to_window_rect(target.local_bounds).center());
+            } else {
+                // The semantic walk emits no targets for the key to resolve
+                // against — the chain recorded at the focus link stands in.
+                #[cfg(feature = "accessibility")]
+                {
+                    scopes = self.accessibility.focus_key_handlers.get(key).cloned();
+                }
+            }
+        }
+        // `scopes` wraps a chain head: a target with no scopes is
+        // `Some(None)`; no resolved target at all falls back to the
+        // every-registration chain.
+        let mut node = scopes.unwrap_or_else(|| self.hit_test.root_key_handlers.clone());
+        while let Some(link) = node {
+            let handler = Rc::clone(&link.scope.handler);
+            let env = link.scope.env.extending(press.clone());
+            let result = handler.borrow_mut().handle(&env);
+            if result == KeyHandling::Handled {
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    key = ?press.key,
+                    "key consumed by an on_key_press ancestor"
+                );
+                return true;
+            }
+            node = link.parent.clone();
+        }
+        // Nothing above the focused node consumed it: the embedding surface
+        // under it (e.g. a terminal under a search overlay) gets the key next.
+        if let Some(center) = bubble_center
+            && let Some((index, _)) = self.topmost_embedded_target_at(center)
+        {
+            let embedded = self.hit_test.embedded_input_targets[index].clone();
+            embedded.sink.key(&KeyDelivery {
+                pressed: true,
+                logical: &press.key,
+                code: press.code,
+                repeat: press.repeat,
+                modifiers: Modifiers::from(press.modifiers),
+            });
+            // The release belongs to the sink that saw the press, not to
+            // whichever surface holds focus when it arrives.
+            self.hit_test.bubbled_key_sinks.push(BubbledKeySink {
+                logical: press.key.clone(),
+                code: press.code,
+                modifiers: Modifiers::from(press.modifiers),
+                sink: embedded.sink,
+            });
+            return true;
+        }
+        false
     }
 
     pub fn handle_key_release_with_env(&mut self, key: &KeyCode, env: &Environment) -> bool {
@@ -1896,15 +2075,35 @@ impl SemanticCore {
                     changed
                 }
                 KeyCode::Named(value) if value == "Enter" => {
-                    // Enter inserts a newline like any other text. The model's
-                    // line limit is what decides whether it survives: a
-                    // single-line field strips it (and the edit reports no
-                    // change), a capped field refuses the edit that would
-                    // exceed the limit, and an unlimited field accepts it.
                     if self.text_editing.ime_preedit.is_some() {
                         false
                     } else {
-                        self.insert_text_into_focused_target("\n")
+                        // A line-limited field with `on_submit` submits on
+                        // Return instead of inserting a newline; a field
+                        // without a limit keeps Return as a newline and never
+                        // submits.
+                        let submit = self.text_editing.focused_target().and_then(|target| {
+                            match &target.model {
+                                TextInputModel::TextField {
+                                    line_limit: Some(_),
+                                    on_submit: Some(action),
+                                    ..
+                                } => Some((action.clone(), target.env.clone())),
+                                _ => None,
+                            }
+                        });
+                        if let Some((action, env)) = submit {
+                            action.call(&env);
+                            true
+                        } else {
+                            // Enter inserts a newline like any other text. The
+                            // model's line limit is what decides whether it
+                            // survives: a single-line field strips it (and the
+                            // edit reports no change, so the key bubbles), a
+                            // capped field refuses the edit that would exceed
+                            // the limit, and an unlimited field accepts it.
+                            self.insert_text_into_focused_target("\n")
+                        }
                     }
                 }
                 KeyCode::Character(text) => {
@@ -1944,6 +2143,7 @@ mod tests {
         TextInputModel::TextField {
             value: Binding::container(StyledStr::plain(value.to_owned())),
             line_limit,
+            on_submit: None,
             selection_menu: empty_selection_menu(),
         }
     }

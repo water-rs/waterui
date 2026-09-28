@@ -89,6 +89,17 @@ impl From<Modifiers> for keyboard_types::Modifiers {
     }
 }
 
+impl From<keyboard_types::Modifiers> for Modifiers {
+    fn from(modifiers: keyboard_types::Modifiers) -> Self {
+        Self {
+            shift: modifiers.contains(keyboard_types::Modifiers::SHIFT),
+            control: modifiers.contains(keyboard_types::Modifiers::CONTROL),
+            alt: modifiers.contains(keyboard_types::Modifiers::ALT),
+            super_key: modifiers.contains(keyboard_types::Modifiers::META),
+        }
+    }
+}
+
 /// IME purpose for the focused text input target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextInputPurpose {

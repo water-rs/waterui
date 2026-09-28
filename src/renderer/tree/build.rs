@@ -468,6 +468,18 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Metadata<OnKeyPress>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return RenderNode::build_wrapper(
+                    WrapperEffect::OnKeyPress(Rc::new(RefCell::new(value))),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Metadata<GestureObserver>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;

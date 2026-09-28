@@ -418,6 +418,7 @@ fn text_field_model(value: &str, line_limit: Option<usize>) -> TextInputModel {
         value: Binding::container(StyledStr::plain(value.to_owned())),
         line_limit,
         selection_menu: empty_selection_menu(),
+        on_submit: None,
     }
 }
 
@@ -449,6 +450,7 @@ fn text_input_target(
         model,
         selection,
         env: test_environment(),
+        key_handlers: None,
         focus_binding: None,
         #[cfg(feature = "accessibility")]
         accessibility_node_id: None,

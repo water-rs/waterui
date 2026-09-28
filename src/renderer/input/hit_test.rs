@@ -92,6 +92,10 @@ pub(crate) struct PointerTarget {
     pub(crate) keyboard_step: Option<KeyboardStepAction>,
     pub(crate) keyboard_focusable: bool,
     pub(crate) modal: bool,
+    /// The `OnKeyPress` scopes enclosing the view this target was registered
+    /// from, innermost first — the chain an unconsumed key bubbles through
+    /// while this target holds keyboard focus.
+    pub(crate) key_handlers: Option<Rc<KeyHandlerNode>>,
 }
 
 /// An in-flight scrollbar-thumb drag: which scroll slot owns it (the handle's
@@ -274,6 +278,18 @@ pub(crate) struct HitTestState {
     pub(crate) keyboard_focus: Option<InteractionKey>,
     pub(crate) keyboard_focus_binding: Option<Binding<bool>>,
     pub(crate) keyboard_focus_visible: bool,
+    /// The `OnKeyPress` scopes enclosing every registration this frame —
+    /// the longest common ancestor of the snapshot chains, and the chain an
+    /// unconsumed key bubbles through while nothing holds keyboard focus at
+    /// all. `None` both before the first registration and when no scope
+    /// encloses them all; `root_key_chain_seen` tells the two apart.
+    pub(crate) root_key_handlers: Option<Rc<KeyHandlerNode>>,
+    /// Whether any registration has contributed a snapshot this frame.
+    pub(crate) root_key_chain_seen: bool,
+    /// Embedded surfaces that received a bubbled press, keyed by the key's
+    /// W3C identity, so the matching release reaches the same sink rather
+    /// than the focused one.
+    pub(crate) bubbled_key_sinks: Vec<BubbledKeySink>,
     pub(crate) active_keyboard_target: Option<PointerTarget>,
     /// Keyboard activation semantics for this runtime — see
     /// [`KeyboardActivation`]. Only the semantic runtime switches it from the
@@ -377,6 +393,10 @@ impl HitTestState {
         self.trackpad_pan_targets.clear();
         self.modal_interaction = None;
         self.hit_clip_stack.clear();
+        // `bubbled_key_sinks` survives: a press bubbled this frame may only
+        // get its release several frames later.
+        self.root_key_handlers = None;
+        self.root_key_chain_seen = false;
     }
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
@@ -1532,7 +1552,13 @@ impl SemanticCore {
             .iter()
             .filter(|(_, linked)| **linked == node)
             .map(|(key, _)| key.clone())
-            .find(|key| self.interaction_key_is_live(key))
+            .find(|key| {
+                self.interaction_key_is_live(key)
+                    // The semantic walk emits no pointer machinery to back a
+                    // key — a key linked to a live node is live there, the
+                    // same allowance `frame.rs` makes for focus liveness.
+                    || (self.semantic_walk && self.emitted_node_is_live(node))
+            })
             .or_else(|| {
                 self.text_editing
                     .text_input_targets
@@ -2395,8 +2421,18 @@ impl SemanticCore {
     /// without firing and the pressed affordance comes down, so a real
     /// release arriving later has nothing stale left to activate.
     pub(crate) fn cancel_keyboard_press(&mut self) -> bool {
+        let cancelled = !self.hit_test.bubbled_key_sinks.is_empty();
+        for entry in self.hit_test.bubbled_key_sinks.drain(..) {
+            entry.sink.key(&KeyDelivery {
+                pressed: false,
+                logical: &entry.logical,
+                code: entry.code,
+                repeat: false,
+                modifiers: entry.modifiers,
+            });
+        }
         if self.hit_test.active_keyboard_target.take().is_none() {
-            return false;
+            return cancelled;
         }
         let clear = self
             .hit_test
@@ -2691,6 +2727,22 @@ impl HydrolysisRenderer {
 }
 
 impl SemanticCore {
+    /// The `OnKeyPress` chain enclosing a registration, folded into
+    /// [`HitTestState::root_key_handlers`]: with nothing focused, a key
+    /// bubbles only through the scopes enclosing every registration of the
+    /// frame — the longest common ancestor of the snapshots.
+    pub(crate) fn snapshot_key_handlers(&mut self) -> Option<Rc<KeyHandlerNode>> {
+        let chain = self.key_handler_stack.clone();
+        if self.hit_test.root_key_chain_seen {
+            self.hit_test.root_key_handlers =
+                common_key_handler_scope(self.hit_test.root_key_handlers.take(), chain.clone());
+        } else {
+            self.hit_test.root_key_chain_seen = true;
+            self.hit_test.root_key_handlers = chain.clone();
+        }
+        chain
+    }
+
     pub(crate) fn register_pointer_target<F>(&mut self, bounds: vello::kurbo::Rect, action: F)
     where
         F: 'static + FnMut(&mut SemanticCore, vello::kurbo::Point, &Environment) -> bool,
@@ -2759,6 +2811,7 @@ impl SemanticCore {
             .as_ref()
             .and_then(|slot| self.hit_test.interaction.handles_for(slot));
         let modal = press_slot.as_ref().is_some_and(|slot| slot.modal);
+        let key_handlers = self.snapshot_key_handlers();
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag,
@@ -2771,6 +2824,7 @@ impl SemanticCore {
             keyboard_step: None,
             keyboard_focusable: false,
             modal,
+            key_handlers,
         });
     }
 
@@ -2798,6 +2852,7 @@ impl SemanticCore {
         }
         let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
+        let key_handlers = self.snapshot_key_handlers();
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: false,
@@ -2812,6 +2867,7 @@ impl SemanticCore {
             keyboard_step: None,
             keyboard_focusable: false,
             modal: false,
+            key_handlers,
         });
         self.hit_test.gesture_occluders.push((bounds, order));
     }
@@ -2874,6 +2930,7 @@ impl SemanticCore {
         }
         let bounds = self.hit_test.clip_hit_bounds(bounds);
         let order = self.hit_test.next_hit_test_order();
+        let key_handlers = self.snapshot_key_handlers();
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: true,
@@ -2886,6 +2943,7 @@ impl SemanticCore {
             keyboard_step: None,
             keyboard_focusable: false,
             modal: false,
+            key_handlers,
         });
     }
 
@@ -3132,6 +3190,7 @@ impl SemanticCore {
         let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
+        let key_handlers = self.snapshot_key_handlers();
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: false,
@@ -3144,6 +3203,7 @@ impl SemanticCore {
             keyboard_step: None,
             keyboard_focusable,
             modal,
+            key_handlers,
         });
     }
 
@@ -3164,6 +3224,7 @@ impl SemanticCore {
         let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
+        let key_handlers = self.snapshot_key_handlers();
         self.hit_test.pointer_targets.push(PointerTarget {
             bounds,
             captures_drag: true,
@@ -3176,6 +3237,7 @@ impl SemanticCore {
             keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
             keyboard_focusable: true,
             modal,
+            key_handlers,
         });
     }
 
