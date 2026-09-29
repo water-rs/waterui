@@ -6,6 +6,7 @@
 //!
 //! [`Picture`]: crate::picture::Picture
 
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -103,7 +104,8 @@ impl From<RenderError> for RasterizeError {
 /// resources against this one: register them through
 /// [`Rasterizer::resources`], not another engine.
 pub struct Rasterizer {
-    engine: Engine<Raster>,
+    engine: Rc<Engine<Raster>>,
+    resources: SceneResources,
     surface: Surface<Raster>,
     width: u32,
     height: u32,
@@ -127,10 +129,11 @@ impl Rasterizer {
     /// start, [`SurfaceError`] itself when the offscreen target cannot be
     /// created.
     pub fn new(width: u32, height: u32) -> Result<Self, SurfaceError> {
-        let engine = Engine::<Raster>::new(RasterConfig::default())?;
+        let engine = Rc::new(Engine::<Raster>::new(RasterConfig::default())?);
         let surface =
             engine.surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))?;
         Ok(Self {
+            resources: SceneResources::new(Rc::clone(&engine)),
             engine,
             surface,
             width,
@@ -142,8 +145,8 @@ impl Rasterizer {
     /// record fonts, images or shader paints: handles minted here are the
     /// only ones the engine owns.
     #[must_use]
-    pub fn resources(&self) -> SceneResources<'_> {
-        SceneResources::new(&self.engine)
+    pub const fn resources(&self) -> &SceneResources {
+        &self.resources
     }
 
     /// Rasterises `content` — a [`Content`], a [`Picture`], whatever a layer

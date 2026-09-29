@@ -42,7 +42,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
 use waterui_graphics::scene_view::{SceneContent, SceneView};
 #[cfg(feature = "gpu")]
-use waterui_graphics::{SceneResources, WorkingColor};
+use waterui_graphics::{Registered, SceneResources, WorkingColor};
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
 use web_time::Instant;
 
@@ -1244,7 +1244,7 @@ struct MorphContent {
     color: Computed<WorkingColor>,
     progress: Computed<f32>,
     driver: Option<MorphDriver>,
-    shader: Option<Shader>,
+    shader: Option<Registered<Shader>>,
 }
 
 #[cfg(feature = "gpu")]
@@ -1293,14 +1293,23 @@ impl fmt::Debug for MorphContent {
 
 #[cfg(feature = "gpu")]
 impl SceneContent for MorphContent {
-    fn prepare_resources(&mut self, resources: &SceneResources) {
-        if self.shader.is_none() {
-            self.shader = Some(
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        let shader = self
+            .shader
+            .get_or_insert_with(|| {
                 resources
                     .shader(ShaderSource::wgsl(MORPH_FRAGMENT))
-                    .unwrap_or_else(|error| panic!("morph shape shader: {error}")),
-            );
-        }
+                    .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
+            })
+            .id();
+        // The morph starts with the content's first frame: the progress it
+        // drives reaches the recording through the bound paint below.
         if let Some(driver) = &mut self.driver
             && driver.task.is_none()
         {
@@ -1309,14 +1318,6 @@ impl SceneContent for MorphContent {
                 driver.animation,
             )));
         }
-    }
-
-    fn build_scene(&mut self, recorder: &mut Recorder, width: f32, height: f32) -> bool {
-        let shader = self
-            .shader
-            .as_ref()
-            .expect("MorphContent reached build_scene before prepare_resources")
-            .id();
         let (from, to) = (self.from, self.to);
         let paint = self
             .progress

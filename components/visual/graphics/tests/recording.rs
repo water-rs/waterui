@@ -18,7 +18,7 @@ use cherenkov::{
 };
 use nami::{Binding, SignalExt};
 use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
-use waterui_graphics::{SceneContent, SceneResources, SceneView};
+use waterui_graphics::{Registered, SceneContent, SceneResources, SceneView};
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
 /// Display P3 components directly, which sRGB cannot hold, so pixel
@@ -159,12 +159,12 @@ fn a_glyph_run_draws_its_glyphs() {
 }
 
 #[test]
-fn the_same_source_registers_once_and_a_dropped_mount_registers_fresh() {
+fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
     const FONT: &[u8] = include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf");
 
     let rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
+    let resources = rasterizer.resources();
     let (first_id, image_id) = {
-        let resources = rasterizer.resources();
         let first = resources
             .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
             .expect("font registration failed");
@@ -174,7 +174,7 @@ fn the_same_source_registers_once_and_a_dropped_mount_registers_fresh() {
         assert_eq!(
             first.id(),
             second.id(),
-            "the same font source must mint one engine registration"
+            "the same font source must mint one engine registration while it is held"
         );
 
         // Same rule for images: identity of the upload is the data.
@@ -186,19 +186,18 @@ fn the_same_source_registers_once_and_a_dropped_mount_registers_fresh() {
             .expect("image registration failed");
         assert_eq!(image_a.id(), image_b.id());
         (first.id(), image_a.id())
-        // `resources` drops here with the handles — the mount is over.
+        // Every handle drops here; the table stays.
     };
 
-    // A new mount registers fresh: nothing carried the old registrations
-    // forward, because carrying them is what the mount was for.
-    let resources = rasterizer.resources();
+    // The table outlives the handles but never kept them: the released
+    // registrations are gone, so the same sources register fresh.
     let third = resources
         .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
         .expect("font registration failed");
     assert_ne!(
         first_id,
         third.id(),
-        "a detached registration must not come back"
+        "a released registration must not come back"
     );
     let image_c = resources
         .image(tiny_image())
@@ -206,52 +205,65 @@ fn the_same_source_registers_once_and_a_dropped_mount_registers_fresh() {
     assert_ne!(image_id, image_c.id());
 }
 
-/// Content that needs a font and an image registered against the engine it
-/// will draw on — the shape of every real `SceneContent` with resources.
-struct PreparedImage {
-    image: Option<cherenkov::Image<Rgba8>>,
-    prepared: bool,
+/// Content that draws nothing on its first two frames and first draws an
+/// image on its third, registering it in the frame that draws it.
+struct LateImage {
+    frame: u32,
+    image: Option<Registered<cherenkov::Image<Rgba8>>>,
 }
 
-impl SceneContent for PreparedImage {
-    fn prepare_resources(&mut self, resources: &SceneResources) {
-        self.image = Some(
-            resources
-                .image(tiny_image())
-                .expect("image registration failed"),
-        );
-        self.prepared = true;
-    }
-
-    fn build_scene(&mut self, recorder: &mut Recorder, _width: f32, _height: f32) -> bool {
-        let image = self.image.as_ref().expect("prepare_resources did not run");
-        recorder.image(image.id(), Rect::new(0.0, 0.0, 8.0, 8.0), Sampling::Nearest);
+impl SceneContent for LateImage {
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
+        self.frame += 1;
+        if self.frame >= 3 {
+            let image = self.image.get_or_insert_with(|| {
+                resources
+                    .image(tiny_image())
+                    .expect("image registration failed")
+            });
+            recorder.image(image.id(), Rect::new(0.0, 0.0, 8.0, 8.0), Sampling::Nearest);
+        }
         false
     }
 }
 
 #[test]
-fn mounted_content_records_the_handles_its_prepare_registered() {
+fn an_image_first_drawn_on_the_third_frame_reaches_the_pixels() {
     let mut rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
-    let mut content = PreparedImage {
+    let mut content = LateImage {
+        frame: 0,
         image: None,
-        prepared: false,
     };
-    // The mount hook hands content the engine's own resource table; handles
-    // minted anywhere else are not this engine's.
-    content.prepare_resources(&rasterizer.resources());
-    assert!(content.prepared);
+    let mut frame = |content: &mut LateImage| {
+        let mut recorder = Recorder::new();
+        assert!(!content.build_scene(&mut recorder, rasterizer.resources(), 8.0, 8.0));
+        rasterizer
+            .rasterize(recorder.finish(), Affine::IDENTITY)
+            .expect("rasterise failed")
+    };
 
-    let mut recorder = Recorder::new();
-    assert!(!content.build_scene(&mut recorder, 8.0, 8.0));
-    let bitmap = rasterizer
-        .rasterize(recorder.finish(), Affine::IDENTITY)
-        .expect("rasterise failed");
+    for _ in 0..2 {
+        let bitmap = frame(&mut content);
+        assert!(bitmap.data().iter().all(|byte| *byte == 0));
+        assert!(content.image.is_none());
+    }
+    let bitmap = frame(&mut content);
     let left = pixel(&bitmap, 2, 4);
-    assert!(left[0] > 200, "mounted image did not draw: {left:?}");
+    let right = pixel(&bitmap, 6, 4);
+    assert!(
+        left[0] > 200 && left[2] < 40,
+        "the late image did not draw: {left:?}"
+    );
+    assert!(right[2] > 200 && right[0] < 40, "right texel: {right:?}");
 
-    // A SceneView keeps the content's contract — the view is the carrier, the
-    // content is the thing that was prepared.
+    // A SceneView keeps the content's contract — the view is the carrier,
+    // the content is the thing that registered.
     let view = SceneView::new(content);
     assert!(view.accessibility_label().is_none());
 }

@@ -39,7 +39,8 @@ pub fn invalidate_on_change<S: Signal>(
 
 /// Object-safe scene producer for `SceneView`.
 pub trait SceneContent: 'static {
-    /// Records this content's drawing into `recorder`.
+    /// Records this content's drawing into `recorder`, registering through
+    /// `resources` whatever engine resource the recording names.
     ///
     /// The recorder is the engine's live recording target: constant operands
     /// freeze into the [`Content`](cherenkov::Content) it finishes, and
@@ -50,23 +51,48 @@ pub trait SceneContent: 'static {
     /// logical points — the same space every layout contract on this trait
     /// measures in.
     ///
+    /// # Resources
+    ///
+    /// A recorder only names fonts, images and shader paints by id; the
+    /// engine that draws the recording owns the registrations behind those
+    /// ids. `resources` is that engine's registration table, and it arrives
+    /// with every frame — rather than once at mount, or as a registration
+    /// handle the content retains from mount — because the moment a content
+    /// first needs a resource is the moment it first records the resource's
+    /// id: here, on whichever frame that is. A canvas whose closure reaches
+    /// for a new font on its tenth frame, or an image whose source signal
+    /// delivers a new picture, registers it in the call that draws it and
+    /// records the id straight away. Nothing is queued for a later hook, no
+    /// mount hook has to have run before the first frame, and content never
+    /// holds on to the engine: the table is the host's and is only borrowed
+    /// for the duration of the call, so content cannot keep an engine alive
+    /// past its host or register against one the host has let go of.
+    ///
+    /// Content owns what it registers. Each call returns a
+    /// [`Registered`](crate::resources::Registered) handle, and the
+    /// registration lives exactly as long as some content holds a handle to
+    /// it: the table dedupes live registrations but never keeps one alive.
+    /// Content therefore keeps the handles its current recording names —
+    /// asking again for a source it still holds returns the same
+    /// registration without a new upload — and drops a handle once it stops
+    /// drawing the resource, which releases it while the content is still
+    /// mounted.
+    ///
+    /// Drop a handle only here, after or while recording a drawing that no
+    /// longer names it: the host installs this call's recording before the
+    /// engine renders again, so the recording that still named the resource
+    /// is never drawn after the release. Content that learns between frames
+    /// that it needs a different resource asks for a frame through its
+    /// invalidator and makes the swap in the next call.
+    ///
     /// Returns true when the content requires another frame to be rendered.
-    fn build_scene(&mut self, recorder: &mut Recorder, width: f32, height: f32) -> bool;
-
-    /// Registers the engine resources this content draws, once per mount.
-    ///
-    /// A recorder only names fonts, images and shader paints by id — the
-    /// engine that will draw the content owns the registrations behind them.
-    /// The host therefore hands content its engine's [`SceneResources`] when
-    /// the content is mounted, and the content registers what it needs and
-    /// keeps the returned handles for as long as it draws: a content that
-    /// detaches and drops its handles releases its registrations.
-    ///
-    /// The default registers nothing, which is correct for content that only
-    /// draws shapes, paints and glyphs against resources it does not own.
-    fn prepare_resources(&mut self, resources: &SceneResources) {
-        let _ = resources;
-    }
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+        width: f32,
+        height: f32,
+    ) -> bool;
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
@@ -335,15 +361,21 @@ impl View for SceneView {
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeView, ProposalSize, Recorder, SceneContent, SceneView, Size, StretchAxis,
-        resolve_scene_proposal, scene_stretch_axis,
+        NativeView, ProposalSize, Recorder, SceneContent, SceneResources, SceneView, Size,
+        StretchAxis, resolve_scene_proposal, scene_stretch_axis,
     };
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
     struct Tall;
 
     impl SceneContent for Tall {
-        fn build_scene(&mut self, _recorder: &mut Recorder, _width: f32, _height: f32) -> bool {
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &SceneResources,
+            _width: f32,
+            _height: f32,
+        ) -> bool {
             false
         }
 
@@ -356,7 +388,13 @@ mod tests {
     struct Sizeless;
 
     impl SceneContent for Sizeless {
-        fn build_scene(&mut self, _recorder: &mut Recorder, _width: f32, _height: f32) -> bool {
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &SceneResources,
+            _width: f32,
+            _height: f32,
+        ) -> bool {
             false
         }
     }
@@ -365,7 +403,13 @@ mod tests {
     struct Spoken;
 
     impl SceneContent for Spoken {
-        fn build_scene(&mut self, _recorder: &mut Recorder, _width: f32, _height: f32) -> bool {
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &SceneResources,
+            _width: f32,
+            _height: f32,
+        ) -> bool {
             false
         }
 
