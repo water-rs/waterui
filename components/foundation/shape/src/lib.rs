@@ -830,7 +830,7 @@ pub struct ResolvedShape {
     /// Path commands in unit coordinate space.
     pub commands: Vec<PathCommand>,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
+    pub fill: Computed<waterui_graphics::WorkingColor>,
 }
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
@@ -843,7 +843,7 @@ pub struct ResolvedMorphShape {
     /// Target shape kind.
     pub to: ShapeKind,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
+    pub fill: Computed<waterui_graphics::WorkingColor>,
     /// Time-based morph animation configuration.
     pub animation: MorphAnimation,
     /// Optional explicit progress signal.
@@ -1339,9 +1339,8 @@ impl GpuView for MorphShapeRenderer {
         };
 
         let fill_color = self.fill_color.get();
-        let [r, g, b] = fill_color.linear_with_headroom();
         let uniforms = MorphUniforms {
-            color: [r, g, b, fill_color.opacity],
+            color: fill_color.components,
             dimensions_and_progress: [
                 u32_to_f32(frame.width),
                 u32_to_f32(frame.height),

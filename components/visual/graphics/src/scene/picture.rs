@@ -1,9 +1,9 @@
 //! A recorded drawing shown as a static image.
 
-use alloc::sync::Arc;
 use core::fmt;
 
-use kurbo::Affine;
+use cherenkov::kurbo::Affine;
+use cherenkov::{Draw, Fixed, Recorder, StaticRecorder};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal};
 use waterui_core::Str;
@@ -14,19 +14,19 @@ use waterui_core::{AnyView, Environment, Native, NativeView, View};
 use crate::scene_view::{
     SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
 };
-use crate::scene2d::{Scene2D, SceneRecording};
 
 /// A recorded drawing shown as a static image.
 ///
-/// The recording is a signal, so a drawing that follows a signal (an icon
-/// tinted from the foreground colour) replaces its commands without replacing
-/// the view. Backends that draw their own pixels replay the recording into
-/// their scene; backends built on platform views rasterise it once at the
-/// display's scale and show the pixels in the platform's image view, which is
-/// what keeps a static drawing from costing a GPU surface of its own.
+/// The picture is a signal of [`cherenkov::Picture`] display lists, so a
+/// drawing that follows a signal (an icon tinted from the foreground colour)
+/// replaces its commands without replacing the view. Backends that draw their
+/// own pixels mount the picture on a layer of their engine; backends built on
+/// platform views rasterise it once at the display's scale and show the
+/// pixels in the platform's image view, which is what keeps a static drawing
+/// from costing a GPU surface of its own.
 #[derive(Clone)]
 pub struct Picture {
-    recording: Computed<Arc<SceneRecording>>,
+    recording: Computed<cherenkov::Picture>,
     size: Size,
     label: Option<Str>,
     value: Option<Str>,
@@ -50,7 +50,7 @@ impl Picture {
     ///
     /// When `size` is not finite and positive: a picture with no area is an
     /// authoring error, not something to lay out.
-    pub fn new(size: Size, recording: impl IntoComputed<Arc<SceneRecording>>) -> Self {
+    pub fn new(size: Size, recording: impl IntoComputed<cherenkov::Picture>) -> Self {
         assert!(
             size.width.is_finite()
                 && size.height.is_finite()
@@ -106,12 +106,16 @@ impl Picture {
         self.value.as_ref()
     }
 
-    /// Records `draw` into a fresh recording.
+    /// Records `draw` into a fresh static picture.
+    ///
+    /// The closure draws into a [`StaticRecorder`], so every operand it names
+    /// is a constant of the resulting display list — a picture has no live
+    /// signals of its own. A drawing that should follow a signal belongs in
+    /// the `recording` signal instead: re-record a new picture when the value
+    /// changes, which is exactly what a `Computed` recording does.
     #[must_use]
-    pub fn record(draw: impl FnOnce(&mut dyn Scene2D)) -> Arc<SceneRecording> {
-        let mut recording = SceneRecording::new();
-        draw(&mut recording);
-        Arc::new(recording)
+    pub fn record(draw: impl FnOnce(&mut StaticRecorder)) -> cherenkov::Picture {
+        cherenkov::Picture::record(draw)
     }
 
     /// The picture's size in points.
@@ -122,7 +126,7 @@ impl Picture {
 
     /// The drawing, as a signal.
     #[must_use]
-    pub const fn recording(&self) -> &Computed<Arc<SceneRecording>> {
+    pub const fn recording(&self) -> &Computed<cherenkov::Picture> {
         &self.recording
     }
 
@@ -181,17 +185,17 @@ impl View for Picture {
     }
 }
 
-/// Scene content replaying a picture's current recording, for backends that
-/// draw their own scene.
+/// Scene content drawing a picture's current recording, for backends that
+/// own their own engine layer tree.
 struct RecordedScene {
     picture: Picture,
     watcher: Option<BoxWatcherGuard>,
 }
 
 impl SceneContent for RecordedScene {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+    fn build_scene(&mut self, recorder: &mut Recorder, width: f32, height: f32) -> bool {
         let recording = self.picture.recording.snapshot();
-        recording.replay(scene, Some(self.picture.transform_to(width, height)));
+        recorder.picture(&recording, Fixed(self.picture.transform_to(width, height)));
         false
     }
 
@@ -222,26 +226,20 @@ impl SceneContent for RecordedScene {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kurbo::{Rect, Shape};
+    use cherenkov::WorkingColor;
+    use cherenkov::kurbo::{Rect, Shape};
     use nami::{SignalExt, binding, constant};
-    use peniko::{Brush, Color, Fill};
     use waterui_core::layout::StretchAxis;
 
-    fn square(color: Color) -> Arc<SceneRecording> {
+    fn square(color: WorkingColor) -> cherenkov::Picture {
         Picture::record(|scene| {
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Solid(color),
-                None,
-                &Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1),
-            );
+            scene.fill(Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1), color);
         })
     }
 
     #[test]
     fn a_picture_has_its_own_size() {
-        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
         assert_eq!(NativeView::stretch_axis(&picture), StretchAxis::None);
         assert_eq!(picture.size(), Size::new(10.0, 10.0));
         assert_eq!(picture.pixel_size(2.5), (25, 25));
@@ -249,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_backend_that_draws_its_own_scene_gets_a_scene_view_and_the_rest_a_raw_picture() {
-        let picture = || Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
+        let picture = || Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
         let merged =
             AnyView::new(picture().body(&Environment::new().extending(SceneViewMergeToParent)));
         assert!(merged.downcast::<SceneView>().is_ok());
@@ -259,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_labeled_picture_offers_its_name_and_an_unlabeled_one_stays_quiet() {
-        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)));
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)));
         assert_eq!(picture.label(), None);
         assert_eq!(picture.value(), None);
         let quiet = RecordedScene {
@@ -269,8 +267,8 @@ mod tests {
         assert_eq!(quiet.accessibility_label(), None);
         assert_eq!(quiet.accessibility_value(), None);
 
-        let picture =
-            Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK))).labeled("Warning");
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)))
+            .labeled("Warning");
         assert_eq!(picture.label().map(Str::as_str), Some("Warning"));
         let named = RecordedScene {
             picture,
@@ -281,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_described_picture_keeps_its_content_on_the_value_channel() {
-        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(Color::BLACK)))
+        let picture = Picture::new(Size::new(10.0, 10.0), constant(square(WorkingColor::BLACK)))
             .labeled("Warning")
             .described("A triangle with an exclamation mark");
         assert_eq!(
@@ -301,19 +299,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_recording_reaches_the_replayed_scene_without_a_new_view() {
-        let tint = binding(Color::BLACK);
+    fn a_new_recording_reaches_the_recorded_content_without_a_new_view() {
+        let tint = binding(WorkingColor::BLACK);
         let picture = Picture::new(Size::new(10.0, 10.0), tint.map(square));
         let mut content = RecordedScene {
             picture,
             watcher: None,
         };
-        let mut scene = SceneRecording::new();
-        content.build_scene(&mut scene, 20.0, 20.0);
-        assert_eq!(scene.len(), 1);
-        tint.set(Color::WHITE);
-        let mut scene = SceneRecording::new();
-        content.build_scene(&mut scene, 20.0, 20.0);
-        assert_eq!(scene.len(), 1);
+        let mut recorder = Recorder::new();
+        content.build_scene(&mut recorder, 20.0, 20.0);
+        let first = recorder.finish();
+        assert_eq!(first.len(), 1);
+        tint.set(WorkingColor::WHITE);
+        let mut recorder = Recorder::new();
+        content.build_scene(&mut recorder, 20.0, 20.0);
+        let second = recorder.finish();
+        assert_eq!(second.len(), 1);
     }
 }

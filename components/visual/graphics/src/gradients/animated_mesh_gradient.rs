@@ -9,7 +9,7 @@ use num_traits::ToPrimitive;
 
 use encase::{ShaderSize, UniformBuffer};
 
-use crate::color::ResolvedColor;
+use crate::color::WorkingColor;
 use crate::gpu::pipeline::single_bind_group_render_stages;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::shaders::ANIMATED_MESH_GRADIENT;
@@ -26,7 +26,7 @@ pub struct AnimatedMeshGradientConfig {
     /// UV warp strength (controls flow intensity).
     pub warp: f32,
     /// Mesh palette (4x4 grid, row-major).
-    pub palette: [ResolvedColor; ANIMATED_MESH_PALETTE_LEN],
+    pub palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN],
 }
 
 impl AnimatedMeshGradientConfig {
@@ -56,7 +56,7 @@ impl AnimatedMeshGradientConfig {
 
     /// Sets the 4x4 palette (row-major).
     #[must_use]
-    pub const fn palette(mut self, palette: [ResolvedColor; ANIMATED_MESH_PALETTE_LEN]) -> Self {
+    pub const fn palette(mut self, palette: [WorkingColor; ANIMATED_MESH_PALETTE_LEN]) -> Self {
         self.palette = palette;
         self
     }
@@ -170,14 +170,8 @@ impl AnimatedMeshGradientConfig {
     }
 }
 
-const fn palette_color(r: f32, g: f32, b: f32) -> ResolvedColor {
-    ResolvedColor {
-        red: r,
-        green: g,
-        blue: b,
-        opacity: 1.0,
-        headroom: 0.0,
-    }
+const fn palette_color(r: f32, g: f32, b: f32) -> WorkingColor {
+    WorkingColor::new([r, g, b, 1.0])
 }
 
 impl Default for AnimatedMeshGradientConfig {
@@ -224,7 +218,7 @@ impl AnimatedMeshRenderer {
     fn new(config: AnimatedMeshGradientConfig) -> Self {
         let mut palette_gpu = [ShaderVec4::ZERO; ANIMATED_MESH_PALETTE_LEN];
         for (dst, src) in palette_gpu.iter_mut().zip(config.palette.iter()) {
-            *dst = ShaderVec4::from_array([src.red, src.green, src.blue, src.opacity]);
+            *dst = ShaderVec4::from_array(src.components);
         }
 
         Self {

@@ -308,7 +308,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1242,6 +1242,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "cherenkov"
+version = "0.0.0"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+dependencies = [
+ "color",
+ "filtrate-core 0.2.0 (git+https://github.com/water-rs/cherenkov?rev=23d94a8a)",
+ "kurbo",
+ "libm",
+ "nami-core",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+ "wasm-bindgen-futures",
+ "web-time",
+]
+
+[[package]]
+name = "cherenkov-cpu"
+version = "0.0.0"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+dependencies = [
+ "cherenkov",
+ "filtrate-core 0.2.0 (git+https://github.com/water-rs/cherenkov?rev=23d94a8a)",
+ "half",
+ "kurbo",
+ "libm",
+ "png",
+ "rayon",
+ "skrifa",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "cherenkov-gpu"
+version = "0.0.0"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+dependencies = [
+ "bytemuck",
+ "cherenkov",
+ "filtrate 0.2.1 (git+https://github.com/water-rs/cherenkov?rev=23d94a8a)",
+ "filtrate-core 0.2.0 (git+https://github.com/water-rs/cherenkov?rev=23d94a8a)",
+ "futures-channel",
+ "futures-util",
+ "gloo-timers 0.3.0",
+ "half",
+ "kurbo",
+ "libm",
+ "naga 30.0.1",
+ "objc2",
+ "objc2-io-surface",
+ "objc2-metal",
+ "png",
+ "pollster 0.4.0",
+ "rustc-hash 2.1.3",
+ "skrifa",
+ "thiserror 2.0.21",
+ "tracing",
+ "wgpu 30.0.1",
+]
+
+[[package]]
+name = "cherenkov-shader"
+version = "0.0.0"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+dependencies = [
+ "naga 30.0.1",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "chromium-example"
 version = "0.1.0"
 dependencies = [
@@ -1452,6 +1523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ec7c5eb7a16992b1904d76c517d170ab353b0e0b3d5a0c81a8a0cd1037893cf"
 dependencies = [
  "bytemuck",
+ "serde",
 ]
 
 [[package]]
@@ -1723,7 +1795,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2082,7 +2154,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2482,7 +2554,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2677,15 +2749,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16b2d5dcd0f9ccfb26c5db8447b7371e9957ddd7893a8a8c077c9c077b55d7d3"
 dependencies = [
  "bytemuck",
- "filtrate-core",
- "filtrate-derive",
+ "filtrate-core 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "filtrate-derive 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "image",
  "num-traits",
  "shaderloom",
  "thiserror 2.0.21",
  "tracing",
  "web-time",
- "wgpu",
+ "wgpu 29.0.4",
+]
+
+[[package]]
+name = "filtrate"
+version = "0.2.1"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+dependencies = [
+ "bytemuck",
+ "cherenkov-shader",
+ "filtrate-core 0.2.0 (git+https://github.com/water-rs/cherenkov?rev=23d94a8a)",
+ "filtrate-derive 0.1.0 (git+https://github.com/water-rs/cherenkov?rev=23d94a8a)",
+ "half",
+ "image",
+ "thiserror 2.0.21",
+ "tracing",
+ "web-time",
+ "wgpu 30.0.1",
+ "wide",
 ]
 
 [[package]]
@@ -2695,10 +2785,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c1b316c214801461fc21a6fe1d9b8baf2c885f43a3cf5e1a86db969433ea9d"
 
 [[package]]
+name = "filtrate-core"
+version = "0.2.0"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+
+[[package]]
 name = "filtrate-derive"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1122b58ca680672293776e7cfe92450d191c97a00de39fc96c6b1550f033a6d5"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "filtrate-derive"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3251,7 +3357,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -3533,7 +3639,7 @@ dependencies = [
  "unicode-segmentation",
  "vello",
  "vello_common",
- "vello_cpu 0.2.0 (git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b)",
+ "vello_cpu",
  "waterkit-clipboard",
  "waterui",
  "waterui-assets",
@@ -3551,7 +3657,7 @@ dependencies = [
  "waterui-text",
  "waterui-url",
  "waterui-webview",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -3667,7 +3773,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4552,6 +4658,7 @@ dependencies = [
  "euclid",
  "libm",
  "polycool",
+ "serde",
  "smallvec",
 ]
 
@@ -5491,6 +5598,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "rustc-hash 1.1.0",
+ "spirv",
  "thiserror 2.0.21",
  "unicode-ident",
 ]
@@ -5761,7 +5869,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6201,6 +6309,7 @@ dependencies = [
  "bitflags 2.13.2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
  "objc2-metal",
 ]
@@ -6367,7 +6476,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6869,7 +6978,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -7476,7 +7585,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7533,7 +7642,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7564,6 +7673,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42c6efa15875e6ecb39ca61fb0b0c1a40b84fac5a5ffe71eef7d1000c8eb3f5f"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "same-file"
@@ -7684,7 +7802,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b55fb86dfd3a2f5f76ea78310a88f96c4ea21a3031f8d212443d56123fd0521"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7869,7 +7987,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "abfe38a4a8d473f595240dd001b51c5778b30ee439a0c5f4960554a977bcba93"
 dependencies = [
  "naga 29.0.4",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -8017,6 +8135,9 @@ name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "smol"
@@ -8645,7 +8766,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8654,7 +8775,7 @@ version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8c27177b12a6399ffc08b98f76f7c9a1f4fe9fc967c784c5a071fa8d93cf7e1"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8673,7 +8794,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -9409,7 +9530,7 @@ dependencies = [
  "thiserror 2.0.21",
  "vello_encoding",
  "vello_shaders",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -9424,18 +9545,6 @@ dependencies = [
  "peniko",
  "smallvec",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "vello_cpu"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ace506ca414548966fcf3c283be94eb1cad8254de488791ee698bf438b0890a9"
-dependencies = [
- "bytemuck",
- "glifo",
- "hashbrown 0.17.1",
- "vello_common",
 ]
 
 [[package]]
@@ -9473,7 +9582,7 @@ dependencies = [
  "thiserror 2.0.21",
  "vello_common",
  "vello_sparse_shaders",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -9702,7 +9811,7 @@ dependencies = [
  "waterkit-codec",
  "waterkit-core",
  "waterkit-video-container",
- "wgpu",
+ "wgpu 29.0.4",
  "yuv",
 ]
 
@@ -9715,7 +9824,7 @@ dependencies = [
  "waterkit-camera",
  "waterkit-permission",
  "waterui",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -9770,8 +9879,8 @@ dependencies = [
  "tracing",
  "waterkit-build",
  "waterkit-video-core",
- "wgpu",
- "wgpu-hal",
+ "wgpu 29.0.4",
+ "wgpu-hal 29.0.4",
  "windows 0.62.2",
  "yuv",
 ]
@@ -9900,7 +10009,7 @@ dependencies = [
  "waterkit-build",
  "waterkit-core",
  "wayland-sys",
- "wgpu",
+ "wgpu 29.0.4",
  "xcap",
 ]
 
@@ -10115,7 +10224,7 @@ dependencies = [
  "waterui-url",
  "waterui-watcher-set",
  "waterui-webview",
- "wgpu",
+ "wgpu 29.0.4",
  "wgpu-external-frame",
 ]
 
@@ -10142,7 +10251,7 @@ dependencies = [
  "waterui-url",
  "waterui-watcher-set",
  "waterui-webview",
- "wgpu",
+ "wgpu 29.0.4",
  "wgpu-external-frame",
  "xkeysym",
 ]
@@ -10285,8 +10394,8 @@ dependencies = [
  "waterui-video",
  "waterui-video-gpu",
  "waterui-webview",
- "wgpu",
- "wgpu-hal",
+ "wgpu 29.0.4",
+ "wgpu-hal 29.0.4",
 ]
 
 [[package]]
@@ -10331,10 +10440,14 @@ version = "0.5.1"
 dependencies = [
  "ash",
  "bytemuck",
+ "cherenkov",
+ "cherenkov-cpu",
+ "cherenkov-gpu",
+ "color",
  "divan",
  "encase",
- "filtrate",
- "filtrate-core",
+ "filtrate 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "filtrate-core 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
  "glifo",
  "image",
@@ -10347,21 +10460,18 @@ dependencies = [
  "num-traits",
  "parking_lot",
  "pastey 0.2.3",
- "peniko",
  "png",
  "pollster 1.0.1",
  "rayon",
  "shaderloom",
  "tracing",
+ "ttf-parser",
  "vello",
  "vello_common",
- "vello_cpu 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "vello_hybrid",
- "waterui",
  "waterui-core",
- "waterui-testing",
- "wgpu",
- "wgpu-hal",
+ "wgpu 29.0.4",
+ "wgpu-hal 29.0.4",
 ]
 
 [[package]]
@@ -10636,7 +10746,7 @@ dependencies = [
  "waterui-map",
  "waterui-url",
  "web-time",
- "wgpu",
+ "wgpu 29.0.4",
  "zenwave",
 ]
 
@@ -10697,7 +10807,7 @@ version = "0.5.1"
 dependencies = [
  "blocking",
  "executor-core",
- "filtrate-core",
+ "filtrate-core 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "futures",
  "futures-lite",
  "image",
@@ -10749,7 +10859,7 @@ dependencies = [
  "shaderloom",
  "waterui-core",
  "waterui-graphics",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -10800,7 +10910,7 @@ dependencies = [
  "waterui-core",
  "waterui-graphics",
  "waterui-testing",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -10840,7 +10950,7 @@ dependencies = [
  "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -10925,7 +11035,7 @@ dependencies = [
  "waterui-layout",
  "waterui-text",
  "waterui-video",
- "wgpu",
+ "wgpu 29.0.4",
 ]
 
 [[package]]
@@ -11177,9 +11287,39 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "wgpu-core",
- "wgpu-hal",
- "wgpu-types",
+ "wgpu-core 29.0.4",
+ "wgpu-hal 29.0.4",
+ "wgpu-types 29.0.4",
+]
+
+[[package]]
+name = "wgpu"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.2",
+ "bytemuck",
+ "cfg-if 1.0.5",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.17.1",
+ "js-sys",
+ "log",
+ "naga 30.0.1",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu-core 30.0.1",
+ "wgpu-hal 30.0.1",
+ "wgpu-types 30.0.1",
 ]
 
 [[package]]
@@ -11207,12 +11347,46 @@ dependencies = [
  "rustc-hash 1.1.0",
  "smallvec",
  "thiserror 2.0.21",
- "wgpu-core-deps-apple",
- "wgpu-core-deps-emscripten",
- "wgpu-core-deps-windows-linux-android",
- "wgpu-hal",
- "wgpu-naga-bridge",
- "wgpu-types",
+ "wgpu-core-deps-apple 29.0.4",
+ "wgpu-core-deps-emscripten 29.0.4",
+ "wgpu-core-deps-windows-linux-android 29.0.4",
+ "wgpu-hal 29.0.4",
+ "wgpu-naga-bridge 29.0.4",
+ "wgpu-types 29.0.4",
+]
+
+[[package]]
+name = "wgpu-core"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c018fce9b6270aa203c2fdd56f3cce996713534bd757e4ea58c8560b121f14"
+dependencies = [
+ "arrayvec",
+ "bit-set 0.10.0",
+ "bit-vec 0.9.1",
+ "bitflags 2.13.2",
+ "bytemuck",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.17.1",
+ "indexmap 2.14.2",
+ "log",
+ "naga 30.0.1",
+ "naga-types",
+ "once_cell",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "rustc-hash 1.1.0",
+ "smallvec",
+ "thiserror 2.0.21",
+ "wgpu-core-deps-apple 30.0.1",
+ "wgpu-core-deps-emscripten 30.0.1",
+ "wgpu-core-deps-windows-linux-android 30.0.1",
+ "wgpu-hal 30.0.1",
+ "wgpu-naga-bridge 30.0.1",
+ "wgpu-types 30.0.1",
 ]
 
 [[package]]
@@ -11221,7 +11395,16 @@ version = "29.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5e39e26c4c0e07589e67d18546cf79ff45383659fc72fca4dd293358a0347f3"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 29.0.4",
+]
+
+[[package]]
+name = "wgpu-core-deps-apple"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "061f3d319a40d39d00b1ecc2c33b89fe21d4e6fe01859df3500a3a8ecccd6b68"
+dependencies = [
+ "wgpu-hal 30.0.1",
 ]
 
 [[package]]
@@ -11230,7 +11413,16 @@ version = "29.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "01e09be551dc939498bdd5f6b2c66e55ab275dad25825267a08605a80fc9f0af"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 29.0.4",
+]
+
+[[package]]
+name = "wgpu-core-deps-emscripten"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98b86cf4abf524a902dd35f18ca6a3f08fc2ae9847c8f10b48e30491b1f0b86"
+dependencies = [
+ "wgpu-hal 30.0.1",
 ]
 
 [[package]]
@@ -11239,7 +11431,16 @@ version = "29.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e592c1bbef6ad047647ae6e666ebd8cee7a32bb4544d9700ec96cbf73230257"
 dependencies = [
- "wgpu-hal",
+ "wgpu-hal 29.0.4",
+]
+
+[[package]]
+name = "wgpu-core-deps-windows-linux-android"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7586165fd5f6d881cb9ce4bb71f40d6caab2c0f1837e3fc1d9788a197fb6004f"
+dependencies = [
+ "wgpu-hal 30.0.1",
 ]
 
 [[package]]
@@ -11256,7 +11457,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal",
- "wgpu",
+ "wgpu 29.0.4",
  "windows 0.62.2",
 ]
 
@@ -11307,8 +11508,64 @@ dependencies = [
  "wasm-bindgen",
  "wayland-sys",
  "web-sys",
- "wgpu-naga-bridge",
- "wgpu-types",
+ "wgpu-naga-bridge 29.0.4",
+ "wgpu-types 29.0.4",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "windows-result 0.4.1",
+]
+
+[[package]]
+name = "wgpu-hal"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b7fb58561a792bc237628ba0792e332de418fefe145f13b5ed8201e6d52f58"
+dependencies = [
+ "android_system_properties",
+ "arrayvec",
+ "ash",
+ "bit-set 0.10.0",
+ "bitflags 2.13.2",
+ "block2",
+ "bytemuck",
+ "cfg-if 1.0.5",
+ "cfg_aliases",
+ "glow",
+ "glutin_wgl_sys",
+ "gpu-allocator",
+ "hashbrown 0.17.1",
+ "js-sys",
+ "khronos-egl",
+ "libc",
+ "libloading 0.8.9",
+ "log",
+ "naga 30.0.1",
+ "naga-types",
+ "ndk-sys",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "objc2-metal",
+ "objc2-quartz-core",
+ "once_cell",
+ "ordered-float",
+ "parking_lot",
+ "portable-atomic",
+ "portable-atomic-util",
+ "profiling",
+ "range-alloc",
+ "raw-window-handle",
+ "raw-window-metal",
+ "renderdoc-sys",
+ "smallvec",
+ "static_assertions",
+ "thiserror 2.0.21",
+ "wasm-bindgen",
+ "wayland-sys",
+ "web-sys",
+ "wgpu-naga-bridge 30.0.1",
+ "wgpu-types 30.0.1",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-result 0.4.1",
@@ -11321,7 +11578,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95226013f547544b223281cd16a4fb549aa9dcb562adbda0faae4c73ffbbc161"
 dependencies = [
  "naga 29.0.4",
- "wgpu-types",
+ "wgpu-types 29.0.4",
+]
+
+[[package]]
+name = "wgpu-naga-bridge"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f62e73117bb7a62bfd9c5a5841438a823f6566c6442a808ee269d2d055c081"
+dependencies = [
+ "naga 30.0.1",
+ "wgpu-types 30.0.1",
 ]
 
 [[package]]
@@ -11335,6 +11602,22 @@ dependencies = [
  "js-sys",
  "log",
  "raw-window-handle",
+ "web-sys",
+]
+
+[[package]]
+name = "wgpu-types"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99dad6f1fbdbbdb4c278a6508b059d44688f5cebddf78d005a46a31340269286"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "js-sys",
+ "log",
+ "naga-types",
+ "raw-window-handle",
+ "static_assertions",
  "web-sys",
 ]
 
@@ -11379,6 +11662,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wide"
+version = "1.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d920ac99c3c8edce110cb8d07dbb324d6d026011dce85b1e9355b70f0adacc4f"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
+]
+
+[[package]]
 name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11406,7 +11699,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

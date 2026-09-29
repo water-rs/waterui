@@ -6,8 +6,9 @@
 //!
 //! Two kinds of view receive them: a
 //! [`GpuView`](crate::gpu_surface::GpuView), which owns a GPU surface, and a
-//! [`SceneContent`](crate::scene_view::SceneContent), which draws through
-//! `Scene2D` and lets the backend decide how the scene reaches the screen.
+//! [`SceneContent`](crate::scene_view::SceneContent), which records into a
+//! `cherenkov::Recorder` and lets the backend decide how the scene reaches
+//! the screen.
 //! Every backend used to invent its own adapter for this, so an engine had to
 //! be ported once per backend. This module is the single vocabulary they all
 //! speak: a backend translates its platform events into

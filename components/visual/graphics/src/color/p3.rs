@@ -1,7 +1,9 @@
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use super::{ResolvedColor, Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
+use cherenkov::{DisplayP3, WorkingColor};
+
+use super::{Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
 
 /// Represents a color in the Display P3 color space.
 ///
@@ -49,21 +51,23 @@ impl P3 {
     }
 }
 
+impl P3 {
+    /// The working colour of this Display P3 colour, fully opaque.
+    #[must_use]
+    pub fn resolve(&self) -> WorkingColor {
+        cherenkov::Color::<DisplayP3>::new([self.red, self.green, self.blue, 1.0]).into()
+    }
+}
+
 impl Resolvable for P3 {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let linear_p3 = [
-            srgb_to_linear(self.red),
-            srgb_to_linear(self.green),
-            srgb_to_linear(self.blue),
-        ];
-        let linear_srgb = p3_to_linear_srgb(linear_p3);
-        ResolvedColor {
-            red: linear_srgb[0],
-            green: linear_srgb[1],
-            blue: linear_srgb[2],
-            headroom: 0.0,
-            opacity: 1.0,
-        }
+        Self::resolve(self)
+    }
+}
+
+impl From<P3> for WorkingColor {
+    fn from(value: P3) -> Self {
+        value.resolve()
     }
 }

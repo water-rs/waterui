@@ -7,7 +7,7 @@ use waterui_core::{
 };
 
 use crate::{
-    color::{Color, ResolvedColor},
+    color::{Color, WorkingColor},
     gpu_surface::RedrawHandle,
 };
 
@@ -18,7 +18,7 @@ use crate::{
 /// subscription without rebuilding the view tree.
 #[doc(hidden)]
 pub struct ReactiveColor {
-    resolved: Computed<ResolvedColor>,
+    resolved: Computed<WorkingColor>,
     redraw_guard: Option<BoxWatcherGuard>,
 }
 
@@ -51,7 +51,7 @@ impl ReactiveColor {
 
     /// Returns the current environment-resolved color.
     #[must_use]
-    pub fn get(&self) -> ResolvedColor {
+    pub fn get(&self) -> WorkingColor {
         self.resolved.snapshot()
     }
 }
@@ -63,10 +63,10 @@ mod tests {
     use super::*;
 
     #[derive(Clone, Debug)]
-    struct BoundColor(Binding<ResolvedColor>);
+    struct BoundColor(Binding<WorkingColor>);
 
     impl Resolvable for BoundColor {
-        type Resolved = ResolvedColor;
+        type Resolved = WorkingColor;
 
         fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
             self.0.clone()
@@ -75,18 +75,15 @@ mod tests {
 
     #[test]
     fn inner_resolved_color_change_requests_redraw() {
-        let resolved = Binding::container(ResolvedColor::default());
+        let resolved = Binding::container(WorkingColor::BLACK);
         let source = Computed::constant(Color::new(BoundColor(resolved.clone())));
         let redraw = RedrawHandle::new();
         let mut color = ReactiveColor::new(&source, &Environment::new());
         color.install(&redraw);
 
-        resolved.set(ResolvedColor {
-            red: 1.0,
-            ..ResolvedColor::default()
-        });
+        resolved.set(WorkingColor::new([1.0, 0.0, 0.0, 1.0]));
 
         assert!(redraw.take_dirty());
-        assert!((color.get().red - 1.0).abs() < f32::EPSILON);
+        assert!((color.get().components[0] - 1.0).abs() < f32::EPSILON);
     }
 }
