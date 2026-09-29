@@ -166,18 +166,13 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) {
 
 /// The a11y bounds `label`'s button was last seen with.
 fn bounds_of(runtime: &mut HeadlessRuntime, label: &str) -> accesskit::Rect {
-    let mut found = None;
-    for _ in 0..64 {
-        if let Some(update) = runtime.pump_at(false, Instant::now()).tree_update
-            && let Some((_, node)) = find_by_label(&update, Role::Button, label)
-        {
-            found = node.bounds();
-        }
-        if runtime.is_settled() {
-            break;
-        }
-    }
-    found.unwrap_or_else(|| panic!("{label} must emit a button with bounds"))
+    pump_until_settled(runtime);
+    runtime
+        .accessibility_tree()
+        .as_ref()
+        .and_then(|update| find_by_label(update, Role::Button, label))
+        .and_then(|(_, node)| node.bounds())
+        .unwrap_or_else(|| panic!("{label} must emit a button with bounds"))
 }
 
 /// A menu item landing on a tap row's hit region must run its own command
@@ -269,19 +264,13 @@ fn popup_window_item_press_does_not_fall_through_to_the_row_tap() {
 
     // The item's a11y bounds are in the popup's local space; the press
     // address is its absolute position inside the window the runner shows.
-    let mut item = None;
-    for _ in 0..64 {
-        if let Some(update) = runtime.pump_at(false, Instant::now()).tree_update
-            && let Some((_, node)) = find_by_label(&update, Role::Button, "Star")
-            && let Some(bounds) = node.bounds()
-        {
-            item = Some(bounds);
-        }
-        if runtime.is_settled() {
-            break;
-        }
-    }
-    let item = item.expect("the popup emits the item's bounds");
+    pump_until_settled(&mut runtime);
+    let item = runtime
+        .accessibility_tree()
+        .as_ref()
+        .and_then(|update| find_by_label(update, Role::Button, "Star"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the popup emits the item's bounds");
     let (x, y) = (
         frame.x() + ((item.x0 + item.x1) / 2.0) as f32,
         frame.y() + ((item.y0 + item.y1) / 2.0) as f32,

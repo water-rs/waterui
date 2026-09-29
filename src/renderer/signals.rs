@@ -62,10 +62,23 @@ impl SemanticCore {
         // re-encode) — the cheap per-frame pump — instead of re-running the whole view
         // `body()`. Structural changes go through `Dynamic`/`when` (a patch), not a
         // plain signal read, so a refresh is sufficient here.
+        // Some signals emit synchronously while `watch` registers — a
+        // collection's populated emission reports the current contents as an
+        // insertion. That registration-time emission echoes the value the
+        // caller's `snapshot()` reads this frame, so it must not count as a new
+        // update; only a callback invoked after `watch` returns requests a
+        // refresh.
+        let armed = Rc::new(Cell::new(false));
+        let armed_for_watch = Rc::clone(&armed);
         let Some(identity) = signal.identity() else {
             // Identity-less signal: subscribe fresh each read, retained for one frame.
             let signals = self.signals.clone();
-            let guard = signal.watch(move |_| signals.request_refresh());
+            let guard = signal.watch(move |_| {
+                if armed_for_watch.get() {
+                    signals.request_refresh();
+                }
+            });
+            armed.set(true);
             self.lifecycle.current_frame_retain.push(Retain::new(guard));
             return;
         };
@@ -77,7 +90,12 @@ impl SemanticCore {
             return;
         }
         let signals = self.signals.clone();
-        let guard = signal.watch(move |_| signals.request_refresh());
+        let guard = signal.watch(move |_| {
+            if armed_for_watch.get() {
+                signals.request_refresh();
+            }
+        });
+        armed.set(true);
         self.lifecycle.signal_watches.insert(
             key,
             signal_type,

@@ -67,19 +67,16 @@ fn ctrl() -> Modifiers {
     }
 }
 
-/// Pumps until the runtime settles (with a cap), returning the last merged
-/// tree update it published, if any.
+/// Pumps until the runtime settles (with a cap), then returns the merged
+/// tree as of that settle — `None` when no window has ever produced one.
 fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<accesskit::TreeUpdate> {
-    let mut update = None;
     for _ in 0..64 {
-        if let Some(tree) = runtime.pump_at(false, Instant::now()).tree_update {
-            update = Some(tree);
-        }
+        let _ = runtime.pump_at(false, Instant::now());
         if runtime.is_settled() {
             break;
         }
     }
-    update
+    runtime.accessibility_tree()
 }
 
 /// Same, capturing the composited frame on every pump — the pixel assertions
@@ -100,18 +97,11 @@ fn capture_until_settled(runtime: &mut HeadlessRuntime) -> crate::HeadlessSnapsh
 
 /// The a11y bounds `label` was last seen with under `role`.
 fn bounds_of(runtime: &mut HeadlessRuntime, role: Role, label: &str) -> accesskit::Rect {
-    let mut found = None;
-    for _ in 0..64 {
-        if let Some(update) = runtime.pump_at(false, Instant::now()).tree_update
-            && let Some((_, node)) = find_by_label(&update, role, label)
-        {
-            found = node.bounds();
-        }
-        if runtime.is_settled() {
-            break;
-        }
-    }
-    found.unwrap_or_else(|| panic!("{label} must emit a {role:?} with bounds"))
+    pump_until_settled(runtime)
+        .as_ref()
+        .and_then(|update| find_by_label(update, role, label))
+        .and_then(|(_, node)| node.bounds())
+        .unwrap_or_else(|| panic!("{label} must emit a {role:?} with bounds"))
 }
 
 /// A click on `label`'s centre, followed by a settle.

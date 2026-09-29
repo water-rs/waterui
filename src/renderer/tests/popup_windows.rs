@@ -368,15 +368,11 @@ fn a_popup_only_change_publishes_the_merged_tree() {
     );
 }
 
-/// Pumps until the runtime settles and returns the last tree update it
-/// emitted — `None` when nothing changed since the previous emit.
+/// Pumps until the runtime settles and returns the merged tree as of that
+/// settle — `None` when no window has ever produced one.
 fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
-    let mut last = None;
     for _ in 0..64 {
-        let result = runtime.pump_at(false, Instant::now());
-        if let Some(update) = result.tree_update {
-            last = Some(update);
-        }
+        let _ = runtime.pump_at(false, Instant::now());
         if runtime.is_settled() {
             break;
         }
@@ -385,7 +381,7 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
         !runtime.has_pending_semantic_update(),
         "headless runtime never settled"
     );
-    last
+    runtime.accessibility_tree()
 }
 
 /// `tree_update` is the "the tree changed" signal: a pump where no window —

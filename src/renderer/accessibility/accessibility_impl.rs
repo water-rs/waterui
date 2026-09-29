@@ -905,6 +905,42 @@ impl SemanticCore {
         &mut self,
         popups: impl IntoIterator<Item = &'a mut SemanticCore>,
     ) -> Option<AccessibilityTreeUpdate> {
+        self.merged_accessibility_tree_update(popups, false, |core| {
+            core.take_accessibility_tree_update()
+        })
+    }
+
+    /// The merged tree as of now — a read-only query: it consumes and clears
+    /// nothing, so pending per-window updates stay pending for the next pump
+    /// to publish. Each window contributes its pending update when one is
+    /// held, else the live registry a publish would describe; popups get the
+    /// same id stride the published merge assigns. `None` when the main
+    /// window has never produced a tree — popups merge into it, so without
+    /// it there is nothing to return.
+    #[cfg(feature = "accessibility")]
+    #[must_use]
+    pub fn accessibility_tree<'a>(
+        &mut self,
+        popups: impl IntoIterator<Item = &'a mut SemanticCore>,
+    ) -> Option<AccessibilityTreeUpdate> {
+        self.merged_accessibility_tree_update(popups, true, |core| {
+            core.peek_accessibility_tree_update().cloned()
+        })
+    }
+
+    /// One merge behind the publish and read paths. `pending` yields a
+    /// window's pending update (taken when publishing, peeked when reading).
+    /// Publishing emits only when some window had one; `when_quiet` makes the
+    /// read path describe the tree regardless. A window without a pending
+    /// update contributes its live registry, rebuilt only once the merge is
+    /// known to emit, so a quiet publish costs no tree construction.
+    #[cfg(feature = "accessibility")]
+    fn merged_accessibility_tree_update<'a>(
+        &mut self,
+        popups: impl IntoIterator<Item = &'a mut SemanticCore>,
+        when_quiet: bool,
+        mut pending: impl FnMut(&mut SemanticCore) -> Option<AccessibilityTreeUpdate>,
+    ) -> Option<AccessibilityTreeUpdate> {
         use accesskit::NodeId as AccessibilityNodeId;
 
         /// Node ids are unique per core, so each window gets its own range.
@@ -913,15 +949,18 @@ impl SemanticCore {
         const WINDOW_ID_STRIDE: u64 = 1 << 32;
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
-        let main_pending = self.take_accessibility_tree_update();
+        let main_pending = pending(self);
         let popups: Vec<(&mut SemanticCore, Option<AccessibilityTreeUpdate>)> = popups
             .into_iter()
             .map(|popup| {
-                let pending = popup.take_accessibility_tree_update();
-                (popup, pending)
+                let update = pending(popup);
+                (popup, update)
             })
             .collect();
-        if main_pending.is_none() && popups.iter().all(|(_, pending)| pending.is_none()) {
+        if !when_quiet
+            && main_pending.is_none()
+            && popups.iter().all(|(_, pending)| pending.is_none())
+        {
             return None;
         }
 

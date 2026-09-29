@@ -508,12 +508,8 @@ fn semantic_runtime_with(view: AnyView) -> SemanticRuntime {
 }
 
 fn semantic_update(runtime: &mut SemanticRuntime) -> TreeUpdate {
-    let mut last = None;
     for _ in 0..64 {
-        let result = runtime.pump();
-        if let Some(update) = result.tree_update {
-            last = Some(update);
-        }
+        let _ = runtime.pump();
         if runtime.is_settled() {
             break;
         }
@@ -522,7 +518,9 @@ fn semantic_update(runtime: &mut SemanticRuntime) -> TreeUpdate {
         !runtime.has_pending_semantic_update(),
         "semantic runtime never settled"
     );
-    last.expect("the pump emitted no tree update")
+    runtime
+        .accessibility_tree()
+        .expect("the pump emitted no tree update")
 }
 
 fn first_of_role(update: &TreeUpdate, role: Role) -> NodeId {
