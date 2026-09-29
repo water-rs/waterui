@@ -86,7 +86,7 @@ pub fn init_logging() {
         } else {
             tracing::level_filters::LevelFilter::INFO
         })
-        .with_writer(AndroidLogWriter::default())
+        .with_writer(AndroidLogWriter)
         .with_ansi(false)
         .try_init();
     // Route `tracing` records emitted on `log`-subscribed spans through the
@@ -96,7 +96,6 @@ pub fn init_logging() {
 
 /// A `tracing` writer that forwards each record to `__android_log_write`
 /// under the `hydrolysis` tag.
-#[derive(Default)]
 struct AndroidLogWriter;
 
 impl std::io::Write for AndroidLogWriter {
