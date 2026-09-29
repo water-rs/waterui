@@ -713,6 +713,42 @@ typedef enum WuiWindowStyle {
 } WuiWindowStyle;
 
 /**
+ * FFI mirror of [`MonitorSelector`].
+ */
+typedef enum WuiMonitorSelector {
+  /**
+   * The platform's primary display.
+   */
+  WuiMonitorSelector_Primary = 0,
+  /**
+   * The display under the pointer when the window is shown.
+   */
+  WuiMonitorSelector_Pointer = 1,
+  /**
+   * The display holding this application's focused window (`Primary` when none).
+   */
+  WuiMonitorSelector_Focused = 2,
+} WuiMonitorSelector;
+
+/**
+ * FFI mirror of [`Activation`].
+ */
+typedef enum WuiActivation {
+  /**
+   * Showing the window activates the app and focuses the window.
+   */
+  WuiActivation_OnShow = 0,
+  /**
+   * Showing does not take focus; a click on the window does.
+   */
+  WuiActivation_OnClick = 1,
+  /**
+   * The window never takes keyboard focus or activates the app.
+   */
+  WuiActivation_Never = 2,
+} WuiActivation;
+
+/**
  * Visual presentation mode for the label slot of every control.
  */
 typedef enum WuiLabelDisplayMode {
@@ -4011,7 +4047,13 @@ typedef struct WuiSize {
  * origin point and a size, relative to its parent's coordinate space.
  */
 typedef struct WuiRect {
+  /**
+   * The rectangle's origin.
+   */
   struct WuiPoint origin;
+  /**
+   * The rectangle's size.
+   */
   struct WuiSize size;
 } WuiRect;
 
@@ -4960,6 +5002,62 @@ typedef struct WuiWindowBackground {
 typedef struct Computed_Size WuiComputed_Size;
 
 /**
+ * FFI mirror of [`Monitor`], built by the native backend that resolved the
+ * placement's selector.
+ *
+ * `name` is a borrowed NUL-terminated UTF-8 string (null when the platform
+ * reports no name): the native caller keeps it alive for the duration of the
+ * `place` call only — the Rust side copies what it needs before returning.
+ */
+typedef struct WuiMonitor {
+  /**
+   * Bounds in the global logical coordinate space.
+   */
+  struct WuiRect frame;
+  /**
+   * `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+   */
+  struct WuiRect visible_frame;
+  /**
+   * Physical pixels per logical point.
+   */
+  double scale_factor;
+  /**
+   * The platform's name for the display, or null.
+   */
+  const char *name;
+} WuiMonitor;
+
+/**
+ * Native invocation of [`WindowPlacement::place`]: the backend fills a
+ * [`WuiMonitor`] for the resolved selector and receives the frame to write.
+ */
+typedef struct WuiRect (*WuiPlaceFn)(const void *context, const struct WuiMonitor *monitor);
+
+/**
+ * FFI mirror of [`WindowPlacement`]: the selector plus the `place` closure as
+ * the usual context/call/drop triple.
+ */
+typedef struct WuiWindowPlacement {
+  /**
+   * Which monitor the backend resolves before calling `call`.
+   */
+  enum WuiMonitorSelector monitor;
+  /**
+   * The `place` closure's context, registered with `call` and `drop`.
+   */
+  void *context;
+  /**
+   * Resolved monitor in, window frame out.
+   */
+  WuiPlaceFn call;
+  /**
+   * Releases `context` exactly once when the window record is disposed.
+   */
+  void (*drop)(void*);
+} WuiWindowPlacement;
+
+/**
  * FFI-compatible representation of a window.
  */
 typedef struct WuiWindow {
@@ -5008,6 +5106,15 @@ typedef struct WuiWindow {
    * Explicit maximum content size, or null for an unconstrained window.
    */
   WuiComputed_Size *max_size;
+  /**
+   * Monitor selection plus the `place` callback, or null for the
+   * platform's default placement.
+   */
+  struct WuiWindowPlacement *placement;
+  /**
+   * How showing and clicking the window affects focus and app activation.
+   */
+  enum WuiActivation activation;
 } WuiWindow;
 
 /**

@@ -597,8 +597,10 @@ impl IntoRust for WuiViewDimensions {
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiRect {
-    origin: WuiPoint,
-    size: WuiSize,
+    /// The rectangle's origin.
+    pub origin: WuiPoint,
+    /// The rectangle's size.
+    pub size: WuiSize,
 }
 
 impl IntoRust for WuiRect {

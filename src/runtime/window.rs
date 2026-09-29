@@ -128,6 +128,97 @@ pub struct Window {
     /// Platform support: X11 through the hydrolysis backend. Wayland carries
     /// only `app_id`, and the bundled platforms ignore this.
     pub instance_name: Option<Str>,
+    /// Which monitor the window is placed on, and the frame it takes there.
+    ///
+    /// When `Some`, the backend resolves [`WindowPlacement::monitor`] each
+    /// time the window is shown, calls [`WindowPlacement::place`] with the
+    /// resolved [`Monitor`], and writes the returned rect into
+    /// [`frame`](Self::frame) before the window becomes visible — placement
+    /// therefore re-picks its monitor on every show, including after monitor
+    /// changes and for a window that was closed and shown again.
+    ///
+    /// When `None` (the default), the window takes [`frame`](Self::frame)'s
+    /// initial value, positioned where the platform puts it.
+    ///
+    /// Platform support: hydrolysis (winit) and GTK. Wayland compositors do
+    /// not expose global pointer position or absolute window positioning, so
+    /// only the size part of the returned rect applies there.
+    pub placement: Option<WindowPlacement>,
+    /// How showing and clicking the window affects keyboard focus and app
+    /// activation. See [`Activation`] for the per-platform notes.
+    pub activation: Activation,
+}
+
+/// A connected display, as the backend resolved it for a window's placement.
+///
+/// A backend hands this to [`WindowPlacement::place`] after resolving the
+/// placement's [`MonitorSelector`]; it is a per-resolution snapshot, not a
+/// live handle — monitor geometry read elsewhere stays authoritative in the
+/// backend that produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Monitor {
+    /// Bounds in the global logical coordinate space window frames use.
+    pub frame: Rect,
+    /// `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+    /// Equal to `frame` where the platform reports no work area.
+    pub visible_frame: Rect,
+    /// Physical pixels per logical point.
+    pub scale_factor: f64,
+    /// The platform's name for the display, when it reports one.
+    pub name: Option<Str>,
+}
+
+/// Which monitor a window is placed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonitorSelector {
+    /// The platform's primary display (macOS: the one carrying the menu bar).
+    #[default]
+    Primary,
+    /// The display under the pointer when the window is shown.
+    Pointer,
+    /// The display holding this application's focused window.
+    /// Resolves as `Primary` when the application has no focused window.
+    Focused,
+}
+
+/// Where a window is placed.
+///
+/// The backend resolves `monitor` each time the window is shown, calls `place`
+/// with the result, and writes the returned rect into `Window::frame` before
+/// the window becomes visible.
+pub struct WindowPlacement {
+    /// The monitor a backend resolves before calling `place`.
+    pub monitor: MonitorSelector,
+    /// Computes the window frame from the resolved monitor's geometry.
+    ///
+    /// Backends call it once per show, immediately before the window becomes
+    /// visible; `place` answers in the same global logical space
+    /// [`Monitor::frame`] is expressed in.
+    pub place: Rc<dyn Fn(&Monitor) -> Rect>,
+}
+
+impl Debug for WindowPlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowPlacement")
+            .field("monitor", &self.monitor)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How showing and clicking a window affects keyboard focus and app activation.
+///
+/// This is for windows that must appear without stealing what the user is
+/// doing — a drop-down terminal is the canonical case: it overlays focused
+/// work and takes the keyboard only when its policy says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Activation {
+    /// Showing the window activates the app and focuses the window.
+    #[default]
+    OnShow,
+    /// Showing does not take focus; a click on the window does.
+    OnClick,
+    /// The window never takes keyboard focus or activates the app.
+    Never,
 }
 
 /// The state of a window.
@@ -283,6 +374,8 @@ impl Window {
             max_size: None,
             app_id: None,
             instance_name: None,
+            placement: None,
+            activation: Activation::default(),
         }
     }
 
@@ -330,6 +423,32 @@ impl Window {
     #[must_use]
     pub const fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
+        self
+    }
+
+    /// Place the window on the monitor `monitor` resolves to, at the frame
+    /// `place` computes from that monitor's [`Monitor`].
+    ///
+    /// See [`Self::placement`] for the resolution contract and platform
+    /// support notes.
+    #[must_use]
+    pub fn placement(
+        mut self,
+        monitor: MonitorSelector,
+        place: impl Fn(&Monitor) -> Rect + 'static,
+    ) -> Self {
+        self.placement = Some(WindowPlacement {
+            monitor,
+            place: Rc::new(place),
+        });
+        self
+    }
+
+    /// Set how showing and clicking the window affects keyboard focus and
+    /// app activation. See [`Activation`].
+    #[must_use]
+    pub const fn activation(mut self, activation: Activation) -> Self {
+        self.activation = activation;
         self
     }
 
