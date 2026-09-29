@@ -52,6 +52,13 @@ pub struct SceneSurfaceRenderer {
     // and leaves all of this unused.
     intermediate_texture: Option<wgpu::Texture>,
     intermediate_view: Option<wgpu::TextureView>,
+    /// The previous frame's render ticket and the scene that produced it.
+    /// The ticket is resolved at the start of the next frame — by then the
+    /// GPU has finished it, so verification costs a device poll rather than
+    /// a CPU wait — and the blit below samples the verified result. An
+    /// overflowed render is re-rendered with grown buffers during that
+    /// resolve, before the blit can sample it.
+    pending_readback: Option<(vello::Scene, vello::BumpReadback)>,
     blit_pipeline: Option<wgpu::RenderPipeline>,
     blit_bind_group_layout: Option<wgpu::BindGroupLayout>,
     blit_sampler: Option<wgpu::Sampler>,
@@ -66,6 +73,7 @@ impl SceneSurfaceRenderer {
             renderer: None,
             intermediate_texture: None,
             intermediate_view: None,
+            pending_readback: None,
             blit_pipeline: None,
             blit_bind_group_layout: None,
             blit_sampler: None,
@@ -290,36 +298,106 @@ impl SceneSurfaceRenderer {
                 .build_scene(&mut scene2d, frame.width as f32, frame.height as f32)
         };
 
-        renderer.with_classic(frame.device, |renderer| {
-            renderer
-                .render_to_texture(
-                    frame.device,
-                    frame.queue,
-                    scene,
-                    intermediate_view,
-                    &vello::RenderParams {
-                        base_color: peniko::Color::TRANSPARENT,
-                        width: frame.width,
-                        height: frame.height,
-                        antialiasing_method: vello::AaConfig::Area,
-                    },
-                )
-                .expect("SceneView vello render failed");
-        });
-
-        let bind_group_layout = self
-            .blit_bind_group_layout
-            .as_ref()
-            .expect("SceneView blit bind group layout missing");
-        let sampler = self
-            .blit_sampler
-            .as_ref()
-            .expect("SceneView blit sampler missing");
-        let pipeline = self
+        let pending = self.pending_readback.take();
+        let mut next_pending = None;
+        let blit_pipeline = self
             .blit_pipeline
             .as_ref()
             .expect("SceneView blit pipeline missing");
+        let blit_bind_group_layout = self
+            .blit_bind_group_layout
+            .as_ref()
+            .expect("SceneView blit bind group layout missing");
+        let blit_sampler = self
+            .blit_sampler
+            .as_ref()
+            .expect("SceneView blit sampler missing");
+        renderer.with_classic(frame.device, |renderer| {
+            let params = vello::RenderParams {
+                base_color: peniko::Color::TRANSPARENT,
+                width: frame.width,
+                height: frame.height,
+                antialiasing_method: vello::AaConfig::Area,
+            };
+            // Resolve the previous frame's render ticket first: by now the
+            // GPU has had a whole frame to finish it, so a completed render
+            // costs a device poll rather than a CPU wait. An overflowed
+            // render is re-rendered with grown buffers — the blit below can
+            // only sample a verified texture.
+            if let Some((prev_scene, mut readback)) = pending {
+                // Growth is one-shot by construction: `satisfy` sizes every
+                // bump-managed buffer to at least the demand this scene
+                // reported, so re-rendering the identical scene once
+                // converges. The second verify exists to surface a
+                // satisfy/covers disagreement with the shader accounting —
+                // not to converge: it is not a retry loop.
+                let overflowed = renderer
+                    .verify_bump_readbacks(frame.device, vec![readback])
+                    .expect("SceneView vello verification failed");
+                if !overflowed.is_empty() {
+                    readback = renderer
+                        .render_to_texture(
+                            frame.device,
+                            frame.queue,
+                            &prev_scene,
+                            intermediate_view,
+                            &params,
+                        )
+                        .expect("SceneView vello render failed")
+                        .expect("SceneView vello render produced no readback on the GPU path");
+                    let overflowed = renderer
+                        .verify_bump_readbacks(frame.device, vec![readback])
+                        .expect("SceneView vello verification failed");
+                    if !overflowed.is_empty() {
+                        tracing::error!(
+                            "SceneView vello bump buffers still overflowing after a \
+                             demand-sized re-render — satisfy/covers disagree with \
+                             the shader accounting"
+                        );
+                    }
+                }
+            }
+            // Sample the verified previous frame — on the first frame the
+            // freshly-created (zeroed) intermediate, a transparent quad.
+            Self::blit_intermediate(
+                intermediate_view,
+                blit_pipeline,
+                blit_bind_group_layout,
+                blit_sampler,
+                frame,
+            );
+            // Render this frame's scene; the blit of it happens next frame
+            // once its ticket has resolved.
+            match renderer
+                .render_to_texture(frame.device, frame.queue, scene, intermediate_view, &params)
+                .expect("SceneView vello render failed")
+            {
+                Some(ticket) => next_pending = Some((scene.as_ref().clone(), ticket)),
+                // The CPU path issues no readback: the submitted render is
+                // complete, so blit it in the same frame.
+                None => Self::blit_intermediate(
+                    intermediate_view,
+                    blit_pipeline,
+                    blit_bind_group_layout,
+                    blit_sampler,
+                    frame,
+                ),
+            }
+        });
+        self.pending_readback = next_pending;
 
+        needs_next_frame
+    }
+
+    /// Samples the intermediate texture into the frame — one fullscreen
+    /// quad over this surface's attachment.
+    fn blit_intermediate(
+        intermediate_view: &wgpu::TextureView,
+        pipeline: &wgpu::RenderPipeline,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        frame: &mut GpuFrame,
+    ) {
         let bind_group = frame.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("SceneView blit bind group"),
             layout: bind_group_layout,
@@ -364,7 +442,6 @@ impl SceneSurfaceRenderer {
         }
 
         frame.queue.submit([encoder.finish()]);
-        needs_next_frame
     }
 
     /// Processes paths on the CPU and rasterizes them through a render pass
