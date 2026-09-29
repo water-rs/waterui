@@ -50,19 +50,16 @@ fn pointer_click(runtime: &mut HeadlessRuntime, x: f32, y: f32) {
     }
 }
 
-/// Pumps until the runtime settles (with a cap), returning the last merged
-/// tree update it published, if any.
+/// Pumps until the runtime settles (with a cap), then returns the merged
+/// tree as of that settle — `None` when no window has ever produced one.
 fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<accesskit::TreeUpdate> {
-    let mut update = None;
     for _ in 0..64 {
-        if let Some(tree) = runtime.pump_at(false, Instant::now()).tree_update {
-            update = Some(tree);
-        }
+        let _ = runtime.pump_at(false, Instant::now());
         if runtime.is_settled() {
             break;
         }
     }
-    update
+    runtime.accessibility_tree()
 }
 
 /// (a) A `when` nested inside another `when`'s payload materializes like a

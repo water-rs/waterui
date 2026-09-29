@@ -65,18 +65,13 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) {
 /// The a11y bounds `label`'s button was last seen with — the anchor's frame,
 /// in hit space.
 fn bounds_of(runtime: &mut HeadlessRuntime, label: &str) -> accesskit::Rect {
-    let mut found = None;
-    for _ in 0..64 {
-        if let Some(update) = runtime.pump_at(false, Instant::now()).tree_update
-            && let Some((_, node)) = find_by_label(&update, Role::Button, label)
-        {
-            found = node.bounds();
-        }
-        if runtime.is_settled() {
-            break;
-        }
-    }
-    found.unwrap_or_else(|| panic!("{label} must emit a button with bounds"))
+    pump_until_settled(runtime);
+    runtime
+        .accessibility_tree()
+        .as_ref()
+        .and_then(|update| find_by_label(update, Role::Button, label))
+        .and_then(|(_, node)| node.bounds())
+        .unwrap_or_else(|| panic!("{label} must emit a button with bounds"))
 }
 
 fn primary_click(x: f32, y: f32) -> [InputEvent; 2] {

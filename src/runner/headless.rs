@@ -595,6 +595,21 @@ impl HeadlessRuntime {
         changed
     }
 
+    /// The accessibility tree of every open window, merged the same way a
+    /// pump publishes it — a read-only query: pending per-window updates are
+    /// included but stay pending for the next pump to publish, so the pump's
+    /// "the tree changed" signal is untouched. Popups keep the id stride the
+    /// published merge assigns. `None` when no window has ever produced a
+    /// tree.
+    #[cfg(feature = "accessibility")]
+    pub fn accessibility_tree(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.runtime.renderer.accessibility_tree(
+            self.popup_windows
+                .iter_mut()
+                .map(|popup| &mut *popup.renderer),
+        )
+    }
+
     /// Where the runner would anchor the platform's input-method panel.
     ///
     /// This is the value the runner hands to

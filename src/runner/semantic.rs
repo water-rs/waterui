@@ -416,6 +416,17 @@ impl SemanticRuntime {
             self.popup_windows.iter_mut().map(|popup| &mut popup.core),
         )
     }
+
+    /// The merged tree as of now — a read-only query: pending per-window
+    /// updates are included but stay pending, so the pump's publish channel
+    /// is untouched. Popups keep the id stride the published merge assigns.
+    /// `None` when no window has ever produced a tree.
+    #[cfg(feature = "accessibility")]
+    pub fn accessibility_tree(&mut self) -> Option<AccessibilityTreeUpdate> {
+        self.window
+            .core
+            .accessibility_tree(self.popup_windows.iter_mut().map(|popup| &mut popup.core))
+    }
 }
 
 /// The window's origin as an environment value — the `input_env` the rendered

@@ -42,27 +42,24 @@ fn runtime(env: Environment, builder: AnyViewBuilder<AnyView>) -> HeadlessRuntim
 }
 
 /// Pumps until the runtime reports quiet — never fewer than `min_frames`, so
-/// a frame still in flight cannot be mistaken for settled — collecting every
-/// tree update.
+/// a frame still in flight cannot be mistaken for settled — then returns the
+/// settled merged tree (as the vec `find_node` reads).
 fn settle(runtime: &mut HeadlessRuntime, at: &mut Instant, min_frames: u32) -> Vec<TreeUpdate> {
-    let mut updates = Vec::new();
     let mut frame = 0;
     loop {
         frame += 1;
         *at += core::time::Duration::from_millis(16);
-        if let Some(update) = runtime.pump_at(false, *at).tree_update {
-            updates.push(update);
-        }
+        let _ = runtime.pump_at(false, *at);
         if frame >= min_frames
             && (frame >= 300 || (runtime.is_settled() && !runtime.has_pending_semantic_update()))
         {
             break;
         }
     }
-    updates
+    runtime.accessibility_tree().into_iter().collect()
 }
 
-/// The node labelled `label` with `role` in the newest update.
+/// The node labelled `label` with `role` in the settled tree.
 fn find_node(updates: &[TreeUpdate], role: Role, label: &str) -> Option<(NodeId, accesskit::Rect)> {
     updates.iter().rev().find_map(|update| {
         update.nodes.iter().find_map(|(id, node)| {

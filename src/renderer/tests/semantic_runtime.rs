@@ -55,16 +55,11 @@ fn mount(builder: AnyViewBuilder<AnyView>) -> SemanticRuntime {
     SemanticRuntime::new_for_tests(Environment::new(), builder, 800, 600)
 }
 
-/// Pumps until the runtime settles and returns the last tree update it
-/// emitted — `None` when nothing changed since the previous emit (a settled
-/// pump produces no update).
+/// Pumps until the runtime settles and returns the merged tree as of that
+/// settle — `None` when no window has ever produced one.
 fn pump_until_settled(runtime: &mut SemanticRuntime) -> Option<TreeUpdate> {
-    let mut last = None;
     for _ in 0..64 {
-        let result = runtime.pump();
-        if let Some(update) = result.tree_update {
-            last = Some(update);
-        }
+        let _ = runtime.pump();
         if runtime.is_settled() {
             break;
         }
@@ -73,7 +68,7 @@ fn pump_until_settled(runtime: &mut SemanticRuntime) -> Option<TreeUpdate> {
         !runtime.has_pending_semantic_update(),
         "semantic runtime never settled"
     );
-    last
+    runtime.accessibility_tree()
 }
 
 fn pumped(runtime: &mut SemanticRuntime) -> TreeUpdate {

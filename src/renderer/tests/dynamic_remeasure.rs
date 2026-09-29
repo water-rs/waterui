@@ -55,29 +55,24 @@ fn runtime(builder: AnyViewBuilder<AnyView>) -> HeadlessRuntime {
 }
 
 /// Pumps until the runtime reports quiet — never fewer than `min_frames` —
-/// collecting every tree update so a settled-but-unchanged pump cannot hide
-/// the last bounds a node published.
+/// then returns the settled merged tree (as the vec `node_bounds` reads).
 fn settle(runtime: &mut HeadlessRuntime, at: &mut Instant, min_frames: u32) -> Vec<TreeUpdate> {
-    let mut updates = Vec::new();
     let mut frame = 0;
     loop {
         frame += 1;
         *at += Duration::from_millis(16);
-        if let Some(update) = runtime.pump_at(false, *at).tree_update {
-            updates.push(update);
-        }
+        let _ = runtime.pump_at(false, *at);
         if frame >= min_frames
             && (frame >= 300 || (runtime.is_settled() && !runtime.has_pending_semantic_update()))
         {
             break;
         }
     }
-    updates
+    runtime.accessibility_tree().into_iter().collect()
 }
 
-/// The most recent bounds the tree published for the node with `role` and
-/// derived `label`, scanning newest update first (updates are deltas, so a
-/// node absent from an update did not change it).
+/// The bounds the settled tree carries for the node with `role` and derived
+/// `label` — `None` when the node is absent.
 fn node_bounds(updates: &[TreeUpdate], role: Role, label: &str) -> Option<Rect> {
     updates.iter().rev().find_map(|update| {
         update.nodes.iter().find_map(|(_, node)| {

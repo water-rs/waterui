@@ -119,19 +119,16 @@ fn runtime_sized(
     )
 }
 
-/// Pumps until the runtime settles (with a cap), returning the last merged
-/// tree update it published, if any.
+/// Pumps until the runtime settles (with a cap), then returns the merged
+/// tree as of that settle — `None` when no window has ever produced one.
 fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
-    let mut update = None;
     for _ in 0..64 {
-        if let Some(tree) = runtime.pump_at(false, Instant::now()).tree_update {
-            update = Some(tree);
-        }
+        let _ = runtime.pump_at(false, Instant::now());
         if runtime.is_settled() {
             break;
         }
     }
-    update
+    runtime.accessibility_tree()
 }
 
 /// Same, capturing the composited frame on every pump — the pixel assertions
@@ -150,22 +147,14 @@ fn capture_until_settled(runtime: &mut HeadlessRuntime) -> HeadlessSnapshot {
     snapshot.expect("a settled runtime must capture a frame")
 }
 
-/// The a11y bounds `label` was last seen with. Merged tree updates only
-/// publish when something changed, so every pump's update is searched and the
-/// last sighting kept — a settled runtime emits nothing new.
+/// The a11y bounds `label` was last seen with, read off the settled merged
+/// tree.
 fn bounds_of(runtime: &mut HeadlessRuntime, label: &str) -> accesskit::Rect {
-    let mut found = None;
-    for _ in 0..64 {
-        if let Some(update) = runtime.pump_at(false, Instant::now()).tree_update
-            && let Some((_, node)) = find_by_label(&update, Role::Button, label)
-        {
-            found = node.bounds();
-        }
-        if runtime.is_settled() {
-            break;
-        }
-    }
-    found.unwrap_or_else(|| panic!("{label} must emit a button with bounds"))
+    pump_until_settled(runtime)
+        .as_ref()
+        .and_then(|update| find_by_label(update, Role::Button, label))
+        .and_then(|(_, node)| node.bounds())
+        .unwrap_or_else(|| panic!("{label} must emit a button with bounds"))
 }
 
 fn bounds_in(update: &TreeUpdate, label: &str) -> accesskit::Rect {
