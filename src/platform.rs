@@ -6,7 +6,7 @@ use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::RedrawHandle;
 
 #[cfg(any(
-    feature = "winit",
+    hydrolysis_winit,
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
@@ -286,7 +286,7 @@ pub enum SurfaceFrame {
         texture: wgpu::Texture,
         view: wgpu::TextureView,
     },
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     Window {
         output: wgpu::SurfaceTexture,
         view: wgpu::TextureView,
@@ -308,7 +308,7 @@ impl SurfaceFrame {
     pub fn texture(&self) -> &wgpu::Texture {
         match self {
             Self::Offscreen { texture, .. } => texture,
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             Self::Window { output, .. } => &output.texture,
             #[cfg(target_os = "android")]
             Self::Android { output, .. } => &output.texture,
@@ -321,7 +321,7 @@ impl SurfaceFrame {
     pub fn view(&self) -> &wgpu::TextureView {
         match self {
             Self::Offscreen { view, .. } => view,
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             Self::Window { view, .. } => view,
             #[cfg(target_os = "android")]
             Self::Android { view, .. } => view,
@@ -332,7 +332,7 @@ impl SurfaceFrame {
 }
 
 #[cfg(any(
-    feature = "winit",
+    hydrolysis_winit,
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
@@ -360,7 +360,7 @@ pub(crate) fn select_hydrolysis_surface_format(
 }
 
 #[cfg(any(
-    feature = "winit",
+    hydrolysis_winit,
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
@@ -375,7 +375,7 @@ fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
 }
 
 #[cfg(any(
-    feature = "winit",
+    hydrolysis_winit,
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
@@ -393,7 +393,7 @@ fn normalize_surface_format(
 }
 
 #[cfg(any(
-    feature = "winit",
+    hydrolysis_winit,
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
@@ -1051,7 +1051,7 @@ async fn request_instance_and_adapter(
 /// The winit side of [`request_instance_and_adapter`]: the surface has to be
 /// created on the instance that produced the adapter, so each tier creates its
 /// own surface before probing and the winning tier returns both.
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 async fn request_instance_surface_adapter(
     context: &str,
     selection: AdapterSelection,
@@ -1237,7 +1237,7 @@ impl SurfaceProvider for OffscreenSurface {
             SurfaceFrame::Offscreen { texture, .. } => {
                 self.last_presented = Some(texture);
             }
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
             }
@@ -1444,13 +1444,13 @@ impl GpuSurfaceWindow for OffscreenWindow {
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_impl;
 
-#[cfg(all(feature = "winit", target_os = "macos"))]
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
 mod macos_display_link;
 
-#[cfg(all(feature = "winit", any(target_os = "macos", target_os = "windows")))]
+#[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
 pub(crate) mod native_menu_bar;
 
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 mod winit_impl {
     #[cfg(hydrolysis_macos_system_webview)]
     use std::collections::{HashMap, HashSet};
@@ -4145,10 +4145,10 @@ mod winit_impl {
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
 
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 pub(crate) use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 pub(crate) use winit_impl::GpuPollDriver;
 
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;

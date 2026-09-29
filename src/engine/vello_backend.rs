@@ -147,7 +147,7 @@ impl LegacyBumpReadback {
 
     /// The `queue.submit` index carrying this readback's buffer copy, for
     /// the runner's `PollType::Wait` completion watch.
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     pub(crate) fn submission_index(&self) -> wgpu::SubmissionIndex {
         self.0.submission_index()
     }

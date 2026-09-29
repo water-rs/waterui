@@ -159,7 +159,7 @@ pub(crate) const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowId {
     /// A winit window — its native `winit::window::WindowId`.
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     Winit(winit::window::WindowId),
     /// A window on a runner without a native window id — an ordinal the
     /// registry hands out in window-creation order.

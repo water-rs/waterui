@@ -24,7 +24,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use waterui::app::App;
 #[cfg(all(
     not(target_arch = "wasm32"),
-    not(feature = "winit"),
+    not(hydrolysis_winit),
     not(target_os = "android")
 ))]
 use waterui::app::AppParts;
@@ -58,7 +58,7 @@ mod web_accessibility;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_runner;
 mod window;
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 mod winit_runner;
 
 use diagnostics::*;
@@ -76,7 +76,7 @@ mod inspector;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use window::HeadlessSnapshot;
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 pub(crate) use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
@@ -115,7 +115,7 @@ fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> 
 /// logical pixel looks soft. Defaults to 2.
 #[cfg(all(
     not(target_arch = "wasm32"),
-    not(feature = "winit"),
+    not(hydrolysis_winit),
     not(target_os = "android")
 ))]
 fn offscreen_scale_factor() -> f64 {
@@ -179,7 +179,7 @@ fn install_headless_window_managers(
 // Android-to-headless dispatch" made mechanical.
 #[cfg(all(
     not(target_arch = "wasm32"),
-    not(feature = "winit"),
+    not(hydrolysis_winit),
     not(target_os = "android")
 ))]
 pub fn run(app: App, style: impl crate::Style) {
@@ -267,21 +267,13 @@ pub fn run(app: App, style: impl crate::Style) {
 // winit (no NativeActivity/GameActivity): `run` is absent on Android under
 // every feature combination, so a winit-enabled Android build cannot
 // silently dispatch to a windowing model the host does not have.
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "winit",
-    not(target_os = "android")
-))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
 pub fn run(app: App, style: impl crate::Style) {
     initialize_tracing_from_env();
     winit_runner::run(app, style, init_main_thread_executors());
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "winit",
-    not(target_os = "android")
-))]
+#[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
 fn initialize_tracing_from_env() {
     if std::env::var_os("RUST_LOG").is_none() {
         return;

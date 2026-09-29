@@ -62,13 +62,13 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
     /// The runner's wake for a resolved deferred stash — fires once per
     /// registered watch through the runner's own event path, never touching
     /// the GPU from the main thread.
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     pub(super) deferred_legacy_wake: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
     /// The shared per-device poll driver carrying outstanding watches, set
     /// by runners whose platform can report GPU completion. `None` where
     /// there is no completion source (headless, web): those drive the same
     /// armed settle synchronously.
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     pub(super) deferred_poll_driver: Option<crate::platform::GpuPollDriver>,
     /// Generation of the currently armed deferred stash, bumped by every
     /// frame that stashes one.
@@ -106,9 +106,9 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
             refresh_rate_hz: None,
             applied_size_limits: None,
             queued_deferred_flush: false,
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             deferred_legacy_wake: None,
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             deferred_poll_driver: None,
             deferred_stash_gen: 0,
             deferred_wake_gen: 0,
@@ -398,7 +398,7 @@ pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> pen
     peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
 }
 
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
     match &window.background {
         WindowBackground::Opaque => false,
@@ -731,7 +731,7 @@ pub(super) struct ScenePumpOutcome {
     pub(super) phases: FramePhases,
 }
 
-#[cfg(any(test, all(not(target_arch = "wasm32"), feature = "winit")))]
+#[cfg(any(test, all(not(target_arch = "wasm32"), hydrolysis_winit)))]
 pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -742,7 +742,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
     runtime.platform.apply_properties(&runtime.window);
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     runtime
         .renderer
         .set_accessibility_root_label(runtime.window.title.snapshot().as_str());
@@ -895,7 +895,7 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
     runtime.platform.apply_properties(&runtime.window);
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     runtime
         .renderer
         .set_accessibility_root_label(runtime.window.title.snapshot().as_str());
@@ -1175,9 +1175,9 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
         // rather than stranded in the stash when the stream settles.
         runtime.queued_deferred_flush = true;
         runtime.deferred_stash_gen += 1;
-        #[cfg(feature = "winit")]
+        #[cfg(hydrolysis_winit)]
         let stash_gen = runtime.deferred_stash_gen;
-        #[cfg(feature = "winit")]
+        #[cfg(hydrolysis_winit)]
         if let (Some(driver), Some(wake)) =
             (&runtime.deferred_poll_driver, &runtime.deferred_legacy_wake)
         {

@@ -71,13 +71,20 @@ rustc-hash = "2.1.3"
 unicode-segmentation = "1.13"
 async-task = "4.7"
 native-executor = "0.8.0"
-winit = { version = "0.30", optional = true }
 keyboard-types = { version = "0.8.3", default-features = false }
-ui-events-winit = { version = "0.3.0", optional = true }
 # `serde` lets the Android host push the merged accesskit tree to its
 # accessibility provider as JSON (src/runner/android/accessibility.rs).
 accesskit = { version = "0.25", optional = true, features = ["serde"] }
 waterui-inspector-protocol = "0.5.0"
+
+# The winit runner and its companion crates: desktop only. Android's
+# Activity belongs to the Kotlin host, and winit's `android-activity` can
+# only build once an application picks an activity backend — nothing in
+# this library may — so the dependency edge does not exist for the Android
+# target at all. The `winit` feature still exists there and means nothing.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+winit = { version = "0.30", optional = true }
+ui-events-winit = { version = "0.3.0", optional = true }
 accesskit_winit = { version = "0.34.0", optional = true }
 
 [build-dependencies]
@@ -87,7 +94,7 @@ shaderloom = { version = "0.1.2", features = ["build"] }
 # Termination signals for the windowed desktop runner. No windowing system
 # delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
 # so the runner installs its own handler on every desktop target it builds for.
-[target.'cfg(any(unix, windows))'.dependencies]
+[target.'cfg(all(any(unix, windows), not(target_os = "android")))'.dependencies]
 ctrlc = { version = "3.5", features = ["termination"], optional = true }
 
 # Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
