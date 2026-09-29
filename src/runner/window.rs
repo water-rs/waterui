@@ -456,7 +456,7 @@ pub(super) fn render_window<P: GpuSurfaceWindow>(
             return false;
         }
     }
-    let result = render_window_with_capture(runtime, env, false, drain_local_tasks);
+    let result = render_window_with_capture(runtime, env, FrameReader::Display, drain_local_tasks);
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
     let _ = (result.rebuilt, result.snapshot);
@@ -886,12 +886,55 @@ fn render_to_surface(
     })
 }
 
+/// Who reads the pixels of a frame `render_window_with_capture` renders.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        dead_code,
+        reason = "the browser has no headless runtime, so only `Display` frames exist there"
+    )
+)]
+pub(super) enum FrameReader {
+    /// A live window: the display reads the presented surface.
+    Display,
+    /// A headless capture: the harness reads the surface back as a snapshot.
+    Snapshot,
+    /// A headless pump nobody reads. The frame still pumps the scene, ticks
+    /// embedded `GpuSurface` views and composites, but rasterizes no scene
+    /// layers: on a software rasterizer each of those submissions is a full
+    /// device-bound frame, and no consumer could observe its pixels.
+    Nobody,
+}
+
+impl FrameReader {
+    /// The reader of a headless frame: the snapshot when the pump captures
+    /// one, nobody otherwise.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) const fn headless(capture_snapshot: bool) -> Self {
+        if capture_snapshot {
+            Self::Snapshot
+        } else {
+            Self::Nobody
+        }
+    }
+
+    const fn captures(self) -> bool {
+        matches!(self, Self::Snapshot)
+    }
+
+    const fn rasterizes(self) -> bool {
+        !matches!(self, Self::Nobody)
+    }
+}
+
 pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
-    capture_snapshot: bool,
+    reader: FrameReader,
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> RenderWindowResult {
+    let capture_snapshot = reader.captures();
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
     runtime.platform.apply_properties(&runtime.window);
@@ -1013,7 +1056,13 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                 runtime.platform.surface(),
                 clear_color,
                 capture_snapshot,
-                HydrolysisRenderer::render_scene_to_surface_with_alpha_mode,
+                |renderer, target, premultiply_alpha| {
+                    renderer.render_scene_to_surface_with_alpha_mode(
+                        target,
+                        premultiply_alpha,
+                        reader.rasterizes(),
+                    );
+                },
             )
         };
 
@@ -1023,7 +1072,13 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
             runtime.platform.surface(),
             clear_color,
             capture_snapshot,
-            HydrolysisRenderer::render_scene_to_surface_with_alpha_mode,
+            |renderer, target, premultiply_alpha| {
+                renderer.render_scene_to_surface_with_alpha_mode(
+                    target,
+                    premultiply_alpha,
+                    reader.rasterizes(),
+                );
+            },
         );
 
         #[cfg(hydrolysis_macos_system_webview)]

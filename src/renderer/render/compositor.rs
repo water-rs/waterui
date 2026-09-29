@@ -1489,7 +1489,7 @@ impl HydrolysisRenderer {
         );
         self.compositor.render_layers = core::mem::take(&mut segment.layers);
         self.transient_scene = transient_scene;
-        self.render_scene_to_surface_with_alpha_mode(target, premultiply_alpha);
+        self.render_scene_to_surface_with_alpha_mode(target, premultiply_alpha, true);
         segment.layers = core::mem::take(&mut self.compositor.render_layers);
         assert!(
             self.transient_scene.is_none(),
@@ -1570,7 +1570,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
-        self.render_scene_to_surface_with_alpha_mode(target, false);
+        self.render_scene_to_surface_with_alpha_mode(target, false, true);
     }
 
     fn ensure_gpu_surface_compositor_state(
@@ -2099,7 +2099,7 @@ impl HydrolysisRenderer {
     }
 
     pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
-        self.render_scene_to_surface_with_alpha_mode(target, false);
+        self.render_scene_to_surface_with_alpha_mode(target, false, true);
     }
 
     /// [`Self::render_scene_to_surface`] with the target's composite alpha
@@ -2107,10 +2107,18 @@ impl HydrolysisRenderer {
     /// premultiplied, which an OS surface presented under
     /// `CompositeAlphaMode::PreMultiplied` reads back correctly; offscreen and
     /// readback targets keep their straight-alpha bytes.
+    ///
+    /// `rasterize_vello_layers` skips only the frame's vello rasterization:
+    /// a frame whose pixels no consumer can read (a headless pump that does
+    /// not capture) still pumps the scene, still ticks embedded GpuSurface
+    /// views and still composites, but submits no vello scene renders or
+    /// masks — on a software rasterizer each of those submissions is a real
+    /// device-bound frame. Capture and presented frames always pass `true`.
     pub(crate) fn render_scene_to_surface_with_alpha_mode(
         &mut self,
         target: HydrolysisRenderTarget<'_>,
         premultiply_alpha: bool,
+        rasterize_vello_layers: bool,
     ) {
         assert!(
             matches!(
@@ -2280,7 +2288,7 @@ impl HydrolysisRenderer {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, layer)| match layer {
-                    RenderLayer::Vello(_) => Some(index),
+                    RenderLayer::Vello(_) => rasterize_vello_layers.then_some(index),
                     RenderLayer::GpuSurface(_) => None,
                     #[cfg(hydrolysis_macos_system_webview)]
                     RenderLayer::NativeView(_) => {
@@ -2331,6 +2339,9 @@ impl HydrolysisRenderer {
         for (layer_index, layer) in render_layers.iter().enumerate() {
             match layer {
                 RenderLayer::Vello(scene) => {
+                    if !rasterize_vello_layers {
+                        continue;
+                    }
                     tracing::trace!(
                         layer_index,
                         paths = scene.legacy_scene().encoding().n_paths,
@@ -2431,30 +2442,31 @@ impl HydrolysisRenderer {
                     if prepared.needs_redraw {
                         needs_redraw = true;
                     }
-                    let (mask_view, mask_texture) = if layer.active_layers.is_empty() {
-                        (
-                            self.default_compositor_mask_view(
+                    let (mask_view, mask_texture) =
+                        if !rasterize_vello_layers || layer.active_layers.is_empty() {
+                            (
+                                self.default_compositor_mask_view(
+                                    target.device,
+                                    target.queue,
+                                    target.format,
+                                ),
+                                None,
+                            )
+                        } else {
+                            let (leased, readback) = self.render_active_layers_mask_to_texture(
                                 target.device,
                                 target.queue,
-                                target.format,
-                            ),
-                            None,
-                        )
-                    } else {
-                        let (leased, readback) = self.render_active_layers_mask_to_texture(
-                            target.device,
-                            target.queue,
-                            target.width,
-                            target.height,
-                            &layer.active_layers,
-                        );
-                        pending_main.push(PendingLegacyRender {
-                            source: DeferredLegacySource::Mask(layer.active_layers.clone()),
-                            view: leased.view.clone(),
-                            readback,
-                        });
-                        (leased.view.clone(), Some(leased))
-                    };
+                                target.width,
+                                target.height,
+                                &layer.active_layers,
+                            );
+                            pending_main.push(PendingLegacyRender {
+                                source: DeferredLegacySource::Mask(layer.active_layers.clone()),
+                                view: leased.view.clone(),
+                                readback,
+                            });
+                            (leased.view.clone(), Some(leased))
+                        };
                     ready.push(ReadyLayerComposite {
                         layer_view: prepared.view,
                         layer_texture: None,
