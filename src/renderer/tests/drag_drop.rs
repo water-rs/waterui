@@ -209,6 +209,50 @@ fn os_file_drop_delivers_one_files_payload_with_every_url() {
     assert_eq!(exits.get(), 1, "the delivered destination exits once");
 }
 
+/// water-rs/hydrolysis#127 — the platforms that deliver no cursor events
+/// while an OS drag owns the pointer (the OLE grab on Windows, an
+/// `NSDraggingSession` on macOS) send winit's `HoveredFile`/`DroppedFile`
+/// unaccompanied: the only position the runner can know for them is the
+/// host's own answer. A drop the host can place must still land even when
+/// the stream reported no position at all.
+#[test]
+fn os_file_drop_delivers_at_the_host_reported_position() {
+    let file_a = PathBuf::from("/tmp/drop-a.png");
+    let drops = Rc::new(RefCell::new(Vec::<Files>::new()));
+    let enters = Rc::new(Cell::new(0u32));
+    let view = {
+        let (drops, enters) = (Rc::clone(&drops), Rc::clone(&enters));
+        ().size(SIZE, SIZE)
+            .drop_destination(move |files: Files| drops.borrow_mut().push(files))
+            .on_enter(move || enters.set(enters.get() + 1))
+    };
+    let mut runtime = runtime_with(AnyView::new(view));
+
+    // The host knows where the pointer is even though it delivered no
+    // cursor event — exactly the OLE/AppKit situation winit's file events
+    // arrive in.
+    runtime.set_pointer_position(Some((80.0, 80.0)));
+    for event in [
+        InputEvent::FileHovered {
+            path: file_a.clone(),
+        },
+        InputEvent::FileDropped {
+            path: file_a.clone(),
+        },
+    ] {
+        runtime.push_input_event(event);
+    }
+    let _ = runtime.pump(false);
+    let _ = runtime.pump(false);
+
+    assert_eq!(
+        drops.borrow().as_slice(),
+        &[Files::new([Url::from_file_path(&file_a)])],
+        "the drop lands at the host's reported position even without cursor events"
+    );
+    assert_eq!(enters.get(), 1, "the destination is hovered once");
+}
+
 /// A drop's `DroppedFile` events straddling two pumps still merge into one
 /// delivery carrying every file — the collected list lives on the drag, not
 /// on the batch.

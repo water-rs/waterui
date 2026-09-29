@@ -11,6 +11,11 @@ pub(super) struct HeadlessPlatformWindow {
     inner: OffscreenWindow,
     pending_events: VecDeque<InputEvent>,
     redraw_requested: Cell<bool>,
+    /// The pointer position the host knows right now — tracked from the
+    /// positional events it dispatched, or set directly when the test's host
+    /// knows a position it delivered no event for (an OS drag suppresses
+    /// cursor events on some platforms).
+    pointer_position: Option<(f32, f32)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,6 +40,7 @@ impl HeadlessPlatformWindow {
             inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
             redraw_requested: Cell::new(false),
+            pointer_position: None,
         }
     }
 
@@ -43,6 +49,9 @@ impl HeadlessPlatformWindow {
     }
 
     pub(super) fn push_event(&mut self, event: InputEvent) {
+        if let Some((x, y)) = event_position(&event) {
+            self.pointer_position = Some((x, y));
+        }
         self.pending_events.push_back(event);
     }
 
@@ -79,6 +88,10 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
     fn drain_events(&mut self) -> Vec<InputEvent> {
         self.pending_events.drain(..).collect()
+    }
+
+    fn pointer_position(&self) -> Option<(f32, f32)> {
+        self.pointer_position
     }
 
     fn request_redraw(&self) {
@@ -504,17 +517,7 @@ impl HeadlessRuntime {
     /// to window-local coordinates before the popup sees them. Events outside
     /// every popup frame keep landing on the main window's queue.
     pub fn push_input_event(&mut self, event: InputEvent) {
-        let point = match event {
-            InputEvent::PointerDown { x, y, .. }
-            | InputEvent::PointerUp { x, y, .. }
-            | InputEvent::PointerMove { x, y, .. }
-            | InputEvent::Scroll { x, y, .. }
-            | InputEvent::TrackpadPan { x, y, .. }
-            | InputEvent::Magnification { x, y, .. }
-            | InputEvent::Rotation { x, y, .. } => Some((x, y)),
-            _ => None,
-        };
-        if let Some((x, y)) = point {
+        if let Some((x, y)) = event_position(&event) {
             // The last mounted popup is the topmost one.
             for popup in self.popup_windows.iter_mut().rev() {
                 let frame = crate::platform::validated_window_frame(popup.window.frame.snapshot());
@@ -528,6 +531,17 @@ impl HeadlessRuntime {
             }
         }
         self.runtime.platform.push_event(event);
+    }
+
+    /// Sets the pointer position the host reports when asked — independent
+    /// of the events it has delivered.
+    ///
+    /// An OS file drag carries no coordinates, and some platforms suppress
+    /// cursor events while the drag owns the pointer; this models a host
+    /// that still knows where the pointer is, so the runner's platform query
+    /// has an answer.
+    pub fn set_pointer_position(&mut self, position: Option<(f32, f32)>) {
+        self.runtime.platform.pointer_position = position;
     }
 
     pub fn request_redraw(&mut self) {
@@ -1006,6 +1020,20 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
         target[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
     }
     target[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+}
+
+/// The window-local point a positional event carries, if it is one.
+fn event_position(event: &InputEvent) -> Option<(f32, f32)> {
+    match event {
+        InputEvent::PointerDown { x, y, .. }
+        | InputEvent::PointerUp { x, y, .. }
+        | InputEvent::PointerMove { x, y, .. }
+        | InputEvent::Scroll { x, y, .. }
+        | InputEvent::TrackpadPan { x, y, .. }
+        | InputEvent::Magnification { x, y, .. }
+        | InputEvent::Rotation { x, y, .. } => Some((*x, *y)),
+        _ => None,
+    }
 }
 
 /// Re-expresses a positional event in a mounted window's local coordinate
