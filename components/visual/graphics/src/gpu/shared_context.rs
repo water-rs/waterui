@@ -281,6 +281,9 @@ impl SharedSceneRenderer {
                         antialiasing_support: vello::AaSupport::area_only(),
                         num_init_threads: std::num::NonZeroUsize::new(1),
                         pipeline_cache: None,
+                        // Surfaces render at their own size, not the window's:
+                        // `None` sizes the bump buffers per render target.
+                        buffer_sizes: None,
                     },
                 )
                 .expect("the GPU device cannot rasterize vector scenes"),

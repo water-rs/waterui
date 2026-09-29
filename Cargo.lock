@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=1275e6768f08f01dcbaef86db8b32eca45b38109#1275e6768f08f01dcbaef86db8b32eca45b38109"
+source = "git+https://github.com/water-rs/hydrolysis?rev=ba37c37a9280e398a1fb997b45ef75c8e924dc19#ba37c37a9280e398a1fb997b45ef75c8e924dc19"
 dependencies = [
  "accesskit",
  "async-task",
@@ -9395,7 +9395,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 [[package]]
 name = "vello"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
+source = "git+https://github.com/lexoliu/vello?rev=76292095f408cf04b901023c2053f8d424652f06#76292095f408cf04b901023c2053f8d424652f06"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -9450,7 +9450,7 @@ dependencies = [
 [[package]]
 name = "vello_encoding"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
+source = "git+https://github.com/lexoliu/vello?rev=76292095f408cf04b901023c2053f8d424652f06#76292095f408cf04b901023c2053f8d424652f06"
 dependencies = [
  "bytemuck",
  "guillotiere",
@@ -9477,7 +9477,7 @@ dependencies = [
 [[package]]
 name = "vello_shaders"
 version = "0.9.0"
-source = "git+https://github.com/lexoliu/vello?rev=7f5e1ca5769a96dc4404b812e7fa0351499cd2c4#7f5e1ca5769a96dc4404b812e7fa0351499cd2c4"
+source = "git+https://github.com/lexoliu/vello?rev=76292095f408cf04b901023c2053f8d424652f06#76292095f408cf04b901023c2053f8d424652f06"
 dependencies = [
  "bytemuck",
  "log",
@@ -10602,7 +10602,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=74d7dcd7a6d59a739eab40fa0f73c87151832408#74d7dcd7a6d59a739eab40fa0f73c87151832408"
+source = "git+https://github.com/water-rs/map-gpu?rev=40c63c94742d0abbd61719ad1754121be2670d01#40c63c94742d0abbd61719ad1754121be2670d01"
 dependencies = [
  "blocking",
  "bytemuck",
