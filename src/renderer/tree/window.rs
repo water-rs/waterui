@@ -560,7 +560,7 @@ impl HydrolysisRenderer {
         // flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.
         self.render_anchored_overlays(transform);
-        self.flush_legacy_scene_layer();
+        self.flush_scene_layer();
         drop(_encode_span);
         #[cfg(feature = "frame-profile")]
         {

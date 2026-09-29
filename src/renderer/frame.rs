@@ -5,7 +5,7 @@ use super::*;
 use kurbo::Shape as _;
 
 /// The two transforms a clip layer is pushed under: `paint` positions the
-/// vello scene layer, `hit` positions the matching hit-test clip — they diverge
+/// scene layer's clip, `hit` positions the matching hit-test clip — they diverge
 /// where paint and hit spaces differ (e.g. a filter-atlas capture paints into
 /// slot space but keeps window hit space).
 #[derive(Clone, Copy)]
@@ -20,8 +20,8 @@ pub(crate) struct RenderLayerStats {
     /// Layers the compositor drew, which is every layer unless the window pass
     /// was handed to a GPU surface outright.
     pub(crate) composited_scene_layers: u32,
-    /// Composited layers that were Vello scenes.
-    pub(crate) legacy_scene_layers: u32,
+    /// Composited layers that were recorded scene segments.
+    pub(crate) scene_segment_layers: u32,
     /// Composited layers that were embedded GPU surfaces.
     pub(crate) gpu_surface_layers: u32,
     /// GPU surfaces that rendered straight into the window's own target,
@@ -298,16 +298,6 @@ impl HydrolysisRenderer {
     ) {
         self.window_bounds = bounds;
         self.window_root_transform = root_transform;
-        let viewport = self.window_viewport();
-        let (w, h) = (
-            viewport.width().ceil() as u32,
-            viewport.height().ceil() as u32,
-        );
-        if w > 0 && h > 0 {
-            // Seed the legacy bump buffers from the viewport's tile grid;
-            // scenes denser than the seed still grow from GPU feedback.
-            self.legacy_renderer.seed_bump_buffer_sizes(w, h);
-        }
     }
 
     /// The window's viewport in physical pixels: where the root transform puts
@@ -341,9 +331,6 @@ impl HydrolysisRenderer {
     }
 
     pub fn reset_scene(&mut self) {
-        for image in self.compositor.active_filter_images.drain(..) {
-            self.legacy_renderer.unregister_texture(image);
-        }
         self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
         self.text_editing.text_input_targets.clear();
@@ -408,7 +395,7 @@ impl HydrolysisRenderer {
             "hydrolysis renderer: scene layer stack must be empty at end of rebuild (len={})",
             self.compositor.active_scene_layers.len()
         );
-        self.flush_legacy_scene_layer();
+        self.flush_scene_layer();
         self.lifecycle.finish_rebuild_frame();
         // Prune the measure-path `Dynamic` dimension cache down to the identities
         // still present in the retained render tree. The cache is read by
@@ -441,12 +428,8 @@ impl HydrolysisRenderer {
         &mut self.scene
     }
 
-    pub(crate) fn draw_context(&mut self, ctx: RenderContext) -> VelloDrawContext<'_> {
-        VelloDrawContext::with_root_transform(&mut self.scene, ctx.transform)
-    }
-
-    pub fn legacy_renderer(&mut self) -> &mut crate::engine::LegacyRenderer {
-        &mut self.legacy_renderer
+    pub(crate) fn draw_context(&mut self, ctx: RenderContext) -> SceneDrawContext<'_> {
+        SceneDrawContext::with_root_transform(&mut self.scene, ctx.transform)
     }
 
     pub fn set_frame_resources(
@@ -617,7 +600,7 @@ impl HydrolysisRenderer {
         self.frame_max_clip_depth = self.frame_max_clip_depth.max(depth);
     }
 
-    pub(super) fn flush_legacy_scene_layer(&mut self) {
+    pub(super) fn flush_scene_layer(&mut self) {
         assert!(
             (self.scene.open_clip_count() as usize) == self.compositor.active_scene_layers.len(),
             "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
@@ -638,7 +621,7 @@ impl HydrolysisRenderer {
         let scene = core::mem::take(&mut self.scene);
         self.compositor
             .render_layers
-            .push(RenderLayer::Vello(scene));
+            .push(RenderLayer::Scene(scene));
 
         for layer in &self.compositor.active_scene_layers {
             layer.push_to_scene(&mut self.scene);
@@ -653,7 +636,7 @@ impl HydrolysisRenderer {
         bounds: kurbo::Rect,
         occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
     ) {
-        self.flush_legacy_scene_layer();
+        self.flush_scene_layer();
         self.compositor
             .render_layers
             .push(RenderLayer::NativeView(NativeViewLayer {
@@ -669,33 +652,52 @@ impl HydrolysisRenderer {
         self.host_redraw_handle = Some(handle);
     }
 
+    /// The engine's scheduling answer from the last presented frame, drained
+    /// once so one pump consumes it: `Next::At` asks the host for the frame
+    /// an in-flight animation needs, `Next::Idle` parks the display link.
+    pub(crate) fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
+        self.engine_next.take()
+    }
+
     pub(crate) fn render_layer_stats(&self) -> RenderLayerStats {
         let scene_layers = u32::try_from(self.compositor.render_layers.len())
             .expect("hydrolysis render layer count exceeds u32");
-        let legacy_scene_layers = u32::try_from(
+        let scene_segment_layers = u32::try_from(
             self.compositor
                 .render_layers
                 .iter()
-                .filter(|layer| matches!(layer, RenderLayer::Vello(_)))
+                .filter(|layer| matches!(layer, RenderLayer::Scene(_)))
                 .count(),
         )
-        .expect("hydrolysis Vello scene layer count exceeds u32");
+        .expect("hydrolysis scene segment layer count exceeds u32");
         // What was rendered directly is recorded by the render pass itself, not
         // re-derived from the layer's `direct_to_target` flag: that flag says
         // the layer is eligible on geometry, structure and opacity, and the
         // render pass adds the one condition only it can see — that the target
         // already carries the format the view was set up for.
         let direct_gpu_surfaces = self.frame_direct_gpu_surfaces;
-        let gpu_surface_layers = scene_layers
-            .checked_sub(legacy_scene_layers)
-            .and_then(|count| count.checked_sub(direct_gpu_surfaces))
+        let external_frame_layers = u32::try_from(
+            self.compositor
+                .render_layers
+                .iter()
+                .filter(|layer| {
+                    matches!(
+                        layer,
+                        RenderLayer::GpuSurface(_) | RenderLayer::ExternalTexture(_)
+                    )
+                })
+                .count(),
+        )
+        .expect("hydrolysis external frame layer count exceeds u32");
+        let gpu_surface_layers = external_frame_layers
+            .checked_sub(direct_gpu_surfaces)
             .expect("hydrolysis render layer count accounting underflow");
         let composited_scene_layers = scene_layers
             .checked_sub(direct_gpu_surfaces)
             .expect("hydrolysis render layer count accounting underflow");
         RenderLayerStats {
             composited_scene_layers,
-            legacy_scene_layers,
+            scene_segment_layers,
             gpu_surface_layers,
             direct_gpu_surfaces,
         }

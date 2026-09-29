@@ -1,12 +1,10 @@
 use super::*;
-use crate::renderer::color::TargetEncoding;
 use core::num::NonZeroU32;
 use kurbo::Shape;
 #[cfg(hydrolysis_macos_system_webview)]
 use objc2::rc::Retained;
 #[cfg(hydrolysis_macos_system_webview)]
 use objc2_web_kit::WKWebView;
-use shaderloom::CompiledShader;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -14,295 +12,10 @@ use std::sync::Arc;
 use shaderloom::WgslModuleCache;
 use waterui_graphics::input::SurfaceInputEvent;
 
-const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
-    include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
-
-/// Builds a fresh legacy render object for the parallel-encode pool, matching
-/// the main renderer's options (GPU-only, area AA, backend-appropriate init
-/// parallelism).
-fn build_pooled_legacy_renderer(
-    device: &wgpu::Device,
-    backend: wgpu::Backend,
-    pipeline_cache: Option<wgpu::PipelineCache>,
-) -> crate::engine::LegacyRenderer {
-    crate::engine::LegacyRenderer::new(
-        device,
-        crate::engine::LegacyRendererOptions {
-            use_cpu: false,
-            num_init_threads: crate::engine::legacy_init_threads(backend),
-            pipeline_cache,
-            // Pooled renders target per-layer textures: `None` sizes the bump
-            // buffers to each render target.
-            buffer_sizes: None,
-        },
-    )
-    .expect("hydrolysis renderer: failed to create pooled legacy renderer")
-}
-
-/// The GPU handles a pooled legacy renderer encode against.
-struct PoolGpu<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-    backend: wgpu::Backend,
-    /// The device-wide persistent pipeline cache, when this platform has one
-    /// (see `crate::pipeline_cache`); shared with the main renderer so pooled
-    /// pipelines compile once and persist with the rest.
-    pipeline_cache: Option<wgpu::PipelineCache>,
-}
-
-/// C2: encode independent Vello layers to per-layer textures across CPU cores.
-///
-/// Each worker checks a `LegacyRenderer` out of `pool` (creating one on first use),
-/// renders its scene to its own texture, and returns the texture + view tagged with the
-/// originating `render_layers` index so the caller can composite in painter's order.
-/// `LegacyRenderer` is `!Sync`, so per-worker ownership (not sharing) is what makes this
-/// sound; the GPU `Queue` is `Send + Sync` and each layer targets an independent texture,
-/// so submission order is irrelevant.
-fn encode_legacy_layers_parallel(
-    pool: &std::sync::Mutex<Vec<crate::engine::LegacyRenderer>>,
-    gpu: PoolGpu<'_>,
-    scenes: Vec<(usize, &Recording, PooledLayerTexture)>,
-    width: u32,
-    height: u32,
-    counters: &mut MigrationCounters,
-) -> Vec<(
-    usize,
-    crate::engine::LegacyRenderer,
-    PooledLayerTexture,
-    Option<crate::engine::LegacyBumpReadback>,
-)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    use rayon::prelude::*;
-
-    let PoolGpu {
-        device,
-        queue,
-        backend,
-        pipeline_cache,
-    } = gpu;
-
-    let render_layer = |(index, scene, leased): (usize, &Recording, PooledLayerTexture)| {
-        let mut renderer = pool
-            .lock()
-            .expect("hydrolysis renderer: legacy renderer pool poisoned")
-            .pop()
-            .unwrap_or_else(|| {
-                build_pooled_legacy_renderer(device, backend, pipeline_cache.clone())
-            });
-
-        let readback = renderer
-            .render_recording(
-                device,
-                queue,
-                scene,
-                &leased.view,
-                width,
-                height,
-                peniko::Color::TRANSPARENT,
-            )
-            .expect("hydrolysis renderer: failed to render legacy layer scene");
-
-        // The renderer stays checked out until its deferred bump-buffer
-        // verification drains at next frame's verify point: an overflow is
-        // re-rendered on this same renderer because its grown sizes live on
-        // it.
-        (index, renderer, leased, readback)
-    };
-
-    // wgpu-hal's GLES device funnels every device call through one adapter
-    // context lock with a ~1 s timeout: concurrent layer encodes on GL gain
-    // nothing and, under load, a worker times out, panics and poisons the
-    // renderer pool. GL encodes the layers in order; every other backend
-    // encodes them across cores.
-    #[cfg(not(target_arch = "wasm32"))]
-    let rendered: Vec<_> = if backend == wgpu::Backend::Gl {
-        scenes.into_iter().map(render_layer).collect()
-    } else {
-        scenes.into_par_iter().map(render_layer).collect()
-    };
-    #[cfg(target_arch = "wasm32")]
-    let rendered: Vec<_> = scenes.into_iter().map(render_layer).collect();
-    // Each rendered layer was one `render_to_texture` submission, counted
-    // once here because the workers run in parallel.
-    counters.gpu_submissions += u64::try_from(rendered.len()).unwrap_or(u64::MAX);
-    rendered
-}
-
-/// How to re-issue a pending legacy render when its readback reports
-/// overflow. The encoded input is carried with the pending render itself:
-/// `compositor.render_layers` is rebuilt every frame and must not be
-/// stashed across the frame boundary.
-enum DeferredLegacySource {
-    /// Re-render this recording.
-    Layer(Box<Recording>),
-    /// Rebuild and re-render the active-layers mask from these layers.
-    Mask(Vec<ActiveSceneLayer>),
-}
-
-/// A submitted-but-unverified legacy render and everything needed to
-/// re-render it: the [`crate::engine::LegacyBumpReadback`] ticket is resolved next frame
-/// by [`HydrolysisRenderer::complete_deferred_legacy`], before the composite
-/// pass can sample its target.
-struct PendingLegacyRender {
-    source: DeferredLegacySource,
-    view: wgpu::TextureView,
-    readback: Option<crate::engine::LegacyBumpReadback>,
-}
-
-/// A frame's legacy outputs held between encode and presentation: the
-/// painter's-order composite inputs plus every unverified render ticket.
-/// Verification is deferred one frame so a completed render resolves with
-/// a device poll instead of a CPU wait; an overflow is re-rendered during
-/// the drain, before the frame's textures can be composited.
-struct DeferredLegacyFrame {
-    ready: Vec<ReadyLayerComposite>,
-    pooled: Vec<(crate::engine::LegacyRenderer, PendingLegacyRender)>,
-    main: Vec<PendingLegacyRender>,
-    surface_size: (u32, u32),
-    /// Set once a settle pass has composited this stash to a surface. The
-    /// frame then stays stashed so the next content frame still composites
-    /// the same verified output at its top — a settle landing between
-    /// damage batches is an early present, never a hole the following
-    /// frame must bootstrap around.
-    presented: bool,
-    /// The `queue.submit` index of every render this stash's tickets depend
-    /// on — one per ticket, all of them, because the parallel layer encode
-    /// makes their relative order unknowable from the outside. A completion
-    /// watch waits on exactly these; a `queue.submit` issued later cannot
-    /// extend the wait the way `PollType::Wait { submission_index: None }`
-    /// could.
-    #[cfg(hydrolysis_winit)]
-    watch_submissions: Vec<wgpu::SubmissionIndex>,
-    /// When the frame was stashed — diagnostics only: the tail-frame
-    /// latency event reports stash → present; nothing reads it for
-    /// scheduling.
-    stashed_at: Instant,
-}
-
-impl DeferredLegacyFrame {
-    /// Every ticket this frame still owes has resolved — draining it is a
-    /// device poll, with no GPU-completion wait behind it.
-    fn verify_ready(&self) -> bool {
-        self.pooled.iter().all(|(_, pending)| {
-            pending
-                .readback
-                .as_ref()
-                .is_none_or(crate::engine::LegacyBumpReadback::is_ready)
-        }) && self.main.iter().all(|pending| {
-            pending
-                .readback
-                .as_ref()
-                .is_none_or(crate::engine::LegacyBumpReadback::is_ready)
-        })
-    }
-}
-
-/// The mask scene [`HydrolysisRenderer::render_active_layers_mask_to_texture`]
-/// draws: the active layers clipped to the target, unioned with the target
-/// rect so uncovered regions stay opaque.
-fn build_active_layers_mask_scene(
-    active_layers: &[ActiveSceneLayer],
-    width: u32,
-    height: u32,
-) -> Recording {
-    assert!(
-        !active_layers.is_empty(),
-        "hydrolysis renderer: active layer mask requires at least one layer"
-    );
-    let mut mask_scene = Recording::new();
-    for layer in active_layers {
-        layer.push_to_scene(&mut mask_scene);
-    }
-    mask_scene.fill(
-        peniko::Fill::NonZero,
-        kurbo::Affine::IDENTITY,
-        &peniko::Brush::Solid(peniko::Color::WHITE),
-        None,
-        &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
-    );
-    for _ in 0..active_layers.len() {
-        mask_scene.pop_scope();
-    }
-    mask_scene
-}
-
 #[derive(Default)]
 pub(crate) struct Compositor {
-    /// Pool of target-sized intermediate textures reused across frames for
-    /// per-layer Vello encodes and active-layer masks. Allocating one per
-    /// layer per frame is exactly the churn the pool exists to avoid; entries
-    /// whose size no longer matches the target are dropped on acquire.
-    pub(crate) layer_texture_pool: Vec<PooledLayerTexture>,
-    /// Pool of `LegacyRenderer` instances reused across frames for C2's parallel
-    /// per-layer encoding. `LegacyRenderer` is `!Sync` (it holds a `RefCell`), so each
-    /// worker checks out its own instance; the `Mutex` only guards the free-list, not the
-    /// (parallel) encode itself.
-    pub(crate) legacy_renderer_pool: std::sync::Mutex<Vec<crate::engine::LegacyRenderer>>,
-    pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
-    /// The previous frame's legacy outputs awaiting verification, presented
-    /// by [`HydrolysisRenderer::complete_deferred_legacy`] at the start of
-    /// this frame — one frame of uniform latency is the cost of never
-    /// blocking the render path on a readback.
-    deferred_legacy_frame: Option<DeferredLegacyFrame>,
     pub(crate) render_layers: Vec<RenderLayer>,
     pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
-    pub(crate) active_filter_images: Vec<peniko::ImageData>,
-}
-
-pub(crate) struct PooledLayerTexture {
-    pub(crate) texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
-}
-
-impl Compositor {
-    fn acquire_layer_texture(
-        &mut self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> PooledLayerTexture {
-        // All intermediate layer textures are target-sized, so a resize makes
-        // every pooled entry stale at once; drop them instead of hoarding.
-        self.layer_texture_pool
-            .retain(|entry| entry.texture.width() == width && entry.texture.height() == height);
-        self.layer_texture_pool.pop().unwrap_or_else(|| {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("hydrolysis_layer_texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::STORAGE_BINDING
-                    | wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            PooledLayerTexture { texture, view }
-        })
-    }
-
-    fn release_layer_texture(&mut self, texture: PooledLayerTexture) {
-        self.layer_texture_pool.push(texture);
-    }
-}
-
-pub(crate) struct GpuSurfaceCompositorState {
-    pub(crate) target_format: wgpu::TextureFormat,
-    pub(crate) uniform_buffer: wgpu::Buffer,
-    /// Number of 256-byte uniform slots `uniform_buffer` holds (one per
-    /// composited layer); the buffer is recreated when a frame needs more.
-    pub(crate) uniform_slot_capacity: usize,
-    pub(crate) sampler: wgpu::Sampler,
-    pub(crate) bind_group_layout: wgpu::BindGroupLayout,
-    pub(crate) pipeline: wgpu::RenderPipeline,
-    pub(crate) _white_mask_texture: wgpu::Texture,
-    pub(crate) white_mask_view: wgpu::TextureView,
 }
 
 pub(crate) struct EmbeddedGpuSurfaceRuntime {
@@ -466,9 +179,26 @@ pub(crate) struct NativeViewLayer {
     pub(crate) occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
+/// A GPU texture produced during the frame's traversal — an effect's output
+/// plane — mounted as engine external-frame content at its own layer so it
+/// composites under the same clip/opacity ancestry as the scene around it.
+pub(crate) struct ExternalTextureLayer {
+    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The produced plane, mounted as engine external-frame content.
+    pub(crate) texture: wgpu::Texture,
+    /// The plane's format; selects the external frame's decode.
+    pub(crate) format: wgpu::TextureFormat,
+    /// Placement transform mapping `bounds` into scene space.
+    pub(crate) transform: kurbo::Affine,
+    pub(crate) bounds: kurbo::Rect,
+    /// The clip/opacity ancestry the plane is shown under.
+    pub(crate) active_layers: Vec<ActiveSceneLayer>,
+}
+
 pub(crate) enum RenderLayer {
-    Vello(Recording),
+    Scene(Recording),
     GpuSurface(GpuSurfaceLayer),
+    ExternalTexture(ExternalTextureLayer),
     #[cfg(hydrolysis_macos_system_webview)]
     NativeView(NativeViewLayer),
 }
@@ -490,8 +220,6 @@ pub(crate) struct PreparedGpuSurfaceLayer {
     pub(crate) texture: wgpu::Texture,
     /// The plane's format; selects the external frame's decode.
     pub(crate) output_format: wgpu::TextureFormat,
-    pub(crate) view: wgpu::TextureView,
-    pub(crate) uniform_bytes: [u8; 80],
     pub(crate) needs_redraw: bool,
 }
 
@@ -595,14 +323,6 @@ pub(crate) fn project_pointer_into_surface(
 /// One layer fully prepared for the final composite pass: its content and mask
 /// views (pooled textures ride along so they return to the pool afterwards)
 /// plus the 80-byte compositor uniform.
-struct ReadyLayerComposite {
-    layer_view: wgpu::TextureView,
-    layer_texture: Option<PooledLayerTexture>,
-    mask_view: wgpu::TextureView,
-    mask_texture: Option<PooledLayerTexture>,
-    uniform_bytes: [u8; 80],
-}
-
 impl ActiveSceneLayer {
     pub(crate) fn push_to_scene(&self, scene: &mut Recording) {
         match &self.shape {
@@ -625,195 +345,6 @@ impl ActiveSceneLayer {
                 );
             }
         }
-    }
-}
-
-impl GpuSurfaceCompositorState {
-    /// Size of one compositor uniform in bytes (the shader-visible struct).
-    const UNIFORM_SIZE: u64 = 80;
-    /// Stride between per-layer uniform slots: WebGPU's guaranteed
-    /// `min_uniform_buffer_offset_alignment`.
-    const UNIFORM_SLOT_STRIDE: u64 = 256;
-    const INITIAL_UNIFORM_SLOTS: usize = 8;
-
-    fn create_uniform_buffer(device: &wgpu::Device, slots: usize) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_uniform"),
-            size: (slots as u64) * Self::UNIFORM_SLOT_STRIDE,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
-    }
-
-    fn ensure_uniform_capacity(&mut self, device: &wgpu::Device, slots: usize) {
-        if slots <= self.uniform_slot_capacity {
-            return;
-        }
-        let slots = slots.next_power_of_two();
-        self.uniform_buffer = Self::create_uniform_buffer(device, slots);
-        self.uniform_slot_capacity = slots;
-    }
-
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target_format: wgpu::TextureFormat,
-    ) -> Self {
-        let uniform_buffer = Self::create_uniform_buffer(device, Self::INITIAL_UNIFORM_SLOTS);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            ..Default::default()
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        // Every composited layer reads its own 256-byte-aligned
-                        // slot of one shared buffer, selected per draw with a
-                        // dynamic offset, so the whole composite is a single
-                        // render pass and a single submit.
-                        has_dynamic_offset: true,
-                        min_binding_size: Some(
-                            core::num::NonZeroU64::new(Self::UNIFORM_SIZE)
-                                .expect("static compositor uniform size must be non-zero"),
-                        ),
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-            ],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-        let (vertex_shader, fragment_shader) =
-            GPU_SURFACE_COMPOSITOR_SHADER.create_render_stages(device, "vs_main", "fs_main");
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: vertex_shader.module(),
-                entry_point: Some(vertex_shader.entry_point()),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: fragment_shader.module(),
-                entry_point: Some(fragment_shader.entry_point()),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        let white_mask_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_white_mask"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            white_mask_texture.as_image_copy(),
-            &[255, 255, 255, 255],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let white_mask_view =
-            white_mask_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        Self {
-            target_format,
-            uniform_buffer,
-            uniform_slot_capacity: Self::INITIAL_UNIFORM_SLOTS,
-            sampler,
-            bind_group_layout,
-            pipeline,
-            _white_mask_texture: white_mask_texture,
-            white_mask_view,
-        }
-    }
-
-    pub(crate) fn ensure_target_format(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target_format: wgpu::TextureFormat,
-    ) {
-        if self.target_format == target_format {
-            return;
-        }
-        *self = Self::new(device, queue, target_format);
     }
 }
 
@@ -1098,13 +629,6 @@ impl EmbeddedGpuSurfaceRuntime {
             self.finish_trackpad_pan_frame();
             self.settle_after_render(frame_requested_redraw)
         };
-        let corners = [
-            point_to_clip(top_left, target.width, target.height),
-            point_to_clip(top_right, target.width, target.height),
-            point_to_clip(bottom_right, target.width, target.height),
-            point_to_clip(bottom_left, target.width, target.height),
-        ];
-
         PreparedGpuSurfaceLayer {
             texture: self
                 .output_texture
@@ -1112,8 +636,6 @@ impl EmbeddedGpuSurfaceRuntime {
                 .expect("hydrolysis embedded GpuSurface missing output texture")
                 .clone(),
             output_format,
-            view,
-            uniform_bytes: encode_compositor_uniform(corners, false),
             needs_redraw,
         }
     }
@@ -1335,29 +857,6 @@ fn select_embedded_surface_format(
     target_format.remove_srgb_suffix()
 }
 
-fn point_to_clip(point: kurbo::Point, width: u32, height: u32) -> [f32; 2] {
-    assert!(
-        width != 0 && height != 0,
-        "hydrolysis compositor target size must be non-zero"
-    );
-
-    let clip_x = ((point.x as f32) / (width as f32)) * 2.0 - 1.0;
-    let clip_y = 1.0 - ((point.y as f32) / (height as f32)) * 2.0;
-    [clip_x, clip_y]
-}
-
-/// Device pixels per logical unit for a composited layer.
-///
-/// A layer's transform maps logical layout coordinates onto the target's
-/// physical pixel grid — the window's root transform is `Affine::scale(
-/// scale_factor)` and every node transform composes onto it, which is why
-/// [`point_to_clip`] normalizes transformed points by the *physical* target
-/// size. Its uniform scale is therefore exactly the factor
-/// [`edge_length_in_pixels`] applies before rounding: `layer_width ==
-/// round(scale * bounds.width())`. Taking it from the transform rather than
-/// from the rounded pixel ratio keeps the value steady at `2.0` on a Retina
-/// display instead of jittering by a rounding step as the layer resizes, and it
-/// matches what the browser widgets already publish to their own viewports.
 fn layer_device_scale(transform: kurbo::Affine) -> f64 {
     transform.determinant().abs().sqrt()
 }
@@ -1442,122 +941,7 @@ fn edge_length_in_pixels(
     ((dx * dx + dy * dy).sqrt().round().max(1.0)) as u32
 }
 
-fn encode_compositor_uniform(corners: [[f32; 2]; 4], source_is_srgb: bool) -> [u8; 80] {
-    let uvs = [[0.0f32, 0.0f32], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-    let mut bytes = [0u8; 80];
-    for (index, corner) in corners.iter().enumerate() {
-        let base = index * 16;
-        write_f32(&mut bytes, base, corner[0]);
-        write_f32(&mut bytes, base + 4, corner[1]);
-        write_f32(&mut bytes, base + 8, uvs[index][0]);
-        write_f32(&mut bytes, base + 12, uvs[index][1]);
-    }
-    write_f32(&mut bytes, 64, if source_is_srgb { 1.0 } else { 0.0 });
-    bytes
-}
-
-fn write_f32(bytes: &mut [u8], offset: usize, value: f32) {
-    bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
-}
-
 impl HydrolysisRenderer {
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn take_hybrid_composition(&mut self) -> Option<HybridComposition> {
-        self.flush_legacy_scene_layer();
-        if !self
-            .compositor
-            .render_layers
-            .iter()
-            .any(|layer| matches!(layer, RenderLayer::NativeView(_)))
-        {
-            return None;
-        }
-
-        let mut segments = vec![HybridRenderSegment { layers: Vec::new() }];
-        let mut native_views = Vec::new();
-        for layer in core::mem::take(&mut self.compositor.render_layers) {
-            match layer {
-                RenderLayer::NativeView(layer) => {
-                    native_views.push(layer);
-                    segments.push(HybridRenderSegment { layers: Vec::new() });
-                }
-                layer => segments
-                    .last_mut()
-                    .expect("Hydrolysis hybrid composition must have a render segment")
-                    .layers
-                    .push(layer),
-            }
-        }
-        assert!(
-            segments.len() == native_views.len() + 1,
-            "Hydrolysis hybrid composition segment count must bracket every native view"
-        );
-        Some(HybridComposition {
-            segments,
-            native_views,
-            transient_scene: self.transient_scene.take(),
-        })
-    }
-
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn render_hybrid_segment_to_surface(
-        &mut self,
-        segment: &mut HybridRenderSegment,
-        transient_scene: Option<Recording>,
-        target: HydrolysisRenderTarget<'_>,
-        premultiply_alpha: bool,
-    ) {
-        assert!(
-            self.compositor.render_layers.is_empty(),
-            "Hydrolysis hybrid composition cannot render over retained layers"
-        );
-        assert!(
-            self.transient_scene.is_none(),
-            "Hydrolysis hybrid composition cannot replace a transient scene"
-        );
-        self.compositor.render_layers = core::mem::take(&mut segment.layers);
-        self.transient_scene = transient_scene;
-        self.render_scene_to_surface_with_alpha_mode(target, premultiply_alpha, true);
-        segment.layers = core::mem::take(&mut self.compositor.render_layers);
-        assert!(
-            self.transient_scene.is_none(),
-            "Hydrolysis hybrid segment left a transient scene unconsumed"
-        );
-    }
-
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn restore_hybrid_composition(&mut self, composition: HybridComposition) {
-        let HybridComposition {
-            segments,
-            native_views,
-            transient_scene,
-        } = composition;
-        assert!(
-            transient_scene.is_none(),
-            "Hydrolysis hybrid composition restored before rendering its transient scene"
-        );
-        assert!(
-            segments.len() == native_views.len() + 1,
-            "Hydrolysis hybrid composition segment count changed during rendering"
-        );
-        let segment_count = segments.len();
-        let mut native_views = native_views.into_iter();
-        let mut layers = Vec::new();
-        for (index, segment) in segments.into_iter().enumerate() {
-            layers.extend(segment.layers);
-            if index + 1 < segment_count
-                && let Some(native_view) = native_views.next()
-            {
-                layers.push(RenderLayer::NativeView(native_view));
-            }
-        }
-        assert!(
-            native_views.next().is_none(),
-            "Hydrolysis hybrid composition did not restore every native view"
-        );
-        self.compositor.render_layers = layers;
-    }
-
     fn embedded_gpu_surface_setup(
         &self,
         adapter: &wgpu::Adapter,
@@ -1601,547 +985,10 @@ impl HydrolysisRenderer {
         self.render_scene_to_surface_with_alpha_mode(target, false, true);
     }
 
-    fn ensure_gpu_surface_compositor_state(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target_format: wgpu::TextureFormat,
-    ) {
-        if self.compositor.gpu_surface_compositor.is_none() {
-            self.compositor.gpu_surface_compositor =
-                Some(GpuSurfaceCompositorState::new(device, queue, target_format));
-            return;
-        }
-        self.compositor
-            .gpu_surface_compositor
-            .as_mut()
-            .expect("hydrolysis renderer: missing gpu surface compositor state")
-            .ensure_target_format(device, queue, target_format);
-    }
-
-    /// Renders a scene into a pooled target-sized texture, which the caller
-    /// must hand back to the pool once the composite pass has sampled it.
-    ///
-    /// The render's [`crate::engine::LegacyBumpReadback`] ticket rides
-    /// along: it is resolved by [`Self::complete_deferred_legacy`] next
-    /// frame, before the composite pass can sample the texture — an
-    /// overflowed layer is re-rendered first.
-    fn render_legacy_layer_to_texture(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        scene: &Recording,
-        width: u32,
-        height: u32,
-    ) -> (
-        PooledLayerTexture,
-        Option<crate::engine::LegacyBumpReadback>,
-    ) {
-        let leased = self.compositor.acquire_layer_texture(device, width, height);
-        self.state.counters.gpu_submissions += 1;
-        let readback = self
-            .legacy_renderer
-            .render_recording(
-                device,
-                queue,
-                scene,
-                &leased.view,
-                width,
-                height,
-                peniko::Color::TRANSPARENT,
-            )
-            .expect("hydrolysis renderer: failed to render legacy layer scene");
-        (leased, readback)
-    }
-
-    fn render_active_layers_mask_to_texture(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        active_layers: &[ActiveSceneLayer],
-    ) -> (
-        PooledLayerTexture,
-        Option<crate::engine::LegacyBumpReadback>,
-    ) {
-        let mask_scene = build_active_layers_mask_scene(active_layers, width, height);
-        self.render_legacy_layer_to_texture(device, queue, &mask_scene, width, height)
-    }
-
-    /// Resolve the deferred bump-buffer verification carried by `deferred`,
-    /// re-rendering any render that overflowed, in place.
-    ///
-    /// Called once per frame, before that frame's phase-1 work, on the
-    /// [`DeferredLegacyFrame`] the previous frame stashed: its renders had a
-    /// whole present interval to finish on the GPU, so a verified render
-    /// costs a non-blocking drain — steady-state frames never wait on GPU
-    /// completion. An overflowed render is re-issued at its freshly grown
-    /// sizes and drained again; a scene that keeps outgrowing stops at
-    /// [`MAX_BUMP_VERIFY_ROUNDS`] and is reported, same as the old inline
-    /// retry bound. That wait is the overflowed frame's own GPU-completion
-    /// cost, paid once, not overhead every frame carries.
-    ///
-    /// `pooled` carries the renderers checked out by
-    /// [`encode_legacy_layers_parallel`], each with its own readback ticket;
-    /// they return to the pool once verified. `main` lists the pending
-    /// readbacks on the shared sequential renderer (`Self::vello_renderer`),
-    /// verified in one batch with positions indexing into `main`.
-    fn verify_deferred_legacy(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        deferred: &mut DeferredLegacyFrame,
-    ) {
-        let (width, height) = deferred.surface_size;
-        for (renderer, pending) in &mut deferred.pooled {
-            // Growth is one-shot by construction: `BumpBufferSizes::satisfy`
-            // raises every bump-managed buffer to at least the demand this
-            // scene reported, so re-rendering the identical scene cannot
-            // overflow the same buffers again. The second verify exists to
-            // surface a violation of that invariant — a satisfy/covers
-            // disagreement with the shader accounting — not to converge.
-            let Some(ticket) = pending.readback.take() else {
-                continue;
-            };
-            let overflowed = match renderer.verify_bump_readbacks(device, vec![ticket]) {
-                Ok(overflowed) => overflowed,
-                Err(error) => {
-                    tracing::error!(
-                        "hydrolysis renderer: legacy bump-buffer verification failed: {error}"
-                    );
-                    continue;
-                }
-            };
-            if overflowed.is_empty() {
-                continue;
-            }
-            let DeferredLegacySource::Layer(scene) = &pending.source else {
-                unreachable!("hydrolysis renderer: pooled legacy pending is not a layer")
-            };
-            self.state.counters.gpu_submissions += 1;
-            pending.readback = renderer
-                .render_recording(
-                    device,
-                    queue,
-                    scene.as_ref(),
-                    &pending.view,
-                    width,
-                    height,
-                    peniko::Color::TRANSPARENT,
-                )
-                .expect("hydrolysis renderer: failed to re-render legacy layer scene");
-            let Some(ticket) = pending.readback.take() else {
-                continue;
-            };
-            match renderer.verify_bump_readbacks(device, vec![ticket]) {
-                Ok(overflowed) if overflowed.is_empty() => {}
-                Ok(_) => {
-                    tracing::error!(
-                        "hydrolysis renderer: legacy bump buffers still overflowing after \
-                         a demand-sized re-render — satisfy/covers disagree with the \
-                         shader accounting"
-                    );
-                }
-                Err(error) => {
-                    tracing::error!(
-                        "hydrolysis renderer: legacy bump-buffer verification failed: {error}"
-                    );
-                }
-            }
-        }
-        for (renderer, _) in deferred.pooled.drain(..) {
-            self.compositor
-                .legacy_renderer_pool
-                .lock()
-                .expect("hydrolysis renderer: legacy renderer pool poisoned")
-                .push(renderer);
-        }
-
-        let main = &mut deferred.main;
-        // Same one-shot construction as the pooled loop above: verify, then
-        // re-render each overflowed render once at its reported demand and
-        // verify once more — a second overflow means the growth accounting
-        // is buggy, which is reported rather than retried.
-        let mut owners = Vec::new();
-        let mut tickets = Vec::new();
-        for (index, pending) in main.iter_mut().enumerate() {
-            if let Some(ticket) = pending.readback.take() {
-                owners.push(index);
-                tickets.push(ticket);
-            }
-        }
-        if tickets.is_empty() {
-            return;
-        }
-        let overflowed = match self.legacy_renderer.verify_bump_readbacks(device, tickets) {
-            Ok(overflowed) => overflowed,
-            Err(error) => {
-                tracing::error!(
-                    "hydrolysis renderer: legacy bump-buffer verification failed: {error}"
-                );
-                return;
-            }
-        };
-        if overflowed.is_empty() {
-            return;
-        }
-        for position in overflowed {
-            let pending = &mut main[owners[position]];
-            let view = pending.view.clone();
-            self.state.counters.gpu_submissions += 1;
-            pending.readback = match &pending.source {
-                DeferredLegacySource::Layer(scene) => self.legacy_renderer.render_recording(
-                    device,
-                    queue,
-                    scene.as_ref(),
-                    &view,
-                    width,
-                    height,
-                    peniko::Color::TRANSPARENT,
-                ),
-                DeferredLegacySource::Mask(active_layers) => {
-                    let mask_scene = build_active_layers_mask_scene(
-                        active_layers,
-                        deferred.surface_size.0,
-                        deferred.surface_size.1,
-                    );
-                    self.legacy_renderer.render_recording(
-                        device,
-                        queue,
-                        &mask_scene,
-                        &view,
-                        width,
-                        height,
-                        peniko::Color::TRANSPARENT,
-                    )
-                }
-            }
-            .expect("hydrolysis renderer: failed to re-render legacy layer scene");
-        }
-        let mut tickets = Vec::new();
-        for pending in main.iter_mut() {
-            if let Some(ticket) = pending.readback.take() {
-                tickets.push(ticket);
-            }
-        }
-        if tickets.is_empty() {
-            return;
-        }
-        match self.legacy_renderer.verify_bump_readbacks(device, tickets) {
-            Ok(overflowed) if overflowed.is_empty() => {}
-            Ok(_) => {
-                tracing::error!(
-                    "hydrolysis renderer: legacy bump buffers still overflowing after \
-                     a demand-sized re-render — satisfy/covers disagree with the \
-                     shader accounting"
-                );
-            }
-            Err(error) => {
-                tracing::error!(
-                    "hydrolysis renderer: legacy bump-buffer verification failed: {error}"
-                );
-            }
-        }
-    }
-
-    /// Whether the last rendered frame left its legacy verification deferred:
-    /// its verified composite still owes a present. Runners must schedule one
-    /// drain pass — [`Self::flush_deferred_legacy_frame_to_surface`] — once the
-    /// frame stream settles, or the last rendered frame never reaches the
-    /// screen. A stash a settle already presented keeps no drain owed: the
-    /// next content frame composites it again at its top.
-    pub(crate) fn has_deferred_legacy_frame(&self) -> bool {
-        self.compositor
-            .deferred_legacy_frame
-            .as_ref()
-            .is_some_and(|deferred| !deferred.presented)
-    }
-
-    /// The `queue.submit` indices the stashed frame's tickets depend on —
-    /// what the runner's GPU-completion watch waits on. Empty when nothing
-    /// is stashed (or a stash carries no tickets, which the verify treats
-    /// as already resolved).
-    #[cfg(hydrolysis_winit)]
-    pub(crate) fn deferred_legacy_watch_submissions(&self) -> Vec<wgpu::SubmissionIndex> {
-        self.compositor
-            .deferred_legacy_frame
-            .as_ref()
-            .map(|deferred| deferred.watch_submissions.clone())
-            .unwrap_or_default()
-    }
-
-    /// Whether the stashed frame's readbacks have all resolved — a pure flag
-    /// check; GPU completion is driven off the main thread by the runner's
-    /// poll driver, whose wake is what brings a settle here. Nothing
-    /// stashed counts as resolved.
-    pub(crate) fn deferred_legacy_frame_resolved(&self) -> bool {
-        self.compositor
-            .deferred_legacy_frame
-            .as_ref()
-            .is_none_or(DeferredLegacyFrame::verify_ready)
-    }
-
-    /// A drain-only present: resolves the stashed frame's tickets and
-    /// composites it, without encoding new scene work — the settle pass a
-    /// stashing frame asks the runner for. A no-op when nothing is stashed.
-    ///
-    /// The stash is presented but RETAINED: the next content frame
-    /// composites the same verified output at its top again, so a settle
-    /// landing between damage batches is an early present rather than a
-    /// hole the following frame must bootstrap around.
-    pub(crate) fn flush_deferred_legacy_frame_to_surface(
-        &mut self,
-        target: HydrolysisRenderTarget<'_>,
-        premultiply_alpha: bool,
-    ) {
-        let encoding = TargetEncoding::of(target.format);
-        self.present_deferred_legacy_frame(&target, encoding, premultiply_alpha);
-    }
-
-    /// Presents the stashed deferred frame's verified composite into
-    /// `target` without consuming it: the frame stays stashed marked
-    /// `presented` so the next content frame re-composites the same output
-    /// before encoding new work.
-    fn present_deferred_legacy_frame(
-        &mut self,
-        target: &HydrolysisRenderTarget<'_>,
-        encoding: TargetEncoding,
-        premultiply_alpha: bool,
-    ) -> bool {
-        let Some(mut deferred) = self.compositor.deferred_legacy_frame.take() else {
-            return false;
-        };
-        self.verify_deferred_legacy(target.device, target.queue, &mut deferred);
-        tracing::debug!(
-            target: "hydrolysis::vello_deferred",
-            tail_latency_ms = deferred.stashed_at.elapsed().as_secs_f64() * 1_000.0,
-            "deferred vello stash presented"
-        );
-        deferred.presented = true;
-        let presented = deferred.surface_size == (target.width, target.height);
-        if presented {
-            if deferred.ready.is_empty() {
-                self.clear_target_surface(
-                    target.device,
-                    target.queue,
-                    target.view,
-                    target.base_color,
-                    encoding,
-                    premultiply_alpha,
-                );
-            } else {
-                self.composite_ready_layers(target, &deferred.ready, premultiply_alpha);
-            }
-        }
-        self.compositor.deferred_legacy_frame = Some(deferred);
-        presented
-    }
-
-    /// Resolves the stashed deferred frame's tickets and composites its
-    /// verified textures into `target`, returning whether anything was
-    /// presented. A resize makes the stashed output unusable: it is still
-    /// drained (buffer growth is learned, textures return to the pool) but
-    /// nothing composites and the caller must fill the target itself.
-    fn drain_deferred_legacy_frame(
-        &mut self,
-        target: &HydrolysisRenderTarget<'_>,
-        encoding: TargetEncoding,
-        premultiply_alpha: bool,
-    ) -> bool {
-        let Some(mut deferred) = self.compositor.deferred_legacy_frame.take() else {
-            return false;
-        };
-        self.verify_deferred_legacy(target.device, target.queue, &mut deferred);
-        let presented = deferred.surface_size == (target.width, target.height);
-        if presented {
-            if deferred.ready.is_empty() {
-                self.clear_target_surface(
-                    target.device,
-                    target.queue,
-                    target.view,
-                    target.base_color,
-                    encoding,
-                    premultiply_alpha,
-                );
-            } else {
-                self.composite_ready_layers(target, &deferred.ready, premultiply_alpha);
-            }
-        }
-        for layer in deferred.ready {
-            if let Some(leased) = layer.layer_texture {
-                self.compositor.release_layer_texture(leased);
-            }
-            if let Some(leased) = layer.mask_texture {
-                self.compositor.release_layer_texture(leased);
-            }
-        }
-        presented
-    }
-
-    fn default_compositor_mask_view(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target_format: wgpu::TextureFormat,
-    ) -> wgpu::TextureView {
-        self.ensure_gpu_surface_compositor_state(device, queue, target_format);
-        self.compositor
-            .gpu_surface_compositor
-            .as_ref()
-            .expect("hydrolysis renderer: missing gpu surface compositor state")
-            .white_mask_view
-            .clone()
-    }
-
-    fn clear_target_surface(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        target: &wgpu::TextureView,
-        base_color: peniko::Color,
-        encoding: TargetEncoding,
-        premultiply_alpha: bool,
-    ) {
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("hydrolysis_surface_clear_encoder"),
-        });
-        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("hydrolysis_surface_clear_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(encoding.clear_value(base_color, premultiply_alpha)),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        drop(_pass);
-        self.state.counters.gpu_submissions += 1;
-        queue.submit(std::iter::once(encoder.finish()));
-    }
-
-    /// Composites every prepared layer into the target in painter's order with
-    /// one render pass and one submit. Each layer's uniform lives in its own
-    /// dynamic-offset slot of the shared buffer, so nothing forces a
-    /// submit-per-layer round trip.
-    fn composite_ready_layers(
-        &mut self,
-        target: &HydrolysisRenderTarget<'_>,
-        layers: &[ReadyLayerComposite],
-        premultiply_alpha: bool,
-    ) {
-        self.ensure_gpu_surface_compositor_state(target.device, target.queue, target.format);
-        let compositor = self
-            .compositor
-            .gpu_surface_compositor
-            .as_mut()
-            .expect("hydrolysis renderer: missing gpu surface compositor state");
-        compositor.ensure_uniform_capacity(target.device, layers.len());
-
-        let stride = GpuSurfaceCompositorState::UNIFORM_SLOT_STRIDE as usize;
-        let mut uniform_bytes = vec![0u8; layers.len() * stride];
-        for (index, layer) in layers.iter().enumerate() {
-            let start = index * stride;
-            uniform_bytes[start..start + layer.uniform_bytes.len()]
-                .copy_from_slice(&layer.uniform_bytes);
-        }
-        target
-            .queue
-            .write_buffer(&compositor.uniform_buffer, 0, &uniform_bytes);
-
-        let bind_groups: Vec<wgpu::BindGroup> = layers
-            .iter()
-            .map(|layer| {
-                target.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("hydrolysis_gpu_surface_compositor_bind_group"),
-                    layout: &compositor.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                buffer: &compositor.uniform_buffer,
-                                offset: 0,
-                                size: core::num::NonZeroU64::new(
-                                    GpuSurfaceCompositorState::UNIFORM_SIZE,
-                                ),
-                            }),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&compositor.sampler),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::TextureView(&layer.layer_view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: wgpu::BindingResource::TextureView(&layer.mask_view),
-                        },
-                    ],
-                })
-            })
-            .collect();
-
-        let mut encoder = target
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("hydrolysis_gpu_surface_compositor_encoder"),
-            });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("hydrolysis_gpu_surface_compositor_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target.view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(
-                        TargetEncoding::of(target.format)
-                            .clear_value(target.base_color, premultiply_alpha),
-                    ),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&compositor.pipeline);
-        for (index, bind_group) in bind_groups.iter().enumerate() {
-            let offset = (index as u64) * GpuSurfaceCompositorState::UNIFORM_SLOT_STRIDE;
-            #[allow(clippy::cast_possible_truncation)]
-            pass.set_bind_group(0, bind_group, &[offset as u32]);
-            pass.draw(0..6, 0..1);
-        }
-        drop(pass);
-        self.state.counters.gpu_submissions += 1;
-        target.queue.submit(std::iter::once(encoder.finish()));
-    }
-
     pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
         self.render_scene_to_surface_with_alpha_mode(target, false, true);
     }
 
-    /// [`Self::render_scene_to_surface`] with the target's composite alpha
-    /// convention made explicit: `premultiply_alpha` stores the base colour
-    /// premultiplied, which an OS surface presented under
-    /// `CompositeAlphaMode::PreMultiplied` reads back correctly; offscreen and
-    /// readback targets keep their straight-alpha bytes.
-    ///
-    /// `rasterize_vello_layers` skips only the frame's vello rasterization:
-    /// a frame whose pixels no consumer can read (a headless pump that does
-    /// not capture) still pumps the scene, still ticks embedded GpuSurface
-    /// views and still composites, but submits no vello scene renders or
-    /// masks — on a software rasterizer each of those submissions is a real
-    /// device-bound frame. Capture and presented frames always pass `true`.
     /// [`Self::render_scene_to_surface`] with the target's composite alpha
     /// convention made explicit: `premultiply_alpha` selects the alpha mode the
     /// presenter writes into the acquired frame — premultiplied for an OS
@@ -2172,7 +1019,7 @@ impl HydrolysisRenderer {
         );
 
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
-        self.flush_legacy_scene_layer();
+        self.flush_scene_layer();
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(target.device, target.queue, 0);
         self.frame_direct_gpu_surfaces = 0;
@@ -2180,11 +1027,75 @@ impl HydrolysisRenderer {
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         let transient = self.transient_scene.take().filter(scene_has_content);
 
+        // A sole GPU surface the tree marked `direct_to_target` — it covers
+        // the viewport, is opaque, and nothing composites around it —
+        // replaces the whole engine pass: it renders straight into the
+        // acquired texture and the surface never presents at all.
+        if transient.is_none()
+            && render_layers.len() == 1
+            && let Some(RenderLayer::GpuSurface(layer)) = render_layers.first()
+            && layer.direct_to_target
+            && let Some(texture) = target.texture
+        {
+            let mut needs_redraw = false;
+            let GpuSurfaceSource::Owned(runtime) = &layer.source;
+            let output_format = runtime.borrow().output_format_for(target.format);
+            if !EmbeddedGpuSurfaceRuntime::ensure_setup(
+                runtime,
+                self.embedded_gpu_surface_setup(
+                    target.adapter,
+                    target.device,
+                    target.queue,
+                    target.device_loss.clone(),
+                ),
+                self.frame_signals(),
+                output_format,
+            ) {
+                needs_redraw = true;
+            } else {
+                let pointer = project_pointer_into_surface(
+                    self.hit_test.pointer_position,
+                    self.hit_test.pointer_press_origin,
+                    layer.hit_rect,
+                    target.width,
+                    target.height,
+                );
+                #[cfg(feature = "frame-profile")]
+                self.gpu_profile_mark(target.device, target.queue, 1);
+                if runtime
+                    .borrow_mut()
+                    .render_direct_to_target(DirectGpuSurfaceTarget {
+                        device: target.device,
+                        queue: target.queue,
+                        texture,
+                        view: target.view.clone(),
+                        format: target.format,
+                        width: target.width,
+                        height: target.height,
+                        scale: layer_device_scale(layer.transform),
+                        pointer,
+                        now: self.frame_instant,
+                    })
+                {
+                    needs_redraw = true;
+                }
+                #[cfg(feature = "frame-profile")]
+                self.gpu_profile_mark(target.device, target.queue, 2);
+                self.frame_direct_gpu_surfaces = 1;
+            }
+            self.compositor.render_layers = render_layers;
+            if needs_redraw {
+                self.request_redraw();
+            }
+            return;
+        }
+
         // The shared engine for this frame's device context; `wake` is the
         // host's display-link wake the engine's redraw callback drives.
         let host_wake = self.host_redraw_handle.clone();
         let engine = crate::engine::shared_engine(
             target.gpu_context_id,
+            target.adapter,
             target.shared_device.clone(),
             move || {
                 if let Some(handle) = &host_wake {
@@ -2208,17 +1119,15 @@ impl HydrolysisRenderer {
         // engine surface are created fresh and dropped with the capture.
         let mut transient_window = None;
         let window = if target.persistent {
-            windows
-                .entry(context_id)
-                .or_insert_with(|| {
-                    CherenkovWindow::new(
-                        engine.clone(),
-                        target.device,
-                        backend,
-                        (target.width, target.height),
-                        target.device_loss.clone(),
-                    )
-                })
+            windows.entry(context_id).or_insert_with(|| {
+                CherenkovWindow::new(
+                    engine.clone(),
+                    target.device,
+                    backend,
+                    (target.width, target.height),
+                    target.device_loss.clone(),
+                )
+            })
         } else {
             transient_window.insert(CherenkovWindow::new(
                 engine.clone(),
@@ -2244,14 +1153,13 @@ impl HydrolysisRenderer {
             crate::renderer::retained::RenderKey,
             Vec<crate::renderer::retained::mount::AncestryScope>,
         )> = Vec::new();
-        let mut placements: Vec<(crate::renderer::retained::RenderKey, kurbo::Affine)> =
-            Vec::new();
+        let mut placements: Vec<(crate::renderer::retained::RenderKey, kurbo::Affine)> = Vec::new();
         let mut needs_redraw = false;
         let mut segment_index = 0usize;
 
         for layer in &render_layers {
             match layer {
-                RenderLayer::Vello(recording) => {
+                RenderLayer::Scene(recording) => {
                     let slot = crate::renderer::retained::MountSlot::Segment(segment_index);
                     segment_index += 1;
                     order.push(slot);
@@ -2304,22 +1212,47 @@ impl HydrolysisRenderer {
                     if prepared.needs_redraw {
                         needs_redraw = true;
                     }
-                    let color = if matches!(
-                        prepared.output_format,
-                        wgpu::TextureFormat::Rgba16Float
-                    ) {
-                        cherenkov_gpu::interop::FrameColor::LINEAR_P3
-                    } else {
-                        cherenkov_gpu::interop::FrameColor::SRGB
-                    };
+                    let color =
+                        if matches!(prepared.output_format, wgpu::TextureFormat::Rgba16Float) {
+                            cherenkov_gpu::interop::FrameColor::LINEAR_P3
+                        } else {
+                            cherenkov_gpu::interop::FrameColor::SRGB
+                        };
                     let frame = cherenkov_gpu::interop::ExternalFrame::rgb(
                         prepared.texture.clone(),
                         cherenkov_gpu::interop::RgbAlpha::Premultiplied,
                         color,
                     )
-                    .expect("hydrolysis renderer: embedded surface texture rejected as a frame plane");
+                    .expect(
+                        "hydrolysis renderer: embedded surface texture rejected as a frame plane",
+                    );
                     installs.push((slot, engine.external_frame(frame).into()));
-                    placements.push((layer.key, gpu_frame_transform(layer, &prepared.texture)));
+                    placements.push((
+                        layer.key,
+                        gpu_frame_transform(layer.transform, layer.bounds, &prepared.texture),
+                    ));
+                    ancestries.push((layer.key, ancestry_scopes(&layer.active_layers)));
+                }
+                RenderLayer::ExternalTexture(layer) => {
+                    let slot = crate::renderer::retained::MountSlot::Keyed(layer.key);
+                    order.push(slot);
+                    live_keys.insert(layer.key);
+                    let color = if matches!(layer.format, wgpu::TextureFormat::Rgba16Float) {
+                        cherenkov_gpu::interop::FrameColor::LINEAR_P3
+                    } else {
+                        cherenkov_gpu::interop::FrameColor::SRGB
+                    };
+                    let frame = cherenkov_gpu::interop::ExternalFrame::rgb(
+                        layer.texture.clone(),
+                        cherenkov_gpu::interop::RgbAlpha::Premultiplied,
+                        color,
+                    )
+                    .expect("hydrolysis renderer: effect output texture rejected as a frame plane");
+                    installs.push((slot, engine.external_frame(frame).into()));
+                    placements.push((
+                        layer.key,
+                        gpu_frame_transform(layer.transform, layer.bounds, &layer.texture),
+                    ));
                     ancestries.push((layer.key, ancestry_scopes(&layer.active_layers)));
                 }
                 #[cfg(hydrolysis_macos_system_webview)]
@@ -2342,7 +1275,9 @@ impl HydrolysisRenderer {
         }
 
         window.surface.resize((target.width, target.height));
-        window.surface.display(target.display_scale, target.headroom);
+        window
+            .surface
+            .display(target.display_scale, target.headroom);
         window
             .surface
             .clear_color(crate::renderer::recording::working_color(target.base_color));
@@ -2359,10 +1294,7 @@ impl HydrolysisRenderer {
                 mounts.set_ancestry(surface, tx, key, &scopes);
             }
             for (key, transform) in placements {
-                let layer = mounts.layer(
-                    surface,
-                    crate::renderer::retained::MountSlot::Keyed(key),
-                );
+                let layer = mounts.layer(surface, crate::renderer::retained::MountSlot::Keyed(key));
                 tx[layer].transform(transform);
             }
             mounts.sync_order(surface, tx, &order, &live_keys);
@@ -2372,7 +1304,8 @@ impl HydrolysisRenderer {
                 .get_mut(&context_id)
                 .expect("hydrolysis renderer: window surface lost within a frame")
         });
-        self.state.counters.recorded_view_contents += u64::try_from(installs_len).unwrap_or(u64::MAX);
+        self.state.counters.recorded_view_contents +=
+            u64::try_from(installs_len).unwrap_or(u64::MAX);
         let (created, removed) = window.mounts.take_frame_stats();
         self.state.counters.layer_creations += created;
         self.state.counters.layer_removals += removed;
@@ -2426,12 +1359,7 @@ impl CherenkovWindow {
         device_loss: waterui_graphics::DeviceLoss,
     ) -> Self {
         Self {
-            surface: crate::engine::CherenkovSurface::new(
-                engine.clone(),
-                device,
-                backend,
-                size,
-            ),
+            surface: crate::engine::CherenkovSurface::new(engine.clone(), device, backend, size),
             mounts: crate::renderer::retained::Mounts::new(),
             resources: crate::renderer::recording::SceneResources::new(engine),
             device_loss,
@@ -2443,17 +1371,21 @@ impl CherenkovWindow {
 /// layer's own transform positions its bounds, then the texture's pixel
 /// extent is normalised onto those bounds so engine sampling maps one
 /// produced pixel onto one bound area regardless of rounding.
-fn gpu_frame_transform(layer: &GpuSurfaceLayer, texture: &wgpu::Texture) -> kurbo::Affine {
+fn gpu_frame_transform(
+    transform: kurbo::Affine,
+    bounds: kurbo::Rect,
+    texture: &wgpu::Texture,
+) -> kurbo::Affine {
     let size = texture.size();
     assert!(
         size.width > 0 && size.height > 0,
-        "hydrolysis renderer: an embedded surface produced an empty texture"
+        "hydrolysis renderer: an external frame plane is an empty texture"
     );
-    layer.transform
-        * kurbo::Affine::translate((layer.bounds.x0, layer.bounds.y0))
+    transform
+        * kurbo::Affine::translate((bounds.x0, bounds.y0))
         * kurbo::Affine::scale_non_uniform(
-            layer.bounds.width() / f64::from(size.width),
-            layer.bounds.height() / f64::from(size.height),
+            bounds.width() / f64::from(size.width),
+            bounds.height() / f64::from(size.height),
         )
 }
 

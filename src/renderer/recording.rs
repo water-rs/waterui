@@ -74,6 +74,15 @@ enum Op {
         radius: f64,
         sigma: f64,
     },
+    /// A shape's blurred silhouette in one colour — the shadow view's
+    /// output, rasterized and cached by the engine rather than a
+    /// renderer-owned pixmap cache.
+    Shadow {
+        transform: Affine,
+        shape: ShapeData,
+        color: peniko::Color,
+        sigma: f64,
+    },
     PushClip {
         rule: Fill,
         transform: Affine,
@@ -93,6 +102,33 @@ enum Op {
     PopLayer,
 }
 
+/// Panics unless `image`'s blob is exactly `format.size_in_bytes(width,
+/// height)` — the `width * height * bytes_per_pixel` contract the upload
+/// enforces. Checked at this boundary — the first hydrolysis-owned point —
+/// so a malformed `peniko::ImageData` fails fast with the expected and
+/// actual byte counts instead of surfacing deep inside the engine.
+pub(crate) fn assert_well_formed_image(image: &peniko::ImageData) {
+    let actual = image.data.len();
+    let Some(expected) = image.format.size_in_bytes(image.width, image.height) else {
+        panic!(
+            "hydrolysis scene ingest: malformed peniko::ImageData — format {:?} at {}x{} \
+             overflows the byte-size calculation",
+            image.format, image.width, image.height,
+        );
+    };
+    assert!(
+        actual == expected,
+        "hydrolysis scene ingest: malformed peniko::ImageData — format {:?} at {}x{} needs \
+         width*height*bytes_per_pixel = {} bytes, but the blob holds {} bytes; re-encode the \
+         image or fix its declared format and dimensions",
+        image.format,
+        image.width,
+        image.height,
+        expected,
+        actual,
+    );
+}
+
 /// Engine-facing caches shared by every lowered scene: registered fonts and
 /// images, keyed by the identity of the peniko resource they came from.
 ///
@@ -103,6 +139,11 @@ pub(crate) struct SceneResources {
     engine: std::rc::Rc<crate::engine::GpuEngine>,
     fonts: FxHashMap<FontKey, cherenkov::Font>,
     images: FxHashMap<ImageKey, cherenkov::Image<cherenkov::Rgba8>>,
+    /// Fresh engine registrations since the last
+    /// [`Self::take_registration_stats`] — the migration counters' evidence
+    /// that fonts and images are not re-registered per frame.
+    font_registrations: u64,
+    image_registrations: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -136,7 +177,18 @@ impl SceneResources {
             engine,
             fonts: FxHashMap::default(),
             images: FxHashMap::default(),
+            font_registrations: 0,
+            image_registrations: 0,
         }
+    }
+
+    /// (fonts, images) registered since the last call, drained per frame
+    /// into the migration counters.
+    pub(crate) fn take_registration_stats(&mut self) -> (u64, u64) {
+        let stats = (self.font_registrations, self.image_registrations);
+        self.font_registrations = 0;
+        self.image_registrations = 0;
+        stats
     }
 
     /// The engine these resources belong to.
@@ -161,6 +213,7 @@ impl SceneResources {
             .expect("hydrolysis renderer: engine rejected a font source it must accept");
         let id = registered.id();
         self.fonts.insert(key, registered);
+        self.font_registrations += 1;
         id
     }
 
@@ -195,13 +248,10 @@ impl SceneResources {
             image.height,
             bytes.len()
         );
-        let data = ImageData::<cherenkov::Rgba8>::new(
-            image.width,
-            image.height,
-            Arc::<[u8]>::from(bytes),
-        )
-        .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
-        .color_space(ImageColorSpace::Srgb);
+        let data =
+            ImageData::<cherenkov::Rgba8>::new(image.width, image.height, Arc::<[u8]>::from(bytes))
+                .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
+                .color_space(ImageColorSpace::Srgb);
         let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
             data.premultiplied()
         } else {
@@ -213,6 +263,7 @@ impl SceneResources {
             .expect("hydrolysis renderer: engine rejected an image it must accept");
         let id = registered.id();
         self.images.insert(key, registered);
+        self.image_registrations += 1;
         id
     }
 
@@ -350,8 +401,30 @@ impl Recording {
         self.ops.push(Op::Picture { transform, picture });
     }
 
+    /// Draws `shape`'s Gaussian-blurred silhouette in `color` under
+    /// `transform` — `sigma` in the shape's units.
+    pub(crate) fn shadow<S: Shape + 'static>(
+        &mut self,
+        transform: Affine,
+        shape: &S,
+        sigma: f64,
+        color: peniko::Color,
+    ) {
+        self.ops.push(Op::Shadow {
+            transform,
+            shape: shape_data(Fill::NonZero, shape),
+            color,
+            sigma,
+        });
+    }
+
     /// Pushes a clip-only scope.
-    pub(crate) fn push_clip<S: Shape + 'static>(&mut self, rule: Fill, transform: Affine, shape: &S) {
+    pub(crate) fn push_clip<S: Shape + 'static>(
+        &mut self,
+        rule: Fill,
+        transform: Affine,
+        shape: &S,
+    ) {
         self.open_layers += 1;
         self.ops.push(Op::PushClip {
             rule,
@@ -408,103 +481,133 @@ impl Recording {
 
     /// Appends `other` under `placement`.
     pub(crate) fn append(&mut self, other: &Recording, placement: Affine) {
-        self.ops.extend(other.ops.iter().cloned().map(|op| match op {
-            Op::Fill {
-                rule,
-                transform,
-                brush,
-                brush_transform,
-                shape,
-            } => Op::Fill {
-                rule,
-                transform: placement * transform,
-                brush,
-                brush_transform,
-                shape,
-            },
-            Op::Stroke {
-                stroke,
-                transform,
-                brush,
-                brush_transform,
-                shape,
-            } => Op::Stroke {
-                stroke,
-                transform: placement * transform,
-                brush,
-                brush_transform,
-                shape,
-            },
-            Op::Image { image, transform } => Op::Image {
-                image,
-                transform: placement * transform,
-            },
-            Op::Glyphs {
-                font,
-                font_size,
-                coords,
-                transform,
-                brush,
-                brush_alpha,
-                style,
-                glyphs,
-            } => Op::Glyphs {
-                font,
-                font_size,
-                coords,
-                transform: placement * transform,
-                brush,
-                brush_alpha,
-                style,
-                glyphs,
-            },
-            Op::BlurredRoundedRect {
-                transform,
-                rect,
-                color,
-                radius,
-                sigma,
-            } => Op::BlurredRoundedRect {
-                transform: placement * transform,
-                rect,
-                color,
-                radius,
-                sigma,
-            },
-            Op::PushClip {
-                rule,
-                transform,
-                clip,
-            } => Op::PushClip {
-                rule,
-                transform: placement * transform,
-                clip,
-            },
-            Op::PushGroup {
-                rule,
-                blend,
-                opacity,
-                transform,
-                clip,
-            } => Op::PushGroup {
-                rule,
-                blend,
-                opacity,
-                transform: placement * transform,
-                clip,
-            },
-            Op::Picture { transform, picture } => Op::Picture {
-                transform: placement * transform,
-                picture,
-            },
-            Op::PopLayer => Op::PopLayer,
-        }));
+        self.ops
+            .extend(other.ops.iter().cloned().map(|op| match op {
+                Op::Fill {
+                    rule,
+                    transform,
+                    brush,
+                    brush_transform,
+                    shape,
+                } => Op::Fill {
+                    rule,
+                    transform: placement * transform,
+                    brush,
+                    brush_transform,
+                    shape,
+                },
+                Op::Stroke {
+                    stroke,
+                    transform,
+                    brush,
+                    brush_transform,
+                    shape,
+                } => Op::Stroke {
+                    stroke,
+                    transform: placement * transform,
+                    brush,
+                    brush_transform,
+                    shape,
+                },
+                Op::Image { image, transform } => Op::Image {
+                    image,
+                    transform: placement * transform,
+                },
+                Op::Glyphs {
+                    font,
+                    font_size,
+                    coords,
+                    transform,
+                    brush,
+                    brush_alpha,
+                    style,
+                    glyphs,
+                } => Op::Glyphs {
+                    font,
+                    font_size,
+                    coords,
+                    transform: placement * transform,
+                    brush,
+                    brush_alpha,
+                    style,
+                    glyphs,
+                },
+                Op::BlurredRoundedRect {
+                    transform,
+                    rect,
+                    color,
+                    radius,
+                    sigma,
+                } => Op::BlurredRoundedRect {
+                    transform: placement * transform,
+                    rect,
+                    color,
+                    radius,
+                    sigma,
+                },
+                Op::Shadow {
+                    transform,
+                    shape,
+                    color,
+                    sigma,
+                } => Op::Shadow {
+                    transform: placement * transform,
+                    shape,
+                    color,
+                    sigma,
+                },
+                Op::PushClip {
+                    rule,
+                    transform,
+                    clip,
+                } => Op::PushClip {
+                    rule,
+                    transform: placement * transform,
+                    clip,
+                },
+                Op::PushGroup {
+                    rule,
+                    blend,
+                    opacity,
+                    transform,
+                    clip,
+                } => Op::PushGroup {
+                    rule,
+                    blend,
+                    opacity,
+                    transform: placement * transform,
+                    clip,
+                },
+                Op::Picture { transform, picture } => Op::Picture {
+                    transform: placement * transform,
+                    picture,
+                },
+                Op::PopLayer => Op::PopLayer,
+            }));
     }
 
     /// Push scopes still open, for the tracked-stack invariant the flush
     /// asserts.
     pub(crate) fn open_clip_count(&self) -> u32 {
         self.open_layers
+    }
+
+    /// The premultiplied sRGB colours of every solid fill or stroke op, for
+    /// tests asserting a colour reached the recording.
+    #[cfg(test)]
+    pub(crate) fn solid_fill_colours(&self) -> Vec<u32> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::Fill { brush, .. } | Op::Stroke { brush, .. } => match brush {
+                    peniko::Brush::Solid(color) => {
+                        Some(u32::from_ne_bytes(color.to_rgba8().to_u8_array()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
     }
 
     /// Lowers the recording into engine [`Content`] through `resources`.
@@ -626,7 +729,23 @@ fn lower(ops: &[Op], index: &mut usize, recorder: &mut Recorder, resources: &mut
                 };
                 recorder.transform(*transform, |r| r.shadow(shape, shadow));
             }
-            Op::PushClip { transform, clip, .. } => recorder.transform(*transform, |r| {
+            Op::Shadow {
+                transform,
+                shape,
+                color,
+                sigma,
+            } => {
+                let shadow = Shadow {
+                    sigma: *sigma,
+                    offset: Vec2::ZERO,
+                    spread: 0.0,
+                    color: working_color(*color),
+                };
+                recorder.transform(*transform, |r| r.shadow(shape.clone(), shadow));
+            }
+            Op::PushClip {
+                transform, clip, ..
+            } => recorder.transform(*transform, |r| {
                 r.clip(clip.clone(), |r| lower(ops, index, r, resources));
             }),
             Op::PushGroup {
@@ -664,9 +783,7 @@ fn lower(ops: &[Op], index: &mut usize, recorder: &mut Recorder, resources: &mut
 fn shape_data<S: Shape + 'static>(rule: Fill, shape: &S) -> ShapeData {
     match rule {
         Fill::NonZero => ShapeData::of(shape),
-        Fill::EvenOdd => {
-            ShapeData::of(&EvenOdd(shape.to_path(cherenkov::PATH_TOLERANCE)))
-        }
+        Fill::EvenOdd => ShapeData::of(&EvenOdd(shape.to_path(cherenkov::PATH_TOLERANCE))),
     }
 }
 
@@ -843,9 +960,7 @@ pub(crate) fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint 
 /// Scales a paint's alpha where a legacy alpha channel rides on the brush.
 fn alpha_scaled_paint(paint: Paint, alpha: f32) -> Paint {
     match paint {
-        Paint::Solid(color) => {
-            Paint::Solid(color.with_alpha(color.components[3] * alpha))
-        }
+        Paint::Solid(color) => Paint::Solid(color.with_alpha(color.components[3] * alpha)),
         _ => paint,
     }
 }
@@ -926,12 +1041,12 @@ impl Scene2D for Recording {
 
 /// The existing `DrawContext` adapter: the WaterUI theme-drawing interface,
 /// recorded into [`Recording`]. Renamed at cutover; the API is unchanged.
-pub struct VelloDrawContext<'a> {
+pub struct SceneDrawContext<'a> {
     scene: &'a mut Recording,
     transform_stack: Vec<Affine>,
 }
 
-impl<'a> VelloDrawContext<'a> {
+impl<'a> SceneDrawContext<'a> {
     pub(crate) fn with_root_transform(scene: &'a mut Recording, transform: Affine) -> Self {
         Self {
             scene,
@@ -966,7 +1081,7 @@ impl<'a> VelloDrawContext<'a> {
     }
 }
 
-impl DrawContext for VelloDrawContext<'_> {
+impl DrawContext for SceneDrawContext<'_> {
     fn fill_rect(&mut self, rect: Rect, brush: &Brush) {
         self.fill_shape(&rect, brush);
     }

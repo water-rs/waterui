@@ -1,4 +1,4 @@
-//! The Vello GPU attachment for the Android host.
+//! The Cherenkov GPU attachment for the Android host.
 //!
 //! One [`AndroidGpuContext`] per process owns the wgpu instance, adapter,
 //! device and queue; every presentation attachment ([`AndroidSurface`]) is a
@@ -98,7 +98,7 @@ impl Drop for AndroidGpuContextInner {
 
 /// The process-wide wgpu context the Android host renders through.
 ///
-/// Vulkan only — the plan of record is Vello over Vulkan, so there is no
+/// Vulkan only — the plan of record is Cherenkov over Vulkan, so there is no
 /// runtime fallback to another GPU API: a Vulkan adapter that cannot paint
 /// is an explicit [`GpuError`] naming the adapter and the missing flags,
 /// never a switch to GLES or another painter.
@@ -114,8 +114,8 @@ impl AndroidGpuContext {
     }
 
     async fn request_async() -> Result<Self, GpuError> {
-        // The painter's shaders require these capabilities — vello's stroke
-        // flatten uses f16-in-f32 builtins unconditionally, and the pipeline is
+        // The engine's shaders require these capabilities — its compute
+        // pipeline uses f16-in-f32 builtins unconditionally, and the pipeline is
         // compute. The default pick may lack them (software Vulkan drivers
         // like llvmpipe drop shaderFloat16), so walk every Vulkan adapter and
         // choose the first that can paint; a device with none is an explicit

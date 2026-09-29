@@ -1,5 +1,4 @@
 mod cherenkov_migration;
-mod clip_transform;
 mod collection_update;
 mod slider_size_indicator;
 use super::*;
@@ -123,6 +122,8 @@ fn test_renderer_with_theme(theme: MinimalTestTheme) -> HydrolysisRenderer {
         surface.device(),
         surface.queue(),
         surface.device_loss(),
+        surface.gpu_context_id(),
+        &surface.shared_device(),
     );
     renderer
 }
@@ -912,6 +913,8 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         surface.device(),
         surface.queue(),
         surface.device_loss(),
+        surface.gpu_context_id(),
+        &surface.shared_device(),
     );
     capture_root_window(&mut renderer, view, &env, bounds);
 

@@ -222,9 +222,7 @@ impl BrowserRunner {
     }
 
     fn needs_next_frame(&self) -> bool {
-        self.runtime.platform.take_redraw_request()
-            || self.runtime.queued_deferred_flush
-            || !self.runnable_queue.borrow().is_empty()
+        self.runtime.platform.take_redraw_request() || !self.runnable_queue.borrow().is_empty()
     }
 }
 

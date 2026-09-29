@@ -16,8 +16,8 @@ pub(crate) use compositor::NativeViewLayer;
 #[cfg(test)]
 pub(crate) use compositor::take_gpu_surface_redraw_request;
 pub(crate) use compositor::{
-    ActiveSceneLayer, CherenkovWindow, Compositor, EmbeddedGpuSurfaceRuntime, GpuSurfaceLayer,
-    GpuSurfaceSource, LayerShape, RenderLayer, covers_viewport_directly,
+    ActiveSceneLayer, CherenkovWindow, Compositor, EmbeddedGpuSurfaceRuntime, ExternalTextureLayer,
+    GpuSurfaceLayer, GpuSurfaceSource, LayerShape, RenderLayer, covers_viewport_directly,
 };
 pub(crate) use measurement::*;
 pub(crate) use measurement_cache::{MeasurementCaches, MemoGate, NodeMeasureEntry};

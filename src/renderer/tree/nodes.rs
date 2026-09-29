@@ -1096,24 +1096,17 @@ impl ViewEffectNode {
         if needs_redraw {
             renderer.signals.request_refresh();
         }
-
-        let image = runtime.register_output_image(
-            &mut renderer.legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
-        );
         drop(runtime);
-        renderer.compositor.active_filter_images.push(image.clone());
-        let image_transform = kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
-            * kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(output_width),
-                ctx.bounds.height() / f64::from(output_height),
-            );
-        renderer.state.counters.image_registrations += 1;
-        renderer.scene.image(
-            &peniko::ImageBrush::new(image),
-            ctx.transform * image_transform,
+
+        renderer.push_external_texture_layer(
+            crate::renderer::retained::RenderKey {
+                render: self.render_id,
+                presentation: crate::renderer::retained::PresentationId::ORDINARY,
+            },
+            output_texture,
+            wgpu::TextureFormat::Rgba8Unorm,
+            ctx.transform,
+            ctx.bounds,
         );
     }
 }
@@ -1161,23 +1154,20 @@ impl AppliedFilterNode {
         );
         renderer.frame_applied_filter_capture += capture_started_at.elapsed();
 
-        let image = self.runtime.borrow_mut().prepare_output(
-            &device,
-            &mut renderer.legacy_renderer,
-            width,
-            height,
-        );
+        let (output_texture, _output_width, _output_height) = self
+            .runtime
+            .borrow_mut()
+            .prepare_output(&device, width, height);
 
-        let image_transform = kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
-            * kurbo::Affine::scale_non_uniform(
-                ctx.bounds.width() / f64::from(image.width),
-                ctx.bounds.height() / f64::from(image.height),
-            );
-        renderer.state.counters.image_registrations += 1;
-        let scene = renderer.scene_mut();
-        scene.image(
-            &peniko::ImageBrush::new(image),
-            ctx.transform * image_transform,
+        renderer.push_external_texture_layer(
+            crate::renderer::retained::RenderKey {
+                render: self.render_id,
+                presentation: crate::renderer::retained::PresentationId::ORDINARY,
+            },
+            output_texture,
+            wgpu::TextureFormat::Rgba8Unorm,
+            ctx.transform,
+            ctx.bounds,
         );
     }
 }

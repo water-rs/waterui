@@ -34,6 +34,7 @@ thread_local! {
 /// window on the shared context wakes the same event loop.
 pub(crate) fn shared_engine(
     context_id: u64,
+    adapter: &wgpu::Adapter,
     shared_device: cherenkov_gpu::interop::SharedDevice,
     wake: impl Fn() + Send + Sync + 'static,
 ) -> Rc<GpuEngine> {
@@ -44,6 +45,7 @@ pub(crate) fn shared_engine(
         let config = cherenkov_gpu::GpuConfig {
             device: Some(shared_device),
             redraw: Some(cherenkov_gpu::interop::RedrawCallback::new(wake)),
+            pipeline_cache: pipeline_cache_path(adapter),
             ..cherenkov_gpu::GpuConfig::default()
         };
         let engine = Rc::new(
@@ -53,6 +55,20 @@ pub(crate) fn shared_engine(
         pool.borrow_mut().insert(context_id, Rc::downgrade(&engine));
         engine
     })
+}
+
+/// The persistent pipeline-cache path for `adapter`, where the platform has a
+/// writable cache directory; the engine loads, feeds and persists it itself.
+#[cfg(hydrolysis_pipeline_cache)]
+fn pipeline_cache_path(adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
+    crate::pipeline_cache::path(adapter)
+}
+
+/// No persistent pipeline cache exists on targets without a platform cache
+/// directory; the engine accepts `None` the same way.
+#[cfg(not(hydrolysis_pipeline_cache))]
+fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
+    None
 }
 
 /// A window's output surface: an engine surface rendering into an

@@ -1,149 +1,7 @@
 //! Metadata view handlers: styling, transforms, interaction, lifecycle
 //! and accessibility metadata wrappers around content views.
 
-use core::num::NonZeroUsize;
-
-use lru::LruCache;
-
 use super::*;
-
-/// How many distinct blurred silhouettes stay cached before the least
-/// recently used is evicted.
-const BLURRED_SILHOUETTE_CACHE_CAP: NonZeroUsize = NonZeroUsize::new(64).unwrap();
-
-/// A blurred silhouette's pixels and where they belong: the cache entry's
-/// `delta` is the image's top-left corner in "linear space" — the frame's
-/// coordinate space with the draw transform's translation removed — so the
-/// final placement is `translate(translation) * delta` at draw time.
-struct BlurredSilhouette {
-    /// The blurred premultiplied pixels. Cache hits share the `Blob`, so vello
-    /// keeps the atlas texture instead of re-uploading identical bytes.
-    image: peniko::ImageData,
-    /// Top-left of the image in linear space: the silhouette rect's origin
-    /// under the linear part of the transform, plus the raster bounds' origin.
-    delta: kurbo::Affine,
-}
-
-/// Everything that determines a blurred silhouette's pixels and placement —
-/// and nothing else, so a pure translation (scrolling, a moving surface)
-/// hits the cache rather than re-rasterizing.
-#[derive(PartialEq, Eq, Hash)]
-struct BlurredSilhouetteKey {
-    /// Canonical encoding of the silhouette: a discriminant word per
-    /// `ShapeKind` and per `PathCommand`, each followed by its `f32`
-    /// parameters' bit patterns.
-    silhouette: Box<[u64]>,
-    /// Local rect size in logical points (`f32` bits).
-    size: [u32; 2],
-    /// `a,b,c,d` of the draw transform — the linear part (`f32` bits).
-    linear: [u32; 4],
-    /// Blur σ (`f32` bits).
-    blur: u32,
-    /// Resolved colour components (`f32` bits, premultiplied).
-    color: [u32; 4],
-}
-
-/// Encode a silhouette as `u64` words for the cache key: discriminant first,
-/// then each `f32` parameter's `to_bits`.
-fn silhouette_key_words(silhouette: &ClipShape) -> Box<[u64]> {
-    fn f(value: f32) -> u64 {
-        u64::from(value.to_bits())
-    }
-    let mut words = Vec::new();
-    match silhouette.kind() {
-        ShapeKind::Rect => words.push(0),
-        ShapeKind::Circle => words.push(1),
-        ShapeKind::Ellipse => words.push(2),
-        ShapeKind::RoundedRect { corner_radius } => {
-            words.extend([3, f(corner_radius)]);
-        }
-        ShapeKind::UnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => words.extend([
-            4,
-            f(top_left),
-            f(top_right),
-            f(bottom_left),
-            f(bottom_right),
-        ]),
-        ShapeKind::Capsule => words.push(5),
-        ShapeKind::FixedRoundedRect { corner_radius } => {
-            words.extend([6, f(corner_radius)]);
-        }
-        ShapeKind::FixedUnevenRoundedRect {
-            top_left,
-            top_right,
-            bottom_left,
-            bottom_right,
-        } => words.extend([
-            7,
-            f(top_left),
-            f(top_right),
-            f(bottom_left),
-            f(bottom_right),
-        ]),
-        ShapeKind::CustomPath => words.push(8),
-    }
-    for command in silhouette.commands() {
-        match *command {
-            PathCommand::MoveTo { x, y } => words.extend([10, f(x), f(y)]),
-            PathCommand::LineTo { x, y } => words.extend([11, f(x), f(y)]),
-            PathCommand::QuadTo { cx, cy, x, y } => {
-                words.extend([12, f(cx), f(cy), f(x), f(y)]);
-            }
-            PathCommand::CubicTo {
-                c1x,
-                c1y,
-                c2x,
-                c2y,
-                x,
-                y,
-            } => words.extend([13, f(c1x), f(c1y), f(c2x), f(c2y), f(x), f(y)]),
-            PathCommand::Arc {
-                cx,
-                cy,
-                rx,
-                ry,
-                start,
-                sweep,
-            } => words.extend([14, f(cx), f(cy), f(rx), f(ry), f(start), f(sweep)]),
-            PathCommand::Close => words.push(15),
-        }
-    }
-    words.into_boxed_slice()
-}
-
-/// Renderer-owned bounded cache of blurred shadow silhouettes. Renderer-owned
-/// rather than static: each window's renderer keeps its own, so eviction
-/// pressure in one window never starves another's casters.
-pub(super) struct BlurredSilhouetteCache {
-    inner: LruCache<BlurredSilhouetteKey, BlurredSilhouette>,
-    /// CPU rasterizations performed so far — the test hook proving a cache
-    /// hit does no pixel work.
-    pub(super) rasterizations: usize,
-}
-
-impl BlurredSilhouetteCache {
-    pub(super) fn new() -> Self {
-        Self {
-            inner: LruCache::new(BLURRED_SILHOUETTE_CACHE_CAP),
-            rasterizations: 0,
-        }
-    }
-
-    fn get(&mut self, key: &BlurredSilhouetteKey) -> Option<&BlurredSilhouette> {
-        self.inner.get(key)
-    }
-
-    /// Store a freshly rasterized silhouette and count the rasterization.
-    fn put_and_count(&mut self, key: BlurredSilhouetteKey, value: BlurredSilhouette) {
-        self.inner.put(key, value);
-        self.rasterizations += 1;
-    }
-}
 
 impl HydrolysisRenderer {
     /// Apply a clip-shape layer around the given content render. Shared by the
@@ -311,7 +169,7 @@ impl HydrolysisRenderer {
         // The silhouette states the caster's shape. `kind_clip_shape` — the
         // same resolver a clip uses to decide between the uniform rounded-rect
         // fast path and the general path route — answers whether the shadow can
-        // feed Vello's blurred-rounded-rect primitive directly.
+        // feed the engine's blurred-rounded-rect primitive directly.
         let silhouette = &shadow.silhouette;
         let uniform_radius = match kind_clip_shape(silhouette.kind(), shadow_rect) {
             Some(RegularClipShape::RoundedRect { corner_width, .. }) => Some(corner_width),
@@ -338,15 +196,11 @@ impl HydrolysisRenderer {
         render_content(renderer);
     }
 
-    /// Rasterize a non-rounded-rect silhouette into `rect` with `vello_cpu`,
-    /// blur it, and composite the result as an image — the general route for
-    /// silhouettes `kind_clip_shape` cannot express as a uniform rounded rect
-    /// (ellipse, non-square circle, uneven corners, custom path).
-    ///
-    /// The raster is cached in the renderer (see [`BlurredSilhouetteCache`]): a
-    /// shape that only translates — a scrolling list row, a moving surface —
-    /// reuses the same `Blob`, so vello keeps its atlas texture and no pixel
-    /// work runs at all.
+    /// Draw a non-rounded-rect silhouette's blurred shadow into `rect` — the
+    /// general route for silhouettes `kind_clip_shape` cannot express as a
+    /// uniform rounded rect (ellipse, non-square circle, uneven corners,
+    /// custom path). The engine rasterizes and caches the blur; Hydrolysis
+    /// keeps no pixmap cache of its own.
     fn draw_blurred_silhouette(
         renderer: &mut HydrolysisRenderer,
         transform: kurbo::Affine,
@@ -358,22 +212,16 @@ impl HydrolysisRenderer {
         // The same resolution `apply_clip_shape` performs — structured kind
         // first, unit-space commands only for a custom path — but against the
         // rect normalized to the origin: the rect's own position is applied
-        // at draw time, keeping it out of the cache key.
+        // at draw time.
         let local_rect = kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
         let local_path = shape_kind_path(silhouette.kind(), local_rect)
             .unwrap_or_else(|| path_commands_to_path(silhouette.commands(), local_rect));
-
-        // Split the transform: the silhouette rasterizes in
-        // local-plus-linear space (scale/rotation/skew baked into the pixels),
-        // and the translation applies only when the cached image is drawn.
-        let [a, b, c, d, e, f] = transform.as_coeffs();
-        let translation = (e, f);
-        let linear = kurbo::Affine::new([a, b, c, d, 0.0, 0.0]);
+        let placement = transform * kurbo::Affine::translate((rect.x0, rect.y0));
 
         if blur <= 0.0 {
             renderer.scene.fill(
                 peniko::Fill::NonZero,
-                transform * kurbo::Affine::translate((rect.x0, rect.y0)),
+                placement,
                 &peniko::Brush::Solid(color),
                 None,
                 &local_path,
@@ -381,69 +229,15 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let key = BlurredSilhouetteKey {
-            silhouette: silhouette_key_words(silhouette),
-            size: [
-                (rect.width() as f32).to_bits(),
-                (rect.height() as f32).to_bits(),
-            ],
-            linear: [
-                (a as f32).to_bits(),
-                (b as f32).to_bits(),
-                (c as f32).to_bits(),
-                (d as f32).to_bits(),
-            ],
-            blur: (blur as f32).to_bits(),
-            color: color.components.map(f32::to_bits),
-        };
-        if let Some(hit) = renderer.blurred_silhouettes.get(&key) {
-            let (image, delta) = (hit.image.clone(), hit.delta);
-            renderer.state.counters.image_registrations += 1;
-            renderer.scene.image(
-                &peniko::ImageBrush::new(image),
-                kurbo::Affine::translate(translation) * delta,
-            );
-            return;
-        }
-
-        let linear_path = linear * &local_path;
-        // The blur's impulse response is cut off at 2.5σ, matching
-        // `draw_blurred_rounded_rect`, so the pixmap covers the full falloff.
-        let margin = 2.5 * blur + 1.0;
-        let bounds = kurbo::Shape::bounding_box(&linear_path).inflate(margin, margin);
-        let width = bounds.width().ceil() as u32;
-        let height = bounds.height().ceil() as u32;
-        if width == 0 || height == 0 {
-            return;
-        }
-        let width = u16::try_from(width)
-            .expect("blurred shadow silhouette rasterizes wider than u16::MAX pixels");
-        let height = u16::try_from(height)
-            .expect("blurred shadow silhouette rasterizes taller than u16::MAX pixels");
-
-        let image = crate::engine::rasterize_blurred_silhouette(
-            &linear_path,
-            (-bounds.x0, -bounds.y0),
+        // `blur` is already in device pixels; the engine scales `sigma` by
+        // the transform's axis length, so the path arrives pre-transformed
+        // and the op transform is identity.
+        renderer.scene.shadow(
+            kurbo::Affine::IDENTITY,
+            &(placement * &local_path),
             blur,
             color,
-            width,
-            height,
         );
-
-        // The image's top-left corner in linear space: the rect's origin under
-        // the linear part, plus the inflated raster bounds' origin.
-        let delta = kurbo::Affine::translate((
-            a * rect.x0 + c * rect.y0 + bounds.x0,
-            b * rect.x0 + d * rect.y0 + bounds.y0,
-        ));
-        renderer.state.counters.image_registrations += 1;
-        renderer.scene.image(
-            &peniko::ImageBrush::new(image.clone()),
-            kurbo::Affine::translate(translation) * delta,
-        );
-        renderer
-            .blurred_silhouettes
-            .put_and_count(key, BlurredSilhouette { image, delta });
     }
 
     /// Draw the theme's context-menu panel behind the wrapped menu rows,
@@ -460,7 +254,7 @@ impl HydrolysisRenderer {
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
         let theme = renderer.theme();
-        let mut draw = VelloDrawContext::with_root_transform(&mut renderer.scene, ctx.transform);
+        let mut draw = SceneDrawContext::with_root_transform(&mut renderer.scene, ctx.transform);
         theme.draw_text_context_menu_panel(&mut draw, ctx.bounds);
         render_content(renderer);
     }

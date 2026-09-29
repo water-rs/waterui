@@ -3118,7 +3118,6 @@ dependencies = [
  "png",
  "pollster 1.0.1",
  "raw-window-handle",
- "rayon",
  "rustc-hash 2.1.3",
  "serde",
  "serde_json",
@@ -3131,10 +3130,6 @@ dependencies = [
  "tracing-subscriber",
  "ui-events-winit",
  "unicode-segmentation",
- "vello",
- "vello_common",
- "vello_cpu",
- "vello_encoding",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "waterkit-clipboard",
@@ -8333,17 +8328,6 @@ dependencies = [
  "peniko",
  "smallvec",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "vello_cpu"
-version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
-dependencies = [
- "bytemuck",
- "glifo",
- "hashbrown 0.17.1",
- "vello_common",
 ]
 
 [[package]]

@@ -121,12 +121,11 @@ fn floating_surface_shadow_follows_clip_silhouette() {
 }
 
 /// An ellipse (or any silhouette `kind_clip_shape` cannot express as a uniform
-/// rounded rect) rasterizes on the CPU — once. The raster is keyed on shape,
-/// size, the transform's linear part, blur and colour; a changed `.offset`
-/// moves only the draw translation, so the second frame must reuse the cached
-/// `Blob` rather than rasterize again.
+/// rounded rect) casts its shadow through the engine's shadow primitive, whose
+/// rasterization the engine caches. A changed `.offset` re-records only the
+/// content op; the pixels must still show the shadow actually moving.
 #[test]
-fn translated_shadow_reuses_the_cached_silhouette() {
+fn translated_shadow_moves_with_the_caster() {
     let dx = Binding::container(0.0_f32);
     let view = {
         let dx = dx.clone();
@@ -165,26 +164,15 @@ fn translated_shadow_reuses_the_cached_silhouette() {
         .pump_at(true, Instant::now())
         .snapshot
         .expect("first frame must produce a snapshot");
-    assert_eq!(
-        runtime.renderer().blurred_silhouette_rasterizations(),
-        1,
-        "the ellipse silhouette rasterizes once on the first frame"
-    );
 
     dx.set(30.0);
     let second = runtime
         .pump_at(true, Instant::now())
         .snapshot
         .expect("moved frame must produce a snapshot");
-    assert_eq!(
-        runtime.renderer().blurred_silhouette_rasterizations(),
-        1,
-        "a pure translation must hit the silhouette cache"
-    );
 
-    // Guard the assertion above against a false pass: if the frame had not
-    // re-rendered or the image had not moved, the pixel the shadow slides
-    // into would still read background.
+    // If the frame had not re-rendered or the shadow had not moved, the pixel
+    // it slides into would still read background.
     let background = pixel(&first, 90, 48);
     let moved = pixel(&second, 90, 48);
     assert!(

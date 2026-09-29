@@ -4,7 +4,7 @@
 //! mounted under the surface root. Two mount kinds exist:
 //!
 //! - **Segment mounts** are positional: each contiguous run of recorded
-//!   scene ops drained by `flush_legacy_scene_layer` shows on the segment
+//!   scene ops drained by `flush_scene_layer` shows on the segment
 //!   layer at that stack position. Membership shifts every frame, so the
 //!   mount carries no identity — it only keeps the engine layer alive
 //!   while the content payload is replaced.
@@ -146,18 +146,20 @@ impl Mounts {
                 }
                 &self.segments[index]
             }
-            MountSlot::Keyed(key) => &self
-                .keyed
-                .entry(key)
-                .or_insert_with(|| {
-                    self.frame_created += 1;
-                    KeyedMount {
-                        wrappers: Vec::new(),
-                        parked: Vec::new(),
-                        content: surface.layer(),
-                    }
-                })
-                .content,
+            MountSlot::Keyed(key) => {
+                &self
+                    .keyed
+                    .entry(key)
+                    .or_insert_with(|| {
+                        self.frame_created += 1;
+                        KeyedMount {
+                            wrappers: Vec::new(),
+                            parked: Vec::new(),
+                            content: surface.layer(),
+                        }
+                    })
+                    .content
+            }
             MountSlot::Overlay => self.overlay.get_or_insert_with(|| {
                 self.frame_created += 1;
                 surface.layer()
@@ -284,10 +286,8 @@ impl Mounts {
             self.overlay = None;
         }
 
-        let order_ids: Vec<cherenkov::LayerId> = order
-            .iter()
-            .map(|slot| self.ordered(*slot).id())
-            .collect();
+        let order_ids: Vec<cherenkov::LayerId> =
+            order.iter().map(|slot| self.ordered(*slot).id()).collect();
         if order_ids == self.order_ids {
             return;
         }

@@ -596,7 +596,7 @@ impl HydrolysisRenderer {
         // container colour, radius and elevation — the same Material surface
         // the drawn text context menu gets.
         {
-            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+            let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
             theme.draw_text_context_menu_panel(&mut draw, presentation.menu_frame);
             if let Some(accessory_frame) = presentation.accessory_frame {
                 theme.draw_text_context_menu_panel(&mut draw, accessory_frame);

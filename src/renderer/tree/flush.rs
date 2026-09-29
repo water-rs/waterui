@@ -383,18 +383,13 @@ impl RenderNode {
                 );
                 renderer.pop_render_owner();
                 let mut scene = Recording::new();
-                // Scope `scene2d` so its `&mut scene` borrow ends before `&scene` is
-                // appended below. `CheckedScene2D` validates every image brush at
-                // this ingest boundary — malformed `ImageData` rejected here would
-                // otherwise only fail inside wgpu's `write_texture`.
+                // `Recording` validates every image payload at its own
+                // registration — malformed `ImageData` fails fast there, at
+                // the first hydrolysis-owned point.
                 let needs_next = {
-                    let mut scene2d = crate::renderer::CheckedScene2D::new(
-                        &mut scene,
-                        &mut renderer.state.counters,
-                    );
                     #[allow(clippy::cast_possible_truncation)]
                     node.content.borrow_mut().build_scene(
-                        &mut scene2d,
+                        &mut scene,
                         ctx.bounds.width() as f32,
                         ctx.bounds.height() as f32,
                     )
@@ -827,7 +822,7 @@ fn flush_navigation_transition_element(
 impl HydrolysisRenderer {
     /// Render an already-laid-out child into an effect input texture in local
     /// coordinates. The complete painter stream is isolated, including embedded
-    /// GPU surfaces, rather than capturing only the Vello scene.
+    /// GPU surfaces, rather than capturing only the scene's recorded ops.
     pub(crate) fn render_child_node_to_texture(
         &mut self,
         child: &RenderNode,

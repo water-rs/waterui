@@ -1,4 +1,4 @@
-use super::{HydrolysisRenderer, Recording, TailMark, VelloDrawContext};
+use super::{HydrolysisRenderer, Recording, SceneDrawContext, TailMark};
 
 use crate::renderer::HydroState;
 use crate::renderer::frame::LayerTransforms;
@@ -107,7 +107,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer
     }
 
-    pub(crate) fn draw_context(&mut self) -> VelloDrawContext<'_> {
+    pub(crate) fn draw_context(&mut self) -> SceneDrawContext<'_> {
         self.renderer.draw_context(self.render_context())
     }
 

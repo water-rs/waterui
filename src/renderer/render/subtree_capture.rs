@@ -362,10 +362,9 @@ impl HydrolysisRenderer {
 
             let effect_started_at = Instant::now();
             for pending in level.pending {
-                let (_image, needs_redraw) = pending.runtime.borrow_mut().encode_output(
+                let needs_redraw = pending.runtime.borrow_mut().encode_output(
                     &device,
                     &queue,
-                    &mut self.legacy_renderer,
                     pending.width,
                     pending.height,
                     &mut encoder,

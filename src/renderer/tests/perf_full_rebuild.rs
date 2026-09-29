@@ -15,7 +15,7 @@
 //!
 //! Rows come in two shapes with the **same primitive count** — a `text` variant
 //! (2 glyph runs/row) and a `shapes` variant (2 rect fills/row) — to separate the
-//! Vello **encode** cost from the text **measurement** cost. `scene_dispatch` is
+//! Recording **encode** cost from the text **measurement** cost. `scene_dispatch` is
 //! the timed phase (dispatch + layout/measure + scene encode); it is CPU-only and
 //! reproduces on any machine. `build_content` (root-builder re-run) is reported
 //! too and is harness-inflated; in a real app's static tree it is near-zero.
@@ -212,20 +212,20 @@ fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (
     (percentiles(dispatch, build), rebuilt_frames)
 }
 
-/// Pure Vello CPU scene-encode floor: the per-frame cost a persistent retained
+/// Pure CPU scene-encode floor: the per-frame cost a persistent retained
 /// reactive tree (Flutter-RenderObject / scene-graph style) would actually pay,
 /// once `body()`/dispatch/a11y-build/target-registration are amortized to
 /// once-and-on-Dynamic-change. No renderer, no dispatch — just encoding the row
 /// primitives into a fresh `Recording` every frame.
 #[test]
-fn pure_vello_encode_floor() {
+fn pure_recording_encode_floor() {
     use kurbo::{Circle as KurboCircle, Rect, RoundedRect};
 
     let white = Brush::Solid(Color::new([1.0, 1.0, 1.0, 1.0]));
     let blue = Brush::Solid(Color::new([0.23, 0.51, 0.96, 1.0]));
     let gray = Brush::Solid(Color::new([0.90, 0.90, 0.92, 1.0]));
 
-    eprintln!("\n=== Pure Vello CPU scene-encode floor (release) ===");
+    eprintln!("\n=== Pure CPU scene-encode floor (release) ===");
     eprintln!(
         "(the per-frame cost a retained reactive tree pays: layout aside, just re-emit draw ops)"
     );
@@ -277,12 +277,9 @@ fn pure_vello_encode_floor() {
 
 /// Report-only, and deliberately out of the gating test run.
 ///
-/// It builds a fresh runtime per sample — 278 of them — and each one builds its
-/// own `LegacyRenderer`, which compiles roughly thirty compute pipelines. On a
-/// runner whose only adapter is a software rasterizer that is some eight
-/// thousand JIT-compiled shaders, and the machine runs out of memory before the
-/// probe finishes. The numbers it prints are read by a person deciding an
-/// architecture question, not asserted by CI, so it is run on demand:
+/// It builds a fresh runtime per sample — 278 of them. The numbers it prints
+/// are read by a person deciding an architecture question, not asserted by CI,
+/// so it is run on demand:
 ///
 /// ```text
 /// cargo nextest run -p hydrolysis --run-ignored all \

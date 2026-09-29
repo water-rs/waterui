@@ -38,7 +38,6 @@ pub(crate) struct AppliedFilterRuntime {
     setup_complete: bool,
     input_texture: Option<CachedEffectTexture>,
     output_texture: Option<CachedEffectTexture>,
-    output_image: Option<peniko::ImageData>,
     frame_clock: EffectFrameClock,
 }
 
@@ -49,7 +48,6 @@ impl AppliedFilterRuntime {
             setup_complete: false,
             input_texture: None,
             output_texture: None,
-            output_image: None,
             frame_clock: EffectFrameClock::new(),
         }
     }
@@ -143,29 +141,22 @@ impl AppliedFilterRuntime {
     }
 
     /// Allocate the output texture for a `width` × `height` input and return
-    /// the image handle that will show its contents, before the filter has run.
-    /// The atlas capture draws the image into the parent scene at flush time and
-    /// runs the filter when the capture level is flushed; the handle is stable
+    /// it with its dimensions, before the filter has run. The flush mounts the
+    /// texture as an external frame layer at that point and the filter writes
+    /// it when the capture level is flushed — the mounted handle is stable
     /// across both because the texture is.
     pub(super) fn prepare_output(
         &mut self,
         device: &wgpu::Device,
-        legacy_renderer: &mut crate::engine::LegacyRenderer,
         width: u32,
         height: u32,
-    ) -> peniko::ImageData {
+    ) -> (wgpu::Texture, u32, u32) {
         let (output_width, output_height) = self.filter().output_size(width, height);
         let output_texture = self
             .output_texture(device, output_width, output_height)
             .0
             .clone();
-        register_or_override_output_image(
-            &mut self.output_image,
-            legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
-        )
+        (output_texture, output_width, output_height)
     }
 
     pub(super) fn output_texture(
@@ -208,11 +199,10 @@ impl AppliedFilterRuntime {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        legacy_renderer: &mut crate::engine::LegacyRenderer,
         width: u32,
         height: u32,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> (peniko::ImageData, bool) {
+    ) -> bool {
         let (output_width, output_height) = self.filter().output_size(width, height);
         let (input_texture, input_view) = {
             let Some(input_texture) = self.input_texture.as_ref() else {
@@ -244,21 +234,12 @@ impl AppliedFilterRuntime {
             width: output_width,
             height: output_height,
         };
-        let needs_redraw = match self.filter_mut().encode_render(&input, &output, encoder) {
+        match self.filter_mut().encode_render(&input, &output, encoder) {
             Ok(needs_redraw) => needs_redraw || self.filter().redraw_hint(),
             Err(err) => {
                 panic!("hydrolysis filter render failed: {err}");
             }
-        };
-
-        let image = register_or_override_output_image(
-            &mut self.output_image,
-            legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
-        );
-        (image, needs_redraw)
+        }
     }
 }
 
@@ -314,42 +295,11 @@ impl CachedEffectTexture {
     }
 }
 
-/// Points vello's retained image handle at `output_texture`, registering a new
-/// handle only when the output dimensions changed. Re-registering every frame
-/// would grow vello's image table and re-upload state for a texture whose
-/// identity is stable.
-fn register_or_override_output_image(
-    output_image: &mut Option<peniko::ImageData>,
-    legacy_renderer: &mut crate::engine::LegacyRenderer,
-    output_texture: wgpu::Texture,
-    output_width: u32,
-    output_height: u32,
-) -> peniko::ImageData {
-    if let Some(image) = output_image
-        .as_ref()
-        .filter(|image| image.width == output_width && image.height == output_height)
-    {
-        let texture_base = wgpu::TexelCopyTextureInfoBase {
-            texture: output_texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        };
-        legacy_renderer.override_image(image, Some(texture_base));
-        image.clone()
-    } else {
-        let image = legacy_renderer.register_texture(output_texture);
-        *output_image = Some(image.clone());
-        image
-    }
-}
-
 pub(crate) struct ViewEffectRuntime {
     effect: Option<ViewEffectErased>,
     setup_complete: bool,
     input_texture: Option<CachedEffectTexture>,
     output_texture: Option<CachedEffectTexture>,
-    output_image: Option<peniko::ImageData>,
 }
 
 impl ViewEffectRuntime {
@@ -359,7 +309,6 @@ impl ViewEffectRuntime {
             setup_complete: false,
             input_texture: None,
             output_texture: None,
-            output_image: None,
         }
     }
 
@@ -398,22 +347,6 @@ impl ViewEffectRuntime {
                 | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::COPY_DST,
-        )
-    }
-
-    pub(super) fn register_output_image(
-        &mut self,
-        legacy_renderer: &mut crate::engine::LegacyRenderer,
-        output_texture: wgpu::Texture,
-        output_width: u32,
-        output_height: u32,
-    ) -> peniko::ImageData {
-        register_or_override_output_image(
-            &mut self.output_image,
-            legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
         )
     }
 
@@ -579,15 +512,7 @@ impl HydrolysisRenderer {
             let effect_started_at = Instant::now();
             let needs_redraw = runtime
                 .borrow_mut()
-                .encode_output(
-                    device,
-                    queue,
-                    &mut self.legacy_renderer,
-                    width,
-                    height,
-                    encoder,
-                )
-                .1;
+                .encode_output(device, queue, width, height, encoder);
             self.frame_applied_filter_effect += effect_started_at.elapsed();
             self.frame_applied_filter_count = self
                 .frame_applied_filter_count
@@ -601,6 +526,30 @@ impl HydrolysisRenderer {
             self.state.counters.gpu_submissions += 1;
             queue.submit([encoder.finish()]);
         }
+    }
+
+    /// Mount an already-produced GPU texture as its own compositor layer —
+    /// the output plane of a `ViewEffect` or `AppliedFilter`, drawn at
+    /// `bounds` under `transform` beneath the caller's clip/opacity ancestry.
+    pub(crate) fn push_external_texture_layer(
+        &mut self,
+        key: crate::renderer::retained::RenderKey,
+        texture: wgpu::Texture,
+        format: wgpu::TextureFormat,
+        transform: kurbo::Affine,
+        bounds: kurbo::Rect,
+    ) {
+        self.flush_scene_layer();
+        self.compositor
+            .render_layers
+            .push(RenderLayer::ExternalTexture(ExternalTextureLayer {
+                key,
+                texture,
+                format,
+                transform,
+                bounds,
+                active_layers: self.compositor.active_scene_layers.clone(),
+            }));
     }
 
     pub(crate) fn push_gpu_surface_layer(
@@ -620,7 +569,7 @@ impl HydrolysisRenderer {
             return;
         }
 
-        self.flush_legacy_scene_layer();
+        self.flush_scene_layer();
         let GpuSurfaceSource::Owned(runtime) = &source;
         // Rendering straight into the window's target replaces the whole
         // composite pass, so everything the composite would have done has to be

@@ -227,13 +227,13 @@ fn flush_window_tree_reuses_retained_tree() {
 
     // A geometry-static frame re-flushes the retained tree without rebuilding it.
     // `flush_window_tree` does full frame management (reset + flush + move the
-    // scene into the compositor's layer stack), so verify a Vello layer resulted.
+    // scene into the compositor's layer stack), so verify a scene segment resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let legacy_layers = renderer.render_layer_stats().legacy_scene_layers;
+    let scene_layers = renderer.render_layer_stats().scene_segment_layers;
     assert!(
-        legacy_layers > 0,
-        "re-flushing the retained tree must produce a Vello scene layer"
+        scene_layers > 0,
+        "re-flushing the retained tree must produce a scene segment layer"
     );
 }
 

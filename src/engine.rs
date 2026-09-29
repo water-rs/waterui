@@ -1,14 +1,7 @@
-#[path = "engine/vello_backend.rs"]
-pub(crate) mod legacy;
 #[path = "engine/cherenkov_backend.rs"]
 pub(crate) mod cherenkov;
 
 pub(crate) use cherenkov::{CherenkovSurface, GpuEngine, shared_engine};
-
-pub(crate) use legacy::{
-    LegacyBumpReadback, LegacyRenderer, LegacyRendererOptions, legacy_init_threads,
-    rasterize_blurred_silhouette,
-};
 
 pub use waterui_backend_core::widget::{
     Brush, DrawContext, RadioIndicatorState, RadioSelectionMotion, TextCaretMotion,

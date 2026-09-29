@@ -938,7 +938,7 @@ impl HydrolysisRenderer {
         let mut scene = Recording::new();
         let theme = self.theme();
         {
-            let mut draw = VelloDrawContext::with_root_transform(&mut scene, transform);
+            let mut draw = SceneDrawContext::with_root_transform(&mut scene, transform);
             for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
                 if target.content_alpha <= 0.0 {
                     continue;
@@ -1236,7 +1236,7 @@ impl HydrolysisRenderer {
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
         {
-            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+            let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
             theme.draw_text_context_menu_panel(&mut draw, overlay.bounds);
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1255,7 +1255,7 @@ impl HydrolysisRenderer {
                     row.bounds.x1 - metrics.separator_horizontal_inset,
                     row.bounds.y1,
                 );
-                let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+                let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
                 theme.draw_text_context_menu_separator(&mut draw, separator);
             }
 
@@ -1296,7 +1296,7 @@ impl HydrolysisRenderer {
                             + metrics.separator_thickness * 0.5,
                     );
                     let mut draw =
-                        VelloDrawContext::with_root_transform(&mut self.scene, transform);
+                        SceneDrawContext::with_root_transform(&mut self.scene, transform);
                     theme.draw_text_context_menu_separator(&mut draw, separator);
                 }
             }
