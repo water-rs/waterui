@@ -197,8 +197,12 @@ impl SemanticCore {
         self.signals.request_refresh();
     }
 
-    pub fn take_redraw_request(&self) -> bool {
-        self.signals.take_redraw_request()
+    pub fn take_redraw_request(&mut self) -> bool {
+        let requested = self.signals.take_redraw_request();
+        if requested {
+            self.state.counters.host_wakeups += 1;
+        }
+        requested
     }
 
     pub fn request_rebuild(&self) {
@@ -214,8 +218,12 @@ impl SemanticCore {
         self.signals.request_next_frame_rebuild();
     }
 
-    pub fn take_rebuild_request(&self) -> bool {
-        self.signals.take_rebuild_request()
+    pub fn take_rebuild_request(&mut self) -> bool {
+        let requested = self.signals.take_rebuild_request();
+        if requested {
+            self.state.counters.host_wakeups += 1;
+        }
+        requested
     }
 
     #[must_use]
@@ -223,12 +231,20 @@ impl SemanticCore {
         self.signals.has_patch_request()
     }
 
-    pub fn take_patch_request(&self) -> bool {
-        self.signals.take_patch_request()
+    pub fn take_patch_request(&mut self) -> bool {
+        let requested = self.signals.take_patch_request();
+        if requested {
+            self.state.counters.host_wakeups += 1;
+        }
+        requested
     }
 
-    pub fn take_next_frame_rebuild_request(&self) -> bool {
-        self.signals.take_next_frame_rebuild_request()
+    pub fn take_next_frame_rebuild_request(&mut self) -> bool {
+        let requested = self.signals.take_next_frame_rebuild_request();
+        if requested {
+            self.state.counters.host_wakeups += 1;
+        }
+        requested
     }
 
     /// Whether a state change has already been requested but not yet applied,
@@ -300,6 +316,20 @@ impl HydrolysisRenderer {
         (&mut self.core.state, &mut self.scene)
     }
 
+    /// The per-frame migration counters of the last rendered pump.
+    /// `HydroState::counters` is private to `crate::renderer`, so callers
+    /// outside the renderer reach it through here.
+    #[must_use]
+    pub fn migration_counters(&self) -> MigrationCounters {
+        self.core.state.counters
+    }
+
+    /// Mutable access for the runner's host-side wakeup and submission
+    /// sites (the ones that happen outside a renderer method).
+    pub fn migration_counters_mut(&mut self) -> &mut MigrationCounters {
+        &mut self.core.state.counters
+    }
+
     #[must_use]
     pub fn scene(&self) -> &vello::Scene {
         &self.scene
@@ -316,6 +346,7 @@ impl HydrolysisRenderer {
         self.compositor.render_layers.clear();
         self.compositor.active_scene_layers.clear();
         self.state.measurement.reset_counters();
+        self.state.counters.reset_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
         self.frame_applied_filter_count = 0;

@@ -1,3 +1,4 @@
+mod cherenkov_migration;
 mod clip_transform;
 mod collection_update;
 mod slider_size_indicator;

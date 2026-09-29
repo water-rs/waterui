@@ -380,6 +380,7 @@ impl HydrolysisRenderer {
                     self.request_redraw();
                 }
             }
+            self.state.counters.gpu_submissions += 1;
             queue.submit([encoder.finish()]);
             self.frame_applied_filter_effect += effect_started_at.elapsed();
             self.subtree_captures.texture_pool.extend(used_textures);

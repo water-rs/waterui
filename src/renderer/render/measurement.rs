@@ -441,6 +441,7 @@ impl HydrolysisRenderer {
             |layout, effective, fragment| {
                 Self::encode_text_layout(
                     state.text.as_ref(),
+                    &mut state.counters,
                     fragment,
                     layout,
                     effective,
@@ -482,7 +483,14 @@ impl HydrolysisRenderer {
             None,
             TailMark::Clip(1),
             |layout, effective, fragment| {
-                Self::encode_text_layout(state.text.as_ref(), fragment, layout, effective, Some(1));
+                Self::encode_text_layout(
+                    state.text.as_ref(),
+                    &mut state.counters,
+                    fragment,
+                    layout,
+                    effective,
+                    Some(1),
+                );
             },
         );
         crate::engine::vello_backend::append_scene(
@@ -497,6 +505,7 @@ impl HydrolysisRenderer {
     /// what makes the encoded fragment reusable across frames.
     fn encode_text_layout(
         service: &TextMeasureService,
+        counters: &mut MigrationCounters,
         scene: &mut vello::Scene,
         layout: &Arc<parley::Layout<[u8; 4]>>,
         input: &ResolvedTextLayoutInput,
@@ -535,6 +544,7 @@ impl HydrolysisRenderer {
                         vello::Glyph { id: glyph.id, x, y }
                     });
 
+                    counters.font_registrations += 1;
                     let glyph_run_builder = scene
                         .draw_glyphs(run.font())
                         .brush(brush)

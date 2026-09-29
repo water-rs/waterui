@@ -60,6 +60,7 @@ fn encode_vello_layers_parallel(
     scenes: Vec<(usize, &vello::Scene, PooledLayerTexture)>,
     width: u32,
     height: u32,
+    counters: &mut MigrationCounters,
 ) -> Vec<(usize, PooledLayerTexture)> {
     #[cfg(not(target_arch = "wasm32"))]
     use rayon::prelude::*;
@@ -103,13 +104,16 @@ fn encode_vello_layers_parallel(
     // renderer pool. GL encodes the layers in order; every other backend
     // encodes them across cores.
     #[cfg(not(target_arch = "wasm32"))]
-    let rendered = if backend == wgpu::Backend::Gl {
+    let rendered: Vec<(usize, PooledLayerTexture)> = if backend == wgpu::Backend::Gl {
         scenes.into_iter().map(render_layer).collect()
     } else {
         scenes.into_par_iter().map(render_layer).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let rendered = scenes.into_iter().map(render_layer).collect();
+    let rendered: Vec<(usize, PooledLayerTexture)> = scenes.into_iter().map(render_layer).collect();
+    // Each rendered layer was one `render_to_texture` submission, counted
+    // once here because the workers run in parallel.
+    counters.gpu_submissions += u64::try_from(rendered.len()).unwrap_or(u64::MAX);
     rendered
 }
 
@@ -1498,6 +1502,7 @@ impl HydrolysisRenderer {
             height,
             antialiasing_method: vello::AaConfig::Area,
         };
+        self.state.counters.gpu_submissions += 1;
         self.vello_renderer
             .render_to_texture(device, queue, scene, &leased.view, &params)
             .expect("hydrolysis renderer: failed to render vello layer scene");
@@ -1549,7 +1554,7 @@ impl HydrolysisRenderer {
     }
 
     fn clear_target_surface(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
@@ -1577,6 +1582,7 @@ impl HydrolysisRenderer {
             multiview_mask: None,
         });
         drop(_pass);
+        self.state.counters.gpu_submissions += 1;
         queue.submit(std::iter::once(encoder.finish()));
     }
 
@@ -1675,6 +1681,7 @@ impl HydrolysisRenderer {
             pass.draw(0..6, 0..1);
         }
         drop(pass);
+        self.state.counters.gpu_submissions += 1;
         target.queue.submit(std::iter::once(encoder.finish()));
     }
 
@@ -1863,17 +1870,24 @@ impl HydrolysisRenderer {
                         (index, scene, leased)
                     })
                     .collect();
+                // `self.pipeline_cache()` borrows all of `self`; hoist it so
+                // the counter borrow below stays field-disjoint.
+                let pipeline_cache = self.pipeline_cache();
                 for (index, leased) in encode_vello_layers_parallel(
                     &self.compositor.vello_renderer_pool,
                     PoolGpu {
                         device: target.device,
                         queue: target.queue,
                         backend: target.adapter.get_info().backend,
-                        pipeline_cache: self.pipeline_cache(),
+                        pipeline_cache,
                     },
                     vello_scenes,
                     target.width,
                     target.height,
+                    // Direct `core` field path: `self.state` would resolve
+                    // through `DerefMut` and mutably borrow all of `*self`,
+                    // colliding with the pool borrow above.
+                    &mut self.core.state.counters,
                 ) {
                     encoded_vello[index] = Some(leased);
                 }

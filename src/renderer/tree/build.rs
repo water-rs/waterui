@@ -13,6 +13,7 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> RenderNode {
+        renderer.state.counters.semantic_builds += 1;
         let view = match view.downcast::<Native<Color>>() {
             Ok(color) => {
                 return RenderNode::Color(ColorNode {

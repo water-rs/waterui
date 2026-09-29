@@ -30,6 +30,7 @@ mod input;
 mod interaction_layers;
 mod lifecycle;
 mod metadata;
+mod migration_counters;
 mod native_measure;
 mod navigation;
 mod render;
@@ -48,6 +49,7 @@ pub(crate) use gpu_profile::GpuFrameProfiler;
 #[cfg(feature = "frame-profile")]
 pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub(crate) use identity::*;
+pub use migration_counters::MigrationCounters;
 pub(crate) use native_measure::*;
 pub(crate) use retained::*;
 pub(crate) use scene_ingest::CheckedScene2D;

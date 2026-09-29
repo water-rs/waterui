@@ -598,6 +598,7 @@ impl HydrolysisRenderer {
             }
         }
         if let Some(encoder) = encoder {
+            self.state.counters.gpu_submissions += 1;
             queue.submit([encoder.finish()]);
         }
     }
@@ -654,8 +655,13 @@ impl HydrolysisRenderer {
         // poll the live ones for off-thread redraw requests.
         self.node_gpu_surfaces
             .retain(|runtime| Rc::strong_count(runtime) > 1);
-        for runtime in &self.node_gpu_surfaces {
+        // `self.state` and `self.node_gpu_surfaces` resolve through Deref,
+        // which borrows all of `*self`; take the direct `core` field paths
+        // so the two borrows stay disjoint.
+        let counters = &mut self.core.state.counters;
+        for runtime in &self.core.node_gpu_surfaces {
             if runtime.borrow_mut().take_external_redraw_request() {
+                counters.host_wakeups += 1;
                 requested = true;
             }
         }

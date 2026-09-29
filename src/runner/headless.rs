@@ -525,6 +525,7 @@ impl HeadlessRuntime {
 
     pub fn request_redraw(&mut self) {
         self.runtime.platform.request_redraw();
+        self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
 
     /// The adapter and device this runtime renders on — attribution for a
@@ -582,6 +583,7 @@ impl HeadlessRuntime {
         if changed {
             window.request_refresh();
             window.platform.request_redraw();
+            window.renderer.migration_counters_mut().host_wakeups += 1;
         }
         changed
     }
@@ -604,6 +606,7 @@ impl HeadlessRuntime {
         if changed {
             self.runtime.request_refresh();
             self.runtime.platform.request_redraw();
+            self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
         changed
     }
@@ -778,6 +781,7 @@ impl HeadlessRuntime {
             });
             self.runtime.request_refresh();
             self.runtime.platform.request_redraw();
+            self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
         let should_render = capture_snapshot
             || self.runtime.mode.is_pending()

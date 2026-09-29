@@ -54,6 +54,13 @@ jobs:
       # that, and only `cargo check --lib` with nothing enabled caught it.
       - run: cargo check --locked --no-default-features --lib
       - uses: taiki-e/install-action@nextest
+      # Renderer boundary check (issue #205): the only enforcement against
+      # new Vello references landing on dev during the Vello -> Cherenkov
+      # migration. Pure Python + the checked-in baseline, so it needs no
+      # Rust toolchain and runs on every PR; its failure text tells the
+      # author how to route the new drawing code through the
+      # `renderer::recording::Recording` boundary instead.
+      - run: python3 scripts/check_renderer_boundary.py
       - run: cargo nextest run --locked --features accessibility,inspector-signals,testing,web,winit
       - run: cargo test --locked --doc --features accessibility,inspector-signals,testing,web,winit
       # The macOS WKWebView bridge. `webview-system` is the one feature the
