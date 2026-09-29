@@ -3387,3 +3387,139 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
     assert_eq!(draws[0].x1, 12.0);
     assert_eq!(draws[0].y0, -2.0);
 }
+
+/// water-rs/hydrolysis#51: after the single-child collapse the surviving
+/// element reports the labelled container's resolved extent — the size it
+/// answered to the placement proposal, centred on the content it placed — not
+/// the child's assigned frame. A root `button.padding(8)` is assigned the
+/// whole window while the padding answers only the button's fit plus its
+/// insets, so announcing the child's (8, 8, 144, 144) frame announces the
+/// button without its padding.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let mut state = HydroState::default();
+    let measured = measure_view_dimensions_with_proposal(
+        &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
+        ProposalSize::new(Some(160.0), Some(160.0)),
+        &mut state,
+        &env,
+        &theme,
+    )
+    .size;
+    let mut renderer = test_renderer();
+    let view = button("OK").padding_with(8.0).a11y_label("Named");
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("a labelled padding container must publish an accessibility tree");
+    let (_, node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Named"))
+        .expect("the labelled element must exist");
+    let bounds = node.bounds().expect("the element must carry bounds");
+    assert!(
+        (bounds.width() - f64::from(measured.width)).abs() < 0.5
+            && (bounds.height() - f64::from(measured.height)).abs() < 0.5,
+        "the element must report the padding's resolved {}x{}, got {}x{}",
+        measured.width,
+        measured.height,
+        bounds.width(),
+        bounds.height(),
+    );
+    // Symmetric padding places its content envelope at the window's centre.
+    let center_x = (bounds.x0 + bounds.x1) / 2.0;
+    let center_y = (bounds.y0 + bounds.y1) / 2.0;
+    assert!(
+        (center_x - 80.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
+        "the resolved extent must sit over the placed content, got centre ({center_x}, {center_y})",
+    );
+}
+
+/// water-rs/hydrolysis#51: the resolved extent is centred on the envelope the
+/// container's `place` produced, not on the assigned frame — asymmetric
+/// insets shift the content off the window's centre and the reported bounds
+/// must follow it.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_placed_content() {
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let mut state = HydroState::default();
+    let measured = measure_view_dimensions_with_proposal(
+        &normalize_layout_view(
+            AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),
+            &env,
+        ),
+        ProposalSize::new(Some(160.0), Some(160.0)),
+        &mut state,
+        &env,
+        &theme,
+    )
+    .size;
+    let mut renderer = test_renderer();
+    let view = button("OK")
+        .padding_with([0.0, 0.0, 20.0, 0.0])
+        .a11y_label("Named");
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("a labelled padding container must publish an accessibility tree");
+    let (_, node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Named"))
+        .expect("the labelled element must exist");
+    let bounds = node.bounds().expect("the element must carry bounds");
+    assert!(
+        (bounds.width() - f64::from(measured.width)).abs() < 0.5
+            && (bounds.height() - f64::from(measured.height)).abs() < 0.5,
+        "the element must report the padding's resolved {}x{}, got {}x{}",
+        measured.width,
+        measured.height,
+        bounds.width(),
+        bounds.height(),
+    );
+    // Leading-only insets place the content envelope at (20, 0, 140, 160),
+    // centred at (90, 80) — not the window's centre.
+    let center_x = (bounds.x0 + bounds.x1) / 2.0;
+    let center_y = (bounds.y0 + bounds.y1) / 2.0;
+    assert!(
+        (center_x - 90.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
+        "the resolved extent must centre on the placed envelope (90, 80), got ({center_x}, {center_y})",
+    );
+}
+
+/// A labelled container with several semantic children stands as a `Group`
+/// and reports the frame it was assigned — the frozen contract makes the
+/// assigned frame the view's frame (water-rs/hydrolysis#51 amendment).
+#[cfg(feature = "accessibility")]
+#[test]
+fn a_labelled_container_that_stands_reports_its_assigned_frame() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = vstack((text("A"), text("B"))).a11y_label("Named");
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("a labelled stack must publish an accessibility tree");
+    let (_, node) = update
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Named"))
+        .expect("the labelled element must exist");
+    assert_eq!(node.role(), AccessibilityNodeRole::Group);
+    let bounds = node.bounds().expect("the element must carry bounds");
+    assert!(
+        (bounds.width() - 160.0).abs() < 0.5 && (bounds.height() - 160.0).abs() < 0.5,
+        "a standing container reports its assigned frame, got {}x{}",
+        bounds.width(),
+        bounds.height(),
+    );
+}
