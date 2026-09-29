@@ -470,30 +470,30 @@ pub(crate) fn render_tabs_parts(
             // A tab gets an equal share of the bar and no more. Without this a
             // long label drew straight over its neighbour and off the edge of
             // the bar, since the label lays out at its natural width.
-            ctx.push_layer_rect(1.0, button_rect);
-            let render_ctx = ctx.render_context();
-            let mut st = state.borrow_mut();
-            // The icon draws whether or not the label has text to show.
-            if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
-                icon.flush_in_rect(
-                    ctx.renderer_mut(),
-                    render_ctx,
-                    env,
-                    ProposalSize::UNSPECIFIED,
-                    icon_rect,
-                );
-            }
-            if has_label {
-                st.tabs[index].label.flush_in_rect(
-                    ctx.renderer_mut(),
-                    render_ctx,
-                    &label_env,
-                    ProposalSize::UNSPECIFIED,
-                    label_rect,
-                );
-            }
-            drop(st);
-            ctx.pop_layer();
+            ctx.with_clip_rect_scope(1.0, button_rect, |ctx| {
+                let render_ctx = ctx.render_context();
+                let mut st = state.borrow_mut();
+                // The icon draws whether or not the label has text to show.
+                if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
+                    icon.flush_in_rect(
+                        ctx.renderer_mut(),
+                        render_ctx,
+                        env,
+                        ProposalSize::UNSPECIFIED,
+                        icon_rect,
+                    );
+                }
+                if has_label {
+                    st.tabs[index].label.flush_in_rect(
+                        ctx.renderer_mut(),
+                        render_ctx,
+                        &label_env,
+                        ProposalSize::UNSPECIFIED,
+                        label_rect,
+                    );
+                }
+                drop(st);
+            });
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().pop_accessibility_suppression();
         }

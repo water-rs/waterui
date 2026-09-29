@@ -465,15 +465,15 @@ pub(crate) fn render_text_field_parts(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.push_layer_rect(content_alpha, text_clip_bounds);
-        ctx.render_styled_text_limited(
-            display_styled,
-            HorizontalAlignment::Leading,
-            env,
-            text_bounds,
-            line_limit,
-        );
-        ctx.pop_layer();
+        ctx.with_clip_rect_scope(content_alpha, text_clip_bounds, |ctx| {
+            ctx.render_styled_text_limited(
+                display_styled,
+                HorizontalAlignment::Leading,
+                env,
+                text_bounds,
+                line_limit,
+            );
+        });
     }
     // While composing, the caret the platform cares about is the live
     // composition caret inside the marked text, mapped through the display
@@ -762,15 +762,15 @@ pub(crate) fn render_secure_field_parts(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.push_layer_rect(content_alpha, text_clip_bounds);
-        ctx.render_styled_text_limited(
-            masked_display,
-            HorizontalAlignment::Leading,
-            env,
-            text_bounds,
-            Some(1),
-        );
-        ctx.pop_layer();
+        ctx.with_clip_rect_scope(content_alpha, text_clip_bounds, |ctx| {
+            ctx.render_styled_text_limited(
+                masked_display,
+                HorizontalAlignment::Leading,
+                env,
+                text_bounds,
+                Some(1),
+            );
+        });
     }
     let cursor_geometry = selection.focus().geometry(&committed_layout, 1.0);
     let cursor_area = material_input_cursor_rect(

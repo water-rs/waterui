@@ -130,6 +130,38 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer.pop_layer();
     }
 
+    /// The [`HydrolysisRenderer::with_clip_rect_scope`] pairing through this
+    /// context's transforms.
+    pub(crate) fn with_clip_rect_scope(
+        &mut self,
+        alpha: f32,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_rect(alpha, clip);
+        f(self);
+        self.pop_layer();
+    }
+
+    /// [`Self::with_clip_rect_scope`] when the scope only exists conditionally
+    /// (a disabled-control alpha group, a viewport clip that only out-scrolls
+    /// need): pairing stays lexical either way.
+    pub(crate) fn with_clip_rect_scope_if(
+        &mut self,
+        enabled: bool,
+        alpha: f32,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        if enabled {
+            self.push_layer_rect(alpha, clip);
+        }
+        f(self);
+        if enabled {
+            self.pop_layer();
+        }
+    }
+
     pub(crate) fn render_styled_text(
         &mut self,
         styled: StyledStr,
