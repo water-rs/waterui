@@ -170,7 +170,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
+    fn ime_caret(&self) -> Option<cherenkov::kurbo::Rect> {
         None
     }
 }

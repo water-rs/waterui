@@ -1,7 +1,7 @@
 //! Widget chrome contracts shared by rendering backends and theme packages.
 
 use core::time::Duration;
-use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii, Vec2};
+use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
 use waterui_controls::toggle::ToggleStyle;
 use waterui_controls::{ControlSize, button::ButtonStyle};
@@ -11,83 +11,10 @@ use waterui_core::handler::SharedAction;
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
+use waterui_graphics::WorkingColor;
+use waterui_graphics::cherenkov::{Paint, Recorder};
 use waterui_graphics::color::Color;
 use waterui_text::font::Font;
-
-/// Paint source used by backend widget chrome.
-#[derive(Debug, Clone)]
-pub enum Brush {
-    /// A solid peniko color.
-    Solid(peniko::Color),
-    /// A peniko gradient.
-    Gradient(peniko::Gradient),
-}
-
-impl From<peniko::Color> for Brush {
-    fn from(value: peniko::Color) -> Self {
-        Self::Solid(value)
-    }
-}
-
-impl From<peniko::Gradient> for Brush {
-    fn from(value: peniko::Gradient) -> Self {
-        Self::Gradient(value)
-    }
-}
-
-/// Drawing operations required by backend widget chrome.
-pub trait DrawContext {
-    /// Fill an axis-aligned rectangle.
-    fn fill_rect(&mut self, rect: Rect, brush: &Brush);
-    /// Fill a rounded rectangle.
-    fn fill_rounded_rect(&mut self, rect: Rect, radii: RoundedRectRadii, brush: &Brush);
-    /// Stroke an axis-aligned rectangle.
-    fn stroke_rect(&mut self, rect: Rect, brush: &Brush, width: f64);
-    /// Stroke a rounded rectangle.
-    fn stroke_rounded_rect(
-        &mut self,
-        rect: Rect,
-        radii: RoundedRectRadii,
-        brush: &Brush,
-        width: f64,
-    );
-    /// Stroke a straight line segment.
-    fn stroke_line(&mut self, from: Point, to: Point, brush: &Brush, width: f64);
-    /// Stroke a circle.
-    fn stroke_circle(&mut self, center: Point, radius: f64, brush: &Brush, width: f64);
-    /// Fill a circle.
-    fn fill_circle(&mut self, center: Point, radius: f64, brush: &Brush);
-    /// Fill a Bezier path.
-    fn fill_path(&mut self, path: &BezPath, brush: &Brush);
-    /// Stroke a Bezier path.
-    fn stroke_path(&mut self, path: &BezPath, brush: &Brush, width: f64);
-    /// Draw a blurred shadow behind a rounded rectangle.
-    ///
-    /// Elevated surfaces — menus, dialogs, pickers — cast their elevation
-    /// through this primitive rather than filling the rect itself, so the
-    /// shadow follows `radii` instead of a hard-cornered bounds rect.
-    fn draw_shadow(
-        &mut self,
-        rect: Rect,
-        radii: RoundedRectRadii,
-        offset: Vec2,
-        blur: f64,
-        color: peniko::Color,
-    );
-    /// Push a temporary drawing layer.
-    fn push_layer(&mut self, alpha: f32, clip: Option<&Rect>);
-    /// Push a temporary drawing layer clipped to a rounded rectangle.
-    fn push_rounded_layer(&mut self, alpha: f32, clip: Rect, radii: RoundedRectRadii) {
-        let _ = radii;
-        self.push_layer(alpha, Some(&clip));
-    }
-    /// Pop the current drawing layer.
-    fn pop_layer(&mut self);
-    /// Push a transform onto the drawing stack.
-    fn push_transform(&mut self, affine: Affine);
-    /// Pop the current transform.
-    fn pop_transform(&mut self);
-}
 
 /// Button layout metrics.
 #[derive(Debug, Clone, Copy)]
@@ -1221,7 +1148,7 @@ pub trait WidgetTheme {
     /// them rather than filling them.
     fn draw_button_chrome(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         style: ButtonStyle,
         icon_only: bool,
@@ -1232,7 +1159,7 @@ pub trait WidgetTheme {
     /// for a button whose label resolved to `IconOnly`.
     fn draw_button_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _style: ButtonStyle,
         _icon_only: bool,
@@ -1242,10 +1169,10 @@ pub trait WidgetTheme {
     /// Draw a state layer supplied by a composed semantic control.
     fn draw_interaction_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _radii: RoundedRectRadii,
-        _color: peniko::Color,
+        _color: WorkingColor,
         _state: WidgetInteractionState,
     ) {
     }
@@ -1260,7 +1187,7 @@ pub trait WidgetTheme {
     /// tell which direction the animation is heading.
     fn draw_toggle_switch(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         progress: f32,
         selected: bool,
@@ -1269,7 +1196,7 @@ pub trait WidgetTheme {
     /// Draw switch-style toggle state layer.
     fn draw_toggle_switch_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _progress: f32,
         _selected: bool,
@@ -1280,7 +1207,7 @@ pub trait WidgetTheme {
     /// so themes can render the inactive container.
     fn draw_toggle_checkbox(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         progress: f32,
         state: WidgetInteractionState,
@@ -1288,7 +1215,7 @@ pub trait WidgetTheme {
     /// Draw checkbox-style toggle state layer.
     fn draw_toggle_checkbox_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _progress: f32,
         _state: WidgetInteractionState,
@@ -1303,19 +1230,19 @@ pub trait WidgetTheme {
     /// one silhouette whose outer corners differ from the seam between them.
     fn draw_stepper_button(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         end: StepperEnd,
         state: WidgetInteractionState,
     );
     /// Draw a stepper decrement icon.
-    fn draw_stepper_decrement_icon(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_stepper_decrement_icon(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a stepper increment icon.
-    fn draw_stepper_increment_icon(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_stepper_increment_icon(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw one stepper button state layer.
     fn draw_stepper_button_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _end: StepperEnd,
         _state: WidgetInteractionState,
@@ -1327,20 +1254,20 @@ pub trait WidgetTheme {
     /// Return the placeholder text color.
     fn input_placeholder_color(&self) -> Color;
     /// Return the text selection fill brush.
-    fn input_selection_brush(&self) -> Brush;
+    fn input_selection_paint(&self) -> Paint;
     /// Return the caret brush for the current caret opacity.
-    fn input_caret_brush(&self, opacity: f32) -> Brush;
+    fn input_caret_paint(&self, opacity: f32) -> Paint;
     /// Draw text input chrome.
     fn draw_input_field(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         state: WidgetInteractionState,
     );
     /// Draw text input state layer.
     fn draw_input_field_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _state: WidgetInteractionState,
     ) {
@@ -1348,48 +1275,48 @@ pub trait WidgetTheme {
     /// Return text context menu metrics.
     fn text_context_menu_metrics(&self) -> TextContextMenuMetrics;
     /// Draw text context menu panel.
-    fn draw_text_context_menu_panel(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_text_context_menu_panel(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw text context menu separator.
-    fn draw_text_context_menu_separator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_text_context_menu_separator(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// Return picker metrics for a style.
     fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics;
     /// Return the motion policy for radio picker selection changes.
     fn radio_selection_motion(&self) -> RadioSelectionMotion;
     /// Draw the picker indicator.
-    fn draw_picker_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_picker_indicator(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw picker field state layer.
     fn draw_picker_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _state: WidgetInteractionState,
     ) {
     }
     /// Draw the picker popup container.
-    fn draw_picker_popup(&self, draw: &mut dyn DrawContext, popup_rect: Rect);
+    fn draw_picker_popup(&self, recorder: &mut Recorder, popup_rect: Rect);
     /// Draw one picker popup row background.
     fn draw_picker_popup_row_background(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         row_rect: Rect,
         selected: bool,
     );
     /// Draw one picker popup row state layer.
     fn draw_picker_popup_row_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _row_rect: Rect,
         _selected: bool,
         _state: WidgetInteractionState,
     ) {
     }
     /// Draw a picker separator.
-    fn draw_picker_separator(&self, draw: &mut dyn DrawContext, separator: Rect);
+    fn draw_picker_separator(&self, recorder: &mut Recorder, separator: Rect);
     /// Draw a radio picker indicator.
     fn draw_radio_indicator(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         center: Point,
         radius: f64,
         state: RadioIndicatorState,
@@ -1397,7 +1324,7 @@ pub trait WidgetTheme {
     /// Draw radio picker state layer.
     fn draw_radio_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _center: Point,
         _radius: f64,
         _selected: bool,
@@ -1411,7 +1338,7 @@ pub trait WidgetTheme {
     /// Draw segmented picker container and dividers.
     fn draw_segmented_picker_container(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _segment_count: usize,
     ) {
@@ -1419,7 +1346,7 @@ pub trait WidgetTheme {
     /// Draw one segmented picker segment background.
     fn draw_segmented_picker_segment(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _selected: bool,
         _is_first: bool,
@@ -1431,7 +1358,7 @@ pub trait WidgetTheme {
     /// its leading side, the last its trailing side, middle items are square.
     fn draw_segmented_picker_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _selected: bool,
         _is_first: bool,
@@ -1446,7 +1373,7 @@ pub trait WidgetTheme {
     /// disabled flag so themes can render the inactive track.
     fn draw_slider_track(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         track_rect: Rect,
         fill_rect: Rect,
         size: ControlSize,
@@ -1455,7 +1382,7 @@ pub trait WidgetTheme {
     /// Draw slider thumb chrome for a control of `size`.
     fn draw_slider_thumb(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         center: Point,
         radius: f64,
         size: ControlSize,
@@ -1464,7 +1391,7 @@ pub trait WidgetTheme {
     /// Draw slider thumb state layer.
     fn draw_slider_thumb_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _center: Point,
         _radius: f64,
         _size: ControlSize,
@@ -1480,7 +1407,7 @@ pub trait WidgetTheme {
     fn slider_value_indicator_font(&self) -> Font;
     /// Draw the value indicator's chrome behind its label. `bounds` is the
     /// bubble rect the renderer laid out above the thumb.
-    fn draw_slider_value_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_slider_value_indicator(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// Return progress indicator metrics.
     fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;
@@ -1493,16 +1420,16 @@ pub trait WidgetTheme {
     /// active portion stops.
     fn draw_progress_linear_track(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         active_end: Option<f64>,
     );
     /// Draw the linear progress fill.
-    fn draw_progress_linear_fill(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_progress_linear_fill(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw the linear indeterminate progress indicator.
     fn draw_progress_linear_indeterminate(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         elapsed: Duration,
         four_color: bool,
@@ -1515,20 +1442,20 @@ pub trait WidgetTheme {
     /// `TrackActiveSpace`, so the track needs to know where the active arc ends.
     fn draw_progress_circular_track(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         center: Point,
         radius: f64,
         width: f64,
         active_turns: Option<f64>,
     );
     /// Draw the circular progress fill path.
-    fn draw_progress_circular_fill(&self, draw: &mut dyn DrawContext, path: &BezPath, width: f64);
+    fn draw_progress_circular_fill(&self, recorder: &mut Recorder, path: &BezPath, width: f64);
     /// Draw the loading indicator at `elapsed` into its cycle.
     ///
     /// `bounds` is the container; the theme insets the shape itself.
     fn draw_progress_loading(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         bounds: Rect,
         elapsed: Duration,
         four_color: bool,
@@ -1536,7 +1463,7 @@ pub trait WidgetTheme {
     /// Draw the circular indeterminate progress indicator.
     fn draw_progress_circular_indeterminate(
         &self,
-        draw: &mut dyn DrawContext,
+        recorder: &mut Recorder,
         center: Point,
         radius: f64,
         width: f64,
@@ -1547,11 +1474,11 @@ pub trait WidgetTheme {
     /// Return navigation bar layout metrics.
     fn navigation_metrics(&self) -> NavigationMetrics;
     /// Draw a navigation bar background.
-    fn draw_navigation_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, background: &Brush);
+    fn draw_navigation_bar(&self, recorder: &mut Recorder, bounds: Rect, background: &Paint);
     /// Draw a navigation bar separator.
-    fn draw_navigation_bar_separator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_navigation_bar_separator(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a navigation back button.
-    fn draw_navigation_back_button(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_navigation_back_button(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// How the tab bar lays out its items when the bar itself is
     /// `bar_width` wide and holds `item_count` items. `bar_width` is the
@@ -1564,14 +1491,14 @@ pub trait WidgetTheme {
     /// Return tabs layout metrics for items laid out as `layout`.
     fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics;
     /// Draw a tabs bar.
-    fn draw_tabs_bar(&self, draw: &mut dyn DrawContext, bounds: Rect, top_edge: bool);
+    fn draw_tabs_bar(&self, recorder: &mut Recorder, bounds: Rect, top_edge: bool);
     /// Draw the selected tab highlight of an item laid out as `layout`.
-    fn draw_tabs_highlight(&self, draw: &mut dyn DrawContext, bounds: Rect, layout: TabItemLayout);
+    fn draw_tabs_highlight(&self, recorder: &mut Recorder, bounds: Rect, layout: TabItemLayout);
     /// Draw the state layer of a tab button whose item is laid out as
     /// `layout`.
     fn draw_tabs_button_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _selected: bool,
         _state: WidgetInteractionState,
@@ -1580,12 +1507,12 @@ pub trait WidgetTheme {
     }
 
     /// Draw a scroll indicator.
-    fn draw_scroll_indicator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_scroll_indicator(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// Return divider layout metrics.
     fn divider_metrics(&self) -> DividerMetrics;
     /// Draw a divider.
-    fn draw_divider(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_divider(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// Return badge layout metrics.
     fn badge_metrics(&self) -> BadgeMetrics;
@@ -1594,30 +1521,30 @@ pub trait WidgetTheme {
     /// Return badge label font.
     fn badge_label_font(&self) -> Font;
     /// Draw a small dot badge.
-    fn draw_badge_small(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_badge_small(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a large labeled badge.
-    fn draw_badge_large(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_badge_large(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// Return list layout metrics.
     fn list_metrics(&self) -> ListMetrics;
     /// Draw a list row background.
-    fn draw_list_row_background(&self, draw: &mut dyn DrawContext, bounds: Rect, alternate: bool);
+    fn draw_list_row_background(&self, recorder: &mut Recorder, bounds: Rect, alternate: bool);
     /// Draw a list move affordance.
-    fn draw_list_move_control(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_list_move_control(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a list move affordance state layer.
     fn draw_list_move_control_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _state: WidgetInteractionState,
     ) {
     }
     /// Draw a list delete affordance.
-    fn draw_list_delete_control(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_list_delete_control(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a list delete affordance state layer.
     fn draw_list_delete_control_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _state: WidgetInteractionState,
     ) {
@@ -1629,27 +1556,27 @@ pub trait WidgetTheme {
     /// so a theme can anchor its icon on the side the row is uncovering.
     fn draw_list_swipe_dismiss_background(
         &self,
-        _draw: &mut dyn DrawContext,
+        _recorder: &mut Recorder,
         _bounds: Rect,
         _progress: f64,
         _toward_start: bool,
     ) {
     }
     /// Draw the lifted treatment for a row being dragged to a new position.
-    fn draw_list_row_lifted(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _elevation: f64) {}
+    fn draw_list_row_lifted(&self, _recorder: &mut Recorder, _bounds: Rect, _elevation: f64) {}
     /// Draw a list separator.
-    fn draw_list_separator(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_list_separator(&self, recorder: &mut Recorder, bounds: Rect);
 
     /// Return table layout metrics.
     fn table_metrics(&self) -> TableMetrics;
     /// Draw a table background.
-    fn draw_table_background(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_table_background(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a table header background.
-    fn draw_table_header_background(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_table_header_background(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a table cell border.
-    fn draw_table_cell_border(&self, draw: &mut dyn DrawContext, bounds: Rect);
+    fn draw_table_cell_border(&self, recorder: &mut Recorder, bounds: Rect);
     /// Draw a table column separator.
-    fn draw_table_column_separator(&self, draw: &mut dyn DrawContext, from: Point, to: Point);
+    fn draw_table_column_separator(&self, recorder: &mut Recorder, from: Point, to: Point);
 }
 
 /// Progress indicator visual style understood by backend theme packages.

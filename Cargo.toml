@@ -108,6 +108,7 @@ clippy.multiple_crate_versions =  { level = "allow", priority = 1 }
 [workspace.dependencies]
 aither-core = "0.4"
 aither-mcp = { version = "0.4", default-features = false }
+arc-swap = "1.9.2"
 # Held at 2 on purpose. `bincode` 3.0.0 is not a release: it is a name
 # reservation whose entire `lib.rs` is a `compile_error!`, with no dependencies
 # and no features, so `cargo upgrade --incompatible` proposes it and every
@@ -250,27 +251,12 @@ native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.5.1", path = "macros" }
 serde = { version = "1.0", default-features = false, features = ["alloc"] }
 erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
-# 29, not 30, and not by neglect: `vello` 0.10.0 — the newest release — pins
-# `wgpu` 29.0.3 in its own workspace, so taking 30 here would put two `wgpu`
-# majors in the graph and split every type that crosses between the renderer
-# and us. This moves when vello releases against 30 (#405).
-wgpu = "29.0.4"
-encase = "0.12"
+# 30, the exact minor `cherenkov-gpu` builds against: an application can link
+# only one wgpu, and every `wgpu` type that crosses between the engine and a
+# `GpuContent` producer must be one type. `testing` still requests `vello`
+# (`vello` 0.10 pins wgpu 29 itself) — its stack is migrated in W3.
+wgpu = "30.0.1"
 vello = "0.9"
-# The CPU/GPU split renderer: it processes paths on the CPU and rasterizes on
-# the GPU, so unlike Vello classic it needs no indirect execution — which is
-# what the iOS Simulator's Metal lacks.
-vello_hybrid = { version = "0.2", default-features = false, features = ["std", "wgpu", "text"] }
-# The glyph-run types `vello_hybrid`'s text API takes but does not re-export.
-# Taken from the same checkout as `vello_hybrid`, which vendors it: the crates.io
-# release is a different major version, and a glyph from one is not a glyph from
-# the other.
-glifo = { version = "0.3.0", default-features = false, features = ["std"] }
-# The paint and pixel types `vello_hybrid` takes but does not re-export. An
-# image is drawn there by naming a handle into the renderer's atlas, and the
-# handle, the paint that samples it, and the premultiplied conversion that
-# fills it all live here.
-vello_common = { version = "0.2", default-features = false, features = ["std"] }
 parley = { version = "0.11", default-features = false }
 # SVG documents are parsed here and drawn through `Scene2D`; nothing in the
 # workspace renders one with `vello_svg`, so the parser is depended on directly
@@ -300,9 +286,8 @@ quick-xml = "0.42"
 # find at runtime; without it MathCAT looks for a `Rules` directory on disk.
 mathcat = { version = "0.7.5", features = ["include-zip"] }
 toml = "1.1.6"
-vello_cpu = { version = "0.2.0", default-features = false }
 lyon = "1.0"
-wgpu-hal = { version = "29.0.4", features = ["gles", "metal"] }
+wgpu-hal = { version = "30.0.1", features = ["gles", "metal"] }
 # The Vulkan bindings `wgpu-hal` itself links. Android view capture imports an
 # `AHardwareBuffer` as a raw `VkImage`, which means calling
 # `VK_ANDROID_external_memory_android_hardware_buffer` on the very `ash::Device`
@@ -592,13 +577,16 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45
 # The coordinated Cherenkov cutover (water-rs/hydrolysis#205): recording,
 # resource ownership, layers and GPU content move onto the cherenkov
 # workspace, which publishes nothing yet — this rev is the engine the plan
-# fixes. Its `filtrate`/`filtrate-core` members resolve inside the same git
-# source through cherenkov's own path deps, so the graph carries the
-# engine's filter library beside the registry one the retiring filter code
-# still uses; that edge drops with it in W2.
+# fixes. Its `filtrate`/`filtrate-core`/`filtrate-derive` members are the
+# filter library `.filter(F)`/`.effect(E)` and the engine itself agree on:
+# every filtrate in the graph must come from this same revision or a filter
+# type built on one side is a different type on the other.
 cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
 cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
 cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
 
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
