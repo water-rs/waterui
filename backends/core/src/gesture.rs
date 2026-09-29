@@ -1274,8 +1274,12 @@ impl ExclusiveDetector {
 impl GestureDetector for ExclusiveDetector {
     fn input(&mut self, input: GestureInput) -> GestureDetection {
         let now = gesture_input_instant(input);
-        if self.suppress_until.is_some_and(|deadline| now < deadline) {
-            return GestureDetection::default();
+        match self.suppress_until {
+            Some(deadline) if now < deadline => return GestureDetection::default(),
+            // The window has elapsed: forget it, or `next_deadline` keeps
+            // reporting a time in the past and the host wakes every frame.
+            Some(_) => self.suppress_until = None,
+            None => {}
         }
 
         let first = self.first.input(input);
@@ -1553,6 +1557,37 @@ mod tests {
             second.recognized,
             Some(GesturePayload::LongPress(_))
         ));
+    }
+
+    #[test]
+    fn exclusive_detector_drops_its_suppression_deadline_once_elapsed() {
+        let mut detector = ExclusiveDetector::new(
+            Box::new(TapDetector::new(1, PointerButtons::PRIMARY)),
+            Box::new(LongPressDetector::new(
+                Duration::from_millis(300),
+                PointerButtons::PRIMARY,
+            )),
+        );
+        let start = Instant::now();
+        let point = kurbo::Point::new(5.0, 7.0);
+
+        detector.input(GestureInput::PointerDown {
+            point,
+            at: start,
+            button: PointerButton::Primary,
+        });
+        let tap = detector.input(GestureInput::PointerUp {
+            point,
+            at: start + Duration::from_millis(10),
+        });
+        assert!(matches!(tap.recognized, Some(GesturePayload::Tap(_))));
+        let window_end = start + Duration::from_millis(10) + EXCLUSIVE_RECOGNITION_WINDOW;
+        assert_eq!(detector.next_deadline(), Some(window_end));
+
+        // The host ticks at the reported deadline; after that the detector is
+        // idle and must stop asking to be woken.
+        detector.input(GestureInput::Tick { at: window_end });
+        assert_eq!(detector.next_deadline(), None);
     }
 
     #[test]
