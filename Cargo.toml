@@ -549,7 +549,7 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # actually compiled, and moving it to "0.10" would buy no code — only a
 # lockstep re-release of `waterui-graphics` and then `hydrolysis`, which
 # consumes graphics from crates.io and requires `vello ^0.9`.
-vello = { git = "https://github.com/lexoliu/vello", rev = "7f5e1ca5769a96dc4404b812e7fa0351499cd2c4" }
+vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
 
 # vello_hybrid 0.2.0 keeps only one physical layer in its image atlas off wasm,
 # and wgpu's GL backend then makes that texture `TEXTURE_2D` while the shader
@@ -584,10 +584,10 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "7455379d3b6ef88a9a767c62438f93c2d0835874" }
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "e56945bd4c71a7d3cf8f9c9a040624ec07851418" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "74d7dcd7a6d59a739eab40fa0f73c87151832408" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "40c63c94742d0abbd61719ad1754121be2670d01" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "1275e6768f08f01dcbaef86db8b32eca45b38109" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "ba37c37a9280e398a1fb997b45ef75c8e924dc19" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "5625b8a224600c57fd8f9d464762bf78792a40fc" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
