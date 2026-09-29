@@ -285,11 +285,16 @@ impl GestureEngine {
         !self.active_recognizers.is_empty()
     }
 
-    /// Drops targets registered after the `len` watermark, then clears the
-    /// active set if any active recognizer lost its live registration.
+    /// Drops targets registered after the `len` watermark.
+    ///
+    /// This runs mid-emit, while the walk is still re-registering targets
+    /// after `clear_targets`: the list is transient, and an armed recognizer
+    /// whose node has not re-registered yet is absent even though its target
+    /// survives the emit. Reconciling the active set here would cancel those
+    /// presses early; the settled check runs in [`Self::sync_after_layout`]
+    /// once registration completes.
     pub fn truncate_targets(&mut self, len: usize) {
         self.targets.truncate(len);
-        self.ensure_active_recognizers_are_live();
     }
 
     /// Swaps the engine's target list with an externally captured one, used
@@ -601,12 +606,6 @@ impl GestureEngine {
         self.active_recognizers
             .iter()
             .all(|recognizer| self.is_recognizer_live(recognizer))
-    }
-
-    fn ensure_active_recognizers_are_live(&mut self) {
-        if !self.active_recognizers_are_live() {
-            self.active_recognizers.clear();
-        }
     }
 
     fn is_recognizer_live(&self, recognizer: &GestureTarget) -> bool {
@@ -1980,5 +1979,78 @@ mod tests {
             &env,
         );
         assert_eq!(last_button.get(), Some(PointerButton::Middle));
+    }
+
+    #[test]
+    fn tap_survives_reemitted_targets_during_press() {
+        // Regression: every scene emit rebuilds the target list under
+        // `clear_targets` and re-registers during the walk; a mid-walk
+        // `truncate_targets` watermark checked recognizer liveness against
+        // the transient list and cleared presses whose retained node had
+        // not re-registered yet (`.on_tap` presses died under emit storms).
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::TapGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let bounds = kurbo::Rect::new(0.0, 0.0, 128.0, 128.0);
+        let tap_hits = Rc::new(Cell::new(0u32));
+
+        let tap_target = {
+            let tap_hits = Rc::clone(&tap_hits);
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    tap_hits.set(tap_hits.get() + 1);
+                }),
+                0,
+                0,
+                7,
+            )
+        };
+
+        let start = Instant::now();
+        let point = kurbo::Point::new(16.0, 16.0);
+        assert!(!engine.handle_pointer_down(point, start, PointerButton::Primary, &env));
+
+        // Emits between press and release: the list is cleared and the walk
+        // re-registers nodes in order. Other nodes land first; a mid-walk
+        // suppression watermark truncates while the armed tap target is
+        // still absent; the retained node then re-registers it (same
+        // recognizer) later in the walk.
+        for _ in 0..3 {
+            engine.clear_targets();
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(|_env: Environment| {}),
+                0,
+                1,
+                7,
+            );
+            engine.register_target(
+                bounds,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(|_env: Environment| {}),
+                0,
+                2,
+                7,
+            );
+            engine.truncate_targets(1);
+            engine.register_existing_target(tap_target.clone());
+            engine.sync_after_layout(Some(point));
+        }
+
+        assert!(engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(32),
+            PointerButton::Primary,
+            &env
+        ));
+        assert_eq!(tap_hits.get(), 1);
     }
 }
