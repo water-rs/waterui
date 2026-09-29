@@ -134,6 +134,23 @@ impl Recording {
             .push_layer(rule, blend, opacity, clip_transform, clip);
     }
 
+    /// Opens a compositing scope, runs `f` inside it, then closes it — the
+    /// lexical pairing recording call sites use when their content is not a
+    /// whole renderer traversal (`&mut Recording`, not `&mut Renderer`).
+    pub(crate) fn with_group<S: Shape>(
+        &mut self,
+        rule: Fill,
+        blend: BlendMode,
+        opacity: f32,
+        clip_transform: Affine,
+        clip: &S,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_group(rule, blend, opacity, clip_transform, clip);
+        f(self);
+        self.pop_scope();
+    }
+
     /// Closes the current scope, then re-arms the encoding's transform/style
     /// force flags.
     ///

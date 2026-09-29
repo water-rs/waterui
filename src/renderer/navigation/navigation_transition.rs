@@ -189,15 +189,14 @@ fn append_matched_element(
             target.height() / element.bounds.height(),
         )
         * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    scene.push_group(
+    scene.with_group(
         peniko::Fill::NonZero,
         peniko::BlendMode::default(),
         opacity,
         transform,
         &target,
+        |scene| scene.append(&element.scene, transform * local),
     );
-    scene.append(&element.scene, transform * local);
-    scene.pop_scope();
 }
 
 fn append_scene_with_opacity(
@@ -237,15 +236,14 @@ fn append_scene_layer(
         * kurbo::Affine::scale(f64::from(layer.scale))
         * kurbo::Affine::translate((-center.x, -center.y));
     let transformed_bounds = local.transform_rect_bbox(clip_bounds);
-    scene.push_group(
+    scene.with_group(
         peniko::Fill::NonZero,
         peniko::BlendMode::default(),
         layer.opacity,
         transform,
         &transformed_bounds,
+        |scene| scene.append(content, transform * local),
     );
-    scene.append(content, transform * local);
-    scene.pop_scope();
 }
 
 #[cfg(test)]
