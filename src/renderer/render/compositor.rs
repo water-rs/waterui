@@ -30,6 +30,9 @@ fn build_pooled_vello_renderer(
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: crate::renderer::vello_init_threads(backend),
             pipeline_cache,
+            // Pooled renders target per-layer textures: `None` sizes the bump
+            // buffers to each render target.
+            buffer_sizes: None,
         },
     )
     .expect("hydrolysis renderer: failed to create pooled vello renderer")
@@ -61,7 +64,12 @@ fn encode_vello_layers_parallel(
     width: u32,
     height: u32,
     counters: &mut MigrationCounters,
-) -> Vec<(usize, PooledLayerTexture)> {
+) -> Vec<(
+    usize,
+    vello::Renderer,
+    PooledLayerTexture,
+    Option<vello::BumpReadback>,
+)> {
     #[cfg(not(target_arch = "wasm32"))]
     use rayon::prelude::*;
 
@@ -81,21 +89,16 @@ fn encode_vello_layers_parallel(
                 build_pooled_vello_renderer(device, backend, pipeline_cache.clone())
             });
 
-        let params = vello::RenderParams {
-            base_color: peniko::Color::TRANSPARENT,
-            width,
-            height,
-            antialiasing_method: vello::AaConfig::Area,
-        };
-        renderer
+        let params = vello_layer_render_params(width, height);
+        let readback = renderer
             .render_to_texture(device, queue, scene, &leased.view, &params)
             .expect("hydrolysis renderer: failed to render vello layer scene");
 
-        pool.lock()
-            .expect("hydrolysis renderer: vello renderer pool poisoned")
-            .push(renderer);
-
-        (index, leased)
+        // The renderer stays checked out until its deferred bump-buffer
+        // verification drains at next frame's verify point: an overflow is
+        // re-rendered on this same renderer because its grown sizes live on
+        // it.
+        (index, renderer, leased, readback)
     };
 
     // wgpu-hal's GLES device funnels every device call through one adapter
@@ -104,17 +107,125 @@ fn encode_vello_layers_parallel(
     // renderer pool. GL encodes the layers in order; every other backend
     // encodes them across cores.
     #[cfg(not(target_arch = "wasm32"))]
-    let rendered: Vec<(usize, PooledLayerTexture)> = if backend == wgpu::Backend::Gl {
+    let rendered: Vec<_> = if backend == wgpu::Backend::Gl {
         scenes.into_iter().map(render_layer).collect()
     } else {
         scenes.into_par_iter().map(render_layer).collect()
     };
     #[cfg(target_arch = "wasm32")]
-    let rendered: Vec<(usize, PooledLayerTexture)> = scenes.into_iter().map(render_layer).collect();
+    let rendered: Vec<_> = scenes.into_iter().map(render_layer).collect();
     // Each rendered layer was one `render_to_texture` submission, counted
     // once here because the workers run in parallel.
     counters.gpu_submissions += u64::try_from(rendered.len()).unwrap_or(u64::MAX);
     rendered
+}
+
+/// The render parameters every pooled vello layer texture is drawn with.
+fn vello_layer_render_params(width: u32, height: u32) -> vello::RenderParams {
+    vello::RenderParams {
+        base_color: peniko::Color::TRANSPARENT,
+        width,
+        height,
+        antialiasing_method: vello::AaConfig::Area,
+    }
+}
+
+/// How to re-issue a pending vello render when its readback reports
+/// overflow. The encoded input is carried with the pending render itself:
+/// `compositor.render_layers` is rebuilt every frame and must not be
+/// stashed across the frame boundary.
+enum DeferredVelloSource {
+    /// Re-render this scene.
+    Layer(Box<vello::Scene>),
+    /// Rebuild and re-render the active-layers mask from these layers.
+    Mask(Vec<ActiveSceneLayer>),
+}
+
+/// A submitted-but-unverified vello render and everything needed to
+/// re-render it: the [`vello::BumpReadback`] ticket is resolved next frame
+/// by [`HydrolysisRenderer::complete_deferred_vello`], before the composite
+/// pass can sample its target.
+struct PendingVelloRender {
+    source: DeferredVelloSource,
+    view: wgpu::TextureView,
+    readback: Option<vello::BumpReadback>,
+}
+
+/// A frame's vello outputs held between encode and presentation: the
+/// painter's-order composite inputs plus every unverified render ticket.
+/// Verification is deferred one frame so a completed render resolves with
+/// a device poll instead of a CPU wait; an overflow is re-rendered during
+/// the drain, before the frame's textures can be composited.
+struct DeferredVelloFrame {
+    ready: Vec<ReadyLayerComposite>,
+    pooled: Vec<(vello::Renderer, PendingVelloRender)>,
+    main: Vec<PendingVelloRender>,
+    surface_size: (u32, u32),
+    /// Set once a settle pass has composited this stash to a surface. The
+    /// frame then stays stashed so the next content frame still composites
+    /// the same verified output at its top — a settle landing between
+    /// damage batches is an early present, never a hole the following
+    /// frame must bootstrap around.
+    presented: bool,
+    /// The `queue.submit` index of every render this stash's tickets depend
+    /// on — one per ticket, all of them, because the parallel layer encode
+    /// makes their relative order unknowable from the outside. A completion
+    /// watch waits on exactly these; a `queue.submit` issued later cannot
+    /// extend the wait the way `PollType::Wait { submission_index: None }`
+    /// could.
+    #[cfg(feature = "winit")]
+    watch_submissions: Vec<wgpu::SubmissionIndex>,
+    /// When the frame was stashed — diagnostics only: the tail-frame
+    /// latency event reports stash → present; nothing reads it for
+    /// scheduling.
+    stashed_at: Instant,
+}
+
+impl DeferredVelloFrame {
+    /// Every ticket this frame still owes has resolved — draining it is a
+    /// device poll, with no GPU-completion wait behind it.
+    fn verify_ready(&self) -> bool {
+        self.pooled.iter().all(|(_, pending)| {
+            pending
+                .readback
+                .as_ref()
+                .is_none_or(vello::BumpReadback::is_ready)
+        }) && self.main.iter().all(|pending| {
+            pending
+                .readback
+                .as_ref()
+                .is_none_or(vello::BumpReadback::is_ready)
+        })
+    }
+}
+
+/// The mask scene [`HydrolysisRenderer::render_active_layers_mask_to_texture`]
+/// draws: the active layers clipped to the target, unioned with the target
+/// rect so uncovered regions stay opaque.
+fn build_active_layers_mask_scene(
+    active_layers: &[ActiveSceneLayer],
+    width: u32,
+    height: u32,
+) -> vello::Scene {
+    assert!(
+        !active_layers.is_empty(),
+        "hydrolysis renderer: active layer mask requires at least one layer"
+    );
+    let mut mask_scene = vello::Scene::new();
+    for layer in active_layers {
+        layer.push_to_scene(&mut mask_scene);
+    }
+    mask_scene.fill(
+        peniko::Fill::NonZero,
+        kurbo::Affine::IDENTITY,
+        peniko::Color::WHITE,
+        None,
+        &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+    );
+    for _ in 0..active_layers.len() {
+        crate::engine::vello_backend::pop_scene_layer(&mut mask_scene);
+    }
+    mask_scene
 }
 
 #[derive(Default)]
@@ -130,6 +241,11 @@ pub(crate) struct Compositor {
     /// (parallel) encode itself.
     pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<vello::Renderer>>,
     pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
+    /// The previous frame's vello outputs awaiting verification, presented
+    /// by [`HydrolysisRenderer::complete_deferred_vello`] at the start of
+    /// this frame — one frame of uniform latency is the cost of never
+    /// blocking the render path on a readback.
+    deferred_vello_frame: Option<DeferredVelloFrame>,
     pub(crate) render_layers: Vec<RenderLayer>,
     pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
     pub(crate) active_filter_images: Vec<peniko::ImageData>,
@@ -1480,6 +1596,11 @@ impl HydrolysisRenderer {
 
     /// Renders a scene into a pooled target-sized texture, which the caller
     /// must hand back to the pool once the composite pass has sampled it.
+    ///
+    /// The render's [`vello::BumpReadback`] ticket rides along: it is
+    /// resolved by [`Self::complete_deferred_vello`] next frame, before the
+    /// composite pass can sample the texture — an overflowed layer is
+    /// re-rendered first.
     fn render_vello_layer_to_texture(
         &mut self,
         device: &wgpu::Device,
@@ -1487,19 +1608,15 @@ impl HydrolysisRenderer {
         scene: &vello::Scene,
         width: u32,
         height: u32,
-    ) -> PooledLayerTexture {
+    ) -> (PooledLayerTexture, Option<vello::BumpReadback>) {
         let leased = self.compositor.acquire_layer_texture(device, width, height);
-        let params = vello::RenderParams {
-            base_color: peniko::Color::TRANSPARENT,
-            width,
-            height,
-            antialiasing_method: vello::AaConfig::Area,
-        };
+        let params = vello_layer_render_params(width, height);
         self.state.counters.gpu_submissions += 1;
-        self.vello_renderer
+        let readback = self
+            .vello_renderer
             .render_to_texture(device, queue, scene, &leased.view, &params)
             .expect("hydrolysis renderer: failed to render vello layer scene");
-        leased
+        (leased, readback)
     }
 
     fn render_active_layers_mask_to_texture(
@@ -1509,26 +1626,307 @@ impl HydrolysisRenderer {
         width: u32,
         height: u32,
         active_layers: &[ActiveSceneLayer],
-    ) -> PooledLayerTexture {
-        assert!(
-            !active_layers.is_empty(),
-            "hydrolysis renderer: active layer mask requires at least one layer"
-        );
-        let mut mask_scene = vello::Scene::new();
-        for layer in active_layers {
-            layer.push_to_scene(&mut mask_scene);
-        }
-        mask_scene.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            peniko::Color::WHITE,
-            None,
-            &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
-        );
-        for _ in 0..active_layers.len() {
-            crate::engine::vello_backend::pop_scene_layer(&mut mask_scene);
-        }
+    ) -> (PooledLayerTexture, Option<vello::BumpReadback>) {
+        let mask_scene = build_active_layers_mask_scene(active_layers, width, height);
         self.render_vello_layer_to_texture(device, queue, &mask_scene, width, height)
+    }
+
+    /// Resolve the deferred bump-buffer verification carried by `deferred`,
+    /// re-rendering any render that overflowed, in place.
+    ///
+    /// Called once per frame, before that frame's phase-1 work, on the
+    /// [`DeferredVelloFrame`] the previous frame stashed: its renders had a
+    /// whole present interval to finish on the GPU, so a verified render
+    /// costs a non-blocking drain — steady-state frames never wait on GPU
+    /// completion. An overflowed render is re-issued at its freshly grown
+    /// sizes and drained again; a scene that keeps outgrowing stops at
+    /// [`MAX_BUMP_VERIFY_ROUNDS`] and is reported, same as the old inline
+    /// retry bound. That wait is the overflowed frame's own GPU-completion
+    /// cost, paid once, not overhead every frame carries.
+    ///
+    /// `pooled` carries the renderers checked out by
+    /// [`encode_vello_layers_parallel`], each with its own readback ticket;
+    /// they return to the pool once verified. `main` lists the pending
+    /// readbacks on the shared sequential renderer (`Self::vello_renderer`),
+    /// verified in one batch with positions indexing into `main`.
+    fn verify_deferred_vello(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        deferred: &mut DeferredVelloFrame,
+    ) {
+        let params = vello_layer_render_params(deferred.surface_size.0, deferred.surface_size.1);
+        for (renderer, pending) in &mut deferred.pooled {
+            // Growth is one-shot by construction: `BumpBufferSizes::satisfy`
+            // raises every bump-managed buffer to at least the demand this
+            // scene reported, so re-rendering the identical scene cannot
+            // overflow the same buffers again. The second verify exists to
+            // surface a violation of that invariant — a satisfy/covers
+            // disagreement with the shader accounting — not to converge.
+            let Some(ticket) = pending.readback.take() else {
+                continue;
+            };
+            let overflowed = match renderer.verify_bump_readbacks(device, vec![ticket]) {
+                Ok(overflowed) => overflowed,
+                Err(error) => {
+                    tracing::error!(
+                        "hydrolysis renderer: vello bump-buffer verification failed: {error}"
+                    );
+                    continue;
+                }
+            };
+            if overflowed.is_empty() {
+                continue;
+            }
+            let DeferredVelloSource::Layer(scene) = &pending.source else {
+                unreachable!("hydrolysis renderer: pooled vello pending is not a layer")
+            };
+            self.state.counters.gpu_submissions += 1;
+            pending.readback = renderer
+                .render_to_texture(device, queue, scene.as_ref(), &pending.view, &params)
+                .expect("hydrolysis renderer: failed to re-render vello layer scene");
+            let Some(ticket) = pending.readback.take() else {
+                continue;
+            };
+            match renderer.verify_bump_readbacks(device, vec![ticket]) {
+                Ok(overflowed) if overflowed.is_empty() => {}
+                Ok(_) => {
+                    tracing::error!(
+                        "hydrolysis renderer: vello bump buffers still overflowing after \
+                         a demand-sized re-render — satisfy/covers disagree with the \
+                         shader accounting"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        "hydrolysis renderer: vello bump-buffer verification failed: {error}"
+                    );
+                }
+            }
+        }
+        for (renderer, _) in deferred.pooled.drain(..) {
+            self.compositor
+                .vello_renderer_pool
+                .lock()
+                .expect("hydrolysis renderer: vello renderer pool poisoned")
+                .push(renderer);
+        }
+
+        let main = &mut deferred.main;
+        // Same one-shot construction as the pooled loop above: verify, then
+        // re-render each overflowed render once at its reported demand and
+        // verify once more — a second overflow means the growth accounting
+        // is buggy, which is reported rather than retried.
+        let mut owners = Vec::new();
+        let mut tickets = Vec::new();
+        for (index, pending) in main.iter_mut().enumerate() {
+            if let Some(ticket) = pending.readback.take() {
+                owners.push(index);
+                tickets.push(ticket);
+            }
+        }
+        if tickets.is_empty() {
+            return;
+        }
+        let overflowed = match self.vello_renderer.verify_bump_readbacks(device, tickets) {
+            Ok(overflowed) => overflowed,
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis renderer: vello bump-buffer verification failed: {error}"
+                );
+                return;
+            }
+        };
+        if overflowed.is_empty() {
+            return;
+        }
+        for position in overflowed {
+            let pending = &mut main[owners[position]];
+            let view = pending.view.clone();
+            self.state.counters.gpu_submissions += 1;
+            pending.readback = match &pending.source {
+                DeferredVelloSource::Layer(scene) => self.vello_renderer.render_to_texture(
+                    device,
+                    queue,
+                    scene.as_ref(),
+                    &view,
+                    &params,
+                ),
+                DeferredVelloSource::Mask(active_layers) => {
+                    let mask_scene = build_active_layers_mask_scene(
+                        active_layers,
+                        deferred.surface_size.0,
+                        deferred.surface_size.1,
+                    );
+                    self.vello_renderer.render_to_texture(
+                        device,
+                        queue,
+                        &mask_scene,
+                        &view,
+                        &params,
+                    )
+                }
+            }
+            .expect("hydrolysis renderer: failed to re-render vello layer scene");
+        }
+        let mut tickets = Vec::new();
+        for pending in main.iter_mut() {
+            if let Some(ticket) = pending.readback.take() {
+                tickets.push(ticket);
+            }
+        }
+        if tickets.is_empty() {
+            return;
+        }
+        match self.vello_renderer.verify_bump_readbacks(device, tickets) {
+            Ok(overflowed) if overflowed.is_empty() => {}
+            Ok(_) => {
+                tracing::error!(
+                    "hydrolysis renderer: vello bump buffers still overflowing after \
+                     a demand-sized re-render — satisfy/covers disagree with the \
+                     shader accounting"
+                );
+            }
+            Err(error) => {
+                tracing::error!(
+                    "hydrolysis renderer: vello bump-buffer verification failed: {error}"
+                );
+            }
+        }
+    }
+
+    /// Whether the last rendered frame left its vello verification deferred:
+    /// its verified composite still owes a present. Runners must schedule one
+    /// drain pass — [`Self::flush_deferred_vello_frame_to_surface`] — once the
+    /// frame stream settles, or the last rendered frame never reaches the
+    /// screen. A stash a settle already presented keeps no drain owed: the
+    /// next content frame composites it again at its top.
+    pub(crate) fn has_deferred_vello_frame(&self) -> bool {
+        self.compositor
+            .deferred_vello_frame
+            .as_ref()
+            .is_some_and(|deferred| !deferred.presented)
+    }
+
+    /// The `queue.submit` indices the stashed frame's tickets depend on —
+    /// what the runner's GPU-completion watch waits on. Empty when nothing
+    /// is stashed (or a stash carries no tickets, which the verify treats
+    /// as already resolved).
+    #[cfg(feature = "winit")]
+    pub(crate) fn deferred_vello_watch_submissions(&self) -> Vec<wgpu::SubmissionIndex> {
+        self.compositor
+            .deferred_vello_frame
+            .as_ref()
+            .map(|deferred| deferred.watch_submissions.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the stashed frame's readbacks have all resolved — a pure flag
+    /// check; GPU completion is driven off the main thread by the runner's
+    /// poll driver, whose wake is what brings a settle here. Nothing
+    /// stashed counts as resolved.
+    pub(crate) fn deferred_vello_frame_resolved(&self) -> bool {
+        self.compositor
+            .deferred_vello_frame
+            .as_ref()
+            .is_none_or(DeferredVelloFrame::verify_ready)
+    }
+
+    /// A drain-only present: resolves the stashed frame's tickets and
+    /// composites it, without encoding new scene work — the settle pass a
+    /// stashing frame asks the runner for. A no-op when nothing is stashed.
+    ///
+    /// The stash is presented but RETAINED: the next content frame
+    /// composites the same verified output at its top again, so a settle
+    /// landing between damage batches is an early present rather than a
+    /// hole the following frame must bootstrap around.
+    pub(crate) fn flush_deferred_vello_frame_to_surface(
+        &mut self,
+        target: HydrolysisRenderTarget<'_>,
+        premultiply_alpha: bool,
+    ) {
+        let encoding = TargetEncoding::of(target.format);
+        self.present_deferred_vello_frame(&target, encoding, premultiply_alpha);
+    }
+
+    /// Presents the stashed deferred frame's verified composite into
+    /// `target` without consuming it: the frame stays stashed marked
+    /// `presented` so the next content frame re-composites the same output
+    /// before encoding new work.
+    fn present_deferred_vello_frame(
+        &mut self,
+        target: &HydrolysisRenderTarget<'_>,
+        encoding: TargetEncoding,
+        premultiply_alpha: bool,
+    ) -> bool {
+        let Some(mut deferred) = self.compositor.deferred_vello_frame.take() else {
+            return false;
+        };
+        self.verify_deferred_vello(target.device, target.queue, &mut deferred);
+        tracing::debug!(
+            target: "hydrolysis::vello_deferred",
+            tail_latency_ms = deferred.stashed_at.elapsed().as_secs_f64() * 1_000.0,
+            "deferred vello stash presented"
+        );
+        deferred.presented = true;
+        let presented = deferred.surface_size == (target.width, target.height);
+        if presented {
+            if deferred.ready.is_empty() {
+                self.clear_target_surface(
+                    target.device,
+                    target.queue,
+                    target.view,
+                    target.base_color,
+                    encoding,
+                    premultiply_alpha,
+                );
+            } else {
+                self.composite_ready_layers(target, &deferred.ready, premultiply_alpha);
+            }
+        }
+        self.compositor.deferred_vello_frame = Some(deferred);
+        presented
+    }
+
+    /// Resolves the stashed deferred frame's tickets and composites its
+    /// verified textures into `target`, returning whether anything was
+    /// presented. A resize makes the stashed output unusable: it is still
+    /// drained (buffer growth is learned, textures return to the pool) but
+    /// nothing composites and the caller must fill the target itself.
+    fn drain_deferred_vello_frame(
+        &mut self,
+        target: &HydrolysisRenderTarget<'_>,
+        encoding: TargetEncoding,
+        premultiply_alpha: bool,
+    ) -> bool {
+        let Some(mut deferred) = self.compositor.deferred_vello_frame.take() else {
+            return false;
+        };
+        self.verify_deferred_vello(target.device, target.queue, &mut deferred);
+        let presented = deferred.surface_size == (target.width, target.height);
+        if presented {
+            if deferred.ready.is_empty() {
+                self.clear_target_surface(
+                    target.device,
+                    target.queue,
+                    target.view,
+                    target.base_color,
+                    encoding,
+                    premultiply_alpha,
+                );
+            } else {
+                self.composite_ready_layers(target, &deferred.ready, premultiply_alpha);
+            }
+        }
+        for layer in deferred.ready {
+            if let Some(leased) = layer.layer_texture {
+                self.compositor.release_layer_texture(leased);
+            }
+            if let Some(leased) = layer.mask_texture {
+                self.compositor.release_layer_texture(leased);
+            }
+        }
+        presented
     }
 
     fn default_compositor_mask_view(
@@ -1718,6 +2116,14 @@ impl HydrolysisRenderer {
             [[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]],
             encoding.compositor_decodes_source(),
         );
+
+        // Present the previous frame's verified content first: its vello
+        // renders had a whole present interval to finish, so resolving their
+        // readbacks costs a device poll — steady-state frames never block on
+        // the GPU.
+        let deferred_presented =
+            self.drain_deferred_vello_frame(&target, encoding, premultiply_alpha);
+
         let mut render_layers = core::mem::take(&mut self.compositor.render_layers);
         let transient_layer_count =
             if let Some(scene) = self.transient_scene.take().filter(scene_has_content) {
@@ -1833,8 +2239,19 @@ impl HydrolysisRenderer {
         // consumes the results in painter's order. A single Vello layer keeps
         // the sequential path (nothing to parallelize), and GpuSurface layers
         // are unaffected.
-        let mut encoded_vello: Vec<Option<PooledLayerTexture>> =
-            (0..render_layers.len()).map(|_| None).collect();
+        let mut encoded_vello: Vec<
+            Option<(
+                vello::Renderer,
+                PooledLayerTexture,
+                Option<vello::BumpReadback>,
+            )>,
+        > = (0..render_layers.len()).map(|_| None).collect();
+        // Deferred bump-buffer verification: every vello render submitted
+        // this phase stashes its readback ticket here and is resolved at the
+        // start of next frame, before the composite pass can sample its
+        // texture — a completed render never waits on the GPU.
+        let mut pending_pooled: Vec<(vello::Renderer, PendingVelloRender)> = Vec::new();
+        let mut pending_main: Vec<PendingVelloRender> = Vec::new();
         {
             let vello_indices: Vec<usize> = render_layers
                 .iter()
@@ -1866,7 +2283,7 @@ impl HydrolysisRenderer {
                 // `self.pipeline_cache()` borrows all of `self`; hoist it so
                 // the counter borrow below stays field-disjoint.
                 let pipeline_cache = self.pipeline_cache();
-                for (index, leased) in encode_vello_layers_parallel(
+                for (index, renderer, leased, readback) in encode_vello_layers_parallel(
                     &self.compositor.vello_renderer_pool,
                     PoolGpu {
                         device: target.device,
@@ -1882,7 +2299,7 @@ impl HydrolysisRenderer {
                     // colliding with the pool borrow above.
                     &mut self.core.state.counters,
                 ) {
-                    encoded_vello[index] = Some(leased);
+                    encoded_vello[index] = Some((renderer, leased, readback));
                 }
             }
         }
@@ -1898,14 +2315,32 @@ impl HydrolysisRenderer {
                         "compositing Hydrolysis Vello layer"
                     );
                     let leased = match encoded_vello[layer_index].take() {
-                        Some(leased) => leased,
-                        None => self.render_vello_layer_to_texture(
-                            target.device,
-                            target.queue,
-                            scene,
-                            target.width,
-                            target.height,
-                        ),
+                        Some((renderer, leased, readback)) => {
+                            pending_pooled.push((
+                                renderer,
+                                PendingVelloRender {
+                                    source: DeferredVelloSource::Layer(Box::new(scene.clone())),
+                                    view: leased.view.clone(),
+                                    readback,
+                                },
+                            ));
+                            leased
+                        }
+                        None => {
+                            let (leased, readback) = self.render_vello_layer_to_texture(
+                                target.device,
+                                target.queue,
+                                scene,
+                                target.width,
+                                target.height,
+                            );
+                            pending_main.push(PendingVelloRender {
+                                source: DeferredVelloSource::Layer(Box::new(scene.clone())),
+                                view: leased.view.clone(),
+                                readback,
+                            });
+                            leased
+                        }
                     };
                     let mask_view = self.default_compositor_mask_view(
                         target.device,
@@ -1983,13 +2418,18 @@ impl HydrolysisRenderer {
                             None,
                         )
                     } else {
-                        let leased = self.render_active_layers_mask_to_texture(
+                        let (leased, readback) = self.render_active_layers_mask_to_texture(
                             target.device,
                             target.queue,
                             target.width,
                             target.height,
                             &layer.active_layers,
                         );
+                        pending_main.push(PendingVelloRender {
+                            source: DeferredVelloSource::Mask(layer.active_layers.clone()),
+                            view: leased.view.clone(),
+                            readback,
+                        });
                         (leased.view.clone(), Some(leased))
                     };
                     ready.push(ReadyLayerComposite {
@@ -2007,32 +2447,98 @@ impl HydrolysisRenderer {
             }
         }
 
+        // Phase-1/phase-2 seam: the verification deferred last frame already
+        // presented at the top of this call; this frame's renders defer the
+        // same way. When nothing was submitted to vello verification at all
+        // (the CPU path, or a frame without vello content) there is no
+        // readback to wait on and this frame composites immediately — no
+        // added latency.
+        let has_pending = pending_main
+            .iter()
+            .any(|pending| pending.readback.is_some())
+            || pending_pooled
+                .iter()
+                .any(|(_, pending)| pending.readback.is_some());
+
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(target.device, target.queue, 1);
 
-        // Phase 2 — one render pass, one submit, painter's order.
-        if ready.is_empty() {
-            self.clear_target_surface(
-                target.device,
-                target.queue,
-                target.view,
-                target.base_color,
-                encoding,
-                premultiply_alpha,
-            );
+        if has_pending {
+            // Phase 2 is deferred by one frame: verification resolves at the
+            // start of the next frame, then this `ready` list composites.
+            #[cfg(feature = "winit")]
+            let watch_submissions = pending_main
+                .iter()
+                .chain(pending_pooled.iter().map(|(_, pending)| pending))
+                .filter_map(|pending| {
+                    pending
+                        .readback
+                        .as_ref()
+                        .map(vello::BumpReadback::submission_index)
+                })
+                .collect();
+            let mut deferred = DeferredVelloFrame {
+                ready,
+                pooled: pending_pooled,
+                main: pending_main,
+                surface_size: (target.width, target.height),
+                presented: false,
+                #[cfg(feature = "winit")]
+                watch_submissions,
+                stashed_at: Instant::now(),
+            };
+            if !deferred_presented {
+                // Bootstrap: nothing verified exists to sample — resolving
+                // this frame's tickets in-frame is the stream's one wait
+                // (bounded, once per burst, not a per-frame cost). Presenting
+                // cleared colour or an unverified frame are both wrong.
+                self.verify_deferred_vello(target.device, target.queue, &mut deferred);
+                if deferred.ready.is_empty() {
+                    self.clear_target_surface(
+                        target.device,
+                        target.queue,
+                        target.view,
+                        target.base_color,
+                        encoding,
+                        premultiply_alpha,
+                    );
+                } else {
+                    self.composite_ready_layers(&target, &deferred.ready, premultiply_alpha);
+                }
+                // Its content just reached the surface in this frame — mark
+                // it presented so no settle pass re-presents it; the next
+                // frame still composites the verified output at its top.
+                deferred.presented = true;
+            }
+            // Stashing the just-verified frame too lets frame two defer
+            // without another in-frame wait: its drain resolves instantly,
+            // recomposites the same content, and hands the pipeline over.
+            self.compositor.deferred_vello_frame = Some(deferred);
         } else {
-            self.composite_ready_layers(&target, &ready, premultiply_alpha);
+            // Phase 2 — one render pass, one submit, painter's order.
+            if ready.is_empty() {
+                self.clear_target_surface(
+                    target.device,
+                    target.queue,
+                    target.view,
+                    target.base_color,
+                    encoding,
+                    premultiply_alpha,
+                );
+            } else {
+                self.composite_ready_layers(&target, &ready, premultiply_alpha);
+            }
+            for layer in ready {
+                if let Some(leased) = layer.layer_texture {
+                    self.compositor.release_layer_texture(leased);
+                }
+                if let Some(leased) = layer.mask_texture {
+                    self.compositor.release_layer_texture(leased);
+                }
+            }
         }
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(target.device, target.queue, 2);
-        for layer in ready {
-            if let Some(leased) = layer.layer_texture {
-                self.compositor.release_layer_texture(leased);
-            }
-            if let Some(leased) = layer.mask_texture {
-                self.compositor.release_layer_texture(leased);
-            }
-        }
         for _ in 0..transient_layer_count {
             render_layers.pop();
         }

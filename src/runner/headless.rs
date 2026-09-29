@@ -791,6 +791,14 @@ impl HeadlessRuntime {
                 self.local_executor.drain()
             })
         });
+        // Every pass below — popup renders, deferred-flush settles — can
+        // rebuild; `rebuilt` reports the OR of all of them, not only the
+        // last pass that replaced `render_result`.
+        let mut rebuilt = render_result.as_ref().is_some_and(|result| result.rebuilt);
+        // The pump's profile is the frame it rendered: the settle passes below
+        // only verify and present that frame's stash, and they replace
+        // `render_result` for its snapshot, not for what the frame did.
+        let rendered_profile = render_result.as_ref().map(|result| result.profile);
         // A popup window pumps its scene the way the main window does: the
         // scene pump is where its retained tree — and with it the window's
         // accessibility update — is built. A popup that only ever rendered on
@@ -798,8 +806,8 @@ impl HeadlessRuntime {
         // merged tree, so an open popup gets a frame whenever its own work is
         // pending, while readback stays limited to the frames that composite
         // it into a snapshot.
-        let mut popups_rebuilt = false;
-        for popup in &mut self.popup_windows {
+        let mut popup_snapshots = Vec::new();
+        for (popup_index, popup) in self.popup_windows.iter_mut().enumerate() {
             let composite = capture_snapshot
                 && render_result
                     .as_ref()
@@ -811,35 +819,92 @@ impl HeadlessRuntime {
             let popup_result = render_window_with_capture(popup, &self.env, composite, &mut || {
                 self.local_executor.drain()
             });
-            popups_rebuilt |= popup_result.rebuilt;
-            if let (Some(snapshot), Some(popup_snapshot)) = (
-                render_result
-                    .as_mut()
-                    .and_then(|result| result.snapshot.as_mut()),
-                popup_result.snapshot,
-            ) {
-                composite_popup_snapshot(
-                    snapshot,
-                    &popup_snapshot,
+            rebuilt |= popup_result.rebuilt;
+            if let Some(popup_snapshot) = popup_result.snapshot {
+                popup_snapshots.push((
+                    popup_index,
                     crate::platform::validated_window_frame(popup.window.frame.snapshot()),
-                );
+                    popup_snapshot,
+                ));
+            }
+        }
+        // A pump must observe the frame it rendered — vello verification that
+        // deferred by an interval is drained now, not by whatever renders
+        // next. The settle passes are drain-only: damage a render left
+        // pending is the next pump's work (one render per pump, as on the
+        // window path's single merge), while an armed animation keeps
+        // `mode`/`redraw` pending across every settle and would otherwise
+        // burn a full scene encode per pass on identical content.
+        // The settle passes below replace `render_result`; the pump's `rebuilt`
+        // must still reflect every pass, not only the last one.
+        while self.runtime.queued_deferred_flush {
+            self.runtime.queued_deferred_flush = false;
+            let settled = flush_deferred_window(&mut self.runtime, &self.env, capture_snapshot);
+            rebuilt |= settled.rebuilt;
+            render_result = Some(settled);
+        }
+        self.runtime.queued_deferred_flush = false;
+        if self.runtime.renderer.has_deferred_vello_frame() {
+            render_result = Some(flush_deferred_window(
+                &mut self.runtime,
+                &self.env,
+                capture_snapshot,
+            ));
+        }
+        for (popup_index, popup) in self.popup_windows.iter_mut().enumerate() {
+            let mut captured = popup_snapshots
+                .iter_mut()
+                .find(|(index, _, _)| *index == popup_index);
+            let capture = captured.is_some();
+            while popup.queued_deferred_flush {
+                popup.queued_deferred_flush = false;
+                let settled = flush_deferred_window(popup, &self.env, capture);
+                rebuilt |= settled.rebuilt;
+                if let (Some(popup_snapshot), Some(entry)) = (settled.snapshot, captured.as_mut()) {
+                    entry.1 =
+                        crate::platform::validated_window_frame(popup.window.frame.snapshot());
+                    entry.2 = popup_snapshot;
+                }
+            }
+            popup.queued_deferred_flush = false;
+            if popup.renderer.has_deferred_vello_frame() {
+                let settled = flush_deferred_window(popup, &self.env, capture);
+                if let (Some(popup_snapshot), Some(entry)) = (settled.snapshot, captured.as_mut()) {
+                    entry.1 =
+                        crate::platform::validated_window_frame(popup.window.frame.snapshot());
+                    entry.2 = popup_snapshot;
+                }
+            }
+        }
+        if let Some(snapshot) = render_result
+            .as_mut()
+            .and_then(|result| result.snapshot.as_mut())
+        {
+            for (_, frame, popup_snapshot) in popup_snapshots {
+                composite_popup_snapshot(snapshot, &popup_snapshot, frame);
             }
         }
         let executor_after_started_at = Instant::now();
         let drained_after = self.local_executor.drain();
         let executor_after = executor_after_started_at.elapsed();
 
-        let mut profile = render_result
-            .as_ref()
-            .map_or_else(FrameProfile::default, |result| result.profile);
+        let mut profile = rendered_profile
+            .or_else(|| render_result.as_ref().map(|result| result.profile))
+            .unwrap_or_default();
+        if render_result.is_some() {
+            // The renderer's migration counters run from the frame's scene
+            // reset through every settle pass, so they include the GPU work
+            // verification and overflow re-renders did after the render.
+            profile.counters.migration = self.runtime.renderer.migration_counters();
+        }
         profile.phases.executor_before = executor_before;
         profile.phases.input = input;
         profile.phases.animation = animation;
         profile.phases.executor_after = executor_after;
 
         HeadlessPumpResult {
-            rebuilt: render_result.as_ref().is_some_and(|result| result.rebuilt)
-                || popups_rebuilt
+            rebuilt: rebuilt
+                || render_result.as_ref().is_some_and(|result| result.rebuilt)
                 || drained_before
                 || drained_after,
             profile: profile.with_total(frame_started_at.elapsed()),

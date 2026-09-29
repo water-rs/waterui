@@ -546,6 +546,9 @@ impl HydrolysisRenderer {
                 antialiasing_support: vello::AaSupport::area_only(),
                 num_init_threads: vello_init_threads(adapter.get_info().backend),
                 pipeline_cache: None,
+                // Filled from the window viewport at `set_window_viewport`;
+                // until then `None` sizes the bump buffers per render target.
+                buffer_sizes: None,
             },
         )
     }

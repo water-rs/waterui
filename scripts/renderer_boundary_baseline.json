@@ -4,9 +4,6 @@
   "renamed_dep_tokens": [],
   "files": {
     "src/engine/vello_backend.rs": {
-      "<top-level>": {
-        "vello::kurbo": 1
-      },
       "pop_scene_layer": {
         "vello::Scene": 1
       },
@@ -18,23 +15,6 @@
       },
       "with_root_transform": {
         "vello::Scene": 1
-      },
-      "fill_shape": {
-        "vello::peniko::Fill::NonZero": 2
-      },
-      "stroke_shape": {
-        "vello::kurbo::Stroke::new": 1
-      },
-      "draw_shadow": {
-        "vello::peniko::Color": 1
-      },
-      "push_layer": {
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1
-      },
-      "push_rounded_layer": {
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1
       }
     },
     "src/engine.rs": {
@@ -42,143 +22,28 @@
         "vello_backend": 1
       }
     },
-    "src/gpu_view.rs": {
-      "render": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::IDENTITY": 2,
-        "vello::peniko::Color::TRANSPARENT": 1
-      }
-    },
-    "src/platform.rs": {
-      "MacRoundedClip": {
-        "vello::kurbo::Rect": 1
-      },
-      "assert_axis_aligned_positive": {
-        "vello::kurbo::Affine": 1
-      },
-      "appkit_root_rect": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/renderer/accessibility/accessibility_impl.rs": {
-      "AccessibilityBuilder": {
-        "vello::kurbo::Rect": 2
-      },
-      "default": {
-        "vello::kurbo::Rect::ZERO": 1
-      },
-      "node_at_point_where": {
-        "vello::kurbo::Point": 1
-      },
-      "node_at_point": {
-        "vello::kurbo::Point": 1
-      },
-      "register_node_internal": {
-        "vello::kurbo::Rect": 1
-      },
-      "click_list_row": {
-        "vello::kurbo::Point::new": 1
-      },
-      "begin_accessibility_container": {
-        "vello::kurbo::Rect": 1
-      },
-      "begin_accessibility_container_inner": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_accessibility_node": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_accessibility_child_node": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_accessibility_child_node_with_key": {
-        "vello::kurbo::Rect": 1
-      },
-      "inspect_tests": {
-        "vello::kurbo": 1
-      }
-    },
-    "src/renderer/accessibility/remap.rs": {
-      "kurbo_rect_to_accesskit_rect": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/renderer/bindings.rs": {
-      "topmost_text_input_index_at_point": {
-        "vello::kurbo::Point": 1
-      },
-      "cursor_style_at": {
-        "vello::kurbo::Point::new": 1
-      },
-      "handle_magnification": {
-        "vello::kurbo::Point::new": 1
-      },
-      "handle_rotation": {
-        "vello::kurbo::Point::new": 1
-      },
-      "sync_active_interactions_after_layout": {
-        "vello::kurbo::Point::new": 1
-      },
-      "register_gesture_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_retained_gesture_target": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/renderer/color.rs": {
-      "clear_value": {
-        "vello::peniko::Color": 1
-      },
-      "the_clear_value_and_the_shader_answer_the_same_question": {
-        "vello::peniko::Color::WHITE": 1
-      },
-      "a_mid_tone_differs_between_the_two_kinds_of_target": {
-        "vello::peniko::Color::new": 1
-      }
-    },
     "src/renderer/effects.rs": {
-      "AppliedFilterRuntime": {
-        "vello::peniko::ImageData": 1
-      },
       "prepare_output": {
         "vello_renderer": 2,
-        "vello::Renderer": 1,
-        "vello::peniko::ImageData": 1
+        "vello::Renderer": 1
       },
       "encode_output": {
         "vello_renderer": 2,
-        "vello::Renderer": 1,
-        "vello::peniko::ImageData": 1
+        "vello::Renderer": 1
       },
       "register_or_override_output_image": {
-        "vello::peniko::ImageData": 2,
         "vello_renderer": 3,
         "vello::Renderer": 1
       },
-      "ViewEffectRuntime": {
-        "vello::peniko::ImageData": 1
-      },
       "register_output_image": {
         "vello_renderer": 2,
-        "vello::Renderer": 1,
-        "vello::peniko::ImageData": 1
+        "vello::Renderer": 1
       },
       "refresh_active_applied_filters": {
         "vello_renderer": 1
-      },
-      "push_gpu_surface_layer": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2
       }
     },
     "src/renderer/frame.rs": {
-      "<top-level>": {
-        "vello::kurbo::Shape": 1
-      },
-      "LayerTransforms": {
-        "vello::kurbo::Affine": 2
-      },
       "RenderLayerStats": {
         "vello_scene_layers": 1
       },
@@ -186,11 +51,8 @@
         "vello::Scene": 1
       },
       "set_window_viewport": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 1
-      },
-      "window_viewport": {
-        "vello::kurbo::Rect": 1
+        "vello_renderer": 1,
+        "vello::BumpBufferSizes::for_target": 1
       },
       "state_and_scene_mut": {
         "vello::Scene": 1
@@ -208,31 +70,11 @@
         "vello_renderer": 2,
         "vello::Renderer": 1
       },
-      "push_layer_rect": {
-        "vello::kurbo::Rect": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1
-      },
-      "push_layer_path": {
-        "vello::kurbo::BezPath": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1
-      },
-      "push_layer_rounded_rect": {
-        "vello::kurbo::BezPath": 1,
-        "vello::kurbo::Rect": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1
-      },
       "pop_layer": {
         "vello_backend::pop_scene_layer": 1
       },
       "flush_vello_scene_layer": {
         "vello_backend::pop_scene_layer": 1
-      },
-      "record_native_view_layer": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2
       },
       "render_layer_stats": {
         "vello_scene_layers": 3
@@ -247,525 +89,32 @@
       }
     },
     "src/renderer/input/anchored_overlay.rs": {
-      "RegisteredAnchoredOverlay": {
-        "vello::kurbo::Rect": 1
-      },
-      "PresentedAnchoredOverlay": {
-        "vello::kurbo::Rect": 1
-      },
-      "dismiss_anchored_overlays_outside": {
-        "vello::kurbo::Point": 1
-      },
-      "anchored_overlay_frames": {
-        "vello::kurbo::Rect": 1
-      },
       "render_anchored_overlays": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Affine::IDENTITY": 1,
         "vello_backend::append_scene": 2
-      },
-      "kurbo_to_rect": {
-        "vello::kurbo::Rect": 1
-      },
-      "rect_to_kurbo": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::from_origin_size": 1,
-        "vello::kurbo::Point::new": 1,
-        "vello::kurbo::Size::new": 1
       }
     },
     "src/renderer/input/context_menu.rs": {
-      "ContextMenuPresentation": {
-        "vello::kurbo::Rect": 4
-      },
-      "ContextMenuLayout": {
-        "vello::kurbo::Rect": 3
-      },
-      "context_menu_presentation_layout": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 6
-      },
-      "context_menu_presentation_contains": {
-        "vello::kurbo::Point": 1
-      },
-      "context_menu_presentation_frames": {
-        "vello::kurbo::Rect": 2
-      },
-      "context_menu_lift_frame": {
-        "vello::kurbo::Rect": 1
-      },
-      "context_menu_row_frames": {
-        "vello::kurbo::Rect": 1
-      },
-      "show_context_menu": {
-        "vello::kurbo::Rect::from_origin_size": 1,
-        "vello::kurbo::Point::new": 1,
-        "vello::kurbo::Size::ZERO": 1,
-        "vello::kurbo::Rect::new": 1
-      },
       "render_context_menu_presentation": {
-        "vello::kurbo::Affine": 1,
-        "vello::peniko::Color::new": 2,
-        "vello::peniko::Fill::NonZero": 4,
-        "vello::peniko::BlendMode::default": 1,
-        "vello::peniko::BlendMode": 1,
-        "vello::peniko::Mix::Normal": 1,
-        "vello::peniko::Compose::DestOut": 1,
-        "vello::kurbo::RoundedRect::from_rect": 1,
-        "vello::peniko::Color::WHITE": 1,
-        "vello_backend::pop_scene_layer": 2,
-        "vello::kurbo::Affine::IDENTITY": 3
-      }
-    },
-    "src/renderer/input/hit_test.rs": {
-      "DropTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "GestureRegion": {
-        "vello::kurbo::Rect": 1
-      },
-      "PointerTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "PendingPointerPress": {
-        "vello::kurbo::Point": 1
-      },
-      "PendingContextMenuHold": {
-        "vello::kurbo::Point": 1
-      },
-      "CursorTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "HoverTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "ScrollTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "TrackpadPanTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "NativeViewOcclusion": {
-        "vello::kurbo::Rect": 2
-      },
-      "PointerAction": {
-        "vello::kurbo::Point": 1
-      },
-      "HoverMoveAction": {
-        "vello::kurbo::Point": 1
-      },
-      "HitTestState": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Point": 3
-      },
-      "clip_hit_bounds": {
-        "vello::kurbo::Rect": 2
-      },
-      "push_hit_clip": {
-        "vello::kurbo::Rect": 1
-      },
-      "publish_native_view_occlusion": {
-        "vello::kurbo::Rect": 2
-      },
-      "cursor_style_at": {
-        "vello::kurbo::Point": 1
-      },
-      "sync_hover_targets": {
-        "vello::kurbo::Point": 1
-      },
-      "topmost_drop_target_index_at_point": {
-        "vello::kurbo::Point": 1
-      },
-      "sync_active_drag_hover": {
-        "vello::kurbo::Point": 1
-      },
-      "begin_or_update_drag": {
-        "vello::kurbo::Point": 1
-      },
-      "finish_active_drag": {
-        "vello::kurbo::Point": 1
-      },
-      "sync_active_pointer_drag_target_after_layout": {
-        "vello::kurbo::Point": 1
-      },
-      "handle_pointer_down_with_source": {
-        "vello::kurbo::Point::new": 1,
-        "vello::kurbo::Rect::from_origin_size": 3,
-        "vello::kurbo::Point::ORIGIN": 3
-      },
-      "handle_pointer_up_with_source": {
-        "vello::kurbo::Point::new": 1
-      },
-      "handle_pointer_move_inner": {
-        "vello::kurbo::Point::new": 1
-      },
-      "sync_pointer_hover_state": {
-        "vello::kurbo::Point::new": 1
-      },
-      "set_keyboard_focus_for_press": {
-        "vello::kurbo::Point": 1
-      },
-      "open_context_menu_at": {
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Rect::from_origin_size": 1,
-        "vello::kurbo::Point::ORIGIN": 1
-      },
-      "handle_scroll": {
-        "vello::kurbo::Point::new": 1
-      },
-      "scroll_metrics_at": {
-        "vello::kurbo::Point::new": 1
-      },
-      "handle_trackpad_pan": {
-        "vello::kurbo::Point::new": 1
-      },
-      "register_pointer_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_pointer_drag_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_native_view_occlusion": {
-        "vello::kurbo::Rect": 2
-      },
-      "register_pointer_target_action": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_hit_test_occluder": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "with_unoccluded_gesture_targets": {
-        "vello::kurbo::Point": 1
-      },
-      "register_scrollbar_drag_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_draggable_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_drop_destination_handles": {
-        "vello::kurbo::Rect": 1
-      },
-      "bind_interaction_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "bind_control_interaction_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "bind_focused_control_interaction_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "bind_interaction_target_with_focus": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_interactive_pointer_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_interactive_pointer_target_with_keyboard": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_interactive_pointer_drag_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_cursor_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_cursor_target_style": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_hover_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_hover_target_with_handles": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_hover_enter_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_hover_exit_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_hover_move_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1
-      },
-      "register_scroll_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_trackpad_pan_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "rect": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "cursor_style_falls_back_to_arrow_outside_all_targets": {
-        "vello::kurbo::Point::new": 1
-      },
-      "cursor_style_prefers_the_last_registered_target": {
-        "vello::kurbo::Point::new": 2
-      }
-    },
-    "src/renderer/input/interaction.rs": {
-      "WidgetInteractionInput": {
-        "vello::kurbo::Rect": 1
-      },
-      "begin_press": {
-        "vello::kurbo::Point": 1
-      },
-      "local_interaction_state": {
-        "vello::kurbo::Affine": 1
-      },
-      "released_ripple_holds_full_size_while_fading_out": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Point::new": 1
-      },
-      "rapid_represses_overlap_independent_waves": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Point::new": 5
-      },
-      "disabled_widget_drops_press_and_hover_and_samples_at_rest": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Point::new": 1
-      },
-      "released_press_stays_visually_pressed_until_minimum_duration": {
-        "vello::kurbo::Point::new": 1
-      }
-    },
-    "src/renderer/input/popup_menu.rs": {
-      "ContextMenuTarget": {
-        "vello::kurbo::Rect": 1
-      },
-      "popup_menu_content": {
-        "vello::kurbo::RoundedRectRadii::from": 1
-      },
-      "append_inspect_element_item": {
-        "vello::kurbo::Point": 2
-      },
-      "topmost_context_menu_target_enclosing": {
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Rect": 1
-      },
-      "topmost_context_menu_target_at_point": {
-        "vello::kurbo::Point": 1
-      },
-      "register_context_menu_target": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_context_menu_target_data": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/renderer/input/surface.rs": {
-      "pointer_move": {
-        "vello::kurbo::Point": 2
-      },
-      "pointer_button": {
-        "vello::kurbo::Point": 2
-      },
-      "scroll": {
-        "vello::kurbo::Point": 2
-      },
-      "ime_caret": {
-        "vello::kurbo::Rect": 5
-      },
-      "EmbeddedInputTarget": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Affine": 1
-      },
-      "local_position": {
-        "vello::kurbo::Point": 2
-      },
-      "local_position_unclamped": {
-        "vello::kurbo::Point": 2,
-        "vello::kurbo::Point::new": 1
-      },
-      "to_window_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Vec2::new": 1
-      },
-      "register_embedded_input_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 1
-      },
-      "register_surface_input_target": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 1
-      },
-      "topmost_embedded_target_at": {
-        "vello::kurbo::Point": 2
-      },
-      "embedded_target_wins_at": {
-        "vello::kurbo::Point": 2
-      },
-      "handle_embedded_pointer_move": {
-        "vello::kurbo::Point": 1
-      },
-      "focused_embedded_ime_caret": {
-        "vello::kurbo::Rect": 1
+        "vello_backend::pop_scene_layer": 2
       }
     },
     "src/renderer/input/text_editing.rs": {
-      "TextSelectionClickState": {
-        "vello::kurbo::Point": 1
-      },
-      "TextInputTarget": {
-        "vello::kurbo::Rect": 4
-      },
-      "TextInputTargetRegistration": {
-        "vello::kurbo::Rect": 4
-      },
-      "TextContextMenuOverlayRow": {
-        "vello::kurbo::Rect": 1
-      },
-      "TextContextMenuOverlay": {
-        "vello::kurbo::Rect": 1
-      },
-      "text_context_menu_overlay_bounds": {
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
       "prepare_transient_text_input_overlay": {
-        "vello::kurbo::Affine": 1,
-        "vello::Scene::new": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "render_active_text_context_menu_overlay": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect::new": 3,
-        "vello::kurbo::Affine::IDENTITY": 1,
-        "vello::kurbo::Affine::translate": 1
-      },
-      "handle_text_context_menu_overlay_pointer_down": {
-        "vello::kurbo::Point": 1
-      },
-      "text_selection_index_from_point": {
-        "vello::kurbo::Point": 1
-      },
-      "text_selection_range_from_point_with_click_count": {
-        "vello::kurbo::Point": 1
-      },
-      "next_text_selection_click_count": {
-        "vello::kurbo::Point": 1
-      },
-      "apply_text_selection_click_gesture": {
-        "vello::kurbo::Point": 1
-      },
-      "update_text_selection_drag": {
-        "vello::kurbo::Point": 1
-      },
-      "update_text_selection_from_pointer": {
-        "vello::kurbo::Point": 1
-      },
-      "show_text_context_menu": {
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "bubble_key_press": {
-        "vello::kurbo::Point": 1
-      }
-    },
-    "src/renderer/interaction_layers.rs": {
-      "WaveLayer": {
-        "vello::kurbo::Point": 1
-      },
-      "retain_waves_with_origin": {
-        "vello::kurbo::Point": 1
-      },
-      "begin_press": {
-        "vello::kurbo::Point": 1
-      }
-    },
-    "src/renderer/lifecycle/lazy.rs": {
-      "LazyViewport": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 1
-      },
-      "place_lazy_stack_item": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 2
-      },
-      "rtl_vertical_stack_mirrors_leading_cross_axis_placement": {
-        "vello::kurbo::Rect::new": 2
-      },
-      "rtl_horizontal_stack_places_first_item_at_the_right_edge": {
-        "vello::kurbo::Rect::new": 2
+        "vello::Scene::new": 1
       }
     },
     "src/renderer/metadata.rs": {
-      "BlurredSilhouette": {
-        "vello::peniko::ImageData": 1,
-        "vello::kurbo::Affine": 1
-      },
-      "apply_border": {
-        "vello::kurbo::RoundedRect::from_rect": 1,
-        "vello::kurbo::Stroke::new": 1,
-        "vello::kurbo::Rect::new": 4,
-        "vello::peniko::Fill::NonZero": 4
-      },
-      "apply_shadow": {
-        "vello::kurbo::Rect::new": 1
-      },
       "draw_blurred_silhouette": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1,
-        "vello::peniko::Color": 1,
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::new": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::Affine::translate": 5,
-        "vello::peniko::ImageBrush::new": 2,
-        "vello::kurbo::Shape::bounding_box": 1,
         "vello_cpu::RenderContext::new": 1,
         "vello_common::filter_effects::Filter::from_primitive": 1,
         "vello_common::filter_effects::FilterPrimitive::GaussianBlur": 1,
         "vello_common::filter_effects::EdgeMode::None": 1,
         "vello_cpu::Pixmap::new": 1,
-        "vello_cpu::Resources::default": 1,
-        "vello::peniko::ImageData": 1,
-        "vello::peniko::Blob::from": 1,
-        "vello::peniko::ImageFormat::Rgba8": 1,
-        "vello::peniko::ImageAlphaType::AlphaPremultiplied": 1
-      },
-      "RegularClipShape": {
-        "vello::kurbo::Rect": 2
-      },
-      "kind_clip_shape": {
-        "vello::kurbo::Rect": 1
-      },
-      "clip_shape_tests": {
-        "vello::kurbo::Rect": 1
-      },
-      "regular_clip_shape": {
-        "vello::kurbo::Rect": 1
-      },
-      "regular_rect": {
-        "vello::kurbo::Rect": 1
-      },
-      "regular_rounded_rect": {
-        "vello::kurbo::Rect": 1
-      },
-      "resolve_normalized_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "BOUNDS": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
+        "vello_cpu::Resources::default": 1
       }
     },
     "src/renderer/navigation/navigation_state.rs": {
       "NavigationMatchedElement": {
-        "vello::kurbo::Rect": 1,
         "vello::Scene": 1
       },
       "NavigationCapturedScene": {
@@ -783,44 +132,23 @@
         "vello::Scene": 1
       },
       "finish_navigation_element_capture": {
-        "vello::kurbo::Rect": 1,
         "vello::Scene": 1
       }
     },
     "src/renderer/navigation/navigation_transition.rs": {
       "NavigationTransitionFrame": {
-        "vello::Scene": 1,
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1
-      },
-      "interpolate_rect": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 1
+        "vello::Scene": 1
       },
       "append_matched_element": {
         "vello::Scene": 1,
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 2,
-        "vello::kurbo::Affine::scale_non_uniform": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1,
         "vello_backend::append_scene": 1,
         "vello_backend::pop_scene_layer": 1
       },
       "append_scene_with_opacity": {
-        "vello::Scene": 2,
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1
+        "vello::Scene": 2
       },
       "append_scene_layer": {
         "vello::Scene": 2,
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 3,
-        "vello::kurbo::Affine::scale": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::peniko::BlendMode::default": 1,
         "vello_backend::append_scene": 1,
         "vello_backend::pop_scene_layer": 1
       }
@@ -834,31 +162,36 @@
         "vello_init_threads": 1
       },
       "encode_vello_layers_parallel": {
-        "vello::Renderer": 1,
+        "vello::Renderer": 2,
         "vello::Scene": 2,
-        "vello::RenderParams": 1,
-        "vello::peniko::Color::TRANSPARENT": 1,
+        "vello::BumpReadback": 1,
+        "vello_layer_render_params": 1
+      },
+      "vello_layer_render_params": {
+        "vello_layer_render_params": 1,
+        "vello::RenderParams": 2,
         "vello::AaConfig::Area": 1
+      },
+      "DeferredVelloSource": {
+        "vello::Scene": 1
+      },
+      "PendingVelloRender": {
+        "vello::BumpReadback": 1
+      },
+      "DeferredVelloFrame": {
+        "vello::Renderer": 1
+      },
+      "verify_ready": {
+        "vello::BumpReadback::is_ready": 2
+      },
+      "build_active_layers_mask_scene": {
+        "vello::Scene": 1,
+        "vello::Scene::new": 1,
+        "vello_backend::pop_scene_layer": 1
       },
       "Compositor": {
         "vello_renderer_pool": 1,
-        "vello::Renderer": 1,
-        "vello::peniko::ImageData": 1
-      },
-      "LayerShape": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::BezPath": 2
-      },
-      "ActiveSceneLayer": {
-        "vello::kurbo::Affine": 1
-      },
-      "GpuSurfaceLayer": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2
-      },
-      "NativeViewLayer": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2
+        "vello::Renderer": 1
       },
       "RenderLayer": {
         "vello::Scene": 1
@@ -866,179 +199,68 @@
       "HybridComposition": {
         "vello::Scene": 1
       },
-      "HydrolysisRenderTarget": {
-        "vello::peniko::Color": 1
-      },
-      "EmbeddedLayerTarget": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Point": 2
-      },
-      "project_pointer_into_surface": {
-        "vello::kurbo::Point": 3,
-        "vello::kurbo::Rect": 1
-      },
       "push_to_scene": {
-        "vello::Scene": 1,
-        "vello::peniko::Fill::NonZero": 2,
-        "vello::peniko::BlendMode::default": 2
-      },
-      "ime_caret": {
-        "vello::kurbo::Rect": 1
-      },
-      "prepare_layer": {
-        "vello::kurbo::Point::new": 4
-      },
-      "point_to_clip": {
-        "vello::kurbo::Point": 1
-      },
-      "layer_device_scale": {
-        "vello::kurbo::Affine": 1
-      },
-      "direct_target_rect": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Affine::new": 1,
-        "vello::kurbo::Affine::scale_non_uniform": 1
-      },
-      "covers_viewport_directly": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2
-      },
-      "direct_target_size": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1
-      },
-      "edge_length_in_pixels": {
-        "vello::kurbo::Point": 2
+        "vello::Scene": 1
       },
       "render_hybrid_segment_to_surface": {
         "vello::Scene": 1
       },
       "render_vello_layer_to_texture": {
         "vello::Scene": 1,
-        "vello::RenderParams": 1,
-        "vello::peniko::Color::TRANSPARENT": 1,
-        "vello::AaConfig::Area": 1,
+        "vello::BumpReadback": 1,
+        "vello_layer_render_params": 1,
         "vello_renderer": 1
       },
       "render_active_layers_mask_to_texture": {
-        "vello::Scene::new": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::Affine::IDENTITY": 1,
-        "vello::peniko::Color::WHITE": 1,
-        "vello::kurbo::Rect::new": 1,
-        "vello_backend::pop_scene_layer": 1
+        "vello::BumpReadback": 1
       },
-      "clear_target_surface": {
-        "vello::peniko::Color": 1
+      "verify_deferred_vello": {
+        "vello_layer_render_params": 1,
+        "vello_renderer_pool": 1,
+        "vello_renderer": 4
       },
       "render_scene_to_surface_with_alpha_mode": {
+        "vello::Renderer": 2,
+        "vello::BumpReadback": 1,
         "vello_indices": 3,
         "vello_scenes": 2,
         "vello::Scene": 1,
-        "vello_renderer_pool": 1
+        "vello_renderer_pool": 1,
+        "vello::BumpReadback::submission_index": 1
       }
     },
     "src/renderer/render/measurement.rs": {
-      "table_header_cell_rect": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "table_data_cell_rect": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
-      },
       "render_styled_text": {
         "vello::Scene": 1
       },
       "render_styled_text_limited": {
         "vello::Scene": 1,
-        "vello_backend::append_scene": 1,
-        "vello::kurbo::Affine::translate": 1
+        "vello_backend::append_scene": 1
       },
       "render_styled_text_single_line_centered": {
         "vello::Scene": 1,
-        "vello_backend::append_scene": 1,
-        "vello::kurbo::Affine::translate": 1
+        "vello_backend::append_scene": 1
       },
       "encode_text_layout": {
         "vello::Scene": 1,
-        "vello::Glyph": 1,
-        "vello::peniko::Fill::NonZero": 2
+        "vello::Glyph": 1
       },
       "encode_line_backgrounds": {
         "vello::Scene": 1
       },
       "fill_span_background": {
-        "vello::Scene": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::Affine::IDENTITY": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "tabs_bar_and_content_rect": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 4
-      },
-      "tabs_button_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 2
-      },
-      "navigation_back_button_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
+        "vello::Scene": 1
       },
       "solid_fill_colours": {
         "vello::Scene": 1
       },
       "rendered_fill_colours": {
-        "vello::Scene::new": 1,
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::IDENTITY": 2
+        "vello::Scene::new": 1
       }
     },
     "src/renderer/render/render_context.rs": {
       "<top-level>": {
         "vello_backend::VelloDrawContext": 1
-      },
-      "RenderContext": {
-        "vello::kurbo::Affine": 2,
-        "vello::kurbo::Rect": 1
-      },
-      "WidgetRenderContext": {
-        "vello::kurbo::Affine": 2,
-        "vello::kurbo::Rect": 1
-      },
-      "bounded_proposal": {
-        "vello::kurbo::Rect": 1
-      },
-      "with_transforms": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 2
-      },
-      "child": {
-        "vello::kurbo::Affine": 2,
-        "vello::kurbo::Rect": 2
-      },
-      "with_identity_transforms": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::IDENTITY": 2
-      },
-      "push_layer_rect": {
-        "vello::kurbo::Rect": 1
-      },
-      "render_styled_text": {
-        "vello::kurbo::Rect": 1
-      },
-      "render_styled_text_limited": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "render_styled_text_single_line_centered": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 1,
-        "vello::kurbo::Rect::new": 1
       },
       "append_scene": {
         "vello::Scene": 1,
@@ -1049,17 +271,8 @@
       "CapturePageContent": {
         "vello::Scene": 2
       },
-      "capture_child_into_atlas": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::translate": 2
-      },
       "flush_subtree_captures": {
         "vello_renderer": 1
-      },
-      "render_capture_page": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::IDENTITY": 1,
-        "vello::peniko::Color::TRANSPARENT": 1
       }
     },
     "src/renderer/render/text_service.rs": {
@@ -1071,129 +284,8 @@
         "vello::Scene::new": 1
       }
     },
-    "src/renderer/render/view_helpers.rs": {
-      "resolved_color_to_peniko": {
-        "vello::peniko::Color": 1,
-        "vello::peniko::Color::new": 1
-      },
-      "resolved_gradient_to_brush": {
-        "vello::kurbo::Rect": 1,
-        "vello::peniko::Brush": 1,
-        "vello::peniko::ColorStop": 3,
-        "vello::peniko::Gradient::new_linear": 1,
-        "vello::peniko::Gradient::new_two_point_radial": 1,
-        "vello::peniko::Gradient::new_sweep": 1,
-        "vello::peniko::Brush::Gradient": 1
-      },
-      "resolved_point_to_kurbo": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Point::new": 1
-      },
-      "to_peniko_stop": {
-        "vello::peniko::ColorStop": 2
-      },
-      "resolved_shape_to_path": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::BezPath": 1
-      },
-      "shape_kind_path": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::BezPath": 1,
-        "vello::kurbo::Shape": 1
-      },
-      "PATH_TOLERANCE": {
-        "vello::kurbo::Circle::new": 1,
-        "vello::kurbo::Ellipse::from_rect": 1
-      },
-      "resolved_morph_shape_to_path": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::BezPath": 1
-      },
-      "rounded_rect_path": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::BezPath": 1
-      },
-      "KAPPA": {
-        "vello::kurbo::BezPath::new": 1,
-        "vello::kurbo::Point::new": 4
-      },
-      "append_corner": {
-        "vello::kurbo::BezPath": 1,
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Point::new": 4
-      },
-      "path_commands_to_path": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::BezPath": 1,
-        "vello::kurbo::BezPath::new": 1,
-        "vello::kurbo::Point::new": 9
-      },
-      "anchor_point": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::Point::new": 1
-      },
-      "rgba8_to_peniko": {
-        "vello::peniko::Color": 1,
-        "vello::peniko::Color::new": 1
-      },
-      "transformed_rect": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Point::new": 4,
-        "vello::kurbo::Rect::new": 1
-      },
-      "circle_arc_path": {
-        "vello::kurbo::Point": 1,
-        "vello::kurbo::BezPath": 1,
-        "vello::kurbo::BezPath::new": 1,
-        "vello::kurbo::Point::new": 2
-      }
-    },
-    "src/renderer/retained.rs": {
-      "affine_near": {
-        "vello::kurbo::Affine": 2
-      },
-      "rect_near": {
-        "vello::kurbo::Rect": 2
-      }
-    },
-    "src/renderer/scene_ingest.rs": {
-      "<top-level>": {
-        "vello::kurbo": 1,
-        "vello::peniko": 1
-      }
-    },
-    "src/renderer/tests/anchored_overlay.rs": {
-      "presented_frame": {
-        "vello::kurbo::Rect": 1
-      },
-      "an_outside_press_writes_false_and_still_reaches_its_target": {
-        "vello::kurbo::Point::new": 1
-      },
-      "input_during_the_exit_reaches_the_content_underneath": {
-        "vello::kurbo::Point::new": 1
-      }
-    },
-    "src/renderer/tests/cherenkov_migration.rs": {
-      "solid_image": {
-        "vello::peniko::ImageData": 2,
-        "vello::peniko::Blob::from": 1,
-        "vello::peniko::ImageFormat::Rgba8": 1,
-        "vello::peniko::ImageAlphaType::AlphaPremultiplied": 1
-      },
-      "transformed_image_brushes_count": {
-        "vello::kurbo::Affine": 1,
-        "vello::peniko": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::BezPath::from_svg": 1
-      }
-    },
     "src/renderer/tests/clip_transform.rs": {
       "<top-level>": {
-        "vello::kurbo": 1,
-        "vello::peniko": 1,
         "vello_encoding": 1,
         "vello_backend": 1
       },
@@ -1205,216 +297,38 @@
         "vello::Glyph": 1
       }
     },
-    "src/renderer/tests/context_menu_presentation.rs": {
-      "a_source_near_the_bottom_edge_stacks_without_overlap": {
-        "vello::kurbo::Rect::new": 1
-      },
-      "a_source_near_the_top_edge_stacks_without_overlap": {
-        "vello::kurbo::Rect::new": 1
-      }
-    },
-    "src/renderer/tests/gpu_surface_input.rs": {
-      "InputProbe": {
-        "vello::kurbo::Rect": 1
-      },
-      "ime_caret": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "pointer_events_arrive_in_logical_surface_local_coordinates": {
-        "vello::kurbo::Point::new": 1
-      },
-      "a_press_focuses_the_surface_and_later_frames_keep_that_focus": {
-        "vello::kurbo::Point::new": 4
-      },
-      "scrolls_carry_their_unit_and_the_end_of_the_gesture": {
-        "vello::kurbo::Point::new": 3
-      },
-      "the_focused_surface_places_the_input_method_panel": {
-        "vello::kurbo::Rect::new": 1
-      },
-      "scene_content_that_wants_input_is_routed_like_a_surface": {
-        "vello::kurbo::Point::new": 2
-      },
-      "tab_focuses_the_surface_and_ctrl_tab_leaves_it": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Point::new": 2
-      },
-      "hiding_the_focused_tab_moves_focus_to_the_shown_tab": {
-        "vello::kurbo::Point::new": 2
-      },
-      "context_menu_claims_the_secondary_button_over_an_input_surface": {
-        "vello::kurbo::Point::new": 1
-      },
-      "an_empty_context_menu_mounts_no_popup_and_keeps_the_secondary_press": {
-        "vello::kurbo::Point::new": 2
-      },
-      "secondary_button_reaches_an_input_surface_without_a_context_menu": {
-        "vello::kurbo::Point::new": 2
-      }
-    },
-    "src/renderer/tests/image_ingest.rs": {
-      "<top-level>": {
-        "vello::kurbo::Affine": 1,
-        "vello::peniko": 1
-      },
-      "scene_view_rejects_malformed_image_inside_a_fill_brush": {
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::BezPath::from_svg": 1
-      }
-    },
-    "src/renderer/tests/ime.rs": {
-      "probe_caret": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "ime_caret": {
-        "vello::kurbo::Rect": 2
-      }
-    },
-    "src/renderer/tests/layout_contract.rs": {
-      "retained_scene_capture_preserves_proposal_and_viewport_boundaries": {
-        "vello::kurbo": 1,
-        "SceneRect": 1,
-        "SceneRect::new": 2
-      },
-      "retained_subview_relayouts_when_a_layout_signal_invalidates": {
-        "vello::kurbo": 1,
-        "SceneRect": 1,
-        "SceneRect::new": 1
-      }
-    },
-    "src/renderer/tests/menu_shortcuts.rs": {
-      "rightmost_ink": {
-        "vello::kurbo::Rect": 1
-      },
-      "command_shortcut_renders_a_trailing_aligned_hint": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 2
-      }
-    },
-    "src/renderer/tests/mod.rs": {
-      "window_mount": {
-        "vello::kurbo": 1
-      },
-      "renderer_magnification_targets_outer_observer_in_stacked_gesture_chain": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Point::new": 1
-      },
-      "input_selection_brush": {
-        "vello::peniko::Color::new": 1
-      },
-      "input_caret_brush": {
-        "vello::peniko::Color::new": 1
-      },
-      "draw_text_context_menu_panel": {
-        "vello::kurbo::RoundedRectRadii::from_single_radius": 1,
-        "vello::kurbo::Vec2::new": 1,
-        "vello::peniko::Color::new": 2
-      }
-    },
     "src/renderer/tests/perf_full_rebuild.rs": {
-      "<top-level>": {
-        "vello::kurbo::Affine": 1,
-        "vello::peniko": 1
-      },
       "pure_vello_encode_floor": {
-        "vello::kurbo": 1,
-        "KurboCircle": 1,
-        "vello::Scene::new": 1,
-        "KurboCircle::new": 1
+        "vello::Scene::new": 1
       },
       "flush": {
-        "vello::Scene": 1,
-        "vello::kurbo::Rect::new": 1
+        "vello::Scene": 1
       },
       "prototype_flush_layout_cost": {
         "vello::Scene::new": 2
       }
     },
-    "src/renderer/tests/slider_size_indicator.rs": {
-      "<top-level>": {
-        "vello::kurbo::Rect": 1
-      }
-    },
     "src/renderer/tests/tree.rs": {
-      "<top-level>": {
-        "vello::kurbo": 1
-      },
       "flush_window_tree_reuses_retained_tree": {
         "vello_layers": 2,
         "vello_scene_layers": 1
       }
     },
-    "src/renderer/tree/collection.rs": {
-      "flush": {
-        "vello::kurbo::Affine::translate": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "flush_entry": {
-        "vello::kurbo::Rect::new": 2
-      }
-    },
     "src/renderer/tree/flush.rs": {
       "flush": {
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::Affine::translate": 8,
-        "vello::kurbo::Rect::new": 4,
-        "vello::kurbo::Affine::scale_non_uniform": 1,
-        "vello::kurbo::Affine::rotate": 1,
         "vello::Scene::new": 1,
         "vello_backend::append_scene": 1
       },
-      "emit_accessibility": {
-        "vello::kurbo::Rect::ZERO": 2,
-        "vello::kurbo::Affine::IDENTITY": 2
-      },
       "flush_navigation_transition_element": {
         "vello::Scene::new": 1
-      },
-      "render_child_node_to_texture": {
-        "vello::kurbo::Rect::new": 2,
-        "vello::kurbo::Affine::IDENTITY": 1,
-        "vello::peniko::Color::TRANSPARENT": 1
       }
     },
     "src/renderer/tree/nodes.rs": {
-      "flush_in_rect": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 1,
-        "vello::kurbo::Rect::new": 1
-      },
       "render_built_scene": {
-        "vello::Scene::new": 1,
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::IDENTITY": 2
+        "vello::Scene::new": 1
       },
       "flush": {
-        "vello_renderer": 2,
-        "vello::kurbo::Affine::translate": 2,
-        "vello::kurbo::Affine::scale_non_uniform": 2,
-        "vello::peniko::ImageBrush::new": 2
-      }
-    },
-    "src/renderer/tree/window.rs": {
-      "capture_window_tree": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 2
-      },
-      "flush_window_tree": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 2
-      }
-    },
-    "src/renderer/views.rs": {
-      "render_gradient_parts": {
-        "vello::peniko::Fill::NonZero": 1
-      },
-      "render_shape_parts": {
-        "vello::peniko::Fill::NonZero": 1
-      },
-      "render_morph_shape_parts": {
-        "vello::peniko::Fill::NonZero": 1
+        "vello_renderer": 2
       }
     },
     "src/renderer.rs": {
@@ -1424,9 +338,7 @@
       "HydrolysisRenderer": {
         "vello_renderer": 1,
         "vello::Renderer": 1,
-        "vello::Scene": 2,
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 1
+        "vello::Scene": 2
       },
       "vello_init_threads": {
         "vello_init_threads": 1
@@ -1440,394 +352,21 @@
         "vello::RendererOptions": 1,
         "vello_renderer": 2,
         "vello::Renderer::new": 1,
-        "vello::Scene::new": 1,
-        "vello::kurbo::Rect::ZERO": 1,
-        "vello::kurbo::Affine::IDENTITY": 1
-      }
-    },
-    "src/runner/headless.rs": {
-      "context_menu_presentation_frames": {
-        "vello::kurbo::Rect": 2
-      },
-      "context_menu_row_frames": {
-        "vello::kurbo::Rect": 1
-      },
-      "anchored_overlay_frames": {
-        "vello::kurbo::Rect": 1
-      },
-      "context_menu_lift_frame": {
-        "vello::kurbo::Rect": 1
+        "vello::Scene::new": 1
       }
     },
     "src/runner/window.rs": {
       "FrameCounters": {
         "vello_scene_layers": 1
       },
-      "create_bounds": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "window_clear_color": {
-        "vello::peniko::Color": 1
-      },
-      "resolve_window_clear_color": {
-        "vello::peniko::Color": 1,
-        "vello::peniko::Color::new": 1
-      },
-      "refresh_window_scene": {
-        "vello::kurbo::Affine::scale": 1,
-        "vello::kurbo::Affine::IDENTITY": 1
-      },
-      "build_window_scene": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Affine::IDENTITY": 1
-      },
-      "pump_window_scene": {
-        "vello::kurbo::Affine::scale": 1
-      },
-      "pump_window_semantics": {
-        "vello::kurbo::Affine::scale": 1,
-        "vello::kurbo::Affine::IDENTITY": 1
-      },
-      "render_to_surface": {
-        "vello::peniko::Color": 1
-      },
       "render_window_with_capture": {
-        "vello::kurbo::Affine::scale": 1,
-        "vello::peniko::Color::TRANSPARENT": 1,
         "vello_scene_layers": 4
-      },
-      "refresh_pending_input_geometry": {
-        "vello::kurbo::Affine::scale": 1,
-        "vello::kurbo::Affine::IDENTITY": 1
-      }
-    },
-    "src/view_renderer.rs": {
-      "render_to_rgba": {
-        "vello::kurbo::Rect::new": 1,
-        "vello::kurbo::Affine::IDENTITY": 2,
-        "vello::peniko::Color::TRANSPARENT": 1
-      }
-    },
-    "src/widgets/controls/color_picker.rs": {
-      "<top-level>": {
-        "vello::kurbo": 1
-      }
-    },
-    "src/widgets/controls/date_picker.rs": {
-      "render_date_picker_parts": {
-        "vello::kurbo::Rect::new": 3
-      }
-    },
-    "src/widgets/controls/picker.rs": {
-      "picker_accessibility": {
-        "vello::kurbo::Rect::new": 2
-      },
-      "menu_picker_popup_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "menu_picker_option_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "menu_picker_content_rects": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 3
-      },
-      "radio_group_label_area": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "segmented_label_area": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 2
-      },
-      "flush_picker_label": {
-        "vello::kurbo::Rect": 1
-      },
-      "render_radio_picker": {
-        "vello::kurbo::Rect::new": 2,
-        "vello::kurbo::Point::new": 1
-      },
-      "render_segmented_picker": {
-        "vello::kurbo::Rect::new": 1
-      },
-      "segmented_label_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "tests": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/widgets/controls/progress.rs": {
-      "render_progress_parts": {
-        "vello::kurbo::Rect::new": 4,
-        "vello::kurbo::Point::new": 1
-      }
-    },
-    "src/widgets/controls/slider.rs": {
-      "render_slider_parts": {
-        "vello::kurbo::Rect::new": 7,
-        "vello::kurbo::Point::new": 1
-      }
-    },
-    "src/widgets/controls/stepper.rs": {
-      "render_stepper_parts": {
-        "vello::kurbo::Rect::new": 2
-      },
-      "stepper_control_and_label_bounds": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 1
-      },
-      "tests": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/widgets/controls/text_field.rs": {
-      "render_text_field_parts": {
-        "vello::kurbo::Rect::new": 1
-      },
-      "render_secure_field_parts": {
-        "vello::kurbo::Rect::new": 1
-      },
-      "material_input_label_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "material_input_resting_label_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "flush_material_label": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 1,
-        "vello::kurbo::Affine::scale": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "flush_material_prompt_label": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Affine::translate": 1,
-        "vello::kurbo::Affine::scale": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "material_input_text_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "material_input_centered_text_rect": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 1
-      },
-      "material_input_text_clip_rect": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 1
-      },
-      "material_input_cursor_rect": {
-        "vello::kurbo::Rect": 4,
-        "vello::kurbo::Rect::new": 1
-      },
-      "emit_text_field_accessibility": {
-        "vello::kurbo::Rect::ZERO": 4
-      },
-      "emit_secure_field_accessibility": {
-        "vello::kurbo::Rect::ZERO": 4
-      },
-      "material_input_text_clip_expands_for_tall_fallback_glyphs": {
-        "vello::kurbo::Rect::new": 2
-      },
-      "material_input_text_clip_expands_for_placeholder_layout": {
-        "vello::kurbo::Rect::new": 2
-      },
-      "material_input_cursor_spans_the_line_for_empty_layout_geometry": {
-        "vello::kurbo::Rect::new": 3
-      },
-      "material_input_cursor_preserves_non_empty_layout_geometry": {
-        "vello::kurbo::Rect::new": 3
-      }
-    },
-    "src/widgets/controls/toggle.rs": {
-      "toggle_binding_action": {
-        "vello::kurbo::Point": 1
-      },
-      "toggle_control_and_label_bounds": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 2
-      },
-      "tests": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/widgets/layout/badge.rs": {
-      "render_badge_parts": {
-        "vello::kurbo::Rect::new": 2
-      }
-    },
-    "src/widgets/layout/divider.rs": {
-      "render_divider_parts": {
-        "vello::kurbo::Rect::new": 2
-      }
-    },
-    "src/widgets/layout/list.rs": {
-      "register_section_chrome_node": {
-        "vello::kurbo::Rect": 1
-      },
-      "list_accessibility": {
-        "vello::kurbo::Rect::ZERO": 1,
-        "vello::kurbo::Rect::new": 4
-      },
-      "register_edit_control_node": {
-        "vello::kurbo::Rect": 1
-      },
-      "render_list_parts": {
-        "vello::kurbo::Rect::new": 5,
-        "vello::kurbo::Vec2::new": 1
-      },
-      "register_row_gesture": {
-        "vello::kurbo::Rect": 1
-      },
-      "RowEditControls": {
-        "vello::kurbo::Rect": 4
-      },
-      "row_edit_controls": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 4
-      },
-      "register_row_swipe_gesture": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_row_reorder_gesture": {
-        "vello::kurbo::Rect": 1
-      },
-      "draw_section_label": {
-        "vello::kurbo::Rect": 1
-      },
-      "list_content_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      }
-    },
-    "src/widgets/layout/scroll.rs": {
-      "register_scroll_accessibility_node": {
-        "vello::kurbo::Rect": 1
-      },
-      "register_scroll_wheel_target": {
-        "vello::kurbo::Affine": 1,
-        "vello::kurbo::Rect": 1
-      },
-      "draw_scroll_indicators": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 4
-      }
-    },
-    "src/widgets/layout/table.rs": {
-      "table_accessibility": {
-        "vello::kurbo::Rect::ZERO": 3
-      },
-      "render_table_parts": {
-        "vello::kurbo::Rect::new": 2,
-        "vello::kurbo::Point::new": 2
-      },
-      "flush_cell_subview": {
-        "vello::kurbo::Rect": 1
       }
     },
     "src/widgets/nav/navigation.rs": {
-      "navigation_view_accessibility": {
-        "vello::kurbo::Rect::new": 2
-      },
-      "render_navigation_view_parts": {
-        "vello::kurbo::Rect::new": 8
-      },
-      "flush_toolbar_group": {
-        "vello::kurbo::Rect": 1,
-        "vello::kurbo::Rect::new": 1
-      },
-      "title_and_subtitle_rects": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 2
-      },
-      "flush_title_and_subtitle": {
-        "vello::kurbo::Rect": 1
-      },
-      "render_navigation_split_parts": {
-        "vello::kurbo::Rect::new": 7
-      },
-      "render_split_content": {
-        "vello::kurbo::Rect": 1
-      },
-      "render_split_detail": {
-        "vello::kurbo::Rect": 1
-      },
       "render_navigation_page_scene": {
         "vello::Scene::new": 1,
-        "vello::kurbo::Rect::new": 1,
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::Affine::IDENTITY": 3,
         "vello_backend::append_scene": 1
-      },
-      "render_navigation_stack_parts": {
-        "vello::peniko::Fill::NonZero": 1,
-        "vello::kurbo::Rect::new": 1
-      }
-    },
-    "src/widgets/nav/tabs.rs": {
-      "render_tabs_parts": {
-        "vello::kurbo::Rect::new": 1
-      },
-      "tabs_item_content_rects": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 4
-      },
-      "tabs_label_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "tabs_highlight_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 3
-      }
-    },
-    "src/widgets/platform/webview.rs": {
-      "WebViewRenderState": {
-        "vello::kurbo::Rect": 1
-      }
-    },
-    "src/widgets/util.rs": {
-      "inset_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "centered_label_rect": {
-        "vello::kurbo::Rect": 2,
-        "vello::kurbo::Rect::new": 1
-      },
-      "label_beside_control_bounds": {
-        "vello::kurbo::Rect": 3,
-        "vello::kurbo::Rect::new": 1
-      }
-    },
-    "tests/graphics.rs": {
-      "<top-level>": {
-        "vello::kurbo": 1,
-        "vello::peniko": 1
-      }
-    },
-    "tests/scene.rs": {
-      "<top-level>": {
-        "vello::kurbo::Shape": 1
-      },
-      "build_scene": {
-        "vello::kurbo::Rect::from_origin_size": 2,
-        "vello::kurbo::Point::new": 1,
-        "vello::kurbo::Size::new": 2,
-        "vello::peniko::Brush": 2,
-        "vello::peniko::Color::new": 2,
-        "vello::peniko::Fill::NonZero": 2,
-        "vello::kurbo::Affine::IDENTITY": 2,
-        "vello::kurbo::Point::ZERO": 1
       }
     },
     "examples/frame_profile.rs": {

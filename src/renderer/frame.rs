@@ -303,6 +303,17 @@ impl HydrolysisRenderer {
     ) {
         self.window_bounds = bounds;
         self.window_root_transform = root_transform;
+        let viewport = self.window_viewport();
+        let (w, h) = (
+            viewport.width().ceil() as u32,
+            viewport.height().ceil() as u32,
+        );
+        if w > 0 && h > 0 {
+            // Seed vello's bump buffers from the viewport's tile grid; scenes
+            // denser than the seed still grow from GPU feedback.
+            self.vello_renderer
+                .set_buffer_sizes(Some(vello::BumpBufferSizes::for_target(w, h)));
+        }
     }
 
     /// The window's viewport in physical pixels: where the root transform puts

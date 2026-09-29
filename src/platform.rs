@@ -1411,6 +1411,102 @@ mod winit_impl {
         queue: wgpu::Queue,
         /// Reports this device lost; taken when the device was opened.
         device_loss: waterui_graphics::DeviceLoss,
+        /// One parked `device.poll` thread for this device, spawned on first
+        /// watch — shared by every surface cloned from this context.
+        poll_driver: std::sync::Arc<std::sync::OnceLock<GpuPollDriver>>,
+    }
+
+    impl WinitGpuContext {
+        /// The device's shared poll driver, started on first use.
+        pub(crate) fn poll_driver(&self) -> &GpuPollDriver {
+            self.poll_driver
+                .get_or_init(|| GpuPollDriver::spawn(self.device.clone()))
+        }
+    }
+
+    /// Drives wgpu's asynchronous callback delivery for one device so the
+    /// event loop never polls the GPU itself.
+    ///
+    /// The driver owns a single parked thread: each `watch` registration
+    /// blocks it in `device.poll(PollType::Wait)` for exactly the
+    /// submissions its tickets were issued on — never `None`, which would
+    /// wait on the latest submission at poll time and let later frames'
+    /// submissions (including presents that may depend on the settle
+    /// itself) extend the wait indefinitely. Watches run in registration
+    /// order, so one registration waits out at most its own submissions.
+    #[derive(Clone)]
+    pub(crate) struct GpuPollDriver {
+        tx: std::sync::mpsc::Sender<Watch>,
+    }
+
+    /// One parked watch: the submissions to wait out, then the wake.
+    struct Watch {
+        submissions: Vec<wgpu::SubmissionIndex>,
+        wake: Box<dyn FnOnce() + Send + 'static>,
+    }
+
+    /// Delivers the watch's wake if the driver thread exits its service
+    /// loop early — a poll panic is the only path no log line covers, and
+    /// an undelivered wake strands the armed settle exactly like a lost
+    /// completion would.
+    struct WakeOnDrop(Option<Box<dyn FnOnce() + Send + 'static>>);
+
+    impl Drop for WakeOnDrop {
+        fn drop(&mut self) {
+            if let Some(wake) = self.0.take() {
+                wake();
+            }
+        }
+    }
+
+    impl GpuPollDriver {
+        fn spawn(device: wgpu::Device) -> Self {
+            let (tx, rx) = std::sync::mpsc::channel::<Watch>();
+            std::thread::Builder::new()
+                .name("hydrolysis-gpu-poll".to_owned())
+                .spawn(move || {
+                    while let Ok(watch) = rx.recv() {
+                        let wake = WakeOnDrop(Some(watch.wake));
+                        for submission_index in watch.submissions {
+                            if let Err(error) = device.poll(wgpu::PollType::Wait {
+                                submission_index: Some(submission_index),
+                                timeout: None,
+                            }) {
+                                // The wake still fires: the drain re-checks
+                                // the tickets itself, and a lost device must
+                                // be surfaced there rather than strand the
+                                // last frame off-screen.
+                                tracing::warn!(
+                                    "hydrolysis gpu poll driver: device poll failed: {error:?}"
+                                );
+                                break;
+                            }
+                        }
+                        drop(wake);
+                    }
+                })
+                .expect("hydrolysis: failed to spawn the gpu poll driver thread");
+            Self { tx }
+        }
+
+        /// Park until the GPU retires `submissions` — the queue indexes the
+        /// watch's tickets were issued on — then run `wake`. Returns
+        /// `false` when the driver thread is gone, which callers treat the
+        /// same as a lost device: drain now and let the verify report it.
+        /// An empty list resolves immediately, matching a stash that owes
+        /// no readbacks.
+        pub(crate) fn watch(
+            &self,
+            submissions: Vec<wgpu::SubmissionIndex>,
+            wake: impl FnOnce() + Send + 'static,
+        ) -> bool {
+            self.tx
+                .send(Watch {
+                    submissions,
+                    wake: Box::new(wake),
+                })
+                .is_ok()
+        }
     }
 
     pub struct WinitSurface {
@@ -1621,6 +1717,7 @@ mod winit_impl {
                             device,
                             queue,
                             device_loss,
+                            poll_driver: std::sync::Arc::new(std::sync::OnceLock::new()),
                         },
                         surface,
                     )
@@ -3952,6 +4049,8 @@ pub use web_impl::ExportedBrowserWindow as BrowserWindow;
 
 #[cfg(feature = "winit")]
 pub(crate) use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
+#[cfg(feature = "winit")]
+pub(crate) use winit_impl::GpuPollDriver;
 
 #[cfg(feature = "winit")]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;

@@ -53,6 +53,32 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
         Option<waterui_core::layout::Size>,
         Option<waterui_core::layout::Size>,
     )>,
+    /// A frame left a verified-but-unpresented vello composite stashed; the
+    /// next wake should drain it (see
+    /// [`HydrolysisRenderer::flush_deferred_vello_frame_to_surface`]) unless
+    /// real scene work arrived first.
+    pub(super) queued_deferred_flush: bool,
+    /// The runner's wake for a resolved deferred stash — fires once per
+    /// registered watch through the runner's own event path, never touching
+    /// the GPU from the main thread.
+    #[cfg(feature = "winit")]
+    pub(super) deferred_vello_wake: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
+    /// The shared per-device poll driver carrying outstanding watches, set
+    /// by runners whose platform can report GPU completion. `None` where
+    /// there is no completion source (headless, web): those drive the same
+    /// armed settle synchronously.
+    #[cfg(feature = "winit")]
+    pub(super) deferred_poll_driver: Option<crate::platform::GpuPollDriver>,
+    /// Generation of the currently armed deferred stash, bumped by every
+    /// frame that stashes one.
+    pub(super) deferred_stash_gen: u64,
+    /// Highest stash generation whose completion wake has been delivered.
+    /// A settle comparing it against `deferred_stash_gen` cannot mistake a
+    /// stale wake (an older watch landing beside a fresh stash) for the
+    /// armed stash's own completion, and a wake that arrives while tickets
+    /// still read unresolved means the device poll errored — the drain
+    /// runs anyway and the verify surfaces the device loss.
+    pub(super) deferred_wake_gen: u64,
 }
 
 impl<P: PlatformWindow> RuntimeWindow<P> {
@@ -74,6 +100,13 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
             refresh_rate_hz: None,
             applied_size_limits: None,
+            queued_deferred_flush: false,
+            #[cfg(feature = "winit")]
+            deferred_vello_wake: None,
+            #[cfg(feature = "winit")]
+            deferred_poll_driver: None,
+            deferred_stash_gen: 0,
+            deferred_wake_gen: 0,
         }
     }
 
@@ -373,11 +406,120 @@ pub(super) fn render_window<P: PlatformWindow>(
     env: &Environment,
     drain_local_tasks: &mut dyn FnMut() -> bool,
 ) -> bool {
+    if runtime.queued_deferred_flush {
+        runtime.queued_deferred_flush = false;
+        // A stashing frame asked for one settle pass. If real scene work also
+        // arrived, the full frame below drains the stash itself; otherwise
+        // drain and present it here so the last rendered frame is never
+        // stranded off-screen. `take_redraw_request` may only consume the
+        // flush's own request — the other two checks see real damage.
+        let damage_pending = runtime.mode.is_pending()
+            || runtime.renderer.has_patch_request()
+            || runtime.renderer.take_redraw_request();
+        if !damage_pending {
+            if !runtime.renderer.has_deferred_vello_frame() {
+                return false;
+            }
+            // The wake arrives once every submission queued at stash time
+            // has retired, so a resolved stash is verified content. The
+            // generation check refuses stale wakes — an older watch that
+            // lands beside a fresh, unresolved stash resolves nothing; a
+            // wake that arrived while tickets still read unresolved means
+            // the device poll errored — drain anyway and let the verify
+            // report the lost device.
+            if runtime.renderer.deferred_vello_frame_resolved()
+                || runtime.deferred_wake_gen >= runtime.deferred_stash_gen
+            {
+                let rendered = flush_deferred_window(runtime, env, false)
+                    .profile
+                    .counters
+                    .rendered;
+                // The drain presents without pumping the scene, so the
+                // RedrawRequested it consumed may have carried the scene's
+                // animation continuation — without a repump the loop can
+                // park with an armed animation (seen on the M4 as sporadic
+                // W5 freezes at the growth→tail transition). One redraw
+                // lets the next full pass re-arm whatever was absorbed.
+                runtime.platform.request_redraw();
+                return rendered;
+            }
+            // The completion watch is still in flight: stay armed and sleep —
+            // the poll driver's wake produces the settle, not a clock.
+            runtime.queued_deferred_flush = true;
+            return false;
+        }
+    }
     let result = render_window_with_capture(runtime, env, false, drain_local_tasks);
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
     let _ = (result.rebuilt, result.snapshot);
     result.profile.counters.rendered
+}
+
+/// The drain-only settle pass: verifies and presents the frame the previous
+/// render deferred, without pumping the scene. Surfaces with nothing stashed
+/// produce an empty frame — the caller only reaches this with a queued flush.
+pub(super) fn flush_deferred_window<P: PlatformWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    capture_snapshot: bool,
+) -> RenderWindowResult {
+    let clear_color = window_clear_color(&runtime.window, env);
+    let render_result = render_to_surface(
+        &mut runtime.renderer,
+        runtime.platform.surface(),
+        clear_color,
+        capture_snapshot,
+        |renderer, target, premultiply_alpha| {
+            renderer.flush_deferred_vello_frame_to_surface(target, premultiply_alpha);
+        },
+    );
+    let rendered = match render_result {
+        Ok(rendered) => rendered,
+        Err(
+            crate::platform::SurfaceError::Lost
+            | crate::platform::SurfaceError::Outdated
+            | crate::platform::SurfaceError::Timeout
+            | crate::platform::SurfaceError::Occluded,
+        ) => {
+            runtime.request_refresh();
+            runtime.platform.request_redraw();
+            return RenderWindowResult {
+                rebuilt: false,
+                snapshot: None,
+                #[cfg(feature = "frame-profile")]
+                stages: runtime.renderer.take_frame_stage_times(),
+                profile: FrameProfile::default(),
+            };
+        }
+        Err(crate::platform::SurfaceError::Validation) => {
+            panic!("hydrolysis surface acquisition failed validation")
+        }
+    };
+    let snapshot = rendered.snapshot;
+    #[cfg(feature = "frame-profile")]
+    let stages = runtime.renderer.take_frame_stage_times();
+    runtime.renderer.clear_frame_resources();
+    RenderWindowResult {
+        rebuilt: false,
+        snapshot,
+        #[cfg(feature = "frame-profile")]
+        stages,
+        profile: FrameProfile {
+            phases: FramePhases {
+                acquire: rendered.acquire,
+                render: rendered.render,
+                present: rendered.present,
+                ..FramePhases::default()
+            },
+            counters: FrameCounters {
+                rendered: true,
+                captured_snapshot: capture_snapshot,
+                ..FrameCounters::default()
+            },
+            ..FrameProfile::default()
+        },
+    }
 }
 
 pub(super) const fn surface_error_requires_reconfigure(
@@ -1017,6 +1159,30 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
     if runtime.renderer.take_redraw_request() {
         runtime.platform.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
+    }
+    if runtime.renderer.has_deferred_vello_frame() {
+        // The frame deferred its vello verification — arm the settle and
+        // park a GPU-completion watch on the poll driver. Its wake fires
+        // through the runner's user-event path the moment the stash's
+        // submissions retire; the verified composite is then presented
+        // rather than stranded in the stash when the stream settles.
+        runtime.queued_deferred_flush = true;
+        runtime.deferred_stash_gen += 1;
+        #[cfg(feature = "winit")]
+        let stash_gen = runtime.deferred_stash_gen;
+        #[cfg(feature = "winit")]
+        if let (Some(driver), Some(wake)) =
+            (&runtime.deferred_poll_driver, &runtime.deferred_vello_wake)
+        {
+            let wake = wake.clone();
+            let submissions = runtime.renderer.deferred_vello_watch_submissions();
+            if !driver.watch(submissions, move || wake(stash_gen)) {
+                // The driver thread is gone — treat it like a broken poll:
+                // the armed settle drains and lets the verify surface the
+                // device loss.
+                runtime.deferred_wake_gen = stash_gen;
+            }
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
