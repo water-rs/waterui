@@ -524,6 +524,20 @@ pub trait PlatformWindow: 'static {
     fn refresh_rate_hz(&self) -> Option<f64> {
         None
     }
+    /// The pointer's live position in this window's logical units, when the
+    /// host can answer.
+    ///
+    /// OS file-drop events carry no coordinates, and a platform that
+    /// suppresses cursor events while an external drag owns the pointer —
+    /// the OLE grab on Windows, `NSDraggingSession` on macOS — leaves the
+    /// event stream's last position stale exactly when a drop needs it. The
+    /// runner asks the host where the pointer actually is when a file event
+    /// arrives; hosts that cannot report it (Wayland, offscreen surfaces)
+    /// return `None` and the dispatch falls back to the last position the
+    /// stream delivered.
+    fn pointer_position(&self) -> Option<(f32, f32)> {
+        None
+    }
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     fn set_cursor_style(&mut self, style: CursorStyle);
 }
