@@ -14,7 +14,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use num_traits::ToPrimitive;
 
-use crate::color::ResolvedColor;
+use crate::color::WorkingColor;
 use crate::gpu::pipeline::single_bind_group_render_stages;
 use crate::gpu_surface::{GpuContext, GpuFrame, GpuSurface, GpuView};
 use crate::gradients::gradient::GradientType;
@@ -326,7 +326,7 @@ impl StaticMeshRenderer {
     pub(super) fn new(
         width: u32,
         height: u32,
-        vertices: Vec<([f32; 2], ResolvedColor)>,
+        vertices: Vec<([f32; 2], WorkingColor)>,
         smooths_colors: bool,
     ) -> Self {
         assert_eq!(
@@ -339,7 +339,7 @@ impl StaticMeshRenderer {
             .map(|(position, color)| GpuMeshVertex {
                 position: ShaderVec2::from_array(position),
                 _padding1: ShaderVec2::ZERO,
-                color: ShaderVec4::from_array([color.red, color.green, color.blue, color.opacity]),
+                color: ShaderVec4::from_array(color.components),
             })
             .collect();
 
@@ -437,7 +437,7 @@ struct ReactiveMeshRenderer<C: Signal> {
     pending_update: Arc<AtomicBool>,
     watcher_guard: Option<MainThreadBound<C::Guard>>,
     resources: Option<MeshGpuResources>,
-    last_colors: Option<Vec<ResolvedColor>>,
+    last_colors: Option<Vec<WorkingColor>>,
 }
 
 impl<C: Signal> ReactiveMeshRenderer<C> {
@@ -458,7 +458,7 @@ impl<C: Signal> ReactiveMeshRenderer<C> {
 impl<C> GpuView for ReactiveMeshRenderer<C>
 where
     C: Signal + 'static,
-    C::Output: IntoIterator<Item = ResolvedColor>,
+    C::Output: IntoIterator<Item = WorkingColor>,
 {
     #[expect(
         clippy::future_not_send,
@@ -491,7 +491,7 @@ where
         let pending_update = self.pending_update.swap(false, Ordering::AcqRel);
 
         if pending_update || self.last_colors.is_none() {
-            let colors: Vec<ResolvedColor> = self.colors.snapshot().into_iter().collect();
+            let colors: Vec<WorkingColor> = self.colors.snapshot().into_iter().collect();
 
             let colors_changed = self.last_colors.as_ref().is_none_or(|last| {
                 last.len() != colors.len()
@@ -510,7 +510,7 @@ where
                     GpuMeshVertex {
                         position: ShaderVec2::new(x, y),
                         _padding1: ShaderVec2::ZERO,
-                        color: ShaderVec4::new(color.red, color.green, color.blue, color.opacity),
+                        color: ShaderVec4::from_array(color.components),
                     }
                 });
 
@@ -533,7 +533,7 @@ where
 impl<C> waterui_core::layout::SubView for ReactiveMeshRenderer<C>
 where
     C: Signal + 'static,
-    C::Output: IntoIterator<Item = ResolvedColor>,
+    C::Output: IntoIterator<Item = WorkingColor>,
 {
     fn measure(
         &self,
@@ -557,7 +557,7 @@ where
 impl<C> MeshGradient<C>
 where
     C: Signal + 'static,
-    C::Output: IntoIterator<Item = ResolvedColor>,
+    C::Output: IntoIterator<Item = WorkingColor>,
 {
     /// Converts this mesh gradient into a GPU surface.
     #[must_use]
@@ -574,7 +574,7 @@ where
 impl<C> View for MeshGradient<C>
 where
     C: Signal + 'static,
-    C::Output: IntoIterator<Item = ResolvedColor>,
+    C::Output: IntoIterator<Item = WorkingColor>,
 {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
         self.into_surface()
@@ -586,12 +586,11 @@ where
     }
 }
 
-const fn resolved_color_eq(a: &ResolvedColor, b: &ResolvedColor) -> bool {
-    a.red.to_bits() == b.red.to_bits()
-        && a.green.to_bits() == b.green.to_bits()
-        && a.blue.to_bits() == b.blue.to_bits()
-        && a.opacity.to_bits() == b.opacity.to_bits()
-        && a.headroom.to_bits() == b.headroom.to_bits()
+const fn resolved_color_eq(a: &WorkingColor, b: &WorkingColor) -> bool {
+    a.components[0].to_bits() == b.components[0].to_bits()
+        && a.components[1].to_bits() == b.components[1].to_bits()
+        && a.components[2].to_bits() == b.components[2].to_bits()
+        && a.components[3].to_bits() == b.components[3].to_bits()
 }
 
 fn usize_to_f32(value: usize) -> f32 {

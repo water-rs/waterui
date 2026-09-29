@@ -198,7 +198,7 @@ impl<'a> GpuContext<'a> {
     /// is drawn with them, so a dozen icons share one rather than each building
     /// its own and reaching a first frame separately.
     ///
-    /// Only a `GpuView` that rasterizes a [`Scene2D`](crate::Scene2D) needs it;
+    /// Only a `GpuView` that rasterizes scene display lists needs it;
     /// everything else draws with its own pipelines and never calls this.
     #[must_use]
     pub const fn scene_renderer(&self) -> &'a Arc<SharedSceneRenderer> {

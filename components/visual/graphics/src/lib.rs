@@ -22,7 +22,11 @@ mod scene;
 #[cfg(feature = "gpu")]
 pub mod shader_types;
 
-pub use color::{Color, Colorspace, ResolvedColor};
+/// The engine this crate records for, re-exported so every consumer names
+/// the same `Content`, `Paint`, `Shape`, `Recorder` and colour types.
+pub use cherenkov;
+
+pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 #[cfg(feature = "gpu")]
 pub use effects::{filter_view, view_effect};
 #[cfg(feature = "gpu")]
@@ -36,11 +40,9 @@ pub use gradients::gradient::{
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
-#[cfg(feature = "cpu-scene")]
-pub use scene::scene2d_cpu;
-pub use scene::{picture, scene_view, scene2d};
-#[cfg(feature = "vello-scene")]
-pub use scene::{scene2d_hybrid, scene2d_vello};
+#[cfg(feature = "cpu")]
+pub use scene::raster;
+pub use scene::{picture, resources, scene_view};
 
 /// Shared shader sources.
 #[cfg(feature = "gpu")]
@@ -127,15 +129,19 @@ pub use image_generator::{
 };
 
 pub use picture::Picture;
+pub use resources::SceneResources;
 pub use scene_view::{
     SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
     resolve_scene_proposal, scene_stretch_axis,
 };
-pub use scene2d::{Glyph, GlyphRun, Scene2D, SceneRecording};
-#[cfg(feature = "vello-scene")]
-pub use scene2d_hybrid::{HybridImageAtlas, HybridRenderer, HybridScene2D, HybridUpload};
-#[cfg(feature = "vello-scene")]
-pub use scene2d_vello::VelloScene2D;
+
+/// The CPU raster backend behind [`raster::Rasterizer`].
+#[cfg(feature = "cpu")]
+pub use cherenkov_cpu;
+
+/// The GPU backend for hosts that own a retained engine.
+#[cfg(feature = "gpu")]
+pub use cherenkov_gpu;
 
 // Re-export dependencies used by macros
 #[cfg(feature = "gpu")]

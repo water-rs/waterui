@@ -12,26 +12,12 @@ categories = ["gui"]
 
 [features]
 default = ["gpu"]
-# The `Scene2D` contract needs no rendering engine, so the two engine-backed
-# implementations of it are their own feature: a crate that only draws through
-# the contract, and lets a backend supply the scene, does not pull Vello.
-#
-# `wgpu` is here because the hybrid engine keeps images in an atlas texture the
-# renderer owns: drawing one means uploading it to the device, so the engine
-# implementation names the device, the queue and the encoder that fills it.
-vello-scene = [
-    "dep:vello",
-    "dep:vello_hybrid",
-    "dep:vello_common",
-    "dep:glifo",
-    "dep:wgpu",
-]
-# Rasterises a `SceneRecording` on the CPU through `vello_cpu`: what the FFI
-# backends need to show a `Picture` in a platform image view, and what Dew
-# paints with. Independent of `gpu`.
-cpu-scene = ["dep:vello_cpu"]
+# Rasterises a `Picture` on the CPU through `cherenkov-cpu`: what the FFI
+# backends need to show a `Picture` in a platform image view. Independent of
+# `gpu`.
+cpu = ["dep:cherenkov-cpu"]
 gpu = [
-    "vello-scene",
+    "dep:cherenkov-gpu",
     "dep:filtrate",
     "dep:filtrate-core",
     "dep:futures",
@@ -50,11 +36,21 @@ gpu = [
     "dep:wgpu-hal",
     "dep:libc",
     "dep:pollster",
+    # The shared GPU context still rasterises Vello scenes for the retiring
+    # `GpuSurface` path; these leave with it.
+    "dep:vello",
+    "dep:vello_hybrid",
+    "dep:vello_common",
+    "dep:glifo",
 ]
 
 [dependencies]
 waterui-core.workspace = true
 nami.workspace = true
+cherenkov.workspace = true
+cherenkov-cpu = { workspace = true, optional = true }
+cherenkov-gpu = { workspace = true, optional = true }
+color.workspace = true
 filtrate = { workspace = true, optional = true }
 filtrate-core = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
@@ -64,16 +60,8 @@ vello = { workspace = true, optional = true }
 vello_hybrid = { workspace = true, optional = true }
 vello_common = { workspace = true, optional = true }
 glifo = { workspace = true, optional = true }
-# Only the u8 pipeline: `Rasterizer` renders with `RenderMode::OptimizeSpeed`,
-# so the f32 pipeline's kernels would never be reachable from this crate.
-vello_cpu = { workspace = true, optional = true, features = [
-    "std",
-    "text",
-    "u8_pipeline",
-] }
 kurbo.workspace = true
 keyboard-types.workspace = true
-peniko.workspace = true
 bytemuck = { version = "1.25", optional = true }
 encase = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
@@ -108,12 +96,14 @@ naga = { version = "30.0.1", features = ["wgsl-in"], optional = true }
 shaderloom = { workspace = true, features = ["build"], optional = true }
 
 [dev-dependencies]
+# Tests record against `cherenkov::testing::Null` engines.
+cherenkov = { workspace = true, features = ["testing"] }
 # `mesh_gradient.wgsl` layout parity test parses the real shader source.
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster.workspace = true
-waterui = { path = "../../.." }
-waterui-testing = { path = "../../../testing" }
 divan = "0.1"
+# The glyph-run recording test maps a character to a glyph id in a real font.
+ttf-parser = "0.25"
 
 [[bench]]
 name = "filter_runtime"

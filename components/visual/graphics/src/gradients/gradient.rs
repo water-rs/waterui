@@ -10,7 +10,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use crate::color::ResolvedColor;
+use crate::color::WorkingColor;
 #[cfg(feature = "gpu")]
 use crate::gpu_surface::GpuSurface;
 #[cfg(feature = "gpu")]
@@ -40,7 +40,7 @@ pub struct ResolvedGradientStop {
     /// Position in range `[0.0, 1.0]`.
     pub position: f32,
     /// Stop color in linear color space.
-    pub color: ResolvedColor,
+    pub color: WorkingColor,
 }
 
 impl ResolvedGradientStop {
@@ -50,7 +50,7 @@ impl ResolvedGradientStop {
     ///
     /// Panics when the position or any color channel is outside the documented range.
     #[must_use]
-    pub fn new(position: f32, color: ResolvedColor) -> Self {
+    pub fn new(position: f32, color: WorkingColor) -> Self {
         assert!(
             position.is_finite(),
             "gradient stop position must be finite"
@@ -60,23 +60,11 @@ impl ResolvedGradientStop {
             "gradient stop position must be within [0, 1]"
         );
         assert!(
-            color.red.is_finite(),
-            "gradient stop red channel must be finite"
+            color.components[..3].iter().all(|c| c.is_finite()),
+            "gradient stop colour channels must be finite"
         );
         assert!(
-            color.green.is_finite(),
-            "gradient stop green channel must be finite"
-        );
-        assert!(
-            color.blue.is_finite(),
-            "gradient stop blue channel must be finite"
-        );
-        assert!(
-            color.headroom.is_finite() && color.headroom >= 0.0,
-            "gradient stop headroom must be finite and >= 0"
-        );
-        assert!(
-            color.opacity.is_finite() && (0.0..=1.0).contains(&color.opacity),
+            color.components[3].is_finite() && (0.0..=1.0).contains(&color.components[3]),
             "gradient stop opacity must be finite and within [0, 1]"
         );
         Self { position, color }
@@ -218,7 +206,7 @@ pub struct GradientConfig {
     /// Type of gradient.
     pub gradient_type: GradientType,
     /// Color stops (position + color).
-    pub stops: Vec<(f32, ResolvedColor)>,
+    pub stops: Vec<(f32, WorkingColor)>,
     /// Start point (linear) or center (radial/angular).
     pub start_point: [f32; 2],
     /// End point (linear only).
@@ -230,7 +218,7 @@ pub struct GradientConfig {
     /// Mesh grid dimensions (width, height) for mesh gradients.
     pub mesh_size: (u32, u32),
     /// Mesh vertices for mesh gradients.
-    pub mesh_vertices: Vec<([f32; 2], ResolvedColor)>,
+    pub mesh_vertices: Vec<([f32; 2], WorkingColor)>,
     /// Whether to smooth colors (mesh gradients).
     pub smooths_colors: bool,
 }
@@ -240,26 +228,8 @@ impl Default for GradientConfig {
         Self {
             gradient_type: GradientType::Linear,
             stops: vec![
-                (
-                    0.0,
-                    ResolvedColor {
-                        red: 1.0,
-                        green: 0.0,
-                        blue: 0.0,
-                        opacity: 1.0,
-                        headroom: 0.0,
-                    },
-                ),
-                (
-                    1.0,
-                    ResolvedColor {
-                        red: 0.0,
-                        green: 0.0,
-                        blue: 1.0,
-                        opacity: 1.0,
-                        headroom: 0.0,
-                    },
-                ),
+                (0.0, WorkingColor::new([1.0, 0.0, 0.0, 1.0])),
+                (1.0, WorkingColor::new([0.0, 0.0, 1.0, 1.0])),
             ],
             start_point: [0.5, 0.0],
             end_point: [0.5, 1.0],
@@ -275,7 +245,7 @@ impl Default for GradientConfig {
 impl GradientConfig {
     /// Creates a linear gradient configuration.
     #[must_use]
-    pub fn linear(stops: Vec<(f32, ResolvedColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
+    pub fn linear(stops: Vec<(f32, WorkingColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
         Self {
             gradient_type: GradientType::Linear,
             stops,
@@ -288,7 +258,7 @@ impl GradientConfig {
     /// Creates a radial gradient configuration.
     #[must_use]
     pub fn radial(
-        stops: Vec<(f32, ResolvedColor)>,
+        stops: Vec<(f32, WorkingColor)>,
         center: [f32; 2],
         start_radius: f32,
         end_radius: f32,
@@ -307,7 +277,7 @@ impl GradientConfig {
     /// Creates an angular gradient configuration.
     #[must_use]
     pub fn angular(
-        stops: Vec<(f32, ResolvedColor)>,
+        stops: Vec<(f32, WorkingColor)>,
         center: [f32; 2],
         start_angle: f32,
         end_angle: f32,
@@ -336,7 +306,7 @@ impl GradientConfig {
     pub fn mesh(
         width: u32,
         height: u32,
-        vertices: Vec<([f32; 2], ResolvedColor)>,
+        vertices: Vec<([f32; 2], WorkingColor)>,
         smooths_colors: bool,
     ) -> Self {
         assert_eq!(
@@ -400,14 +370,14 @@ impl Gradient {
 
     /// Creates a linear gradient view.
     #[must_use]
-    pub fn linear(stops: Vec<(f32, ResolvedColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
+    pub fn linear(stops: Vec<(f32, WorkingColor)>, start: [f32; 2], end: [f32; 2]) -> Self {
         Self::new(GradientConfig::linear(stops, start, end))
     }
 
     /// Creates a radial gradient view.
     #[must_use]
     pub fn radial(
-        stops: Vec<(f32, ResolvedColor)>,
+        stops: Vec<(f32, WorkingColor)>,
         center: [f32; 2],
         start_radius: f32,
         end_radius: f32,
@@ -423,7 +393,7 @@ impl Gradient {
     /// Creates an angular gradient view.
     #[must_use]
     pub fn angular(
-        stops: Vec<(f32, ResolvedColor)>,
+        stops: Vec<(f32, WorkingColor)>,
         center: [f32; 2],
         start_angle: f32,
         end_angle: f32,
@@ -445,7 +415,7 @@ impl Gradient {
     pub fn mesh(
         width: u32,
         height: u32,
-        vertices: Vec<([f32; 2], ResolvedColor)>,
+        vertices: Vec<([f32; 2], WorkingColor)>,
         smooths_colors: bool,
     ) -> Self {
         Self::new(GradientConfig::mesh(

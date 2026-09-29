@@ -14,8 +14,29 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use shaderloom::WgslModuleCache;
 
-use crate::scene2d_hybrid::HybridImageAtlas;
-pub use crate::scene2d_hybrid::HybridRenderer;
+/// The hybrid scene renderer and the resources it draws with.
+///
+/// They are created together and used together, so they are kept together:
+/// the renderer owns the atlas texture, and the resources own what has been
+/// placed in it. Kept here beside its owner; it leaves with the rest of this
+/// module.
+#[derive(Debug)]
+pub struct HybridRenderer {
+    /// The renderer itself.
+    pub renderer: vello_hybrid::Renderer,
+    /// Its atlas and buffer resources.
+    pub resources: vello_hybrid::Resources,
+    /// The images this renderer has put in its atlas.
+    pub images: HybridImageAtlas,
+}
+
+/// The images one hybrid renderer has uploaded into its atlas.
+///
+/// Nothing reaches the atlas at this stage: image-brush drawing went through
+/// the scene adapter this cutover removed, and the atlas itself leaves with
+/// the rest of this module.
+#[derive(Debug, Default)]
+pub struct HybridImageAtlas;
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
@@ -334,7 +355,7 @@ impl SharedSceneRenderer {
                     HybridRenderer {
                         renderer,
                         resources,
-                        images: HybridImageAtlas::default(),
+                        images: HybridImageAtlas,
                     },
                 ));
                 renderers.len() - 1
