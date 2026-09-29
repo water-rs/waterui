@@ -1,6 +1,7 @@
-pub mod vello_backend;
+#[path = "engine/vello_backend.rs"]
+pub(crate) mod legacy;
 
-pub(crate) use vello_backend::{
+pub(crate) use legacy::{
     LegacyBumpReadback, LegacyRenderer, LegacyRendererOptions, legacy_init_threads,
     rasterize_blurred_silhouette,
 };

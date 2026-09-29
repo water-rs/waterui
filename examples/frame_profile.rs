@@ -1,12 +1,12 @@
 //! Headless frame-pipeline profiler for Hydrolysis.
 //!
 //! Renders representative WaterUI scenes through the real retained-tree →
-//! layout → `vello::Scene` → compositor pipeline offscreen — no window, no
+//! layout → `Recording` → compositor pipeline offscreen — no window, no
 //! display — and writes one JSON document per scene with per-frame stage
 //! records plus p50/p90/p99 per stage. GPU stages come from wgpu timestamp
 //! queries and stay `null` where the adapter lacks `TIMESTAMP_QUERY`.
 //!
-//! The point of the numbers is the Vello-replacement bound: `vello_gpu` is
+//! The point of the numbers is the Vello-replacement bound: `legacy_gpu` is
 //! what a different vector engine could take over; `encode` is what stays
 //! Hydrolysis's own.
 //!
@@ -92,7 +92,7 @@ struct FrameRecord {
     update_ns: u64,
     layout_ns: u64,
     encode_ns: u64,
-    vello_gpu_ns: Option<u64>,
+    legacy_gpu_ns: Option<u64>,
     compositor_gpu_ns: Option<u64>,
     gpu_wait_ns: u64,
     readback_ns: u64,
@@ -417,7 +417,7 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
             update_ns: ns(stages.update),
             layout_ns: ns(stages.layout),
             encode_ns: ns(stages.encode),
-            vello_gpu_ns: stages.vello_gpu.map(ns),
+            legacy_gpu_ns: stages.legacy_gpu.map(ns),
             compositor_gpu_ns: stages.compositor_gpu.map(ns),
             gpu_wait_ns: ns(stages.gpu_wait),
             readback_ns: ns(stages.readback),
@@ -448,7 +448,10 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
                         u64::from(counters.measurement_cache_misses),
                     ),
                     ("scene_layers", u64::from(counters.scene_layers)),
-                    ("vello_scene_layers", u64::from(counters.vello_scene_layers)),
+                    (
+                        "legacy_scene_layers",
+                        u64::from(counters.legacy_scene_layers),
+                    ),
                     ("gpu_surface_layers", u64::from(counters.gpu_surface_layers)),
                     (
                         "direct_gpu_surfaces",
@@ -477,12 +480,12 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
     // GPU stages: `None` in the report means "the device cannot timestamp",
     // never "the GPU took zero time".
     stage_summaries.insert(
-        "vello_gpu",
+        "legacy_gpu",
         timestamp_queries.then(|| {
             summarize(
                 records
                     .iter()
-                    .filter_map(|f| f.vello_gpu_ns)
+                    .filter_map(|f| f.legacy_gpu_ns)
                     .collect::<Vec<u64>>(),
             )
         }),

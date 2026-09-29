@@ -216,7 +216,7 @@ fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (
 /// reactive tree (Flutter-RenderObject / scene-graph style) would actually pay,
 /// once `body()`/dispatch/a11y-build/target-registration are amortized to
 /// once-and-on-Dynamic-change. No renderer, no dispatch — just encoding the row
-/// primitives into a fresh `vello::Scene` every frame.
+/// primitives into a fresh `Recording` every frame.
 #[test]
 fn pure_vello_encode_floor() {
     use kurbo::{Circle as KurboCircle, Rect, RoundedRect};
@@ -278,7 +278,7 @@ fn pure_vello_encode_floor() {
 /// Report-only, and deliberately out of the gating test run.
 ///
 /// It builds a fresh runtime per sample — 278 of them — and each one builds its
-/// own `vello::Renderer`, which compiles roughly thirty compute pipelines. On a
+/// own `LegacyRenderer`, which compiles roughly thirty compute pipelines. On a
 /// runner whose only adapter is a software rasterizer that is some eight
 /// thousand JIT-compiled shaders, and the machine runs out of memory before the
 /// probe finishes. The numbers it prints are read by a person deciding an
@@ -348,7 +348,7 @@ fn full_rebuild_vs_retained_replay_cost() {
 // This stands in for the future `RenderNode` tree to measure the ONE cost not
 // isolated by the probes above: per-frame **layout + encode** on a tree that is
 // built once and only re-flushed (no `body()`/dispatch/a11y/target churn). It is
-// pure `vello::Scene` + the real `Layout` implementations — no renderer — so the
+// pure `Recording` + the real `Layout` implementations — no renderer — so the
 // numbers are the irreducible per-frame cost the persistent-tree architecture
 // pays. The gate: a 160-row screen must flush well under the 120Hz budget.
 // ---------------------------------------------------------------------------

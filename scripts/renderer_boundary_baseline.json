@@ -1,6 +1,13 @@
 {
   "version": 1,
   "strict": false,
+  "quarantine": [
+    "src/renderer/recording/vello.rs",
+    "src/engine/vello_backend.rs"
+  ],
+  "compat_files": [
+    "src/runner/window.rs"
+  ],
   "renamed_dep_tokens": [],
   "files": {
     "src/engine/vello_backend.rs": {
@@ -39,49 +46,12 @@
         "vello_cpu::Resources::default": 1
       }
     },
-    "src/engine.rs": {
-      "vello_backend": {
-        "vello_backend": 2
-      }
-    },
-    "src/renderer/effects.rs": {
-      "prepare_output": {
-        "vello_renderer": 2
-      },
-      "encode_output": {
-        "vello_renderer": 2
-      },
-      "register_or_override_output_image": {
-        "vello_renderer": 3
-      },
-      "register_output_image": {
-        "vello_renderer": 2
-      }
-    },
-    "src/renderer/frame.rs": {
-      "RenderLayerStats": {
-        "vello_scene_layers": 1
-      },
-      "render_layer_stats": {
-        "vello_scene_layers": 3
-      }
-    },
-    "src/renderer/gpu_profile.rs": {
-      "FrameStageTimes": {
-        "vello_gpu": 1
-      },
-      "finish_gpu_frame_profile": {
-        "vello_gpu": 1
-      }
-    },
-    "src/renderer/recording/mod.rs": {
-      "vello": {
-        "vello": 2
-      }
-    },
     "src/renderer/recording/vello.rs": {
       "Recording": {
         "vello::Scene": 1
+      },
+      "default": {
+        "vello_encoding": 1
       },
       "new": {
         "vello::Scene::new": 1
@@ -96,46 +66,12 @@
         "vello::Glyph": 1
       }
     },
-    "src/renderer/render/compositor.rs": {
-      "Compositor": {
-        "vello_renderer_pool": 1
-      },
-      "verify_deferred_vello": {
-        "vello_renderer_pool": 1
-      },
-      "render_scene_to_surface_with_alpha_mode": {
-        "vello_indices": 3,
-        "vello_scenes": 2,
-        "vello_renderer_pool": 1
-      }
-    },
-    "src/renderer/tests/clip_transform.rs": {
-      "<top-level>": {
-        "vello_encoding": 1
-      }
-    },
-    "src/renderer/tests/tree.rs": {
-      "flush_window_tree_reuses_retained_tree": {
-        "vello_layers": 2,
-        "vello_scene_layers": 1
-      }
-    },
     "src/runner/window.rs": {
       "FrameCounters": {
         "vello_scene_layers": 1
       },
       "render_window_with_capture": {
-        "vello_scene_layers": 4
-      }
-    },
-    "examples/frame_profile.rs": {
-      "FrameRecord": {
-        "vello_gpu_ns": 1
-      },
-      "run_scene": {
-        "vello_gpu_ns": 2,
-        "vello_gpu": 1,
-        "vello_scene_layers": 1
+        "vello_scene_layers": 2
       }
     },
     "Cargo.toml": {

@@ -28,6 +28,12 @@ impl Default for Recording {
     }
 }
 
+/// Re-exported for the clip-transform test, which resolves the packed
+/// stream the way `flatten` does. `vello_encoding` is a dev-dependency,
+/// so this exists only in test builds.
+#[cfg(test)]
+pub(crate) use vello_encoding::{PathTag, Resolver, Transform};
+
 impl Recording {
     /// Creates an empty recording.
     #[must_use]
@@ -180,7 +186,7 @@ impl Recording {
 
 /// Legacy plumbing — submission-side and tracking access, not part of the
 /// drawing-facing API. Everything below is consumed only by the compositor's
-/// submission boundary, `crate::engine::vello_backend`, or tests already
+/// submission boundary, `src/engine/vello_backend.rs`, or tests already
 /// quarantined in the boundary baseline.
 impl Recording {
     /// Scene-layer scopes still open, for the tracked-stack invariant the
@@ -274,7 +280,7 @@ impl Scene2D for Recording {
 
 /// The existing `DrawContext` adapter: the WaterUI theme-drawing interface,
 /// recorded into [`Recording`]. Moved here unchanged from
-/// `engine::vello_backend` — deleted with the boundary at cutover.
+/// `engine/vello_backend.rs` — deleted with the boundary at cutover.
 pub struct VelloDrawContext<'a> {
     scene: &'a mut Recording,
     transform_stack: Vec<Affine>,

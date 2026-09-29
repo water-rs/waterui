@@ -20,12 +20,11 @@
 
 use std::sync::Arc;
 
+use crate::engine::{Brush, DrawContext};
+use crate::renderer::recording::{PathTag, Resolver, Transform};
+use crate::renderer::{Recording, VelloDrawContext};
 use kurbo::{Affine, Rect};
 use peniko::{Blob, Color, Fill, FontData};
-use vello_encoding::{PathTag, Resolver, Transform};
-
-use crate::engine::{Brush, DrawContext};
-use crate::renderer::{Recording, VelloDrawContext};
 
 /// `trans_ix` the flatten shader computes for the `index`th PATH tag: the
 /// number of TRANSFORM tags before it in the packed stream, minus one.

@@ -227,9 +227,9 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a Vello layer resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let vello_layers = renderer.render_layer_stats().vello_scene_layers;
+    let legacy_layers = renderer.render_layer_stats().legacy_scene_layers;
     assert!(
-        vello_layers > 0,
+        legacy_layers > 0,
         "re-flushing the retained tree must produce a Vello scene layer"
     );
 }

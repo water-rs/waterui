@@ -328,7 +328,7 @@ impl RetainedSubview {
     }
 
     /// Build (once), lay out at `size`, and flush the sub-view into a fresh,
-    /// standalone [`vello::Scene`] in identity (local) coordinates — the retained
+    /// standalone [`Recording`] in identity (local) coordinates — the retained
     /// analogue of [`HydrolysisRenderer::render_subtree_scene`] for a node that
     /// must survive across flushes (the navigation-stack root). The renderer's
     /// scene is swapped out, the node flushes into the temporary scene, then the

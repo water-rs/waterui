@@ -371,7 +371,7 @@ pub struct HydrolysisRenderer {
     last_layout_signature: Option<u64>,
     /// The device-wide pipeline cache persisted between launches; `None` where
     /// the adapter or platform has no persistent cache (see
-    /// `pipeline_cache.rs`). Held here rather than by the `vello::Renderer` it
+    /// `pipeline_cache.rs`). Held here rather than by the `LegacyRenderer` it
     /// was handed to so pooled renderers can share it and the renderer can
     /// write it back once early frames have run the pipelines.
     #[cfg(hydrolysis_pipeline_cache)]
@@ -627,7 +627,7 @@ impl HydrolysisRenderer {
         }
     }
 
-    /// The pipeline cache pooled vello renderers should compile against, when
+    /// The pipeline cache pooled legacy renderers should compile against, when
     /// this device has one.
     #[cfg(hydrolysis_pipeline_cache)]
     pub(crate) fn pipeline_cache(&self) -> Option<wgpu::PipelineCache> {
