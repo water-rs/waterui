@@ -50,6 +50,8 @@ mod fonts;
 mod headless;
 pub(crate) mod ime;
 pub(crate) mod menu_bar;
+#[cfg(feature = "winit")]
+pub(crate) mod placement;
 mod semantic;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

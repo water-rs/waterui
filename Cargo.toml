@@ -101,8 +101,12 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", optional = true, features = [
     "NSAnimation",
+    "NSEvent",
+    "NSGraphics",
     "NSResponder",
+    "NSScreen",
     "NSView",
+    "NSWindow",
     "objc2-quartz-core",
 ] }
 objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
@@ -162,6 +166,24 @@ serde_json = { version = "1", optional = true }
 # (Windows). See src/platform/native_menu_bar.rs.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 muda = { version = "0.20", optional = true, default-features = false }
+
+# Window placement (water-rs/waterui#1302): X11 reads the pointer position and
+# `_NET_WORKAREA` over the connection winit already holds — borrowed through
+# the raw display handle, never a second connection. `x11-dl`'s `xlib_xcb`
+# module turns the Xlib backend's `Display*` into its `xcb_connection_t`.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
+x11-dl = { version = "2.21", optional = true }
+x11rb = { version = "0.13", optional = true }
+
+# `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
+# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`. The version
+# tracks the `windows-sys` release winit 0.30 already builds against.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # The Android host's JNI boundary (see src/runner/android/): `ndk` is pinned to
 # the API-31 NDK symbols it calls (Surface frame-rate and MotionEvent-from-Java
@@ -308,6 +330,9 @@ winit = [
     "dep:objc2-foundation",
     "dep:objc2-quartz-core",
     "dep:muda",
+    "dep:x11-dl",
+    "dep:x11rb",
+    "dep:windows-sys",
 ]
 web = [
     "accessibility",

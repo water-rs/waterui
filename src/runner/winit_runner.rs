@@ -21,7 +21,7 @@ use executor_core::{
 };
 use nami::Signal;
 use waterui::app::{App, AppParts, LastWindowPolicy};
-use waterui::window::{Window, WindowState};
+use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
@@ -234,9 +234,23 @@ pub fn run(
     }
     let mut event_loop_builder = EventLoop::<RunnerEvent>::with_user_event();
     #[cfg(target_os = "macos")]
-    event_loop_builder
-        .with_activation_policy(ActivationPolicy::Regular)
-        .with_activate_ignoring_other_apps(true);
+    {
+        // Launch activation belongs to a window that is actually shown with
+        // `Activation::OnShow` at startup. A resident app that mounts no
+        // window, or only windows that defer focus (`OnClick`/`Never`),
+        // must not pull focus when it launches — a drop-down terminal
+        // started at login or by a hotkey daemon is the case this
+        // protects. `ActivationPolicy::Regular` stays either way, so the
+        // Dock icon and menu bar keep working, and a window shown later
+        // still takes focus per its own policy.
+        let activate_at_launch = windows.iter().any(|window| {
+            window.activation == waterui::window::Activation::OnShow
+                && window.state.snapshot() != waterui::window::WindowState::Closed
+        });
+        event_loop_builder
+            .with_activation_policy(ActivationPolicy::Regular)
+            .with_activate_ignoring_other_apps(activate_at_launch);
+    }
     let event_loop = event_loop_builder
         .build()
         .expect("hydrolysis runner: failed to create event loop");
@@ -338,6 +352,8 @@ pub fn run(
         event_proxy,
         render_diagnostics_config,
         outside_pointer_presses: 0,
+        focused_window: None,
+        last_pointer_window: None,
     };
 
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -392,6 +408,13 @@ struct WinitRunner {
     /// window-level pointer event in the same event batch. What is left over
     /// when the batch settles is a press outside every window we own.
     outside_pointer_presses: u32,
+    /// The window winit last reported `Focused(true)` for — the `Focused`
+    /// monitor selector's answer (water-rs/waterui#1302).
+    focused_window: Option<WindowId>,
+    /// The window a pointer event last arrived on. Wayland exposes no global
+    /// pointer position, so for `MonitorSelector::Pointer` this window's
+    /// monitor stands in for the pointer's home.
+    last_pointer_window: Option<WindowId>,
 }
 
 /// Loads the window icon the water CLI stages into the asset bundle root.
@@ -466,7 +489,11 @@ fn native_window_attributes(
         .with_resizable(window.resizable)
         .with_visible(false)
         .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
-        .with_active(activates)
+        // `Activation::OnClick` and `Never` both map without activation: the
+        // platform parts that `with_active` cannot express (X11 `WM_HINTS`,
+        // the AppKit style mask, `WS_EX_NOACTIVATE`) are applied after
+        // creation, before the window is mapped.
+        .with_active(activates && window.activation == waterui::window::Activation::OnShow)
         .with_transparent(super::window_requires_transparency(window, env))
         .with_decorations(!matches!(
             window.style,
@@ -571,6 +598,15 @@ impl WinitRunner {
         pending: PendingWindow,
     ) -> (RuntimeWindow<WinitWindow>, AccessKitAdapter) {
         let PendingWindow { window, activates } = pending;
+        let activation = window.activation;
+        // `Window::placement` resolves each time the window is shown — and a
+        // winit window is shown exactly once, at mount (a `Closed` window is
+        // destroyed, never re-shown) — so the resolved rect is written into
+        // `frame` here, before the attributes carry it into the map request.
+        if let Some(placement) = window.placement.as_ref() {
+            let monitor = self.resolve_placement_monitor(event_loop, placement.monitor);
+            window.frame.set((placement.place)(&monitor));
+        }
         let attributes =
             native_window_attributes(&window, &self.env, activates, self.window_icon.clone());
 
@@ -659,9 +695,24 @@ impl WinitRunner {
                 .insert(runtime.platform.id(), last_tree_update);
             adapter
         };
-        runtime.platform.native_window().set_visible(true);
-        if activates {
-            runtime.platform.native_window().focus_window();
+        // The activation parts window attributes cannot express, applied
+        // before the window maps (see `with_active` above).
+        crate::runner::placement::apply_activation(
+            event_loop,
+            runtime.platform.native_window(),
+            activation,
+        );
+        // A window declared `Closed` at mount stays unmapped: ordering it
+        // front and reaping it in `remove_closed_windows` would flash it on
+        // screen — and `makeKeyAndOrderFront` would activate the app at
+        // launch, the resident drop-down terminal bug this guards. Shown
+        // windows map through `show_at_mount`, which orders `OnClick`/`Never`
+        // windows front without activation (see that function).
+        if runtime.window.state.snapshot() != WindowState::Closed {
+            crate::runner::placement::show_at_mount(runtime.platform.native_window(), activation);
+            if activates && activation == waterui::window::Activation::OnShow {
+                runtime.platform.native_window().focus_window();
+            }
         }
         (runtime, adapter)
     }
@@ -713,6 +764,30 @@ impl WinitRunner {
             self.windows.insert(id, runtime);
             self.accesskit_adapters.insert(id, adapter);
         }
+    }
+
+    /// The monitor a window's [`MonitorSelector`] resolves to, evaluated
+    /// with the event loop in hand — called once per window, at mount (the
+    /// only "shown" a winit window has; see `placement` module docs).
+    fn resolve_placement_monitor(
+        &self,
+        event_loop: &ActiveEventLoop,
+        selector: MonitorSelector,
+    ) -> Monitor {
+        crate::runner::placement::resolve_placement_monitor(
+            &crate::runner::placement::PlacementContext {
+                event_loop,
+                focused_window: self
+                    .focused_window
+                    .and_then(|id| self.windows.get(&id))
+                    .map(|runtime| runtime.platform.native_window()),
+                pointer_window: self
+                    .last_pointer_window
+                    .and_then(|id| self.windows.get(&id))
+                    .map(|runtime| runtime.platform.native_window()),
+            },
+            selector,
+        )
     }
 
     fn handle_input_events(runtime: &mut RuntimeWindow<WinitWindow>, env: &Environment) -> bool {
@@ -798,6 +873,21 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             // device-level press; what remains at the end of the batch is
             // presses outside every window we own.
             self.outside_pointer_presses = self.outside_pointer_presses.saturating_sub(1);
+        }
+        // Selector inputs that outlive a single event: `Focused` feeds the
+        // `Focused` monitor selector, and the last pointer-touched window is
+        // Wayland's only answer to "which monitor is the pointer on".
+        match &event {
+            WindowEvent::Focused(focused) => {
+                self.focused_window = focused.then_some(window_id);
+            }
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::CursorEntered { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::Touch(_) => {
+                self.last_pointer_window = Some(window_id);
+            }
+            _ => {}
         }
         let should_close = {
             let Some(runtime) = self.windows.get_mut(&window_id) else {
