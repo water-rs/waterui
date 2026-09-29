@@ -3505,7 +3505,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=ba37c37a9280e398a1fb997b45ef75c8e924dc19#ba37c37a9280e398a1fb997b45ef75c8e924dc19"
+source = "git+https://github.com/water-rs/hydrolysis?rev=481c20cc44bb64a764f472a775af8a6714831712#481c20cc44bb64a764f472a775af8a6714831712"
 dependencies = [
  "accesskit",
  "async-task",
@@ -3514,10 +3514,12 @@ dependencies = [
  "icu_properties",
  "js-sys",
  "keyboard-types",
+ "kurbo",
  "lru 0.18.5",
  "nami",
  "native-executor",
  "parley",
+ "peniko",
  "png",
  "pollster 1.0.1",
  "rayon",
@@ -10602,7 +10604,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=40c63c94742d0abbd61719ad1754121be2670d01#40c63c94742d0abbd61719ad1754121be2670d01"
+source = "git+https://github.com/water-rs/map-gpu?rev=13e199d255a11637e03341e0a947447851eff85e#13e199d255a11637e03341e0a947447851eff85e"
 dependencies = [
  "blocking",
  "bytemuck",
