@@ -832,6 +832,14 @@ impl SurfaceProvider for RecoveringSurface {
         self.resize_count += 1;
         self.inner.resize(width, height);
     }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.inner.gpu_context_id()
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        self.inner.shared_device()
+    }
 }
 
 /// Regression test for water-rs/hydrolysis#228: an `on_change` handler fed by

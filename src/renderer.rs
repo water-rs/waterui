@@ -338,6 +338,15 @@ pub struct HydrolysisRenderer {
     /// The scene renderer embedded GPU surfaces share, for the same reason: its
     /// pipelines belong to the device rather than to any one scene.
     scene_renderer: Arc<SharedSceneRenderer>,
+    /// Engine window surfaces by GPU-context id: the `TextureTarget` surface,
+    /// the stable mounts under it and the resource registrations its content
+    /// names. Entries whose device was reported lost are pruned at the next
+    /// presented frame.
+    cherenkov_windows: rustc_hash::FxHashMap<u64, crate::renderer::render::CherenkovWindow>,
+    /// The engine's frame scheduling answer from the last presented frame.
+    /// The pump follows it: `Next::Idle` means no animation is running and
+    /// the display link may sleep.
+    engine_next: Option<cherenkov::Next>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
     /// Whether this frame's window pass was handed straight to a GPU surface
@@ -579,6 +588,8 @@ impl HydrolysisRenderer {
             host_redraw_handle: None,
             shader_cache: Arc::new(WgslModuleCache::new()),
             scene_renderer: Arc::new(SharedSceneRenderer::new(SceneEngine::for_adapter(adapter))),
+            cherenkov_windows: rustc_hash::FxHashMap::default(),
+            engine_next: None,
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
             frame_direct_gpu_surfaces: 0,

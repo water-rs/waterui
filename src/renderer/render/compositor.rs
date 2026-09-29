@@ -1,6 +1,7 @@
 use super::*;
 use crate::renderer::color::TargetEncoding;
 use core::num::NonZeroU32;
+use kurbo::Shape;
 #[cfg(hydrolysis_macos_system_webview)]
 use objc2::rc::Retained;
 #[cfg(hydrolysis_macos_system_webview)]
@@ -439,6 +440,8 @@ pub(crate) enum GpuSurfaceSource {
 #[derive(Clone)]
 pub(crate) struct GpuSurfaceLayer {
     pub(crate) source: GpuSurfaceSource,
+    /// The mount identity: which visual node's surface this frame presents.
+    pub(crate) key: crate::renderer::retained::RenderKey,
     pub(crate) transform: kurbo::Affine,
     pub(crate) bounds: kurbo::Rect,
     /// The surface's rect in window hit-test space, used to project the
@@ -483,6 +486,10 @@ pub(crate) struct HybridComposition {
 }
 
 pub(crate) struct PreparedGpuSurfaceLayer {
+    /// The frame's produced plane, mounted as engine external-frame content.
+    pub(crate) texture: wgpu::Texture,
+    /// The plane's format; selects the external frame's decode.
+    pub(crate) output_format: wgpu::TextureFormat,
     pub(crate) view: wgpu::TextureView,
     pub(crate) uniform_bytes: [u8; 80],
     pub(crate) needs_redraw: bool,
@@ -502,6 +509,21 @@ pub struct HydrolysisRenderTarget<'a> {
     pub queue: &'a wgpu::Queue,
     /// Reports this device lost; taken when the device was opened.
     pub device_loss: waterui_graphics::DeviceLoss,
+    /// The device-creation chain the frame's handles belong to — the engine
+    /// pool key.
+    pub gpu_context_id: u64,
+    /// All four handles of that chain; the shared engine requires them to
+    /// come from the same creation chain.
+    pub shared_device: cherenkov_gpu::interop::SharedDevice,
+    /// Device pixels per logical unit on the display the target shows on.
+    pub display_scale: f64,
+    /// HDR headroom the display reaches; 1.0 for SDR.
+    pub headroom: f32,
+    /// `true` for the renderer's mounted output — its engine surface and
+    /// mounts persist across frames, keyed by [`Self::gpu_context_id`].
+    /// `false` for a transient target (a subtree capture): it renders through
+    /// a short-lived engine surface whose mounts die with the call.
+    pub persistent: bool,
     pub texture: Option<&'a wgpu::Texture>,
     pub view: &'a wgpu::TextureView,
     pub format: wgpu::TextureFormat,
@@ -1084,6 +1106,12 @@ impl EmbeddedGpuSurfaceRuntime {
         ];
 
         PreparedGpuSurfaceLayer {
+            texture: self
+                .output_texture
+                .as_ref()
+                .expect("hydrolysis embedded GpuSurface missing output texture")
+                .clone(),
+            output_format,
             view,
             uniform_bytes: encode_compositor_uniform(corners, false),
             needs_redraw,
@@ -2114,11 +2142,22 @@ impl HydrolysisRenderer {
     /// views and still composites, but submits no vello scene renders or
     /// masks — on a software rasterizer each of those submissions is a real
     /// device-bound frame. Capture and presented frames always pass `true`.
+    /// [`Self::render_scene_to_surface`] with the target's composite alpha
+    /// convention made explicit: `premultiply_alpha` selects the alpha mode the
+    /// presenter writes into the acquired frame — premultiplied for an OS
+    /// surface configured `CompositeAlphaMode::PreMultiplied`, straight for
+    /// offscreen/readback targets.
+    ///
+    /// `rasterize_scene_layers` skips only re-installing segment content: a
+    /// frame whose pixels no consumer can read still mounts every layer and
+    /// ticks embedded GpuSurface views, but leaves each segment showing the
+    /// content it already carries. Capture and presented frames always pass
+    /// `true`.
     pub(crate) fn render_scene_to_surface_with_alpha_mode(
         &mut self,
         target: HydrolysisRenderTarget<'_>,
         premultiply_alpha: bool,
-        rasterize_vello_layers: bool,
+        rasterize_scene_layers: bool,
     ) {
         assert!(
             matches!(
@@ -2137,287 +2176,101 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(target.device, target.queue, 0);
         self.frame_direct_gpu_surfaces = 0;
-        // The scene the compositor samples is always sRGB. Whether it should be
-        // decoded depends on what the attachment does next, which is the
-        // target's format and nothing else — hard-coding it here is what made
-        // every colour come out as `srgb_to_linear` of itself (#233).
-        let encoding = TargetEncoding::of(target.format);
-        let fullscreen_uniform = encode_compositor_uniform(
-            [[-1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0]],
-            encoding.compositor_decodes_source(),
+
+        let render_layers = core::mem::take(&mut self.compositor.render_layers);
+        let transient = self.transient_scene.take().filter(scene_has_content);
+
+        // The shared engine for this frame's device context; `wake` is the
+        // host's display-link wake the engine's redraw callback drives.
+        let host_wake = self.host_redraw_handle.clone();
+        let engine = crate::engine::shared_engine(
+            target.gpu_context_id,
+            target.shared_device.clone(),
+            move || {
+                if let Some(handle) = &host_wake {
+                    handle.request_redraw();
+                }
+            },
         );
 
-        // Present the previous frame's verified content first: its vello
-        // renders had a whole present interval to finish, so resolving their
-        // readbacks costs a device poll — steady-state frames never block on
-        // the GPU.
-        let deferred_presented =
-            self.drain_deferred_legacy_frame(&target, encoding, premultiply_alpha);
-
-        let mut render_layers = core::mem::take(&mut self.compositor.render_layers);
-        let transient_layer_count =
-            if let Some(scene) = self.transient_scene.take().filter(scene_has_content) {
-                render_layers.push(RenderLayer::Vello(scene));
-                1
-            } else {
-                0
-            };
-        if render_layers.is_empty() {
-            #[cfg(feature = "frame-profile")]
-            self.gpu_profile_mark(target.device, target.queue, 1);
-            self.clear_target_surface(
-                target.device,
-                target.queue,
-                target.view,
-                target.base_color,
-                encoding,
-                premultiply_alpha,
-            );
-            #[cfg(feature = "frame-profile")]
-            self.gpu_profile_mark(target.device, target.queue, 2);
-            return;
-        }
-        // The last condition is the one the layer could not answer for itself:
-        // the format a view is set up for is fixed for its lifetime (see
-        // [`select_embedded_surface_format`]), so it may only be handed the
-        // window's own texture when that texture already carries that format.
-        // Anything else would re-run `GpuView::setup` on every switch between
-        // this path and the composited one.
-        if let [RenderLayer::GpuSurface(layer)] = render_layers.as_slice()
-            && layer.direct_to_target
-            && let GpuSurfaceSource::Owned(runtime) = &layer.source
-            && runtime.borrow().output_format_for(target.format) == target.format
-        {
-            let texture = target
-                .texture
-                .expect("hydrolysis direct GpuSurface render requires target texture");
-            // The surface's pixel size comes from the same transformed bounds
-            // the direct decision was taken on, not from the window: the two
-            // agree by construction, and deriving it here is what makes that
-            // checkable.
-            let (width, height) = direct_target_size(layer.transform, layer.bounds);
-            assert!(
-                width == target.width && height == target.height,
-                "hydrolysis direct GpuSurface layer covers {width}x{height} device pixels but its \
-                 window target is {}x{}",
-                target.width,
-                target.height
-            );
-            #[cfg(feature = "frame-profile")]
-            self.gpu_profile_mark(target.device, target.queue, 1);
-            let direct_target = DirectGpuSurfaceTarget {
-                device: target.device,
-                queue: target.queue,
-                texture,
-                view: target.view.clone(),
-                format: target.format,
-                width,
-                height,
-                scale: layer_device_scale(layer.transform),
-                pointer: project_pointer_into_surface(
-                    self.hit_test.pointer_position,
-                    self.hit_test.pointer_press_origin,
-                    layer.hit_rect,
-                    width,
-                    height,
-                ),
-                now: self.frame_instant(),
-            };
-            if !EmbeddedGpuSurfaceRuntime::ensure_setup(
-                runtime,
-                self.embedded_gpu_surface_setup(
-                    target.adapter,
-                    target.device,
-                    target.queue,
-                    target.device_loss.clone(),
-                ),
-                self.frame_signals(),
-                target.format,
-            ) {
-                self.clear_target_surface(
-                    target.device,
-                    target.queue,
-                    target.view,
-                    target.base_color,
-                    encoding,
-                    premultiply_alpha,
-                );
-                #[cfg(feature = "frame-profile")]
-                self.gpu_profile_mark(target.device, target.queue, 2);
-                self.compositor.render_layers = render_layers;
-                return;
-            }
-            self.frame_direct_gpu_surfaces = 1;
-            let needs_redraw = runtime.borrow_mut().render_direct_to_target(direct_target);
-            #[cfg(feature = "frame-profile")]
-            self.gpu_profile_mark(target.device, target.queue, 2);
-            self.compositor.render_layers = render_layers;
-            if needs_redraw {
-                self.request_redraw();
-            }
-            return;
-        }
-        let mut needs_redraw = false;
-
-        // Phase 1 — prepare every layer's content and mask textures. All the
-        // per-layer content work (parallel Vello encodes, embedded GpuSurface
-        // renders, mask rasterization) lands here, before any composite state
-        // is touched.
-        //
-        // C2: when there are 2+ independent Vello layers, encode them to
-        // per-layer pooled textures across CPU cores up front; the loop below
-        // consumes the results in painter's order. A single Vello layer keeps
-        // the sequential path (nothing to parallelize), and GpuSurface layers
-        // are unaffected.
-        let mut encoded_legacy: Vec<
-            Option<(
-                crate::engine::LegacyRenderer,
-                PooledLayerTexture,
-                Option<crate::engine::LegacyBumpReadback>,
-            )>,
-        > = (0..render_layers.len()).map(|_| None).collect();
-        // Deferred bump-buffer verification: every legacy render submitted
-        // this phase stashes its readback ticket here and is resolved at the
-        // start of next frame, before the composite pass can sample its
-        // texture — a completed render never waits on the GPU.
-        let mut pending_pooled: Vec<(crate::engine::LegacyRenderer, PendingLegacyRender)> =
-            Vec::new();
-        let mut pending_main: Vec<PendingLegacyRender> = Vec::new();
-        {
-            let legacy_indices: Vec<usize> = render_layers
-                .iter()
-                .enumerate()
-                .filter_map(|(index, layer)| match layer {
-                    RenderLayer::Vello(_) => rasterize_vello_layers.then_some(index),
-                    RenderLayer::GpuSurface(_) => None,
-                    #[cfg(hydrolysis_macos_system_webview)]
-                    RenderLayer::NativeView(_) => {
-                        panic!("Hydrolysis native views require hybrid window composition")
-                    }
-                })
-                .collect();
-            if legacy_indices.len() > 1 {
-                let legacy_scenes: Vec<(usize, &Recording, PooledLayerTexture)> = legacy_indices
-                    .iter()
-                    .map(|&index| {
-                        let leased = self.compositor.acquire_layer_texture(
-                            target.device,
-                            target.width,
-                            target.height,
-                        );
-                        let RenderLayer::Vello(scene) = &render_layers[index] else {
-                            panic!("hydrolysis renderer: legacy layer index changed type");
-                        };
-                        (index, scene, leased)
-                    })
-                    .collect();
-                // `self.pipeline_cache()` borrows all of `self`; hoist it so
-                // the counter borrow below stays field-disjoint.
-                let pipeline_cache = self.pipeline_cache();
-                for (index, renderer, leased, readback) in encode_legacy_layers_parallel(
-                    &self.compositor.legacy_renderer_pool,
-                    PoolGpu {
-                        device: target.device,
-                        queue: target.queue,
-                        backend: target.adapter.get_info().backend,
-                        pipeline_cache,
-                    },
-                    legacy_scenes,
-                    target.width,
-                    target.height,
-                    // Direct `core` field path: `self.state` would resolve
-                    // through `DerefMut` and mutably borrow all of `*self`,
-                    // colliding with the pool borrow above.
-                    &mut self.core.state.counters,
-                ) {
-                    encoded_legacy[index] = Some((renderer, leased, readback));
-                }
-            }
-        }
-
-        let mut ready: Vec<ReadyLayerComposite> = Vec::with_capacity(render_layers.len());
-        for (layer_index, layer) in render_layers.iter().enumerate() {
-            match layer {
-                RenderLayer::Vello(scene) => {
-                    if !rasterize_vello_layers {
-                        continue;
-                    }
-                    tracing::trace!(
-                        layer_index,
-                        paths = scene.legacy_scene().encoding().n_paths,
-                        segments = scene.legacy_scene().encoding().n_path_segments,
-                        "compositing Hydrolysis Vello layer"
-                    );
-                    let leased = match encoded_legacy[layer_index].take() {
-                        Some((renderer, leased, readback)) => {
-                            pending_pooled.push((
-                                renderer,
-                                PendingLegacyRender {
-                                    source: DeferredLegacySource::Layer(Box::new(scene.clone())),
-                                    view: leased.view.clone(),
-                                    readback,
-                                },
-                            ));
-                            leased
-                        }
-                        None => {
-                            let (leased, readback) = self.render_legacy_layer_to_texture(
-                                target.device,
-                                target.queue,
-                                scene,
-                                target.width,
-                                target.height,
-                            );
-                            pending_main.push(PendingLegacyRender {
-                                source: DeferredLegacySource::Layer(Box::new(scene.clone())),
-                                view: leased.view.clone(),
-                                readback,
-                            });
-                            leased
-                        }
-                    };
-                    let mask_view = self.default_compositor_mask_view(
+        // One window surface per GPU context this renderer presents through.
+        // Entries whose device was reported lost are dropped — their engine
+        // surface, mounts and resources all die with the dead device — and a
+        // context change mid-session replaces the previous window's mount
+        // state with a fresh one. The map leaves `self` for the frame so the
+        // layer walk may borrow the renderer's other state.
+        let mut windows = core::mem::take(&mut self.cherenkov_windows);
+        windows.retain(|_, window| !window.device_loss.is_lost());
+        let backend = target.adapter.get_info().backend;
+        let context_id = target.gpu_context_id;
+        // A persistent output keeps its window (and mounts) across frames; a
+        // transient target's window lives for this call only — its mounts and
+        // engine surface are created fresh and dropped with the capture.
+        let mut transient_window = None;
+        let window = if target.persistent {
+            windows
+                .entry(context_id)
+                .or_insert_with(|| {
+                    CherenkovWindow::new(
+                        engine.clone(),
                         target.device,
-                        target.queue,
-                        target.format,
-                    );
-                    ready.push(ReadyLayerComposite {
-                        layer_view: leased.view.clone(),
-                        layer_texture: Some(leased),
-                        mask_view,
-                        mask_texture: None,
-                        uniform_bytes: fullscreen_uniform,
-                    });
+                        backend,
+                        (target.width, target.height),
+                        target.device_loss.clone(),
+                    )
+                })
+        } else {
+            transient_window.insert(CherenkovWindow::new(
+                engine.clone(),
+                target.device,
+                backend,
+                (target.width, target.height),
+                target.device_loss.clone(),
+            ))
+        };
+
+        // The frame's mount plan: the ordered slots under the surface root,
+        // the content each slot installs, and the placement/ancestry edits
+        // keyed mounts carry.
+        let mut order: Vec<crate::renderer::retained::MountSlot> =
+            Vec::with_capacity(render_layers.len() + 1);
+        let mut live_keys: rustc_hash::FxHashSet<crate::renderer::retained::RenderKey> =
+            rustc_hash::FxHashSet::default();
+        let mut installs: Vec<(
+            crate::renderer::retained::MountSlot,
+            cherenkov::LayerContent<cherenkov_gpu::Gpu>,
+        )> = Vec::new();
+        let mut ancestries: Vec<(
+            crate::renderer::retained::RenderKey,
+            Vec<crate::renderer::retained::mount::AncestryScope>,
+        )> = Vec::new();
+        let mut placements: Vec<(crate::renderer::retained::RenderKey, kurbo::Affine)> =
+            Vec::new();
+        let mut needs_redraw = false;
+        let mut segment_index = 0usize;
+
+        for layer in &render_layers {
+            match layer {
+                RenderLayer::Vello(recording) => {
+                    let slot = crate::renderer::retained::MountSlot::Segment(segment_index);
+                    segment_index += 1;
+                    order.push(slot);
+                    if rasterize_scene_layers {
+                        let content = recording.to_content(&mut window.resources);
+                        installs.push((slot, content.into()));
+                    }
                 }
-                // Embedded GPU surfaces render serially by design: `GpuView` is a
-                // user-facing, main-thread contract (`!Send` setup/render futures,
-                // `&mut Environment`), so parallelizing this loop would force
-                // `Send` onto every user renderer. Vello layers get their
-                // parallelism in `encode_legacy_layers_parallel` instead.
+                // Embedded GPU surfaces render serially by design: `GpuView`
+                // is a user-facing, main-thread contract (`!Send` setup/render
+                // futures, `&mut Environment`), so parallelizing this loop
+                // would force `Send` onto every user renderer.
                 RenderLayer::GpuSurface(layer) => {
-                    tracing::trace!(
-                        layer_index,
-                        bounds = ?layer.bounds,
-                        transform = ?layer.transform,
-                        "compositing Hydrolysis GPU surface layer"
-                    );
-                    // A transform that collapses to zero area — a scale
-                    // animation passing through zero — projects the surface
-                    // onto no pixels, so there is nothing to composite and no
-                    // device scale the renderer could draw against.
                     if layer_device_scale(layer.transform) <= 0.0 {
                         continue;
                     }
-                    let embedded_target = EmbeddedLayerTarget {
-                        width: target.width,
-                        height: target.height,
-                        transform: layer.transform,
-                        bounds: layer.bounds,
-                        hit_rect: layer.hit_rect,
-                        pointer_position: self.hit_test.pointer_position,
-                        pointer_press_origin: self.hit_test.pointer_press_origin,
-                        now: self.frame_instant(),
-                    };
+                    let slot = crate::renderer::retained::MountSlot::Keyed(layer.key);
+                    order.push(slot);
+                    live_keys.insert(layer.key);
                     let GpuSurfaceSource::Owned(runtime) = &layer.source;
                     let output_format = runtime.borrow().output_format_for(target.format);
                     if !EmbeddedGpuSurfaceRuntime::ensure_setup(
@@ -2437,152 +2290,193 @@ impl HydrolysisRenderer {
                     let prepared = runtime.borrow_mut().prepare_layer(
                         target.device,
                         target.queue,
-                        embedded_target,
+                        EmbeddedLayerTarget {
+                            width: target.width,
+                            height: target.height,
+                            transform: layer.transform,
+                            bounds: layer.bounds,
+                            hit_rect: layer.hit_rect,
+                            pointer_position: self.hit_test.pointer_position,
+                            pointer_press_origin: self.hit_test.pointer_press_origin,
+                            now: self.frame_instant,
+                        },
                     );
                     if prepared.needs_redraw {
                         needs_redraw = true;
                     }
-                    let (mask_view, mask_texture) =
-                        if !rasterize_vello_layers || layer.active_layers.is_empty() {
-                            (
-                                self.default_compositor_mask_view(
-                                    target.device,
-                                    target.queue,
-                                    target.format,
-                                ),
-                                None,
-                            )
-                        } else {
-                            let (leased, readback) = self.render_active_layers_mask_to_texture(
-                                target.device,
-                                target.queue,
-                                target.width,
-                                target.height,
-                                &layer.active_layers,
-                            );
-                            pending_main.push(PendingLegacyRender {
-                                source: DeferredLegacySource::Mask(layer.active_layers.clone()),
-                                view: leased.view.clone(),
-                                readback,
-                            });
-                            (leased.view.clone(), Some(leased))
-                        };
-                    ready.push(ReadyLayerComposite {
-                        layer_view: prepared.view,
-                        layer_texture: None,
-                        mask_view,
-                        mask_texture,
-                        uniform_bytes: prepared.uniform_bytes,
-                    });
+                    let color = if matches!(
+                        prepared.output_format,
+                        wgpu::TextureFormat::Rgba16Float
+                    ) {
+                        cherenkov_gpu::interop::FrameColor::LINEAR_P3
+                    } else {
+                        cherenkov_gpu::interop::FrameColor::SRGB
+                    };
+                    let frame = cherenkov_gpu::interop::ExternalFrame::rgb(
+                        prepared.texture.clone(),
+                        cherenkov_gpu::interop::RgbAlpha::Premultiplied,
+                        color,
+                    )
+                    .expect("hydrolysis renderer: embedded surface texture rejected as a frame plane");
+                    installs.push((slot, engine.external_frame(frame).into()));
+                    placements.push((layer.key, gpu_frame_transform(layer, &prepared.texture)));
+                    ancestries.push((layer.key, ancestry_scopes(&layer.active_layers)));
                 }
                 #[cfg(hydrolysis_macos_system_webview)]
                 RenderLayer::NativeView(_) => {
-                    panic!("Hydrolysis native views require hybrid window composition")
+                    panic!(
+                        "hydrolysis renderer: native views are not supported on the \
+                         Cherenkov output path; the hydrolysis_macos_system_webview \
+                         gate is blocked until the platform-host integration lands \
+                         (water-rs/hydrolysis#205)"
+                    )
                 }
             }
         }
+        if let Some(recording) = &transient {
+            order.push(crate::renderer::retained::MountSlot::Overlay);
+            installs.push((
+                crate::renderer::retained::MountSlot::Overlay,
+                recording.to_content(&mut window.resources).into(),
+            ));
+        }
 
-        // Phase-1/phase-2 seam: the verification deferred last frame already
-        // presented at the top of this call; this frame's renders defer the
-        // same way. When nothing was submitted to legacy verification at all
-        // (the CPU path, or a frame without vello content) there is no
-        // readback to wait on and this frame composites immediately — no
-        // added latency.
-        let has_pending = pending_main
-            .iter()
-            .any(|pending| pending.readback.is_some())
-            || pending_pooled
-                .iter()
-                .any(|(_, pending)| pending.readback.is_some());
+        window.surface.resize((target.width, target.height));
+        window.surface.display(target.display_scale, target.headroom);
+        window
+            .surface
+            .clear_color(crate::renderer::recording::working_color(target.base_color));
+
+        let installs_len = installs.len();
+        let mounts = &mut window.mounts;
+        let surface = window.surface.engine_surface();
+        surface.update(|tx| {
+            for (slot, content) in installs {
+                let layer = mounts.layer(surface, slot);
+                tx[layer].content(content);
+            }
+            for (key, scopes) in ancestries {
+                mounts.set_ancestry(surface, tx, key, &scopes);
+            }
+            for (key, transform) in placements {
+                let layer = mounts.layer(
+                    surface,
+                    crate::renderer::retained::MountSlot::Keyed(key),
+                );
+                tx[layer].transform(transform);
+            }
+            mounts.sync_order(surface, tx, &order, &live_keys);
+        });
+        let window = transient_window.as_mut().unwrap_or_else(|| {
+            windows
+                .get_mut(&context_id)
+                .expect("hydrolysis renderer: window surface lost within a frame")
+        });
+        self.state.counters.recorded_view_contents += u64::try_from(installs_len).unwrap_or(u64::MAX);
+        let (created, removed) = window.mounts.take_frame_stats();
+        self.state.counters.layer_creations += created;
+        self.state.counters.layer_removals += removed;
 
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(target.device, target.queue, 1);
 
-        if has_pending {
-            // Phase 2 is deferred by one frame: verification resolves at the
-            // start of the next frame, then this `ready` list composites.
-            #[cfg(hydrolysis_winit)]
-            let watch_submissions = pending_main
-                .iter()
-                .chain(pending_pooled.iter().map(|(_, pending)| pending))
-                .filter_map(|pending| {
-                    pending
-                        .readback
-                        .as_ref()
-                        .map(crate::engine::LegacyBumpReadback::submission_index)
-                })
-                .collect();
-            let mut deferred = DeferredLegacyFrame {
-                ready,
-                pooled: pending_pooled,
-                main: pending_main,
-                surface_size: (target.width, target.height),
-                presented: false,
-                #[cfg(hydrolysis_winit)]
-                watch_submissions,
-                stashed_at: Instant::now(),
-            };
-            if !deferred_presented {
-                // Bootstrap: nothing verified exists to sample — resolving
-                // this frame's tickets in-frame is the stream's one wait
-                // (bounded, once per burst, not a per-frame cost). Presenting
-                // cleared colour or an unverified frame are both wrong.
-                self.verify_deferred_legacy(target.device, target.queue, &mut deferred);
-                if deferred.ready.is_empty() {
-                    self.clear_target_surface(
-                        target.device,
-                        target.queue,
-                        target.view,
-                        target.base_color,
-                        encoding,
-                        premultiply_alpha,
-                    );
-                } else {
-                    self.composite_ready_layers(&target, &deferred.ready, premultiply_alpha);
-                }
-                // Its content just reached the surface in this frame — mark
-                // it presented so no settle pass re-presents it; the next
-                // frame still composites the verified output at its top.
-                deferred.presented = true;
-            }
-            // Stashing the just-verified frame too lets frame two defer
-            // without another in-frame wait: its drain resolves instantly,
-            // recomposites the same content, and hands the pipeline over.
-            self.compositor.deferred_legacy_frame = Some(deferred);
-        } else {
-            // Phase 2 — one render pass, one submit, painter's order.
-            if ready.is_empty() {
-                self.clear_target_surface(
-                    target.device,
-                    target.queue,
-                    target.view,
-                    target.base_color,
-                    encoding,
-                    premultiply_alpha,
-                );
-            } else {
-                self.composite_ready_layers(&target, &ready, premultiply_alpha);
-            }
-            for layer in ready {
-                if let Some(leased) = layer.layer_texture {
-                    self.compositor.release_layer_texture(leased);
-                }
-                if let Some(leased) = layer.mask_texture {
-                    self.compositor.release_layer_texture(leased);
-                }
-            }
-        }
+        let next = window.surface.render();
+        self.engine_next = Some(next);
+        let texture = target
+            .texture
+            .expect("hydrolysis renderer: surface presentation requires the acquired texture");
+        window.surface.present_into(
+            target.device,
+            target.queue,
+            texture,
+            premultiply_alpha,
+            target.headroom,
+        );
+
         #[cfg(feature = "frame-profile")]
         self.gpu_profile_mark(target.device, target.queue, 2);
-        for _ in 0..transient_layer_count {
-            render_layers.pop();
-        }
-        self.compositor.render_layers = render_layers;
 
+        self.compositor.render_layers = render_layers;
+        self.cherenkov_windows = windows;
         if needs_redraw {
             self.request_redraw();
         }
     }
+}
+
+/// One window surface's engine-side state: the `TextureTarget` surface, the
+/// stable mounts the frame's `RenderLayer`s show through, and the resource
+/// registrations recorded content names.
+pub(crate) struct CherenkovWindow {
+    pub(crate) surface: crate::engine::CherenkovSurface,
+    pub(crate) mounts: crate::renderer::retained::Mounts,
+    pub(crate) resources: crate::renderer::recording::SceneResources,
+    /// The device-loss token taken when this window's context was opened; a
+    /// dead token prunes the entry so a recovered context gets a fresh mount
+    /// set instead of reusing a surface on a dead device.
+    device_loss: waterui_graphics::DeviceLoss,
+}
+
+impl CherenkovWindow {
+    pub(crate) fn new(
+        engine: Rc<crate::engine::GpuEngine>,
+        device: &wgpu::Device,
+        backend: wgpu::Backend,
+        size: (u32, u32),
+        device_loss: waterui_graphics::DeviceLoss,
+    ) -> Self {
+        Self {
+            surface: crate::engine::CherenkovSurface::new(
+                engine.clone(),
+                device,
+                backend,
+                size,
+            ),
+            mounts: crate::renderer::retained::Mounts::new(),
+            resources: crate::renderer::recording::SceneResources::new(engine),
+            device_loss,
+        }
+    }
+}
+
+/// The placement transform of an embedded surface's produced texture: the
+/// layer's own transform positions its bounds, then the texture's pixel
+/// extent is normalised onto those bounds so engine sampling maps one
+/// produced pixel onto one bound area regardless of rounding.
+fn gpu_frame_transform(layer: &GpuSurfaceLayer, texture: &wgpu::Texture) -> kurbo::Affine {
+    let size = texture.size();
+    assert!(
+        size.width > 0 && size.height > 0,
+        "hydrolysis renderer: an embedded surface produced an empty texture"
+    );
+    layer.transform
+        * kurbo::Affine::translate((layer.bounds.x0, layer.bounds.y0))
+        * kurbo::Affine::scale_non_uniform(
+            layer.bounds.width() / f64::from(size.width),
+            layer.bounds.height() / f64::from(size.height),
+        )
+}
+
+/// The clip/opacity ancestry a surface layer is drawn under, as mount
+/// scopes: each active scene layer becomes one scope carrying its
+/// silhouette transformed into root space and its alpha.
+fn ancestry_scopes(
+    active_layers: &[ActiveSceneLayer],
+) -> Vec<crate::renderer::retained::mount::AncestryScope> {
+    active_layers
+        .iter()
+        .map(|layer| {
+            let mut path = match &layer.shape {
+                LayerShape::Rect(rect) => rect.to_path(cherenkov::PATH_TOLERANCE),
+                LayerShape::RoundedRect { path, .. } | LayerShape::Path(path) => path.clone(),
+            };
+            path.apply_affine(layer.transform);
+            crate::renderer::retained::mount::AncestryScope {
+                clip: Some(cherenkov::ShapeData::of(&path)),
+                opacity: layer.alpha,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

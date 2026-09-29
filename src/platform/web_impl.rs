@@ -24,7 +24,9 @@ struct PendingResize {
 }
 
 pub struct BrowserSurface {
-    _instance: wgpu::Instance,
+    instance: wgpu::Instance,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
@@ -82,7 +84,8 @@ impl BrowserSurface {
         surface.configure(&device, &config);
 
         Self {
-            _instance: instance,
+            instance,
+            context_id: super::next_gpu_context_id(),
             surface,
             adapter,
             device,
@@ -143,6 +146,19 @@ impl SurfaceProvider for BrowserSurface {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        cherenkov_gpu::interop::SharedDevice {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
     }
 }
 

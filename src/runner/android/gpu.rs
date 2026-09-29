@@ -82,6 +82,8 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 
 struct AndroidGpuContextInner {
     instance: wgpu::Instance,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -157,7 +159,8 @@ impl AndroidGpuContext {
         let required_limits = crate::platform::required_device_limits(&adapter);
         let required_features =
             waterui_graphics::shared_context::required_media_features(adapter.features())
-                | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
+                | (adapter.features()
+                    & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
@@ -177,6 +180,7 @@ impl AndroidGpuContext {
         Ok(Self {
             inner: Arc::new(AndroidGpuContextInner {
                 instance,
+                context_id: crate::platform::next_gpu_context_id(),
                 adapter,
                 device,
                 queue,
@@ -446,6 +450,20 @@ impl SurfaceProvider for AndroidSurface {
             .as_ref()
             .map(|config| config.format)
             .unwrap_or(wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.gpu.inner.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        let inner = &*self.gpu.inner;
+        cherenkov_gpu::interop::SharedDevice {
+            instance: inner.instance.clone(),
+            adapter: inner.adapter.clone(),
+            device: inner.device.clone(),
+            queue: inner.queue.clone(),
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {

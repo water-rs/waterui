@@ -606,6 +606,7 @@ impl HydrolysisRenderer {
     pub(crate) fn push_gpu_surface_layer(
         &mut self,
         source: GpuSurfaceSource,
+        key: crate::renderer::retained::RenderKey,
         transform: kurbo::Affine,
         bounds: kurbo::Rect,
         hit_rect: kurbo::Rect,
@@ -640,6 +641,7 @@ impl HydrolysisRenderer {
             .render_layers
             .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
                 source,
+                key,
                 transform,
                 bounds,
                 hit_rect,

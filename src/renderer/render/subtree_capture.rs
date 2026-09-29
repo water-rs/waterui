@@ -409,11 +409,18 @@ impl HydrolysisRenderer {
             kurbo::Affine::IDENTITY,
         );
         let device_loss = self.state().frame_device_loss().clone();
+        let gpu_context_id = self.state().frame_gpu_context_id();
+        let shared_device = self.state().frame_shared_device().clone();
         self.render_scene_to_texture(HydrolysisRenderTarget {
             adapter,
             device,
             queue,
             device_loss,
+            gpu_context_id,
+            shared_device,
+            display_scale: 1.0,
+            headroom: 1.0,
+            persistent: false,
             texture: Some(&texture.texture),
             view: &texture.view,
             format: wgpu::TextureFormat::Rgba8Unorm,

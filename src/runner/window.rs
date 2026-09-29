@@ -472,10 +472,12 @@ pub(super) fn flush_deferred_window<P: GpuSurfaceWindow>(
     capture_snapshot: bool,
 ) -> RenderWindowResult {
     let clear_color = window_clear_color(&runtime.window, env);
+    let scale_factor = runtime.platform.scale_factor();
     let render_result = render_to_surface(
         &mut runtime.renderer,
         runtime.platform.surface(),
         clear_color,
+        scale_factor,
         capture_snapshot,
         |renderer, target, premultiply_alpha| {
             renderer.flush_deferred_legacy_frame_to_surface(target, premultiply_alpha);
@@ -649,6 +651,8 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
         surface.device(),
         surface.queue(),
         surface.device_loss(),
+        surface.gpu_context_id(),
+        &surface.shared_device(),
     );
 
     let pump_started_at = Instant::now();
@@ -808,6 +812,7 @@ fn render_to_surface(
     renderer: &mut HydrolysisRenderer,
     surface: &mut dyn crate::platform::SurfaceProvider,
     clear_color: peniko::Color,
+    display_scale: f64,
     capture_snapshot: bool,
     render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::HydrolysisRenderTarget<'_>, bool),
 ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
@@ -825,6 +830,11 @@ fn render_to_surface(
             device: surface.device(),
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
+            gpu_context_id: surface.gpu_context_id(),
+            shared_device: surface.shared_device(),
+            display_scale,
+            headroom: surface.display_headroom(),
+            persistent: true,
             texture: Some(frame.texture()),
             view: frame.view(),
             format,
@@ -1004,6 +1014,7 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                 snapshot: None,
             };
             let mut result = Ok(());
+            let scale_factor = platform.scale_factor();
             for (index, segment) in composition.segments.iter_mut().enumerate() {
                 let transient_scene = (index + 1 == segment_count)
                     .then(|| composition.transient_scene.take())
@@ -1022,6 +1033,7 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                     &mut runtime.renderer,
                     surface,
                     segment_clear_color,
+                    scale_factor,
                     false,
                     |renderer, target, premultiply_alpha| {
                         renderer.render_hybrid_segment_to_surface(
@@ -1051,10 +1063,12 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
             {
                 platform.clear_hybrid_composition();
             }
+            let scale_factor = runtime.platform.scale_factor();
             render_to_surface(
                 &mut runtime.renderer,
                 runtime.platform.surface(),
                 clear_color,
+                scale_factor,
                 capture_snapshot,
                 |renderer, target, premultiply_alpha| {
                     renderer.render_scene_to_surface_with_alpha_mode(
@@ -1067,19 +1081,23 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
         };
 
         #[cfg(not(hydrolysis_macos_system_webview))]
-        let render_result = render_to_surface(
-            &mut runtime.renderer,
-            runtime.platform.surface(),
-            clear_color,
-            capture_snapshot,
-            |renderer, target, premultiply_alpha| {
-                renderer.render_scene_to_surface_with_alpha_mode(
-                    target,
-                    premultiply_alpha,
-                    reader.rasterizes(),
-                );
-            },
-        );
+        let render_result = {
+            let scale_factor = runtime.platform.scale_factor();
+            render_to_surface(
+                &mut runtime.renderer,
+                runtime.platform.surface(),
+                clear_color,
+                scale_factor,
+                capture_snapshot,
+                |renderer, target, premultiply_alpha| {
+                    renderer.render_scene_to_surface_with_alpha_mode(
+                        target,
+                        premultiply_alpha,
+                        reader.rasterizes(),
+                    );
+                },
+            )
+        };
 
         #[cfg(hydrolysis_macos_system_webview)]
         if let Some(composition) = hybrid_composition.take() {
@@ -1327,7 +1345,7 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
 
     runtime.request_refresh();
     let scale_factor = runtime.platform.scale_factor();
-    let (width, height, adapter, device, queue, device_loss) = {
+    let (width, height, adapter, device, queue, device_loss, gpu_context_id, shared_device) = {
         let surface = runtime.platform.surface();
         let (width, height) = surface.size();
         (
@@ -1337,11 +1355,18 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
             surface.device().clone(),
             surface.queue().clone(),
             surface.device_loss().clone(),
+            surface.gpu_context_id(),
+            surface.shared_device(),
         )
     };
-    runtime
-        .renderer
-        .set_frame_resources(&adapter, &device, &queue, &device_loss);
+    runtime.renderer.set_frame_resources(
+        &adapter,
+        &device,
+        &queue,
+        &device_loss,
+        gpu_context_id,
+        &shared_device,
+    );
     let bounds = create_bounds(width, height, scale_factor);
     let transform = kurbo::Affine::scale(scale_factor);
     assert!(

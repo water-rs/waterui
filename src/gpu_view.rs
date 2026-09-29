@@ -97,7 +97,14 @@ where
             .as_ref()
             .expect("HydrolysisGpuView environment missing");
 
-        renderer.set_frame_resources(adapter, frame.device, frame.queue, device_loss);
+        renderer.set_frame_resources(
+            adapter,
+            frame.device,
+            frame.queue,
+            device_loss,
+            frame.gpu_context_id(),
+            &frame.shared_device(),
+        );
         renderer.poll_gpu_surface_redraw_handles();
 
         // Advance the embedded frame clock from the host's animation clock.
@@ -136,6 +143,11 @@ where
             device: frame.device,
             queue: frame.queue,
             device_loss: device_loss.clone(),
+            gpu_context_id: frame.gpu_context_id(),
+            shared_device: frame.shared_device(),
+            display_scale: frame.display_scale,
+            headroom: frame.headroom,
+            persistent: true,
             texture: Some(frame.texture),
             view: &frame.view,
             format: frame.format,

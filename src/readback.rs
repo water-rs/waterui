@@ -51,7 +51,9 @@ pub(crate) fn readback_texture_rgba8(
         .expect("hydrolysis texture readback callback dropped")
         .expect("hydrolysis failed to map texture readback buffer");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("hydrolysis failed to read the mapped readback buffer");
     let pixels = layout.unpad_rows(&mapped);
     drop(mapped);
     readback.unmap();

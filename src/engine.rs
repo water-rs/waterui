@@ -1,5 +1,9 @@
 #[path = "engine/vello_backend.rs"]
 pub(crate) mod legacy;
+#[path = "engine/cherenkov_backend.rs"]
+pub(crate) mod cherenkov;
+
+pub(crate) use cherenkov::{CherenkovSurface, GpuEngine, shared_engine};
 
 pub(crate) use legacy::{
     LegacyBumpReadback, LegacyRenderer, LegacyRendererOptions, legacy_init_threads,

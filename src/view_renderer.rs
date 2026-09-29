@@ -81,7 +81,14 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 let device_loss = surface.device_loss().clone();
                 let mut renderer =
                     HydrolysisRenderer::new(surface.adapter(), device, Rc::clone(&self.theme));
-                renderer.set_frame_resources(surface.adapter(), device, queue, &device_loss);
+                renderer.set_frame_resources(
+                    surface.adapter(),
+                    device,
+                    queue,
+                    &device_loss,
+                    surface.gpu_context_id(),
+                    &surface.shared_device(),
+                );
                 renderer.reset_scene();
                 renderer.begin_rebuild_frame();
 
@@ -102,6 +109,11 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                     device,
                     queue,
                     device_loss,
+                    gpu_context_id: surface.gpu_context_id(),
+                    shared_device: surface.shared_device(),
+                    display_scale: 1.0,
+                    headroom: 1.0,
+                    persistent: true,
                     texture: Some(frame.texture()),
                     view: frame.view(),
                     format: surface.format(),

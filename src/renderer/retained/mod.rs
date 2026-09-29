@@ -3,7 +3,9 @@
 //! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
 
 pub(crate) mod identity;
+pub(crate) mod mount;
 pub(crate) use identity::{PresentationId, RenderId, RenderKey};
+pub(crate) use mount::{MountSlot, Mounts};
 
 use super::signals::SubscribedSnapshot;
 use super::*;

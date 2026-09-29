@@ -43,6 +43,8 @@ waterui-locale = "0.5.0"
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { version = "0.5.1", features = ["std"] }
 vello = "0.9"
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
 kurbo = "0.13"
 peniko = "0.6"
 # Silhouettes that are not a uniform rounded rect (ellipse, uneven corners,
@@ -62,7 +64,7 @@ skrifa = "0.44"
 # `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
 # route through the `emoji` generic family first.
 icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
-wgpu = "29.0.4"
+wgpu = "30.0.1"
 lru = "0.18"
 rayon = "1.12"
 pollster = "1.0"
@@ -362,6 +364,12 @@ vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa
 vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
 vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
 glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+
+# The Cherenkov pin (water-rs/hydrolysis#205): every consumer in the graph —
+# this crate included — must see the same revision so `Engine<Gpu>` types line
+# up. `cherenkov-gpu` builds against wgpu 30.
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "23d94a8a" }
 
 # `waterui-testing` depends on this backend at the 0.5.0-wave requirement
 # `0.3.0`, which is this package; a registry copy would be pre-freeze code

@@ -841,6 +841,8 @@ impl HydrolysisRenderer {
             (device.clone(), queue.clone())
         };
         let device_loss = self.state().frame_device_loss().clone();
+        let gpu_context_id = self.state().frame_gpu_context_id();
+        let shared_device = self.state().frame_shared_device().clone();
         let parent_scene = core::mem::take(&mut self.scene);
         let parent_render_layers = core::mem::take(&mut self.compositor.render_layers);
         let parent_active_layers = core::mem::take(&mut self.compositor.active_scene_layers);
@@ -877,6 +879,11 @@ impl HydrolysisRenderer {
             device: &device,
             queue: &queue,
             device_loss,
+            gpu_context_id,
+            shared_device,
+            display_scale: 1.0,
+            headroom: 1.0,
+            persistent: false,
             texture: Some(target.texture),
             view: target.view,
             format: target.format,

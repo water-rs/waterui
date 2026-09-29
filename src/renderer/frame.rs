@@ -455,9 +455,17 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         device_loss: &waterui_graphics::DeviceLoss,
+        gpu_context_id: u64,
+        shared_device: &cherenkov_gpu::interop::SharedDevice,
     ) {
-        self.state
-            .set_frame_resources(adapter, device, queue, device_loss);
+        self.state.set_frame_resources(
+            adapter,
+            device,
+            queue,
+            device_loss,
+            gpu_context_id,
+            shared_device,
+        );
     }
 
     pub fn clear_frame_resources(&mut self) {

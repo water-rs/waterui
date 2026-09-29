@@ -423,12 +423,26 @@ pub trait SurfaceProvider {
     fn size(&self) -> (u32, u32);
     fn format(&self) -> wgpu::TextureFormat;
     fn resize(&mut self, width: u32, height: u32);
+    /// The identity of the GPU context this surface's device belongs to: the
+    /// key that binds one shared Cherenkov engine to one device creation
+    /// chain.
+    fn gpu_context_id(&self) -> u64;
+    /// The instance/adapter/device/queue this surface's device was created
+    /// from — all four from the same creation chain, which the shared
+    /// Cherenkov engine requires of its [`SharedDevice`].
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
     /// Whether the pixels written into this surface's textures are consumed
     /// as premultiplied-alpha. True only for an OS surface configured
     /// `CompositeAlphaMode::PreMultiplied`; offscreen/readback targets keep
     /// their straight-alpha bytes and stay `false`.
     fn premultiply_alpha(&self) -> bool {
         false
+    }
+    /// The display's HDR headroom — the brightest white the surface
+    /// presents, relative to SDR white. Every current surface is SDR, so
+    /// the default is 1.0; an HDR presentation surface overrides it.
+    fn display_headroom(&self) -> f32 {
+        1.0
     }
 }
 
@@ -574,11 +588,24 @@ pub struct OffscreenGpuContext {
 
 #[derive(Debug)]
 struct OffscreenGpuContextInner {
+    /// The instance this adapter came from — the shared Cherenkov engine
+    /// keeps it alive for as long as the device is in use.
+    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
     /// Reports this device lost; taken when the device was opened.
     device_loss: waterui_graphics::DeviceLoss,
+}
+
+/// One id per device creation chain — instances, adapters, devices and
+/// queues are only shared inside one, so it is also the Cherenkov engine key.
+static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn next_gpu_context_id() -> u64 {
+    NEXT_GPU_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Drop for OffscreenGpuContextInner {
@@ -629,7 +656,7 @@ impl OffscreenGpuContext {
         )
     )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
-        let (_instance, adapter) =
+        let (instance, adapter) =
             request_instance_and_adapter("hydrolysis offscreen surface", selection).await;
 
         ensure_compute_capable_adapter(
@@ -641,10 +668,14 @@ impl OffscreenGpuContext {
         // PIPELINE_CACHE is requested wherever the adapter has it: without the
         // feature `create_pipeline_cache` errors, so the persistent store in
         // `pipeline_cache.rs` can only exist when it was requested here.
+        // PASSTHROUGH_SHADERS loads the engine's precompiled fixed shaders on
+        // Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get
+        // the same hard Engine::new failure the engine documents.
         #[cfg(not(feature = "frame-profile"))]
         let required_features =
             waterui_graphics::shared_context::required_media_features(adapter.features())
-                | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
+                | (adapter.features()
+                    & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The frame profiler timestamps GPU work through timestamp queries
         // written between submits, which needs both timestamp features;
         // request them where the adapter has them and report absent where it
@@ -655,7 +686,8 @@ impl OffscreenGpuContext {
                 | (adapter.features()
                     & (wgpu::Features::TIMESTAMP_QUERY
                         | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-                        | wgpu::Features::PIPELINE_CACHE));
+                        | wgpu::Features::PIPELINE_CACHE
+                        | wgpu::Features::PASSTHROUGH_SHADERS));
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-offscreen-device"),
@@ -671,9 +703,11 @@ impl OffscreenGpuContext {
 
         Self {
             inner: std::sync::Arc::new(OffscreenGpuContextInner {
+                instance,
                 adapter,
                 device,
                 queue,
+                context_id: next_gpu_context_id(),
                 device_loss,
             }),
         }
@@ -1269,6 +1303,20 @@ impl SurfaceProvider for OffscreenSurface {
             self.last_presented = None;
         }
     }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.gpu.inner.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        let inner = &*self.gpu.inner;
+        cherenkov_gpu::interop::SharedDevice {
+            instance: inner.instance.clone(),
+            adapter: inner.adapter.clone(),
+            device: inner.device.clone(),
+            queue: inner.queue.clone(),
+        }
+    }
 }
 
 /// Headless platform window backed by an offscreen texture.
@@ -1500,6 +1548,8 @@ mod winit_impl {
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
+        /// Identity of this device creation chain for the engine pool.
+        context_id: u64,
         /// Reports this device lost; taken when the device was opened.
         device_loss: waterui_graphics::DeviceLoss,
         /// One parked `device.poll` thread for this device, spawned on first
@@ -1788,7 +1838,9 @@ mod winit_impl {
                     let required_features =
                         waterui_graphics::shared_context::required_media_features(
                             adapter.features(),
-                        ) | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
+                        ) | (adapter.features()
+                            & (wgpu::Features::PIPELINE_CACHE
+                                | wgpu::Features::PASSTHROUGH_SHADERS));
                     let (device, queue) = adapter
                         .request_device(&wgpu::DeviceDescriptor {
                             label: Some("hydrolysis-winit-device"),
@@ -1807,6 +1859,7 @@ mod winit_impl {
                             adapter,
                             device,
                             queue,
+                            context_id: super::next_gpu_context_id(),
                             device_loss,
                             poll_driver: std::sync::Arc::new(std::sync::OnceLock::new()),
                         },
@@ -1904,6 +1957,20 @@ mod winit_impl {
 
         fn premultiply_alpha(&self) -> bool {
             self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+        }
+
+        fn gpu_context_id(&self) -> u64 {
+            self.gpu.context_id
+        }
+
+        fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+            let gpu = &self.gpu;
+            cherenkov_gpu::interop::SharedDevice {
+                instance: gpu.instance.clone(),
+                adapter: gpu.adapter.clone(),
+                device: gpu.device.clone(),
+                queue: gpu.queue.clone(),
+            }
         }
     }
 

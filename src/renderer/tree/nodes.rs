@@ -994,6 +994,10 @@ impl GpuSurfaceNode {
         let hit_rect = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.push_gpu_surface_layer(
             GpuSurfaceSource::Owned(Rc::clone(&self.runtime)),
+            crate::renderer::retained::RenderKey {
+                render: self.render_id,
+                presentation: crate::renderer::retained::PresentationId::ORDINARY,
+            },
             ctx.transform,
             ctx.bounds,
             hit_rect,
