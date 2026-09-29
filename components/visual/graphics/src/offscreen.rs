@@ -192,6 +192,7 @@ fn pixels_to_points(pixels: u32, scale: f32) -> f32 {
 /// An engine that renders scene content into images through backend `B`.
 pub struct OffscreenRenderer<B: Backend> {
     engine: Rc<Engine<B>>,
+    resources: SceneResources,
 }
 
 impl<B: Backend> fmt::Debug for OffscreenRenderer<B> {
@@ -228,23 +229,27 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// # Errors
     /// [`EngineError`] when the backend cannot initialise.
     pub fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
+        let engine = Rc::new(Engine::<B>::new(config)?);
         Ok(Self {
-            engine: Rc::new(Engine::<B>::new(config)?),
+            resources: SceneResources::new(Rc::clone(&engine)),
+            engine,
         })
     }
 
-    /// The engine's resources, for content that mints handles ahead of a render.
+    /// The engine's resource registration, for drawings that name fonts,
+    /// images or shader paints: handles minted anywhere else are not this
+    /// engine's.
     #[must_use]
-    pub fn resources(&self) -> SceneResources<'_> {
-        SceneResources::new(&self.engine)
+    pub const fn resources(&self) -> &SceneResources {
+        &self.resources
     }
 
     /// Records `content` laid out at `size / scale` points, renders one frame
     /// at `size` pixels and reads it back.
     ///
-    /// The content is prepared against this engine first — its
-    /// [`SceneContent::prepare_resources`] registers what it draws — because
-    /// resources minted on another engine are not this one's.
+    /// The content records against this engine's [`SceneResources`], so what
+    /// it registers while drawing is this engine's; it keeps those handles
+    /// across renders the way it would on a window.
     ///
     /// # Errors
     /// [`OffscreenError`] when the surface cannot be created, the frame does
@@ -261,10 +266,9 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
             (size.width(), size.height()),
             OffscreenFormat::LinearF16,
         ))?;
-        content.prepare_resources(&self.resources());
         let recorded = surface.record(|recorder: &mut Recorder| {
             recorder.transform(Affine::scale(f64::from(scale)), |recorder| {
-                content.build_scene(recorder, width, height);
+                content.build_scene(recorder, &self.resources, width, height);
             });
         });
         surface.update(|tx| {

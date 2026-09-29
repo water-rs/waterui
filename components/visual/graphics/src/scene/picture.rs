@@ -11,6 +11,7 @@ use waterui_core::layout::Size;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
+use crate::scene::resources::SceneResources;
 use crate::scene_view::{
     SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
 };
@@ -193,7 +194,13 @@ struct RecordedScene {
 }
 
 impl SceneContent for RecordedScene {
-    fn build_scene(&mut self, recorder: &mut Recorder, width: f32, height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        _resources: &SceneResources,
+        width: f32,
+        height: f32,
+    ) -> bool {
         let recording = self.picture.recording.snapshot();
         recorder.picture(&recording, Fixed(self.picture.transform_to(width, height)));
         false
@@ -300,6 +307,7 @@ mod tests {
 
     #[test]
     fn a_new_recording_reaches_the_recorded_content_without_a_new_view() {
+        let (resources, _events) = crate::scene::resources::tests::null_resources();
         let tint = binding(WorkingColor::BLACK);
         let picture = Picture::new(Size::new(10.0, 10.0), tint.map(square));
         let mut content = RecordedScene {
@@ -307,12 +315,12 @@ mod tests {
             watcher: None,
         };
         let mut recorder = Recorder::new();
-        content.build_scene(&mut recorder, 20.0, 20.0);
+        content.build_scene(&mut recorder, &resources, 20.0, 20.0);
         let first = recorder.finish();
         assert_eq!(first.len(), 1);
         tint.set(WorkingColor::WHITE);
         let mut recorder = Recorder::new();
-        content.build_scene(&mut recorder, 20.0, 20.0);
+        content.build_scene(&mut recorder, &resources, 20.0, 20.0);
         let second = recorder.finish();
         assert_eq!(second.len(), 1);
     }
