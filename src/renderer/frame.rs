@@ -33,14 +33,9 @@ pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Whether a scene encodes any visible content.
-///
-/// `Encoding::is_empty` only checks the path stream; glyph runs are deferred
-/// resources that resolve to paths at render time, so a scene containing only
-/// text would otherwise read as empty and be dropped by the compositor.
-pub(crate) fn scene_has_content(scene: &vello::Scene) -> bool {
-    let encoding = scene.encoding();
-    !encoding.is_empty() || !encoding.resources.glyph_runs.is_empty()
+/// Whether a recording encodes any visible content.
+pub(crate) fn scene_has_content(scene: &Recording) -> bool {
+    !scene.is_empty()
 }
 
 impl SemanticCore {
@@ -309,10 +304,9 @@ impl HydrolysisRenderer {
             viewport.height().ceil() as u32,
         );
         if w > 0 && h > 0 {
-            // Seed vello's bump buffers from the viewport's tile grid; scenes
-            // denser than the seed still grow from GPU feedback.
-            self.vello_renderer
-                .set_buffer_sizes(Some(vello::BumpBufferSizes::for_target(w, h)));
+            // Seed the legacy bump buffers from the viewport's tile grid;
+            // scenes denser than the seed still grow from GPU feedback.
+            self.legacy_renderer.seed_bump_buffer_sizes(w, h);
         }
     }
 
@@ -323,7 +317,7 @@ impl HydrolysisRenderer {
             .transform_rect_bbox(self.window_bounds)
     }
 
-    pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut vello::Scene) {
+    pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
         (&mut self.core.state, &mut self.scene)
     }
 
@@ -342,13 +336,13 @@ impl HydrolysisRenderer {
     }
 
     #[must_use]
-    pub fn scene(&self) -> &vello::Scene {
+    pub fn scene(&self) -> &Recording {
         &self.scene
     }
 
     pub fn reset_scene(&mut self) {
         for image in self.compositor.active_filter_images.drain(..) {
-            self.vello_renderer.unregister_texture(image);
+            self.legacy_renderer.unregister_texture(image);
         }
         self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
@@ -443,7 +437,7 @@ impl HydrolysisRenderer {
         self.finalize_accessibility_tree_update();
     }
 
-    pub fn scene_mut(&mut self) -> &mut vello::Scene {
+    pub fn scene_mut(&mut self) -> &mut Recording {
         &mut self.scene
     }
 
@@ -451,8 +445,8 @@ impl HydrolysisRenderer {
         VelloDrawContext::with_root_transform(&mut self.scene, ctx.transform)
     }
 
-    pub fn vello_renderer(&mut self) -> &mut vello::Renderer {
-        &mut self.vello_renderer
+    pub fn legacy_renderer(&mut self) -> &mut crate::engine::LegacyRenderer {
+        &mut self.legacy_renderer
     }
 
     pub fn set_frame_resources(
@@ -477,7 +471,7 @@ impl HydrolysisRenderer {
         rect: kurbo::Rect,
     ) {
         self.record_clip_layer_push();
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
@@ -503,7 +497,7 @@ impl HydrolysisRenderer {
         path: kurbo::BezPath,
     ) {
         self.record_clip_layer_push();
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
@@ -529,7 +523,7 @@ impl HydrolysisRenderer {
         corner_height: f64,
     ) {
         self.record_clip_layer_push();
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
@@ -551,7 +545,7 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn pop_layer(&mut self) {
-        crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
+        self.scene.pop_scope();
         self.compositor
             .active_scene_layers
             .pop()
@@ -571,18 +565,17 @@ impl HydrolysisRenderer {
 
     pub(super) fn flush_vello_scene_layer(&mut self) {
         assert!(
-            (self.scene.encoding().n_open_clips as usize)
-                == self.compositor.active_scene_layers.len(),
+            (self.scene.open_clip_count() as usize) == self.compositor.active_scene_layers.len(),
             "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
-            self.scene.encoding().n_open_clips,
+            self.scene.open_clip_count(),
             self.compositor.active_scene_layers.len()
         );
 
         for _ in 0..self.compositor.active_scene_layers.len() {
-            crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
+            self.scene.pop_scope();
         }
 
-        if !scene_has_content(&self.scene) {
+        if self.scene.is_empty() {
             for layer in &self.compositor.active_scene_layers {
                 layer.push_to_scene(&mut self.scene);
             }

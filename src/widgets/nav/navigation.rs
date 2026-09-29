@@ -3,6 +3,7 @@ use crate::engine::Brush;
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::ROOT_NAVIGATION_IDENTITY;
+use crate::renderer::Recording;
 use crate::renderer::bounded_proposal;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
@@ -1591,16 +1592,16 @@ fn render_navigation_page_scene(
             entry.content.render_built_scene(renderer, env, size)
         }
     };
-    let mut scene = vello::Scene::new();
+    let mut scene = Recording::new();
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
     scene.fill(
         peniko::Fill::NonZero,
         kurbo::Affine::IDENTITY,
-        resolved_color_to_peniko(renderer.read_signal(&background)),
+        &peniko::Brush::Solid(resolved_color_to_peniko(renderer.read_signal(&background))),
         None,
         &bounds,
     );
-    crate::engine::vello_backend::append_scene(&mut scene, &captured.scene, None);
+    scene.append(&captured.scene, kurbo::Affine::IDENTITY);
     if identity != 0 {
         core::mem::swap(renderer.scene_mut(), &mut scene);
         let context = RenderContext::with_transforms(
@@ -1809,7 +1810,7 @@ pub(crate) fn render_navigation_stack_parts(
     ctx.renderer_mut().scene_mut().fill(
         peniko::Fill::NonZero,
         transform,
-        background,
+        &peniko::Brush::Solid(background),
         None,
         &bounds,
     );

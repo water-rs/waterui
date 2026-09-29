@@ -341,7 +341,7 @@ impl RetainedSubview {
         size: Size,
     ) -> NavigationCapturedScene {
         self.ensure_built(renderer, env);
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         let Some(node) = &mut self.node else {
             return NavigationCapturedScene::default();
         };
@@ -1020,7 +1020,7 @@ impl ViewEffectNode {
         }
 
         let image = runtime.register_output_image(
-            &mut renderer.vello_renderer,
+            &mut renderer.legacy_renderer,
             output_texture,
             output_width,
             output_height,
@@ -1033,7 +1033,7 @@ impl ViewEffectNode {
                 ctx.bounds.height() / f64::from(output_height),
             );
         renderer.state.counters.image_registrations += 1;
-        renderer.scene.draw_image(
+        renderer.scene.image(
             &peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
         );
@@ -1085,7 +1085,7 @@ impl AppliedFilterNode {
 
         let image = self.runtime.borrow_mut().prepare_output(
             &device,
-            &mut renderer.vello_renderer,
+            &mut renderer.legacy_renderer,
             width,
             height,
         );
@@ -1097,7 +1097,7 @@ impl AppliedFilterNode {
             );
         renderer.state.counters.image_registrations += 1;
         let scene = renderer.scene_mut();
-        scene.draw_image(
+        scene.image(
             &peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
         );

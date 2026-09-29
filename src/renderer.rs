@@ -33,6 +33,7 @@ mod metadata;
 mod migration_counters;
 mod native_measure;
 mod navigation;
+mod recording;
 mod render;
 mod retained;
 mod scene_ingest;
@@ -51,6 +52,7 @@ pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub(crate) use identity::*;
 pub use migration_counters::MigrationCounters;
 pub(crate) use native_measure::*;
+pub use recording::{Recording, VelloDrawContext};
 pub(crate) use retained::*;
 pub(crate) use scene_ingest::CheckedScene2D;
 #[cfg(test)]
@@ -168,7 +170,6 @@ use waterui_graphics::view_effect::{
 use waterui_graphics::{
     AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
     ResolvedGradient, ResolvedGradientStop, SceneEngine, SceneView, SharedSceneRenderer,
-    VelloScene2D,
 };
 
 use waterui_icon::SystemIcon;
@@ -187,8 +188,8 @@ use waterui_webview::WebView;
 
 use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};
 use crate::engine::{
-    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
-    vello_backend::VelloDrawContext,
+    LegacyRenderer, LegacyRendererOptions, RadioIndicatorState, RadioSelectionMotion,
+    TextCaretMotion, TextContextMenuMetrics, legacy_init_threads,
 };
 use crate::gesture::GestureEngine;
 use crate::platform::{
@@ -315,9 +316,9 @@ pub struct HydrolysisRenderer {
     /// The widget theme the runtime's style supplies to layout and encode.
     /// Never installed into the environment: build and patch cannot reach it.
     theme: Rc<dyn crate::engine::WidgetTheme>,
-    vello_renderer: vello::Renderer,
-    scene: vello::Scene,
-    transient_scene: Option<vello::Scene>,
+    legacy_renderer: LegacyRenderer,
+    scene: Recording,
+    transient_scene: Option<Recording>,
     compositor: Compositor,
     window_bounds: kurbo::Rect,
     /// The transform the window's root content is flushed under: logical layout
@@ -510,20 +511,6 @@ impl SemanticCore {
     }
 }
 
-/// Pipeline-init thread count for a `vello::Renderer` on `backend`.
-///
-/// wgpu-hal's GLES device serialises every shader compile through one context
-/// lock with a ~1 s timeout, so handing Vello a parallel init pool on GL
-/// deadlocks under CPU load — a worker times out, panics, and poisons the
-/// renderer pool. GL therefore gets a single init thread; Vulkan, Metal and
-/// DX12 compile pipelines concurrently and keep full parallelism.
-pub(crate) fn vello_init_threads(backend: wgpu::Backend) -> Option<NonZeroUsize> {
-    match backend {
-        wgpu::Backend::Gl => Some(NonZeroUsize::MIN),
-        _ => std::thread::available_parallelism().ok(),
-    }
-}
-
 impl HydrolysisRenderer {
     /// A renderer for `device`, which `adapter` produced, drawing with `theme`.
     ///
@@ -541,10 +528,9 @@ impl HydrolysisRenderer {
             adapter,
             device,
             theme,
-            vello::RendererOptions {
+            LegacyRendererOptions {
                 use_cpu: false,
-                antialiasing_support: vello::AaSupport::area_only(),
-                num_init_threads: vello_init_threads(adapter.get_info().backend),
+                num_init_threads: legacy_init_threads(adapter.get_info().backend),
                 pipeline_cache: None,
                 // Filled from the window viewport at `set_window_viewport`;
                 // until then `None` sizes the bump buffers per render target.
@@ -566,7 +552,7 @@ impl HydrolysisRenderer {
         adapter: &wgpu::Adapter,
         device: &wgpu::Device,
         theme: Rc<dyn crate::engine::WidgetTheme>,
-        options: vello::RendererOptions,
+        options: LegacyRendererOptions,
     ) -> Self {
         #[cfg(hydrolysis_pipeline_cache)]
         let mut options = options;
@@ -578,14 +564,14 @@ impl HydrolysisRenderer {
                 options.pipeline_cache = Some(store.cache());
             })
         };
-        let vello_renderer =
-            vello::Renderer::new(device, options).expect("failed to create hydrolysis renderer");
+        let legacy_renderer =
+            LegacyRenderer::new(device, options).expect("failed to create hydrolysis renderer");
         let frame_instant = Instant::now();
         Self {
             core: SemanticCore::new(frame_instant),
             theme,
-            vello_renderer,
-            scene: vello::Scene::new(),
+            legacy_renderer,
+            scene: Recording::new(),
             transient_scene: None,
             compositor: Compositor::default(),
             window_bounds: kurbo::Rect::ZERO,

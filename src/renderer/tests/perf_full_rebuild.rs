@@ -31,6 +31,7 @@ use waterui_core::{AnyView, Binding, Computed};
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
 use crate::platform::{InputEvent, OffscreenGpuContext};
+use crate::renderer::Recording;
 
 use kurbo::Affine;
 use peniko::{Brush, Color, Fill};
@@ -229,7 +230,7 @@ fn pure_vello_encode_floor() {
         "(the per-frame cost a retained reactive tree pays: layout aside, just re-emit draw ops)"
     );
     for &rows in &[40usize, 80, 160, 320] {
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         let mut samples = Vec::with_capacity(SAMPLE_FRAMES);
         for f in 0..(WARMUP_FRAMES + SAMPLE_FRAMES) {
             scene.reset();
@@ -441,7 +442,7 @@ impl ProtoNode {
 
     /// Re-encode this subtree into the scene using cached placements — the
     /// per-frame cost of a geometry-static frame.
-    fn flush(&self, scene: &mut vello::Scene, transform: Affine, size: Size) {
+    fn flush(&self, scene: &mut Recording, transform: Affine, size: Size) {
         match self {
             ProtoNode::Color { brush, .. } => {
                 let rect =
@@ -510,7 +511,7 @@ fn prototype_flush_layout_cost() {
     );
     for &rows in &[40usize, 160, 320] {
         let mut tree = build_proto_screen(rows);
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         tree.layout(proposal, window);
         for _ in 0..WARMUP_FRAMES {
             scene.reset();
@@ -543,7 +544,7 @@ fn prototype_flush_layout_cost() {
     // Gate: the 120fps common-case frame (geometry static — animation, scroll,
     // re-present) must re-flush a large screen (160 dense rows) well under budget.
     let mut tree = build_proto_screen(160);
-    let mut scene = vello::Scene::new();
+    let mut scene = Recording::new();
     tree.layout(proposal, window);
     for _ in 0..WARMUP_FRAMES {
         scene.reset();

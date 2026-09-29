@@ -150,7 +150,7 @@ impl AppliedFilterRuntime {
     pub(super) fn prepare_output(
         &mut self,
         device: &wgpu::Device,
-        vello_renderer: &mut vello::Renderer,
+        vello_renderer: &mut crate::engine::LegacyRenderer,
         width: u32,
         height: u32,
     ) -> peniko::ImageData {
@@ -208,7 +208,7 @@ impl AppliedFilterRuntime {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        vello_renderer: &mut vello::Renderer,
+        vello_renderer: &mut crate::engine::LegacyRenderer,
         width: u32,
         height: u32,
         encoder: &mut wgpu::CommandEncoder,
@@ -320,7 +320,7 @@ impl CachedEffectTexture {
 /// identity is stable.
 fn register_or_override_output_image(
     output_image: &mut Option<peniko::ImageData>,
-    vello_renderer: &mut vello::Renderer,
+    vello_renderer: &mut crate::engine::LegacyRenderer,
     output_texture: wgpu::Texture,
     output_width: u32,
     output_height: u32,
@@ -335,7 +335,7 @@ fn register_or_override_output_image(
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         };
-        let _ = vello_renderer.override_image(image, Some(texture_base));
+        vello_renderer.override_image(image, Some(texture_base));
         image.clone()
     } else {
         let image = vello_renderer.register_texture(output_texture);
@@ -403,7 +403,7 @@ impl ViewEffectRuntime {
 
     pub(super) fn register_output_image(
         &mut self,
-        vello_renderer: &mut vello::Renderer,
+        vello_renderer: &mut crate::engine::LegacyRenderer,
         output_texture: wgpu::Texture,
         output_width: u32,
         output_height: u32,
@@ -582,7 +582,7 @@ impl HydrolysisRenderer {
                 .encode_output(
                     device,
                     queue,
-                    &mut self.vello_renderer,
+                    &mut self.legacy_renderer,
                     width,
                     height,
                     encoder,

@@ -935,7 +935,7 @@ impl HydrolysisRenderer {
     ) {
         let focused = self.text_editing.focused_index();
         let menu_target = self.active_text_context_menu_target();
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         let theme = self.theme();
         {
             let mut draw = VelloDrawContext::with_root_transform(&mut scene, transform);

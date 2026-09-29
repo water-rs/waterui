@@ -56,9 +56,9 @@ struct CapturePage {
 /// out of the renderer around each slot flush and the page render.
 #[derive(Default)]
 struct CapturePageContent {
-    scene: vello::Scene,
+    scene: Recording,
     render_layers: Vec<RenderLayer>,
-    transient_scene: Option<vello::Scene>,
+    transient_scene: Option<Recording>,
 }
 
 struct CaptureSlot {
@@ -366,7 +366,7 @@ impl HydrolysisRenderer {
                 let (_image, needs_redraw) = pending.runtime.borrow_mut().encode_output(
                     &device,
                     &queue,
-                    &mut self.vello_renderer,
+                    &mut self.legacy_renderer,
                     pending.width,
                     pending.height,
                     &mut encoder,

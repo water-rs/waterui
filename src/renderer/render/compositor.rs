@@ -16,19 +16,19 @@ use waterui_graphics::input::SurfaceInputEvent;
 const GPU_SURFACE_COMPOSITOR_SHADER: CompiledShader =
     include!(concat!(env!("OUT_DIR"), "/gpu_surface_compositor.rs"));
 
-/// Builds a fresh `vello::Renderer` for the parallel-encode pool, matching the main
-/// renderer's options (GPU-only, area AA, backend-appropriate init parallelism).
+/// Builds a fresh legacy render object for the parallel-encode pool, matching
+/// the main renderer's options (GPU-only, area AA, backend-appropriate init
+/// parallelism).
 fn build_pooled_vello_renderer(
     device: &wgpu::Device,
     backend: wgpu::Backend,
     pipeline_cache: Option<wgpu::PipelineCache>,
-) -> vello::Renderer {
-    vello::Renderer::new(
+) -> crate::engine::LegacyRenderer {
+    crate::engine::LegacyRenderer::new(
         device,
-        vello::RendererOptions {
+        crate::engine::LegacyRendererOptions {
             use_cpu: false,
-            antialiasing_support: vello::AaSupport::area_only(),
-            num_init_threads: crate::renderer::vello_init_threads(backend),
+            num_init_threads: crate::engine::legacy_init_threads(backend),
             pipeline_cache,
             // Pooled renders target per-layer textures: `None` sizes the bump
             // buffers to each render target.
@@ -58,17 +58,17 @@ struct PoolGpu<'a> {
 /// sound; the GPU `Queue` is `Send + Sync` and each layer targets an independent texture,
 /// so submission order is irrelevant.
 fn encode_vello_layers_parallel(
-    pool: &std::sync::Mutex<Vec<vello::Renderer>>,
+    pool: &std::sync::Mutex<Vec<crate::engine::LegacyRenderer>>,
     gpu: PoolGpu<'_>,
-    scenes: Vec<(usize, &vello::Scene, PooledLayerTexture)>,
+    scenes: Vec<(usize, &Recording, PooledLayerTexture)>,
     width: u32,
     height: u32,
     counters: &mut MigrationCounters,
 ) -> Vec<(
     usize,
-    vello::Renderer,
+    crate::engine::LegacyRenderer,
     PooledLayerTexture,
-    Option<vello::BumpReadback>,
+    Option<crate::engine::LegacyBumpReadback>,
 )> {
     #[cfg(not(target_arch = "wasm32"))]
     use rayon::prelude::*;
@@ -80,7 +80,7 @@ fn encode_vello_layers_parallel(
         pipeline_cache,
     } = gpu;
 
-    let render_layer = |(index, scene, leased): (usize, &vello::Scene, PooledLayerTexture)| {
+    let render_layer = |(index, scene, leased): (usize, &Recording, PooledLayerTexture)| {
         let mut renderer = pool
             .lock()
             .expect("hydrolysis renderer: vello renderer pool poisoned")
@@ -89,9 +89,16 @@ fn encode_vello_layers_parallel(
                 build_pooled_vello_renderer(device, backend, pipeline_cache.clone())
             });
 
-        let params = vello_layer_render_params(width, height);
         let readback = renderer
-            .render_to_texture(device, queue, scene, &leased.view, &params)
+            .render_recording(
+                device,
+                queue,
+                scene,
+                &leased.view,
+                width,
+                height,
+                peniko::Color::TRANSPARENT,
+            )
             .expect("hydrolysis renderer: failed to render vello layer scene");
 
         // The renderer stays checked out until its deferred bump-buffer
@@ -120,23 +127,13 @@ fn encode_vello_layers_parallel(
     rendered
 }
 
-/// The render parameters every pooled vello layer texture is drawn with.
-fn vello_layer_render_params(width: u32, height: u32) -> vello::RenderParams {
-    vello::RenderParams {
-        base_color: peniko::Color::TRANSPARENT,
-        width,
-        height,
-        antialiasing_method: vello::AaConfig::Area,
-    }
-}
-
 /// How to re-issue a pending vello render when its readback reports
 /// overflow. The encoded input is carried with the pending render itself:
 /// `compositor.render_layers` is rebuilt every frame and must not be
 /// stashed across the frame boundary.
 enum DeferredVelloSource {
-    /// Re-render this scene.
-    Layer(Box<vello::Scene>),
+    /// Re-render this recording.
+    Layer(Box<Recording>),
     /// Rebuild and re-render the active-layers mask from these layers.
     Mask(Vec<ActiveSceneLayer>),
 }
@@ -148,7 +145,7 @@ enum DeferredVelloSource {
 struct PendingVelloRender {
     source: DeferredVelloSource,
     view: wgpu::TextureView,
-    readback: Option<vello::BumpReadback>,
+    readback: Option<crate::engine::LegacyBumpReadback>,
 }
 
 /// A frame's vello outputs held between encode and presentation: the
@@ -158,7 +155,7 @@ struct PendingVelloRender {
 /// the drain, before the frame's textures can be composited.
 struct DeferredVelloFrame {
     ready: Vec<ReadyLayerComposite>,
-    pooled: Vec<(vello::Renderer, PendingVelloRender)>,
+    pooled: Vec<(crate::engine::LegacyRenderer, PendingVelloRender)>,
     main: Vec<PendingVelloRender>,
     surface_size: (u32, u32),
     /// Set once a settle pass has composited this stash to a surface. The
@@ -189,12 +186,12 @@ impl DeferredVelloFrame {
             pending
                 .readback
                 .as_ref()
-                .is_none_or(vello::BumpReadback::is_ready)
+                .is_none_or(crate::engine::LegacyBumpReadback::is_ready)
         }) && self.main.iter().all(|pending| {
             pending
                 .readback
                 .as_ref()
-                .is_none_or(vello::BumpReadback::is_ready)
+                .is_none_or(crate::engine::LegacyBumpReadback::is_ready)
         })
     }
 }
@@ -206,24 +203,24 @@ fn build_active_layers_mask_scene(
     active_layers: &[ActiveSceneLayer],
     width: u32,
     height: u32,
-) -> vello::Scene {
+) -> Recording {
     assert!(
         !active_layers.is_empty(),
         "hydrolysis renderer: active layer mask requires at least one layer"
     );
-    let mut mask_scene = vello::Scene::new();
+    let mut mask_scene = Recording::new();
     for layer in active_layers {
         layer.push_to_scene(&mut mask_scene);
     }
     mask_scene.fill(
         peniko::Fill::NonZero,
         kurbo::Affine::IDENTITY,
-        peniko::Color::WHITE,
+        &peniko::Brush::Solid(peniko::Color::WHITE),
         None,
         &kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
     );
     for _ in 0..active_layers.len() {
-        crate::engine::vello_backend::pop_scene_layer(&mut mask_scene);
+        mask_scene.pop_scope();
     }
     mask_scene
 }
@@ -239,7 +236,7 @@ pub(crate) struct Compositor {
     /// per-layer encoding. `vello::Renderer` is `!Sync` (it holds a `RefCell`), so each
     /// worker checks out its own instance; the `Mutex` only guards the free-list, not the
     /// (parallel) encode itself.
-    pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<vello::Renderer>>,
+    pub(crate) vello_renderer_pool: std::sync::Mutex<Vec<crate::engine::LegacyRenderer>>,
     pub(crate) gpu_surface_compositor: Option<GpuSurfaceCompositorState>,
     /// The previous frame's vello outputs awaiting verification, presented
     /// by [`HydrolysisRenderer::complete_deferred_vello`] at the start of
@@ -467,7 +464,7 @@ pub(crate) struct NativeViewLayer {
 }
 
 pub(crate) enum RenderLayer {
-    Vello(vello::Scene),
+    Vello(Recording),
     GpuSurface(GpuSurfaceLayer),
     #[cfg(hydrolysis_macos_system_webview)]
     NativeView(NativeViewLayer),
@@ -482,7 +479,7 @@ pub(crate) struct HybridRenderSegment {
 pub(crate) struct HybridComposition {
     pub(crate) segments: Vec<HybridRenderSegment>,
     pub(crate) native_views: Vec<NativeViewLayer>,
-    pub(crate) transient_scene: Option<vello::Scene>,
+    pub(crate) transient_scene: Option<Recording>,
 }
 
 pub(crate) struct PreparedGpuSurfaceLayer {
@@ -585,10 +582,10 @@ struct ReadyLayerComposite {
 }
 
 impl ActiveSceneLayer {
-    pub(crate) fn push_to_scene(&self, scene: &mut vello::Scene) {
+    pub(crate) fn push_to_scene(&self, scene: &mut Recording) {
         match &self.shape {
             LayerShape::Rect(rect) => {
-                scene.push_layer(
+                scene.push_group(
                     peniko::Fill::NonZero,
                     peniko::BlendMode::default(),
                     self.alpha,
@@ -597,7 +594,7 @@ impl ActiveSceneLayer {
                 );
             }
             LayerShape::RoundedRect { path, .. } | LayerShape::Path(path) => {
-                scene.push_layer(
+                scene.push_group(
                     peniko::Fill::NonZero,
                     peniko::BlendMode::default(),
                     self.alpha,
@@ -1478,7 +1475,7 @@ impl HydrolysisRenderer {
     pub(crate) fn render_hybrid_segment_to_surface(
         &mut self,
         segment: &mut HybridRenderSegment,
-        transient_scene: Option<vello::Scene>,
+        transient_scene: Option<Recording>,
         target: HydrolysisRenderTarget<'_>,
         premultiply_alpha: bool,
     ) {
@@ -1605,16 +1602,23 @@ impl HydrolysisRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        scene: &vello::Scene,
+        scene: &Recording,
         width: u32,
         height: u32,
-    ) -> (PooledLayerTexture, Option<vello::BumpReadback>) {
+    ) -> (PooledLayerTexture, Option<crate::engine::LegacyBumpReadback>) {
         let leased = self.compositor.acquire_layer_texture(device, width, height);
-        let params = vello_layer_render_params(width, height);
         self.state.counters.gpu_submissions += 1;
         let readback = self
-            .vello_renderer
-            .render_to_texture(device, queue, scene, &leased.view, &params)
+            .legacy_renderer
+            .render_recording(
+                device,
+                queue,
+                scene,
+                &leased.view,
+                width,
+                height,
+                peniko::Color::TRANSPARENT,
+            )
             .expect("hydrolysis renderer: failed to render vello layer scene");
         (leased, readback)
     }
@@ -1626,7 +1630,7 @@ impl HydrolysisRenderer {
         width: u32,
         height: u32,
         active_layers: &[ActiveSceneLayer],
-    ) -> (PooledLayerTexture, Option<vello::BumpReadback>) {
+    ) -> (PooledLayerTexture, Option<crate::engine::LegacyBumpReadback>) {
         let mask_scene = build_active_layers_mask_scene(active_layers, width, height);
         self.render_vello_layer_to_texture(device, queue, &mask_scene, width, height)
     }
@@ -1655,7 +1659,7 @@ impl HydrolysisRenderer {
         queue: &wgpu::Queue,
         deferred: &mut DeferredVelloFrame,
     ) {
-        let params = vello_layer_render_params(deferred.surface_size.0, deferred.surface_size.1);
+        let (width, height) = deferred.surface_size;
         for (renderer, pending) in &mut deferred.pooled {
             // Growth is one-shot by construction: `BumpBufferSizes::satisfy`
             // raises every bump-managed buffer to at least the demand this
@@ -1683,7 +1687,15 @@ impl HydrolysisRenderer {
             };
             self.state.counters.gpu_submissions += 1;
             pending.readback = renderer
-                .render_to_texture(device, queue, scene.as_ref(), &pending.view, &params)
+                .render_recording(
+                    device,
+                    queue,
+                    scene.as_ref(),
+                    &pending.view,
+                    width,
+                    height,
+                    peniko::Color::TRANSPARENT,
+                )
                 .expect("hydrolysis renderer: failed to re-render vello layer scene");
             let Some(ticket) = pending.readback.take() else {
                 continue;
@@ -1728,7 +1740,7 @@ impl HydrolysisRenderer {
         if tickets.is_empty() {
             return;
         }
-        let overflowed = match self.vello_renderer.verify_bump_readbacks(device, tickets) {
+        let overflowed = match self.legacy_renderer.verify_bump_readbacks(device, tickets) {
             Ok(overflowed) => overflowed,
             Err(error) => {
                 tracing::error!(
@@ -1745,12 +1757,14 @@ impl HydrolysisRenderer {
             let view = pending.view.clone();
             self.state.counters.gpu_submissions += 1;
             pending.readback = match &pending.source {
-                DeferredVelloSource::Layer(scene) => self.vello_renderer.render_to_texture(
+                DeferredVelloSource::Layer(scene) => self.legacy_renderer.render_recording(
                     device,
                     queue,
                     scene.as_ref(),
                     &view,
-                    &params,
+                    width,
+                    height,
+                    peniko::Color::TRANSPARENT,
                 ),
                 DeferredVelloSource::Mask(active_layers) => {
                     let mask_scene = build_active_layers_mask_scene(
@@ -1758,12 +1772,14 @@ impl HydrolysisRenderer {
                         deferred.surface_size.0,
                         deferred.surface_size.1,
                     );
-                    self.vello_renderer.render_to_texture(
+                    self.legacy_renderer.render_recording(
                         device,
                         queue,
                         &mask_scene,
                         &view,
-                        &params,
+                        width,
+                        height,
+                        peniko::Color::TRANSPARENT,
                     )
                 }
             }
@@ -1778,7 +1794,7 @@ impl HydrolysisRenderer {
         if tickets.is_empty() {
             return;
         }
-        match self.vello_renderer.verify_bump_readbacks(device, tickets) {
+        match self.legacy_renderer.verify_bump_readbacks(device, tickets) {
             Ok(overflowed) if overflowed.is_empty() => {}
             Ok(_) => {
                 tracing::error!(
@@ -2241,16 +2257,16 @@ impl HydrolysisRenderer {
         // are unaffected.
         let mut encoded_vello: Vec<
             Option<(
-                vello::Renderer,
+                crate::engine::LegacyRenderer,
                 PooledLayerTexture,
-                Option<vello::BumpReadback>,
+                Option<crate::engine::LegacyBumpReadback>,
             )>,
         > = (0..render_layers.len()).map(|_| None).collect();
         // Deferred bump-buffer verification: every vello render submitted
         // this phase stashes its readback ticket here and is resolved at the
         // start of next frame, before the composite pass can sample its
         // texture — a completed render never waits on the GPU.
-        let mut pending_pooled: Vec<(vello::Renderer, PendingVelloRender)> = Vec::new();
+        let mut pending_pooled: Vec<(crate::engine::LegacyRenderer, PendingVelloRender)> = Vec::new();
         let mut pending_main: Vec<PendingVelloRender> = Vec::new();
         {
             let vello_indices: Vec<usize> = render_layers
@@ -2266,7 +2282,7 @@ impl HydrolysisRenderer {
                 })
                 .collect();
             if vello_indices.len() > 1 {
-                let vello_scenes: Vec<(usize, &vello::Scene, PooledLayerTexture)> = vello_indices
+                let vello_scenes: Vec<(usize, &Recording, PooledLayerTexture)> = vello_indices
                     .iter()
                     .map(|&index| {
                         let leased = self.compositor.acquire_layer_texture(
@@ -2310,8 +2326,8 @@ impl HydrolysisRenderer {
                 RenderLayer::Vello(scene) => {
                     tracing::trace!(
                         layer_index,
-                        paths = scene.encoding().n_paths,
-                        segments = scene.encoding().n_path_segments,
+                        paths = scene.legacy_scene().encoding().n_paths,
+                        segments = scene.legacy_scene().encoding().n_path_segments,
                         "compositing Hydrolysis Vello layer"
                     );
                     let leased = match encoded_vello[layer_index].take() {
@@ -2474,7 +2490,7 @@ impl HydrolysisRenderer {
                     pending
                         .readback
                         .as_ref()
-                        .map(vello::BumpReadback::submission_index)
+                        .map(crate::engine::LegacyBumpReadback::submission_index)
                 })
                 .collect();
             let mut deferred = DeferredVelloFrame {

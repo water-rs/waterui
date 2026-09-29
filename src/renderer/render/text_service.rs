@@ -85,7 +85,7 @@ pub(crate) struct TextMeasureService {
     /// flush cost. A fragment is encoded once at the local origin and appended
     /// under the frame's transform, so a scrolled or animated frame pays one
     /// encoding copy per text instead of a full glyph-run walk.
-    scene_cache: Mutex<LruCache<TextSceneCacheKey, Arc<vello::Scene>>>,
+    scene_cache: Mutex<LruCache<TextSceneCacheKey, Arc<Recording>>>,
 }
 
 /// Cache identity for an encoded glyph scene: the shaped layout it draws plus
@@ -321,8 +321,8 @@ impl TextMeasureService {
         input: &ResolvedTextLayoutInput,
         max_width: Option<f32>,
         tail: TailMark,
-        encode: impl FnOnce(&Arc<parley::Layout<[u8; 4]>>, &ResolvedTextLayoutInput, &mut vello::Scene),
-    ) -> Arc<vello::Scene> {
+        encode: impl FnOnce(&Arc<parley::Layout<[u8; 4]>>, &ResolvedTextLayoutInput, &mut Recording),
+    ) -> Arc<Recording> {
         let (max_lines, tail_ellipsis) = tail.parts();
         let key = TextSceneCacheKey {
             layout: input.cache_key(max_width),
@@ -342,7 +342,7 @@ impl TextMeasureService {
         } else {
             (self.shape(input, max_width), None)
         };
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         encode(&layout, respelled.as_ref().unwrap_or(input), &mut scene);
         let scene = Arc::new(scene);
         self.scene_cache

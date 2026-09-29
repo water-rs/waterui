@@ -4,77 +4,63 @@
   "renamed_dep_tokens": [],
   "files": {
     "src/engine/vello_backend.rs": {
-      "pop_scene_layer": {
-        "vello::Scene": 1
+      "LegacyRendererOptions": {
+        "vello::BumpBufferSizes": 1
       },
-      "append_scene": {
-        "vello::Scene": 2
+      "LegacyRenderer": {
+        "vello::Renderer": 1
       },
-      "VelloDrawContext": {
-        "vello::Scene": 1
+      "new": {
+        "vello::Error": 1,
+        "vello::Renderer::new": 1,
+        "vello::RendererOptions": 1,
+        "vello::AaSupport::area_only": 1
       },
-      "with_root_transform": {
-        "vello::Scene": 1
+      "render_recording": {
+        "vello::Error": 1,
+        "vello::RenderParams": 1,
+        "vello::AaConfig::Area": 1
+      },
+      "verify_bump_readbacks": {
+        "vello::Error": 1
+      },
+      "seed_bump_buffer_sizes": {
+        "vello::BumpBufferSizes::for_target": 1
+      },
+      "LegacyBumpReadback": {
+        "vello::BumpReadback": 1
+      },
+      "rasterize_blurred_silhouette": {
+        "vello_cpu::RenderContext::new": 1,
+        "vello_common::filter_effects::Filter::from_primitive": 1,
+        "vello_common::filter_effects::FilterPrimitive::GaussianBlur": 1,
+        "vello_common::filter_effects::EdgeMode::None": 1,
+        "vello_cpu::Pixmap::new": 1,
+        "vello_cpu::Resources::default": 1
       }
     },
     "src/engine.rs": {
       "vello_backend": {
-        "vello_backend": 1
+        "vello_backend": 2
       }
     },
     "src/renderer/effects.rs": {
       "prepare_output": {
-        "vello_renderer": 2,
-        "vello::Renderer": 1
+        "vello_renderer": 2
       },
       "encode_output": {
-        "vello_renderer": 2,
-        "vello::Renderer": 1
+        "vello_renderer": 2
       },
       "register_or_override_output_image": {
-        "vello_renderer": 3,
-        "vello::Renderer": 1
+        "vello_renderer": 3
       },
       "register_output_image": {
-        "vello_renderer": 2,
-        "vello::Renderer": 1
-      },
-      "refresh_active_applied_filters": {
-        "vello_renderer": 1
+        "vello_renderer": 2
       }
     },
     "src/renderer/frame.rs": {
       "RenderLayerStats": {
         "vello_scene_layers": 1
-      },
-      "scene_has_content": {
-        "vello::Scene": 1
-      },
-      "set_window_viewport": {
-        "vello_renderer": 1,
-        "vello::BumpBufferSizes::for_target": 1
-      },
-      "state_and_scene_mut": {
-        "vello::Scene": 1
-      },
-      "scene": {
-        "vello::Scene": 1
-      },
-      "reset_scene": {
-        "vello_renderer": 1
-      },
-      "scene_mut": {
-        "vello::Scene": 1
-      },
-      "vello_renderer": {
-        "vello_renderer": 2,
-        "vello::Renderer": 1
-      },
-      "pop_layer": {
-        "vello_backend::pop_scene_layer": 1
-      },
-      "flush_vello_scene_layer": {
-        "vello_backend::pop_scene_layer": 1
       },
       "render_layer_stats": {
         "vello_scene_layers": 3
@@ -88,224 +74,44 @@
         "vello_gpu": 1
       }
     },
-    "src/renderer/input/anchored_overlay.rs": {
-      "render_anchored_overlays": {
-        "vello_backend::append_scene": 2
+    "src/renderer/recording/mod.rs": {
+      "vello": {
+        "vello": 2
       }
     },
-    "src/renderer/input/context_menu.rs": {
-      "render_context_menu_presentation": {
-        "vello_backend::pop_scene_layer": 2
-      }
-    },
-    "src/renderer/input/text_editing.rs": {
-      "prepare_transient_text_input_overlay": {
+    "src/renderer/recording/vello.rs": {
+      "Recording": {
+        "vello::Scene": 1
+      },
+      "new": {
         "vello::Scene::new": 1
-      }
-    },
-    "src/renderer/metadata.rs": {
-      "draw_blurred_silhouette": {
-        "vello_cpu::RenderContext::new": 1,
-        "vello_common::filter_effects::Filter::from_primitive": 1,
-        "vello_common::filter_effects::FilterPrimitive::GaussianBlur": 1,
-        "vello_common::filter_effects::EdgeMode::None": 1,
-        "vello_cpu::Pixmap::new": 1,
-        "vello_cpu::Resources::default": 1
-      }
-    },
-    "src/renderer/navigation/navigation_state.rs": {
-      "NavigationMatchedElement": {
+      },
+      "glyphs": {
+        "vello::Glyph": 1
+      },
+      "legacy_scene": {
         "vello::Scene": 1
       },
-      "NavigationCapturedScene": {
-        "vello::Scene": 1
-      },
-      "composed": {
-        "vello::Scene": 1,
-        "vello_backend::append_scene": 1
-      },
-      "composed_without": {
-        "vello::Scene": 1,
-        "vello_backend::append_scene": 2
-      },
-      "finish_navigation_scene_capture": {
-        "vello::Scene": 1
-      },
-      "finish_navigation_element_capture": {
-        "vello::Scene": 1
-      }
-    },
-    "src/renderer/navigation/navigation_transition.rs": {
-      "NavigationTransitionFrame": {
-        "vello::Scene": 1
-      },
-      "append_matched_element": {
-        "vello::Scene": 1,
-        "vello_backend::append_scene": 1,
-        "vello_backend::pop_scene_layer": 1
-      },
-      "append_scene_with_opacity": {
-        "vello::Scene": 2
-      },
-      "append_scene_layer": {
-        "vello::Scene": 2,
-        "vello_backend::append_scene": 1,
-        "vello_backend::pop_scene_layer": 1
+      "draw_glyph_run": {
+        "vello::Glyph": 1
       }
     },
     "src/renderer/render/compositor.rs": {
-      "build_pooled_vello_renderer": {
-        "vello::Renderer": 1,
-        "vello::Renderer::new": 1,
-        "vello::RendererOptions": 1,
-        "vello::AaSupport::area_only": 1,
-        "vello_init_threads": 1
-      },
-      "encode_vello_layers_parallel": {
-        "vello::Renderer": 2,
-        "vello::Scene": 2,
-        "vello::BumpReadback": 1,
-        "vello_layer_render_params": 1
-      },
-      "vello_layer_render_params": {
-        "vello_layer_render_params": 1,
-        "vello::RenderParams": 2,
-        "vello::AaConfig::Area": 1
-      },
-      "DeferredVelloSource": {
-        "vello::Scene": 1
-      },
-      "PendingVelloRender": {
-        "vello::BumpReadback": 1
-      },
-      "DeferredVelloFrame": {
-        "vello::Renderer": 1
-      },
-      "verify_ready": {
-        "vello::BumpReadback::is_ready": 2
-      },
-      "build_active_layers_mask_scene": {
-        "vello::Scene": 1,
-        "vello::Scene::new": 1,
-        "vello_backend::pop_scene_layer": 1
-      },
       "Compositor": {
-        "vello_renderer_pool": 1,
-        "vello::Renderer": 1
-      },
-      "RenderLayer": {
-        "vello::Scene": 1
-      },
-      "HybridComposition": {
-        "vello::Scene": 1
-      },
-      "push_to_scene": {
-        "vello::Scene": 1
-      },
-      "render_hybrid_segment_to_surface": {
-        "vello::Scene": 1
-      },
-      "render_vello_layer_to_texture": {
-        "vello::Scene": 1,
-        "vello::BumpReadback": 1,
-        "vello_layer_render_params": 1,
-        "vello_renderer": 1
-      },
-      "render_active_layers_mask_to_texture": {
-        "vello::BumpReadback": 1
+        "vello_renderer_pool": 1
       },
       "verify_deferred_vello": {
-        "vello_layer_render_params": 1,
-        "vello_renderer_pool": 1,
-        "vello_renderer": 4
+        "vello_renderer_pool": 1
       },
       "render_scene_to_surface_with_alpha_mode": {
-        "vello::Renderer": 2,
-        "vello::BumpReadback": 1,
         "vello_indices": 3,
         "vello_scenes": 2,
-        "vello::Scene": 1,
-        "vello_renderer_pool": 1,
-        "vello::BumpReadback::submission_index": 1
-      }
-    },
-    "src/renderer/render/measurement.rs": {
-      "render_styled_text": {
-        "vello::Scene": 1
-      },
-      "render_styled_text_limited": {
-        "vello::Scene": 1,
-        "vello_backend::append_scene": 1
-      },
-      "render_styled_text_single_line_centered": {
-        "vello::Scene": 1,
-        "vello_backend::append_scene": 1
-      },
-      "encode_text_layout": {
-        "vello::Scene": 1,
-        "vello::Glyph": 1
-      },
-      "encode_line_backgrounds": {
-        "vello::Scene": 1
-      },
-      "fill_span_background": {
-        "vello::Scene": 1
-      },
-      "solid_fill_colours": {
-        "vello::Scene": 1
-      },
-      "rendered_fill_colours": {
-        "vello::Scene::new": 1
-      }
-    },
-    "src/renderer/render/render_context.rs": {
-      "<top-level>": {
-        "vello_backend::VelloDrawContext": 1
-      },
-      "append_scene": {
-        "vello::Scene": 1,
-        "vello_backend::append_scene": 1
-      }
-    },
-    "src/renderer/render/subtree_capture.rs": {
-      "CapturePageContent": {
-        "vello::Scene": 2
-      },
-      "flush_subtree_captures": {
-        "vello_renderer": 1
-      }
-    },
-    "src/renderer/render/text_service.rs": {
-      "TextMeasureService": {
-        "vello::Scene": 1
-      },
-      "glyph_scene_with": {
-        "vello::Scene": 2,
-        "vello::Scene::new": 1
+        "vello_renderer_pool": 1
       }
     },
     "src/renderer/tests/clip_transform.rs": {
       "<top-level>": {
-        "vello_encoding": 1,
-        "vello_backend": 1
-      },
-      "last_path_transform": {
-        "vello::Scene": 1
-      },
-      "a_path_after_a_clip_boundary_resolves_to_its_own_transform": {
-        "vello::Scene::new": 2,
-        "vello::Glyph": 1
-      }
-    },
-    "src/renderer/tests/perf_full_rebuild.rs": {
-      "pure_vello_encode_floor": {
-        "vello::Scene::new": 1
-      },
-      "flush": {
-        "vello::Scene": 1
-      },
-      "prototype_flush_layout_cost": {
-        "vello::Scene::new": 2
+        "vello_encoding": 1
       }
     },
     "src/renderer/tests/tree.rs": {
@@ -314,59 +120,12 @@
         "vello_scene_layers": 1
       }
     },
-    "src/renderer/tree/flush.rs": {
-      "flush": {
-        "vello::Scene::new": 1,
-        "vello_backend::append_scene": 1
-      },
-      "flush_navigation_transition_element": {
-        "vello::Scene::new": 1
-      }
-    },
-    "src/renderer/tree/nodes.rs": {
-      "render_built_scene": {
-        "vello::Scene::new": 1
-      },
-      "flush": {
-        "vello_renderer": 2
-      }
-    },
-    "src/renderer.rs": {
-      "views": {
-        "vello_backend::VelloDrawContext": 1
-      },
-      "HydrolysisRenderer": {
-        "vello_renderer": 1,
-        "vello::Renderer": 1,
-        "vello::Scene": 2
-      },
-      "vello_init_threads": {
-        "vello_init_threads": 1
-      },
-      "new": {
-        "vello::RendererOptions": 1,
-        "vello::AaSupport::area_only": 1,
-        "vello_init_threads": 1
-      },
-      "new_with_options": {
-        "vello::RendererOptions": 1,
-        "vello_renderer": 2,
-        "vello::Renderer::new": 1,
-        "vello::Scene::new": 1
-      }
-    },
     "src/runner/window.rs": {
       "FrameCounters": {
         "vello_scene_layers": 1
       },
       "render_window_with_capture": {
         "vello_scene_layers": 4
-      }
-    },
-    "src/widgets/nav/navigation.rs": {
-      "render_navigation_page_scene": {
-        "vello::Scene::new": 1,
-        "vello_backend::append_scene": 1
       }
     },
     "examples/frame_profile.rs": {

@@ -1,5 +1,5 @@
-use super::{HydrolysisRenderer, TailMark};
-use crate::engine::vello_backend::VelloDrawContext;
+use super::{HydrolysisRenderer, Recording, TailMark, VelloDrawContext};
+
 use crate::renderer::HydroState;
 use crate::renderer::frame::LayerTransforms;
 use crate::renderer::navigation::{
@@ -182,12 +182,8 @@ impl<'a> WidgetRenderContext<'a> {
         );
     }
 
-    pub(crate) fn append_scene(&mut self, scene: &vello::Scene) {
-        crate::engine::vello_backend::append_scene(
-            self.renderer.scene_mut(),
-            scene,
-            Some(self.transform),
-        );
+    pub(crate) fn append_scene(&mut self, scene: &Recording) {
+        self.renderer.scene_mut().append(scene, self.transform);
     }
 
     pub(crate) fn draw_navigation_transition(

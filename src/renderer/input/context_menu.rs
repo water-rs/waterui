@@ -543,16 +543,21 @@ impl HydrolysisRenderer {
         // itself). The menu and accessory panels draw opaque over the dim —
         // their corner wedges stay scrim and their elevation shadows land on
         // it, so no square hole is punched for them.
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             1.0,
             transform,
             &window,
         );
-        self.scene
-            .fill(peniko::Fill::NonZero, transform, dim, None, &window);
-        self.scene.draw_blurred_rounded_rect(
+        self.scene.fill(
+            peniko::Fill::NonZero,
+            transform,
+            &peniko::Brush::Solid(dim),
+            None,
+            &window,
+        );
+        self.scene.blurred_rounded_rect(
             transform,
             layout.lift,
             shadow,
@@ -560,7 +565,7 @@ impl HydrolysisRenderer {
             CONTEXT_MENU_LIFT_SHADOW_RADIUS,
         );
         if presentation.preview.is_none() {
-            self.scene.push_layer(
+            self.scene.push_group(
                 peniko::Fill::NonZero,
                 peniko::BlendMode {
                     mix: peniko::Mix::Normal,
@@ -574,13 +579,13 @@ impl HydrolysisRenderer {
             self.scene.fill(
                 peniko::Fill::NonZero,
                 transform,
-                peniko::Color::WHITE,
+                &peniko::Brush::Solid(peniko::Color::WHITE),
                 None,
                 &hole,
             );
-            crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
+            self.scene.pop_scope();
         }
-        crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
+        self.scene.pop_scope();
 
         // Menu and accessory sit on the theme's context-menu surface —
         // container colour, radius and elevation — the same Material surface

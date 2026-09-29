@@ -256,12 +256,12 @@ impl HydrolysisRenderer {
                     *entry.content.borrow_mut() = Some(content);
                     continue;
                 }
-                crate::engine::vello_backend::append_scene(&mut self.scene, &overlay_scene, None);
+                self.scene.append(&overlay_scene, kurbo::Affine::IDENTITY);
                 self.compositor.render_layers.extend(overlay_render_layers);
                 if let Some(transient) = overlay_transient_scene {
                     match &mut self.transient_scene {
                         Some(parent) => {
-                            crate::engine::vello_backend::append_scene(parent, &transient, None);
+                            parent.append(&transient, kurbo::Affine::IDENTITY);
                         }
                         None => self.transient_scene = Some(transient),
                     }

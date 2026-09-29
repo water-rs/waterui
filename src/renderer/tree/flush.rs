@@ -27,7 +27,7 @@ impl RenderNode {
                 renderer.scene_mut().fill(
                     peniko::Fill::NonZero,
                     ctx.transform,
-                    color,
+                    &peniko::Brush::Solid(color),
                     None,
                     &ctx.bounds,
                 );
@@ -344,15 +344,14 @@ impl RenderNode {
                     wants_input,
                 );
                 renderer.pop_render_owner();
-                let mut scene = vello::Scene::new();
+                let mut scene = Recording::new();
                 // Scope `scene2d` so its `&mut scene` borrow ends before `&scene` is
                 // appended below. `CheckedScene2D` validates every image brush at
                 // this ingest boundary — malformed `ImageData` rejected here would
                 // otherwise only fail inside wgpu's `write_texture`.
                 let needs_next = {
-                    let mut scene2d = VelloScene2D::new(&mut scene);
                     let mut scene2d = crate::renderer::CheckedScene2D::new(
-                        &mut scene2d,
+                        &mut scene,
                         &mut renderer.state.counters,
                     );
                     #[allow(clippy::cast_possible_truncation)]
@@ -362,10 +361,9 @@ impl RenderNode {
                         ctx.bounds.height() as f32,
                     )
                 };
-                crate::engine::vello_backend::append_scene(
-                    renderer.scene_mut(),
+                renderer.scene_mut().append(
                     &scene,
-                    Some(ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
+                    ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
                 );
                 if needs_next {
                     renderer.request_refresh();
@@ -775,7 +773,7 @@ fn flush_navigation_transition_element(
         child.flush(renderer, ctx, env);
         return;
     }
-    let mut scene = vello::Scene::new();
+    let mut scene = Recording::new();
     core::mem::swap(renderer.scene_mut(), &mut scene);
     child.flush(renderer, ctx, env);
     core::mem::swap(renderer.scene_mut(), &mut scene);

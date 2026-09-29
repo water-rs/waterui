@@ -229,9 +229,13 @@ impl HydrolysisRenderer {
             let rounded =
                 kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
             let stroke = kurbo::Stroke::new(width);
-            renderer
-                .scene
-                .stroke(&stroke, ctx.transform, brush, None, &rounded);
+            renderer.scene.stroke(
+                &stroke,
+                ctx.transform,
+                &peniko::Brush::Solid(brush),
+                None,
+                &rounded,
+            );
             return;
         }
 
@@ -242,9 +246,13 @@ impl HydrolysisRenderer {
                 ctx.bounds.x1,
                 ctx.bounds.y0 + width,
             );
-            renderer
-                .scene
-                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &top);
+            renderer.scene.fill(
+                peniko::Fill::NonZero,
+                ctx.transform,
+                &peniko::Brush::Solid(brush),
+                None,
+                &top,
+            );
         }
         if border.edges.bottom {
             let bottom = kurbo::Rect::new(
@@ -253,9 +261,13 @@ impl HydrolysisRenderer {
                 ctx.bounds.x1,
                 ctx.bounds.y1,
             );
-            renderer
-                .scene
-                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &bottom);
+            renderer.scene.fill(
+                peniko::Fill::NonZero,
+                ctx.transform,
+                &peniko::Brush::Solid(brush),
+                None,
+                &bottom,
+            );
         }
         if border.edges.leading {
             let leading = kurbo::Rect::new(
@@ -264,9 +276,13 @@ impl HydrolysisRenderer {
                 ctx.bounds.x0 + width,
                 ctx.bounds.y1,
             );
-            renderer
-                .scene
-                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &leading);
+            renderer.scene.fill(
+                peniko::Fill::NonZero,
+                ctx.transform,
+                &peniko::Brush::Solid(brush),
+                None,
+                &leading,
+            );
         }
         if border.edges.trailing {
             let trailing = kurbo::Rect::new(
@@ -275,9 +291,13 @@ impl HydrolysisRenderer {
                 ctx.bounds.x1,
                 ctx.bounds.y1,
             );
-            renderer
-                .scene
-                .fill(peniko::Fill::NonZero, ctx.transform, brush, None, &trailing);
+            renderer.scene.fill(
+                peniko::Fill::NonZero,
+                ctx.transform,
+                &peniko::Brush::Solid(brush),
+                None,
+                &trailing,
+            );
         }
     }
 
@@ -313,7 +333,7 @@ impl HydrolysisRenderer {
             None => None,
         };
         match uniform_radius {
-            Some(corner_radius) => renderer.scene.draw_blurred_rounded_rect(
+            Some(corner_radius) => renderer.scene.blurred_rounded_rect(
                 ctx.transform,
                 shadow_rect,
                 shadow_color,
@@ -368,7 +388,7 @@ impl HydrolysisRenderer {
             renderer.scene.fill(
                 peniko::Fill::NonZero,
                 transform * kurbo::Affine::translate((rect.x0, rect.y0)),
-                color,
+                &peniko::Brush::Solid(color),
                 None,
                 &local_path,
             );
@@ -393,7 +413,7 @@ impl HydrolysisRenderer {
         if let Some(hit) = renderer.blurred_silhouettes.get(&key) {
             let (image, delta) = (hit.image.clone(), hit.delta);
             renderer.state.counters.image_registrations += 1;
-            renderer.scene.draw_image(
+            renderer.scene.image(
                 &peniko::ImageBrush::new(image),
                 kurbo::Affine::translate(translation) * delta,
             );
@@ -415,26 +435,14 @@ impl HydrolysisRenderer {
         let height = u16::try_from(height)
             .expect("blurred shadow silhouette rasterizes taller than u16::MAX pixels");
 
-        let mut raster = vello_cpu::RenderContext::new(width, height);
-        raster.set_transform(kurbo::Affine::translate((-bounds.x0, -bounds.y0)));
-        raster.push_filter_layer(vello_common::filter_effects::Filter::from_primitive(
-            vello_common::filter_effects::FilterPrimitive::GaussianBlur {
-                std_deviation: blur as f32,
-                edge_mode: vello_common::filter_effects::EdgeMode::None,
-            },
-        ));
-        raster.set_paint(color);
-        raster.fill_path(&linear_path);
-        raster.pop_layer();
-        let mut pixmap = vello_cpu::Pixmap::new(width, height);
-        raster.render(&mut pixmap, &mut vello_cpu::Resources::default());
-        let image = peniko::ImageData {
-            data: peniko::Blob::from(pixmap.data_as_u8_slice().to_vec()),
-            format: peniko::ImageFormat::Rgba8,
-            alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
-            width: u32::from(width),
-            height: u32::from(height),
-        };
+        let image = crate::engine::rasterize_blurred_silhouette(
+            &linear_path,
+            (-bounds.x0, -bounds.y0),
+            blur,
+            color,
+            width,
+            height,
+        );
 
         // The image's top-left corner in linear space: the rect's origin under
         // the linear part, plus the inflated raster bounds' origin.
@@ -443,7 +451,7 @@ impl HydrolysisRenderer {
             b * rect.x0 + d * rect.y0 + bounds.y0,
         ));
         renderer.state.counters.image_registrations += 1;
-        renderer.scene.draw_image(
+        renderer.scene.image(
             &peniko::ImageBrush::new(image.clone()),
             kurbo::Affine::translate(translation) * delta,
         );

@@ -1,5 +1,10 @@
 pub mod vello_backend;
 
+pub(crate) use vello_backend::{
+    LegacyBumpReadback, LegacyRenderer, LegacyRendererOptions, legacy_init_threads,
+    rasterize_blurred_silhouette,
+};
+
 pub use waterui_backend_core::widget::{
     Brush, DrawContext, RadioIndicatorState, RadioSelectionMotion, TextCaretMotion,
     TextContextMenuMetrics, WidgetTheme,

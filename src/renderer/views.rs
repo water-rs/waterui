@@ -224,9 +224,13 @@ pub(crate) fn render_shape_parts(
     };
     let fill = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.transform;
-    ctx.renderer_mut()
-        .scene
-        .fill(peniko::Fill::NonZero, transform, fill, None, &path);
+    ctx.renderer_mut().scene.fill(
+        peniko::Fill::NonZero,
+        transform,
+        &peniko::Brush::Solid(fill),
+        None,
+        &path,
+    );
 }
 
 /// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
@@ -285,9 +289,13 @@ pub(crate) fn render_morph_shape_parts(
             resolved_color_to_peniko(fill),
         )
     };
-    renderer
-        .scene
-        .fill(peniko::Fill::NonZero, transform, fill, None, &path);
+    renderer.scene.fill(
+        peniko::Fill::NonZero,
+        transform,
+        &peniko::Brush::Solid(fill),
+        None,
+        &path,
+    );
 }
 
 /// Emits a string leaf's accessibility node from its content. Shared by the
