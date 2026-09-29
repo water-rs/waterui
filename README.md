@@ -40,7 +40,7 @@ water run
 `water update` upgrades the CLI in place, and `water update --check` reports the
 newest release without installing it.
 
-A WaterUI project is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
+A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
 ```rust,ignore
 use waterui::app::App;
