@@ -99,7 +99,7 @@ fn primary_click(x: f32, y: f32) -> [InputEvent; 2] {
 }
 
 /// The one presented overlay's frame — every test here mounts exactly one.
-fn presented_frame(runtime: &HeadlessRuntime) -> vello::kurbo::Rect {
+fn presented_frame(runtime: &HeadlessRuntime) -> kurbo::Rect {
     let frames = runtime.anchored_overlay_frames();
     assert_eq!(frames.len(), 1, "exactly one overlay is presented");
     frames[0]
@@ -242,7 +242,7 @@ fn an_outside_press_writes_false_and_still_reaches_its_target() {
         ((far.y0 + far.y1) / 2.0) as f32,
     );
     assert!(
-        !frame.contains(vello::kurbo::Point::new(f64::from(x), f64::from(y))),
+        !frame.contains(kurbo::Point::new(f64::from(x), f64::from(y))),
         "the press target must be outside the overlay frame"
     );
     for event in primary_click(x, y) {
@@ -621,7 +621,7 @@ fn input_during_the_exit_reaches_the_content_underneath() {
     let frame = presented_frame(&runtime);
 
     // Presented, a press inside the frame lands on the overlay's own button.
-    let point = vello::kurbo::Point::new((frame.x0 + frame.x1) / 2.0, (frame.y0 + frame.y1) / 2.0);
+    let point = kurbo::Point::new((frame.x0 + frame.x1) / 2.0, (frame.y0 + frame.y1) / 2.0);
     assert!(
         under.contains(accesskit::Point::new(point.x, point.y)),
         "the 'under' button must reach into the overlay's frame for this test"

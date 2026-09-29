@@ -240,7 +240,7 @@ impl RetainedSubview {
         ctx: RenderContext,
         env: &Environment,
         proposal: ProposalSize,
-        rect: vello::kurbo::Rect,
+        rect: kurbo::Rect,
     ) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -261,8 +261,8 @@ impl RetainedSubview {
             self.needs_layout = false;
         }
         let child_ctx = ctx.child(
-            vello::kurbo::Affine::translate((rect.x0, rect.y0)),
-            vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
+            kurbo::Affine::translate((rect.x0, rect.y0)),
+            kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
         );
         // Record the sub-view's root as the owner of whatever its flush
         // registers: a press the caller registered for the whole sub-view
@@ -356,9 +356,9 @@ impl RetainedSubview {
             self.needs_layout = false;
         }
         let local_ctx = RenderContext::with_transforms(
-            vello::kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
-            vello::kurbo::Affine::IDENTITY,
-            vello::kurbo::Affine::IDENTITY,
+            kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+            kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
         );
         renderer.begin_navigation_scene_capture();
         renderer.push_lazy_viewport(LazyViewport {
@@ -1027,14 +1027,14 @@ impl ViewEffectNode {
         );
         drop(runtime);
         renderer.compositor.active_filter_images.push(image.clone());
-        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
-            * vello::kurbo::Affine::scale_non_uniform(
+        let image_transform = kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
+            * kurbo::Affine::scale_non_uniform(
                 ctx.bounds.width() / f64::from(output_width),
                 ctx.bounds.height() / f64::from(output_height),
             );
         renderer.state.counters.image_registrations += 1;
         renderer.scene.draw_image(
-            &vello::peniko::ImageBrush::new(image),
+            &peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
         );
     }
@@ -1090,15 +1090,15 @@ impl AppliedFilterNode {
             height,
         );
 
-        let image_transform = vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
-            * vello::kurbo::Affine::scale_non_uniform(
+        let image_transform = kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))
+            * kurbo::Affine::scale_non_uniform(
                 ctx.bounds.width() / f64::from(image.width),
                 ctx.bounds.height() / f64::from(image.height),
             );
         renderer.state.counters.image_registrations += 1;
         let scene = renderer.scene_mut();
         scene.draw_image(
-            &vello::peniko::ImageBrush::new(image),
+            &peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
         );
     }

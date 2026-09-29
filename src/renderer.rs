@@ -319,14 +319,14 @@ pub struct HydrolysisRenderer {
     scene: vello::Scene,
     transient_scene: Option<vello::Scene>,
     compositor: Compositor,
-    window_bounds: vello::kurbo::Rect,
+    window_bounds: kurbo::Rect,
     /// The transform the window's root content is flushed under: logical layout
     /// units onto the target's physical pixel grid. Stored alongside
     /// [`Self::window_bounds`] because the pair is what says where the viewport
     /// is in device pixels, which is what
     /// [`HydrolysisRenderer::push_gpu_surface_layer`] tests a full-window GPU
     /// surface against.
-    window_root_transform: vello::kurbo::Affine,
+    window_root_transform: kurbo::Affine,
     /// Wake target supplied when this renderer itself is hosted by a
     /// `GpuSurface`. Async setup and renderer-owned redraws from nested surfaces
     /// use it to wake the parent host without polling frames.
@@ -585,8 +585,8 @@ impl HydrolysisRenderer {
             scene: vello::Scene::new(),
             transient_scene: None,
             compositor: Compositor::default(),
-            window_bounds: vello::kurbo::Rect::ZERO,
-            window_root_transform: vello::kurbo::Affine::IDENTITY,
+            window_bounds: kurbo::Rect::ZERO,
+            window_root_transform: kurbo::Affine::IDENTITY,
             host_redraw_handle: None,
             shader_cache: Arc::new(WgslModuleCache::new()),
             scene_renderer: Arc::new(SharedSceneRenderer::new(SceneEngine::for_adapter(adapter))),

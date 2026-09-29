@@ -738,7 +738,7 @@ fn register_section_chrome_node(
     semantic_key: i64,
     label: Text,
     is_header: bool,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     env: &Environment,
 ) -> Option<AccessibilityNodeId> {
     let role = if is_header {
@@ -820,7 +820,7 @@ pub(crate) fn list_accessibility(
         }
     }
     let _rendered = ctx.is_some();
-    let viewport = ctx.map_or(vello::kurbo::Rect::ZERO, |ctx| ctx.bounds);
+    let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
     // The rendered scroll domain is the measured extent; the semantic one is
     // the row count — with a zero viewport every row is scrollable to.
     let content_height = state
@@ -899,7 +899,7 @@ pub(crate) fn list_accessibility(
             } else {
                 0.0
             };
-            let slot_rect = vello::kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
+            let slot_rect = kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
             y += slot_height;
             if _rendered && (slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1) {
                 continue;
@@ -909,7 +909,7 @@ pub(crate) fn list_accessibility(
             // The chrome a row owns is not part of the row: a section title is
             // its own node, and the row's bounds are the band left between the
             // header and the footer — the same split the draw pass makes.
-            let row_rect = vello::kurbo::Rect::new(
+            let row_rect = kurbo::Rect::new(
                 slot_rect.x0,
                 slot_rect.y0 + header_height,
                 slot_rect.x1,
@@ -921,7 +921,7 @@ pub(crate) fn list_accessibility(
                 .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
             let key_base = row_a11y_key_base(row_id);
             if let Some(header) = chrome.header.clone() {
-                let header_rect = vello::kurbo::Rect::new(
+                let header_rect = kurbo::Rect::new(
                     slot_rect.x0 + list_metrics.map_or(0.0, |m| m.horizontal_inset),
                     slot_rect.y0,
                     slot_rect.x1 - list_metrics.map_or(0.0, |m| m.horizontal_inset),
@@ -1139,7 +1139,7 @@ pub(crate) fn list_accessibility(
                 }
             }
             if let Some(footer) = chrome.footer.clone() {
-                let footer_rect = vello::kurbo::Rect::new(
+                let footer_rect = kurbo::Rect::new(
                     slot_rect.x0 + list_metrics.map_or(0.0, |m| m.horizontal_inset),
                     slot_rect.y1 - footer_height,
                     slot_rect.x1 - list_metrics.map_or(0.0, |m| m.horizontal_inset),
@@ -1197,7 +1197,7 @@ fn register_edit_control_node(
     ctx: Option<RenderContext>,
     semantic_key: i64,
     label: String,
-    bounds: Option<vello::kurbo::Rect>,
+    bounds: Option<kurbo::Rect>,
     env: &Environment,
     action: crate::renderer::AccessibilityActivation,
 ) -> Option<AccessibilityNodeId> {
@@ -1481,7 +1481,7 @@ pub(crate) fn render_list_parts(
         let swipe_dx = state.borrow().swipe_offset_for(row_id);
         // Where the row's slot is (the gap it occupies in the list), before the
         // row itself is displaced sideways by a swipe.
-        let slot_rect = vello::kurbo::Rect::new(
+        let slot_rect = kurbo::Rect::new(
             viewport.x0,
             resting_y + reorder_dy,
             viewport.x1,
@@ -1495,7 +1495,7 @@ pub(crate) fn render_list_parts(
         // The slot covers the section chrome this row owns; the row itself is
         // the band left between that header and footer, and only that band
         // swipes — a section title is not part of the row that carries it.
-        let row_slot = vello::kurbo::Rect::new(
+        let row_slot = kurbo::Rect::new(
             slot_rect.x0,
             slot_rect.y0 + header_height,
             slot_rect.x1,
@@ -1519,7 +1519,7 @@ pub(crate) fn render_list_parts(
         // Everything the row draws — its background, controls and content —
         // rides the swipe displacement; only the revealed dismiss background
         // stays anchored to the slot.
-        let row_rect = row_slot + vello::kurbo::Vec2::new(swipe_dx, 0.0);
+        let row_rect = row_slot + kurbo::Vec2::new(swipe_dx, 0.0);
         let selected = state
             .borrow()
             .row_selection
@@ -1551,7 +1551,7 @@ pub(crate) fn render_list_parts(
             }
         }
         if let Some(header) = chrome.header.clone() {
-            let header_rect = vello::kurbo::Rect::new(
+            let header_rect = kurbo::Rect::new(
                 slot_rect.x0 + list_metrics.horizontal_inset,
                 slot_rect.y0,
                 slot_rect.x1 - list_metrics.horizontal_inset,
@@ -1560,7 +1560,7 @@ pub(crate) fn render_list_parts(
             draw_section_label(ctx, header, header_rect, true, &row_env);
         }
         if let Some(footer) = chrome.footer.clone() {
-            let footer_rect = vello::kurbo::Rect::new(
+            let footer_rect = kurbo::Rect::new(
                 slot_rect.x0 + list_metrics.horizontal_inset,
                 slot_rect.y1 - footer_height,
                 slot_rect.x1 - list_metrics.horizontal_inset,
@@ -1827,7 +1827,7 @@ pub(crate) fn render_list_parts(
         }
 
         {
-            let separator = vello::kurbo::Rect::new(
+            let separator = kurbo::Rect::new(
                 row_rect.x0 + list_metrics.divider_leading_inset,
                 row_rect.y1 - 1.0,
                 row_rect.x1 - list_metrics.divider_trailing_inset,
@@ -1910,7 +1910,7 @@ fn register_row_gesture(
     state: &Rc<RefCell<ListRenderState>>,
     group: usize,
     row_id: ListItemId,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     slot: RowGestureSlot,
     build: impl FnOnce() -> (Gesture, BoxedAction<()>),
 ) {
@@ -1945,16 +1945,16 @@ fn register_row_gesture(
 /// registers the same controls' accessibility nodes on these bounds, so a
 /// `Click` and a pointer tap land identically (water-rs/hydrolysis#52).
 struct RowEditControls {
-    reorder: Option<vello::kurbo::Rect>,
-    reorder_up: Option<vello::kurbo::Rect>,
-    reorder_down: Option<vello::kurbo::Rect>,
-    delete: Option<vello::kurbo::Rect>,
+    reorder: Option<kurbo::Rect>,
+    reorder_up: Option<kurbo::Rect>,
+    reorder_down: Option<kurbo::Rect>,
+    delete: Option<kurbo::Rect>,
     trailing_x: f64,
 }
 
 fn row_edit_controls(
     metrics: &waterui_backend_core::widget::ListMetrics,
-    row_rect: vello::kurbo::Rect,
+    row_rect: kurbo::Rect,
     slot_height: f64,
     index: usize,
     total_rows: usize,
@@ -1973,7 +1973,7 @@ fn row_edit_controls(
         let control_width = metrics.move_control_width;
         let vertical_inset = metrics.trailing_control_vertical_inset;
         let control_height = (slot_height - vertical_inset * 2.0).max(vertical_inset * 2.0);
-        let control_rect = vello::kurbo::Rect::new(
+        let control_rect = kurbo::Rect::new(
             trailing_x - control_width,
             row_rect.y0 + vertical_inset,
             trailing_x,
@@ -1983,7 +1983,7 @@ fn row_edit_controls(
         let half_height = control_rect.height() / 2.0;
         controls.reorder = Some(control_rect);
         controls.reorder_up = (index > 0).then(|| {
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 control_rect.x0,
                 control_rect.y0,
                 control_rect.x1,
@@ -1991,7 +1991,7 @@ fn row_edit_controls(
             )
         });
         controls.reorder_down = (index + 1 < total_rows).then(|| {
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 control_rect.x0,
                 control_rect.y0 + half_height,
                 control_rect.x1,
@@ -2000,7 +2000,7 @@ fn row_edit_controls(
         });
     }
     if delete_enabled {
-        let delete_rect = vello::kurbo::Rect::new(
+        let delete_rect = kurbo::Rect::new(
             trailing_x - metrics.delete_control_width,
             row_rect.y0 + metrics.trailing_control_vertical_inset,
             trailing_x,
@@ -2050,7 +2050,7 @@ fn register_row_swipe_gesture(
     group: usize,
     row_id: ListItemId,
     binding: Rc<Cell<RowBinding>>,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     row_env: &Environment,
 ) {
     let owner = Rc::clone(state);
@@ -2118,7 +2118,7 @@ fn register_row_reorder_gesture(
     group: usize,
     row_id: ListItemId,
     binding: Rc<Cell<RowBinding>>,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     row_env: &Environment,
 ) {
     let owner = Rc::clone(state);
@@ -2251,7 +2251,7 @@ impl RowGestures {
 fn draw_section_label(
     ctx: &mut WidgetRenderContext<'_>,
     label: Text,
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     is_header: bool,
     env: &Environment,
 ) {
@@ -2286,12 +2286,12 @@ fn section_chrome_text(label: Text, is_header: bool) -> Text {
 }
 
 fn list_content_rect(
-    row_rect: vello::kurbo::Rect,
+    row_rect: kurbo::Rect,
     metrics: waterui_backend_core::widget::ListMetrics,
     insets: Option<&waterui_layout::padding::EdgeInsets>,
     content_size: waterui_core::layout::Size,
     env: &Environment,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     // Rows propose their full inset width to the content; horizontal
     // alignment belongs to the content itself (composite items cannot be
     // statically classified as stretching, and interactive rows must keep a
@@ -2320,7 +2320,7 @@ fn list_content_rect(
     let available_height = (row_rect.height() - vertical_insets).max(0.0);
     let height = f64::from(content_size.height).min(available_height);
     let y0 = row_rect.y0 + (row_rect.height() - height) * 0.5;
-    vello::kurbo::Rect::new(x0, y0, x1, y0 + height)
+    kurbo::Rect::new(x0, y0, x1, y0 + height)
 }
 
 /// Emits a retained list's accessibility tree for the semantic walk — the same

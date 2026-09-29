@@ -6,7 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use vello::kurbo::Rect;
+use kurbo::Rect;
 use waterui::{Binding, Str};
 use waterui_controls::ControlSize;
 use waterui_controls::slider::slider;

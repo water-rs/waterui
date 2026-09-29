@@ -183,11 +183,11 @@ impl SceneContent for ImagePane {
     fn set_invalidator(&mut self, _invalidator: Option<waterui_graphics::SceneInvalidator>) {}
 }
 
-fn solid_image() -> vello::peniko::ImageData {
-    vello::peniko::ImageData {
-        data: vello::peniko::Blob::from(vec![0x80u8; 16 * 16 * 4]),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::AlphaPremultiplied,
+fn solid_image() -> peniko::ImageData {
+    peniko::ImageData {
+        data: peniko::Blob::from(vec![0x80u8; 16 * 16 * 4]),
+        format: peniko::ImageFormat::Rgba8,
+        alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
         width: 16,
         height: 16,
     }
@@ -195,8 +195,8 @@ fn solid_image() -> vello::peniko::ImageData {
 
 #[test]
 fn transformed_image_brushes_count() {
-    use vello::kurbo::Affine;
-    use vello::peniko::{Brush, ImageBrush};
+    use kurbo::Affine;
+    use peniko::{Brush, ImageBrush};
 
     let mut runtime = runtime_with(waterui_graphics::SceneView::new(ImagePane {
         draw: |scene| {
@@ -205,12 +205,11 @@ fn transformed_image_brushes_count() {
                 Affine::translate((40.0, 40.0)) * Affine::rotate(0.4),
             );
             scene.fill(
-                vello::peniko::Fill::NonZero,
+                peniko::Fill::NonZero,
                 Affine::translate((120.0, 60.0)) * Affine::scale(2.0),
                 &Brush::Image(ImageBrush::new(solid_image())),
                 None,
-                &vello::kurbo::BezPath::from_svg("M0,0 L16,0 L16,16 Z")
-                    .expect("static path parses"),
+                &kurbo::BezPath::from_svg("M0,0 L16,0 L16,16 Z").expect("static path parses"),
             );
         },
     }));

@@ -2,7 +2,7 @@
 //! stack management, frame triggers, and per-frame statistics.
 
 use super::*;
-use vello::kurbo::Shape as _;
+use kurbo::Shape as _;
 
 /// The two transforms a clip layer is pushed under: `paint` positions the
 /// vello scene layer, `hit` positions the matching hit-test clip — they diverge
@@ -10,8 +10,8 @@ use vello::kurbo::Shape as _;
 /// slot space but keeps window hit space).
 #[derive(Clone, Copy)]
 pub(crate) struct LayerTransforms {
-    pub(crate) paint: vello::kurbo::Affine,
-    pub(crate) hit: vello::kurbo::Affine,
+    pub(crate) paint: kurbo::Affine,
+    pub(crate) hit: kurbo::Affine,
 }
 
 /// What one frame's window pass was made of.
@@ -298,8 +298,8 @@ impl HydrolysisRenderer {
     /// be rendered straight into the target.
     pub(crate) fn set_window_viewport(
         &mut self,
-        bounds: vello::kurbo::Rect,
-        root_transform: vello::kurbo::Affine,
+        bounds: kurbo::Rect,
+        root_transform: kurbo::Affine,
     ) {
         self.window_bounds = bounds;
         self.window_root_transform = root_transform;
@@ -307,7 +307,7 @@ impl HydrolysisRenderer {
 
     /// The window's viewport in physical pixels: where the root transform puts
     /// the window's logical bounds.
-    pub(crate) fn window_viewport(&self) -> vello::kurbo::Rect {
+    pub(crate) fn window_viewport(&self) -> kurbo::Rect {
         self.window_root_transform
             .transform_rect_bbox(self.window_bounds)
     }
@@ -463,12 +463,12 @@ impl HydrolysisRenderer {
         &mut self,
         alpha: f32,
         transforms: LayerTransforms,
-        rect: vello::kurbo::Rect,
+        rect: kurbo::Rect,
     ) {
         self.record_clip_layer_push();
         self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
+            peniko::Fill::NonZero,
+            peniko::BlendMode::default(),
             alpha,
             transforms.paint,
             &rect,
@@ -489,12 +489,12 @@ impl HydrolysisRenderer {
         &mut self,
         alpha: f32,
         transforms: LayerTransforms,
-        path: vello::kurbo::BezPath,
+        path: kurbo::BezPath,
     ) {
         self.record_clip_layer_push();
         self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
+            peniko::Fill::NonZero,
+            peniko::BlendMode::default(),
             alpha,
             transforms.paint,
             &path,
@@ -512,15 +512,15 @@ impl HydrolysisRenderer {
         &mut self,
         alpha: f32,
         transforms: LayerTransforms,
-        path: vello::kurbo::BezPath,
-        rect: vello::kurbo::Rect,
+        path: kurbo::BezPath,
+        rect: kurbo::Rect,
         corner_width: f64,
         corner_height: f64,
     ) {
         self.record_clip_layer_push();
         self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
+            peniko::Fill::NonZero,
+            peniko::BlendMode::default(),
             alpha,
             transforms.paint,
             &path,
@@ -591,9 +591,9 @@ impl HydrolysisRenderer {
     pub(crate) fn record_native_view_layer(
         &mut self,
         view: objc2::rc::Retained<objc2_web_kit::WKWebView>,
-        transform: vello::kurbo::Affine,
-        bounds: vello::kurbo::Rect,
-        occlusion: Rc<RefCell<Vec<vello::kurbo::Rect>>>,
+        transform: kurbo::Affine,
+        bounds: kurbo::Rect,
+        occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
     ) {
         self.flush_vello_scene_layer();
         self.compositor

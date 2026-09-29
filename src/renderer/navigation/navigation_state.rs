@@ -11,7 +11,7 @@ pub(crate) const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 
 #[derive(Clone)]
 pub(crate) struct NavigationMatchedElement {
-    pub(crate) bounds: vello::kurbo::Rect,
+    pub(crate) bounds: kurbo::Rect,
     pub(crate) scene: vello::Scene,
 }
 
@@ -769,7 +769,7 @@ impl HydrolysisRenderer {
         &mut self,
         source: bool,
         id: Id,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         scene: vello::Scene,
     ) {
         let capture = self

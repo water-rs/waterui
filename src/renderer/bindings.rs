@@ -12,10 +12,7 @@ impl SemanticCore {
         (order, depth, index)
     }
 
-    pub(super) fn topmost_text_input_index_at_point(
-        &self,
-        point: vello::kurbo::Point,
-    ) -> Option<usize> {
+    pub(super) fn topmost_text_input_index_at_point(&self, point: kurbo::Point) -> Option<usize> {
         self.text_editing
             .text_input_targets
             .iter()
@@ -148,7 +145,7 @@ impl SemanticCore {
 
     #[must_use]
     pub fn cursor_style_at(&self, x: f32, y: f32) -> CursorStyle {
-        let point = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.cursor_style_at(point)
     }
 
@@ -160,7 +157,7 @@ impl SemanticCore {
         phase: TouchPhase,
         env: &Environment,
     ) -> bool {
-        let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let center = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant;
         self.with_unoccluded_gesture_targets(center, |engine| {
             engine.handle_magnification(center, delta, phase, at, env)
@@ -192,7 +189,7 @@ impl SemanticCore {
         phase: TouchPhase,
         env: &Environment,
     ) -> bool {
-        let center = vello::kurbo::Point::new(f64::from(x), f64::from(y));
+        let center = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant;
         self.with_unoccluded_gesture_targets(center, |engine| {
             engine.handle_rotation(center, delta, phase, at, env)
@@ -223,14 +220,14 @@ impl SemanticCore {
     }
 
     pub fn sync_active_interactions_after_layout(&mut self, pointer: Option<(f32, f32)>) {
-        let pointer = pointer.map(|(x, y)| vello::kurbo::Point::new(f64::from(x), f64::from(y)));
+        let pointer = pointer.map(|(x, y)| kurbo::Point::new(f64::from(x), f64::from(y)));
         self.gesture_engine.sync_after_layout(pointer);
         self.sync_active_pointer_drag_target_after_layout(pointer);
     }
 
     pub(crate) fn register_gesture_target(
         &mut self,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         group_id: usize,
         gesture: Gesture,
         action: BoxedAction<()>,
@@ -267,7 +264,7 @@ impl SemanticCore {
     pub(crate) fn register_retained_gesture_target(
         &mut self,
         target: &crate::gesture::GestureTarget,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         group_id: usize,
     ) {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {

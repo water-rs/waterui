@@ -3,10 +3,10 @@
 use super::{MinimalTestTheme, test_environment, test_renderer};
 use crate::renderer::{ContainerNode, RenderContext, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
+use kurbo::{Affine, Rect};
 use nami::Computed;
 use nami::Signal as _;
 use std::rc::Rc;
-use vello::kurbo::{Affine, Rect};
 use waterui::ViewExt as _;
 use waterui_controls::button::button;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size};

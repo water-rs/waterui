@@ -14,9 +14,9 @@ use waterui_text::styled::StyledStr;
 /// Render context passed to handlers.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
-    pub transform: vello::kurbo::Affine,
-    pub hit_transform: vello::kurbo::Affine,
-    pub bounds: vello::kurbo::Rect,
+    pub transform: kurbo::Affine,
+    pub hit_transform: kurbo::Affine,
+    pub bounds: kurbo::Rect,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -33,14 +33,14 @@ pub(crate) enum HydrolysisTextContextMenuMode {
 
 pub(crate) struct WidgetRenderContext<'a> {
     renderer: &'a mut HydrolysisRenderer,
-    pub transform: vello::kurbo::Affine,
-    pub hit_transform: vello::kurbo::Affine,
-    pub bounds: vello::kurbo::Rect,
+    pub transform: kurbo::Affine,
+    pub hit_transform: kurbo::Affine,
+    pub bounds: kurbo::Rect,
 }
 
 /// An explicit offer from a native widget-owned content region.
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn bounded_proposal(bounds: vello::kurbo::Rect) -> waterui_core::layout::ProposalSize {
+pub(crate) fn bounded_proposal(bounds: kurbo::Rect) -> waterui_core::layout::ProposalSize {
     waterui_core::layout::ProposalSize::new(
         Some(bounds.width() as f32),
         Some(bounds.height() as f32),
@@ -49,9 +49,9 @@ pub(crate) fn bounded_proposal(bounds: vello::kurbo::Rect) -> waterui_core::layo
 
 impl RenderContext {
     pub(crate) fn with_transforms(
-        bounds: vello::kurbo::Rect,
-        transform: vello::kurbo::Affine,
-        hit_transform: vello::kurbo::Affine,
+        bounds: kurbo::Rect,
+        transform: kurbo::Affine,
+        hit_transform: kurbo::Affine,
     ) -> Self {
         Self {
             transform,
@@ -61,7 +61,7 @@ impl RenderContext {
     }
 
     #[must_use]
-    pub fn child(&self, transform: vello::kurbo::Affine, bounds: vello::kurbo::Rect) -> Self {
+    pub fn child(&self, transform: kurbo::Affine, bounds: kurbo::Rect) -> Self {
         Self {
             transform: self.transform * transform,
             hit_transform: self.hit_transform * transform,
@@ -70,10 +70,10 @@ impl RenderContext {
     }
 
     #[must_use]
-    pub(crate) fn with_identity_transforms(&self, bounds: vello::kurbo::Rect) -> Self {
+    pub(crate) fn with_identity_transforms(&self, bounds: kurbo::Rect) -> Self {
         Self {
-            transform: vello::kurbo::Affine::IDENTITY,
-            hit_transform: vello::kurbo::Affine::IDENTITY,
+            transform: kurbo::Affine::IDENTITY,
+            hit_transform: kurbo::Affine::IDENTITY,
             bounds,
         }
     }
@@ -99,11 +99,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer.theme()
     }
 
-    pub(crate) fn child(
-        &self,
-        transform: vello::kurbo::Affine,
-        bounds: vello::kurbo::Rect,
-    ) -> RenderContext {
+    pub(crate) fn child(&self, transform: kurbo::Affine, bounds: kurbo::Rect) -> RenderContext {
         self.render_context().child(transform, bounds)
     }
 
@@ -119,7 +115,7 @@ impl<'a> WidgetRenderContext<'a> {
         &mut self.renderer.state
     }
 
-    pub(crate) fn push_layer_rect(&mut self, alpha: f32, clip: vello::kurbo::Rect) {
+    pub(crate) fn push_layer_rect(&mut self, alpha: f32, clip: kurbo::Rect) {
         self.renderer.push_layer_rect(
             alpha,
             LayerTransforms {
@@ -139,7 +135,7 @@ impl<'a> WidgetRenderContext<'a> {
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
     ) {
         self.render_styled_text_limited(styled, alignment, env, bounds, None);
     }
@@ -149,12 +145,12 @@ impl<'a> WidgetRenderContext<'a> {
         styled: StyledStr,
         alignment: HorizontalAlignment,
         env: &Environment,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
         max_lines: Option<usize>,
     ) {
         let child_ctx = self.child(
-            vello::kurbo::Affine::translate((bounds.x0, bounds.y0)),
-            vello::kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
+            kurbo::Affine::translate((bounds.x0, bounds.y0)),
+            kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
         let (state, scene) = renderer.state_and_scene_mut();
@@ -173,11 +169,11 @@ impl<'a> WidgetRenderContext<'a> {
         &mut self,
         styled: StyledStr,
         env: &Environment,
-        bounds: vello::kurbo::Rect,
+        bounds: kurbo::Rect,
     ) {
         let child_ctx = self.child(
-            vello::kurbo::Affine::translate((bounds.x0, bounds.y0)),
-            vello::kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
+            kurbo::Affine::translate((bounds.x0, bounds.y0)),
+            kurbo::Rect::new(0.0, 0.0, bounds.width(), bounds.height()),
         );
         let renderer = self.renderer_mut();
         let (state, scene) = renderer.state_and_scene_mut();

@@ -20,8 +20,8 @@ pub(crate) fn table_header_cell_rect(
     x_offset: f64,
     width: f64,
     metrics: waterui_backend_core::widget::TableMetrics,
-) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::new(
+) -> kurbo::Rect {
+    kurbo::Rect::new(
         origin_x + x_offset,
         origin_y,
         origin_x + x_offset + width,
@@ -36,9 +36,9 @@ pub(crate) fn table_data_cell_rect(
     width: f64,
     row_index: usize,
     metrics: waterui_backend_core::widget::TableMetrics,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let y0 = origin_y + metrics.header_height + metrics.row_height * row_index as f64;
-    vello::kurbo::Rect::new(
+    kurbo::Rect::new(
         origin_x + x_offset,
         y0,
         origin_x + x_offset + width,
@@ -452,7 +452,7 @@ impl HydrolysisRenderer {
         crate::engine::vello_backend::append_scene(
             scene,
             &fragment,
-            Some(ctx.transform * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
+            Some(ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
         );
     }
 
@@ -496,7 +496,7 @@ impl HydrolysisRenderer {
         crate::engine::vello_backend::append_scene(
             scene,
             &fragment,
-            Some(ctx.transform * vello::kurbo::Affine::translate((x, y))),
+            Some(ctx.transform * kurbo::Affine::translate((x, y))),
         );
     }
 
@@ -550,11 +550,11 @@ impl HydrolysisRenderer {
                         .brush(brush)
                         .font_size(run.font_size());
                     if normalized_coords.is_empty() {
-                        glyph_run_builder.draw(vello::peniko::Fill::NonZero, glyphs);
+                        glyph_run_builder.draw(peniko::Fill::NonZero, glyphs);
                     } else {
                         glyph_run_builder
                             .normalized_coords(normalized_coords)
-                            .draw(vello::peniko::Fill::NonZero, glyphs);
+                            .draw(peniko::Fill::NonZero, glyphs);
                     }
                 }
             }
@@ -614,11 +614,11 @@ impl HydrolysisRenderer {
         colour: [u8; 4],
     ) {
         scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
+            peniko::Fill::NonZero,
+            kurbo::Affine::IDENTITY,
             rgba8_to_peniko(colour),
             None,
-            &vello::kurbo::Rect::new(f64::from(start), top, f64::from(end), bottom),
+            &kurbo::Rect::new(f64::from(start), top, f64::from(end), bottom),
         );
     }
 
@@ -877,21 +877,21 @@ pub(crate) fn tabs_content_proposal(
 }
 
 pub(crate) fn tabs_bar_and_content_rect(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     style: NativeTabStyle,
     bar_extent: f64,
-) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+) -> (kurbo::Rect, kurbo::Rect) {
     match style {
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
             let bar_height = bar_extent.min(bounds.height());
             (
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     bounds.x0,
                     (bounds.y1 - bar_height).max(bounds.y0),
                     bounds.x1,
                     bounds.y1,
                 ),
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     bounds.x0,
                     bounds.y0,
                     bounds.x1,
@@ -902,38 +902,38 @@ pub(crate) fn tabs_bar_and_content_rect(
         NativeTabStyle::Sidebar => {
             let bar_width = bar_extent.min(bounds.width());
             (
-                vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + bar_width, bounds.y1),
-                vello::kurbo::Rect::new(bounds.x0 + bar_width, bounds.y0, bounds.x1, bounds.y1),
+                kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x0 + bar_width, bounds.y1),
+                kurbo::Rect::new(bounds.x0 + bar_width, bounds.y0, bounds.x1, bounds.y1),
             )
         }
     }
 }
 
 pub(crate) fn tabs_button_rect(
-    bar_rect: vello::kurbo::Rect,
+    bar_rect: kurbo::Rect,
     tab_count: usize,
     index: usize,
     style: NativeTabStyle,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     match style {
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
             let button_width = bar_rect.width() / tab_count as f64;
             let x0 = bar_rect.x0 + button_width * index as f64;
-            vello::kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
+            kurbo::Rect::new(x0, bar_rect.y0, x0 + button_width, bar_rect.y1)
         }
         NativeTabStyle::Sidebar => {
             let button_height = bar_rect.height() / tab_count as f64;
             let y0 = bar_rect.y0 + button_height * index as f64;
-            vello::kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
+            kurbo::Rect::new(bar_rect.x0, y0, bar_rect.x1, y0 + button_height)
         }
     }
 }
 
 pub(crate) fn navigation_back_button_rect(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     metrics: waterui_backend_core::widget::NavigationMetrics,
-) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::new(
+) -> kurbo::Rect {
+    kurbo::Rect::new(
         bounds.x0 + metrics.back_button_leading_inset,
         bounds.y0 + metrics.back_button_top_inset,
         bounds.x0 + metrics.back_button_leading_inset + metrics.back_button_size,
@@ -1609,9 +1609,9 @@ mod background_tests {
         let mut state = HydroState::default();
         let mut scene = vello::Scene::new();
         let ctx = RenderContext::with_transforms(
-            vello::kurbo::Rect::new(0.0, 0.0, width, 200.0),
-            vello::kurbo::Affine::IDENTITY,
-            vello::kurbo::Affine::IDENTITY,
+            kurbo::Rect::new(0.0, 0.0, width, 200.0),
+            kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
         );
         HydrolysisRenderer::render_styled_text_limited(
             &mut state,

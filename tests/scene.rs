@@ -9,7 +9,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use vello::kurbo::Shape as _;
+use kurbo::Shape as _;
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::hstack;
@@ -27,15 +27,15 @@ struct TestSceneContent(Rc<Cell<bool>>);
 impl SceneContent for TestSceneContent {
     fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
         self.0.set(true);
-        let rect = vello::kurbo::Rect::from_origin_size(
-            vello::kurbo::Point::new(8.0, 8.0),
-            vello::kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
+        let rect = kurbo::Rect::from_origin_size(
+            kurbo::Point::new(8.0, 8.0),
+            kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
         )
         .to_path(0.1);
-        let brush: vello::peniko::Brush = vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
+        let brush: peniko::Brush = peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
         scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
+            peniko::Fill::NonZero,
+            kurbo::Affine::IDENTITY,
             &brush,
             None,
             &rect,
@@ -58,15 +58,15 @@ impl NaturallySizedContent {
 
 impl SceneContent for NaturallySizedContent {
     fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        let rect = vello::kurbo::Rect::from_origin_size(
-            vello::kurbo::Point::ZERO,
-            vello::kurbo::Size::new(f64::from(width), f64::from(height)),
+        let rect = kurbo::Rect::from_origin_size(
+            kurbo::Point::ZERO,
+            kurbo::Size::new(f64::from(width), f64::from(height)),
         )
         .to_path(0.1);
-        let brush: vello::peniko::Brush = vello::peniko::Color::new([0.0, 0.4, 1.0, 1.0]).into();
+        let brush: peniko::Brush = peniko::Color::new([0.0, 0.4, 1.0, 1.0]).into();
         scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
+            peniko::Fill::NonZero,
+            kurbo::Affine::IDENTITY,
             &brush,
             None,
             &rect,

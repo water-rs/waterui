@@ -52,11 +52,7 @@ impl TargetEncoding {
     /// colour components are scaled by alpha exactly when `premultiply_alpha`
     /// holds — a surface presented under `CompositeAlphaMode::PreMultiplied`
     /// stores premultiplied texels, every other target stores straight ones.
-    pub(crate) fn clear_value(
-        self,
-        color: vello::peniko::Color,
-        premultiply_alpha: bool,
-    ) -> wgpu::Color {
+    pub(crate) fn clear_value(self, color: peniko::Color, premultiply_alpha: bool) -> wgpu::Color {
         let srgb = Srgb::new(
             color.components[0],
             color.components[1],
@@ -145,7 +141,7 @@ mod tests {
             wgpu::TextureFormat::Rgba16Float,
         ] {
             let encoding = TargetEncoding::of(format);
-            let white = encoding.clear_value(vello::peniko::Color::WHITE, false);
+            let white = encoding.clear_value(peniko::Color::WHITE, false);
             // White is the fixed point of the transfer function, so it pins the
             // plumbing without depending on which branch was taken.
             assert!((white.r - 1.0).abs() < 1e-6, "{format:?}");
@@ -161,7 +157,7 @@ mod tests {
     /// function, which is the whole of #233 in one assertion.
     #[test]
     fn a_mid_tone_differs_between_the_two_kinds_of_target() {
-        let mid = vello::peniko::Color::new([0.5, 0.5, 0.5, 1.0]);
+        let mid = peniko::Color::new([0.5, 0.5, 0.5, 1.0]);
         let stored = TargetEncoding::of(wgpu::TextureFormat::Rgba8Unorm).clear_value(mid, false);
         let hardware =
             TargetEncoding::of(wgpu::TextureFormat::Rgba8UnormSrgb).clear_value(mid, false);

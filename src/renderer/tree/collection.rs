@@ -482,13 +482,8 @@ impl CollectionNode {
                 continue;
             }
             let child_ctx = ctx.child(
-                vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
-                vello::kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(rect.width()),
-                    f64::from(rect.height()),
-                ),
+                kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
+                kurbo::Rect::new(0.0, 0.0, f64::from(rect.width()), f64::from(rect.height())),
             );
             if entry.phase.suppresses_accessibility() {
                 renderer.with_suppressed_accessibility(|renderer| {
@@ -554,7 +549,7 @@ impl CollectionNode {
         }
         let bounds = child_ctx.bounds;
         let clip = match axis {
-            Some(TransitionAxis { vertical: true, .. }) => vello::kurbo::Rect::new(
+            Some(TransitionAxis { vertical: true, .. }) => kurbo::Rect::new(
                 0.0,
                 0.0,
                 bounds.width(),
@@ -562,7 +557,7 @@ impl CollectionNode {
             ),
             Some(TransitionAxis {
                 vertical: false, ..
-            }) => vello::kurbo::Rect::new(
+            }) => kurbo::Rect::new(
                 0.0,
                 0.0,
                 bounds.width() * f64::from(factor),

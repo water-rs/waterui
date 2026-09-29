@@ -195,7 +195,7 @@ fn equal_bounds_keep_the_selected_proposal_after_other_probes() {
 #[test]
 fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
     use crate::renderer::{LazyViewport, RenderContext, tree::RetainedSubview};
-    use vello::kurbo::{Affine, Rect as SceneRect};
+    use kurbo::{Affine, Rect as SceneRect};
 
     let env = test_environment();
     let mut renderer = test_renderer();
@@ -234,7 +234,7 @@ fn retained_scene_capture_preserves_proposal_and_viewport_boundaries() {
 #[test]
 fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
-    use vello::kurbo::{Affine, Rect as SceneRect};
+    use kurbo::{Affine, Rect as SceneRect};
     use waterui_layout::frame::Frame;
 
     let env = test_environment();

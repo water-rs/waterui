@@ -25,7 +25,7 @@ impl RenderNode {
                 renderer.state.counters.recorded_view_contents += 1;
                 let color = resolved_color_to_peniko(renderer.read_signal(&color.color));
                 renderer.scene_mut().fill(
-                    vello::peniko::Fill::NonZero,
+                    peniko::Fill::NonZero,
                     ctx.transform,
                     color,
                     None,
@@ -74,8 +74,8 @@ impl RenderNode {
                 renderer.pop_render_owner();
                 for (child, rect) in container.children.iter().zip(container.placed.iter()) {
                     let child_ctx = ctx.child(
-                        vello::kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
-                        vello::kurbo::Rect::new(
+                        kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y()))),
+                        kurbo::Rect::new(
                             0.0,
                             0.0,
                             f64::from(rect.width()),
@@ -117,12 +117,9 @@ impl RenderNode {
                     &node.value.y,
                     SCALE_Y_ANIMATION_KEY,
                 );
-                let transform = vello::kurbo::Affine::translate((center.x, center.y))
-                    * vello::kurbo::Affine::scale_non_uniform(
-                        f64::from(scale_x),
-                        f64::from(scale_y),
-                    )
-                    * vello::kurbo::Affine::translate((-center.x, -center.y));
+                let transform = kurbo::Affine::translate((center.x, center.y))
+                    * kurbo::Affine::scale_non_uniform(f64::from(scale_x), f64::from(scale_y))
+                    * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
@@ -133,9 +130,9 @@ impl RenderNode {
                     ROTATION_ANIMATION_KEY,
                 ))
                 .to_radians();
-                let transform = vello::kurbo::Affine::translate((center.x, center.y))
-                    * vello::kurbo::Affine::rotate(radians)
-                    * vello::kurbo::Affine::translate((-center.x, -center.y));
+                let transform = kurbo::Affine::translate((center.x, center.y))
+                    * kurbo::Affine::rotate(radians)
+                    * kurbo::Affine::translate((-center.x, -center.y));
                 node.child
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
@@ -149,7 +146,7 @@ impl RenderNode {
                     OFFSET_Y_ANIMATION_KEY,
                 );
                 let transform =
-                    vello::kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
+                    kurbo::Affine::translate((f64::from(offset_x), f64::from(offset_y)));
                 node.child
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
@@ -368,10 +365,7 @@ impl RenderNode {
                 crate::engine::vello_backend::append_scene(
                     renderer.scene_mut(),
                     &scene,
-                    Some(
-                        ctx.transform
-                            * vello::kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
-                    ),
+                    Some(ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
                 );
                 if needs_next {
                     renderer.request_refresh();
@@ -429,7 +423,7 @@ impl RenderNode {
                     return;
                 };
                 let metrics = handle.metrics();
-                let viewport_rect = vello::kurbo::Rect::new(
+                let viewport_rect = kurbo::Rect::new(
                     0.0,
                     0.0,
                     f64::from(node.viewport.width),
@@ -444,8 +438,8 @@ impl RenderNode {
                     viewport_rect,
                 );
                 let scroll_offset =
-                    vello::kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-                let content_bounds = vello::kurbo::Rect::new(
+                    kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+                let content_bounds = kurbo::Rect::new(
                     0.0,
                     0.0,
                     f64::from(node.content_size.width),
@@ -458,7 +452,7 @@ impl RenderNode {
                 );
                 // Publish the visible window (in content coordinates) so a
                 // virtualized `LazyStack` child only builds the rows on screen.
-                let lazy_viewport = vello::kurbo::Rect::new(
+                let lazy_viewport = kurbo::Rect::new(
                     metrics.offset_x,
                     metrics.offset_y,
                     metrics.offset_x + f64::from(node.viewport.width),
@@ -673,8 +667,8 @@ impl RenderNode {
                     // so it is a focus-bookkeeping slot (keyboard traversal,
                     // `.focused`), not a hit rect.
                     renderer.register_surface_input_target(
-                        vello::kurbo::Rect::ZERO,
-                        vello::kurbo::Affine::IDENTITY,
+                        kurbo::Rect::ZERO,
+                        kurbo::Affine::IDENTITY,
                         Rc::clone(&node.content),
                         focus_node,
                     );
@@ -701,8 +695,8 @@ impl RenderNode {
                 renderer.pop_accessibility_owner();
                 if wants_input {
                     renderer.register_surface_input_target(
-                        vello::kurbo::Rect::ZERO,
-                        vello::kurbo::Affine::IDENTITY,
+                        kurbo::Rect::ZERO,
+                        kurbo::Affine::IDENTITY,
                         Rc::clone(&node.runtime),
                         focus_node,
                     );
@@ -820,11 +814,11 @@ impl HydrolysisRenderer {
         let parent_window_bounds = self.window_bounds;
         let parent_window_root_transform = self.window_root_transform;
         self.set_window_viewport(
-            vello::kurbo::Rect::new(0.0, 0.0, f64::from(target.width), f64::from(target.height)),
-            vello::kurbo::Affine::IDENTITY,
+            kurbo::Rect::new(0.0, 0.0, f64::from(target.width), f64::from(target.height)),
+            kurbo::Affine::IDENTITY,
         );
 
-        let local_ctx = ctx.with_identity_transforms(vello::kurbo::Rect::new(
+        let local_ctx = ctx.with_identity_transforms(kurbo::Rect::new(
             0.0,
             0.0,
             f64::from(target.width),
@@ -851,7 +845,7 @@ impl HydrolysisRenderer {
             format: target.format,
             width: target.width,
             height: target.height,
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color: peniko::Color::TRANSPARENT,
         });
         assert!(
             self.compositor.active_scene_layers.is_empty(),

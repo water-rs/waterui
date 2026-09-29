@@ -344,12 +344,12 @@ pub(crate) fn picker_accessibility(
                                 } else {
                                     0.0
                                 };
-                            vello::kurbo::Rect::new(x0, top, x0 + segment_width, ctx.bounds.y1)
+                            kurbo::Rect::new(x0, top, x0 + segment_width, ctx.bounds.y1)
                         } else {
                             let y = row_y.unwrap_or(ctx.bounds.y0);
                             let row_height =
                                 f64::from(label_size.height).max(metrics.radio_indicator_size);
-                            let rect = vello::kurbo::Rect::new(
+                            let rect = kurbo::Rect::new(
                                 ctx.bounds.x0,
                                 y,
                                 ctx.bounds.x1,
@@ -517,24 +517,24 @@ pub(crate) fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerM
 
 #[cfg(feature = "accessibility")]
 pub(crate) fn menu_picker_popup_rect(
-    field_bounds: vello::kurbo::Rect,
+    field_bounds: kurbo::Rect,
     row_height: f64,
     item_count: usize,
     metrics: PickerMetrics,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let y0 = field_bounds.y1 + metrics.popup_top_spacing;
     let y1 = y0 + row_height * item_count as f64;
-    vello::kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
+    kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
 }
 
 #[cfg(feature = "accessibility")]
 pub(crate) fn menu_picker_option_rect(
-    popup_rect: vello::kurbo::Rect,
+    popup_rect: kurbo::Rect,
     row_height: f64,
     index: usize,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let y0 = popup_rect.y0 + row_height * index as f64;
-    vello::kurbo::Rect::new(popup_rect.x0, y0, popup_rect.x1, y0 + row_height)
+    kurbo::Rect::new(popup_rect.x0, y0, popup_rect.x1, y0 + row_height)
 }
 
 pub(crate) fn render_menu_picker(
@@ -656,21 +656,21 @@ pub(crate) fn render_menu_picker(
 /// A label that measures empty (a hidden or content-free label) draws nothing
 /// and takes no space — the value keeps its full-height inset.
 pub(crate) fn menu_picker_content_rects(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     metrics: PickerMetrics,
     label_height: f64,
-) -> (Option<vello::kurbo::Rect>, vello::kurbo::Rect) {
+) -> (Option<kurbo::Rect>, kurbo::Rect) {
     let text_x0 = bounds.x0 + metrics.horizontal_inset;
     let text_x1 = (bounds.x1 - metrics.horizontal_inset - metrics.indicator_space).max(text_x0);
     let text_bottom = bounds.y1 - metrics.vertical_inset;
     if label_height > 0.0 {
-        let label_rect = vello::kurbo::Rect::new(
+        let label_rect = kurbo::Rect::new(
             text_x0,
             bounds.y0 + metrics.vertical_inset,
             text_x1,
             bounds.y0 + metrics.vertical_inset + label_height,
         );
-        let value_rect = vello::kurbo::Rect::new(
+        let value_rect = kurbo::Rect::new(
             text_x0,
             label_rect.y1 + metrics.label_spacing,
             text_x1,
@@ -680,7 +680,7 @@ pub(crate) fn menu_picker_content_rects(
     } else {
         (
             None,
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 text_x0,
                 bounds.y0 + metrics.vertical_inset,
                 text_x1,
@@ -697,13 +697,13 @@ pub(crate) fn menu_picker_content_rects(
 /// measure path uses. A label measuring zero height (a hidden one) draws
 /// nothing and takes no space: the rows begin at `content_y_without_label`.
 pub(crate) fn radio_group_label_area(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     metrics: PickerMetrics,
     label_height: f64,
     content_y_without_label: f64,
-) -> (Option<vello::kurbo::Rect>, f64) {
+) -> (Option<kurbo::Rect>, f64) {
     if label_height > 0.0 {
-        let heading = vello::kurbo::Rect::new(
+        let heading = kurbo::Rect::new(
             bounds.x0 + metrics.horizontal_inset,
             bounds.y0 + metrics.vertical_inset,
             bounds.x1 - metrics.horizontal_inset,
@@ -722,14 +722,13 @@ pub(crate) fn radio_group_label_area(
 /// presence rule: a label measuring zero height (a hidden one) draws nothing
 /// and takes no space — the row keeps the full bounds.
 pub(crate) fn segmented_label_area(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     metrics: PickerMetrics,
     label_height: f64,
-) -> (Option<vello::kurbo::Rect>, vello::kurbo::Rect) {
+) -> (Option<kurbo::Rect>, kurbo::Rect) {
     if label_height > 0.0 {
-        let heading =
-            vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + label_height);
-        let row = vello::kurbo::Rect::new(
+        let heading = kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y0 + label_height);
+        let row = kurbo::Rect::new(
             bounds.x0,
             heading.y1 + metrics.label_spacing,
             bounds.x1,
@@ -749,7 +748,7 @@ fn flush_picker_label(
     ctx: &mut WidgetRenderContext<'_>,
     owner: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,
-    rect: vello::kurbo::Rect,
+    rect: kurbo::Rect,
 ) {
     let mut state = owner.borrow_mut();
     let render_ctx = ctx.render_context();
@@ -796,7 +795,7 @@ pub(crate) fn render_radio_picker(
         let label_size =
             HydrolysisRenderer::measure_text_intrinsic_size(ctx.state_mut(), label.clone(), env);
         let row_height = f64::from(label_size.height).max(metrics.radio_indicator_size);
-        let row_rect = vello::kurbo::Rect::new(
+        let row_rect = kurbo::Rect::new(
             bounds.x0,
             row_y,
             bounds.x1,
@@ -807,7 +806,7 @@ pub(crate) fn render_radio_picker(
         }
         row_y = row_rect.y1 + metrics.radio_row_spacing;
 
-        let indicator_center = vello::kurbo::Point::new(
+        let indicator_center = kurbo::Point::new(
             row_rect.x0 + metrics.horizontal_inset + metrics.radio_indicator_size / 2.0,
             row_rect.y0 + row_rect.height() / 2.0,
         );
@@ -852,7 +851,7 @@ pub(crate) fn render_radio_picker(
             );
         }
 
-        let indicator_rect = vello::kurbo::Rect::new(
+        let indicator_rect = kurbo::Rect::new(
             indicator_center.x - indicator_radius,
             indicator_center.y - indicator_radius,
             indicator_center.x + indicator_radius,
@@ -909,8 +908,7 @@ pub(crate) fn render_segmented_picker(
 
     for (index, item) in items.into_iter().enumerate() {
         let x0 = row_bounds.x0 + segment_width * index as f64;
-        let segment_rect =
-            vello::kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
+        let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
         let discriminator = i32::from(item.tag) as u32 as usize;
@@ -973,16 +971,16 @@ pub(crate) fn render_segmented_picker(
 }
 
 fn segmented_label_rect(
-    segment_rect: vello::kurbo::Rect,
+    segment_rect: kurbo::Rect,
     label_size: waterui_core::layout::Size,
     metrics: PickerMetrics,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let max_width = (segment_rect.width() - metrics.horizontal_inset * 2.0).max(0.0);
     let width = f64::from(label_size.width).min(max_width);
     let height = f64::from(label_size.height).min(segment_rect.height());
     let x0 = segment_rect.x0 + (segment_rect.width() - width) * 0.5;
     let y0 = segment_rect.y0 + (segment_rect.height() - height) * 0.5;
-    vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+    kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 use crate::animation::AnimationKey;
 
@@ -1000,7 +998,7 @@ pub(crate) fn emit_picker_accessibility(
 #[cfg(test)]
 mod tests {
     use super::{menu_picker_content_rects, radio_group_label_area, segmented_label_area};
-    use vello::kurbo::Rect;
+    use kurbo::Rect;
     use waterui_backend_core::widget::PickerMetrics;
 
     fn metrics() -> PickerMetrics {

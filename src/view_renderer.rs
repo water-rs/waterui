@@ -88,13 +88,13 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 let mut env = Environment::new().extending(SceneViewMergeToParent);
                 configure_environment(&mut env);
                 let view = crate::renderer::normalize_view_for_render(view, &env);
-                let bounds = vello::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+                let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
                 renderer.capture_window_tree(
                     view,
                     &env,
                     bounds,
-                    vello::kurbo::Affine::IDENTITY,
-                    vello::kurbo::Affine::IDENTITY,
+                    kurbo::Affine::IDENTITY,
+                    kurbo::Affine::IDENTITY,
                 );
                 renderer.finish_rebuild_frame();
                 renderer.render_scene_to_texture(crate::renderer::HydrolysisRenderTarget {
@@ -107,7 +107,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                     format: surface.format(),
                     width,
                     height,
-                    base_color: vello::peniko::Color::TRANSPARENT,
+                    base_color: peniko::Color::TRANSPARENT,
                 });
                 renderer.migration_counters_mut().gpu_submissions += 1;
                 let rgba_data =

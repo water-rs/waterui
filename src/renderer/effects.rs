@@ -38,7 +38,7 @@ pub(crate) struct AppliedFilterRuntime {
     setup_complete: bool,
     input_texture: Option<CachedEffectTexture>,
     output_texture: Option<CachedEffectTexture>,
-    output_image: Option<vello::peniko::ImageData>,
+    output_image: Option<peniko::ImageData>,
     frame_clock: EffectFrameClock,
 }
 
@@ -153,7 +153,7 @@ impl AppliedFilterRuntime {
         vello_renderer: &mut vello::Renderer,
         width: u32,
         height: u32,
-    ) -> vello::peniko::ImageData {
+    ) -> peniko::ImageData {
         let (output_width, output_height) = self.filter().output_size(width, height);
         let output_texture = self
             .output_texture(device, output_width, output_height)
@@ -212,7 +212,7 @@ impl AppliedFilterRuntime {
         width: u32,
         height: u32,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> (vello::peniko::ImageData, bool) {
+    ) -> (peniko::ImageData, bool) {
         let (output_width, output_height) = self.filter().output_size(width, height);
         let (input_texture, input_view) = {
             let Some(input_texture) = self.input_texture.as_ref() else {
@@ -319,12 +319,12 @@ impl CachedEffectTexture {
 /// would grow vello's image table and re-upload state for a texture whose
 /// identity is stable.
 fn register_or_override_output_image(
-    output_image: &mut Option<vello::peniko::ImageData>,
+    output_image: &mut Option<peniko::ImageData>,
     vello_renderer: &mut vello::Renderer,
     output_texture: wgpu::Texture,
     output_width: u32,
     output_height: u32,
-) -> vello::peniko::ImageData {
+) -> peniko::ImageData {
     if let Some(image) = output_image
         .as_ref()
         .filter(|image| image.width == output_width && image.height == output_height)
@@ -349,7 +349,7 @@ pub(crate) struct ViewEffectRuntime {
     setup_complete: bool,
     input_texture: Option<CachedEffectTexture>,
     output_texture: Option<CachedEffectTexture>,
-    output_image: Option<vello::peniko::ImageData>,
+    output_image: Option<peniko::ImageData>,
 }
 
 impl ViewEffectRuntime {
@@ -407,7 +407,7 @@ impl ViewEffectRuntime {
         output_texture: wgpu::Texture,
         output_width: u32,
         output_height: u32,
-    ) -> vello::peniko::ImageData {
+    ) -> peniko::ImageData {
         register_or_override_output_image(
             &mut self.output_image,
             vello_renderer,
@@ -606,9 +606,9 @@ impl HydrolysisRenderer {
     pub(crate) fn push_gpu_surface_layer(
         &mut self,
         source: GpuSurfaceSource,
-        transform: vello::kurbo::Affine,
-        bounds: vello::kurbo::Rect,
-        hit_rect: vello::kurbo::Rect,
+        transform: kurbo::Affine,
+        bounds: kurbo::Rect,
+        hit_rect: kurbo::Rect,
     ) {
         if self
             .compositor

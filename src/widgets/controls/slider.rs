@@ -252,7 +252,7 @@ pub(crate) fn render_slider_parts(
         0.0
     };
     if label_height > 0.0 {
-        let label_rect = vello::kurbo::Rect::new(
+        let label_rect = kurbo::Rect::new(
             ctx.bounds.x0,
             ctx.bounds.y0,
             ctx.bounds.x1,
@@ -297,8 +297,7 @@ pub(crate) fn render_slider_parts(
     let control_top = ctx.bounds.y0 + label_height;
     let control_bottom = ctx.bounds.y1;
     let control_height = control_bottom - control_top;
-    let controls_row =
-        vello::kurbo::Rect::new(ctx.bounds.x0, control_top, ctx.bounds.x1, control_bottom);
+    let controls_row = kurbo::Rect::new(ctx.bounds.x0, control_top, ctx.bounds.x1, control_bottom);
     let track_left = if min_label_width > 0.0 {
         min_label_x1 + metrics.horizontal_spacing
     } else {
@@ -310,7 +309,7 @@ pub(crate) fn render_slider_parts(
         ctx.bounds.x1 - metrics.horizontal_inset
     };
     let track_center_y = control_top + control_height / 2.0;
-    let track_rect = vello::kurbo::Rect::new(
+    let track_rect = kurbo::Rect::new(
         track_left,
         track_center_y - metrics.track_height / 2.0,
         track_right,
@@ -379,7 +378,7 @@ pub(crate) fn render_slider_parts(
         .clamp(range_start, range_end);
     let progress = (clamped - range_start) / span;
     let fill_right = track_left + (track_right - track_left) * progress;
-    let fill_rect = vello::kurbo::Rect::new(
+    let fill_rect = kurbo::Rect::new(
         track_left,
         track_center_y - metrics.track_height / 2.0,
         fill_right,
@@ -387,7 +386,7 @@ pub(crate) fn render_slider_parts(
     );
     let hit_bounds = transformed_rect(
         ctx.hit_transform,
-        vello::kurbo::Rect::new(
+        kurbo::Rect::new(
             track_left - metrics.handle_overhang(),
             control_top,
             track_right + metrics.handle_overhang(),
@@ -400,7 +399,7 @@ pub(crate) fn render_slider_parts(
         env,
         disabled,
     );
-    let thumb_center = vello::kurbo::Point::new(fill_right, track_center_y);
+    let thumb_center = kurbo::Point::new(fill_right, track_center_y);
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
         let mut draw = ctx.draw_context();
@@ -451,7 +450,7 @@ pub(crate) fn render_slider_parts(
             ctx.bounds.x0 + bubble_width / 2.0,
             ctx.bounds.x1 - bubble_width / 2.0,
         );
-        let bubble = vello::kurbo::Rect::new(
+        let bubble = kurbo::Rect::new(
             bubble_center_x - bubble_width / 2.0,
             bubble_bottom - bubble_height,
             bubble_center_x + bubble_width / 2.0,
@@ -461,7 +460,7 @@ pub(crate) fn render_slider_parts(
             let mut draw = ctx.draw_context();
             theme.draw_slider_value_indicator(&mut draw, bubble);
         }
-        let text_rect = vello::kurbo::Rect::new(
+        let text_rect = kurbo::Rect::new(
             bubble.x0,
             bubble.y0 + (bubble.height() - f64::from(text_size.height)) * 0.5,
             bubble.x1,

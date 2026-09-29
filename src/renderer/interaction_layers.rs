@@ -20,7 +20,7 @@ pub(crate) struct WaveLayer {
     /// point). Widgets map it into their own local frame at draw time via
     /// `local_interaction_state` and the live hit transform, so it stays
     /// correct under arbitrary nesting and scroll offsets.
-    origin: Cell<Option<vello::kurbo::Point>>,
+    origin: Cell<Option<kurbo::Point>>,
     pressing: Cell<bool>,
     pressed_at: Cell<Option<Instant>>,
     released_at: Cell<Option<Instant>>,
@@ -165,10 +165,7 @@ impl InteractionLayerHandles {
     /// Drops every wave whose press origin does not satisfy `retain`: a press
     /// must not migrate to a different widget that inherits this slot across a
     /// rebuild.
-    pub(crate) fn retain_waves_with_origin(
-        &self,
-        mut retain: impl FnMut(vello::kurbo::Point) -> bool,
-    ) {
+    pub(crate) fn retain_waves_with_origin(&self, mut retain: impl FnMut(kurbo::Point) -> bool) {
         for wave in &self.waves {
             if !wave.origin.get().is_some_and(&mut retain) {
                 wave.clear();
@@ -193,7 +190,7 @@ impl InteractionLayerHandles {
     /// grows from the origin while its layer fades in. Waves still fading from
     /// earlier presses keep fading independently (Material semantics); when every
     /// slot is still visible the oldest wave is recycled.
-    pub(crate) fn begin_press(&self, origin: vello::kurbo::Point, now: Instant) {
+    pub(crate) fn begin_press(&self, origin: kurbo::Point, now: Instant) {
         let wave = self.spawn_wave(now);
         let seq = self.next_wave_seq.get();
         self.next_wave_seq

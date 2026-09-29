@@ -541,8 +541,8 @@ impl ProbeLog {
 
 /// A caret rect the embedded view reports in its own logical coordinates —
 /// the point `focused_text_input_state` projects into the window.
-fn probe_caret() -> Option<vello::kurbo::Rect> {
-    Some(vello::kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))
+fn probe_caret() -> Option<kurbo::Rect> {
+    Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))
 }
 
 struct InputProbe {
@@ -562,7 +562,7 @@ impl GpuView for InputProbe {
         self.log.0.borrow_mut().push(event.clone());
     }
 
-    fn ime_caret(&self) -> Option<vello::kurbo::Rect> {
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
         probe_caret()
     }
 }
@@ -584,7 +584,7 @@ impl SceneContent for SceneProbe {
         self.log.0.borrow_mut().push(event.clone());
     }
 
-    fn ime_caret(&self) -> Option<vello::kurbo::Rect> {
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
         probe_caret()
     }
 }

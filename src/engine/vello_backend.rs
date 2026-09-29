@@ -1,5 +1,5 @@
 use super::{Brush, DrawContext};
-use vello::kurbo::{
+use kurbo::{
     Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Vec2,
 };
 
@@ -55,17 +55,12 @@ impl<'a> VelloDrawContext<'a> {
     fn fill_shape(&mut self, shape: &impl Shape, brush: &Brush) {
         match brush {
             Brush::Solid(color) => {
-                self.scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    self.transform(),
-                    color,
-                    None,
-                    shape,
-                );
+                self.scene
+                    .fill(peniko::Fill::NonZero, self.transform(), color, None, shape);
             }
             Brush::Gradient(gradient) => {
                 self.scene.fill(
-                    vello::peniko::Fill::NonZero,
+                    peniko::Fill::NonZero,
                     self.transform(),
                     gradient,
                     None,
@@ -76,7 +71,7 @@ impl<'a> VelloDrawContext<'a> {
     }
 
     fn stroke_shape(&mut self, shape: &impl Shape, brush: &Brush, width: f64) {
-        let stroke = vello::kurbo::Stroke::new(width);
+        let stroke = kurbo::Stroke::new(width);
         match brush {
             Brush::Solid(color) => {
                 self.scene
@@ -144,7 +139,7 @@ impl DrawContext for VelloDrawContext<'_> {
         radii: RoundedRectRadii,
         offset: Vec2,
         blur: f64,
-        color: vello::peniko::Color,
+        color: peniko::Color,
     ) {
         let radius = radii
             .as_single_radius()
@@ -163,8 +158,8 @@ impl DrawContext for VelloDrawContext<'_> {
             .copied()
             .unwrap_or(Rect::new(-1.0e9, -1.0e9, 1.0e9, 1.0e9));
         self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
+            peniko::Fill::NonZero,
+            peniko::BlendMode::default(),
             alpha,
             self.transform(),
             &clip,
@@ -174,8 +169,8 @@ impl DrawContext for VelloDrawContext<'_> {
     fn push_rounded_layer(&mut self, alpha: f32, clip: Rect, radii: RoundedRectRadii) {
         let clip = RoundedRect::from_rect(clip, radii);
         self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
+            peniko::Fill::NonZero,
+            peniko::BlendMode::default(),
             alpha,
             self.transform(),
             &clip,

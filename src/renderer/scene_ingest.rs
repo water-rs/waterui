@@ -7,8 +7,8 @@
 //! the blob here, at the first hydrolysis-owned point, fails fast with the
 //! expected and actual byte counts and the format.
 
-use vello::kurbo::{Affine, BezPath, Stroke};
-use vello::peniko::{BlendMode, Brush, Fill, ImageBrush, ImageData};
+use kurbo::{Affine, BezPath, Stroke};
+use peniko::{BlendMode, Brush, Fill, ImageBrush, ImageData};
 use waterui_graphics::{GlyphRun, Scene2D};
 
 use super::MigrationCounters;

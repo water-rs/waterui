@@ -67,7 +67,7 @@ impl ProbeLog {
 
 struct InputProbe {
     log: ProbeLog,
-    caret: Option<vello::kurbo::Rect>,
+    caret: Option<kurbo::Rect>,
 }
 
 impl GpuView for InputProbe {
@@ -83,7 +83,7 @@ impl GpuView for InputProbe {
         self.log.0.borrow_mut().push(event.clone());
     }
 
-    fn ime_caret(&self) -> Option<vello::kurbo::Rect> {
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
         self.caret
     }
 }
@@ -231,7 +231,7 @@ fn pointer_events_arrive_in_logical_surface_local_coordinates() {
     assert_eq!(
         log.drain(),
         vec![SurfaceInputEvent::PointerMove {
-            position: vello::kurbo::Point::new(30.0, 20.0),
+            position: kurbo::Point::new(30.0, 20.0),
         }],
         "a pointer over the surface must arrive with the surface's own origin \
          subtracted, in logical units"
@@ -270,12 +270,12 @@ fn a_press_focuses_the_surface_and_later_frames_keep_that_focus() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
         ],
     );
@@ -293,12 +293,12 @@ fn a_press_focuses_the_surface_and_later_frames_keep_that_focus() {
         log.drain(),
         vec![
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: false,
                 button: SurfacePointerButton::Primary,
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
         ],
     );
@@ -426,21 +426,21 @@ fn scrolls_carry_their_unit_and_the_end_of_the_gesture() {
         log.drain(),
         vec![
             SurfaceInputEvent::Scroll {
-                position: vello::kurbo::Point::new(60.0, 40.0),
+                position: kurbo::Point::new(60.0, 40.0),
                 delta_x: 0.0,
                 delta_y: -3.0,
                 unit: ScrollUnit::Line,
                 finished: true,
             },
             SurfaceInputEvent::Scroll {
-                position: vello::kurbo::Point::new(60.0, 40.0),
+                position: kurbo::Point::new(60.0, 40.0),
                 delta_x: 1.0,
                 delta_y: -12.0,
                 unit: ScrollUnit::Pixel,
                 finished: false,
             },
             SurfaceInputEvent::Scroll {
-                position: vello::kurbo::Point::new(60.0, 40.0),
+                position: kurbo::Point::new(60.0, 40.0),
                 delta_x: 0.0,
                 delta_y: 0.0,
                 unit: ScrollUnit::Pixel,
@@ -522,7 +522,7 @@ fn the_focused_surface_places_the_input_method_panel() {
     let log = ProbeLog::default();
     let mut runtime = runtime_with(GpuSurface::new(InputProbe {
         log: log.clone(),
-        caret: Some(vello::kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
+        caret: Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
     }));
     let start = Instant::now();
     settled(&mut runtime, start);
@@ -619,8 +619,8 @@ impl SceneContent for SceneProbe {
         }
     }
 
-    fn ime_caret(&self) -> Option<vello::kurbo::Rect> {
-        Some(vello::kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))
     }
 }
 
@@ -644,12 +644,12 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
         ],
         "a press lands on the content in its own logical coordinates and \
@@ -704,7 +704,7 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
     let view = vstack((
         GpuSurface::new(InputProbe {
             log: log.clone(),
-            caret: Some(vello::kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
+            caret: Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
         }),
         button("next").action(|| {}),
         button("last").action(|| {}),
@@ -728,12 +728,12 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(10.0, 10.0),
+                position: kurbo::Point::new(10.0, 10.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
-                position: vello::kurbo::Point::new(10.0, 10.0),
+                position: kurbo::Point::new(10.0, 10.0),
             },
         ],
         "a press focuses the surface through the same slot traversal uses"
@@ -1012,12 +1012,12 @@ fn hiding_the_focused_tab_moves_focus_to_the_shown_tab() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(10.0, 10.0),
+                position: kurbo::Point::new(10.0, 10.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: true,
                 button: SurfacePointerButton::Primary,
-                position: vello::kurbo::Point::new(10.0, 10.0),
+                position: kurbo::Point::new(10.0, 10.0),
             },
         ],
         "the press focuses the visible tab's surface"
@@ -1213,7 +1213,7 @@ fn context_menu_claims_the_secondary_button_over_an_input_surface() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
         ],
         "the surface takes focus and the pointer move, not the secondary button"
@@ -1262,12 +1262,12 @@ fn an_empty_context_menu_mounts_no_popup_and_keeps_the_secondary_press() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: true,
                 button: SurfacePointerButton::Secondary,
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
         ],
         "with no menu to open the secondary button must reach the surface, \
@@ -1301,12 +1301,12 @@ fn secondary_button_reaches_an_input_surface_without_a_context_menu() {
         vec![
             SurfaceInputEvent::Focus(true),
             SurfaceInputEvent::PointerMove {
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
             SurfaceInputEvent::PointerButton {
                 pressed: true,
                 button: SurfacePointerButton::Secondary,
-                position: vello::kurbo::Point::new(12.0, 34.0),
+                position: kurbo::Point::new(12.0, 34.0),
             },
         ],
         "the secondary button reaches the surface when no menu claims it"

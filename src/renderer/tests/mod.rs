@@ -73,7 +73,7 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
-use vello::kurbo::{Affine, BezPath, Point, Rect};
+use kurbo::{Affine, BezPath, Point, Rect};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
@@ -905,7 +905,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         )
     };
     let env = test_environment();
-    let bounds = vello::kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
+    let bounds = kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
     let surface = platform.surface();
     renderer.set_frame_resources(
         surface.adapter(),
@@ -915,7 +915,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
     );
     capture_root_window(&mut renderer, view, &env, bounds);
 
-    let point = vello::kurbo::Point::new(60.0, 60.0);
+    let point = kurbo::Point::new(60.0, 60.0);
     let debug_targets = renderer.gesture_engine.debug_targets_at(point);
     assert_eq!(
         debug_targets.len(),
@@ -2376,11 +2376,11 @@ impl WidgetTheme for MinimalTestTheme {
     }
 
     fn input_selection_brush(&self) -> Brush {
-        Brush::from(vello::peniko::Color::new([0.20, 0.45, 0.90, 0.28]))
+        Brush::from(peniko::Color::new([0.20, 0.45, 0.90, 0.28]))
     }
 
     fn input_caret_brush(&self, opacity: f32) -> Brush {
-        Brush::from(vello::peniko::Color::new([0.12, 0.14, 0.18, opacity]))
+        Brush::from(peniko::Color::new([0.12, 0.14, 0.18, opacity]))
     }
 
     fn draw_input_field(
@@ -2406,7 +2406,7 @@ impl WidgetTheme for MinimalTestTheme {
     }
 
     fn draw_text_context_menu_panel(&self, draw: &mut dyn DrawContext, bounds: Rect) {
-        let radii = vello::kurbo::RoundedRectRadii::from_single_radius(
+        let radii = kurbo::RoundedRectRadii::from_single_radius(
             self.text_context_menu_metrics().corner_radius,
         );
         // A level-2-like shadow under the panel, deep enough for tests to
@@ -2414,14 +2414,14 @@ impl WidgetTheme for MinimalTestTheme {
         draw.draw_shadow(
             bounds,
             radii,
-            vello::kurbo::Vec2::new(0.0, 3.0),
+            kurbo::Vec2::new(0.0, 3.0),
             6.0,
-            vello::peniko::Color::new([0.0, 0.0, 0.0, 0.35]),
+            peniko::Color::new([0.0, 0.0, 0.0, 0.35]),
         );
         draw.fill_rounded_rect(
             bounds,
             radii,
-            &Brush::Solid(vello::peniko::Color::new([0.96, 0.94, 0.97, 1.0])),
+            &Brush::Solid(peniko::Color::new([0.96, 0.94, 0.97, 1.0])),
         );
     }
 

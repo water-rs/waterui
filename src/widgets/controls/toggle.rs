@@ -284,7 +284,7 @@ pub(crate) fn render_toggle_parts(
 fn toggle_binding_action(
     binding: nami::Binding<bool>,
     visual_interaction_key: InteractionKey,
-) -> impl FnMut(&mut crate::renderer::SemanticCore, vello::kurbo::Point, &Environment) -> bool {
+) -> impl FnMut(&mut crate::renderer::SemanticCore, kurbo::Point, &Environment) -> bool {
     move |renderer, _point, _env| {
         // A pointer press on the non-focusable label target temporarily owns an
         // interaction-only key. Restore semantic keyboard focus to the switch
@@ -314,11 +314,11 @@ pub(crate) fn measure_toggle_intrinsic(
 }
 
 fn toggle_control_and_label_bounds(
-    bounds: vello::kurbo::Rect,
+    bounds: kurbo::Rect,
     style: ToggleStyle,
     metrics: waterui_backend_core::widget::ToggleMetrics,
     label_size: LayoutSize,
-) -> (vello::kurbo::Rect, vello::kurbo::Rect) {
+) -> (kurbo::Rect, kurbo::Rect) {
     let control_y0 = bounds.y0 + ((bounds.height() - metrics.height) / 2.0).max(0.0);
     let control_y1 = control_y0 + metrics.height;
     let has_label = label_size.width > 0.0 || label_size.height > 0.0;
@@ -326,7 +326,7 @@ fn toggle_control_and_label_bounds(
         ToggleStyle::Checkbox => {
             let control_x0 = bounds.x0;
             let control_x1 = control_x0 + metrics.width;
-            let control = vello::kurbo::Rect::new(control_x0, control_y0, control_x1, control_y1);
+            let control = kurbo::Rect::new(control_x0, control_y0, control_x1, control_y1);
             let label_x0 = if has_label {
                 (control_x1 + metrics.label_spacing).min(bounds.x1)
             } else {
@@ -347,7 +347,7 @@ fn toggle_control_and_label_bounds(
         }
         ToggleStyle::Automatic | ToggleStyle::Switch => {
             let control_x0 = (bounds.x1 - metrics.width).max(bounds.x0);
-            let control = vello::kurbo::Rect::new(
+            let control = kurbo::Rect::new(
                 control_x0,
                 control_y0,
                 control_x0 + metrics.width,
@@ -394,7 +394,7 @@ pub(crate) fn emit_toggle_accessibility(
 #[cfg(test)]
 mod tests {
     use super::toggle_control_and_label_bounds;
-    use vello::kurbo::Rect;
+    use kurbo::Rect;
     use waterui_backend_core::widget::ToggleMetrics;
     use waterui_controls::toggle::ToggleStyle;
     use waterui_core::layout::Size;

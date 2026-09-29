@@ -176,13 +176,9 @@ pub(crate) fn render_gradient_parts(
     let bounds = ctx.bounds;
     let brush = resolved_gradient_to_brush(&gradient.borrow(), bounds);
     let transform = ctx.transform;
-    ctx.renderer_mut().scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        &brush,
-        None,
-        &bounds,
-    );
+    ctx.renderer_mut()
+        .scene
+        .fill(peniko::Fill::NonZero, transform, &brush, None, &bounds);
 }
 
 /// Measures a retained shape leaf: a shape fills the proposed bounds.
@@ -230,7 +226,7 @@ pub(crate) fn render_shape_parts(
     let transform = ctx.transform;
     ctx.renderer_mut()
         .scene
-        .fill(vello::peniko::Fill::NonZero, transform, fill, None, &path);
+        .fill(peniko::Fill::NonZero, transform, fill, None, &path);
 }
 
 /// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
@@ -291,7 +287,7 @@ pub(crate) fn render_morph_shape_parts(
     };
     renderer
         .scene
-        .fill(vello::peniko::Fill::NonZero, transform, fill, None, &path);
+        .fill(peniko::Fill::NonZero, transform, fill, None, &path);
 }
 
 /// Emits a string leaf's accessibility node from its content. Shared by the

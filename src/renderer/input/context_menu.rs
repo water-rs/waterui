@@ -30,7 +30,7 @@ const CONTEXT_MENU_SHADOW_OPACITY: f32 = 0.35;
 pub(crate) struct ContextMenuPresentation {
     /// The context-menu target's rect in hit space: where the preview is
     /// lifted and what the accessory anchors to.
-    pub(crate) source_bounds: vello::kurbo::Rect,
+    pub(crate) source_bounds: kurbo::Rect,
     /// The menu's rows, drawn into this window's scene at `menu_frame` every
     /// frame — no borderless popup window exists in this presentation, so
     /// nothing transparent can stray over the dimmed backdrop.
@@ -57,19 +57,19 @@ pub(crate) struct ContextMenuPresentation {
     pub(crate) menu_state: Binding<WindowState>,
     /// The popup's frame in hit space — the accessory is kept clear of it.
     /// Recomputed every frame by [`context_menu_presentation_layout`].
-    pub(crate) menu_frame: vello::kurbo::Rect,
+    pub(crate) menu_frame: kurbo::Rect,
     /// The menu's measured size in hit space, kept for the per-frame layout.
     pub(crate) menu_size: (f64, f64),
     /// The lifted preview's frame as last laid out — the source's rect until
     /// fitting the whole stack pushes it.
-    pub(crate) lift_frame: vello::kurbo::Rect,
+    pub(crate) lift_frame: kurbo::Rect,
     /// `true` when the stack was taller than the window and `lift_frame` is
     /// shorter than the source: the preview draws cropped to that height.
     pub(crate) lift_cropped: bool,
     /// The accessory's frame as last laid out, in hit space — outside-press
     /// and context-menu-open handling read it to let presses through to the
     /// accessory's own targets.
-    pub(crate) accessory_frame: Option<vello::kurbo::Rect>,
+    pub(crate) accessory_frame: Option<kurbo::Rect>,
     /// The declaring view's environment — the presentation's sub-views are
     /// built, measured and flushed inside it.
     pub(crate) env: Environment,
@@ -93,14 +93,14 @@ impl Drop for ContextMenuPresentation {
 #[derive(Clone, Copy)]
 struct ContextMenuLayout {
     /// The lifted copy's rect — the source's rect until fitting pushes it.
-    lift: vello::kurbo::Rect,
+    lift: kurbo::Rect,
     /// `true` when the stack was taller than the window: `lift` is then
     /// shorter than the source, and the preview draws cropped to it.
     lift_cropped: bool,
     /// The menu panel's frame.
-    menu: vello::kurbo::Rect,
+    menu: kurbo::Rect,
     /// The accessory panel's frame, when one mounts.
-    accessory: Option<vello::kurbo::Rect>,
+    accessory: Option<kurbo::Rect>,
 }
 
 /// Lay out `accessory`, `gap`, `lift`, `gap`, `menu` inside the window
@@ -114,11 +114,11 @@ struct ContextMenuLayout {
 /// source stays lit through the dim) instead packs accessory and menu
 /// contiguously on the roomier side, the accessory closest to the source.
 fn context_menu_presentation_layout(
-    source: vello::kurbo::Rect,
+    source: kurbo::Rect,
     lift_movable: bool,
     menu_size: (f64, f64),
     accessory_size: Option<(f64, f64)>,
-    window: vello::kurbo::Rect,
+    window: kurbo::Rect,
 ) -> ContextMenuLayout {
     let gap = CONTEXT_MENU_ACCESSORY_GAP;
     let (menu_w, menu_h) = menu_size;
@@ -142,17 +142,17 @@ fn context_menu_presentation_layout(
 
     // `menu_above` selects the order: `false` = accessory above, menu below
     // (the default); `true` = menu above, accessory below.
-    let place = |lift: vello::kurbo::Rect, menu_above: bool| -> ContextMenuLayout {
+    let place = |lift: kurbo::Rect, menu_above: bool| -> ContextMenuLayout {
         let (menu_y0, acc_y0) = if menu_above {
             (lift.y0 - gap - menu_h, lift.y1 + gap)
         } else {
             (lift.y1 + gap, lift.y0 - gap - acc_h)
         };
         let menu_x0 = edge_x(menu_w);
-        let menu = vello::kurbo::Rect::new(menu_x0, menu_y0, menu_x0 + menu_w, menu_y0 + menu_h);
+        let menu = kurbo::Rect::new(menu_x0, menu_y0, menu_x0 + menu_w, menu_y0 + menu_h);
         let accessory = accessory_size.map(|_| {
             let x0 = edge_x(acc_w);
-            vello::kurbo::Rect::new(x0, acc_y0, x0 + acc_w, acc_y0 + acc_h)
+            kurbo::Rect::new(x0, acc_y0, x0 + acc_w, acc_y0 + acc_h)
         });
         ContextMenuLayout {
             lift,
@@ -182,7 +182,7 @@ fn context_menu_presentation_layout(
             let hi = window.y1 - below - h;
             if lo <= hi {
                 let y0 = source.y0.clamp(lo, hi);
-                let lift = vello::kurbo::Rect::new(source.x0, y0, source.x1, y0 + h);
+                let lift = kurbo::Rect::new(source.x0, y0, source.x1, y0 + h);
                 return place(lift, menu_above);
             }
         }
@@ -190,7 +190,7 @@ fn context_menu_presentation_layout(
         // keep full size, and the preview draws cropped to what remains.
         let capped = (window.y1 - window.y0 - acc_need - menu_need).max(0.0);
         let y0 = window.y0 + acc_need;
-        let lift = vello::kurbo::Rect::new(source.x0, y0, source.x1, y0 + capped);
+        let lift = kurbo::Rect::new(source.x0, y0, source.x1, y0 + capped);
         return place(lift, false);
     }
 
@@ -207,11 +207,11 @@ fn context_menu_presentation_layout(
     };
     let menu_x0 = edge_x(menu_w);
     let menu_y0 = clamp_y(menu_y0, menu_h);
-    let menu = vello::kurbo::Rect::new(menu_x0, menu_y0, menu_x0 + menu_w, menu_y0 + menu_h);
+    let menu = kurbo::Rect::new(menu_x0, menu_y0, menu_x0 + menu_w, menu_y0 + menu_h);
     let accessory = accessory_size.map(|_| {
         let x0 = edge_x(acc_w);
         let y0 = clamp_y(acc_y0, acc_h);
-        vello::kurbo::Rect::new(x0, y0, x0 + acc_w, y0 + acc_h)
+        kurbo::Rect::new(x0, y0, x0 + acc_w, y0 + acc_h)
     });
     ContextMenuLayout {
         lift: source,
@@ -227,7 +227,7 @@ impl SemanticCore {
     /// to the presentation's own targets: they must not dismiss the menu,
     /// open a new one, or arm a press-and-hold (water-rs/waterui#1245 —
     /// accessory actions don't close the menu by themselves).
-    pub(crate) fn context_menu_presentation_contains(&self, point: vello::kurbo::Point) -> bool {
+    pub(crate) fn context_menu_presentation_contains(&self, point: kurbo::Point) -> bool {
         self.popup_menu
             .context_menu_presentation
             .as_ref()
@@ -244,7 +244,7 @@ impl SemanticCore {
     #[cfg(test)]
     pub(crate) fn context_menu_presentation_frames(
         &self,
-    ) -> Option<(vello::kurbo::Rect, Option<vello::kurbo::Rect>)> {
+    ) -> Option<(kurbo::Rect, Option<kurbo::Rect>)> {
         self.popup_menu
             .context_menu_presentation
             .as_ref()
@@ -254,7 +254,7 @@ impl SemanticCore {
     /// The lifted preview's frame as last laid out, in hit space — the
     /// source's rect unless fitting the stack moved or cropped it.
     #[cfg(test)]
-    pub(crate) fn context_menu_lift_frame(&self) -> Option<vello::kurbo::Rect> {
+    pub(crate) fn context_menu_lift_frame(&self) -> Option<kurbo::Rect> {
         self.popup_menu
             .context_menu_presentation
             .as_ref()
@@ -265,7 +265,7 @@ impl SemanticCore {
     /// in hit order. The panel's swallow is the only target as tall as the
     /// menu itself, so the row targets are the shorter ones.
     #[cfg(test)]
-    pub(crate) fn context_menu_row_frames(&self) -> Vec<vello::kurbo::Rect> {
+    pub(crate) fn context_menu_row_frames(&self) -> Vec<kurbo::Rect> {
         let Some(presentation) = self.popup_menu.context_menu_presentation.as_ref() else {
             return Vec::new();
         };
@@ -324,9 +324,9 @@ impl HydrolysisRenderer {
             });
         let source_bounds = target.map_or_else(
             || {
-                vello::kurbo::Rect::from_origin_size(
-                    vello::kurbo::Point::new(f64::from(origin.x), f64::from(origin.y)),
-                    vello::kurbo::Size::ZERO,
+                kurbo::Rect::from_origin_size(
+                    kurbo::Point::new(f64::from(origin.x), f64::from(origin.y)),
+                    kurbo::Size::ZERO,
                 )
             },
             |target| target.bounds,
@@ -383,7 +383,7 @@ impl HydrolysisRenderer {
                 last_dismiss_requests: target
                     .map_or(0, |target| target.dismiss_requests.snapshot()),
                 menu_state,
-                menu_frame: vello::kurbo::Rect::new(
+                menu_frame: kurbo::Rect::new(
                     f64::from(menu_origin.x),
                     f64::from(menu_origin.y),
                     f64::from(menu_origin.x) + menu_width,
@@ -476,7 +476,7 @@ impl HydrolysisRenderer {
     /// `transform` is the window's encode transform; the sub-views flush under
     /// an identity hit transform because their frames are already in hit
     /// space, the convention the text context menu overlay follows.
-    pub(crate) fn render_context_menu_presentation(&mut self, transform: vello::kurbo::Affine) {
+    pub(crate) fn render_context_menu_presentation(&mut self, transform: kurbo::Affine) {
         let Some(mut presentation) = self.popup_menu.context_menu_presentation.take() else {
             return;
         };
@@ -500,8 +500,8 @@ impl HydrolysisRenderer {
         let source = presentation.source_bounds;
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
-        let dim = vello::peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_DIM_OPACITY]);
-        let shadow = vello::peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_SHADOW_OPACITY]);
+        let dim = peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_DIM_OPACITY]);
+        let shadow = peniko::Color::new([0.0, 0.0, 0.0, CONTEXT_MENU_SHADOW_OPACITY]);
 
         let presentation_env = presentation.env.clone();
 
@@ -544,14 +544,14 @@ impl HydrolysisRenderer {
         // their corner wedges stay scrim and their elevation shadows land on
         // it, so no square hole is punched for them.
         self.scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
+            peniko::Fill::NonZero,
+            peniko::BlendMode::default(),
             1.0,
             transform,
             &window,
         );
         self.scene
-            .fill(vello::peniko::Fill::NonZero, transform, dim, None, &window);
+            .fill(peniko::Fill::NonZero, transform, dim, None, &window);
         self.scene.draw_blurred_rounded_rect(
             transform,
             layout.lift,
@@ -561,20 +561,20 @@ impl HydrolysisRenderer {
         );
         if presentation.preview.is_none() {
             self.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode {
-                    mix: vello::peniko::Mix::Normal,
-                    compose: vello::peniko::Compose::DestOut,
+                peniko::Fill::NonZero,
+                peniko::BlendMode {
+                    mix: peniko::Mix::Normal,
+                    compose: peniko::Compose::DestOut,
                 },
                 1.0,
                 transform,
                 &window,
             );
-            let hole = vello::kurbo::RoundedRect::from_rect(layout.lift, CONTEXT_MENU_LIFT_RADIUS);
+            let hole = kurbo::RoundedRect::from_rect(layout.lift, CONTEXT_MENU_LIFT_RADIUS);
             self.scene.fill(
-                vello::peniko::Fill::NonZero,
+                peniko::Fill::NonZero,
                 transform,
-                vello::peniko::Color::WHITE,
+                peniko::Color::WHITE,
                 None,
                 &hole,
             );
@@ -603,7 +603,7 @@ impl HydrolysisRenderer {
 
         presentation.menu.flush_in_rect(
             self,
-            RenderContext::with_transforms(window, transform, vello::kurbo::Affine::IDENTITY),
+            RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
             &presentation_env,
             bounded_proposal(presentation.menu_frame),
             presentation.menu_frame,
@@ -614,11 +614,7 @@ impl HydrolysisRenderer {
                 renderer.with_preview_targets_suppressed(|renderer| {
                     preview.flush_in_rect(
                         renderer,
-                        RenderContext::with_transforms(
-                            window,
-                            transform,
-                            vello::kurbo::Affine::IDENTITY,
-                        ),
+                        RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
                         &presentation_env,
                         bounded_proposal(layout.lift),
                         layout.lift,
@@ -632,7 +628,7 @@ impl HydrolysisRenderer {
             let content = inset_rect(frame, metrics.horizontal_padding, metrics.vertical_padding);
             accessory.flush_in_rect(
                 self,
-                RenderContext::with_transforms(window, transform, vello::kurbo::Affine::IDENTITY),
+                RenderContext::with_transforms(window, transform, kurbo::Affine::IDENTITY),
                 &presentation_env,
                 bounded_proposal(content),
                 content,

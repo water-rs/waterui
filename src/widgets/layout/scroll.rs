@@ -57,7 +57,7 @@ impl HydroNativeView for Native<ScrollView> {
 pub(crate) fn register_scroll_accessibility_node(
     renderer: &mut crate::renderer::SemanticCore,
     env: &Environment,
-    bounds: Option<vello::kurbo::Rect>,
+    bounds: Option<kurbo::Rect>,
     handle: &crate::scroll::ScrollHandle,
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
@@ -124,8 +124,8 @@ pub(crate) fn register_scroll_accessibility_node(
 /// delta falls through to the next enclosing region.
 pub(crate) fn register_scroll_wheel_target(
     renderer: &mut crate::renderer::SemanticCore,
-    hit_transform: vello::kurbo::Affine,
-    viewport: vello::kurbo::Rect,
+    hit_transform: kurbo::Affine,
+    viewport: kurbo::Rect,
     handle: &crate::scroll::ScrollHandle,
 ) {
     let target_handle = handle.clone();
@@ -173,7 +173,7 @@ fn indicator_geometry(
 pub(crate) fn draw_scroll_indicators(
     ctx: &mut WidgetRenderContext<'_>,
     _env: &Environment,
-    viewport: vello::kurbo::Rect,
+    viewport: kurbo::Rect,
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
     handle: &crate::scroll::ScrollHandle,
@@ -215,7 +215,7 @@ pub(crate) fn draw_scroll_indicators(
             let thumb_y = viewport.y0 + geometry.thumb_offset;
             theme.draw_scroll_indicator(
                 &mut draw,
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     viewport.x1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
                     thumb_y,
                     viewport.x1 - SCROLL_INDICATOR_EDGE_INSET,
@@ -227,7 +227,7 @@ pub(crate) fn draw_scroll_indicators(
             let thumb_x = viewport.x0 + geometry.thumb_offset;
             theme.draw_scroll_indicator(
                 &mut draw,
-                vello::kurbo::Rect::new(
+                kurbo::Rect::new(
                     thumb_x,
                     viewport.y1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
                     thumb_x + geometry.thumb_extent,
@@ -241,7 +241,7 @@ pub(crate) fn draw_scroll_indicators(
     if vertical.is_some_and(|geometry| geometry.travel > 0.0) {
         let gutter = transformed_rect(
             hit_transform,
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 viewport.x1 - SCROLL_INDICATOR_GUTTER,
                 viewport.y0,
                 viewport.x1,
@@ -283,7 +283,7 @@ pub(crate) fn draw_scroll_indicators(
     if horizontal.is_some_and(|geometry| geometry.travel > 0.0) {
         let gutter = transformed_rect(
             hit_transform,
-            vello::kurbo::Rect::new(
+            kurbo::Rect::new(
                 viewport.x0,
                 viewport.y1 - SCROLL_INDICATOR_GUTTER,
                 viewport.x1,

@@ -497,7 +497,7 @@ pub(crate) fn render_text_field_parts(
     let cursor_area = material_input_cursor_rect(
         field_rect,
         text_bounds,
-        vello::kurbo::Rect::new(
+        kurbo::Rect::new(
             cursor_geometry.x0,
             cursor_geometry.y0,
             cursor_geometry.x1,
@@ -776,7 +776,7 @@ pub(crate) fn render_secure_field_parts(
     let cursor_area = material_input_cursor_rect(
         field_rect,
         text_bounds,
-        vello::kurbo::Rect::new(
+        kurbo::Rect::new(
             cursor_geometry.x0,
             cursor_geometry.y0,
             cursor_geometry.x1,
@@ -870,12 +870,12 @@ fn material_input_label_height(label_size: LayoutSize, min_label_height: f64) ->
 }
 
 fn material_input_label_rect(
-    field_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let y0 = field_rect.y0 + 4.0;
-    vello::kurbo::Rect::new(
+    kurbo::Rect::new(
         field_rect.x0 + horizontal_inset,
         y0,
         field_rect.x1 - horizontal_inset,
@@ -884,12 +884,12 @@ fn material_input_label_rect(
 }
 
 fn material_input_resting_label_rect(
-    field_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let y0 = field_rect.y0 + ((field_rect.height() - label_height) * 0.5).max(0.0);
-    vello::kurbo::Rect::new(
+    kurbo::Rect::new(
         field_rect.x0 + horizontal_inset,
         y0,
         field_rect.x1 - horizontal_inset,
@@ -905,7 +905,7 @@ fn flush_material_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
     label_view: &mut RetainedSubview,
-    field_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
     progress: f32,
@@ -918,8 +918,8 @@ fn flush_material_label(
     let y = resting.y0 + (floating.y0 - resting.y0) * progress;
     let width = floating.width() / scale;
     let height = label_height / scale;
-    let transform = vello::kurbo::Affine::translate((x, y)) * vello::kurbo::Affine::scale(scale);
-    let child = ctx.child(transform, vello::kurbo::Rect::new(0.0, 0.0, width, height));
+    let transform = kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale);
+    let child = ctx.child(transform, kurbo::Rect::new(0.0, 0.0, width, height));
     #[allow(clippy::cast_possible_truncation)]
     let size = LayoutSize::new(width as f32, height as f32);
     // The label's semantics are merged into the field's own text-input node, so
@@ -946,7 +946,7 @@ fn flush_material_prompt_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
     prompt_styled: StyledStr,
-    field_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
     progress: f32,
@@ -959,8 +959,8 @@ fn flush_material_prompt_label(
     let y = resting.y0 + (floating.y0 - resting.y0) * progress;
     let width = floating.width() / scale;
     let child = ctx.child(
-        vello::kurbo::Affine::translate((x, y)) * vello::kurbo::Affine::scale(scale),
-        vello::kurbo::Rect::new(0.0, 0.0, width, label_height / scale),
+        kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale),
+        kurbo::Rect::new(0.0, 0.0, width, label_height / scale),
     );
     let renderer = ctx.renderer_mut();
     let (state, scene) = renderer.state_and_scene_mut();
@@ -976,12 +976,12 @@ fn flush_material_prompt_label(
 }
 
 fn material_input_text_rect(
-    field_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
     horizontal_inset: f64,
     vertical_inset: f64,
     label_height: f64,
-) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::new(
+) -> kurbo::Rect {
+    kurbo::Rect::new(
         field_rect.x0 + horizontal_inset,
         field_rect.y0 + vertical_inset + label_height,
         field_rect.x1 - horizontal_inset,
@@ -993,12 +993,12 @@ fn material_input_text_rect(
 /// the container when the field carries no inside label — the label's
 /// resting spot — instead of top-aligning it under the vertical inset (#85).
 fn material_input_centered_text_rect(
-    field_rect: vello::kurbo::Rect,
-    text_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
+    text_rect: kurbo::Rect,
     text_height: f64,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let y0 = field_rect.y0 + ((field_rect.height() - text_height) * 0.5).max(0.0);
-    vello::kurbo::Rect::new(
+    kurbo::Rect::new(
         text_rect.x0,
         y0,
         text_rect.x1,
@@ -1007,24 +1007,24 @@ fn material_input_centered_text_rect(
 }
 
 fn material_input_text_clip_rect(
-    field_rect: vello::kurbo::Rect,
-    text_rect: vello::kurbo::Rect,
+    field_rect: kurbo::Rect,
+    text_rect: kurbo::Rect,
     layout_height: f32,
-) -> vello::kurbo::Rect {
+) -> kurbo::Rect {
     let required_height = f64::from(layout_height).max(text_rect.height());
     if required_height <= text_rect.height() {
         return text_rect;
     }
     let y1 = (text_rect.y0 + required_height).min(field_rect.y1);
     let y0 = (y1 - required_height).max(field_rect.y0);
-    vello::kurbo::Rect::new(text_rect.x0, y0, text_rect.x1, y1)
+    kurbo::Rect::new(text_rect.x0, y0, text_rect.x1, y1)
 }
 
 fn material_input_cursor_rect(
-    field_rect: vello::kurbo::Rect,
-    text_rect: vello::kurbo::Rect,
-    cursor_geometry: vello::kurbo::Rect,
-) -> vello::kurbo::Rect {
+    field_rect: kurbo::Rect,
+    text_rect: kurbo::Rect,
+    cursor_geometry: kurbo::Rect,
+) -> kurbo::Rect {
     let x0 = text_rect.x0 + cursor_geometry.x0;
     let x1 = text_rect.x0 + cursor_geometry.x1.max(cursor_geometry.x0 + 1.0);
     // `text_rect` is the thin baseline strip the layout sits on — a real
@@ -1041,7 +1041,7 @@ fn material_input_cursor_rect(
     } else {
         (text_rect.y0, field_rect.y1.max(text_rect.y0 + 1.0))
     };
-    vello::kurbo::Rect::new(x0, y0, x1, y1)
+    kurbo::Rect::new(x0, y0, x1, y1)
 }
 
 /// Emits a retained text field's accessibility node and text-input target for
@@ -1134,10 +1134,10 @@ pub(crate) fn emit_text_field_accessibility(
                 modal: env
                     .get::<ModalInteraction>()
                     .is_some_and(ModalInteraction::is_active),
-                bounds: vello::kurbo::Rect::ZERO,
-                cursor_area: vello::kurbo::Rect::ZERO,
-                text_bounds: vello::kurbo::Rect::ZERO,
-                text_clip_bounds: vello::kurbo::Rect::ZERO,
+                bounds: kurbo::Rect::ZERO,
+                cursor_area: kurbo::Rect::ZERO,
+                text_bounds: kurbo::Rect::ZERO,
+                text_clip_bounds: kurbo::Rect::ZERO,
                 content_alpha: 1.0,
                 layout,
                 purpose: TextInputPurpose::Normal,
@@ -1226,10 +1226,10 @@ pub(crate) fn emit_secure_field_accessibility(
                 modal: env
                     .get::<ModalInteraction>()
                     .is_some_and(ModalInteraction::is_active),
-                bounds: vello::kurbo::Rect::ZERO,
-                cursor_area: vello::kurbo::Rect::ZERO,
-                text_bounds: vello::kurbo::Rect::ZERO,
-                text_clip_bounds: vello::kurbo::Rect::ZERO,
+                bounds: kurbo::Rect::ZERO,
+                cursor_area: kurbo::Rect::ZERO,
+                text_bounds: kurbo::Rect::ZERO,
+                text_clip_bounds: kurbo::Rect::ZERO,
                 content_alpha: 1.0,
                 layout,
                 purpose: TextInputPurpose::Password,
@@ -1285,8 +1285,8 @@ mod tests {
 
     #[test]
     fn material_input_text_clip_expands_for_tall_fallback_glyphs() {
-        let field = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
-        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
 
         let clip = material_input_text_clip_rect(field, text, 30.0);
 
@@ -1299,8 +1299,8 @@ mod tests {
 
     #[test]
     fn material_input_text_clip_expands_for_placeholder_layout() {
-        let field = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
-        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
 
         let clip = material_input_text_clip_rect(field, text, 34.0);
 
@@ -1315,9 +1315,9 @@ mod tests {
         // A material field's text rect is the thin baseline strip; with no
         // shaped line the caret still spans the strip down to the field's
         // bottom edge rather than collapsing into the strip.
-        let field = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
-        let text = vello::kurbo::Rect::new(16.0, 24.75, 184.0, 26.0);
-        let empty_geometry = vello::kurbo::Rect::new(0.0, 0.0, 0.0, 1.0);
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 24.75, 184.0, 26.0);
+        let empty_geometry = kurbo::Rect::new(0.0, 0.0, 0.0, 1.0);
 
         let cursor = material_input_cursor_rect(field, text, empty_geometry);
 
@@ -1329,9 +1329,9 @@ mod tests {
 
     #[test]
     fn material_input_cursor_preserves_non_empty_layout_geometry() {
-        let field = vello::kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
-        let text = vello::kurbo::Rect::new(16.0, 26.0, 184.0, 60.0);
-        let geometry = vello::kurbo::Rect::new(42.0, 3.0, 43.0, 25.0);
+        let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
+        let text = kurbo::Rect::new(16.0, 26.0, 184.0, 60.0);
+        let geometry = kurbo::Rect::new(42.0, 3.0, 43.0, 25.0);
 
         let cursor = material_input_cursor_rect(field, text, geometry);
 

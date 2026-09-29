@@ -42,6 +42,8 @@ waterui-locale = "0.5.0"
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { version = "0.5.1", features = ["std"] }
 vello = "0.9"
+kurbo = "0.13"
+peniko = "0.6"
 # Silhouettes that are not a uniform rounded rect (ellipse, uneven corners,
 # custom paths) are blurred by rasterizing the silhouette on the CPU; the
 # sparse-strips stack is the same vello fork rev the patch table pins.

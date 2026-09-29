@@ -163,7 +163,7 @@ pub(crate) fn table_accessibility(
                 .unwrap_or(0);
         }
     }
-    let viewport = ctx.map_or(vello::kurbo::Rect::ZERO, |ctx| ctx.bounds);
+    let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
     let layout_metrics = theme.map(|theme| theme.table_metrics());
     let table_metrics = {
         let state_ref = state.borrow();
@@ -277,7 +277,7 @@ pub(crate) fn table_accessibility(
             .skip(column_window.start)
         {
             let width = table_metrics.column_widths[column_index];
-            let header_cell = layout_metrics.map_or(vello::kurbo::Rect::ZERO, |m| {
+            let header_cell = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
                 table_header_cell_rect(origin_x, origin_y, x_offset, width, m)
             });
             let header_view = AnyView::new(column.label());
@@ -316,7 +316,7 @@ pub(crate) fn table_accessibility(
             }
             let rows = column.rows();
             for row_index in row_window.start..row_window.end {
-                let cell_rect = layout_metrics.map_or(vello::kurbo::Rect::ZERO, |m| {
+                let cell_rect = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
                     table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index, m)
                 });
                 if let Some(cell) = rows.get_view(row_index) {
@@ -518,13 +518,13 @@ pub(crate) fn render_table_parts(
     let origin_x = viewport.x0 - scroll_metrics.offset_x;
     let origin_y = viewport.y0 - scroll_metrics.offset_y;
     {
-        let table_rect = vello::kurbo::Rect::new(
+        let table_rect = kurbo::Rect::new(
             origin_x,
             origin_y,
             origin_x + table_metrics.table_width,
             origin_y + table_metrics.table_height,
         );
-        let header_rect = vello::kurbo::Rect::new(
+        let header_rect = kurbo::Rect::new(
             origin_x,
             origin_y,
             origin_x + table_metrics.table_width,
@@ -600,8 +600,8 @@ pub(crate) fn render_table_parts(
             theme.draw_table_cell_border(&mut draw, cell_rect);
         }
 
-        let separator_from = vello::kurbo::Point::new(origin_x + x_offset + width, origin_y);
-        let separator_to = vello::kurbo::Point::new(
+        let separator_from = kurbo::Point::new(origin_x + x_offset + width, origin_y);
+        let separator_to = kurbo::Point::new(
             origin_x + x_offset + width,
             origin_y + table_metrics.table_height,
         );
@@ -631,7 +631,7 @@ fn flush_cell_subview(
     env: &Environment,
     key: TableCellKey,
     view: AnyView,
-    rect: vello::kurbo::Rect,
+    rect: kurbo::Rect,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
