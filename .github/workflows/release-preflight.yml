@@ -224,7 +224,7 @@ jobs:
           local-registry = "$scratch/registry"
           EOF
           cd "$consumer"
-          water create gate --mode playground \
+          water create gate \
             --framework-manifest "$GITHUB_WORKSPACE/framework.json"
       - name: Resolve and build the scaffolded project
         run: |
