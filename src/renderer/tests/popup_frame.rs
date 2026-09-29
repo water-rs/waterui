@@ -108,7 +108,7 @@ fn the_context_menu_popup_presents_its_items_through_a_presentable_window() {
         runtime.popup_window(0).is_some(),
         "the secondary press must mount the context-menu popup"
     );
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     assert!(
         crate::runner::window_requires_transparency(
             runtime

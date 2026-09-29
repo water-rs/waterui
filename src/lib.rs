@@ -58,7 +58,7 @@ pub use gpu_view::{HydrolysisExt, HydrolysisGpuView};
 pub use keyboard_types;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use platform::BrowserWindow;
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 pub use platform::{
     GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,

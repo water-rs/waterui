@@ -1147,7 +1147,7 @@ fn window_focus_changes_reach_the_focused_surface() {
 /// reachable from a headless test, so the two quirks the mapping depends on
 /// are pinned here directly: get either wrong and space stops activating
 /// buttons, or the platform modifier arrives as the wrong key.
-#[cfg(feature = "winit")]
+#[cfg(hydrolysis_winit)]
 #[test]
 fn the_winit_translation_follows_the_w3c_vocabulary() {
     use winit::keyboard::{Key as WinitKey, NamedKey as WinitNamedKey, PhysicalKey};

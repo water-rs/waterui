@@ -124,7 +124,7 @@ impl SurfaceProvider for BrowserSurface {
             SurfaceFrame::Offscreen { .. } => {
                 panic!("hydrolysis web surface received an offscreen frame")
             }
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis web surface received a native window frame")
             }

@@ -14,6 +14,12 @@ fn main() {
         apple: { any(target_os = "ios", target_os = "macos") },
         android_platform: { target_os = "android" },
         free_unix: { all(unix, not(apple), not(android_platform), not(target_os = "emscripten")) },
+        // The winit runner exists on every target except Android: there the
+        // Activity belongs to the Kotlin host, and winit's `android-activity`
+        // can only build once an application selects a backend — nothing in
+        // this library may. Every winit-scoped item gates on this alias, so
+        // `--features winit` compiles on Android and simply means nothing.
+        hydrolysis_winit: { all(feature = "winit", not(android_platform)) },
         hydrolysis_wayland_platform: { all(feature = "winit", free_unix, not(target_os = "redox")) },
         // The macOS `WKWebView` bridge needs a real window: it is composed into
         // the winit window's AppKit view as a native subview, so a headless

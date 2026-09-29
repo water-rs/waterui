@@ -170,7 +170,7 @@ struct DeferredLegacyFrame {
     /// watch waits on exactly these; a `queue.submit` issued later cannot
     /// extend the wait the way `PollType::Wait { submission_index: None }`
     /// could.
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     watch_submissions: Vec<wgpu::SubmissionIndex>,
     /// When the frame was stashed — diagnostics only: the tail-frame
     /// latency event reports stash → present; nothing reads it for
@@ -1834,7 +1834,7 @@ impl HydrolysisRenderer {
     /// what the runner's GPU-completion watch waits on. Empty when nothing
     /// is stashed (or a stash carries no tickets, which the verify treats
     /// as already resolved).
-    #[cfg(feature = "winit")]
+    #[cfg(hydrolysis_winit)]
     pub(crate) fn deferred_legacy_watch_submissions(&self) -> Vec<wgpu::SubmissionIndex> {
         self.compositor
             .deferred_legacy_frame
@@ -2501,7 +2501,7 @@ impl HydrolysisRenderer {
         if has_pending {
             // Phase 2 is deferred by one frame: verification resolves at the
             // start of the next frame, then this `ready` list composites.
-            #[cfg(feature = "winit")]
+            #[cfg(hydrolysis_winit)]
             let watch_submissions = pending_main
                 .iter()
                 .chain(pending_pooled.iter().map(|(_, pending)| pending))
@@ -2518,7 +2518,7 @@ impl HydrolysisRenderer {
                 main: pending_main,
                 surface_size: (target.width, target.height),
                 presented: false,
-                #[cfg(feature = "winit")]
+                #[cfg(hydrolysis_winit)]
                 watch_submissions,
                 stashed_at: Instant::now(),
             };
