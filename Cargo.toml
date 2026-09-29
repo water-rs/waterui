@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+members = ["android/test-app/rust"]
 
 [package]
 name = "hydrolysis"
@@ -73,7 +74,9 @@ native-executor = "0.8.0"
 winit = { version = "0.30", optional = true }
 keyboard-types = { version = "0.8.3", default-features = false }
 ui-events-winit = { version = "0.3.0", optional = true }
-accesskit = { version = "0.25", optional = true }
+# `serde` lets the Android host push the merged accesskit tree to its
+# accessibility provider as JSON (src/runner/android/accessibility.rs).
+accesskit = { version = "0.25", optional = true, features = ["serde"] }
 waterui-inspector-protocol = "0.5.0"
 accesskit_winit = { version = "0.34.0", optional = true }
 
@@ -159,6 +162,24 @@ serde_json = { version = "1", optional = true }
 # (Windows). See src/platform/native_menu_bar.rs.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 muda = { version = "0.20", optional = true, default-features = false }
+
+# The Android host's JNI boundary (see src/runner/android/): `ndk` is pinned to
+# the API-31 NDK symbols it calls (Surface frame-rate and MotionEvent-from-Java
+# are runtime-gated by Build.VERSION.SDK_INT), `libc` carries the eventfd the
+# main-Looper executor wakes on, and `android_logger` + `tracing-log` route
+# `tracing` into logcat.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
+raw-window-handle = "0.6"
+libc = "0.2"
+android_logger = "0.15"
+log = "0.4"
+tracing-log = "0.2"
+# The accessibility tree publish and the platform-view placement set cross JNI
+# as JSON.
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The web runner fetches its fonts while the GPU device comes up; `join!` and

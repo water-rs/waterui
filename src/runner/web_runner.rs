@@ -28,7 +28,7 @@ use waterui_text::FontCollection;
 use web_sys::Response;
 
 use super::fonts::ResourceFontFamilies;
-use crate::platform::{BrowserWindow, PlatformWindow};
+use crate::platform::{BrowserWindow, GpuSurfaceWindow, PlatformWindow};
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{

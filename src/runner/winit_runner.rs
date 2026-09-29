@@ -34,7 +34,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window as NativeWindow, WindowId};
 
-use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
+use crate::platform::{GpuSurfaceWindow, PlatformWindow, WinitGpuContext, WinitWindow};
 use crate::renderer::{
     HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
     MenuShortcutRegistry, PopupWindowManager,

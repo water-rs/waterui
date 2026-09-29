@@ -1,0 +1,95 @@
+{
+  "$schema-comment": "toolchain-lock.json — frozen provenance for bench/android (water-rs/hydrolysis#246 step 1). Records the source revisions the fixture inventory and reference source were imported from, the CI environment pins those fixtures ran under, and the sha256 of every imported baseline artifact. A measurement campaign resolves the Compose BOM at campaign start and records it in its own campaign lock; this file freezes the IMPORT, not a measurement.",
+  "sources": {
+    "android-backend": {
+      "repository": "https://github.com/water-rs/android-backend",
+      "revision": "ebaf59f04b987474ba099e62c94a288b189726cf",
+      "ref": "dev",
+      "imported_at_utc": "2026-09-28",
+      "note": "android-backend is sunset (water-rs/android-backend#220); it receives no new runtime features. Its e2e policy, twin sources and golden artifacts are imported here as the fixture baseline."
+    },
+    "waterui": {
+      "repository": "https://github.com/water-rs/waterui",
+      "revision": "1b80ef536b547838e676c4ee04e74c78e78aa94d",
+      "ref": "dev",
+      "note": "Fixture source of truth: the examples/ tree enumerated by suite.toml."
+    },
+    "hydrolysis": {
+      "repository": "https://github.com/water-rs/hydrolysis",
+      "revision": "4a34cf9acf44218d496c43ecdee008f8f5eeabd7",
+      "ref": "dev",
+      "note": "The backend under test; this harness lives here so archiving android-backend cannot remove the acceptance machinery."
+    }
+  },
+  "ci_environment": {
+    "note": "The emulator environment android-backend's CI ran the frozen fixture set under (workflows/android-e2e.yml at the pinned revision). A campaign must re-derive its own environment and record a change here before recalibrating noise envelopes.",
+    "avd": {
+      "api_level": 35,
+      "arch": "x86_64",
+      "target": "google_apis",
+      "profile": "pixel_6",
+      "emulator_options": "-no-window -gpu swiftshader_indirect -noaudio -no-boot-anim"
+    },
+    "sharding": { "shard_total": 16 },
+    "host_tools": {
+      "pillow": "11.3.0",
+      "tomlkit": "0.13.3",
+      "android_ndk": "29.0.14206865",
+      "android_ndk_note": "android-backend's runtime pin. The hydrolysis host toolchain builds with NDK r27d (27.2.12479018) per the #246 task; both are recorded here so a campaign lock can distinguish them."
+    },
+    "reference_app": {
+      "compileSdk": 37,
+      "minSdk": 26,
+      "targetSdk": 37,
+      "compose_bom": "2025.09.00",
+      "compose_bom_note": "Debug/development pin, explicitly NOT the required production baseline: the plan requires release/R8/baseline-profile configuration, resolved and frozen per campaign.",
+      "agp": "9.3.0",
+      "kotlin": "2.2.0",
+      "gradle": "9.7.1",
+      "jdk": 21,
+      "lint": { "abortOnError": true, "warningsAsErrors": true }
+    }
+  },
+  "imported_artifacts": {
+    "note": "sha256 of each file imported verbatim into bench/android/reference/ and bench/android/scripts/. A file whose hash diverges from this table is a local modification, not the frozen baseline.",
+    "e2e/manifest.json": "7cc0dfc83e6966340fc2d6dee4be9d149921e69df81056248d01fa2889d6a4bb",
+    "e2e/parity-budgets.json": "290c8e35ad05c88d4c86a175fca19ddbc7c05d834e6cb43306d898807198348e",
+    "e2e/reference/app/build.gradle.kts": "7c542afc8c64e476867bd75dba3bec1080272eb2ca249e2b36cd89d0d03af927",
+    "e2e/reference/app/src/main/AndroidManifest.xml": "d1994fcaff4834e92b5927e9b02b6ec29dcd6732d906f018ae3e39ffc6ac2685",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/FormTwin.kt": "49dfcfab80aabc59a7bea5189208effe56310e51dc59bba66abdee0936f61506",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/GestureTwin.kt": "40d1fa635ee115883596c64de3a281f301898bc43094ffeaf93e0b29e16e0bb6",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/HoverTwin.kt": "021b57aeffcb9789818546a736bb11ad6b53940f44baa52279a7ce250aa74994",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/ListTwin.kt": "6e7103376f66ac9f0eecdd8ba1937e708e51c80ed4499576d5d394aec1b6e665",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/MainActivity.kt": "1b5e9a23d9d90ee5719366eb484c1a1165eaaad8f00da5294f2f130fb20e9c63",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/MenuTwin.kt": "5e00c12b1d1fcd8c994a72ccfc6f0e860cbfd0966b7d63fa90649790b1d53b0a",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/PickerTwin.kt": "d11584d7ee2340b2bb1c196755c12af09d8c2f50217f08dd8770b2a130f6d598",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/Twins.kt": "6e3a2d4608a5482f93fbc782ab814b3ee788dbdfa5a8c702a199a498ab01aa03",
+    "e2e/reference/app/src/main/java/dev/waterui/android/reference/TypographyRtlTwin.kt": "524a878eac12c4cad75452d0287f0a113f0a06b8abb682f22643fca1c07bf561",
+    "e2e/reference/gradle.properties": "e5dc98d1b9196f13dde817fb5861c65769cd5833af30484fe901c204ffaa413a",
+    "e2e/reference/gradle/wrapper/gradle-wrapper.properties": "59ebb504450e10ae1c47073fbb8d9beaac65edfc23df79ac13bc0bee220b99fd",
+    "e2e/reference/settings.gradle.kts": "ef023dd855635d4b2622eebda7db353356ef56d2157d9d6eda2c9cbd0f99537d",
+    "scripts/ci/e2e.py": "e083cee2f32c54c2c99f1a9ba2610e7784613abc033a7e27b1c10dab79c6799f",
+    "scripts/ci/release_metrics.py": "3e892dbf1039aa1021ce012fe32f2ace757c908b22ba39f70267a008b0338b03",
+    "scripts/ci/aggregate_metrics.py": "b097f15b4a5e6ae2c573d4941a57c9df42135999a56fb0b30fd4d232b399a3e2",
+    "scripts/ci/test_e2e.py": "426fb0f97918536a63d47e0b9cc43fdb378ff77eb8389fb80453f1e86066aa91",
+    "e2e/goldens/drag_drop.png": "9fb99010dddcd19b4733c83f528317a14eec242feab2466f8a9a528d63c5e241",
+    "e2e/goldens/edge_layout.png": "b56ca33ea56a5255c6ee656f51e9df1dd9b8b62236e7c413b1c9cc183b35169a",
+    "e2e/goldens/edge_list.png": "18d4c876c005f2fffbbefbf943dad352d9dcf652eef45122a33478bddcfa1d68",
+    "e2e/goldens/edge_text.png": "8aea7416a2cd77f07d29b2b3c0be1b6d3c15ea628ca1ff1a8daac7f29f454b72",
+    "e2e/goldens/flow_markdown.png": "9f3b05cd58e3fc584ad72d1cea3d03ba91ec25640518b49bdc83f5c31a76253a",
+    "e2e/goldens/form.png": "331570398440ba0fb0df7b608752d463b16021f67788583f117f27db8227fb56",
+    "e2e/goldens/gesture.png": "fe3f5ce237a53e77def704d6a87ba60ea1524aeb5f46038eea8a1a8dfe17f24c",
+    "e2e/goldens/hover.png": "875594096441e94a2b4a08d512460edac60a480d4faefb4e7da4c0398fe019cb",
+    "e2e/goldens/icons.png": "ddda288ddc345bb70fa71500a3c6219b7aae1b44edde6cbaf1bf0a26e5e6c047",
+    "e2e/goldens/list.png": "5c5408b8a2be9d8980aa6adaf6d50e80d73dab14772ae06513d7a90b94157f65",
+    "e2e/goldens/locale.png": "465e83e10da4c11640c34024eeedb9663fb2265727cb766e6490e16990c5a3c7",
+    "e2e/goldens/markdown.png": "c44023f395a61faf27bf00235f55640867cf2e47314ceb8e5a0f0d9e6f8dbd84",
+    "e2e/goldens/media_picker.png": "14943670d325a974e90a44923b284c51343d0477d8047c6d12fb8a0a2a4d060d",
+    "e2e/goldens/menu.png": "110c6779eb203588aeb5c35f3da7e2a6999d7134c45126b5cec63c8304e99d42",
+    "e2e/goldens/navigation.png": "7e38d89d591946462d70d80bd573a0399562b726d1678b0f25e9a92a9178354a",
+    "e2e/goldens/picker.png": "ac3a48b25902fc37d6baeac0e34222b025d539de9622cc077e2e113ec880d252",
+    "e2e/goldens/shape.png": "e257928dbf22726b99f8fcaf38375cd195280bc15c3d8cdb0541e35c3792b93b",
+    "e2e/goldens/snackbar.png": "be8dbc527116c665f26451f32f93bc565ee50ffb096a9ccbf4f70636992ad234",
+    "e2e/goldens/typography-rtl.png": "e6132b1b426323b444c198a80c3b3e84417eb654ff7381cf9623a92ad917a217"
+  }
+}

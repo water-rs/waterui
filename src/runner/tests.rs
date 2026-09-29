@@ -5,7 +5,8 @@ use super::{
     schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
-    InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError, SurfaceFrame, SurfaceProvider,
+    GpuSurfaceWindow as _, InputEvent, OffscreenSurface, PlatformWindow as _, SurfaceError,
+    SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{HydrolysisRenderer, InteractionKey};

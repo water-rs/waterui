@@ -1,6 +1,7 @@
 //! Per-frame flush: [`RenderNode::flush`] re-encodes the laid-out subtree
 //! into the renderer's scene using the cached placements.
 
+use super::window::window_safe_area_insets;
 use super::*;
 
 pub(crate) struct ChildTextureTarget<'a> {
@@ -234,6 +235,44 @@ impl RenderNode {
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
                         node.child.flush(renderer, ctx, child_env);
+                    }
+                    WrapperEffect::IgnoreSafeArea(edges) => {
+                        // The mirror of the layout arm: on each flagged edge
+                        // the child's frame reaches the window edge — the
+                        // transform carries the leading/top overhang so
+                        // descendants place from the shifted origin too.
+                        let insets = window_safe_area_insets(renderer, env);
+                        let leading = if edges.leading {
+                            f64::from(insets.leading())
+                        } else {
+                            0.0
+                        };
+                        let top = if edges.top {
+                            f64::from(insets.top())
+                        } else {
+                            0.0
+                        };
+                        let trailing = if edges.trailing {
+                            f64::from(insets.trailing())
+                        } else {
+                            0.0
+                        };
+                        let bottom = if edges.bottom {
+                            f64::from(insets.bottom())
+                        } else {
+                            0.0
+                        };
+                        let bounds = kurbo::Rect::new(
+                            0.0,
+                            0.0,
+                            ctx.bounds.width() + leading + trailing,
+                            ctx.bounds.height() + top + bottom,
+                        );
+                        node.child.flush(
+                            renderer,
+                            ctx.child(kurbo::Affine::translate((-leading, -top)), bounds),
+                            child_env,
+                        );
                     }
                     WrapperEffect::Cursor(value) => {
                         HydrolysisRenderer::apply_cursor(renderer, ctx, value, |r| {

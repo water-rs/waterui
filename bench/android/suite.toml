@@ -1,0 +1,405 @@
+# bench/android/suite.toml — the frozen fixture inventory for the Android
+# benchmark harness (water-rs/hydrolysis#246, step 1).
+#
+# This file enumerates every fixture and dogfood screen android-backend's CI
+# actually runs — every waterui example with a runnable `src/lib.rs`,
+# INCLUDING the entries CI leaves at default policy — resolved against the
+# pinned source revisions in toolchain-lock.json. It is the harness's single
+# source of truth: run.py consumes this file, not android-backend's manifest.
+#
+# Fixture entry schema:
+#
+#   source          path of the fixture inside the pinned waterui checkout
+#   package         application/bundle id the built APK installs as
+#   mode            "verify" | "smoke" | "skip" — resolved CI policy
+#   reason          required for smoke/skip; the CI-recorded justification
+#   golden          path under bench/android/ to the baseline frame, or none
+#   compose_twin    "registered" — a hand-written MD3 twin exists in
+#                   reference/ — or "missing" (an explicit unfinished entry;
+#                   section 6 of the plan requires a twin per fixture)
+#   parity_budget   pixel-diffraction bound for the twin comparison; only
+#                   present when compose_twin = "registered"
+#   parity_budget_source   "blessed" (recorded in parity-budgets.json) or
+#                   "default" (the strict fallback fraction)
+#   role            "fixture" (default), "dogfood" (a whole app CI dogfoods),
+#                   or "stress" (the load driver)
+#   env             extra WATERUI_* intent env the fixture receives
+#   settle_timeout_seconds / poll_interval_ms / pixel_tolerance /
+#   max_diff_fraction   per-fixture overrides of [defaults]
+#
+# Every fixture implicitly also receives the shared launch env listed under
+# [defaults.env] exactly as CI applies it.
+#
+# Result-schema note: run.py emits one JSON object per
+# (backend, painter, fixture, script, round) carrying the full identity the
+# plan's section 6 requires — backend, painter, app/screen/script, source and
+# build revisions, environment, and the round index — plus the per-metric
+# samples collected that round. compare.py pairs those rounds.
+
+[provenance]
+# The revisions this inventory was frozen from. The lock file carries the
+# per-file hashes; these commits are the human-readable anchor.
+android_backend = { repository = "water-rs/android-backend", revision = "ebaf59f04b987474ba099e62c94a288b189726cf" }
+waterui = { repository = "water-rs/waterui", revision = "1b80ef536b547838e676c4ee04e74c78e78aa94d", branch = "dev" }
+hydrolysis = { repository = "water-rs/hydrolysis", revision = "4a34cf9acf44218d496c43ecdee008f8f5eeabd7", branch = "dev" }
+
+[defaults]
+# android-backend e2e/manifest.json "defaults" block, verbatim.
+settle_timeout_seconds = 25
+poll_interval_ms = 400
+pixel_tolerance = 8
+max_diff_fraction = 0.005
+
+# Applied to every example by CI: the generated MainActivity forwards these as
+# waterui.env.* intent extras (Os.setenv before the native library loads).
+[defaults.env]
+WATERUI_DISABLE_DYNAMIC_COLORS = "1"
+
+# ---------------------------------------------------------------------------
+# skip — the two documented unsupported examples. Preserving these is
+# required: introducing another skip is not parity, and removing a documented
+# one would silently shrink the inventory.
+# ---------------------------------------------------------------------------
+
+[fixtures.chromium]
+source = "examples/chromium"
+package = "dev.waterui.examples.chromium"
+mode = "skip"
+reason = "CEF has no Android realization; the example cannot function on an emulator"
+compose_twin = "missing"
+
+[fixtures.webview-cef]
+source = "examples/webview-cef"
+package = "dev.waterui.examples.webviewcef"
+mode = "skip"
+reason = "CEF has no Android realization; the example cannot function on an emulator"
+compose_twin = "missing"
+
+# ---------------------------------------------------------------------------
+# smoke — fixtures CI runs with start-and-non-blank-content checks only.
+# ---------------------------------------------------------------------------
+
+[fixtures.animation]
+source = "examples/animation"
+package = "com.waterui.animation_example"
+mode = "smoke"
+reason = "continuous animation never reaches a settled frame"
+compose_twin = "missing"
+
+[fixtures.filter]
+source = "examples/filter"
+package = "com.waterui.example.filter"
+mode = "smoke"
+reason = "GPU-rendered filter effects; the repository boundary contract requires visual verification and forbids pixel-exact golden comparison"
+compose_twin = "missing"
+
+[fixtures.gallery]
+source = "examples/gallery"
+package = "com.waterui.example.gallery"
+mode = "smoke"
+reason = "loads remote images over the network"
+role = "dogfood"
+compose_twin = "missing"
+
+[fixtures.gradient]
+source = "examples/gradient"
+package = "com.waterui.gradient_example"
+mode = "smoke"
+reason = "animated mesh gradient never reaches a settled frame"
+compose_twin = "missing"
+
+[fixtures.map]
+source = "examples/map"
+package = "com.waterui.example.map"
+mode = "smoke"
+reason = "SwiftShader kills the wgpu device roughly every 35s; water-rs/waterui#914 rebuilds the runtime on loss, so this verifies survival, not pixels. Tile fetch plus a loss-recovery cycle needs well over the default window"
+settle_timeout_seconds = 120
+compose_twin = "missing"
+
+[fixtures.multi_window]
+source = "examples/multi_window"
+package = "com.waterui.example.multi_window"
+mode = "smoke"
+reason = "secondary windows need windowing the single-display emulator lacks"
+compose_twin = "missing"
+
+[fixtures.reminders]
+source = "examples/reminders"
+package = "dev.waterui.reminders"
+mode = "smoke"
+reason = "may raise a runtime permission prompt over the content"
+role = "dogfood"
+compose_twin = "missing"
+
+[fixtures.reply]
+source = "examples/reply"
+package = "cool.lexo.reply"
+mode = "smoke"
+reason = "avatars and message photos load over the network from a remote repository, so a settled frame may or may not contain them"
+role = "dogfood"
+compose_twin = "missing"
+
+[fixtures.starfield]
+source = "examples/starfield"
+package = "com.waterui.example.star"
+mode = "smoke"
+reason = "continuous GPU animation"
+compose_twin = "missing"
+
+[fixtures.stress]
+source = "examples/stress"
+package = "com.waterui.example.stress"
+mode = "smoke"
+reason = "stress drivers mutate state on timers; counts scaled to emulator capacity (android-backend#86)"
+role = "stress"
+env = { WATERUI_STRESS_SYSTEM_COUNT = "18", WATERUI_STRESS_CUSTOM_COUNT = "14", WATERUI_STRESS_FILTER_COUNT = "12" }
+compose_twin = "missing"
+
+[fixtures.video_player]
+source = "examples/video_player"
+package = "com.waterui.video_player_example"
+mode = "smoke"
+reason = "video playback never reaches a settled frame"
+compose_twin = "missing"
+
+[fixtures.waterkit_camera_filters]
+source = "examples/waterkit_camera_filters"
+package = "com.waterui.example.waterkit_camera_filters"
+mode = "smoke"
+reason = "camera preview stream never reaches a settled frame"
+compose_twin = "missing"
+
+[fixtures.webview]
+source = "examples/webview"
+package = "com.waterui.example.webview"
+mode = "smoke"
+reason = "remote page loads asynchronously over the network"
+compose_twin = "missing"
+
+# ---------------------------------------------------------------------------
+# verify — default-policy entries: settle, then pixel-compare against the
+# baseline golden under reference/goldens/. Every fixture below was run by CI
+# in verify mode; golden = none marks the verified fixture whose golden the
+# frozen inventory does not carry (anchored_overlay — CI runs it in verify
+# mode but e2e/goldens holds no baseline for it).
+# ---------------------------------------------------------------------------
+
+[fixtures.anchored_overlay]
+source = "examples/anchored_overlay"
+package = "com.waterui.anchored_overlay_example"
+mode = "verify"
+golden = "none"
+compose_twin = "missing"
+
+[fixtures.drag_drop]
+source = "examples/drag_drop"
+package = "com.waterui.example.drop_and_drop"
+mode = "verify"
+golden = "reference/goldens/drag_drop.png"
+compose_twin = "missing"
+
+[fixtures.edge_layout]
+source = "examples/edge_layout"
+package = "dev.waterui.edge_layout"
+mode = "verify"
+golden = "reference/goldens/edge_layout.png"
+compose_twin = "missing"
+
+[fixtures.edge_list]
+source = "examples/edge_list"
+package = "dev.waterui.edge_list"
+mode = "verify"
+golden = "reference/goldens/edge_list.png"
+compose_twin = "missing"
+
+[fixtures.edge_text]
+source = "examples/edge_text"
+package = "dev.waterui.edge_text"
+mode = "verify"
+golden = "reference/goldens/edge_text.png"
+compose_twin = "missing"
+
+[fixtures.flow_markdown]
+source = "examples/flow_markdown"
+package = "dev.waterui.examples.flow_markdown"
+mode = "verify"
+golden = "reference/goldens/flow_markdown.png"
+compose_twin = "missing"
+
+[fixtures.form]
+source = "examples/form"
+package = "com.waterui.form_example"
+mode = "verify"
+golden = "reference/goldens/form.png"
+compose_twin = "registered"
+parity_budget = 0.20
+parity_budget_source = "blessed"
+
+[fixtures.gesture]
+source = "examples/gesture"
+package = "com.waterui.gesture_example"
+mode = "verify"
+golden = "reference/goldens/gesture.png"
+compose_twin = "registered"
+parity_budget = 0.10
+parity_budget_source = "blessed"
+
+[fixtures.hover]
+source = "examples/hover"
+package = "com.waterui.hover_example"
+mode = "verify"
+golden = "reference/goldens/hover.png"
+compose_twin = "registered"
+parity_budget = 0.28
+parity_budget_source = "blessed"
+
+[fixtures.icons]
+source = "examples/icons"
+package = "com.waterui.example.icons"
+mode = "verify"
+golden = "reference/goldens/icons.png"
+compose_twin = "missing"
+
+[fixtures.list]
+source = "examples/list"
+package = "com.waterui.listexample"
+mode = "verify"
+golden = "reference/goldens/list.png"
+compose_twin = "registered"
+parity_budget = 0.20
+parity_budget_source = "blessed"
+
+[fixtures.locale]
+source = "examples/locale"
+package = "com.waterui.example.locale"
+mode = "verify"
+golden = "reference/goldens/locale.png"
+compose_twin = "missing"
+
+[fixtures.markdown]
+source = "examples/markdown"
+package = "com.waterui.example.markdown"
+mode = "verify"
+golden = "reference/goldens/markdown.png"
+compose_twin = "missing"
+
+[fixtures.media_picker]
+source = "examples/media_picker"
+package = "com.waterui.media_picker_example"
+mode = "verify"
+golden = "reference/goldens/media_picker.png"
+compose_twin = "missing"
+
+[fixtures.menu]
+source = "examples/menu"
+package = "com.waterui.menu_example"
+mode = "verify"
+golden = "reference/goldens/menu.png"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
+
+[fixtures.navigation]
+source = "examples/navigation"
+package = "dev.waterui.navigation"
+mode = "verify"
+golden = "reference/goldens/navigation.png"
+compose_twin = "missing"
+
+[fixtures.picker]
+source = "examples/picker"
+package = "com.waterui.example.picker"
+mode = "verify"
+golden = "reference/goldens/picker.png"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
+
+[fixtures.shape]
+source = "examples/shape"
+package = "com.waterui.example.shape"
+mode = "verify"
+golden = "reference/goldens/shape.png"
+compose_twin = "missing"
+
+[fixtures.snackbar]
+source = "examples/snackbar"
+package = "com.waterui.snackbar_example"
+mode = "verify"
+golden = "reference/goldens/snackbar.png"
+compose_twin = "missing"
+
+[fixtures.typography-rtl]
+source = "examples/typography-rtl"
+package = "dev.waterui.typography_rtl"
+mode = "verify"
+golden = "reference/goldens/typography-rtl.png"
+compose_twin = "registered"
+parity_budget = 0.33
+parity_budget_source = "blessed"
+
+# ---------------------------------------------------------------------------
+# Stale CI policy entries: the frozen manifest carries policies for examples
+# that no longer exist on the pinned waterui revision (self-drawn components
+# moved to their own repositories). They run nothing — recorded here so the
+# import is complete and no fixture is silently dropped or invented.
+# ---------------------------------------------------------------------------
+
+[stale_policies.audio_visualizer]
+mode = "smoke"
+reason = "continuous animation driven by audio input"
+status = "no fixture: examples/audio_visualizer is absent at the pinned waterui revision"
+
+[stale_policies.chart]
+mode = "smoke"
+reason = "GPU-rendered surface; software-renderer antialiasing is not golden-stable"
+status = "no fixture: examples/chart is absent at the pinned waterui revision"
+
+[stale_policies.flame]
+mode = "smoke"
+reason = "continuous GPU animation"
+status = "no fixture: examples/flame is absent at the pinned waterui revision"
+
+[stale_policies.image]
+mode = "smoke"
+reason = "remote images arrive asynchronously over the network"
+status = "no fixture: examples/image is absent at the pinned waterui revision"
+
+[stale_policies.particle]
+mode = "smoke"
+reason = "continuous GPU particle animation"
+status = "no fixture: examples/particle is absent at the pinned waterui revision"
+
+# ---------------------------------------------------------------------------
+# Unfinished entries — the plan's acceptance for step 1 makes missing Compose
+# twins explicit. Every fixture whose compose_twin = "missing" appears here,
+# grouped by the section-6 family the finished reference must cover. An entry
+# is complete when a twin is registered in reference/ AND its parity budget
+# is recorded (or deliberately set to the strict default).
+# ---------------------------------------------------------------------------
+
+[unfinished.compose_twins]
+# verify-mode fixtures missing a twin (twin + parity budget required):
+verify = [
+    "anchored_overlay", "drag_drop", "edge_layout", "edge_list", "edge_text",
+    "flow_markdown", "icons", "locale", "markdown", "media_picker",
+    "navigation", "shape", "snackbar",
+]
+# smoke-mode fixtures missing a twin (matching actions still required):
+smoke = [
+    "animation", "filter", "gallery", "gradient", "map", "multi_window",
+    "reminders", "reply", "starfield", "stress", "video_player",
+    "waterkit_camera_filters", "webview",
+]
+# skip-mode fixtures: their missing twins are recorded but blocked — the
+# fixture itself has no Android realization, so twin work cannot run.
+skip = ["chromium", "webview-cef"]
+
+# Section-6 coverage the finished reference must add on top of the seven
+# registered twins: the remaining core fixture screens in light/dark, CJK and
+# RTL; a deterministic 1,000-row list stress case; the editing suite
+# (single/multiline, password, selection, CJK composition, scrolling editor,
+# keyboard/inset transitions); navigation/animation transition matching; the
+# same local WebView document and native video/View embedding twins; and
+# dogfood flows for Reply, gallery and the other CI dogfood apps (not merely
+# launch screenshots).

@@ -279,7 +279,15 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<IgnoreSafeArea>>() {
-            Ok(meta) => return RenderNode::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                return RenderNode::build_wrapper(
+                    WrapperEffect::IgnoreSafeArea(value.edges),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<ContextMenu>>() {

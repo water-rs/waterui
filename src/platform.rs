@@ -5,7 +5,11 @@ use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
 use waterui_graphics::RedrawHandle;
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
 use waterui_graphics::gpu_surface::preferred_surface_format;
 use waterui_graphics::shared_context::reclaim_device;
 
@@ -287,6 +291,11 @@ pub enum SurfaceFrame {
         output: wgpu::SurfaceTexture,
         view: wgpu::TextureView,
     },
+    #[cfg(target_os = "android")]
+    Android {
+        output: wgpu::SurfaceTexture,
+        view: wgpu::TextureView,
+    },
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     Browser {
         output: wgpu::SurfaceTexture,
@@ -301,6 +310,8 @@ impl SurfaceFrame {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(feature = "winit")]
             Self::Window { output, .. } => &output.texture,
+            #[cfg(target_os = "android")]
+            Self::Android { output, .. } => &output.texture,
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             Self::Browser { output, .. } => &output.texture,
         }
@@ -312,14 +323,22 @@ impl SurfaceFrame {
             Self::Offscreen { view, .. } => view,
             #[cfg(feature = "winit")]
             Self::Window { view, .. } => view,
+            #[cfg(target_os = "android")]
+            Self::Android { view, .. } => view,
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             Self::Browser { view, .. } => view,
         }
     }
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
-fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+pub(crate) fn select_hydrolysis_surface_format(
+    caps: &wgpu::SurfaceCapabilities,
+) -> wgpu::TextureFormat {
     let preferred = preferred_surface_format(caps);
     if supports_hydrolysis_surface_format(preferred) {
         return normalize_surface_format(caps, preferred);
@@ -340,7 +359,11 @@ fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::T
     );
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
 fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     matches!(
         format.remove_srgb_suffix(),
@@ -351,7 +374,11 @@ fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
     )
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
 fn normalize_surface_format(
     caps: &wgpu::SurfaceCapabilities,
     format: wgpu::TextureFormat,
@@ -365,8 +392,12 @@ fn normalize_surface_format(
     format
 }
 
-#[cfg(any(feature = "winit", all(target_arch = "wasm32", feature = "web")))]
-fn acquire_surface_texture(
+#[cfg(any(
+    feature = "winit",
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+pub(crate) fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
     match surface.get_current_texture() {
@@ -401,6 +432,19 @@ pub trait SurfaceProvider {
     }
 }
 
+/// The window's platform safe area, in logical units — the insets the host
+/// reports for regions obscured by system chrome (status bar, navigation bar,
+/// display cutout) and the IME.
+///
+/// The host owns the binding: it writes the combined insets on every change,
+/// and the windowed pipeline lays the root content out inside them while
+/// `waterui_layout::safe_area::IgnoreSafeArea` content reaches the window
+/// edge on its flagged edges. The binding lives in the session environment so
+/// an update re-lays out through the ordinary input path; hosts with no
+/// unsafe regions simply never install one.
+#[derive(Debug, Clone)]
+pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
+
 /// Asserts the app's `Window::frame` binding carries finite components on
 /// all four fields. The binding is a trust boundary — a NaN or infinite
 /// frame is a programming error, not something the runner silently repairs
@@ -422,9 +466,24 @@ pub(crate) fn validated_window_frame(
     frame
 }
 
-/// Window abstraction consumed by hydrolysis runner.
+/// Window host-services contract consumed by hydrolysis runner: window
+/// metrics, property application, input delivery, redraw wakeup, IME state
+/// sync and cursor chrome.
+///
+/// This contract carries no GPU objects — a host satisfies it without a
+/// wgpu device, a presentation surface or a render thread. The GPU
+/// painter's presentation attachment is the separate [`GpuSurfaceWindow`]
+/// boundary: only window types that implement it can drive the GPU frame
+/// pump, so a host that stays `PlatformWindow`-only can never hand the
+/// runner a wgpu surface.
 pub trait PlatformWindow: 'static {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider;
+    /// The drawable content area in physical pixels.
+    ///
+    /// Window metrics are host state: layout bounds, the semantic tree and
+    /// DPI all come from here, never from a presentation attachment, so a
+    /// host answers correctly before any surface exists and while it is
+    /// between surface generations.
+    fn content_size(&self) -> (u32, u32);
     fn apply_properties(&mut self, window: &WuiWindow);
     /// Applies the window's effective content-size limits (logical units).
     ///
@@ -456,14 +515,6 @@ pub trait PlatformWindow: 'static {
     }
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
-    /// Returns a thread-safe wake bridge for nested GPU surfaces.
-    ///
-    /// Windowed platforms override this when their native window can be woken
-    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
-    /// default and rely on their explicit render pump.
-    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-        None
-    }
     fn scale_factor(&self) -> f64;
     /// The refresh rate (Hz) of the display this window is on, if known.
     ///
@@ -475,6 +526,25 @@ pub trait PlatformWindow: 'static {
     }
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     fn set_cursor_style(&mut self, style: CursorStyle);
+}
+
+/// The GPU painter's presentation attachment: a [`PlatformWindow`] whose
+/// content is presented through a wgpu surface.
+///
+/// This is the compile-time painter boundary — the windowed frame pump is
+/// generic over this trait, so a GPU surface exists only where a painter
+/// attached one. A host implementing only [`PlatformWindow`] has no surface
+/// to give the pump, and the GPU render path is unreachable for it.
+pub trait GpuSurfaceWindow: PlatformWindow {
+    fn surface(&mut self) -> &mut dyn SurfaceProvider;
+    /// Returns a thread-safe wake bridge for nested GPU surfaces.
+    ///
+    /// Windowed platforms override this when their native window can be woken
+    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
+    /// default and rely on their explicit render pump.
+    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+        None
+    }
 }
 
 /// The adapter, device and queue an [`OffscreenSurface`] renders on.
@@ -1082,7 +1152,7 @@ impl OffscreenSurface {
     }
 }
 
-fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+pub(crate) fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let adapter_limits = adapter.limits();
     let downlevel_caps = adapter.get_downlevel_capabilities();
     let base_limits = if downlevel_caps.is_webgpu_compliant()
@@ -1100,7 +1170,7 @@ fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
         .using_alignment(adapter_limits)
 }
 
-fn ensure_compute_capable_adapter(
+pub(crate) fn ensure_compute_capable_adapter(
     adapter: &wgpu::Adapter,
     context: &str,
     no_compute_message: &str,
@@ -1170,6 +1240,10 @@ impl SurfaceProvider for OffscreenSurface {
             #[cfg(feature = "winit")]
             SurfaceFrame::Window { .. } => {
                 panic!("hydrolysis offscreen surface received a window frame");
+            }
+            #[cfg(target_os = "android")]
+            SurfaceFrame::Android { .. } => {
+                panic!("hydrolysis offscreen surface received an android frame");
             }
             #[cfg(all(target_arch = "wasm32", feature = "web"))]
             SurfaceFrame::Browser { .. } => {
@@ -1292,6 +1366,16 @@ impl OffscreenWindow {
         &self.surface
     }
 
+    /// The offscreen presentation attachment, directly on the concrete type.
+    ///
+    /// [`GpuSurfaceWindow::surface`] carries the same entry point on the
+    /// painter-boundary trait; this inherent form exists because downstream
+    /// test hosts (e.g. `waterui-testing`) call `surface()` on the concrete
+    /// window without importing the trait.
+    pub fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
+    }
+
     /// The last (min, max) content-size limits the runner applied, for tests.
     #[must_use]
     pub fn applied_size_limits(
@@ -1305,8 +1389,9 @@ impl OffscreenWindow {
 }
 
 impl PlatformWindow for OffscreenWindow {
-    fn surface(&mut self) -> &mut dyn SurfaceProvider {
-        &mut self.surface
+    fn content_size(&self) -> (u32, u32) {
+        // An offscreen window is exactly its render target.
+        self.surface.size()
     }
 
     fn apply_properties(&mut self, window: &WuiWindow) {
@@ -1348,6 +1433,12 @@ impl PlatformWindow for OffscreenWindow {
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
+}
+
+impl GpuSurfaceWindow for OffscreenWindow {
+    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
+    }
 }
 
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
@@ -1398,9 +1489,9 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow, PointerButton,
-        PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose,
-        TextInputState, TouchPhase, reclaim_device, validated_window_frame,
+        CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
+        PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider,
+        TextInputPurpose, TextInputState, TouchPhase, reclaim_device, validated_window_frame,
     };
 
     #[derive(Clone)]
@@ -2946,11 +3037,9 @@ mod winit_impl {
     }
 
     impl PlatformWindow for WinitWindow {
-        fn surface(&mut self) -> &mut dyn SurfaceProvider {
-            if let Some(size) = self.pending_surface_size.take() {
-                self.surface.resize(size.width, size.height);
-            }
-            &mut self.surface
+        fn content_size(&self) -> (u32, u32) {
+            let size = self.window.inner_size();
+            (size.width, size.height)
         }
 
         fn applies_size_limits(&self) -> bool {
@@ -3082,13 +3171,6 @@ mod winit_impl {
             }
         }
 
-        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let handle = RedrawHandle::new();
-            let window = Arc::clone(&self.window);
-            handle.set_waker(Some(Arc::new(move || window.request_redraw())));
-            Some(handle)
-        }
-
         fn scale_factor(&self) -> f64 {
             self.window.scale_factor()
         }
@@ -3136,6 +3218,22 @@ mod winit_impl {
             self.current_cursor_style = style;
             self.window
                 .set_cursor(WinitCursor::Icon(map_cursor_style(style)));
+        }
+    }
+
+    impl GpuSurfaceWindow for WinitWindow {
+        fn surface(&mut self) -> &mut dyn SurfaceProvider {
+            if let Some(size) = self.pending_surface_size.take() {
+                self.surface.resize(size.width, size.height);
+            }
+            &mut self.surface
+        }
+
+        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+            let handle = RedrawHandle::new();
+            let window = Arc::clone(&self.window);
+            handle.set_waker(Some(Arc::new(move || window.request_redraw())));
+            Some(handle)
         }
     }
 
