@@ -32,7 +32,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/relea
 Then create and run a project:
 
 ```bash
-water create counter --mode playground
+water create counter
 cd counter
 water run
 ```
@@ -40,7 +40,7 @@ water run
 `water update` upgrades the CLI in place, and `water update --check` reports the
 newest release without installing it.
 
-A playground is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
+A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
 ```rust,ignore
 use waterui::app::App;
@@ -89,7 +89,7 @@ The same surface drives `water preview test` for semantic interaction tests and 
 
 ## Shipping a real app
 
-Playgrounds are for iteration. App mode generates platform projects that belong to you, so they can be customized, signed, and packaged:
+The same project you iterate on is the one that ships: the CLI generates and manages the platform projects, and builds, signs and packages the app from the declarations in `Water.toml`:
 
 ```bash
 water create my-app --backends apple,android

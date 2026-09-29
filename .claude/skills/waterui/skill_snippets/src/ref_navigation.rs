@@ -6,7 +6,7 @@ use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
 
-/// Glue: the app model navigation.md's snippets thread through their views.
+/// Glue: the app's model navigation.md's snippets thread through their views.
 /// `#[state]` marks it an extractor, which `send_draft`'s bare `mail: Mail`
 /// parameter relies on.
 #[state]
