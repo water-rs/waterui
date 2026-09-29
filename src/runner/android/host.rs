@@ -4,10 +4,10 @@
 //! stands behind: window metrics live here (one coherent snapshot pushed by
 //! the host, never read off the GPU attachment), input arrives as pushed
 //! events, and `request_redraw` crosses JNI once to post a Choreographer
-//! frame. `AndroidSession` is the mounted app: `RuntimeWindow` + environment
-//! + the main-Looper executor, driven by one frame transaction per vsync
-//! callback — the plan's "one coordinated frame transaction", never an
-//! unconditional tick-then-render pair.
+//! frame. `AndroidSession` is the mounted app: `RuntimeWindow`, the
+//! environment and the main-Looper executor, driven by one frame transaction
+//! per vsync callback — the plan's "one coordinated frame transaction",
+//! never an unconditional tick-then-render pair.
 //!
 //! The executor keeps the shared channel-queue shape, but its wake writes an
 //! `eventfd` that the main `ALooper` is watching instead of a Java callback —
@@ -132,10 +132,10 @@ impl HostBridge {
     fn sync_text_input_state(&self, state: Option<TextInputState>, density: f64) {
         let args: &[JValue] = match state {
             Some(state) => &[
-                JValue::Float((f64::from(state.x) * density) as f32),
-                JValue::Float((f64::from(state.y) * density) as f32),
-                JValue::Float((f64::from(state.width) * density) as f32),
-                JValue::Float((f64::from(state.height) * density) as f32),
+                JValue::Float((state.x * density) as f32),
+                JValue::Float((state.y * density) as f32),
+                JValue::Float((state.width * density) as f32),
+                JValue::Float((state.height * density) as f32),
                 JValue::Int(match state.purpose {
                     crate::platform::TextInputPurpose::Normal => 0,
                     crate::platform::TextInputPurpose::Password => 1,
@@ -226,14 +226,12 @@ impl AndroidHostWindow {
         if let InputEvent::Scroll {
             dx,
             dy,
-            is_line_delta,
+            is_line_delta: false,
             ..
         } = &mut event
         {
-            if !*is_line_delta {
-                *dx /= density;
-                *dy /= density;
-            }
+            *dx /= density;
+            *dy /= density;
         }
         // Input is a wake, not a pump: the first queued event posts one
         // Choreographer frame that dispatches the batch; the engine's `Next`

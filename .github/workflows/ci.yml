@@ -85,6 +85,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked --target wasm32-unknown-unknown --features web -- -D warnings
 
+  android:
+    name: Check / aarch64-linux-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The Android host (`runner::android`) compiles only for Android, so the
+      # host-target legs above never lint it. Both feature extremes: the full
+      # sweep proves `winit` stays inert there, and the bare build catches
+      # call sites a feature gates out.
+      - run: cargo clippy --locked --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      - run: cargo clippy --locked --target aarch64-linux-android --no-default-features -- -D warnings
+
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
