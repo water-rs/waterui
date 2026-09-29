@@ -185,6 +185,100 @@ pub(crate) enum RenderNode {
 }
 
 impl RenderNode {
+    /// The render identity of this visual node itself — never looked through
+    /// to a child's. Even a layout-transparent transform/opacity wrapper owns a
+    /// distinct [`RenderId`] (separate visual ownership for engine mounts):
+    /// accessibility ancestry and render ancestry differ on purpose.
+    ///
+    /// A node keeps its id across signal-driven updates — the id is allocated
+    /// once in the node's constructor and only a structural replacement (a
+    /// `Dynamic` rebuild, a collection reconcile removal or rebuild of an
+    /// unchanged id) replaces the node and its id.
+    #[allow(dead_code)]
+    pub(crate) fn render_id(&self) -> RenderId {
+        match self {
+            Self::Color(node) => node.render_id,
+            Self::Text(node) => node.render_id,
+            Self::Container(node) => node.render_id,
+            Self::Opacity(node) => node.render_id,
+            Self::Scale(node) => node.render_id,
+            Self::Rotation(node) => node.render_id,
+            Self::Offset(node) => node.render_id,
+            Self::Retain(node) => node.render_id,
+            Self::Env(node) => node.render_id,
+            Self::Scroll(node) => node.render_id,
+            Self::Collection(node) => node.render_id,
+            Self::LazyStack(node) => node.render_id,
+            Self::SceneView(node) => node.render_id,
+            Self::GpuSurface(node) => node.render_id,
+            Self::ViewEffect(node) => node.render_id,
+            Self::AppliedFilter(node) => node.render_id,
+            Self::Dynamic(node) => node.render_id,
+            Self::Wrapper(node) => node.render_id,
+            Self::Widget(node) => node.render_id,
+        }
+    }
+
+    /// This node's mount key in the given presentation placement — ordinary
+    /// content mounts under [`PresentationId::ORDINARY`]; a hosted preview,
+    /// accessory or popup instance mounts under its own `PresentationId` so
+    /// the two can never collide.
+    #[allow(dead_code)]
+    pub(crate) fn render_key(&self, presentation: PresentationId) -> RenderKey {
+        RenderKey {
+            render: self.render_id(),
+            presentation,
+        }
+    }
+
+    /// Pre-order collection of every visual node's [`RenderId`] in the subtree,
+    /// in tree order. Test-only: the acceptance probes compare the whole
+    /// sequence across an update (unchanged nodes keep their position and id).
+    #[cfg(test)]
+    pub(crate) fn collect_render_ids(&self, out: &mut Vec<RenderId>) {
+        out.push(self.render_id());
+        match self {
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::Widget(_)
+            | Self::SceneView(_)
+            | Self::GpuSurface(_) => {}
+            Self::Container(node) => {
+                for child in &node.children {
+                    child.collect_render_ids(out);
+                }
+            }
+            Self::Collection(node) => {
+                for entry in &node.entries {
+                    entry.node.collect_render_ids(out);
+                }
+            }
+            Self::LazyStack(node) => {
+                // The visible-window cache is id-keyed (unordered); collect then
+                // sort so the sequence is comparable across frames.
+                let mut ids = Vec::new();
+                for subview in node.item_cache.borrow().values() {
+                    if let Some(child) = subview.node() {
+                        child.collect_render_ids(&mut ids);
+                    }
+                }
+                ids.sort();
+                out.extend(ids);
+            }
+            Self::Opacity(node) => node.child.collect_render_ids(out),
+            Self::Scale(node) => node.child.collect_render_ids(out),
+            Self::Rotation(node) => node.child.collect_render_ids(out),
+            Self::Offset(node) => node.child.collect_render_ids(out),
+            Self::Retain(node) => node.child.collect_render_ids(out),
+            Self::Env(node) => node.child.collect_render_ids(out),
+            Self::Scroll(node) => node.child.collect_render_ids(out),
+            Self::AppliedFilter(node) => node.child.collect_render_ids(out),
+            Self::ViewEffect(node) => node.child.borrow().collect_render_ids(out),
+            Self::Dynamic(node) => node.child.borrow().collect_render_ids(out),
+            Self::Wrapper(node) => node.child.collect_render_ids(out),
+        }
+    }
+
     /// The retained identity marking where this node's view begins, looked
     /// through the transparent single-child wrappers (env scopes, animation
     /// layers, retained guards, dynamic hosts) to the first node that carries

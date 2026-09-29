@@ -54,6 +54,7 @@ mod perf_scroll;
 mod popup_frame;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod popup_windows;
+mod render_identity;
 mod retained_scene;
 mod scene_offer;
 #[cfg(feature = "accessibility")]

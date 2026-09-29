@@ -60,7 +60,7 @@ pub struct MigrationCounters {
     /// acceptance: an image is not re-registered per frame.
     pub(crate) image_registrations: u64,
     /// GPU submissions this frame: every `wgpu::Queue::submit` and every
-    /// `vello::Renderer::render_to_texture` issued by the render path.
+    /// `LegacyRenderer::render_recording` issued by the render path.
     pub(crate) gpu_submissions: u64,
     /// Wake requests consumed by the host plumbing this frame: each
     /// `signals.take_*` drain that found a pending frame request, each GPU

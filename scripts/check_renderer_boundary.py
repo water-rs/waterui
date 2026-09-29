@@ -19,6 +19,12 @@ The baseline is generated on purpose; it is the inventory of what the
 migration has not ported yet. Regenerate it only when a P-step removed
 references: `python3 scripts/check_renderer_boundary.py --write-baseline`.
 
+When `quarantine` is set in the baseline (flipped at P4), every tracked file
+must be one of the designated legacy implementation files, `Cargo.toml`, or a
+file the `compat_files` list names (symbols a pinned external consumer owns —
+e.g. `waterui-testing` reads `FrameCounters::vello_scene_layers`): a Vello
+reference anywhere else fails even if it was in the baseline before.
+
 When `strict` is set in the baseline (flipped by the final cutover step),
 *any* Vello reference in source or resolved Cargo metadata fails the check —
 including test-only and dev-dependency references — and the quarantine list
@@ -229,6 +235,14 @@ def manifests_under(root: Path) -> list[Path]:
     return sorted(root.rglob("Cargo.toml"))
 
 
+# Post-P4 quarantine: the only source files that may hold Vello references.
+QUARANTINE_FILES = (
+    "src/renderer/recording/vello.rs",
+    "src/engine/vello_backend.rs",
+    "Cargo.toml",
+)
+
+
 def build_baseline(root: Path) -> dict:
     dep_aliases = manifest_dep_aliases(manifests_under(root))
     extra = set(dep_aliases)  # renamed-dep crate idents are vello tokens
@@ -241,6 +255,10 @@ def build_baseline(root: Path) -> dict:
     return {
         "version": 1,
         "strict": False,
+        "quarantine": list(QUARANTINE_FILES[:2]),
+        # Baseline entries these files may still hold: symbols a pinned
+        # external consumer owns (renamed on that side at the W cutover).
+        "compat_files": ["src/runner/window.rs"],
         "renamed_dep_tokens": sorted(extra),
         "files": files,
     }
@@ -263,6 +281,21 @@ def compare(root: Path, baseline: dict) -> list[str]:
     newly_renamed = {
         k: v for k, v in dep_aliases.items() if k not in baseline.get("renamed_dep_tokens", [])
     }
+
+    quarantine_list = baseline.get("quarantine")
+    if quarantine_list is not None and not strict:
+        quarantine = (
+            set(quarantine_list)
+            | {"Cargo.toml"}
+            | set(baseline.get("compat_files") or ())
+        )
+        unexpected = set(baseline_files) - quarantine
+        for rel in sorted(unexpected):
+            violations.append(
+                f"{rel}: baseline carries Vello references outside the "
+                "quarantine — only recording/vello.rs, vello_backend.rs, "
+                "compat files and Cargo.toml may hold them"
+            )
 
     for path in scanned_paths(root):
         rel = path.relative_to(root).as_posix()
@@ -344,9 +377,14 @@ def main() -> int:
 
     if args.write_baseline:
         baseline = build_baseline(REPO_ROOT)
-        # Preserve the strict flag across regeneration.
+        # Preserve the strict flag and quarantine list across regeneration.
         if BASELINE_PATH.is_file():
-            baseline["strict"] = bool(load_baseline().get("strict"))
+            prior = load_baseline()
+            baseline["strict"] = bool(prior.get("strict"))
+            if prior.get("quarantine") is not None:
+                baseline["quarantine"] = prior["quarantine"]
+            if prior.get("compat_files") is not None:
+                baseline["compat_files"] = prior["compat_files"]
         BASELINE_PATH.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE_PATH} ({len(baseline['files'])} files tracked)")
         return 0

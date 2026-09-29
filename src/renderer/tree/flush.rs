@@ -27,7 +27,7 @@ impl RenderNode {
                 renderer.scene_mut().fill(
                     peniko::Fill::NonZero,
                     ctx.transform,
-                    color,
+                    &peniko::Brush::Solid(color),
                     None,
                     &ctx.bounds,
                 );
@@ -96,16 +96,15 @@ impl RenderNode {
                     &node.value.value,
                     OPACITY_ANIMATION_KEY,
                 );
-                renderer.push_layer_rect(
+                renderer.with_clip_rect_scope(
                     alpha,
                     LayerTransforms {
                         paint: ctx.transform,
                         hit: ctx.hit_transform,
                     },
                     ctx.bounds,
+                    |renderer| node.child.flush(renderer, ctx, env),
                 );
-                node.child.flush(renderer, ctx, env);
-                renderer.pop_layer();
             }
             RenderNode::Scale(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
@@ -344,15 +343,14 @@ impl RenderNode {
                     wants_input,
                 );
                 renderer.pop_render_owner();
-                let mut scene = vello::Scene::new();
+                let mut scene = Recording::new();
                 // Scope `scene2d` so its `&mut scene` borrow ends before `&scene` is
                 // appended below. `CheckedScene2D` validates every image brush at
                 // this ingest boundary — malformed `ImageData` rejected here would
                 // otherwise only fail inside wgpu's `write_texture`.
                 let needs_next = {
-                    let mut scene2d = VelloScene2D::new(&mut scene);
                     let mut scene2d = crate::renderer::CheckedScene2D::new(
-                        &mut scene2d,
+                        &mut scene,
                         &mut renderer.state.counters,
                     );
                     #[allow(clippy::cast_possible_truncation)]
@@ -362,10 +360,9 @@ impl RenderNode {
                         ctx.bounds.height() as f32,
                     )
                 };
-                crate::engine::vello_backend::append_scene(
-                    renderer.scene_mut(),
+                renderer.scene_mut().append(
                     &scene,
-                    Some(ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
+                    ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
                 );
                 if needs_next {
                     renderer.request_refresh();
@@ -429,78 +426,79 @@ impl RenderNode {
                     f64::from(node.viewport.width),
                     f64::from(node.viewport.height),
                 );
-                renderer.push_layer_rect(
+                renderer.with_clip_rect_scope(
                     1.0,
                     LayerTransforms {
                         paint: ctx.transform,
                         hit: ctx.hit_transform,
                     },
                     viewport_rect,
-                );
-                let scroll_offset =
-                    kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
-                let content_bounds = kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    f64::from(node.content_size.width),
-                    f64::from(node.content_size.height),
-                );
-                let content_ctx = RenderContext::with_transforms(
-                    content_bounds,
-                    ctx.transform * scroll_offset,
-                    ctx.hit_transform * scroll_offset,
-                );
-                // Publish the visible window (in content coordinates) so a
-                // virtualized `LazyStack` child only builds the rows on screen.
-                let lazy_viewport = kurbo::Rect::new(
-                    metrics.offset_x,
-                    metrics.offset_y,
-                    metrics.offset_x + f64::from(node.viewport.width),
-                    metrics.offset_y + f64::from(node.viewport.height),
-                );
-                // Registered before the content so the content can be parented
-                // to it: a scroll region owns what it scrolls, and a label on
-                // the scroll view must reach the node carrying the scroll
-                // actions rather than a group beside it.
-                #[cfg(feature = "accessibility")]
-                let scroll_accessibility_node = {
-                    renderer.push_accessibility_owner(&node.accessibility_identity);
-                    let scroll_accessibility_node =
-                        crate::widgets::scroll::register_scroll_accessibility_node(
-                            renderer,
-                            &node.env,
-                            Some(transformed_rect(ctx.hit_transform, viewport_rect)),
-                            &handle,
-                            metrics,
-                            node.axis,
+                    |renderer| {
+                        let scroll_offset =
+                            kurbo::Affine::translate((-metrics.offset_x, -metrics.offset_y));
+                        let content_bounds = kurbo::Rect::new(
+                            0.0,
+                            0.0,
+                            f64::from(node.content_size.width),
+                            f64::from(node.content_size.height),
                         );
-                    renderer.pop_accessibility_owner();
-                    if let Some(scroll_accessibility_node) = scroll_accessibility_node {
-                        renderer.push_accessibility_parent(scroll_accessibility_node);
-                    }
-                    scroll_accessibility_node
-                };
-                // The wheel/trackpad target registers before the content
-                // flushes: dispatch walks the frame's targets newest-first, so
-                // a scroll region nested inside this one — registered by the
-                // child below — wins the delta until it hits its own edge.
-                crate::widgets::scroll::register_scroll_wheel_target(
-                    renderer,
-                    ctx.hit_transform,
-                    viewport_rect,
-                    &handle,
+                        let content_ctx = RenderContext::with_transforms(
+                            content_bounds,
+                            ctx.transform * scroll_offset,
+                            ctx.hit_transform * scroll_offset,
+                        );
+                        // Publish the visible window (in content coordinates) so a
+                        // virtualized `LazyStack` child only builds the rows on screen.
+                        let lazy_viewport = kurbo::Rect::new(
+                            metrics.offset_x,
+                            metrics.offset_y,
+                            metrics.offset_x + f64::from(node.viewport.width),
+                            metrics.offset_y + f64::from(node.viewport.height),
+                        );
+                        // Registered before the content so the content can be parented
+                        // to it: a scroll region owns what it scrolls, and a label on
+                        // the scroll view must reach the node carrying the scroll
+                        // actions rather than a group beside it.
+                        #[cfg(feature = "accessibility")]
+                        let scroll_accessibility_node = {
+                            renderer.push_accessibility_owner(&node.accessibility_identity);
+                            let scroll_accessibility_node =
+                                crate::widgets::scroll::register_scroll_accessibility_node(
+                                    renderer,
+                                    &node.env,
+                                    Some(transformed_rect(ctx.hit_transform, viewport_rect)),
+                                    &handle,
+                                    metrics,
+                                    node.axis,
+                                );
+                            renderer.pop_accessibility_owner();
+                            if let Some(scroll_accessibility_node) = scroll_accessibility_node {
+                                renderer.push_accessibility_parent(scroll_accessibility_node);
+                            }
+                            scroll_accessibility_node
+                        };
+                        // The wheel/trackpad target registers before the content
+                        // flushes: dispatch walks the frame's targets newest-first, so
+                        // a scroll region nested inside this one — registered by the
+                        // child below — wins the delta until it hits its own edge.
+                        crate::widgets::scroll::register_scroll_wheel_target(
+                            renderer,
+                            ctx.hit_transform,
+                            viewport_rect,
+                            &handle,
+                        );
+                        renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
+                            bounds: lazy_viewport,
+                            transform: content_ctx.transform,
+                        });
+                        node.child.flush(renderer, content_ctx, env);
+                        renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
+                        #[cfg(feature = "accessibility")]
+                        if scroll_accessibility_node.is_some() {
+                            renderer.pop_accessibility_parent();
+                        }
+                    },
                 );
-                renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
-                    bounds: lazy_viewport,
-                    transform: content_ctx.transform,
-                });
-                node.child.flush(renderer, content_ctx, env);
-                renderer.pop_lazy_viewport("hydrolysis render tree ScrollNode");
-                #[cfg(feature = "accessibility")]
-                if scroll_accessibility_node.is_some() {
-                    renderer.pop_accessibility_parent();
-                }
-                renderer.pop_layer();
                 let scroll_ctx =
                     RenderContext::with_transforms(viewport_rect, ctx.transform, ctx.hit_transform);
                 let mut widget_ctx = WidgetRenderContext::new(renderer, scroll_ctx);
@@ -775,7 +773,7 @@ fn flush_navigation_transition_element(
         child.flush(renderer, ctx, env);
         return;
     }
-    let mut scene = vello::Scene::new();
+    let mut scene = Recording::new();
     core::mem::swap(renderer.scene_mut(), &mut scene);
     child.flush(renderer, ctx, env);
     core::mem::swap(renderer.scene_mut(), &mut scene);

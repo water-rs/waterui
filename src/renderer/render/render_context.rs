@@ -1,5 +1,5 @@
-use super::{HydrolysisRenderer, TailMark};
-use crate::engine::vello_backend::VelloDrawContext;
+use super::{HydrolysisRenderer, Recording, TailMark, VelloDrawContext};
+
 use crate::renderer::HydroState;
 use crate::renderer::frame::LayerTransforms;
 use crate::renderer::navigation::{
@@ -130,6 +130,38 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer.pop_layer();
     }
 
+    /// The [`HydrolysisRenderer::with_clip_rect_scope`] pairing through this
+    /// context's transforms.
+    pub(crate) fn with_clip_rect_scope(
+        &mut self,
+        alpha: f32,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_rect(alpha, clip);
+        f(self);
+        self.pop_layer();
+    }
+
+    /// [`Self::with_clip_rect_scope`] when the scope only exists conditionally
+    /// (a disabled-control alpha group, a viewport clip that only out-scrolls
+    /// need): pairing stays lexical either way.
+    pub(crate) fn with_clip_rect_scope_if(
+        &mut self,
+        enabled: bool,
+        alpha: f32,
+        clip: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        if enabled {
+            self.push_layer_rect(alpha, clip);
+        }
+        f(self);
+        if enabled {
+            self.pop_layer();
+        }
+    }
+
     pub(crate) fn render_styled_text(
         &mut self,
         styled: StyledStr,
@@ -182,12 +214,8 @@ impl<'a> WidgetRenderContext<'a> {
         );
     }
 
-    pub(crate) fn append_scene(&mut self, scene: &vello::Scene) {
-        crate::engine::vello_backend::append_scene(
-            self.renderer.scene_mut(),
-            scene,
-            Some(self.transform),
-        );
+    pub(crate) fn append_scene(&mut self, scene: &Recording) {
+        self.renderer.scene_mut().append(scene, self.transform);
     }
 
     pub(crate) fn draw_navigation_transition(

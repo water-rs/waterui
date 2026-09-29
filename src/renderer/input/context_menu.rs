@@ -543,44 +543,54 @@ impl HydrolysisRenderer {
         // itself). The menu and accessory panels draw opaque over the dim —
         // their corner wedges stay scrim and their elevation shadows land on
         // it, so no square hole is punched for them.
-        self.scene.push_layer(
+        self.scene.with_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             1.0,
             transform,
             &window,
+            |scene| {
+                scene.fill(
+                    peniko::Fill::NonZero,
+                    transform,
+                    &peniko::Brush::Solid(dim),
+                    None,
+                    &window,
+                );
+                scene.blurred_rounded_rect(
+                    transform,
+                    layout.lift,
+                    shadow,
+                    CONTEXT_MENU_LIFT_RADIUS,
+                    CONTEXT_MENU_LIFT_SHADOW_RADIUS,
+                );
+                if presentation.preview.is_none() {
+                    scene.with_group(
+                        peniko::Fill::NonZero,
+                        peniko::BlendMode {
+                            mix: peniko::Mix::Normal,
+                            compose: peniko::Compose::DestOut,
+                        },
+                        1.0,
+                        transform,
+                        &window,
+                        |scene| {
+                            let hole = kurbo::RoundedRect::from_rect(
+                                layout.lift,
+                                CONTEXT_MENU_LIFT_RADIUS,
+                            );
+                            scene.fill(
+                                peniko::Fill::NonZero,
+                                transform,
+                                &peniko::Brush::Solid(peniko::Color::WHITE),
+                                None,
+                                &hole,
+                            );
+                        },
+                    );
+                }
+            },
         );
-        self.scene
-            .fill(peniko::Fill::NonZero, transform, dim, None, &window);
-        self.scene.draw_blurred_rounded_rect(
-            transform,
-            layout.lift,
-            shadow,
-            CONTEXT_MENU_LIFT_RADIUS,
-            CONTEXT_MENU_LIFT_SHADOW_RADIUS,
-        );
-        if presentation.preview.is_none() {
-            self.scene.push_layer(
-                peniko::Fill::NonZero,
-                peniko::BlendMode {
-                    mix: peniko::Mix::Normal,
-                    compose: peniko::Compose::DestOut,
-                },
-                1.0,
-                transform,
-                &window,
-            );
-            let hole = kurbo::RoundedRect::from_rect(layout.lift, CONTEXT_MENU_LIFT_RADIUS);
-            self.scene.fill(
-                peniko::Fill::NonZero,
-                transform,
-                peniko::Color::WHITE,
-                None,
-                &hole,
-            );
-            crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
-        }
-        crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
 
         // Menu and accessory sit on the theme's context-menu surface —
         // container colour, radius and elevation — the same Material surface

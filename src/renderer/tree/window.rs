@@ -513,7 +513,7 @@ impl HydrolysisRenderer {
         // flush registered each anchor's live bounds, so the placement
         // contract re-runs per frame and the overlay follows moves/resizes.
         self.render_anchored_overlays(transform);
-        self.flush_vello_scene_layer();
+        self.flush_legacy_scene_layer();
         drop(_encode_span);
         #[cfg(feature = "frame-profile")]
         {
@@ -569,6 +569,12 @@ impl HydrolysisRenderer {
             validated_minimum_axis(min_box.width, "width"),
             validated_minimum_axis(min_box.height, "height"),
         ))
+    }
+
+    /// The retained window tree's root, for render-identity probes.
+    #[cfg(test)]
+    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode> {
+        self.render_tree.as_ref()
     }
 }
 

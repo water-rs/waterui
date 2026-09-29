@@ -180,26 +180,27 @@ pub(crate) fn render_toggle_parts(
     if label_bounds.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
-        if disabled {
-            ctx.push_layer_rect(theme.disabled_content_alpha(), label_bounds);
-        }
         // The label's semantics are merged into the toggle's own node by
         // `toggle_accessibility`, so the sub-view flushes visual-only.
-        let render_ctx = ctx.render_context();
-        let label_view = &mut state.label_view;
-        ctx.renderer_mut()
-            .with_suppressed_accessibility(|renderer| {
-                label_view.flush_in_rect(
-                    renderer,
-                    render_ctx,
-                    env,
-                    ProposalSize::UNSPECIFIED,
-                    label_bounds,
-                );
-            });
-        if disabled {
-            ctx.pop_layer();
-        }
+        ctx.with_clip_rect_scope_if(
+            disabled,
+            theme.disabled_content_alpha(),
+            label_bounds,
+            |ctx| {
+                let render_ctx = ctx.render_context();
+                let label_view = &mut state.label_view;
+                ctx.renderer_mut()
+                    .with_suppressed_accessibility(|renderer| {
+                        label_view.flush_in_rect(
+                            renderer,
+                            render_ctx,
+                            env,
+                            ProposalSize::UNSPECIFIED,
+                            label_bounds,
+                        );
+                    });
+            },
+        );
     }
 
     // Reading the toggle value through `resolve_toggle_progress` watches the

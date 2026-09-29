@@ -20,12 +20,11 @@
 
 use std::sync::Arc;
 
+use crate::engine::{Brush, DrawContext};
+use crate::renderer::recording::{PathTag, Resolver, Transform};
+use crate::renderer::{Recording, VelloDrawContext};
 use kurbo::{Affine, Rect};
 use peniko::{Blob, Color, Fill, FontData};
-use vello_encoding::{PathTag, Resolver, Transform};
-
-use crate::engine::vello_backend::{VelloDrawContext, append_scene};
-use crate::engine::{Brush, DrawContext};
 
 /// `trans_ix` the flatten shader computes for the `index`th PATH tag: the
 /// number of TRANSFORM tags before it in the packed stream, minus one.
@@ -58,9 +57,10 @@ fn roboto() -> FontData {
 }
 
 /// The last PATH in the stream is the fill drawn after the clip boundary.
-fn last_path_transform(scene: &vello::Scene) -> Transform {
+fn last_path_transform(recording: &Recording) -> Transform {
     let mut packed = Vec::new();
-    let (layout, _ramps, _images) = Resolver::new().resolve(scene.encoding(), &mut packed);
+    let (layout, _ramps, _images) =
+        Resolver::new().resolve(recording.legacy_scene().encoding(), &mut packed);
     let tags = layout.path_tags(&packed);
     let path_count = tags.iter().filter(|tag| **tag == PathTag::PATH).count();
     let trans_ix = path_transform_index(tags, path_count - 1);
@@ -73,7 +73,7 @@ fn a_path_after_a_clip_boundary_resolves_to_its_own_transform() {
     let glyph_transform = Affine::translate((500.0, 300.0));
     let clip_transform = Affine::translate((11.0, 7.0));
 
-    let mut scene = vello::Scene::new();
+    let mut scene = Recording::new();
     {
         let mut ctx = VelloDrawContext::with_root_transform(&mut scene, clip_transform);
         ctx.push_layer(1.0, Some(&Rect::new(0.0, 0.0, 100.0, 100.0)));
@@ -82,22 +82,23 @@ fn a_path_after_a_clip_boundary_resolves_to_its_own_transform() {
     // A sibling's glyph run is encoded after the clip's transform tag: at
     // resolve its transform entries are spliced in ahead of the post-clip
     // path — the entries that path's `trans_ix` used to land on.
-    scene
-        .draw_glyphs(&font)
-        .font_size(24.0)
-        .transform(glyph_transform)
-        .draw(
-            Fill::NonZero,
-            [vello::Glyph {
-                id: GLYPH_ID,
-                x: 0.0,
-                y: 0.0,
-            }]
-            .into_iter(),
-        );
+    scene.glyphs(waterui_graphics::GlyphRun {
+        font: &font,
+        font_size: 24.0,
+        normalized_coords: &[],
+        transform: glyph_transform,
+        brush: &peniko::Brush::Solid(Color::BLACK),
+        brush_alpha: 1.0,
+        style: peniko::StyleRef::Fill(Fill::NonZero),
+        glyphs: &[waterui_graphics::Glyph {
+            id: GLYPH_ID,
+            x: 0.0,
+            y: 0.0,
+        }],
+    });
     // A retained child scene spliced into the frame — `Encoding::append`
     // copies the child's `flags`, dropping the force the glyph run armed.
-    append_scene(&mut scene, &vello::Scene::new(), None);
+    scene.append(&Recording::new(), Affine::IDENTITY);
     {
         let mut ctx = VelloDrawContext::with_root_transform(&mut scene, clip_transform);
         // The fill rides the same transform the clip layer encoded: with the

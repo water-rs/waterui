@@ -17,6 +17,7 @@ impl RenderNode {
         let view = match view.downcast::<Native<Color>>() {
             Ok(color) => {
                 return RenderNode::Color(ColorNode {
+                    render_id: RenderId::next(),
                     color: (*color).into_inner().resolve(env),
                 });
             }
@@ -25,6 +26,7 @@ impl RenderNode {
         let view = match view.downcast::<Native<ResolvedColor>>() {
             Ok(color) => {
                 return RenderNode::Color(ColorNode {
+                    render_id: RenderId::next(),
                     color: Computed::constant((*color).into_inner()),
                 });
             }
@@ -37,6 +39,7 @@ impl RenderNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
+                    render_id: RenderId::next(),
                     content: config.content,
                     alignment: config.paragraph_alignment,
                     line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
@@ -76,6 +79,7 @@ impl RenderNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
+                    render_id: RenderId::next(),
                     layout,
                     children,
                     #[cfg(feature = "accessibility")]
@@ -137,6 +141,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::Opacity(Box::new(OpacityNode {
+                    render_id: RenderId::next(),
                     value,
                     child: RenderNode::build(content, env, renderer),
                 }));
@@ -147,6 +152,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::Scale(Box::new(ScaleNode {
+                    render_id: RenderId::next(),
                     value,
                     child: RenderNode::build(content, env, renderer),
                 }));
@@ -157,6 +163,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::Rotation(Box::new(RotationNode {
+                    render_id: RenderId::next(),
                     value,
                     child: RenderNode::build(content, env, renderer),
                 }));
@@ -167,6 +174,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::Offset(Box::new(OffsetNode {
+                    render_id: RenderId::next(),
                     value,
                     child: RenderNode::build(content, env, renderer),
                 }));
@@ -187,6 +195,7 @@ impl RenderNode {
                 // a11y read env every frame.
                 let child = RenderNode::build(content, &scoped_env, renderer);
                 return RenderNode::Env(Box::new(EnvNode {
+                    render_id: RenderId::next(),
                     env: scoped_env,
                     child,
                 }));
@@ -197,6 +206,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return RenderNode::Retain(Box::new(RetainNode {
+                    render_id: RenderId::next(),
                     _retain: value,
                     child: RenderNode::build(content, env, renderer),
                 }));
@@ -227,7 +237,11 @@ impl RenderNode {
         let view = match a11y_scoped_env_for_view(view, env) {
             Ok((content, scoped)) => {
                 let child = RenderNode::build(content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+                return RenderNode::Env(Box::new(EnvNode {
+                    render_id: RenderId::next(),
+                    env: scoped,
+                    child,
+                }));
             }
             Err(view) => view,
         };
@@ -243,7 +257,11 @@ impl RenderNode {
                 let mut scoped = env.clone();
                 scoped.insert(DynamicRangePreference(false));
                 let child = RenderNode::build(meta.content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+                return RenderNode::Env(Box::new(EnvNode {
+                    render_id: RenderId::next(),
+                    env: scoped,
+                    child,
+                }));
             }
             Err(view) => view,
         };
@@ -252,7 +270,11 @@ impl RenderNode {
                 let mut scoped = env.clone();
                 scoped.insert(DynamicRangePreference(true));
                 let child = RenderNode::build(meta.content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode { env: scoped, child }));
+                return RenderNode::Env(Box::new(EnvNode {
+                    render_id: RenderId::next(),
+                    env: scoped,
+                    child,
+                }));
             }
             Err(view) => view,
         };
@@ -540,6 +562,7 @@ impl RenderNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
+                    render_id: RenderId::next(),
                     axis,
                     child: RenderNode::build(content, env, renderer),
                     controller,
@@ -782,6 +805,7 @@ impl RenderNode {
         };
         RenderNode::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
             effect,
             env,
             child,
@@ -835,6 +859,7 @@ impl RenderNode {
         };
         RenderNode::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
             effect: WrapperEffect::LifeCycle(effect),
             env,
             child,
@@ -896,6 +921,7 @@ impl RenderNode {
         RenderNode::Collection(Box::new(CollectionNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
+            render_id: RenderId::next(),
             layout,
             views,
             env: env.clone(),
@@ -956,6 +982,7 @@ impl RenderNode {
             views,
             env: env.clone(),
             accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
             #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
@@ -986,6 +1013,7 @@ impl RenderNode {
         })));
         RenderNode::SceneView(Box::new(SceneViewNode {
             accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
             content: Rc::new(RefCell::new(content)),
         }))
     }
@@ -1003,6 +1031,7 @@ impl RenderNode {
         renderer.register_node_gpu_surface(Rc::clone(&runtime));
         RenderNode::GpuSurface(Box::new(GpuSurfaceNode {
             accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
             runtime,
         }))
     }
@@ -1020,6 +1049,7 @@ impl RenderNode {
         let runtime = Rc::new(RefCell::new(ViewEffectRuntime::new(effect)));
         renderer.register_node_view_effect(Rc::clone(&runtime));
         RenderNode::ViewEffect(Box::new(ViewEffectNode {
+            render_id: RenderId::next(),
             runtime,
             child: RefCell::new(child),
             env: env.clone(),
@@ -1040,6 +1070,7 @@ impl RenderNode {
         renderer.register_node_applied_filter(Rc::clone(&runtime));
         let child = RenderNode::build(normalize_layout_view(content, env), env, renderer);
         RenderNode::AppliedFilter(Box::new(AppliedFilterNode {
+            render_id: RenderId::next(),
             runtime,
             child,
             env: env.clone(),
@@ -1085,6 +1116,7 @@ impl RenderNode {
             .measurement
             .register_dynamic_node(identity, &child);
         RenderNode::Dynamic(Box::new(DynamicHostNode {
+            render_id: RenderId::next(),
             source,
             pending,
             env: env.clone(),

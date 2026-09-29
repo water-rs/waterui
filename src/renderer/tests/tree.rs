@@ -1,7 +1,7 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
 use super::{MinimalTestTheme, test_environment, test_renderer};
-use crate::renderer::{ContainerNode, RenderContext, RenderNode, TextNode};
+use crate::renderer::{ContainerNode, RenderContext, RenderId, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
 use kurbo::{Affine, Rect};
 use nami::Computed;
@@ -31,6 +31,7 @@ fn text_node(content: &'static str) -> RenderNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
+        render_id: RenderId::next(),
         content: Computed::constant(StyledStr::plain(content)),
         alignment: Computed::constant(HorizontalAlignment::Leading),
         line_limit: None,
@@ -46,6 +47,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
+        render_id: RenderId::next(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -106,6 +108,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
+        render_id: RenderId::next(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -227,9 +230,9 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a Vello layer resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let vello_layers = renderer.render_layer_stats().vello_scene_layers;
+    let legacy_layers = renderer.render_layer_stats().legacy_scene_layers;
     assert!(
-        vello_layers > 0,
+        legacy_layers > 0,
         "re-flushing the retained tree must produce a Vello scene layer"
     );
 }

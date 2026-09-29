@@ -15,6 +15,12 @@ use super::*;
 pub(crate) struct RetainedSubview {
     /// The source view, taken on first build (`AnyView` is move-only).
     source: Option<AnyView>,
+    /// This host's presentation instance: a subview is an additional placement
+    /// of its content's visual nodes (a preview, an accessory), so its mounts
+    /// key under its own `PresentationId` — never the content's ordinary one.
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) presentation: PresentationId,
     /// The built child node, re-laid-out + re-flushed at the label rect each frame.
     node: Option<RenderNode>,
     /// The size the node was last laid out at, so layout re-runs only on a change.
@@ -34,6 +40,7 @@ impl RetainedSubview {
     pub(crate) fn new(source: AnyView) -> Self {
         Self {
             source: Some(source),
+            presentation: PresentationId::next(),
             node: None,
             laid_out: Size::zero(),
             laid_out_proposal: None,
@@ -80,6 +87,12 @@ impl RetainedSubview {
     /// Whether the sub-view's node has been built.
     pub(crate) fn is_built(&self) -> bool {
         self.node.is_some()
+    }
+
+    /// The built child node, for render-identity probes.
+    #[cfg(test)]
+    pub(crate) fn node(&self) -> Option<&RenderNode> {
+        self.node.as_ref()
     }
 
     /// Measure the sub-view's intrinsic size (building it once if needed), the
@@ -328,7 +341,7 @@ impl RetainedSubview {
     }
 
     /// Build (once), lay out at `size`, and flush the sub-view into a fresh,
-    /// standalone [`vello::Scene`] in identity (local) coordinates — the retained
+    /// standalone [`Recording`] in identity (local) coordinates — the retained
     /// analogue of [`HydrolysisRenderer::render_subtree_scene`] for a node that
     /// must survive across flushes (the navigation-stack root). The renderer's
     /// scene is swapped out, the node flushes into the temporary scene, then the
@@ -341,7 +354,7 @@ impl RetainedSubview {
         size: Size,
     ) -> NavigationCapturedScene {
         self.ensure_built(renderer, env);
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         let Some(node) = &mut self.node else {
             return NavigationCapturedScene::default();
         };
@@ -451,6 +464,12 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
         self.entries.get(key)
     }
 
+    /// Iterate the retained sub-views (unordered; test callers sort).
+    #[cfg(test)]
+    pub(crate) fn values(&self) -> impl Iterator<Item = &RetainedSubview> {
+        self.entries.values()
+    }
+
     /// Drop the retained sub-views of exactly the keys in `ids`. The next
     /// `entry` for a dropped key re-materializes it from the collection's
     /// current data; keys not in `ids` keep their nodes (and their retained
@@ -503,6 +522,9 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// read env every frame), and the child node it recurses into.
 pub(crate) struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
     pub(super) child: RenderNode,
@@ -564,6 +586,9 @@ pub(crate) trait WidgetBehavior {
 /// current bounds. No bake, no capture-once freeze.
 pub(crate) struct WidgetNode {
     pub(super) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) behavior: Rc<dyn WidgetBehavior>,
     pub(super) stretch: StretchAxis,
     pub(super) env: Environment,
@@ -737,6 +762,9 @@ pub(crate) struct GestureObserverEffect {
 }
 
 pub(crate) struct ColorNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) color: Computed<ResolvedColor>,
 }
 
@@ -750,6 +778,9 @@ pub(crate) struct TextNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(crate) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) content: Computed<StyledStr>,
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -766,6 +797,9 @@ pub(crate) struct ContainerNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(crate) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) layout: Box<dyn Layout>,
     pub(crate) children: Vec<RenderNode>,
     #[cfg(feature = "accessibility")]
@@ -788,21 +822,33 @@ pub(crate) struct ContainerNode {
 /// layer around the child. Layout-transparent (the child measures/places as if
 /// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
 pub(crate) struct OpacityNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) value: Opacity,
     pub(crate) child: RenderNode,
 }
 
 pub(crate) struct ScaleNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) value: Scale,
     pub(crate) child: RenderNode,
 }
 
 pub(crate) struct RotationNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) value: Rotation,
     pub(crate) child: RenderNode,
 }
 
 pub(crate) struct OffsetNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(crate) value: Offset,
     pub(crate) child: RenderNode,
 }
@@ -817,6 +863,9 @@ pub(crate) struct ScrollNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(super) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode,
     pub(super) controller: Option<ScrollController<Point>>,
@@ -845,11 +894,17 @@ pub(crate) struct ScrollNode {
 }
 
 pub(crate) struct RetainNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode,
 }
 
 pub(crate) struct EnvNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     /// The scoped environment this subtree was built under, used to override the
     /// inherited environment at every measure/layout/flush.
     pub(super) env: Environment,
@@ -858,6 +913,9 @@ pub(crate) struct EnvNode {
 
 pub(crate) struct SceneViewNode {
     pub(super) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     /// The owned scene content, re-drawn each flush (it reads its own reactive
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
@@ -875,6 +933,9 @@ pub(crate) struct SceneViewNode {
 /// re-flush the tree.
 pub(crate) struct GpuSurfaceNode {
     pub(super) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) runtime: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
 }
 
@@ -886,6 +947,9 @@ pub(crate) struct GpuSurfaceNode {
 /// the dispatch path's `render_view_effect` exactly, but with no cursor-bound
 /// effect slot.
 pub(crate) struct ViewEffectNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) runtime: Rc<RefCell<ViewEffectRuntime>>,
     /// The effect's content, built once as a persistent node (recursed into, not
     /// baked), re-rendered into the input texture each flush.
@@ -901,6 +965,9 @@ pub(crate) struct ViewEffectNode {
 /// output texture, and draws the resulting image — reusing the runtime's
 /// texture-reuse logic verbatim, with no cursor-bound effect slot.
 pub(crate) struct AppliedFilterNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     pub(super) runtime: Rc<RefCell<AppliedFilterRuntime>>,
     pub(super) child: RenderNode,
     pub(super) env: Environment,
@@ -1020,7 +1087,7 @@ impl ViewEffectNode {
         }
 
         let image = runtime.register_output_image(
-            &mut renderer.vello_renderer,
+            &mut renderer.legacy_renderer,
             output_texture,
             output_width,
             output_height,
@@ -1033,7 +1100,7 @@ impl ViewEffectNode {
                 ctx.bounds.height() / f64::from(output_height),
             );
         renderer.state.counters.image_registrations += 1;
-        renderer.scene.draw_image(
+        renderer.scene.image(
             &peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
         );
@@ -1085,7 +1152,7 @@ impl AppliedFilterNode {
 
         let image = self.runtime.borrow_mut().prepare_output(
             &device,
-            &mut renderer.vello_renderer,
+            &mut renderer.legacy_renderer,
             width,
             height,
         );
@@ -1097,7 +1164,7 @@ impl AppliedFilterNode {
             );
         renderer.state.counters.image_registrations += 1;
         let scene = renderer.scene_mut();
-        scene.draw_image(
+        scene.image(
             &peniko::ImageBrush::new(image),
             ctx.transform * image_transform,
         );
@@ -1105,6 +1172,9 @@ impl AppliedFilterNode {
 }
 
 pub(crate) struct DynamicHostNode {
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     /// The source `Dynamic`, kept alive so its identity cannot be reused while
     /// this node lives — otherwise a freed identity could be reallocated to a
     /// different `Dynamic` and confused for this one. Also read by

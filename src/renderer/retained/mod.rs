@@ -2,6 +2,9 @@
 //! tree. These re-sample animated transform/opacity/morph signals every flush so
 //! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
 
+pub(crate) mod identity;
+pub(crate) use identity::{PresentationId, RenderId, RenderKey};
+
 use super::signals::SubscribedSnapshot;
 use super::*;
 

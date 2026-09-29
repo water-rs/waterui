@@ -28,16 +28,16 @@ pub struct FrameStageTimes {
     pub update: Duration,
     /// Measure and layout of the retained tree.
     pub layout: Duration,
-    /// The retained tree's flush into `vello::Scene` and the scene-layer
-    /// bookkeeping up to `flush_vello_scene_layer`.
+    /// The retained tree's flush into `Recording` and the scene-layer
+    /// bookkeeping up to `flush_legacy_scene_layer`.
     pub encode: Duration,
     /// Timestamped span covering the frame's layer-content submits — Vello
     /// scene encodes, mask renders and embedded GPU surfaces. `None` when the
     /// device lacks `TIMESTAMP_QUERY`.
-    pub vello_gpu: Option<Duration>,
+    pub legacy_gpu: Option<Duration>,
     /// Timestamped span covering the final surface pass — the compositor
     /// submit, or the whole-window render on the direct GPU-surface path.
-    /// `None` like `vello_gpu`.
+    /// `None` like `legacy_gpu`.
     pub compositor_gpu: Option<Duration>,
     /// CPU time spent waiting for GPU work: the queue drain each marker does
     /// plus the blocking timestamp resolve — the wait for this frame's GPU
@@ -192,7 +192,7 @@ impl HydrolysisRenderer {
         // (1.0 on most adapters, but not guaranteed).
         let period = f64::from(queue.get_timestamp_period());
         let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period).round() as u64);
-        self.frame_stage_times.vello_gpu =
+        self.frame_stage_times.legacy_gpu =
             Some(ns(before_composite.saturating_sub(before_content)));
         self.frame_stage_times.compositor_gpu = Some(ns(end.saturating_sub(before_composite)));
     }

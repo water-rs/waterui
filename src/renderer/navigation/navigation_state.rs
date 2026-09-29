@@ -12,35 +12,35 @@ pub(crate) const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 #[derive(Clone)]
 pub(crate) struct NavigationMatchedElement {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) scene: vello::Scene,
+    pub(crate) scene: Recording,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct NavigationCapturedScene {
-    pub(crate) scene: vello::Scene,
+    pub(crate) scene: Recording,
     pub(crate) sources: BTreeMap<Id, NavigationMatchedElement>,
     pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement>,
 }
 
 impl NavigationCapturedScene {
-    pub(crate) fn composed(&self) -> vello::Scene {
+    pub(crate) fn composed(&self) -> Recording {
         let mut scene = self.scene.clone();
         for element in self.sources.values().chain(self.destinations.values()) {
-            crate::engine::vello_backend::append_scene(&mut scene, &element.scene, None);
+            scene.append(&element.scene, kurbo::Affine::IDENTITY);
         }
         scene
     }
 
-    pub(crate) fn composed_without(&self, source: bool, id: Id) -> vello::Scene {
+    pub(crate) fn composed_without(&self, source: bool, id: Id) -> Recording {
         let mut scene = self.scene.clone();
         for (element_id, element) in &self.sources {
             if !source || *element_id != id {
-                crate::engine::vello_backend::append_scene(&mut scene, &element.scene, None);
+                scene.append(&element.scene, kurbo::Affine::IDENTITY);
             }
         }
         for (element_id, element) in &self.destinations {
             if source || *element_id != id {
-                crate::engine::vello_backend::append_scene(&mut scene, &element.scene, None);
+                scene.append(&element.scene, kurbo::Affine::IDENTITY);
             }
         }
         scene
@@ -736,7 +736,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn finish_navigation_scene_capture(
         &mut self,
-        scene: vello::Scene,
+        scene: Recording,
     ) -> NavigationCapturedScene {
         let capture = self
             .navigation_captures
@@ -770,7 +770,7 @@ impl HydrolysisRenderer {
         source: bool,
         id: Id,
         bounds: kurbo::Rect,
-        scene: vello::Scene,
+        scene: Recording,
     ) {
         let capture = self
             .navigation_captures

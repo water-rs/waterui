@@ -56,9 +56,9 @@ struct CapturePage {
 /// out of the renderer around each slot flush and the page render.
 #[derive(Default)]
 struct CapturePageContent {
-    scene: vello::Scene,
+    scene: Recording,
     render_layers: Vec<RenderLayer>,
-    transient_scene: Option<vello::Scene>,
+    transient_scene: Option<Recording>,
 }
 
 struct CaptureSlot {
@@ -264,16 +264,15 @@ impl HydrolysisRenderer {
         self.subtree_captures.depth = depth + 1;
         // The slot clip keeps a child that paints outside its bounds (a shadow,
         // an overflowing transform) from bleeding into its neighbours' slots.
-        self.push_layer_rect(
+        self.with_clip_rect_scope(
             1.0,
             LayerTransforms {
                 paint: slot_transform,
                 hit: local_ctx.hit_transform,
             },
             local_bounds,
+            |this| child.flush(this, local_ctx, env),
         );
-        child.flush(self, local_ctx, env);
-        self.pop_layer();
         self.subtree_captures.depth = depth;
         assert!(
             self.compositor.active_scene_layers.is_empty(),
@@ -366,7 +365,7 @@ impl HydrolysisRenderer {
                 let (_image, needs_redraw) = pending.runtime.borrow_mut().encode_output(
                     &device,
                     &queue,
-                    &mut self.vello_renderer,
+                    &mut self.legacy_renderer,
                     pending.width,
                     pending.height,
                     &mut encoder,

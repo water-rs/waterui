@@ -6,9 +6,10 @@ use waterui::navigation::{
 use waterui_backend_core::widget::NavigationMotion;
 
 use super::{NavigationCapturedScene, NavigationMatchedElement};
+use crate::renderer::Recording;
 
 pub(crate) struct NavigationTransitionFrame<'a> {
-    pub(crate) scene: &'a mut vello::Scene,
+    pub(crate) scene: &'a mut Recording,
     pub(crate) transform: kurbo::Affine,
     pub(crate) bounds: kurbo::Rect,
     pub(crate) style: AnyNavigationTransition,
@@ -173,7 +174,7 @@ fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo:
 }
 
 fn append_matched_element(
-    scene: &mut vello::Scene,
+    scene: &mut Recording,
     transform: kurbo::Affine,
     element: &NavigationMatchedElement,
     target: kurbo::Rect,
@@ -188,22 +189,21 @@ fn append_matched_element(
             target.height() / element.bounds.height(),
         )
         * kurbo::Affine::translate((-element.bounds.x0, -element.bounds.y0));
-    scene.push_layer(
+    scene.with_group(
         peniko::Fill::NonZero,
         peniko::BlendMode::default(),
         opacity,
         transform,
         &target,
+        |scene| scene.append(&element.scene, transform * local),
     );
-    crate::engine::vello_backend::append_scene(scene, &element.scene, Some(transform * local));
-    crate::engine::vello_backend::pop_scene_layer(scene);
 }
 
 fn append_scene_with_opacity(
-    scene: &mut vello::Scene,
+    scene: &mut Recording,
     transform: kurbo::Affine,
     clip_bounds: kurbo::Rect,
-    content: &vello::Scene,
+    content: &Recording,
     opacity: f32,
 ) {
     append_scene_layer(
@@ -219,10 +219,10 @@ fn append_scene_with_opacity(
 }
 
 fn append_scene_layer(
-    scene: &mut vello::Scene,
+    scene: &mut Recording,
     transform: kurbo::Affine,
     clip_bounds: kurbo::Rect,
-    content: &vello::Scene,
+    content: &Recording,
     layer: NavigationTransitionLayer,
 ) {
     if layer.opacity <= 0.0 {
@@ -236,15 +236,14 @@ fn append_scene_layer(
         * kurbo::Affine::scale(f64::from(layer.scale))
         * kurbo::Affine::translate((-center.x, -center.y));
     let transformed_bounds = local.transform_rect_bbox(clip_bounds);
-    scene.push_layer(
+    scene.with_group(
         peniko::Fill::NonZero,
         peniko::BlendMode::default(),
         layer.opacity,
         transform,
         &transformed_bounds,
+        |scene| scene.append(content, transform * local),
     );
-    crate::engine::vello_backend::append_scene(scene, content, Some(transform * local));
-    crate::engine::vello_backend::pop_scene_layer(scene);
 }
 
 #[cfg(test)]

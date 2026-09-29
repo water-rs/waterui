@@ -21,7 +21,7 @@ pub(crate) struct RenderLayerStats {
     /// was handed to a GPU surface outright.
     pub(crate) composited_scene_layers: u32,
     /// Composited layers that were Vello scenes.
-    pub(crate) vello_scene_layers: u32,
+    pub(crate) legacy_scene_layers: u32,
     /// Composited layers that were embedded GPU surfaces.
     pub(crate) gpu_surface_layers: u32,
     /// GPU surfaces that rendered straight into the window's own target,
@@ -33,14 +33,9 @@ pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// Whether a scene encodes any visible content.
-///
-/// `Encoding::is_empty` only checks the path stream; glyph runs are deferred
-/// resources that resolve to paths at render time, so a scene containing only
-/// text would otherwise read as empty and be dropped by the compositor.
-pub(crate) fn scene_has_content(scene: &vello::Scene) -> bool {
-    let encoding = scene.encoding();
-    !encoding.is_empty() || !encoding.resources.glyph_runs.is_empty()
+/// Whether a recording encodes any visible content.
+pub(crate) fn scene_has_content(scene: &Recording) -> bool {
+    !scene.is_empty()
 }
 
 impl SemanticCore {
@@ -309,10 +304,9 @@ impl HydrolysisRenderer {
             viewport.height().ceil() as u32,
         );
         if w > 0 && h > 0 {
-            // Seed vello's bump buffers from the viewport's tile grid; scenes
-            // denser than the seed still grow from GPU feedback.
-            self.vello_renderer
-                .set_buffer_sizes(Some(vello::BumpBufferSizes::for_target(w, h)));
+            // Seed the legacy bump buffers from the viewport's tile grid;
+            // scenes denser than the seed still grow from GPU feedback.
+            self.legacy_renderer.seed_bump_buffer_sizes(w, h);
         }
     }
 
@@ -323,7 +317,7 @@ impl HydrolysisRenderer {
             .transform_rect_bbox(self.window_bounds)
     }
 
-    pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut vello::Scene) {
+    pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
         (&mut self.core.state, &mut self.scene)
     }
 
@@ -342,13 +336,13 @@ impl HydrolysisRenderer {
     }
 
     #[must_use]
-    pub fn scene(&self) -> &vello::Scene {
+    pub fn scene(&self) -> &Recording {
         &self.scene
     }
 
     pub fn reset_scene(&mut self) {
         for image in self.compositor.active_filter_images.drain(..) {
-            self.vello_renderer.unregister_texture(image);
+            self.legacy_renderer.unregister_texture(image);
         }
         self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
@@ -414,7 +408,7 @@ impl HydrolysisRenderer {
             "hydrolysis renderer: scene layer stack must be empty at end of rebuild (len={})",
             self.compositor.active_scene_layers.len()
         );
-        self.flush_vello_scene_layer();
+        self.flush_legacy_scene_layer();
         self.lifecycle.finish_rebuild_frame();
         // Prune the measure-path `Dynamic` dimension cache down to the identities
         // still present in the retained render tree. The cache is read by
@@ -443,7 +437,7 @@ impl HydrolysisRenderer {
         self.finalize_accessibility_tree_update();
     }
 
-    pub fn scene_mut(&mut self) -> &mut vello::Scene {
+    pub fn scene_mut(&mut self) -> &mut Recording {
         &mut self.scene
     }
 
@@ -451,8 +445,8 @@ impl HydrolysisRenderer {
         VelloDrawContext::with_root_transform(&mut self.scene, ctx.transform)
     }
 
-    pub fn vello_renderer(&mut self) -> &mut vello::Renderer {
-        &mut self.vello_renderer
+    pub fn legacy_renderer(&mut self) -> &mut crate::engine::LegacyRenderer {
+        &mut self.legacy_renderer
     }
 
     pub fn set_frame_resources(
@@ -477,7 +471,7 @@ impl HydrolysisRenderer {
         rect: kurbo::Rect,
     ) {
         self.record_clip_layer_push();
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
@@ -503,7 +497,7 @@ impl HydrolysisRenderer {
         path: kurbo::BezPath,
     ) {
         self.record_clip_layer_push();
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
@@ -529,7 +523,7 @@ impl HydrolysisRenderer {
         corner_height: f64,
     ) {
         self.record_clip_layer_push();
-        self.scene.push_layer(
+        self.scene.push_group(
             peniko::Fill::NonZero,
             peniko::BlendMode::default(),
             alpha,
@@ -551,12 +545,58 @@ impl HydrolysisRenderer {
     }
 
     pub(crate) fn pop_layer(&mut self) {
-        crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
+        self.scene.pop_scope();
         self.compositor
             .active_scene_layers
             .pop()
             .expect("hydrolysis renderer: pop_layer underflow");
         self.hit_test.pop_hit_clip();
+    }
+
+    /// Opens a rect clip/opacity scope on the recording, runs `f` inside it,
+    /// then closes it. The lexical pairing every traversal helper uses, so an
+    /// unclosed or misplaced scope is a type error — and the cutover has one
+    /// defined place to substitute retained group layers (water-rs/hydrolysis#205).
+    pub(crate) fn with_clip_rect_scope(
+        &mut self,
+        alpha: f32,
+        transforms: LayerTransforms,
+        rect: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_rect(alpha, transforms, rect);
+        f(self);
+        self.pop_layer();
+    }
+
+    /// The [`Self::with_clip_rect_scope`] pairing for an arbitrary clip path.
+    pub(super) fn with_clip_path_scope(
+        &mut self,
+        alpha: f32,
+        transforms: LayerTransforms,
+        path: kurbo::BezPath,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_path(alpha, transforms, path);
+        f(self);
+        self.pop_layer();
+    }
+
+    /// The [`Self::with_clip_rect_scope`] pairing for a rounded-rect clip.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn with_clip_rounded_rect_scope(
+        &mut self,
+        alpha: f32,
+        transforms: LayerTransforms,
+        path: kurbo::BezPath,
+        rect: kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_rounded_rect(alpha, transforms, path, rect, corner_width, corner_height);
+        f(self);
+        self.pop_layer();
     }
 
     pub(super) fn record_clip_layer_push(&mut self) {
@@ -569,20 +609,19 @@ impl HydrolysisRenderer {
         self.frame_max_clip_depth = self.frame_max_clip_depth.max(depth);
     }
 
-    pub(super) fn flush_vello_scene_layer(&mut self) {
+    pub(super) fn flush_legacy_scene_layer(&mut self) {
         assert!(
-            (self.scene.encoding().n_open_clips as usize)
-                == self.compositor.active_scene_layers.len(),
+            (self.scene.open_clip_count() as usize) == self.compositor.active_scene_layers.len(),
             "hydrolysis renderer: scene clip count {} does not match tracked scene layers {}",
-            self.scene.encoding().n_open_clips,
+            self.scene.open_clip_count(),
             self.compositor.active_scene_layers.len()
         );
 
         for _ in 0..self.compositor.active_scene_layers.len() {
-            crate::engine::vello_backend::pop_scene_layer(&mut self.scene);
+            self.scene.pop_scope();
         }
 
-        if !scene_has_content(&self.scene) {
+        if self.scene.is_empty() {
             for layer in &self.compositor.active_scene_layers {
                 layer.push_to_scene(&mut self.scene);
             }
@@ -606,7 +645,7 @@ impl HydrolysisRenderer {
         bounds: kurbo::Rect,
         occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
     ) {
-        self.flush_vello_scene_layer();
+        self.flush_legacy_scene_layer();
         self.compositor
             .render_layers
             .push(RenderLayer::NativeView(NativeViewLayer {
@@ -625,7 +664,7 @@ impl HydrolysisRenderer {
     pub(crate) fn render_layer_stats(&self) -> RenderLayerStats {
         let scene_layers = u32::try_from(self.compositor.render_layers.len())
             .expect("hydrolysis render layer count exceeds u32");
-        let vello_scene_layers = u32::try_from(
+        let legacy_scene_layers = u32::try_from(
             self.compositor
                 .render_layers
                 .iter()
@@ -640,7 +679,7 @@ impl HydrolysisRenderer {
         // already carries the format the view was set up for.
         let direct_gpu_surfaces = self.frame_direct_gpu_surfaces;
         let gpu_surface_layers = scene_layers
-            .checked_sub(vello_scene_layers)
+            .checked_sub(legacy_scene_layers)
             .and_then(|count| count.checked_sub(direct_gpu_surfaces))
             .expect("hydrolysis render layer count accounting underflow");
         let composited_scene_layers = scene_layers
@@ -648,7 +687,7 @@ impl HydrolysisRenderer {
             .expect("hydrolysis render layer count accounting underflow");
         RenderLayerStats {
             composited_scene_layers,
-            vello_scene_layers,
+            legacy_scene_layers,
             gpu_surface_layers,
             direct_gpu_surfaces,
         }

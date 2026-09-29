@@ -415,7 +415,7 @@ fn view_has_plain_alignment_dimensions(view: &AnyView) -> bool {
 impl HydrolysisRenderer {
     pub(crate) fn render_styled_text(
         state: &mut HydroState,
-        scene: &mut vello::Scene,
+        scene: &mut Recording,
         ctx: RenderContext,
         styled: StyledStr,
         alignment: HorizontalAlignment,
@@ -426,7 +426,7 @@ impl HydrolysisRenderer {
 
     pub(crate) fn render_styled_text_limited(
         state: &mut HydroState,
-        scene: &mut vello::Scene,
+        scene: &mut Recording,
         ctx: RenderContext,
         styled: StyledStr,
         alignment: HorizontalAlignment,
@@ -449,16 +449,15 @@ impl HydrolysisRenderer {
                 );
             },
         );
-        crate::engine::vello_backend::append_scene(
-            scene,
+        scene.append(
             &fragment,
-            Some(ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0))),
+            ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
         );
     }
 
     pub(crate) fn render_styled_text_single_line_centered(
         state: &mut HydroState,
-        scene: &mut vello::Scene,
+        scene: &mut Recording,
         ctx: RenderContext,
         styled: StyledStr,
         env: &Environment,
@@ -493,11 +492,7 @@ impl HydrolysisRenderer {
                 );
             },
         );
-        crate::engine::vello_backend::append_scene(
-            scene,
-            &fragment,
-            Some(ctx.transform * kurbo::Affine::translate((x, y))),
-        );
+        scene.append(&fragment, ctx.transform * kurbo::Affine::translate((x, y)));
     }
 
     /// Encode `layout`'s glyph runs into `scene` at the local origin. The
@@ -506,7 +501,7 @@ impl HydrolysisRenderer {
     fn encode_text_layout(
         service: &TextMeasureService,
         counters: &mut MigrationCounters,
-        scene: &mut vello::Scene,
+        scene: &mut Recording,
         layout: &Arc<parley::Layout<[u8; 4]>>,
         input: &ResolvedTextLayoutInput,
         max_lines: Option<usize>,
@@ -537,25 +532,27 @@ impl HydrolysisRenderer {
 
                     let mut run_x = glyph_run.offset() + ink_shift;
                     let run_y = glyph_run.baseline();
-                    let glyphs = glyph_run.glyphs().map(move |glyph| {
-                        let x = run_x + glyph.x;
-                        let y = run_y - glyph.y;
-                        run_x += glyph.advance;
-                        vello::Glyph { id: glyph.id, x, y }
-                    });
+                    let glyphs: Vec<waterui_graphics::Glyph> = glyph_run
+                        .glyphs()
+                        .map(move |glyph| {
+                            let x = run_x + glyph.x;
+                            let y = run_y - glyph.y;
+                            run_x += glyph.advance;
+                            waterui_graphics::Glyph { id: glyph.id, x, y }
+                        })
+                        .collect();
 
                     counters.font_registrations += 1;
-                    let glyph_run_builder = scene
-                        .draw_glyphs(run.font())
-                        .brush(brush)
-                        .font_size(run.font_size());
-                    if normalized_coords.is_empty() {
-                        glyph_run_builder.draw(peniko::Fill::NonZero, glyphs);
-                    } else {
-                        glyph_run_builder
-                            .normalized_coords(normalized_coords)
-                            .draw(peniko::Fill::NonZero, glyphs);
-                    }
+                    scene.glyphs(waterui_graphics::GlyphRun {
+                        font: run.font(),
+                        font_size: run.font_size(),
+                        normalized_coords,
+                        transform: kurbo::Affine::IDENTITY,
+                        brush: &peniko::Brush::Solid(brush),
+                        brush_alpha: 1.0,
+                        style: peniko::StyleRef::Fill(peniko::Fill::NonZero),
+                        glyphs: &glyphs,
+                    });
                 }
             }
         }
@@ -570,7 +567,7 @@ impl HydrolysisRenderer {
     /// come from a ranged builder, which emits no inline boxes, so runs are
     /// the whole item sequence.
     fn encode_line_backgrounds(
-        scene: &mut vello::Scene,
+        scene: &mut Recording,
         line: &parley::Line<'_, [u8; 4]>,
         input: &ResolvedTextLayoutInput,
         ink_shift: f32,
@@ -606,7 +603,7 @@ impl HydrolysisRenderer {
     }
 
     fn fill_span_background(
-        scene: &mut vello::Scene,
+        scene: &mut Recording,
         start: f32,
         end: f32,
         top: f64,
@@ -616,7 +613,7 @@ impl HydrolysisRenderer {
         scene.fill(
             peniko::Fill::NonZero,
             kurbo::Affine::IDENTITY,
-            rgba8_to_peniko(colour),
+            &peniko::Brush::Solid(rgba8_to_peniko(colour)),
             None,
             &kurbo::Rect::new(f64::from(start), top, f64::from(end), bottom),
         );
@@ -1591,8 +1588,8 @@ mod background_tests {
     /// background fills alike — read straight off the encoding. `0x44` is
     /// `vello_encoding`'s `DrawTag::COLOR`; each entry consumes
     /// `tag.info_size()` words of the draw-data stream.
-    fn solid_fill_colours(scene: &vello::Scene) -> Vec<u32> {
-        let encoding = scene.encoding();
+    fn solid_fill_colours(scene: &Recording) -> Vec<u32> {
+        let encoding = scene.legacy_scene().encoding();
         let mut colours = Vec::new();
         let mut offset = 0usize;
         for tag in &encoding.draw_tags {
@@ -1607,7 +1604,7 @@ mod background_tests {
     fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {
         let env = test_environment();
         let mut state = HydroState::default();
-        let mut scene = vello::Scene::new();
+        let mut scene = Recording::new();
         let ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, width, 200.0),
             kurbo::Affine::IDENTITY,

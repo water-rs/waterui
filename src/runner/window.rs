@@ -55,14 +55,14 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
     )>,
     /// A frame left a verified-but-unpresented vello composite stashed; the
     /// next wake should drain it (see
-    /// [`HydrolysisRenderer::flush_deferred_vello_frame_to_surface`]) unless
+    /// [`HydrolysisRenderer::flush_deferred_legacy_frame_to_surface`]) unless
     /// real scene work arrived first.
     pub(super) queued_deferred_flush: bool,
     /// The runner's wake for a resolved deferred stash — fires once per
     /// registered watch through the runner's own event path, never touching
     /// the GPU from the main thread.
     #[cfg(feature = "winit")]
-    pub(super) deferred_vello_wake: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
+    pub(super) deferred_legacy_wake: Option<std::sync::Arc<dyn Fn(u64) + Send + Sync>>,
     /// The shared per-device poll driver carrying outstanding watches, set
     /// by runners whose platform can report GPU completion. `None` where
     /// there is no completion source (headless, web): those drive the same
@@ -102,7 +102,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
             applied_size_limits: None,
             queued_deferred_flush: false,
             #[cfg(feature = "winit")]
-            deferred_vello_wake: None,
+            deferred_legacy_wake: None,
             #[cfg(feature = "winit")]
             deferred_poll_driver: None,
             deferred_stash_gen: 0,
@@ -417,7 +417,7 @@ pub(super) fn render_window<P: PlatformWindow>(
             || runtime.renderer.has_patch_request()
             || runtime.renderer.take_redraw_request();
         if !damage_pending {
-            if !runtime.renderer.has_deferred_vello_frame() {
+            if !runtime.renderer.has_deferred_legacy_frame() {
                 return false;
             }
             // The wake arrives once every submission queued at stash time
@@ -427,7 +427,7 @@ pub(super) fn render_window<P: PlatformWindow>(
             // wake that arrived while tickets still read unresolved means
             // the device poll errored — drain anyway and let the verify
             // report the lost device.
-            if runtime.renderer.deferred_vello_frame_resolved()
+            if runtime.renderer.deferred_legacy_frame_resolved()
                 || runtime.deferred_wake_gen >= runtime.deferred_stash_gen
             {
                 let rendered = flush_deferred_window(runtime, env, false)
@@ -471,7 +471,7 @@ pub(super) fn flush_deferred_window<P: PlatformWindow>(
         clear_color,
         capture_snapshot,
         |renderer, target, premultiply_alpha| {
-            renderer.flush_deferred_vello_frame_to_surface(target, premultiply_alpha);
+            renderer.flush_deferred_legacy_frame_to_surface(target, premultiply_alpha);
         },
     );
     let rendered = match render_result {
@@ -1059,7 +1059,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                             measurement_cache_hits,
                             measurement_cache_misses,
                             scene_layers: layer_stats.composited_scene_layers,
-                            vello_scene_layers: layer_stats.vello_scene_layers,
+                            vello_scene_layers: layer_stats.legacy_scene_layers,
                             gpu_surface_layers: layer_stats.gpu_surface_layers,
                             direct_gpu_surfaces: layer_stats.direct_gpu_surfaces,
                             clip_layers,
@@ -1110,7 +1110,7 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
                 measurement_cache_hits,
                 measurement_cache_misses,
                 scene_layers: layer_stats.composited_scene_layers,
-                vello_scene_layers: layer_stats.vello_scene_layers,
+                vello_scene_layers: layer_stats.legacy_scene_layers,
                 gpu_surface_layers: layer_stats.gpu_surface_layers,
                 direct_gpu_surfaces: layer_stats.direct_gpu_surfaces,
                 clip_layers,
@@ -1160,8 +1160,8 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         runtime.platform.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
-    if runtime.renderer.has_deferred_vello_frame() {
-        // The frame deferred its vello verification — arm the settle and
+    if runtime.renderer.has_deferred_legacy_frame() {
+        // The frame deferred its legacy verification — arm the settle and
         // park a GPU-completion watch on the poll driver. Its wake fires
         // through the runner's user-event path the moment the stash's
         // submissions retire; the verified composite is then presented
@@ -1172,10 +1172,10 @@ pub(super) fn render_window_with_capture<P: PlatformWindow>(
         let stash_gen = runtime.deferred_stash_gen;
         #[cfg(feature = "winit")]
         if let (Some(driver), Some(wake)) =
-            (&runtime.deferred_poll_driver, &runtime.deferred_vello_wake)
+            (&runtime.deferred_poll_driver, &runtime.deferred_legacy_wake)
         {
             let wake = wake.clone();
-            let submissions = runtime.renderer.deferred_vello_watch_submissions();
+            let submissions = runtime.renderer.deferred_legacy_watch_submissions();
             if !driver.watch(submissions, move || wake(stash_gen)) {
                 // The driver thread is gone — treat it like a broken poll:
                 // the armed settle drains and lets the verify surface the

@@ -211,24 +211,25 @@ pub(crate) fn render_stepper_parts(
     if label_bounds.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
-        if disabled {
-            ctx.push_layer_rect(theme.disabled_content_alpha(), label_bounds);
-        }
-        let render_ctx = ctx.render_context();
-        let label_view = &mut state.label_view;
-        ctx.renderer_mut()
-            .with_suppressed_accessibility(|renderer| {
-                label_view.flush_in_rect(
-                    renderer,
-                    render_ctx,
-                    env,
-                    ProposalSize::UNSPECIFIED,
-                    label_bounds,
-                );
-            });
-        if disabled {
-            ctx.pop_layer();
-        }
+        ctx.with_clip_rect_scope_if(
+            disabled,
+            theme.disabled_content_alpha(),
+            label_bounds,
+            |ctx| {
+                let render_ctx = ctx.render_context();
+                let label_view = &mut state.label_view;
+                ctx.renderer_mut()
+                    .with_suppressed_accessibility(|renderer| {
+                        label_view.flush_in_rect(
+                            renderer,
+                            render_ctx,
+                            env,
+                            ProposalSize::UNSPECIFIED,
+                            label_bounds,
+                        );
+                    });
+            },
+        );
     }
 
     let minus_bounds = kurbo::Rect::new(
@@ -254,11 +255,11 @@ pub(crate) fn render_stepper_parts(
         .bind_control_interaction_target(plus_interaction_key, plus_hit_bounds, env, disabled);
     let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
     let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
-    {
-        if disabled {
-            ctx.push_layer_rect(theme.disabled_content_alpha(), controls_bounds);
-        }
-        {
+    ctx.with_clip_rect_scope_if(
+        disabled,
+        theme.disabled_content_alpha(),
+        controls_bounds,
+        |ctx| {
             let mut draw = ctx.draw_context();
             theme.draw_stepper_button(
                 &mut draw,
@@ -286,11 +287,8 @@ pub(crate) fn render_stepper_parts(
                 StepperEnd::Increment,
                 plus_interaction,
             );
-        }
-        if disabled {
-            ctx.pop_layer();
-        }
-    }
+        },
+    );
 
     // A disabled stepper registers no tap targets: the pointer neither presses
     // nor steps it. Targets are re-registered every flush, so re-enabling
