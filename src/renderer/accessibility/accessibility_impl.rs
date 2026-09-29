@@ -769,16 +769,20 @@ impl AccessibilityBuilder {
     /// `accessibilityLabel` overrides the element rather than wrapping it — so
     /// a padding or frame between the metadata and a lone text must not turn
     /// the override into a `Group("name")` around a `Label(content)`. The child
-    /// keeps its identity, its actions, and its own bounds — the naming
-    /// container's outer bounds are the frame the parent assigned to the
-    /// labelled view, which under the placement contract routinely exceeds the
-    /// element (a window's overlay places its base over the whole bounds, so a
-    /// root `view.size(8, 8)` is laid out in the window while the element sits
-    /// in the resolved 8x8 box). The child takes the scope's label, the scope's
-    /// automation id, and the scope's explicit role. With zero or several
-    /// children the container stands: it is then the only node that can say
-    /// the parts belong together.
-    fn collapse_single_child_container(&mut self, container_id: AccessibilityNodeId) {
+    /// keeps its identity and its actions; its bounds become the naming
+    /// container's resolved extent when one was recorded at layout — the frame
+    /// the parent assigned to the labelled view routinely exceeds it under the
+    /// placement contract (a window's overlay places its base over the whole
+    /// bounds, so a root `view.size(8, 8)` is laid out in the window while the
+    /// element sits in the resolved 8x8 box). The child takes the scope's
+    /// label, the scope's automation id, and the scope's explicit role. With
+    /// zero or several children the container stands: it is then the only node
+    /// that can say the parts belong together.
+    fn collapse_single_child_container(
+        &mut self,
+        container_id: AccessibilityNodeId,
+        resolved_bounds: Option<kurbo::Rect>,
+    ) {
         let container_index = self
             .nodes
             .iter()
@@ -841,6 +845,16 @@ impl AccessibilityBuilder {
         }
         if role != AccessibilityNodeRole::Group {
             child.set_role(role);
+        }
+        // The element reports the scope owner's resolved extent — the size the
+        // container answered to the placement proposal, positioned over the
+        // content it placed — not the assigned frame nor the child's own
+        // placement (water-rs/hydrolysis#51).
+        if let Some(resolved) = resolved_bounds
+            && resolved.width() > 0.0
+            && resolved.height() > 0.0
+        {
+            child.set_bounds(kurbo_rect_to_accesskit_rect(resolved));
         }
         // The child takes the container's place under its parent.
         if let Some(slot) = self
@@ -919,6 +933,11 @@ pub(crate) struct AccessibilityContainerScope {
     suppression_pushed: bool,
     /// The node this scope synthesized for the container, when it did.
     container_node: Option<AccessibilityNodeId>,
+    /// The extent the container resolved at layout — the size it answered to
+    /// the placement proposal, positioned over the content it placed — kept so
+    /// the element the scope collapses onto reports it instead of the assigned
+    /// frame or the child's (water-rs/hydrolysis#51).
+    resolved_bounds: Option<kurbo::Rect>,
     /// The naming scope that node's registration claimed — the channel
     /// silenced representatives (a tap gesture whose own node was suppressed)
     /// delegate their activation through, drained when the scope ends.
@@ -933,6 +952,7 @@ impl AccessibilityContainerScope {
         parent_pushed: false,
         suppression_pushed: false,
         container_node: None,
+        resolved_bounds: None,
         naming_scope: None,
     };
 }
@@ -1597,14 +1617,19 @@ impl SemanticCore {
     ///
     /// The caller must have determined the container carries those semantics
     /// ([`accessibility_container_child_environment`] returned `Some`), and must
-    /// flush its children under that returned environment.
+    /// flush its children under that returned environment. `resolved_bounds`
+    /// is the extent the container resolved at layout — the size it answered
+    /// to the placement proposal, positioned over the content it placed — the
+    /// bounds the element reports when the scope collapses onto its single
+    /// semantic child (water-rs/hydrolysis#51).
     #[cfg(feature = "accessibility")]
     pub(crate) fn begin_accessibility_container(
         &mut self,
         bounds: kurbo::Rect,
+        resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope {
-        self.begin_accessibility_container_inner(Some(bounds), env)
+        self.begin_accessibility_container_inner(Some(bounds), resolved_bounds, env)
     }
 
     /// The semantic counterpart of [`Self::begin_accessibility_container`]:
@@ -1615,13 +1640,14 @@ impl SemanticCore {
         &mut self,
         env: &Environment,
     ) -> AccessibilityContainerScope {
-        self.begin_accessibility_container_inner(None, env)
+        self.begin_accessibility_container_inner(None, None, env)
     }
 
     #[cfg(feature = "accessibility")]
     fn begin_accessibility_container_inner(
         &mut self,
         bounds: Option<kurbo::Rect>,
+        resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope {
         debug_assert!(
@@ -1638,6 +1664,7 @@ impl SemanticCore {
                 parent_pushed: false,
                 suppression_pushed: true,
                 container_node: None,
+                resolved_bounds: None,
                 naming_scope: None,
             };
         }
@@ -1668,6 +1695,7 @@ impl SemanticCore {
                 parent_pushed: false,
                 suppression_pushed: true,
                 container_node: None,
+                resolved_bounds: None,
                 naming_scope: None,
             };
         }
@@ -1699,6 +1727,7 @@ impl SemanticCore {
             parent_pushed: true,
             suppression_pushed,
             container_node: Some(node_id),
+            resolved_bounds,
             naming_scope: env.get::<ScopedAccessibilitySemantics>().cloned(),
         }
     }
@@ -1812,11 +1841,12 @@ impl SemanticCore {
             // control child: the close button would answer as the tab.
             if !consumed_text {
                 self.accessibility
-                    .collapse_single_child_container(container_id);
+                    .collapse_single_child_container(container_id, scope.resolved_bounds);
             }
             // No real child ever registered under the container, but suppressed
             // decorative leaves beneath it still placed their boxes: the
-            // container's node reports the element box they left, not the frame
+            // container's node reports the resolved extent its layout recorded
+            // — or, when none was, the element box they left — not the frame
             // the container itself was stretched into — and, as
             // `collapse_single_child_container` keeps the child's role when the
             // container names nothing but `Group`, a suppressed graphics leaf
@@ -1837,7 +1867,11 @@ impl SemanticCore {
                     .iter_mut()
                     .find(|(id, _)| *id == container_id)
             {
-                node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+                let element = scope
+                    .resolved_bounds
+                    .filter(|resolved| resolved.width() > 0.0 && resolved.height() > 0.0)
+                    .unwrap_or(bounds);
+                node.set_bounds(kurbo_rect_to_accesskit_rect(element));
                 if node.role() == AccessibilityNodeRole::Group {
                     node.set_role(AccessibilityNodeRole::Image);
                 }

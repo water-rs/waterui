@@ -1,6 +1,9 @@
 //! Retained collection nodes: [`CollectionNode`] (reactive, non-virtualized,
 //! reconciled by id) and [`LazyStackNode`] (viewport-virtualized lazy stack).
 
+#[cfg(feature = "accessibility")]
+use super::layout::kurbo_rect;
+use super::layout::resolved_content_rect;
 use super::*;
 use std::rc::Rc;
 
@@ -199,6 +202,11 @@ pub(crate) struct CollectionNode {
     /// a transition each frame holds the entry's full extent at its re-stacked
     /// position; flush clips it to the presence factor.
     pub(super) placed: Vec<Rect>,
+    /// The extent this collection resolved at layout — the size it answered to
+    /// the selected proposal, centred on the envelope `place` produced — kept
+    /// beside `placed` so a naming-scope owner reports its own extent when the
+    /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    pub(super) resolved: Rect,
     /// Resolved membership transition, or `None` when the collection pops.
     pub(super) transition: Option<CollectionTransitionRuntime>,
     /// Set by the membership watcher; consumed by `patch` to trigger a reconcile.
@@ -416,7 +424,7 @@ impl CollectionNode {
     ) {
         let env = self.env.clone();
         let theme = renderer.theme();
-        let mut placements = {
+        let (mut placements, answer) = {
             let cell = RefCell::new(&mut renderer.state);
             let subs: Vec<NodeSubView> = self
                 .entries
@@ -424,7 +432,10 @@ impl CollectionNode {
                 .map(|entry| NodeSubView::new(&entry.node, &cell, &env, &theme))
                 .collect();
             let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
-            self.layout.place(Rect::from_size(size), proposal, &refs)
+            (
+                self.layout.place(Rect::from_size(size), proposal, &refs),
+                self.layout.size_that_fits(proposal, &refs),
+            )
         };
         if self.has_active_transition()
             && let Some(runtime) = &self.transition
@@ -470,6 +481,7 @@ impl CollectionNode {
             .into_iter()
             .map(|placement| placement.frame)
             .collect();
+        self.resolved = resolved_content_rect(answer, size, &self.placed);
     }
 
     pub(super) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
@@ -478,6 +490,10 @@ impl CollectionNode {
             renderer.push_accessibility_owner(&self.accessibility_identity);
             let scope = renderer.begin_accessibility_container(
                 transformed_rect(ctx.hit_transform, ctx.bounds),
+                Some(transformed_rect(
+                    ctx.hit_transform,
+                    kurbo_rect(self.resolved),
+                )),
                 env,
             );
             renderer.pop_accessibility_owner();
@@ -1007,8 +1023,12 @@ impl LazyStackNode {
         #[cfg(feature = "accessibility")]
         let container_scope = self.accessibility_container_env.as_ref().map(|env| {
             renderer.push_accessibility_owner(&self.accessibility_identity);
+            // A lazy stack places its items at flush (offset-dependent), so no
+            // resolved extent is cached for it — `None` keeps the surviving
+            // child's own bounds on collapse.
             let scope = renderer.begin_accessibility_container(
                 transformed_rect(ctx.hit_transform, ctx.bounds),
+                None,
                 env,
             );
             renderer.pop_accessibility_owner();

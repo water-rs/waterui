@@ -85,6 +85,7 @@ impl RenderNode {
                     #[cfg(feature = "accessibility")]
                     accessibility_child_env,
                     placed: Vec::new(),
+                    resolved: Rect::from_size(Size::zero()),
                     layout_dirty,
                     _guards: guards,
                 }));
@@ -938,6 +939,7 @@ impl RenderNode {
             accessibility_container_env,
             entries,
             placed: Vec::new(),
+            resolved: Rect::from_size(Size::zero()),
             transition,
             dirty,
             replaced_ids,
