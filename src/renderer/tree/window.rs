@@ -570,6 +570,12 @@ impl HydrolysisRenderer {
             validated_minimum_axis(min_box.height, "height"),
         ))
     }
+
+    /// The retained window tree's root, for render-identity probes.
+    #[cfg(test)]
+    pub(crate) fn render_tree_root(&self) -> Option<&RenderNode> {
+        self.render_tree.as_ref()
+    }
 }
 
 fn validated_minimum_axis(value: f32, axis: &str) -> f32 {

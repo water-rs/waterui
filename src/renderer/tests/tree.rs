@@ -1,7 +1,7 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
 use super::{MinimalTestTheme, test_environment, test_renderer};
-use crate::renderer::{ContainerNode, RenderContext, RenderNode, TextNode};
+use crate::renderer::{ContainerNode, RenderContext, RenderId, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
 use kurbo::{Affine, Rect};
 use nami::Computed;
@@ -31,6 +31,7 @@ fn text_node(content: &'static str) -> RenderNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
+        render_id: RenderId::next(),
         content: Computed::constant(StyledStr::plain(content)),
         alignment: Computed::constant(HorizontalAlignment::Leading),
         line_limit: None,
@@ -46,6 +47,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
+        render_id: RenderId::next(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -106,6 +108,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
+        render_id: RenderId::next(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),

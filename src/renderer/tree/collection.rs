@@ -181,6 +181,10 @@ pub(crate) struct CollectionNode {
     /// Stable identity owning this collection's own accessibility node id, so the
     /// id survives membership changes shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
+    /// The collection's own render identity.
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     /// The unshielded environment when this collection carries accessibility
     /// naming metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
@@ -234,6 +238,10 @@ pub(crate) struct LazyStackNode {
     /// Stable identity owning this stack's own accessibility node id, so the id
     /// survives the visible window shifting the sibling ordinals.
     pub(super) accessibility_identity: Rc<()>,
+    /// The stack's own render identity.
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
     /// The unshielded environment when this stack carries accessibility naming
     /// metadata: `Some` means it emits the node naming itself.
     #[cfg(feature = "accessibility")]
