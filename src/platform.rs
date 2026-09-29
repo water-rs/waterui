@@ -2787,6 +2787,127 @@ mod winit_impl {
             (pulled.x - requested.x).powi(2) + (pulled.y - requested.y).powi(2)
         }
 
+        /// The pointer's live position in window-local logical units as the
+        /// host window system reports it right now — `None` where the host
+        /// cannot be asked.
+        ///
+        /// winit's file events carry no coordinates, and no `CursorMoved`
+        /// arrives while an OS drag owns the pointer — OLE keeps
+        /// `WM_MOUSEMOVE` out of the queue on Windows, and AppKit withholds
+        /// `mouseMoved` for an `NSDraggingSession` — so the event-stream
+        /// position goes stale exactly when a drop needs it. Asking the host
+        /// is the only truthful source there; X11 keeps streaming motion
+        /// during XDND, and the query stays right even if the drag source
+        /// grabs the pointer.
+        fn live_pointer_position(&self) -> Option<(f32, f32)> {
+            #[cfg(target_os = "windows")]
+            {
+                self.windows_live_pointer_position()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                self.macos_live_pointer_position()
+            }
+            #[cfg(hydrolysis_wayland_platform)]
+            {
+                self.x11_live_pointer_position()
+            }
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "macos",
+                hydrolysis_wayland_platform
+            )))]
+            {
+                None
+            }
+        }
+
+        /// `GetCursorPos` mapped into this window's client area
+        /// (`ScreenToClient`), physical pixels converted to logical points —
+        /// the same space `CursorMoved` reports in.
+        #[cfg(target_os = "windows")]
+        fn windows_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+            let RawWindowHandle::Win32(win32) = self.window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            let mut point = POINT { x: 0, y: 0 };
+            if unsafe { GetCursorPos(&mut point) } == 0 {
+                return None;
+            }
+            if unsafe { ScreenToClient(win32.hwnd.get(), &mut point) } == 0 {
+                return None;
+            }
+            let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
+                .to_logical::<f64>(self.window.scale_factor());
+            Some((position.x as f32, position.y as f32))
+        }
+
+        /// `-[NSWindow mouseLocationOutsideOfEventStream]` converted into
+        /// the view's flipped logical space — the answer a `mouseMoved`
+        /// would carry, without the event AppKit withholds during a drag.
+        #[cfg(target_os = "macos")]
+        fn macos_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use objc2_app_kit::NSView;
+            let RawWindowHandle::AppKit(appkit) = self.window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            // SAFETY: winit guarantees `ns_view` is a valid `NSView` for the
+            // window's lifetime — the same borrow `handle_window_event`'s
+            // WebView bridge makes.
+            let view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+            let window = view.window()?;
+            let window_point = window.mouseLocationOutsideOfEventStream();
+            let view_point = view.convertPoint_fromView(window_point, None);
+            // AppKit's window base space grows up from the bottom-left corner;
+            // winit reports logical points down from the top-left. `WinitView`
+            // is flipped, so the two spaces already agree — an unflipped view
+            // needs y mirrored across its height.
+            let y = if view.isFlipped() {
+                view_point.y
+            } else {
+                view.bounds().size.height - view_point.y
+            };
+            Some((view_point.x as f32, y as f32))
+        }
+
+        /// `XQueryPointer` on this window over the connection winit already
+        /// holds: `win_x`/`win_y` are window-local physical pixels,
+        /// converted to logical points.
+        #[cfg(hydrolysis_wayland_platform)]
+        fn x11_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+            use x11rb::protocol::xproto::ConnectionExt as _;
+            use x11rb::xcb_ffi::XCBConnection;
+            let window_xid = match self.window.window_handle().ok()?.as_raw() {
+                RawWindowHandle::Xcb(handle) => handle.window.get(),
+                RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok()?,
+                _ => return None,
+            };
+            let connection_ptr = match self.window.display_handle().ok()?.as_raw() {
+                RawDisplayHandle::Xcb(handle) => handle.connection?.as_ptr(),
+                RawDisplayHandle::Xlib(handle) => {
+                    let display = handle.display?.as_ptr().cast::<x11_dl::xlib::Display>();
+                    let xlib_xcb = x11_dl::xlib_xcb::Xlib_xcb::open().ok()?;
+                    // SAFETY: `display` is winit's live `Display*` and
+                    // `XGetXCBConnection` borrows its XCB side without
+                    // transferring ownership.
+                    unsafe { (xlib_xcb.XGetXCBConnection)(display) }.cast()
+                }
+                _ => return None,
+            };
+            // `should_drop = false`: the connection is winit's — the wrapper
+            // is a borrow, and dropping it must not disconnect.
+            let connection =
+                unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }.ok()?;
+            let reply = connection.query_pointer(window_xid).ok()?.reply().ok()?;
+            let position = PhysicalPosition::new(f64::from(reply.win_x), f64::from(reply.win_y))
+                .to_logical::<f64>(self.window.scale_factor());
+            Some((position.x as f32, position.y as f32))
+        }
+
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
             // The first mapped-signal event re-applies the frame and state
             // the app asked for: requests made of an unmapped window were
@@ -3173,6 +3294,14 @@ mod winit_impl {
 
         fn drain_events(&mut self) -> Vec<InputEvent> {
             core::mem::take(&mut self.pending_events)
+        }
+
+        /// The pointer's live position: the host's own answer where it can
+        /// be asked, else the last position `CursorMoved`/`Touch` reported —
+        /// the fallback keeps the stream that never went quiet (X11 motion
+        /// during XDND) supplying it.
+        fn pointer_position(&self) -> Option<(f32, f32)> {
+            self.live_pointer_position().or(Some(self.pointer_position))
         }
 
         fn request_redraw(&self) {
