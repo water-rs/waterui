@@ -10602,7 +10602,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=d02e8ac2916487fef6d5a7949e4a7eb06b68be95#d02e8ac2916487fef6d5a7949e4a7eb06b68be95"
+source = "git+https://github.com/water-rs/map-gpu?rev=40c63c94742d0abbd61719ad1754121be2670d01#40c63c94742d0abbd61719ad1754121be2670d01"
 dependencies = [
  "blocking",
  "bytemuck",
