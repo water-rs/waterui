@@ -1,36 +1,7 @@
-struct Uniforms {
-    color: vec4<f32>,
-    dimensions_and_progress: vec4<f32>, // width, height, progress, _pad
-    shape_types: vec4<f32>,             // from_type, to_type, _pad, _pad
-    from_radii: vec4<f32>,              // tl, tr, br, bl
-    to_radii: vec4<f32>,                // tl, tr, br, bl
-}
-
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-}
-
-@vertex
-fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
-    var positions = array<vec2<f32>, 6>(
-        vec2<f32>(-1.0, -1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>(-1.0,  1.0),
-        vec2<f32>( 1.0, -1.0),
-        vec2<f32>( 1.0,  1.0),
-    );
-    let pos = positions[vertex_index];
-
-    var out: VertexOutput;
-    out.position = vec4<f32>(pos, 0.0, 1.0);
-    out.uv = pos * 0.5 + 0.5;
-    out.uv.y = 1.0 - out.uv.y;
-    return out;
-}
+// Morph-shape fragment, written against the Cherenkov shader-paint prelude:
+// `uniforms.time`/`uniforms.resolution` and `in.uv` come from the engine, and
+// `params` is the `ShaderPaint::uniforms` list — colour, progress, shape
+// types and the two radius sets, in order.
 
 fn sd_rect(p: vec2<f32>, b: vec2<f32>) -> f32 {
     let d = abs(p) - b;
@@ -75,19 +46,22 @@ fn shape_distance(shape_type: u32, p: vec2<f32>, size: vec2<f32>, radii: vec4<f3
 }
 
 @fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let size = uniforms.dimensions_and_progress.xy;
-    let progress = clamp(uniforms.dimensions_and_progress.z, 0.0, 1.0);
-    let from_shape = u32(uniforms.shape_types.x + 0.5);
-    let to_shape = u32(uniforms.shape_types.y + 0.5);
+fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let color = params[0];
+    let size = uniforms.resolution;
+    let progress = clamp(params[1].x, 0.0, 1.0);
+    let from_shape = u32(params[2].x + 0.5);
+    let to_shape = u32(params[2].y + 0.5);
     let p = (in.uv * size) - (size * 0.5);
 
-    let from_dist = shape_distance(from_shape, p, size, uniforms.from_radii);
-    let to_dist = shape_distance(to_shape, p, size, uniforms.to_radii);
+    let from_dist = shape_distance(from_shape, p, size, params[3]);
+    let to_dist = shape_distance(to_shape, p, size, params[4]);
     let dist = mix(from_dist, to_dist, progress);
 
     // Pixel-accurate edge smoothing derived from signed-distance derivatives.
     let aa = max(fwidth(dist), 0.5);
     let alpha = 1.0 - smoothstep(-aa, aa, dist);
-    return vec4<f32>(uniforms.color.rgb, uniforms.color.a * alpha);
+    // `color` is premultiplied; scaling it by coverage keeps the paint in the
+    // engine's premultiplied output convention.
+    return color * alpha;
 }

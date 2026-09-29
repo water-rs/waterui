@@ -135,9 +135,11 @@ where
 mod sealed {
     use cherenkov::{Backend, Engine};
 
-    /// Per-backend capabilities [`SceneResources`](super::SceneResources) can
-    /// surface. Implemented inside this crate for each backend it builds
-    /// against; sealing it keeps a downstream backend from misdeclaring.
+    /// Per-backend capabilities [`SceneResources`](super::SceneResources)
+    /// surfaces.
+    ///
+    /// A backend declares them here; under-declaring simply reports
+    /// `Unsupported` at registration.
     pub trait SceneCaps: Backend {
         /// The shader registry, when `Self` accepts shader paints.
         fn shaders(engine: &Engine<Self>) -> Option<&dyn super::ShaderBackend> {
@@ -147,7 +149,7 @@ mod sealed {
     }
 }
 
-pub(crate) use sealed::SceneCaps;
+pub use sealed::SceneCaps;
 
 #[cfg(feature = "gpu")]
 impl SceneCaps for cherenkov_gpu::Gpu {

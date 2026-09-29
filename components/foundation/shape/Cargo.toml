@@ -12,29 +12,27 @@ categories = ["gui"]
 
 [features]
 default = ["gpu"]
-# GPU-backed morphing-shape renderer (wgpu). When disabled, morph shapes still
-# emit their `ResolvedMorphShape` native semantic object for backends to render,
-# but no in-crate GPU fallback is compiled, so wgpu/vello are not pulled in.
+# Cherenkov shader-paint fallback for morphing shapes. When disabled, morph
+# shapes still emit their `ResolvedMorphShape` native semantic object for
+# backends to render, but no in-crate fallback is compiled.
 gpu = [
     "waterui-graphics/gpu",
-    "dep:wgpu",
-    "dep:bytemuck",
+    "dep:executor-core",
+    "dep:native-executor",
     "dep:num-traits",
-    "dep:shaderloom",
-    "dep:shaderloom",
+    "dep:web-time",
 ]
 
 [dependencies]
 waterui-core.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
-wgpu = { workspace = true, optional = true }
 nami.workspace = true
-bytemuck = { version = "1.25", features = ["derive"], optional = true }
+executor-core = { workspace = true, optional = true }
+native-executor = { workspace = true, optional = true }
 num-traits = { version = "0.2", default-features = false, optional = true }
-shaderloom = { workspace = true, optional = true }
 
-[build-dependencies]
-shaderloom = { workspace = true, features = ["build"], optional = true }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = { version = "1", optional = true }
 
 [dev-dependencies]
 waterui = { path = "../../.." }
@@ -42,6 +40,3 @@ waterui-testing = { path = "../../../testing" }
 
 [lints]
 workspace = true
-# `shaderloom` is used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
-[package.metadata.cargo-machete]
-ignored = ["shaderloom"]
