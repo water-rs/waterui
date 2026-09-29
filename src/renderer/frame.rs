@@ -553,6 +553,52 @@ impl HydrolysisRenderer {
         self.hit_test.pop_hit_clip();
     }
 
+    /// Opens a rect clip/opacity scope on the recording, runs `f` inside it,
+    /// then closes it. The lexical pairing every traversal helper uses, so an
+    /// unclosed or misplaced scope is a type error — and the cutover has one
+    /// defined place to substitute retained group layers (water-rs/hydrolysis#205).
+    pub(crate) fn with_clip_rect_scope(
+        &mut self,
+        alpha: f32,
+        transforms: LayerTransforms,
+        rect: kurbo::Rect,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_rect(alpha, transforms, rect);
+        f(self);
+        self.pop_layer();
+    }
+
+    /// The [`Self::with_clip_rect_scope`] pairing for an arbitrary clip path.
+    pub(super) fn with_clip_path_scope(
+        &mut self,
+        alpha: f32,
+        transforms: LayerTransforms,
+        path: kurbo::BezPath,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_path(alpha, transforms, path);
+        f(self);
+        self.pop_layer();
+    }
+
+    /// The [`Self::with_clip_rect_scope`] pairing for a rounded-rect clip.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn with_clip_rounded_rect_scope(
+        &mut self,
+        alpha: f32,
+        transforms: LayerTransforms,
+        path: kurbo::BezPath,
+        rect: kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+        f: impl FnOnce(&mut Self),
+    ) {
+        self.push_layer_rounded_rect(alpha, transforms, path, rect, corner_width, corner_height);
+        f(self);
+        self.pop_layer();
+    }
+
     pub(super) fn record_clip_layer_push(&mut self) {
         self.frame_clip_layers = self
             .frame_clip_layers

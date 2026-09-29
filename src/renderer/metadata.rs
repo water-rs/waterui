@@ -161,48 +161,34 @@ impl HydrolysisRenderer {
         // non-square rect makes every circular corner elliptical.
         let clip_path = shape_kind_path(value.kind(), ctx.bounds)
             .unwrap_or_else(|| path_commands_to_path(value.commands(), ctx.bounds));
+        let transforms = LayerTransforms {
+            paint: ctx.transform,
+            hit: ctx.hit_transform,
+        };
         if let Some(regular_clip) = kind_clip_shape(value.kind(), ctx.bounds)
             .or_else(|| regular_clip_shape(value.commands(), ctx.bounds))
         {
             match regular_clip {
                 RegularClipShape::Rect(rect) => {
-                    renderer.push_layer_rect(
-                        1.0,
-                        LayerTransforms {
-                            paint: ctx.transform,
-                            hit: ctx.hit_transform,
-                        },
-                        rect,
-                    );
+                    renderer.with_clip_rect_scope(1.0, transforms, rect, render_content);
                 }
                 RegularClipShape::RoundedRect {
                     rect,
                     corner_width,
                     corner_height,
-                } => renderer.push_layer_rounded_rect(
+                } => renderer.with_clip_rounded_rect_scope(
                     1.0,
-                    LayerTransforms {
-                        paint: ctx.transform,
-                        hit: ctx.hit_transform,
-                    },
+                    transforms,
                     clip_path,
                     rect,
                     corner_width,
                     corner_height,
+                    render_content,
                 ),
             }
         } else {
-            renderer.push_layer_path(
-                1.0,
-                LayerTransforms {
-                    paint: ctx.transform,
-                    hit: ctx.hit_transform,
-                },
-                clip_path,
-            );
+            renderer.with_clip_path_scope(1.0, transforms, clip_path, render_content);
         }
-        render_content(renderer);
-        renderer.pop_layer();
     }
 
     /// Render the given content then stroke the border over it, mirroring the
