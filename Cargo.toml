@@ -575,25 +575,25 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45
 # filter library `.filter(F)`/`.effect(E)` and the engine itself agree on:
 # every filtrate in the graph must come from this same revision or a filter
 # type built on one side is a different type on the other.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "8476ba05147d909bf1d067531761727efda0173d" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "8476ba05147d909bf1d067531761727efda0173d" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "8476ba05147d909bf1d067531761727efda0173d" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "8476ba05147d909bf1d067531761727efda0173d" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "8476ba05147d909bf1d067531761727efda0173d" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "8476ba05147d909bf1d067531761727efda0173d" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "a7708216db67bbf976e1fe36429a6a54cf82ba8a" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "a7708216db67bbf976e1fe36429a6a54cf82ba8a" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "a7708216db67bbf976e1fe36429a6a54cf82ba8a" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "a7708216db67bbf976e1fe36429a6a54cf82ba8a" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "a7708216db67bbf976e1fe36429a6a54cf82ba8a" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "a7708216db67bbf976e1fe36429a6a54cf82ba8a" }
 
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
 # devin/chore/nami-snapshot head before the branch is pushed.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "2ef1c9fbf77805454bed32e685c71010adeb2a6d" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "a210eac2b8bcf627e2116ef30002683b237d7bd2" }
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "4c530503f6e3277f44511f327db463a195482abd" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "a024239e18055ac851e639a177d9309ac4a2f821" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "481c20cc44bb64a764f472a775af8a6714831712" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "be59d588f8dff02ac9388dbd4b3a8c43a19985e6" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "b42c9ee10ee2e5a780c070dea3ea972edf333a1a" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "08b84660f471039d598f3ac037d37854ebac8043" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16362805a6babc99a8937a1b75f2ccb831e93f43" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
