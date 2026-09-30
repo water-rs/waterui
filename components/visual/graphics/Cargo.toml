@@ -25,6 +25,8 @@ gpu = [
     "dep:bytemuck",
     "dep:image",
     "dep:mp4parse",
+    "dep:tracing",
+    "dep:pollster",
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
@@ -49,6 +51,8 @@ thiserror = { workspace = true, optional = true }
 # patched container to the platform decoder, so the encoder was pure weight.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"], optional = true }
 mp4parse = { version = "0.17", optional = true }
+tracing = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.

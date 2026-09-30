@@ -40,11 +40,16 @@ use {
 use waterui_core::Str;
 use waterui_core::layout::Size;
 use waterui_graphics::cherenkov::{Display, Next};
-use waterui_graphics::gpu::{GpuContentRenderer, GpuContentView, GpuRuntime, RedrawHandle};
+use waterui_graphics::cherenkov_gpu;
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+use waterui_graphics::gpu::SharedGpuContext;
+use waterui_graphics::gpu::{
+    GpuContentHandle, GpuContentRenderer, GpuContentView, GpuRuntime, RedrawHandle,
+};
 use waterui_graphics::offscreen::OffscreenSize;
 
-use crate::components::layouting::layout::WuiSize;
-use crate::{IntoFFI, WuiStr};
+use crate::components::layouting::layout::{WuiProposalSize, WuiSize, WuiViewDimensions};
+use crate::{IntoFFI, IntoRust, WuiStr};
 
 /// FFI representation of a [`GpuContentView`].
 ///
@@ -93,12 +98,36 @@ ffi_view!(GpuContentView, WuiGpuContent, gpu_content);
 pub struct WuiGpuContentState {
     runtime: GpuRuntime,
     view: GpuContentView,
+    /// The content once it has been handed to the engine — a shareable handle
+    /// so a rebuilt context re-installs the same content object.
+    content: Option<GpuContentHandle>,
     renderer: Option<GpuContentRenderer>,
     /// The format the content was set up for; `None` until the first target
     /// declares one. It never changes afterwards.
     format: Option<wgpu::TextureFormat>,
+    /// Native presentation surface currently attached to this content.
+    ///
+    /// Android may replace the underlying `ANativeWindow` while preserving the
+    /// `GpuContentView` and its persistent resources. Apple platforms present
+    /// through host-owned textures instead and never attach a swapchain.
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     surface: Option<(wgpu::Surface<'static>, wgpu::SurfaceConfiguration)>,
+    /// The `ANativeWindow` `layer` was — kept so the surface can be recreated
+    /// on a rebuilt runtime after device loss without another attach call.
+    /// Valid while `surface` is `Some`; stale otherwise.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_layer: *mut c_void,
+    /// The HDR preference `attach` configured the surface with.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    attached_prefers_hdr: bool,
+    /// The physical size the attached surface was last configured at.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    surface_size: (u32, u32),
+    /// The [`SharedGpuContext`] generation `surface` and `renderer` were built
+    /// under. Anything else means they belong to a dead device and must be
+    /// recreated before the next frame.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    context_generation: u64,
     redraw: RedrawHandle,
     /// The redraw waker installed by the host; the handle above fires it.
     waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>>,
@@ -134,6 +163,64 @@ impl WuiGpuContentState {
         }
     }
 
+    /// Measures the content against a layout proposal without touching
+    /// presentation resources.
+    ///
+    /// `None` means the content moved to the engine already and answers
+    /// through the retained handle; a content that never measured reports the
+    /// proposal filled.
+    pub(crate) fn measure(
+        &self,
+        proposal: waterui_core::layout::ProposalSize,
+    ) -> waterui_core::layout::ViewDimensions {
+        self.view.measure(proposal)
+    }
+
+    /// The content's engine-facing handle, created on first use and kept so a
+    /// rebuilt context re-installs the same content object.
+    fn content_handle(&mut self) -> GpuContentHandle {
+        if self.content.is_none() {
+            self.content = Some(self.view.engine_content());
+        }
+        self.content
+            .as_ref()
+            .expect("content handle created above")
+            .clone()
+    }
+
+    /// Ensures the state's device-bound resources run on the runtime's current
+    /// context.
+    ///
+    /// On a generation mismatch — the driver reported the device lost and the
+    /// runtime rebuilt it — the renderer and the swapchain are dropped and
+    /// recreated on the fresh context: the renderer is recreated lazily by
+    /// `render_into` from the retained content handle, and the surface is
+    /// recreated here from the retained native layer.
+    ///
+    /// Android reattaches the surface without reconfiguring the FFI state: the
+    /// still-attached `layer` is the handle `create_attached_surface` needs to
+    /// rebuild the native binding on the new device.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    fn ensure_current_context(&mut self) {
+        let context = self.runtime.context();
+        if context.generation() == self.context_generation {
+            return;
+        }
+        self.renderer = None;
+        if self.surface.is_some() {
+            let (surface, config) = create_attached_surface(
+                &context,
+                self.attached_layer,
+                self.surface_size,
+                self.format,
+                self.attached_prefers_hdr,
+                "waterui_gpu_content_render",
+            );
+            self.surface = Some((surface, config));
+        }
+        self.context_generation = context.generation();
+    }
+
     /// Renders through the retained engine and presents its composed texture.
     fn render_into(
         &mut self,
@@ -146,18 +233,20 @@ impl WuiGpuContentState {
         self.dirty
             .store(false, core::sync::atomic::Ordering::Release);
         self.view.frame();
-        let renderer = self.renderer.get_or_insert_with(|| {
+        if self.renderer.is_none() {
             let redraw = self.redraw.clone();
-            let content = self
-                .view
-                .take_engine_content(move || redraw.request_redraw());
-            GpuContentRenderer::new(
+            let content =
+                cherenkov_gpu::interop::GpuContentBox::new(self.content_handle(), move || {
+                    redraw.request_redraw();
+                });
+            self.renderer = Some(GpuContentRenderer::new(
                 self.runtime.clone(),
                 content,
                 OffscreenSize::try_from_pixels(width, height)
                     .expect("native target must be nonempty"),
-            )
-        });
+            ));
+        }
+        let renderer = self.renderer.as_mut().expect("renderer created above");
         renderer.present(texture, display) != Next::Idle
             || self.dirty.load(core::sync::atomic::Ordering::Acquire)
     }
@@ -200,6 +289,32 @@ impl Drop for ForeignRedrawTarget {
         // SAFETY: `drop` and `context` are one registration from the backend, and
         // `Drop` runs once.
         unsafe { (self.drop)(self.context as *mut c_void) };
+    }
+}
+
+/// Whether the process was asked to fake one device loss, for end-to-end
+/// recovery checks on real Android drivers that do not lose on demand.
+///
+/// `WATERUI_SIMULATE_GPU_LOSS` is a testing hook: when set, the first render
+/// call marks the shared context lost and `ensure_current_context` takes the
+/// same rebuild a driver-reported loss would.
+#[cfg(target_os = "android")]
+fn simulate_device_loss_requested() -> bool {
+    static REQUESTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REQUESTED.get_or_init(|| std::env::var_os("WATERUI_SIMULATE_GPU_LOSS").is_some())
+}
+
+/// Marks the shared context lost exactly once per process when the
+/// `WATERUI_SIMULATE_GPU_LOSS` test hook is set.
+#[cfg(target_os = "android")]
+fn simulate_device_loss_once(state: &WuiGpuContentState) {
+    static FIRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    if !FIRED.swap(true, core::sync::atomic::Ordering::Relaxed) && simulate_device_loss_requested()
+    {
+        state
+            .runtime
+            .context()
+            .mark_device_lost_for_testing("simulated loss via WATERUI_SIMULATE_GPU_LOSS");
     }
 }
 
@@ -266,13 +381,24 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
         })
     };
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    let context_generation = runtime.context().generation();
     Box::into_raw(Box::new(WuiGpuContentState {
         runtime,
         view,
+        content: None,
         renderer: None,
         format: None,
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         surface: None,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_layer: core::ptr::null_mut(),
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        attached_prefers_hdr: false,
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        surface_size: (0, 0),
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        context_generation,
         redraw,
         waker,
         dirty,
@@ -360,6 +486,75 @@ pub unsafe extern "C" fn waterui_gpu_content_accessibility_value(
     Str::from(state.view.accessibility_value().unwrap_or_default()).into_ffi()
 }
 
+/// Content-driven HDR preference exported to native backends before init.
+///
+/// `has_preference = false` means the content should follow backend/global
+/// policy.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WuiGpuContentHdrPreference {
+    /// Whether the view or its content provided an explicit HDR/SDR preference.
+    pub has_preference: bool,
+    /// Explicit preferred dynamic range when `has_preference` is true.
+    pub prefers_hdr: bool,
+}
+
+/// Returns the HDR preference a `WuiGpuContent` declares.
+///
+/// The view's own `prefer_hdr_surface`/`prefer_sdr_surface` wins over the
+/// content's `preferred_surface_hdr`.
+///
+/// This must be called before `waterui_gpu_content_create` consumes the
+/// descriptor.
+///
+/// # Safety
+///
+/// - `content` must be a valid pointer obtained from
+///   `waterui_force_as_gpu_content`
+/// - `content` must not have been consumed by `waterui_gpu_content_create`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_content_hdr_preference(
+    content: *const WuiGpuContent,
+) -> WuiGpuContentHdrPreference {
+    // SAFETY: the caller contract requires `content` to be a valid descriptor alive
+    // for this call.
+    let descriptor = unsafe { &*content };
+    // SAFETY: a descriptor that has not been consumed holds a live `GpuContentView`;
+    // the consuming path nulls the field, so a stale read cannot reach here.
+    let view = unsafe { &*(descriptor.view as *const GpuContentView) };
+    let explicit = view.resolved_hdr_preference();
+    WuiGpuContentHdrPreference {
+        has_preference: explicit.is_some(),
+        prefers_hdr: explicit.unwrap_or(false),
+    }
+}
+
+/// Measures the content without touching presentation resources.
+///
+/// # Safety
+///
+/// `state` must be valid and this function must run on the content's owning
+/// thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_content_measure(
+    state: *const WuiGpuContentState,
+    proposal: WuiProposalSize,
+) -> WuiViewDimensions {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    // SAFETY: the caller contract makes `proposal` an owning handle from the
+    // matching FFI constructor; it is consumed here and not observed again.
+    measure_state(state, unsafe { proposal.into_rust() }).into_ffi()
+}
+
+pub(crate) fn measure_state(
+    state: &WuiGpuContentState,
+    proposal: waterui_core::layout::ProposalSize,
+) -> waterui_core::layout::ViewDimensions {
+    state.measure(proposal)
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 fn attached_surface_format(
     capabilities: &wgpu::SurfaceCapabilities,
@@ -376,6 +571,49 @@ fn attached_surface_format(
             format
         },
     )
+}
+
+/// Creates and configures the wgpu surface for `layer` on `context`.
+///
+/// Split from `attach` because device-loss recovery recreates the surface from
+/// the retained `layer` with the same arguments.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+fn create_attached_surface(
+    context: &SharedGpuContext,
+    layer: *mut c_void,
+    (width, height): (u32, u32),
+    established_format: Option<wgpu::TextureFormat>,
+    prefers_hdr: bool,
+    context_name: &'static str,
+) -> (wgpu::Surface<'static>, wgpu::SurfaceConfiguration) {
+    let surface = create_surface_from_layer(context.instance(), layer);
+    let caps = surface.get_capabilities(context.adapter());
+    let format = attached_surface_format(&caps, established_format, prefers_hdr);
+    assert!(
+        caps.present_modes.contains(&wgpu::PresentMode::Fifo),
+        "{context_name}: surface does not support FIFO presentation"
+    );
+    let alpha_mode = [
+        wgpu::CompositeAlphaMode::PreMultiplied,
+        wgpu::CompositeAlphaMode::PostMultiplied,
+        wgpu::CompositeAlphaMode::Inherit,
+        wgpu::CompositeAlphaMode::Opaque,
+    ]
+    .into_iter()
+    .find(|mode| caps.alpha_modes.contains(mode))
+    .unwrap_or_else(|| panic!("{context_name}: surface reports no supported composite alpha mode"));
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width,
+        height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode,
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    };
+    super::checked_surface_configure(&surface, context.device(), &config, context_name);
+    (surface, config)
 }
 
 /// Attaches a native presentation surface and sets the content up on its
@@ -414,36 +652,21 @@ pub unsafe extern "C" fn waterui_gpu_content_attach(
         "waterui_gpu_content_attach: native surface dimensions must be non-zero, got {width}x{height}"
     );
 
-    let surface = create_surface_from_layer(state.runtime.instance(), layer);
-    let caps = surface.get_capabilities(state.runtime.adapter());
-    let format = attached_surface_format(&caps, state.format, prefers_hdr);
-    assert!(
-        caps.present_modes.contains(&wgpu::PresentMode::Fifo),
-        "waterui_gpu_content_attach: surface does not support FIFO presentation"
+    let context = state.runtime.context();
+    let (surface, config) = create_attached_surface(
+        &context,
+        layer,
+        (width, height),
+        state.format,
+        prefers_hdr,
+        "waterui_gpu_content_attach",
     );
-    let alpha_mode = [
-        wgpu::CompositeAlphaMode::PreMultiplied,
-        wgpu::CompositeAlphaMode::PostMultiplied,
-        wgpu::CompositeAlphaMode::Inherit,
-        wgpu::CompositeAlphaMode::Opaque,
-    ]
-    .into_iter()
-    .find(|mode| caps.alpha_modes.contains(mode))
-    .unwrap_or_else(|| {
-        panic!("waterui_gpu_content_attach: surface reports no supported composite alpha mode")
-    });
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width,
-        height,
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode,
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-    };
-    surface.configure(state.runtime.device(), &config);
+    let format = config.format;
     state.surface = Some((surface, config));
+    state.attached_layer = layer;
+    state.attached_prefers_hdr = prefers_hdr;
+    state.surface_size = (width, height);
+    state.context_generation = context.generation();
     state.prepare_format(format);
 }
 
@@ -546,47 +769,58 @@ pub unsafe extern "C" fn waterui_gpu_content_render(
         "waterui_gpu_content_render: dimensions must be non-zero"
     );
     let display = display_from_ffi(scale, headroom, "waterui_gpu_content_render");
+    #[cfg(target_os = "android")]
+    simulate_device_loss_once(state);
 
-    let format = {
-        let (surface, config) = state
-            .surface
-            .as_mut()
-            .expect("waterui_gpu_content_render: native surface is detached");
-        if config.width != width || config.height != height {
-            config.width = width;
-            config.height = height;
-            surface.configure(state.runtime.device(), config);
-        }
-        config.format
-    };
+    // Recreate the context's device generation when the driver reported the
+    // previous one lost; surface and renderer are bound to the dead device and
+    // must be rebuilt from the retained layer before anything else runs.
+    state.ensure_current_context();
 
-    let output = loop {
-        let (surface, config) = state
-            .surface
-            .as_ref()
-            .expect("waterui_gpu_content_render: native surface is detached");
-        match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(output) => break output,
-            wgpu::CurrentSurfaceTexture::Suboptimal(output) => {
-                drop(output);
-                surface.configure(state.runtime.device(), config);
-            }
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                surface.configure(state.runtime.device(), config);
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                tracing::debug!("waterui_gpu_content_render: no frame acquired; frame pending");
+    // The whole frame is device-bound work; run_gpu_frame recovers a loss the
+    // driver announces mid-frame as `None` instead of unwinding over the FFI.
+    let presented = super::run_gpu_frame(
+        &state.runtime.context(),
+        "waterui_gpu_content_render",
+        || {
+            let Some((surface, config)) = state.surface.as_mut() else {
+                // The content was detached while the frame was already inside
+                // the C call; nothing to draw, so stay pending.
                 return true;
+            };
+            if config.width != width || config.height != height {
+                config.width = width;
+                config.height = height;
+                let gpu = state.runtime.context();
+                super::checked_surface_configure(
+                    surface,
+                    gpu.device(),
+                    config,
+                    "waterui_gpu_content_render",
+                );
+                state.surface_size = (width, height);
             }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                panic!("waterui_gpu_content_render: surface acquire raised a validation error")
-            }
-        }
-    };
-
-    let needs_redraw = state.render_into(&output.texture, format, (width, height), display);
-    output.present();
-    needs_redraw
+            let gpu = state.runtime.context();
+            let Some(output) =
+                super::acquire_surface_texture(surface, &gpu, config, "waterui_gpu_content_render")
+            else {
+                // Nothing was drawn, so the frame this call was asked for is
+                // still pending: the host must come back for it once the
+                // surface can be acquired again. Reporting it done here would
+                // strand a view whose only clock is its own render loop.
+                return true;
+            };
+            let format = output.texture.format();
+            let still_pending =
+                state.render_into(&output.texture, format, (width, height), display);
+            output.present();
+            gpu.note_frame_presented();
+            still_pending
+        },
+    );
+    // A device loss caught mid-frame leaves the frame pending exactly like a
+    // skipped acquire: the next render rebuilds and draws.
+    presented.unwrap_or(true)
 }
 
 /// Renders one frame into the attached swapchain (non-Apple only).
