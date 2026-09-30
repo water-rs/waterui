@@ -91,9 +91,25 @@ fn new_cef_app(handler: BrowserProcessHandler) -> App {
                     command_line.append_switch(Some(&switch.into()));
                 }
                 #[cfg(target_os = "macos")]
-                disable_features(command_line, &MACOS_SYSTEM_NOTIFICATION_FEATURES);
-                #[cfg(all(target_os = "macos", debug_assertions))]
-                command_line.append_switch(Some(&"use-mock-keychain".into()));
+                {
+                    disable_features(command_line, &MACOS_SYSTEM_NOTIFICATION_FEATURES);
+                    // Chromium encrypts the persistent cookie store with
+                    // OSCrypt, whose macOS key is the "Chromium Safe Storage"
+                    // login-keychain item. That item's partition_id ACL is
+                    // bound to the creator's keychain partition: a binary
+                    // whose signature carries a team identifier joins the
+                    // stable `teamid:` partition, while an ad-hoc, unsigned,
+                    // or self-signed binary gets a `cdhash:` partition that
+                    // changes on every rebuild — so each rebuild hits a
+                    // SecurityAgent password prompt. The prompt blocks the
+                    // network thread inside the cookie-key load, so every
+                    // request parks at URL_REQUEST_START_JOB and the page
+                    // never loads. Only a team-signed binary keeps the real
+                    // keychain; every other signature falls back to the mock.
+                    if crate::signing::needs_mock_keychain() {
+                        command_line.append_switch(Some(&"use-mock-keychain".into()));
+                    }
+                }
             }
 
             #[cfg(feature = "webview")]

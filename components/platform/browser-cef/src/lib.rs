@@ -21,6 +21,9 @@ mod install;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 mod page;
 mod runtime;
+#[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod signing;
 #[cfg(feature = "webview")]
 mod webview;
 
@@ -41,13 +44,13 @@ pub use page::{
     AcceleratedFrameSink, CefInputModifiers, CefKeyInput, CefPageHandle, CefPointerButton,
     CefPopupRect, CefTextRange,
 };
+#[cfg(target_os = "macos")]
+pub use runtime::initialize_sandbox_early;
 #[cfg(target_os = "windows")]
 pub use runtime::install_bootstrap_sandbox_info;
 pub use runtime::{
     CefRuntime, CefRuntimeConfiguration, CefRuntimePaths, PumpDeadline, run_packaged_subprocess,
 };
-#[cfg(target_os = "macos")]
-pub use runtime::initialize_sandbox_early;
 #[cfg(feature = "webview")]
 pub use webview::CefWebViewHandle;
 
