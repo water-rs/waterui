@@ -2,30 +2,48 @@
 //!
 //! A host builds one [`SceneResources`] over the engine it already selected —
 //! the GPU engine its surfaces render through, or the CPU raster engine an
-//! offscreen rasterizer owns — keeps it for as long as that engine lives, and
-//! hands it to every [`SceneContent::build_scene`] call. Content registers a
-//! font, an image or a shader paint in the frame that first draws it, and
-//! keeps the returned [`Registered`] handle for as long as its recordings name
-//! the resource.
+//! offscreen rasterizer owns — and keeps it for as long as that engine lives.
+//! Each recording of scene content borrows it as [`RecordingResources`],
+//! which is what [`SceneContent::build_scene`] receives.
 //!
-//! Registrations live exactly as long as somebody holds them. A
-//! [`Registered`] handle is the only strong owner of its registration: the
-//! table keeps a weak entry per registration for deduplication, never a strong
-//! one, so when the last content holding a handle lets go of it the entry
-//! leaves the table and the engine's own handle drops, which unregisters the
-//! resource. Nothing waits for the content to detach or for the table to be
-//! swept; the release is the handle's drop, the same `Rc` semantics the
-//! engine's handles already have.
+//! # Who holds a registration
+//!
+//! A registration lives exactly as long as somebody holds it, and three
+//! parties do, one for each way a resource is still in use:
+//!
+//! - **The content** registers a font, an image or a shader paint in the
+//!   frame that first draws it and keeps the returned [`Registered`] handle
+//!   for as long as it goes on drawing the resource.
+//! - **The recording** holds every resource it names. A handle gives out the
+//!   id a recorder draws with only through [`RecordingResources::name`],
+//!   which puts the handle in that recording's [`HeldResources`], so a
+//!   recording cannot name a resource without holding it.
+//! - **The host** keeps each installed recording's [`HeldResources`] until a
+//!   recording that replaces it has been installed.
+//!
+//! The table itself holds nothing: it keeps a weak entry per registration for
+//! deduplication, and when the last holder lets go the entry leaves the table
+//! and the engine's own handle drops, which unregisters the resource. So
+//! content can drop a handle in the very call that records a drawing without
+//! the resource: the recording still installed keeps it until the host
+//! installs the one that no longer names it — even when the host renders in
+//! between, or discards the new recording instead of installing it.
 //!
 //! The type deliberately carries no drawing methods, no layer operations and
 //! no backend choice: the engine is the host's, selected before this exists.
-//! What this adds on top of `Engine` is deduplication — two contents drawing
-//! the same font or image while both hold it share one registration — and a
-//! uniform surface for backends with differing capabilities: a shader paint
-//! on a backend without shader support is an explicit
-//! [`ResourceError::Unsupported`], never a silent miss.
+//! What this adds on top of `Engine` is ownership that follows what is drawn,
+//! exact deduplication — two contents drawing the same font or image while
+//! both hold it share one registration — and a uniform surface for backends
+//! with differing capabilities: a shader paint on a backend without shader
+//! support is an explicit [`ResourceError::Unsupported`], never a silent miss.
 //!
 //! [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
+//! [`SceneResources`]: crate::resources::SceneResources
+//! [`RecordingResources`]: crate::resources::RecordingResources
+//! [`RecordingResources::name`]: crate::resources::RecordingResources::name
+//! [`Registered`]: crate::resources::Registered
+//! [`HeldResources`]: crate::resources::HeldResources
+//! [`ResourceError::Unsupported`]: cherenkov::ResourceError::Unsupported
 
 use alloc::borrow::Cow;
 use alloc::rc::{Rc, Weak};
@@ -35,12 +53,13 @@ use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::mem::discriminant;
 use core::ops::Deref;
+use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
 use cherenkov::{
-    Backend, Engine, Font, FontSource, Image, ImageColorSpace, ImageData, ResourceError, Rgba8,
-    Rgba16F, Shader, ShaderPaintCapability, ShaderSource, Uploads,
+    Backend, Engine, Font, FontId, FontSource, Format, Image, ImageColorSpace, ImageData, ImageId,
+    ResourceError, Rgba8, Rgba16F, Shader, ShaderId, ShaderPaintCapability, ShaderSource, Uploads,
 };
 
 /// The bytes a registration was made from, kept by its entry so that a later
@@ -135,7 +154,7 @@ struct ImageShape {
 }
 
 impl ImageShape {
-    const fn of<F: cherenkov::Format>(data: &ImageData<F>) -> Self {
+    const fn of<F: Format>(data: &ImageData<F>) -> Self {
         Self {
             width: data.width,
             height: data.height,
@@ -300,13 +319,59 @@ impl<H> Drop for Entry<H> {
     }
 }
 
+/// An engine handle whose id a recording can name: [`Font`], [`Image`] or
+/// [`Shader`].
+pub trait EngineResource: sealed_resource::Sealed + 'static {
+    /// The id a recording names this resource by.
+    type Id: Copy;
+
+    /// This resource's id.
+    fn id(&self) -> Self::Id;
+}
+
+mod sealed_resource {
+    pub trait Sealed {}
+    impl Sealed for cherenkov::Font {}
+    impl<F: cherenkov::Format> Sealed for cherenkov::Image<F> {}
+    impl Sealed for cherenkov::Shader {}
+}
+
+impl EngineResource for Font {
+    type Id = FontId;
+
+    fn id(&self) -> FontId {
+        Self::id(self)
+    }
+}
+
+impl<F: Format> EngineResource for Image<F> {
+    type Id = ImageId;
+
+    fn id(&self) -> ImageId {
+        Self::id(self)
+    }
+}
+
+impl EngineResource for Shader {
+    type Id = ShaderId;
+
+    fn id(&self) -> ShaderId {
+        Self::id(self)
+    }
+}
+
 /// A resource registered through [`SceneResources`], shared by everyone who
 /// asked for the same source while it was held.
 ///
-/// This is the registration's owner: cloning it shares the registration, and
-/// dropping the last clone releases it — the table's entry leaves with it, and
-/// the engine unregisters the resource. It dereferences to the engine handle
-/// (`Font`, `Image<F>` or `Shader`), whose `id()` is what a recording names.
+/// This is the content's share of the registration: cloning it shares the
+/// registration, and once the last clone and every recording holding it are
+/// gone, the table's entry leaves and the engine unregisters the resource.
+///
+/// It deliberately does not hand out the resource's id. A recording names the
+/// resource through [`RecordingResources::name`], which holds the
+/// registration for as long as that recording may be drawn — so the id a
+/// recorder draws with never outlives the registration behind it. Two handles
+/// compare equal when they share one registration.
 pub struct Registered<H> {
     entry: Rc<Entry<H>>,
 }
@@ -319,19 +384,155 @@ impl<H> Clone for Registered<H> {
     }
 }
 
-impl<H> Deref for Registered<H> {
-    type Target = H;
-
-    fn deref(&self) -> &H {
-        &self.entry.handle
+impl<H> PartialEq for Registered<H> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.entry, &other.entry)
     }
 }
+
+impl<H> Eq for Registered<H> {}
 
 impl<H: fmt::Debug> fmt::Debug for Registered<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Registered")
             .field(&self.entry.handle)
             .finish()
+    }
+}
+
+/// A registration a recording holds, whatever its kind.
+trait HeldEntry {}
+
+impl<H> HeldEntry for Entry<H> {}
+
+/// Where a held registration lives, which identifies it.
+fn entry_address<T: ?Sized>(entry: &Rc<T>) -> usize {
+    Rc::as_ptr(entry).cast::<()>().addr()
+}
+
+/// The registrations one recording names, held for as long as the recording
+/// may be drawn.
+///
+/// [`RecordingResources::finish`] produces it beside the recording it belongs
+/// to. The host keeps it for as long as that recording is installed and drops
+/// it only once a recording that replaces it has been installed, for example
+/// right after the [`Surface::update`](cherenkov::Surface::update) that
+/// installs the replacement: the engine applies an install before it draws
+/// again, so no frame draws the replaced recording after its resources are
+/// released. A recording that is discarded rather than installed takes its
+/// set with it and releases nothing the installed recording draws.
+///
+/// Cloning shares the set.
+#[derive(Clone)]
+pub struct HeldResources {
+    table: Weak<Table>,
+    entries: Rc<[Rc<dyn HeldEntry>]>,
+}
+
+impl HeldResources {
+    /// The set of a recording that names no resource.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            table: Weak::new(),
+            entries: Rc::from([]),
+        }
+    }
+}
+
+impl fmt::Debug for HeldResources {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HeldResources")
+            .field("held", &self.entries.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The resource side of one recording: registration through the engine's
+/// [`SceneResources`], which this dereferences to, and the set of every
+/// registration the recording names.
+///
+/// A host begins one with [`SceneResources::recording`] for each recording it
+/// makes, hands it to every [`SceneContent::build_scene`] that records into
+/// that recording, and takes the set with [`finish`](Self::finish).
+///
+/// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
+pub struct RecordingResources<'a> {
+    resources: &'a SceneResources,
+    held: HashMap<usize, Rc<dyn HeldEntry>>,
+}
+
+impl RecordingResources<'_> {
+    /// The id to record `resource` by, holding the registration for as long
+    /// as this recording may be drawn.
+    ///
+    /// Name a resource in every recording that draws it — an id kept from an
+    /// earlier recording is not held by this one.
+    ///
+    /// # Panics
+    ///
+    /// When `resource` was registered through another engine's
+    /// [`SceneResources`]: its id means nothing, or something else, on this
+    /// one.
+    pub fn name<H: EngineResource>(&mut self, resource: &Registered<H>) -> H::Id {
+        assert!(
+            ptr::eq(
+                resource.entry.table.as_ptr(),
+                Rc::as_ptr(&self.resources.table)
+            ),
+            "a resource registered on another engine was named in this recording"
+        );
+        let entry: Rc<dyn HeldEntry> = Rc::<Entry<H>>::clone(&resource.entry);
+        self.held.entry(entry_address(&entry)).or_insert(entry);
+        resource.entry.handle.id()
+    }
+
+    /// Holds every registration in `held` for this recording too — for a
+    /// recording that draws another one, such as a picture recorded with
+    /// [`Picture::record_with`](crate::picture::Picture::record_with).
+    ///
+    /// # Panics
+    ///
+    /// When `held` belongs to another engine's [`SceneResources`].
+    pub fn hold(&mut self, held: &HeldResources) {
+        if held.entries.is_empty() {
+            return;
+        }
+        assert!(
+            ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)),
+            "a recording naming another engine's resources was drawn in this recording"
+        );
+        for entry in held.entries.iter() {
+            self.held
+                .entry(entry_address(entry))
+                .or_insert_with(|| Rc::clone(entry));
+        }
+    }
+
+    /// The registrations this recording names, for the host to keep beside
+    /// it; see [`HeldResources`].
+    #[must_use = "the recording names these resources; keep them for as long as it is installed"]
+    pub fn finish(self) -> HeldResources {
+        HeldResources {
+            table: Rc::downgrade(&self.resources.table),
+            entries: self.held.into_values().collect(),
+        }
+    }
+}
+
+impl Deref for RecordingResources<'_> {
+    type Target = SceneResources;
+
+    fn deref(&self) -> &SceneResources {
+        self.resources
+    }
+}
+
+impl fmt::Debug for RecordingResources<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecordingResources")
+            .field("held", &self.held.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -412,12 +613,12 @@ impl Table {
 
 /// Resource registration over one engine, shared by the content drawn on it.
 ///
-/// Constructed once from the host's already-selected engine and handed to
-/// every [`SceneContent::build_scene`] on that engine; see the module
-/// documentation for the ownership contract. The table holds the engine
-/// strongly and its registrations weakly: it never keeps a resource alive,
-/// so it can live as long as the engine does without pinning anything a
-/// content has stopped drawing.
+/// Constructed once from the host's already-selected engine and lent, as
+/// [`RecordingResources`], to every [`SceneContent::build_scene`] on that
+/// engine; see the module documentation for the ownership contract. The table
+/// holds the engine strongly and its registrations weakly: it never keeps a
+/// resource alive, so it can live as long as the engine does without pinning
+/// anything that is no longer drawn.
 ///
 /// Deduplication is exact. Each live registration keeps the bytes it was made
 /// from — the `Arc` the request handed over, not a copy; owned shader text is
@@ -453,6 +654,16 @@ impl SceneResources {
                 images_rgba16f: Listing::new(),
                 shaders_cache: Listing::new(),
             }),
+        }
+    }
+
+    /// Begins the resource side of one recording; see
+    /// [`RecordingResources`].
+    #[must_use]
+    pub fn recording(&self) -> RecordingResources<'_> {
+        RecordingResources {
+            resources: self,
+            held: HashMap::new(),
         }
     }
 
@@ -611,22 +822,23 @@ impl fmt::Debug for SceneResources {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloc::rc::Rc;
+    use alloc::sync::Arc;
     use alloc::vec::Vec;
+    use core::cell::RefCell;
     use std::collections::HashSet;
     use std::sync::mpsc::{Receiver, channel};
 
     use cherenkov::kurbo::Rect;
     use cherenkov::testing::{Event, Null, NullConfig};
     use cherenkov::{
-        Command, Draw as _, Engine, FrameTime, Image, ImageData, ImageId, Offscreen,
-        OffscreenFormat, Recorder, Rgba8, Sampling, Surface, WorkingColor,
+        Command, Content as Recording, Draw as _, Engine, FrameTime, Image, ImageColorSpace,
+        ImageData, ImageId, Offscreen, OffscreenFormat, Recorder, Rgba8, Sampling, Surface,
+        WorkingColor,
     };
 
-    use alloc::sync::Arc;
-
-    use cherenkov::ImageColorSpace;
-
-    use super::{Content, Registered, SceneResources, SourceBytes};
+    use super::{
+        Content, HeldResources, RecordingResources, Registered, SceneResources, SourceBytes,
+    };
     use crate::scene_view::SceneContent;
 
     fn null_engine() -> (Rc<Engine<Null>>, Receiver<Event>) {
@@ -646,7 +858,7 @@ pub(crate) mod tests {
         (SceneResources::new(engine), probe)
     }
 
-    fn one_pixel() -> ImageData<Rgba8> {
+    pub fn one_pixel() -> ImageData<Rgba8> {
         ImageData::<Rgba8>::new(1, 1, Vec::from([255, 0, 0, 255])).expect("valid image")
     }
 
@@ -670,21 +882,19 @@ pub(crate) mod tests {
         // `one_pixel` allocates afresh on every call: this is the content
         // path, not the allocation one.
         let identical = resources.image(one_pixel()).expect("image registration");
-        assert_eq!(identical.id(), held.id());
+        assert_eq!(identical, held);
         let linear = resources
             .image(one_pixel().color_space(ImageColorSpace::LinearSrgb))
             .expect("image registration");
         assert_ne!(
-            linear.id(),
-            held.id(),
+            linear, held,
             "the same bytes in another colour space are another image"
         );
         let premultiplied = resources
             .image(one_pixel().premultiplied())
             .expect("image registration");
         assert_ne!(
-            premultiplied.id(),
-            held.id(),
+            premultiplied, held,
             "the same bytes under the other alpha convention are another image"
         );
     }
@@ -699,7 +909,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn removed_images(events: &[Event]) -> Vec<ImageId> {
+    pub fn removed_images(events: &[Event]) -> Vec<ImageId> {
         events
             .iter()
             .filter_map(|event| match event {
@@ -717,11 +927,20 @@ pub(crate) mod tests {
         image: Option<Registered<Image<Rgba8>>>,
     }
 
+    impl LateImage {
+        const fn new() -> Self {
+            Self {
+                frame: 0,
+                image: None,
+            }
+        }
+    }
+
     impl SceneContent for LateImage {
         fn build_scene(
             &mut self,
             recorder: &mut Recorder,
-            resources: &SceneResources,
+            resources: &mut RecordingResources<'_>,
             width: f32,
             height: f32,
         ) -> bool {
@@ -734,7 +953,7 @@ pub(crate) mod tests {
                         .image(one_pixel())
                         .expect("image registration failed")
                 });
-                recorder.image(image.id(), bounds, Sampling::Nearest);
+                recorder.image(resources.name(image), bounds, Sampling::Nearest);
             } else {
                 self.image = None;
             }
@@ -742,23 +961,33 @@ pub(crate) mod tests {
         }
     }
 
-    /// What one frame did: the image ids the installed recording draws, and
-    /// the render-thread events from recording it through rendering it.
-    struct FrameReport {
+    /// A recording the host has made but not installed yet, with the
+    /// registrations it names and the image ids it draws.
+    pub struct Recorded {
+        content: Recording,
+        held: HeldResources,
         drawn: Vec<ImageId>,
-        events: Vec<Event>,
     }
 
-    /// A host mounting one content on a `Null` engine's surface root.
-    struct Mount {
+    /// What one frame did: the image ids the installed recording draws, and
+    /// the render-thread events from recording it through rendering it.
+    pub struct FrameReport {
+        pub drawn: Vec<ImageId>,
+        pub events: Vec<Event>,
+    }
+
+    /// A host mounting one content on a `Null` engine's surface root, holding
+    /// the installed recording's resources the way a real host does.
+    pub struct Mount {
         engine: Rc<Engine<Null>>,
         probe: Receiver<Event>,
-        resources: SceneResources,
+        pub resources: SceneResources,
         surface: Surface<Null>,
+        installed: RefCell<HeldResources>,
     }
 
     impl Mount {
-        fn new() -> Self {
+        pub fn new() -> Self {
             let (engine, probe) = null_engine();
             let surface = engine
                 .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
@@ -769,14 +998,15 @@ pub(crate) mod tests {
                 engine,
                 probe,
                 surface,
+                installed: RefCell::new(HeldResources::empty()),
             }
         }
 
-        /// One host frame: record, install the recording on the mounted
-        /// layer, render.
-        fn frame(&self, content: &mut LateImage) -> FrameReport {
+        /// Records `content` without installing the recording.
+        pub fn record(&self, content: &mut dyn SceneContent) -> Recorded {
+            let mut resources = self.resources.recording();
             let mut recorded = self.surface.record(|recorder| {
-                content.build_scene(recorder, &self.resources, 8.0, 8.0);
+                content.build_scene(recorder, &mut resources, 8.0, 8.0);
             });
             let drawn = recorded
                 .snapshot()
@@ -787,15 +1017,46 @@ pub(crate) mod tests {
                     _ => None,
                 })
                 .collect();
-            self.surface.update(|tx| {
-                tx[self.surface.root()].content(recorded);
-            });
-            self.engine.render(FrameTime::now()).expect("render");
-            FrameReport {
+            Recorded {
+                content: recorded,
+                held: resources.finish(),
                 drawn,
-                events: self.probe.try_iter().collect(),
             }
         }
+
+        /// Installs `recorded` on the mounted layer, then lets go of what the
+        /// recording it replaces held.
+        pub fn install(&self, recorded: Recorded) {
+            self.surface.update(|tx| {
+                tx[self.surface.root()].content(recorded.content);
+            });
+            drop(self.installed.replace(recorded.held));
+        }
+
+        /// Renders one frame and returns every render-thread event since the
+        /// last render.
+        pub fn render(&self) -> Vec<Event> {
+            self.engine.render(FrameTime::now()).expect("render");
+            self.probe.try_iter().collect()
+        }
+
+        /// One host frame: record, install the recording, render.
+        pub fn frame(&self, content: &mut dyn SceneContent) -> FrameReport {
+            let recorded = self.record(content);
+            let drawn = recorded.drawn.clone();
+            self.install(recorded);
+            FrameReport {
+                drawn,
+                events: self.render(),
+            }
+        }
+    }
+
+    fn position(events: &[Event], wanted: impl Fn(&Event) -> bool) -> usize {
+        events
+            .iter()
+            .position(wanted)
+            .unwrap_or_else(|| panic!("missing event in {events:?}"))
     }
 
     /// The frame registered `id`, then installed and rendered a recording
@@ -806,25 +1067,36 @@ pub(crate) mod tests {
             [id],
             "the frame draws the image it registered"
         );
-        let position = |wanted: fn(&Event) -> bool| report.events.iter().position(wanted);
-        let added = position(|event| matches!(event, Event::AddImage(_))).expect("registered");
-        let installed =
-            position(|event| matches!(event, Event::SetContent(..))).expect("installed");
-        let rendered = position(|event| matches!(event, Event::Frame(_))).expect("rendered");
+        let events = &report.events;
+        let added = position(events, |event| matches!(event, Event::AddImage(_)));
+        let installed = position(events, |event| matches!(event, Event::SetContent(..)));
+        let rendered = position(events, |event| matches!(event, Event::Frame(_)));
         assert!(
             added < installed && installed < rendered,
-            "the image must reach the engine before the recording naming it: {:?}",
-            report.events
+            "the image must reach the engine before the recording naming it: {events:?}"
+        );
+    }
+
+    /// The frame released `id` and installed a recording that no longer
+    /// names it with no frame rendered in between: the release may reach the
+    /// engine ahead of the install that stops drawing the image, but nothing
+    /// draws the old recording after it.
+    fn assert_released_then_replaced(report: &FrameReport, id: ImageId) {
+        let events = &report.events;
+        assert_eq!(removed_images(events), [id], "{events:?}");
+        let released = position(events, |event| matches!(event, Event::RemoveImage(_)));
+        let installed = position(events, |event| matches!(event, Event::SetContent(..)));
+        let rendered = position(events, |event| matches!(event, Event::Frame(_)));
+        assert!(
+            released < installed && installed < rendered,
+            "a frame rendered between the release and the install replacing its recording: {events:?}"
         );
     }
 
     #[test]
     fn content_registers_an_image_on_its_third_frame_and_releases_it_while_mounted() {
         let mount = Mount::new();
-        let mut content = LateImage {
-            frame: 0,
-            image: None,
-        };
+        let mut content = LateImage::new();
 
         for _ in 0..2 {
             let report = mount.frame(&mut content);
@@ -844,11 +1116,6 @@ pub(crate) mod tests {
             third.events
         );
         let id = registered[0];
-        assert_eq!(
-            content.image.as_ref().map(|image| image.id()),
-            Some(id),
-            "the content holds the registration the engine committed"
-        );
         assert_registered_then_drawn(&third, id);
         assert!(removed_images(&third.events).is_empty());
 
@@ -858,7 +1125,7 @@ pub(crate) mod tests {
             .resources
             .image(one_pixel())
             .expect("image registration");
-        assert_eq!(shared.id(), id);
+        assert_eq!(Some(&shared), content.image.as_ref());
         drop(shared);
 
         let fourth = mount.frame(&mut content);
@@ -874,12 +1141,8 @@ pub(crate) mod tests {
 
         let fifth = mount.frame(&mut content);
         assert!(fifth.drawn.is_empty());
-        assert_eq!(
-            removed_images(&fifth.events),
-            [id],
-            "an image the content stopped holding is released while the content is mounted"
-        );
         assert!(content.image.is_none());
+        assert_released_then_replaced(&fifth, id);
         assert_eq!(
             mount.resources.listed(),
             0,
@@ -891,11 +1154,9 @@ pub(crate) mod tests {
             .resources
             .image(one_pixel())
             .expect("image registration");
-        assert_ne!(fresh.id(), id);
-        assert_eq!(
-            added_images(&mount.probe.try_iter().collect::<Vec<_>>()),
-            [fresh.id()]
-        );
+        let fresh_id = mount.resources.recording().name(&fresh);
+        assert_ne!(fresh_id, id);
+        assert_eq!(added_images(&mount.render()), [fresh_id]);
         assert_eq!(mount.resources.listed(), 1);
         drop(fresh);
         assert_eq!(
@@ -903,5 +1164,55 @@ pub(crate) mod tests {
             0,
             "dropping the last handle takes the entry out of the table"
         );
+    }
+
+    #[test]
+    fn a_recording_not_yet_installed_cannot_release_what_the_installed_one_draws() {
+        let mount = Mount::new();
+        let mut content = LateImage::new();
+        for _ in 0..3 {
+            mount.frame(&mut content);
+        }
+        let fourth = mount.frame(&mut content);
+        let [id] = fourth.drawn[..] else {
+            panic!("the fourth frame draws the image: {:?}", fourth.drawn);
+        };
+
+        // The fifth recording lets the image go, and the host renders before
+        // installing it: the fourth recording is still the one drawn.
+        let fifth = mount.record(&mut content);
+        assert!(content.image.is_none());
+        let rendered = mount.render();
+        assert!(
+            rendered
+                .iter()
+                .any(|event| matches!(event, Event::Frame(_))),
+            "{rendered:?}"
+        );
+        assert!(
+            removed_images(&rendered).is_empty(),
+            "the image was released while the installed recording still drew it: {rendered:?}"
+        );
+
+        // The host discards that recording instead, and renders again.
+        drop(fifth);
+        assert!(
+            removed_images(&mount.render()).is_empty(),
+            "a discarded recording must not release what the installed one draws"
+        );
+
+        // The next recording that is installed stops drawing the image.
+        let sixth = mount.frame(&mut content);
+        assert!(sixth.drawn.is_empty());
+        assert_released_then_replaced(&sixth, id);
+    }
+
+    #[test]
+    #[should_panic(expected = "registered on another engine")]
+    fn a_resource_from_another_engine_cannot_be_named() {
+        let (theirs, _events) = null_resources();
+        let (ours, _events) = null_resources();
+        let image = theirs.image(one_pixel()).expect("image registration");
+        let _ = ours.recording().name(&image);
     }
 }
