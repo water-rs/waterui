@@ -10249,14 +10249,12 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=b8447310045c9c11fa07c18a9ee6130f1b4ccd11#b8447310045c9c11fa07c18a9ee6130f1b4ccd11"
+source = "git+https://github.com/water-rs/image?rev=27ab17cad98e8b08f50d9df5a66d9ec11529a69f#27ab17cad98e8b08f50d9df5a66d9ec11529a69f"
 dependencies = [
  "half",
  "image",
- "kurbo",
  "mp4-atom 0.14.0",
  "num-traits",
- "peniko",
  "waterkit-codec",
  "waterui-core",
  "waterui-graphics",
@@ -10612,7 +10610,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=16362805a6babc99a8937a1b75f2ccb831e93f43#16362805a6babc99a8937a1b75f2ccb831e93f43"
+source = "git+https://github.com/water-rs/svg?rev=d53a94b03236718c9ee506bd9f5b4b1d2f247a8b#d53a94b03236718c9ee506bd9f5b4b1d2f247a8b"
 dependencies = [
  "cherenkov",
  "suiteki",
