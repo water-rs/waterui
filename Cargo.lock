@@ -1119,7 +1119,6 @@ version = "0.29.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ecb53484c9c167ba674026b656d8a27d7657a58e6066aa902bfb1a4aa00ae20"
 dependencies = [
- "clap",
  "heck",
  "indexmap 2.14.2",
  "log",
@@ -10066,6 +10065,7 @@ dependencies = [
  "jiff",
  "jni 0.22.4",
  "kurbo",
+ "libc",
  "nami",
  "native-executor",
  "ndk-context",
@@ -10083,6 +10083,7 @@ dependencies = [
  "waterkit-audio",
  "waterkit-screen",
  "waterui",
+ "waterui-backend-core",
  "waterui-browser-cef",
  "waterui-chromium",
  "waterui-controls",
@@ -10108,6 +10109,9 @@ name = "waterui-ffi-generator"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
+ "prettyplease 0.2.37",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -10155,6 +10159,7 @@ dependencies = [
  "pastey 0.2.3",
  "pollster 1.0.1",
  "thiserror 2.0.21",
+ "tracing",
  "ttf-parser",
  "waterui-core",
  "wgpu 30.0.1",
@@ -12406,16 +12411,6 @@ dependencies = [
  "syn 3.0.6",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "vello_hybrid"
-version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
-
-[[patch.unused]]
-name = "vello_sparse_shaders"
-version = "0.2.0"
-source = "git+https://github.com/lexoliu/vello?rev=a01e5039c290fa869e0f6f3708e621056740f49b#a01e5039c290fa869e0f6f3708e621056740f49b"
 
 [[patch.unused]]
 name = "waterui-dew"
