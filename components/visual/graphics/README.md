@@ -75,10 +75,10 @@ Per-view hooks also exist for input (`on_input`), the IME caret
 ### SceneView - Vector Scenes
 
 `SceneContent` records a vector scene into a `cherenkov::Recorder` each frame;
-registered engine resources come from `SceneResources`:
+the engine resources it names come from `RecordingResources`:
 
 ```rust
-use waterui::graphics::{SceneContent, SceneResources, SceneView, cherenkov};
+use waterui::graphics::{RecordingResources, SceneContent, SceneView, cherenkov};
 
 struct Graph;
 
@@ -86,7 +86,7 @@ impl SceneContent for Graph {
     fn build_scene(
         &mut self,
         recorder: &mut cherenkov::Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool {
@@ -125,6 +125,8 @@ pub trait GpuContent: Send + 'static {
     fn render(&mut self, frame: &mut Frame<'_>);
     fn is_opaque(&self) -> bool { false }
     fn intrinsic_size(&self) -> Option<Size> { None }
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions { /* fill proposal */ }
+    fn preferred_surface_hdr(&self) -> Option<bool> { None }
 }
 ```
 
@@ -150,7 +152,8 @@ content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 ### Scene Module
 
 - `SceneView::new(content)` - Create a view from a `SceneContent`
-- `SceneResources` - Engine resource registry: `new(Rc<Engine<B>>)`, `register`/`Registered` handles
+- `SceneResources` - Engine resource registry a host builds with `new(Rc<Engine<B>>)`; `recording()` opens a `RecordingResources` for each recording
+- `RecordingResources` - The registration half handed to `build_scene`: `name`/`hold` plus `font`/`image`/`image16f`/`shader`
 - `Picture` - A retained recorded scene
 
 ### Re-exported Dependencies
