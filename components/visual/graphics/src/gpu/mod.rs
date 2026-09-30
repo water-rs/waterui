@@ -1,19 +1,29 @@
-//! User GPU work inside the scene: [`GpuContent`] and the view that hosts it.
+//! User GPU work inside the scene: [`GpuContent`], external frames, and the
+//! views that host them.
 //!
 //! The engine owns the device. Content that draws with `wgpu` directly — a
-//! particle system, a 3D viewport, a video decoder's output — implements
-//! [`GpuContent`] and the backend installs it on a layer of an engine whose
-//! backend hosts GPU content, where it renders into a texture the engine
-//! composites like any other layer. The content runs on the render thread:
-//! it is `Send`, and whatever it shares with the UI (a pointer position, a
-//! simulation parameter) crosses through its own synchronised state.
+//! particle system, a 3D viewport — implements [`GpuContent`] and the backend
+//! installs it on a layer of an engine whose backend hosts GPU content, where
+//! it renders into a texture the engine composites like any other layer. The
+//! content runs on the render thread: it is `Send`, and whatever it shares
+//! with the UI (a pointer position, a simulation parameter) crosses through
+//! its own synchronised state.
+//!
+//! Frames that already exist in GPU memory — a video decoder's or a camera's
+//! output — do not draw at all: an [`ExternalFrameSource`] publishes them to
+//! an [`ExternalFrameView`], whose layer samples their planes in place.
 
 extern crate alloc;
 
+pub mod external;
 pub mod runtime;
+pub use external::{
+    ExternalFrameSource, ExternalFrameStream, ExternalFrameView, FrameOutput, FrameReceiver,
+    RetiredOutput,
+};
 pub use runtime::{
-    DeviceLoss, GpuContentRenderer, GpuRuntime, GpuRuntimeError, SharedGpuContext,
-    preferred_surface_format,
+    DeviceLoss, ExternalFrameRenderer, GpuContentRenderer, GpuRuntime, GpuRuntimeError,
+    SharedGpuContext, preferred_surface_format,
 };
 
 use alloc::boxed::Box;
@@ -32,6 +42,15 @@ use wgpu::{Adapter, Device, Queue, Texture, TextureFormat, TextureView};
 use cherenkov::kurbo;
 
 use crate::input::SurfaceInputEvent;
+
+/// The GPU layer's shared pointer: `Arc` where device handles and frames
+/// really travel between threads, `Rc` on WebGPU, whose wgpu handles are
+/// `!Send` and where no second thread exists to share them with anyway.
+#[cfg(not(target_arch = "wasm32"))]
+type Shared<T> = Arc<T>;
+/// The GPU layer's shared pointer on WebGPU (see the `Arc` alias).
+#[cfg(target_arch = "wasm32")]
+type Shared<T> = Rc<T>;
 
 /// Wakes the host for another frame from anywhere: a decoder thread, a
 /// browser's compositor callback, a network task.
@@ -180,12 +199,7 @@ pub trait GpuContent: Send + 'static {
     ///
     /// This is layout-only and must not touch GPU or render state.
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        ViewDimensions::new(self.intrinsic_size().unwrap_or_else(|| {
-            Size::new(
-                proposal.width.unwrap_or(0.0),
-                proposal.height.unwrap_or(0.0),
-            )
-        }))
+        measure_by_intrinsic_size(self.intrinsic_size(), proposal)
     }
 
     /// Which dynamic range the content prefers its presentation target to
@@ -200,6 +214,17 @@ pub trait GpuContent: Send + 'static {
     fn preferred_surface_hdr(&self) -> Option<bool> {
         None
     }
+}
+
+/// The default measurement of GPU-backed views: the intrinsic size when one
+/// is known, the proposal filled otherwise.
+fn measure_by_intrinsic_size(intrinsic: Option<Size>, proposal: ProposalSize) -> ViewDimensions {
+    ViewDimensions::new(intrinsic.unwrap_or_else(|| {
+        Size::new(
+            proposal.width.unwrap_or(0.0),
+            proposal.height.unwrap_or(0.0),
+        )
+    }))
 }
 
 /// A UI-side handler for input the backend routes to a [`GpuContentView`].
@@ -341,12 +366,7 @@ impl GpuContentView {
         self.content_handle.as_ref().map_or_else(
             || {
                 self.content.as_ref().map_or_else(
-                    || {
-                        ViewDimensions::new(Size::new(
-                            proposal.width.unwrap_or(0.0),
-                            proposal.height.unwrap_or(0.0),
-                        ))
-                    },
+                    || measure_by_intrinsic_size(None, proposal),
                     |content| content.measure(proposal),
                 )
             },
