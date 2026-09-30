@@ -1,14 +1,5 @@
 //! Shared native GPU devices and engine-composed content presentation.
 
-#![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        clippy::future_not_send,
-        clippy::arc_with_non_send_sync,
-        reason = "the engine's wasm32 API is !Send by design (Rc-based backend handles) and every future executes on the browser's single-threaded executor"
-    )
-)]
-
 use alloc::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use alloc::vec::Vec;
@@ -144,6 +135,15 @@ impl DeviceLoss {
 /// A one-shot action run when a device loss is recorded.
 type LossWakeup = Box<dyn Fn() + Send + Sync>;
 
+/// The runtime's shared pointer: `Arc` where contexts really travel between
+/// threads, `Rc` on WebGPU, whose wgpu handles are `!Send` and where no
+/// second thread exists to share them with anyway.
+#[cfg(not(target_arch = "wasm32"))]
+type Shared<T> = Arc<T>;
+/// The runtime's shared pointer on WebGPU (see the `Arc` alias).
+#[cfg(target_arch = "wasm32")]
+type Shared<T> = alloc::rc::Rc<T>;
+
 /// One device generation of a [`GpuRuntime`]: the shared `wgpu` instance,
 /// adapter, device and queue the runtime hands out.
 ///
@@ -179,6 +179,13 @@ impl SharedGpuContext {
     ///
     /// # Errors
     /// [`GpuRuntimeError`] when no adapter or device is available.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wgpu's wasm32 request_adapter/request_device resolve through JS promises kept in an Rc<RefCell>, so this future is !Send there; it is Send on native targets"
+        )
+    )]
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
         let instance =
             Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -341,13 +348,13 @@ const MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS: usize = 3;
 /// instead of paying for another stillborn device.
 #[derive(Clone)]
 pub struct GpuRuntime {
-    inner: Arc<RuntimeInner>,
+    inner: Shared<RuntimeInner>,
 }
 
 struct RuntimeInner {
     /// The live context, replaced when the spawned rebuild lands after its
     /// device was reported lost.
-    context: Mutex<Arc<SharedGpuContext>>,
+    context: Mutex<Shared<SharedGpuContext>>,
     /// The recorded reasons of consecutive losses that produced no presented
     /// frame — the current streak of stillborn devices. A context lost after
     /// presenting real work is an ordinary recoverable loss and clears the
@@ -396,8 +403,8 @@ impl GpuRuntime {
         )
     )]
     pub async fn new() -> Result<Self, GpuRuntimeError> {
-        let inner = Arc::new(RuntimeInner {
-            context: Mutex::new(Arc::new(SharedGpuContext::new(0).await?)),
+        let inner = Shared::new(RuntimeInner {
+            context: Mutex::new(Shared::new(SharedGpuContext::new(0).await?)),
             #[cfg(not(target_arch = "wasm32"))]
             unproductive_losses: Mutex::new(Vec::new()),
             #[cfg(not(target_arch = "wasm32"))]
@@ -420,7 +427,7 @@ impl GpuRuntime {
     /// the fresh context's `DeviceLoss` the same way through
     /// [`install_rebuild_wakeup`](Self::install_rebuild_wakeup).
     #[cfg(not(target_arch = "wasm32"))]
-    fn arm_rebuild_wakeup(inner: &Arc<RuntimeInner>) {
+    fn arm_rebuild_wakeup(inner: &Shared<RuntimeInner>) {
         let device_loss = inner
             .context
             .lock()
@@ -432,8 +439,8 @@ impl GpuRuntime {
     /// Installs the rebuild trigger on `device_loss`, held weakly so a lost
     /// context's callback cannot keep a dropped runtime alive.
     #[cfg(not(target_arch = "wasm32"))]
-    fn install_rebuild_wakeup(device_loss: &DeviceLoss, inner: &Arc<RuntimeInner>) {
-        let weak = Arc::downgrade(inner);
+    fn install_rebuild_wakeup(device_loss: &DeviceLoss, inner: &Shared<RuntimeInner>) {
+        let weak = Shared::downgrade(inner);
         device_loss.set_wakeup(move || {
             if let Some(inner) = weak.upgrade() {
                 Self::start_rebuild(&inner);
@@ -458,7 +465,7 @@ impl GpuRuntime {
     /// device it hands out is not recoverable — and reports the collected
     /// loss reasons.
     #[must_use]
-    pub fn context(&self) -> Arc<SharedGpuContext> {
+    pub fn context(&self) -> Shared<SharedGpuContext> {
         {
             let slot = self
                 .inner
@@ -466,7 +473,7 @@ impl GpuRuntime {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if slot.device_lost_reason().is_none() {
-                return Arc::clone(&slot);
+                return Shared::clone(&slot);
             }
         }
         self.request_rebuild()
@@ -475,7 +482,7 @@ impl GpuRuntime {
     /// The lost half of [`context`](Self::context): kicks the rebuild and
     /// answers whatever context is current — usually still the lost one.
     #[cfg(not(target_arch = "wasm32"))]
-    fn request_rebuild(&self) -> Arc<SharedGpuContext> {
+    fn request_rebuild(&self) -> Shared<SharedGpuContext> {
         let exhausted = self
             .inner
             .rebuild_exhausted
@@ -486,7 +493,7 @@ impl GpuRuntime {
             panic!("{reasons}");
         }
         Self::start_rebuild(&self.inner);
-        Arc::clone(
+        Shared::clone(
             &self
                 .inner
                 .context
@@ -499,8 +506,8 @@ impl GpuRuntime {
     /// `request_adapter` is a JS promise with no executor to run it here — so
     /// the lost context stays in place and keeps naming its cause.
     #[cfg(target_arch = "wasm32")]
-    fn request_rebuild(&self) -> Arc<SharedGpuContext> {
-        Arc::clone(
+    fn request_rebuild(&self) -> Shared<SharedGpuContext> {
+        Shared::clone(
             &self
                 .inner
                 .context
@@ -523,7 +530,7 @@ impl GpuRuntime {
     /// failure as a loss, so the next trigger retries under the same budget
     /// the losses themselves count against.
     #[cfg(not(target_arch = "wasm32"))]
-    fn start_rebuild(inner: &Arc<RuntimeInner>) {
+    fn start_rebuild(inner: &Shared<RuntimeInner>) {
         if inner.rebuild_in_flight.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -571,7 +578,7 @@ impl GpuRuntime {
             inner.next_generation.fetch_add(1, Ordering::Relaxed)
         };
 
-        let worker = Arc::clone(inner);
+        let worker = Shared::clone(inner);
         std::thread::Builder::new()
             .name("waterui-gpu-runtime-rebuild".to_owned())
             .spawn(move || {
@@ -580,7 +587,7 @@ impl GpuRuntime {
                 }));
                 match outcome {
                     Ok(Ok(fresh)) => {
-                        let fresh = Arc::new(fresh);
+                        let fresh = Shared::new(fresh);
                         tracing::warn!(
                             generation,
                             adapter = %fresh.adapter().get_info().name,
@@ -668,6 +675,13 @@ impl GpuRuntime {
     /// # Errors
     /// When the engine cannot initialize its rendering resources.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn engine(&self) -> Result<Engine<Gpu>, cherenkov::EngineError> {
         self.engine_on(&self.context()).await
     }
@@ -699,6 +713,13 @@ impl GpuRuntime {
     /// # Errors
     /// When the engine cannot initialize its rendering resources.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn engine_on(
         &self,
         context: &SharedGpuContext,
@@ -748,6 +769,13 @@ impl GpuRuntime {
     /// # Panics
     /// When engine creation, rendering, or readback fails.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn render_content(
         &self,
         content: impl GpuContent,
@@ -809,7 +837,7 @@ pub fn preferred_surface_format(
 pub struct GpuContentRenderer {
     surface: Surface<Gpu>,
     engine: Engine<Gpu>,
-    context: Arc<SharedGpuContext>,
+    context: Shared<SharedGpuContext>,
     textures: std::sync::mpsc::Receiver<wgpu::Texture>,
     source: wgpu::Texture,
     presenter: Presenter,
@@ -872,6 +900,13 @@ impl GpuContentRenderer {
     // transaction closure — the lint only counts direct use of the value.
     #[allow(clippy::needless_pass_by_value)]
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn new(runtime: GpuRuntime, content: GpuContentBox, size: OffscreenSize) -> Self {
         let shared = runtime.context();
         let engine = runtime
@@ -948,6 +983,13 @@ impl GpuContentRenderer {
     /// # Panics
     /// When resizing, display configuration, or rendering fails.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn render(&mut self, size: OffscreenSize, display: Display) -> Next {
         let pixels = (size.width(), size.height());
         if self.surface.size() != pixels {
@@ -1009,6 +1051,13 @@ impl GpuContentRenderer {
     /// # Panics
     /// When the destination is empty or rendering fails.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
         let size = OffscreenSize::try_from_pixels(target.width(), target.height())
             .expect("native target must be nonempty");
