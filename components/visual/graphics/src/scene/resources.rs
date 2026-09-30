@@ -27,60 +27,149 @@
 //!
 //! [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 
+use alloc::borrow::Cow;
 use alloc::rc::{Rc, Weak};
+use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use core::mem::discriminant;
 use core::ops::Deref;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
 use cherenkov::{
-    Backend, Engine, Font, FontSource, Image, ImageData, ResourceError, Rgba8, Rgba16F, Shader,
-    ShaderPaintCapability, ShaderSource, Uploads,
+    Backend, Engine, Font, FontSource, Image, ImageColorSpace, ImageData, ResourceError, Rgba8,
+    Rgba16F, Shader, ShaderPaintCapability, ShaderSource, Uploads,
 };
 
-/// Identity of a registered font: the data's content hash plus the index in
-/// its collection, so two `Arc` copies of the same bytes share one
-/// registration while a reused `Arc` address can never alias one.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct FontKey {
-    hash: u64,
-    index: u32,
+/// The bytes a registration was made from, kept by its entry so that a later
+/// request is compared against them exactly.
+#[derive(Clone)]
+enum SourceBytes {
+    /// Font and image data — the very allocation the request handed over —
+    /// and owned shader text, copied once into an allocation of its own.
+    Shared(Arc<[u8]>),
+    /// Shader text compiled into the binary, which is never freed.
+    Static(&'static [u8]),
 }
 
-/// Identity of a registered image: the data's content hash plus the upload's
-/// full shape — the same bytes at a different size are a different image.
+impl SourceBytes {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Shared(bytes) => bytes,
+            Self::Static(bytes) => bytes,
+        }
+    }
+}
+
+/// Where a source's bytes live.
+///
+/// Two byte slices that are alive at the same time, start at the same address
+/// and have the same length are the same bytes. Every listed entry keeps its
+/// own source alive, so its address cannot be reused by other bytes while the
+/// entry is listed: a request found at a listed address is that entry's
+/// source, and matching it needs neither a hash nor a comparison.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct ImageKey {
+struct Address {
+    start: usize,
+    len: usize,
+}
+
+impl Address {
+    fn of(bytes: &[u8]) -> Self {
+        Self {
+            start: bytes.as_ptr().addr(),
+            len: bytes.len(),
+        }
+    }
+}
+
+/// A source identified by its content.
+///
+/// The hash only chooses the bucket: equal hashes still compare the bytes, so
+/// two different sources never share a registration, whatever their hashes.
+/// The hash is computed once, when the source is first compared, and is what
+/// the map rehashes on growth — never the bytes.
+#[derive(Clone)]
+struct Content {
     hash: u64,
+    bytes: SourceBytes,
+}
+
+impl Content {
+    fn new(bytes: SourceBytes) -> Self {
+        let mut hasher = DefaultHasher::new();
+        bytes.as_slice().hash(&mut hasher);
+        Self {
+            hash: hasher.finish(),
+            bytes,
+        }
+    }
+}
+
+impl PartialEq for Content {
+    fn eq(&self, other: &Self) -> bool {
+        let (ours, theirs) = (self.bytes.as_slice(), other.bytes.as_slice());
+        self.hash == other.hash && (Address::of(ours) == Address::of(theirs) || ours == theirs)
+    }
+}
+
+impl Eq for Content {}
+
+impl Hash for Content {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.hash.hash(state);
+    }
+}
+
+/// Everything besides its bytes that makes an image upload a different
+/// image: the same bytes at another size, in another colour space or with the
+/// other alpha convention draw differently.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ImageShape {
     width: u32,
     height: u32,
+    color_space: ImageColorSpace,
+    premultiplied: bool,
 }
 
-/// Identity of a registered shader: the source text's content hash plus the
-/// `animated` flag — a static shader re-registered as animated would freeze
-/// mid-frame if the two collided.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct ShaderKey {
-    hash: u64,
-    animated: bool,
+impl ImageShape {
+    const fn of<F: cherenkov::Format>(data: &ImageData<F>) -> Self {
+        Self {
+            width: data.width,
+            height: data.height,
+            color_space: data.color_space,
+            premultiplied: data.premultiplied,
+        }
+    }
+}
+
+impl Hash for ImageShape {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.width.hash(state);
+        self.height.hash(state);
+        discriminant(&self.color_space).hash(state);
+        self.premultiplied.hash(state);
+    }
+}
+
+/// A registration's exact identity: its source's shape — a font's index in
+/// its collection, an image's [`ImageShape`], a shader's `animated` flag, any
+/// of which makes the same bytes a different resource — and its bytes.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Key<S> {
+    shape: S,
+    content: Content,
 }
 
 /// Which table entry a registration occupies, so its last handle can take
 /// the entry out when it drops.
-#[derive(Clone, Copy)]
 enum EntryKey {
-    Font(FontKey),
-    Rgba8(ImageKey),
-    Rgba16F(ImageKey),
-    Shader(ShaderKey),
-}
-
-fn content_hash(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    hasher.finish()
+    Font(Key<u32>),
+    Rgba8(Key<ImageShape>),
+    Rgba16F(Key<ImageShape>),
+    Shader(Key<bool>),
 }
 
 /// The registration an engine always provides: fonts and image uploads.
@@ -206,7 +295,7 @@ struct Entry<H> {
 impl<H> Drop for Entry<H> {
     fn drop(&mut self) {
         if let Some(table) = self.table.upgrade() {
-            table.unlist(self.key);
+            table.unlist(&self.key);
         }
     }
 }
@@ -246,36 +335,77 @@ impl<H: fmt::Debug> fmt::Debug for Registered<H> {
     }
 }
 
-/// A deduplication map from source identity to the live registration.
-type Listing<K, H> = RefCell<HashMap<K, Weak<Entry<H>>>>;
+/// The live registrations of one kind, found either by the allocation their
+/// source bytes live in — a request that hands over a source the table already
+/// holds costs one lookup, without reading its bytes — or by exact content.
+struct Listing<S, H> {
+    by_address: HashMap<(S, Address), Weak<Entry<H>>>,
+    by_content: HashMap<Key<S>, Weak<Entry<H>>>,
+}
+
+impl<S: Copy + Eq + Hash, H> Listing<S, H> {
+    fn new() -> RefCell<Self> {
+        RefCell::new(Self {
+            by_address: HashMap::new(),
+            by_content: HashMap::new(),
+        })
+    }
+
+    fn find_address(&self, shape: S, address: Address) -> Option<Rc<Entry<H>>> {
+        self.by_address
+            .get(&(shape, address))
+            .and_then(Weak::upgrade)
+    }
+
+    fn find_content(&self, key: &Key<S>) -> Option<Rc<Entry<H>>> {
+        self.by_content.get(key).and_then(Weak::upgrade)
+    }
+
+    fn list(&mut self, key: Key<S>, entry: &Rc<Entry<H>>) {
+        let address = Address::of(key.content.bytes.as_slice());
+        self.by_address
+            .insert((key.shape, address), Rc::downgrade(entry));
+        self.by_content.insert(key, Rc::downgrade(entry));
+    }
+
+    fn unlist(&mut self, key: &Key<S>) {
+        let address = Address::of(key.content.bytes.as_slice());
+        self.by_address.remove(&(key.shape, address));
+        self.by_content.remove(key);
+    }
+
+    /// How many registrations are listed, dead entries included; both
+    /// indexes must list each one exactly once.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        assert_eq!(
+            self.by_address.len(),
+            self.by_content.len(),
+            "the address and content indexes disagree"
+        );
+        self.by_content.len()
+    }
+}
 
 /// The shared state behind [`SceneResources`]; entries reach it weakly to
 /// take themselves out.
 struct Table {
     backend: Rc<dyn SceneBackend>,
     shaders: Option<Rc<dyn ShaderBackend>>,
-    fonts: Listing<FontKey, Font>,
-    images_rgba8: Listing<ImageKey, Image<Rgba8>>,
-    images_rgba16f: Listing<ImageKey, Image<Rgba16F>>,
-    shaders_cache: Listing<ShaderKey, Shader>,
+    fonts: RefCell<Listing<u32, Font>>,
+    images_rgba8: RefCell<Listing<ImageShape, Image<Rgba8>>>,
+    images_rgba16f: RefCell<Listing<ImageShape, Image<Rgba16F>>>,
+    shaders_cache: RefCell<Listing<bool, Shader>>,
 }
 
 impl Table {
     /// Removes the entry of a registration whose last handle is dropping.
-    fn unlist(&self, key: EntryKey) {
+    fn unlist(&self, key: &EntryKey) {
         match key {
-            EntryKey::Font(key) => {
-                self.fonts.borrow_mut().remove(&key);
-            }
-            EntryKey::Rgba8(key) => {
-                self.images_rgba8.borrow_mut().remove(&key);
-            }
-            EntryKey::Rgba16F(key) => {
-                self.images_rgba16f.borrow_mut().remove(&key);
-            }
-            EntryKey::Shader(key) => {
-                self.shaders_cache.borrow_mut().remove(&key);
-            }
+            EntryKey::Font(key) => self.fonts.borrow_mut().unlist(key),
+            EntryKey::Rgba8(key) => self.images_rgba8.borrow_mut().unlist(key),
+            EntryKey::Rgba16F(key) => self.images_rgba16f.borrow_mut().unlist(key),
+            EntryKey::Shader(key) => self.shaders_cache.borrow_mut().unlist(key),
         }
     }
 }
@@ -288,6 +418,14 @@ impl Table {
 /// strongly and its registrations weakly: it never keeps a resource alive,
 /// so it can live as long as the engine does without pinning anything a
 /// content has stopped drawing.
+///
+/// Deduplication is exact. Each live registration keeps the bytes it was made
+/// from — the `Arc` the request handed over, not a copy; owned shader text is
+/// copied once — and only a request with identical bytes and an identical
+/// shape shares it. A request that hands over the allocation a registration
+/// already keeps is found by address alone, so content that asks again every
+/// frame with the source it holds costs one lookup; identical bytes from
+/// another allocation are hashed once and compared.
 ///
 /// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 pub struct SceneResources {
@@ -310,62 +448,72 @@ impl SceneResources {
             table: Rc::new(Table {
                 backend: engine,
                 shaders,
-                fonts: RefCell::new(HashMap::new()),
-                images_rgba8: RefCell::new(HashMap::new()),
-                images_rgba16f: RefCell::new(HashMap::new()),
-                shaders_cache: RefCell::new(HashMap::new()),
+                fonts: Listing::new(),
+                images_rgba8: Listing::new(),
+                images_rgba16f: Listing::new(),
+                shaders_cache: Listing::new(),
             }),
         }
     }
 
-    /// The live registration listed under `key`, or a new one from
-    /// `register` listed there while it lives.
-    fn intern<K, H>(
+    /// The live registration of `bytes` in `shape`, or a new one from
+    /// `register` listed while it lives.
+    ///
+    /// A source the table already holds is found by its address alone; any
+    /// other source is hashed once and, on a hash match, compared byte for
+    /// byte, so only identical sources ever share a registration.
+    fn intern<S, H>(
         &self,
-        listing: fn(&Table) -> &Listing<K, H>,
-        key: K,
-        entry_key: EntryKey,
+        listing: fn(&Table) -> &RefCell<Listing<S, H>>,
+        shape: S,
+        bytes: SourceBytes,
+        entry_key: fn(Key<S>) -> EntryKey,
         register: impl FnOnce(&Table) -> Result<H, ResourceError>,
     ) -> Result<Registered<H>, ResourceError>
     where
-        K: Hash + Eq,
+        S: Copy + Eq + Hash,
     {
-        let live = listing(&self.table)
+        let listing = listing(&self.table);
+        let held = listing
             .borrow()
-            .get(&key)
-            .and_then(Weak::upgrade);
-        if let Some(entry) = live {
+            .find_address(shape, Address::of(bytes.as_slice()));
+        if let Some(entry) = held {
+            return Ok(Registered { entry });
+        }
+        let key = Key {
+            shape,
+            content: Content::new(bytes),
+        };
+        let identical = listing.borrow().find_content(&key);
+        if let Some(entry) = identical {
             return Ok(Registered { entry });
         }
         let entry = Rc::new(Entry {
             handle: register(&self.table)?,
-            key: entry_key,
+            key: entry_key(key.clone()),
             table: Rc::downgrade(&self.table),
         });
-        listing(&self.table)
-            .borrow_mut()
-            .insert(key, Rc::downgrade(&entry));
+        listing.borrow_mut().list(key, &entry);
         Ok(Registered { entry })
     }
 
     /// Registers `source` with the engine, returning the shared handle.
     ///
-    /// While any handle to it is held, identical sources — same data and
-    /// same collection index — map to that one registration.
+    /// While any handle to it is held, identical sources — the same bytes and
+    /// the same collection index — map to that one registration. Asking again
+    /// with the `Arc` the registration was made from is a single lookup; an
+    /// identical font in another allocation is hashed and compared.
     ///
     /// # Errors
     ///
     /// [`ResourceError::Font`] when the data cannot be used,
     /// [`ResourceError::Lost`] when the render thread is gone.
     pub fn font(&self, source: FontSource) -> Result<Registered<Font>, ResourceError> {
-        let key = FontKey {
-            hash: content_hash(&source.data),
-            index: source.index,
-        };
         self.intern(
             |table| &table.fonts,
-            key,
-            EntryKey::Font(key),
+            source.index,
+            SourceBytes::Shared(Arc::clone(&source.data)),
+            EntryKey::Font,
             |table| table.backend.register_font(source),
         )
     }
@@ -373,29 +521,27 @@ impl SceneResources {
     /// Registers `Rgba8` image data.
     ///
     /// [`ImageData::new`] validates the dimensions and byte length before the
-    /// engine ever sees the upload; identical images share one registration
-    /// while any handle to it is held.
+    /// engine ever sees the upload. While any handle to it is held, identical
+    /// images — the same bytes, size, colour space and alpha convention —
+    /// share one registration; as with fonts, asking again with the same
+    /// `Arc` is a single lookup.
     ///
     /// # Errors
     ///
     /// [`ResourceError::Image`] when the backend rejects the upload,
     /// [`ResourceError::Lost`] when the render thread is gone.
     pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<Image<Rgba8>>, ResourceError> {
-        let key = ImageKey {
-            hash: content_hash(&data.data),
-            width: data.width,
-            height: data.height,
-        };
         self.intern(
             |table| &table.images_rgba8,
-            key,
-            EntryKey::Rgba8(key),
+            ImageShape::of(&data),
+            SourceBytes::Shared(Arc::clone(&data.data)),
+            EntryKey::Rgba8,
             |table| table.backend.register_rgba8(data),
         )
     }
 
     /// Registers `Rgba16Float` image data — the format HDR and linear-space
-    /// sources upload as.
+    /// sources upload as — deduplicated as [`image`](Self::image) is.
     ///
     /// # Errors
     ///
@@ -405,20 +551,20 @@ impl SceneResources {
         &self,
         data: ImageData<Rgba16F>,
     ) -> Result<Registered<Image<Rgba16F>>, ResourceError> {
-        let key = ImageKey {
-            hash: content_hash(&data.data),
-            width: data.width,
-            height: data.height,
-        };
         self.intern(
             |table| &table.images_rgba16f,
-            key,
-            EntryKey::Rgba16F(key),
+            ImageShape::of(&data),
+            SourceBytes::Shared(Arc::clone(&data.data)),
+            EntryKey::Rgba16F,
             |table| table.backend.register_rgba16f(data),
         )
     }
 
     /// Registers a shader paint's WGSL source.
+    ///
+    /// While any handle to it is held, the same source text with the same
+    /// `animated` flag maps to that one registration. Static text asked for
+    /// again is a single lookup; owned text is hashed and compared.
     ///
     /// # Errors
     ///
@@ -429,14 +575,15 @@ impl SceneResources {
         let Some(backend) = self.table.shaders.clone() else {
             return Err(ResourceError::Unsupported("shader paint"));
         };
-        let key = ShaderKey {
-            hash: content_hash(source.source.as_bytes()),
-            animated: source.animated,
+        let bytes = match &source.source {
+            Cow::Borrowed(text) => SourceBytes::Static(text.as_bytes()),
+            Cow::Owned(text) => SourceBytes::Shared(Arc::from(text.as_bytes())),
         };
         self.intern(
             |table| &table.shaders_cache,
-            key,
-            EntryKey::Shader(key),
+            source.animated,
+            bytes,
+            EntryKey::Shader,
             move |_| backend.register_shader(source),
         )
     }
@@ -475,7 +622,11 @@ pub(crate) mod tests {
         OffscreenFormat, Recorder, Rgba8, Sampling, Surface, WorkingColor,
     };
 
-    use super::{Registered, SceneResources};
+    use alloc::sync::Arc;
+
+    use cherenkov::ImageColorSpace;
+
+    use super::{Content, Registered, SceneResources, SourceBytes};
     use crate::scene_view::SceneContent;
 
     fn null_engine() -> (Rc<Engine<Null>>, Receiver<Event>) {
@@ -497,6 +648,45 @@ pub(crate) mod tests {
 
     fn one_pixel() -> ImageData<Rgba8> {
         ImageData::<Rgba8>::new(1, 1, Vec::from([255, 0, 0, 255])).expect("valid image")
+    }
+
+    #[test]
+    fn sources_whose_hashes_collide_are_still_different() {
+        let content = |hash, byte: u8| Content {
+            hash,
+            bytes: SourceBytes::Shared(Arc::from([byte])),
+        };
+        assert!(
+            content(7, 1) != content(7, 2),
+            "equal hashes must not make different bytes one registration"
+        );
+        assert!(content(7, 1) == content(7, 1));
+    }
+
+    #[test]
+    fn only_identical_sources_share_a_registration() {
+        let (resources, _events) = null_resources();
+        let held = resources.image(one_pixel()).expect("image registration");
+        // `one_pixel` allocates afresh on every call: this is the content
+        // path, not the allocation one.
+        let identical = resources.image(one_pixel()).expect("image registration");
+        assert_eq!(identical.id(), held.id());
+        let linear = resources
+            .image(one_pixel().color_space(ImageColorSpace::LinearSrgb))
+            .expect("image registration");
+        assert_ne!(
+            linear.id(),
+            held.id(),
+            "the same bytes in another colour space are another image"
+        );
+        let premultiplied = resources
+            .image(one_pixel().premultiplied())
+            .expect("image registration");
+        assert_ne!(
+            premultiplied.id(),
+            held.id(),
+            "the same bytes under the other alpha convention are another image"
+        );
     }
 
     fn added_images(events: &[Event]) -> Vec<ImageId> {
