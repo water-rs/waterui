@@ -4,6 +4,7 @@ use core::ptr::NonNull;
 use core::ptr::null_mut;
 use std::rc::Rc;
 
+use nami::SignalExt as _;
 use waterui::window::{
     Activation, Monitor, MonitorSelector, Window, WindowBackground, WindowManager, WindowPlacement,
     WindowState, WindowStyle,
@@ -230,6 +231,17 @@ impl From<WindowStyle> for WuiWindowStyle {
     }
 }
 
+impl IntoFFI for WindowStyle {
+    type FFI = WuiWindowStyle;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.into()
+    }
+}
+
+// Native backends read and observe the style; only Rust writes it.
+crate::ffi_computed!(WindowStyle, WuiWindowStyle, window_style);
+
 /// FFI-compatible representation of [`WindowState`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,8 +339,9 @@ pub struct WuiWindow {
     pub state: *mut WuiBinding<WindowState>,
     /// Optional toolbar content (null if none).
     pub toolbar: *mut WuiAnyView,
-    /// The visual style of the window.
-    pub style: WuiWindowStyle,
+    /// The visual style of the window, observed so a change after the window
+    /// is shown is re-applied.
+    pub style: *mut WuiComputed<WindowStyle>,
     /// The background style of the window.
     pub background: WuiWindowBackground,
     /// Explicit minimum content size, or null to derive the minimum from the
@@ -411,7 +424,7 @@ impl WuiWindow {
             content,
             state,
             toolbar,
-            style: _,
+            style,
             background,
             min_size,
             max_size,
@@ -427,6 +440,7 @@ impl WuiWindow {
             OwnedFfiHandle::optional(frame),
             OwnedFfiHandle::required(state, "WuiWindow.state"),
             OwnedFfiHandle::optional(toolbar),
+            OwnedFfiHandle::required(style, "WuiWindow.style"),
             background.into_android_owned_color(),
             OwnedFfiHandle::optional(min_size),
             OwnedFfiHandle::optional(max_size),
@@ -474,7 +488,7 @@ impl IntoFFI for Window {
             content: content.into_ffi(),
             state: self.state.into_ffi(),
             toolbar,
-            style: self.style.into(),
+            style: self.style.computed().into_ffi(),
             background: self.background.into(),
             min_size: self.min_size.into_ffi(),
             max_size: self.max_size.into_ffi(),

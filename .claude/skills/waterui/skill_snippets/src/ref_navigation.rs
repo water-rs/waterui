@@ -389,7 +389,8 @@ pub fn navigation_block_11(env: Environment) -> App {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`,
+// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`
+// with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
 // `.background(..)` with a Color or a Material, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each), and
 // the `WindowState` variants. Not counted as a rust block.
@@ -406,9 +407,12 @@ pub fn navigation_window_builder_prose() {
         .resizable(true)
         .min_size(Size::new(320.0, 240.0))
         .max_size(Size::new(1920.0, 1080.0));
-    let _ = Window::new("W", state, || text("c"))
+    let _ = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
+    let style = binding(WindowStyle::Titled);
+    let window = Window::new("W", state, || text("c")).style(style.clone());
+    window.handle().set_style(WindowStyle::Borderless);
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;
