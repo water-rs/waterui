@@ -43,9 +43,22 @@ pub enum GpuRuntimeError {
 /// worker was producing anyway.
 ///
 /// [`GpuContent::setup`]: super::GpuContent::setup
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct DeviceLoss {
     reason: Arc<Mutex<Option<String>>>,
+    /// Runs once a loss is recorded — the owning [`GpuRuntime`] installs its
+    /// rebuild trigger here so recovery starts when the driver reports the
+    /// loss instead of waiting for the next frame to notice it.
+    wakeup: Arc<Mutex<Option<LossWakeup>>>,
+}
+
+impl fmt::Debug for DeviceLoss {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeviceLoss")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeviceLoss {
@@ -65,6 +78,17 @@ impl DeviceLoss {
             recorder.record(format!("{reason:?}: {message}"));
         });
         handle
+    }
+
+    /// Installs `wakeup`, run once after the loss is recorded. Only the
+    /// device owner calls this: the [`GpuRuntime`] to trigger its rebuild,
+    /// or a host that opened its own device.
+    pub(crate) fn set_wakeup(&self, wakeup: impl Fn() + Send + Sync + 'static) {
+        *self
+            .wakeup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(Box::new(wakeup) as LossWakeup);
     }
 
     /// Whether the driver has reported this device lost.
@@ -87,8 +111,18 @@ impl DeviceLoss {
             .reason
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+        if let Some(wakeup) = &*self
+            .wakeup
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            wakeup();
+        }
     }
 }
+
+/// A one-shot action run when a device loss is recorded.
+type LossWakeup = Box<dyn Fn() + Send + Sync>;
 
 /// One device generation of a [`GpuRuntime`]: the shared `wgpu` instance,
 /// adapter, device and queue the runtime hands out.
@@ -274,9 +308,8 @@ pub struct GpuRuntime {
 }
 
 struct RuntimeInner {
-    /// The live context, replaced on the first access after its device is
-    /// reported lost. The mutex also serializes the rebuild itself, so a loss
-    /// observed by several views at once is paid for exactly once.
+    /// The live context, replaced when the spawned rebuild lands after its
+    /// device was reported lost.
     context: Mutex<Arc<SharedGpuContext>>,
     /// The recorded reasons of consecutive losses that produced no presented
     /// frame — the current streak of stillborn devices. A context lost after
@@ -286,9 +319,20 @@ struct RuntimeInner {
     #[cfg(not(target_arch = "wasm32"))]
     unproductive_losses: Mutex<Vec<String>>,
     /// Generation handed to the next rebuilt context. WebGPU has no
-    /// synchronous rebuild path, so on wasm32 no context is ever rebuilt.
+    /// asynchronous rebuild path, so on wasm32 no context is ever rebuilt.
     #[cfg(not(target_arch = "wasm32"))]
     next_generation: AtomicU64,
+    /// Set while a rebuild runs on its spawned thread so at most one is in
+    /// flight; callers keep receiving the still-lost context meanwhile and
+    /// report the frame pending.
+    #[cfg(not(target_arch = "wasm32"))]
+    rebuild_in_flight: AtomicBool,
+    /// The reasons the rebuild budget tripped on. The budget can trip inside
+    /// the device-lost callback, where unwinding cannot run, so the verdict
+    /// is stored here and the next [`GpuRuntime::context`] call panics with
+    /// it on its own thread.
+    #[cfg(not(target_arch = "wasm32"))]
+    rebuild_exhausted: Mutex<Option<String>>,
 }
 
 impl fmt::Debug for GpuRuntime {
@@ -304,7 +348,9 @@ impl GpuRuntime {
     /// Creates an independent GPU runtime.
     ///
     /// # Errors
-    /// [`GpuRuntimeError`] when no adapter or device is available.
+    /// [`GpuRuntimeError`] when no adapter or device is available, or the
+    /// adapter cannot provide the passthrough-shader feature cherenkov
+    /// requires of a shared device.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -313,23 +359,60 @@ impl GpuRuntime {
         )
     )]
     pub async fn new() -> Result<Self, GpuRuntimeError> {
-        Ok(Self {
-            inner: Arc::new(RuntimeInner {
-                context: Mutex::new(Arc::new(SharedGpuContext::new(0).await?)),
-                #[cfg(not(target_arch = "wasm32"))]
-                unproductive_losses: Mutex::new(Vec::new()),
-                #[cfg(not(target_arch = "wasm32"))]
-                next_generation: AtomicU64::new(1),
-            }),
-        })
+        let inner = Arc::new(RuntimeInner {
+            context: Mutex::new(Arc::new(SharedGpuContext::new(0).await?)),
+            #[cfg(not(target_arch = "wasm32"))]
+            unproductive_losses: Mutex::new(Vec::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            next_generation: AtomicU64::new(1),
+            #[cfg(not(target_arch = "wasm32"))]
+            rebuild_in_flight: AtomicBool::new(false),
+            #[cfg(not(target_arch = "wasm32"))]
+            rebuild_exhausted: Mutex::new(None),
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::arm_rebuild_wakeup(&inner);
+        Ok(Self { inner })
+    }
+
+    /// Hooks the live context's device-lost observer so the rebuild starts
+    /// the moment the driver reports the loss instead of waiting for the
+    /// next [`context`](Self::context) call.
+    ///
+    /// The observer is rebuilt with the context, so the rebuild thread arms
+    /// the fresh context's `DeviceLoss` the same way through
+    /// [`install_rebuild_wakeup`](Self::install_rebuild_wakeup).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn arm_rebuild_wakeup(inner: &Arc<RuntimeInner>) {
+        let device_loss = inner
+            .context
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .device_loss();
+        Self::install_rebuild_wakeup(&device_loss, inner);
+    }
+
+    /// Installs the rebuild trigger on `device_loss`, held weakly so a lost
+    /// context's callback cannot keep a dropped runtime alive.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_rebuild_wakeup(device_loss: &DeviceLoss, inner: &Arc<RuntimeInner>) {
+        let weak = Arc::downgrade(inner);
+        device_loss.set_wakeup(move || {
+            if let Some(inner) = weak.upgrade() {
+                Self::start_rebuild(&inner);
+            }
+        });
     }
 
     /// Returns this runtime's shared GPU resources.
     ///
-    /// When the driver has reported the current context's device lost, this
-    /// rebuilds the context first and returns the replacement. Callers holding
-    /// device-bound resources from an earlier call compare
-    /// [`SharedGpuContext::generation`] to know they must rebuild them.
+    /// While the driver-reported device loss is being recovered, this returns
+    /// the still-lost context — its [`SharedGpuContext::device_lost_reason`]
+    /// names the cause and callers report their frame pending — and a spawned
+    /// thread performs the rebuild, so a driver call never runs on the
+    /// frame's caller. Callers holding device-bound resources from an earlier
+    /// call compare [`SharedGpuContext::generation`] to know they must
+    /// rebuild them once a fresh context lands.
     ///
     /// # Panics
     ///
@@ -338,40 +421,86 @@ impl GpuRuntime {
     /// device it hands out is not recoverable — and reports the collected
     /// loss reasons.
     #[must_use]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the context lock must stay held across `rebuild_locked` so concurrent callers wait for the one rebuild instead of racing to create their own device"
-    )]
     pub fn context(&self) -> Arc<SharedGpuContext> {
-        let mut slot = self
-            .inner
-            .context
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if slot.device_lost_reason().is_none() {
-            return Arc::clone(&slot);
+        {
+            let slot = self
+                .inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.device_lost_reason().is_none() {
+                return Arc::clone(&slot);
+            }
         }
-        self.rebuild_locked(&mut slot)
+        self.request_rebuild()
     }
 
-    /// Replaces the lost context in `slot` with a freshly built one.
-    ///
-    /// A failed rebuild keeps the dead context in place and returns it, so the
-    /// caller still sees the recorded loss reason instead of a second failure;
-    /// the next `context()` call retries the rebuild, bounded by the same cap
-    /// as the losses themselves.
-    ///
-    /// # Panics
-    ///
-    /// Panics when [`MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS`] devices in a row
-    /// each died before presenting a frame: that streak means the driver loses
-    /// every device it creates, so another recreation would only spin behind
-    /// a blank screen. The panic carries every recorded loss reason.
+    /// The lost half of [`context`](Self::context): kicks the rebuild and
+    /// answers whatever context is current — usually still the lost one.
     #[cfg(not(target_arch = "wasm32"))]
-    fn rebuild_locked(&self, slot: &mut Arc<SharedGpuContext>) -> Arc<SharedGpuContext> {
-        {
-            let mut unproductive = self
+    fn request_rebuild(&self) -> Arc<SharedGpuContext> {
+        let exhausted = self
+            .inner
+            .rebuild_exhausted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(reasons) = exhausted {
+            panic!("{reasons}");
+        }
+        Self::start_rebuild(&self.inner);
+        Arc::clone(
+            &self
                 .inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// WebGPU reports device loss but offers no asynchronous rebuild path —
+    /// `request_adapter` is a JS promise with no executor to run it here — so
+    /// the lost context stays in place and keeps naming its cause.
+    #[cfg(target_arch = "wasm32")]
+    fn request_rebuild(&self) -> Arc<SharedGpuContext> {
+        Arc::clone(
+            &self
+                .inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Spawns the context rebuild, once per device loss.
+    ///
+    /// `request_adapter`/`request_device` are driver calls that take tens of
+    /// milliseconds; they run on the spawned thread, the same shape
+    /// `create_gpu_runtime` uses for the first runtime, so the frame's caller
+    /// never waits on a driver. `rebuild_in_flight` serializes attempts: the
+    /// device-lost wakeup and every `context()` call that finds the loss all
+    /// funnel into one rebuild, and the still-lost context is returned until
+    /// the fresh one lands.
+    ///
+    /// A failed rebuild keeps the dead context in place and records the
+    /// failure as a loss, so the next trigger retries under the same budget
+    /// the losses themselves count against.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_rebuild(inner: &Arc<RuntimeInner>) {
+        if inner.rebuild_in_flight.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let generation = {
+            let slot = inner
+                .context
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.device_lost_reason().is_none() {
+                // The context was already replaced; nothing to rebuild.
+                inner.rebuild_in_flight.store(false, Ordering::Release);
+                return;
+            }
+            let mut unproductive = inner
                 .unproductive_losses
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -383,67 +512,71 @@ impl GpuRuntime {
                         .unwrap_or_else(|| "device lost with no recorded reason".to_owned()),
                 );
             }
-            Self::enforce_rebuild_budget(&unproductive);
+            if unproductive.len() > MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS {
+                let message = format!(
+                    "WaterUI GPU device was lost {} times in a row without ever \
+                     presenting a frame; the device is unrecoverable. Recorded losses: {}",
+                    unproductive.len(),
+                    unproductive.join(" | ")
+                );
+                drop(unproductive);
+                drop(slot);
+                *inner
+                    .rebuild_exhausted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
+                // `rebuild_in_flight` stays set: the device is unrecoverable,
+                // so no further attempt is ever spawned.
+                return;
+            }
             drop(unproductive);
-        }
+            drop(slot);
+            inner.next_generation.fetch_add(1, Ordering::Relaxed)
+        };
 
-        let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
-        match pollster::block_on(SharedGpuContext::new(generation)) {
-            Ok(fresh) => {
-                let fresh = Arc::new(fresh);
-                tracing::warn!(
-                    generation,
-                    adapter = %fresh.adapter().get_info().name,
-                    "GPU device was lost; recreated the runtime context"
-                );
-                *slot = Arc::clone(&fresh);
-                fresh
-            }
-            Err(error) => {
-                {
-                    let mut unproductive = self
-                        .inner
-                        .unproductive_losses
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    unproductive.push(format!("context recreation failed: {error}"));
-                    Self::enforce_rebuild_budget(&unproductive);
-                    drop(unproductive);
+        let worker = Arc::clone(inner);
+        std::thread::Builder::new()
+            .name("waterui-gpu-runtime-rebuild".to_owned())
+            .spawn(move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    pollster::block_on(SharedGpuContext::new(generation))
+                }));
+                match outcome {
+                    Ok(Ok(fresh)) => {
+                        let fresh = Arc::new(fresh);
+                        tracing::warn!(
+                            generation,
+                            adapter = %fresh.adapter().get_info().name,
+                            "GPU device was lost; recreated the runtime context"
+                        );
+                        Self::install_rebuild_wakeup(&fresh.device_loss(), &worker);
+                        // Only this thread replaces the slot: `rebuild_in_flight`
+                        // stays set until the store below, so no second writer
+                        // can interleave.
+                        *worker
+                            .context
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = fresh;
+                    }
+                    Ok(Err(error)) => {
+                        worker
+                            .unproductive_losses
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(format!("context recreation failed: {error}"));
+                        tracing::error!(
+                            "GPU device was lost and recreation failed ({error}); \
+                             retrying on the next trigger"
+                        );
+                    }
+                    Err(payload) => {
+                        worker.rebuild_in_flight.store(false, Ordering::Release);
+                        std::panic::resume_unwind(payload);
+                    }
                 }
-                tracing::error!(
-                    "GPU device was lost and recreation failed ({error}); \
-                     retrying on the next access"
-                );
-                Arc::clone(slot)
-            }
-        }
-    }
-
-    /// Stops an unbounded recreation streak: a run of devices that each died
-    /// before presenting a frame means the driver cannot sustain one, so the
-    /// runtime reports the collected reasons instead of rebuilding again.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn enforce_rebuild_budget(unproductive: &[String]) {
-        assert!(
-            unproductive.len() <= MAX_CONSECUTIVE_UNPRODUCTIVE_REBUILDS,
-            "WaterUI GPU device was lost {} times in a row without ever \
-             presenting a frame; the device is unrecoverable. Recorded losses: {}",
-            unproductive.len(),
-            unproductive.join(" | ")
-        );
-    }
-
-    /// WebGPU reports device loss but offers no synchronous rebuild path —
-    /// `request_adapter` is a JS promise this accessor cannot await — so the
-    /// lost context stays in place and the failure keeps naming its cause.
-    #[cfg(target_arch = "wasm32")]
-    #[expect(
-        clippy::unused_self,
-        clippy::needless_pass_by_ref_mut,
-        reason = "keeps the native twin's signature so `context()` has one call site; the native rebuild reads the runtime's generation counter and replaces the slot"
-    )]
-    fn rebuild_locked(&self, slot: &mut Arc<SharedGpuContext>) -> Arc<SharedGpuContext> {
-        Arc::clone(slot)
+                worker.rebuild_in_flight.store(false, Ordering::Release);
+            })
+            .expect("failed to spawn the GPU runtime rebuild thread");
     }
 
     /// The instance surfaces are created from.
