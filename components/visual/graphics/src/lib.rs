@@ -60,8 +60,8 @@ pub use scene::resources::{
     ShaderBackend,
 };
 pub use scene::scene_view::{
-    SceneContent, SceneInvalidator, SceneView, invalidate_on_change, resolve_scene_proposal,
-    scene_stretch_axis,
+    SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
+    resolve_scene_proposal, scene_stretch_axis,
 };
 pub use scene::{picture, resources, scene_view};
 #[cfg(feature = "gpu")]
