@@ -54,8 +54,9 @@ def framework_scaffold(framework):
     `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
     pins a repository — and every backend coordinate — `{name}-backend-url`,
     plus the `{name}-backend-version` of a backend pinned by release or the
-    `{name}-backend-revision` of one pinned by commit — from
-    `[package.metadata.waterui]`.
+    `{name}-backend-revision` of one pinned by commit — and every pinned
+    platform host: `{name}-host-url`, `{name}-host-revision` and
+    `{name}-host-subdirectory` — from `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]
@@ -79,7 +80,16 @@ def framework_scaffold(framework):
             scaffold[f"{name}-git"] = dependency["git"]
             scaffold[f"{name}-rev"] = revision
     for key, value in metadata.items():
-        if key.endswith(("-backend-url", "-backend-version", "-backend-revision")):
+        if key.endswith(
+            (
+                "-backend-url",
+                "-backend-version",
+                "-backend-revision",
+                "-host-url",
+                "-host-revision",
+                "-host-subdirectory",
+            )
+        ):
             scaffold[key] = value
     return scaffold
 
