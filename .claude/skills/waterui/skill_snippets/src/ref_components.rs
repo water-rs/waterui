@@ -18,7 +18,7 @@ pub struct Record {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Layout containers" — rust block 1/28
+// components.md § "## Layout containers" — rust block 1/29
 // Listing: three container constructors.
 // ---------------------------------------------------------------------------
 pub fn components_block_01() {
@@ -37,7 +37,7 @@ pub fn components_block_01() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Layout containers" — rust block 2/28
+// components.md § "## Layout containers" — rust block 2/29
 // Method-fragment listing applied to a stack receiver.
 // ---------------------------------------------------------------------------
 pub fn components_block_02() {
@@ -56,7 +56,7 @@ pub fn components_block_02() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Layout containers" — rust block 3/28
+// components.md § "## Layout containers" — rust block 3/29
 // ---------------------------------------------------------------------------
 pub fn components_block_03() {
     struct Tab;
@@ -80,7 +80,7 @@ pub fn components_block_03() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Layout containers" — rust block 4/28
+// components.md § "## Layout containers" — rust block 4/29
 // Listing: four spacing/separator forms.
 // ---------------------------------------------------------------------------
 pub fn components_block_04() {
@@ -101,7 +101,7 @@ pub fn components_block_04() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Layout containers" — rust block 5/28
+// components.md § "## Layout containers" — rust block 5/29
 // Frame-modifier listing applied to fresh receivers.
 // ---------------------------------------------------------------------------
 pub fn components_block_05() {
@@ -136,7 +136,7 @@ pub fn components_block_05() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Layout containers" — rust block 6/28
+// components.md § "## Layout containers" — rust block 6/29
 // ---------------------------------------------------------------------------
 pub fn components_block_06() {
     let (a, b, c) = (text("a"), text("b"), text("c"));
@@ -157,7 +157,7 @@ pub fn components_block_06() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Absolute placement and overlays" — rust block 7/28
+// components.md § "## Absolute placement and overlays" — rust block 7/29
 // ---------------------------------------------------------------------------
 pub fn components_block_07() -> impl View {
     fn map_view() -> impl View {
@@ -185,7 +185,7 @@ pub fn components_block_07() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Absolute placement and overlays" — rust block 8/28
+// components.md § "## Absolute placement and overlays" — rust block 8/29
 // ---------------------------------------------------------------------------
 pub fn components_block_08() -> impl View {
     let player = text("player");
@@ -195,7 +195,7 @@ pub fn components_block_08() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Scrolling" — rust block 9/28
+// components.md § "## Scrolling" — rust block 9/29
 // Listing: three scroll constructors.
 // ---------------------------------------------------------------------------
 pub fn components_block_09() {
@@ -210,7 +210,7 @@ pub fn components_block_09() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Scrolling" — rust block 10/28
+// components.md § "## Scrolling" — rust block 10/29
 // ---------------------------------------------------------------------------
 pub fn components_block_10() {
     use waterui::layout::scroll::ScrollController;
@@ -236,7 +236,7 @@ pub fn components_block_10() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Controls" — rust block 11/28
+// components.md § "## Controls" — rust block 11/29
 // Listing: three label-display-mode forms.
 // ---------------------------------------------------------------------------
 // components.md writes `lucide::` qualified so the icon set stays visible.
@@ -263,7 +263,7 @@ pub fn components_block_11() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Controls" — rust block 12/28
+// components.md § "## Controls" — rust block 12/29
 // A chain on `button(..)`, then eleven independent control constructors.
 // ---------------------------------------------------------------------------
 pub fn components_block_12() {
@@ -359,7 +359,7 @@ pub fn components_button_style_shorthands() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Controls" — rust block 13/28
+// components.md § "## Controls" — rust block 13/29
 // ---------------------------------------------------------------------------
 // components.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
@@ -398,7 +398,7 @@ pub fn components_block_13() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Menus, commands, context menus" — rust block 14/28
+// components.md § "## Menus, commands, context menus" — rust block 14/29
 // ---------------------------------------------------------------------------
 pub fn components_block_14() -> impl View {
     fn nested_handler() {}
@@ -436,7 +436,7 @@ pub fn components_command_builder_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Menus, commands, context menus" — rust block 15/28
+// components.md § "## Menus, commands, context menus" — rust block 15/29
 // ---------------------------------------------------------------------------
 pub fn components_block_15() -> impl View {
     fn copy_handler() {}
@@ -451,7 +451,7 @@ pub fn components_block_15() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Text" — rust block 16/28
+// components.md § "## Text" — rust block 16/29
 // Listing: three text constructors.
 // ---------------------------------------------------------------------------
 pub fn components_block_16() {
@@ -464,7 +464,7 @@ pub fn components_block_16() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Text" — rust block 17/28
+// components.md § "## Text" — rust block 17/29
 // Method-name listing; each is applied to its own `Text` receiver.
 // ---------------------------------------------------------------------------
 pub fn components_block_17() {
@@ -492,9 +492,17 @@ pub fn components_block_17() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Text" — rust block 18/28
+// components.md § "## Text" — rust block 18/29
 // ---------------------------------------------------------------------------
-pub fn components_block_18() {
+pub fn components_block_18() -> impl View {
+    let family: Binding<Option<Str>> = Binding::container(None); // e.g. a user setting
+    text("~/src").font(font::Font::from(font::Body).family(family.clone()))
+}
+
+// ---------------------------------------------------------------------------
+// components.md § "## Text" — rust block 19/29
+// ---------------------------------------------------------------------------
+pub fn components_block_19() {
     let runtime_str = "# Heading";
 
     use waterui::widget::{Code, RichText, code, rich_text};
@@ -514,12 +522,12 @@ pub fn components_block_18() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Text" — rust block 19/28
+// components.md § "## Text" — rust block 20/29
 //
 // Re-transcribed after the framework fix: `FlowMarkdownConfig` is now itself a
 // constant signal, so the config goes in bare — no `Computed::constant` wrapper.
 // ---------------------------------------------------------------------------
-pub fn components_block_19() -> impl View {
+pub fn components_block_20() -> impl View {
     use core::time::Duration;
     use waterui::animation::Animation;
 
@@ -560,10 +568,10 @@ pub fn components_flow_overrides_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Lists and collections" — rust block 20/28
+// components.md § "## Lists and collections" — rust block 21/29
 // Item declarations, then a listing of container forms.
 // ---------------------------------------------------------------------------
-pub mod components_block_20 {
+pub mod components_block_21 {
     use waterui::layout::scroll::ScrollController;
     use waterui::prelude::*;
     use waterui::reactive::collection::List as ReactiveList;
@@ -617,9 +625,9 @@ pub mod components_block_20 {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Lists and collections" — rust block 21/28
+// components.md § "## Lists and collections" — rust block 22/29
 // ---------------------------------------------------------------------------
-pub fn components_block_21() -> impl View {
+pub fn components_block_22() -> impl View {
     use core::time::Duration;
     use waterui::animation::Animation;
     use waterui::reactive::collection::List as ReactiveList;
@@ -637,9 +645,9 @@ pub fn components_block_21() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Lists and collections" — rust block 22/28
+// components.md § "## Lists and collections" — rust block 23/29
 // ---------------------------------------------------------------------------
-pub fn components_block_22() -> impl View {
+pub fn components_block_23() -> impl View {
     List::content((
         Section::new("Recent")
             .footer("Sub-pages push onto this tab's own stack.")
@@ -671,9 +679,9 @@ pub fn components_list_item_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Forms and pickers" — rust block 23/28
+// components.md § "## Forms and pickers" — rust block 24/29
 // ---------------------------------------------------------------------------
-pub mod components_block_23 {
+pub mod components_block_24 {
     use waterui::prelude::*;
 
     #[form]
@@ -697,9 +705,9 @@ pub mod components_block_23 {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Forms and pickers" — rust block 24/28
+// components.md § "## Forms and pickers" — rust block 25/29
 // ---------------------------------------------------------------------------
-pub mod components_block_24 {
+pub mod components_block_25 {
     use waterui::prelude::*;
     use waterui::reactive::binding;
 
@@ -758,9 +766,9 @@ pub mod components_block_24 {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Forms and pickers" — rust block 25/28
+// components.md § "## Forms and pickers" — rust block 26/29
 // ---------------------------------------------------------------------------
-pub fn components_block_25() {
+pub fn components_block_26() {
     use alloc::collections::BTreeSet;
     use waterui::color::Srgb;
     use waterui::form::Calendar;
@@ -826,7 +834,7 @@ pub fn components_picker_seeding_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Overlays" — rust block 26/28
+// components.md § "## Overlays" — rust block 27/29
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
@@ -835,7 +843,7 @@ pub fn components_picker_seeding_prose() {
 )]
 // Verbatim: components.md writes `mdi::` qualified so the icon set stays visible.
 #[allow(unknown_lints, qualified_waterui_path)]
-pub fn components_block_26() {
+pub fn components_block_27() {
     fn restore() {}
 
     use core::time::Duration;
@@ -854,14 +862,14 @@ pub fn components_block_26() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Overlays" — rust block 27/28
+// components.md § "## Overlays" — rust block 28/29
 // Listing: four overlay/composition helpers.
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
     reason = "the snippet is transcribed verbatim from the skill; rewriting it to satisfy the lint would defeat this crate's purpose"
 )]
-pub fn components_block_27() {
+pub fn components_block_28() {
     async fn load() -> Text {
         text("loaded")
     }
@@ -890,10 +898,10 @@ pub fn components_block_27() {
 }
 
 // ---------------------------------------------------------------------------
-// components.md § "## Accessibility modifiers" — rust block 28/28
+// components.md § "## Accessibility modifiers" — rust block 29/29
 // Method-fragment listing applied to fresh receivers.
 // ---------------------------------------------------------------------------
-pub fn components_block_28() {
+pub fn components_block_29() {
     let active = Binding::bool(true);
 
     use waterui::accessibility::{AccessibilityRole, AccessibilityState};

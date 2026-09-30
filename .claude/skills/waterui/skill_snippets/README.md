@@ -104,11 +104,11 @@ alignment of trailing comments, re-wraps long argument lists, expands one-line s
 bodies, and inlines short `let _ = { … };` wrappers. **That normalization is a sanctioned
 deviation** — it changes layout, never tokens.
 
-The accounting for the current skill text, over 876 snippet lines in 135 blocks:
+The accounting for the current skill text, over 878 snippet lines in 136 blocks:
 
 | Class | Lines |
 |---|---|
-| byte-identical to the skill | 509 |
+| byte-identical to the skill | 511 |
 | identical after whitespace normalization (rustfmt) | 251 |
 | restructured: listing splits, ellipsis fills, rustfmt re-wraps | 116 |
 
