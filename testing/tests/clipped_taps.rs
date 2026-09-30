@@ -4,6 +4,10 @@
 //! straddling the scroll edge is tapped at its visible fragment, and a
 //! fully clipped row fails with a not-visible panic instead of
 //! dead-tapping inside the clip.
+//!
+//! The scroll distances are derived from geometry measured in the mounted
+//! tree — the row's bounds and the `on_tap` strip's resolved edges — never
+//! from the theme's row metrics.
 
 use std::time::Duration;
 
@@ -14,17 +18,10 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::{hstack, spacer, text};
 use waterui::id::SelfId;
 use waterui::reactive::collection::List as ReactiveList;
-use waterui_testing::{Role, ui};
+use waterui_testing::{
+    AccessibilityActivationPointError, ElementRef, HeadlessRuntime, NodeId, OffscreenApp, Role, ui,
+};
 
-/// A 40 pt scroll leaves the first one-line row (56 pt under Material 3)
-/// straddling the viewport's top edge with a 16 pt visible sliver — and
-/// that sliver is padding only: the row's `on_tap` strip, centred inside
-/// the row at content height, already lies fully above the viewport.
-const FULL_SCROLL: f32 = 40.0;
-/// A shallower scroll leaves the same row straddling with its `on_tap`
-/// strip partially visible: the strip's own top is clipped away while its
-/// lower span still crosses the viewport edge.
-const PARTIAL_SCROLL: f32 = 28.0;
 const ROW_COUNT: i32 = 10;
 
 fn row_items() -> ReactiveList<SelfId<i32>> {
@@ -35,16 +32,10 @@ fn row_label(row: i32) -> String {
     format!("Row {row}")
 }
 
-/// Mounts a scrollable list whose rows count taps, scrolled by `scroll`,
-/// and returns the mounted app, the row tap counter and the selection
-/// binding — the view's evidence a tap reached the row's `on_tap`.
-fn mount_scrolled_list(
-    scroll: f32,
-) -> (
-    waterui_testing::OffscreenApp,
-    Binding<i32>,
-    Binding<Option<i32>>,
-) {
+/// Mounts a scrollable list whose rows count taps and returns the mounted
+/// app, the row tap counter and the selection binding — the view's
+/// evidence a tap reached the row's `on_tap`.
+fn mount_list() -> (OffscreenApp, Binding<i32>, Binding<Option<i32>>) {
     let selection = Binding::container(Option::<i32>::None);
     let binding = selection.clone();
     let taps = Binding::container(0_i32);
@@ -64,21 +55,52 @@ fn mount_scrolled_list(
             .selection(&binding)
         });
     app.settle();
-    app.scroll_at(180.0, 120.0, 0.0, -scroll, false);
-    app.pump_for(Duration::from_millis(500));
     (app, taps, selection)
+}
+
+/// The straddling row the scroll distances derive from.
+fn row_one(app: &mut OffscreenApp) -> ElementRef<HeadlessRuntime> {
+    app.query()
+        .role(Role::LIST_ITEM)
+        .label(row_label(1))
+        .single()
+}
+
+/// The list's top clip edge, in the same window coordinates the nodes
+/// report their bounds in.
+fn clip_top(app: &mut OffscreenApp) -> f32 {
+    app.query().role(Role::LIST).single().bounds().y()
+}
+
+/// The vertical span of the row's `on_tap` strip. The strip is not its
+/// own accessibility node — it is the interaction owner the row's `Click`
+/// delegates to — so its edges are measured through `activation_point`,
+/// the projection that resolves against exactly that region: the `0.0`
+/// and `1.0` vertical fractions are the strip's top and bottom edges.
+fn strip_edges(app: &OffscreenApp, row: NodeId) -> (f32, f32) {
+    let top = app
+        .activation_point(row, 0.5, 0.0)
+        .expect("a mounted row's strip resolves a hittable point")
+        .1;
+    let bottom = app
+        .activation_point(row, 0.5, 1.0)
+        .expect("a mounted row's strip resolves a hittable point")
+        .1;
+    (top, bottom)
+}
+
+/// Scrolls the list up by `distance` logical points and lets the scroll
+/// glide come to rest.
+fn scroll_by(app: &mut OffscreenApp, distance: f32) {
+    app.scroll_at(180.0, 120.0, 0.0, -distance, false);
+    app.pump_for(Duration::from_millis(500));
 }
 
 /// The straddling precondition both tests share: row 1's logical bounds
 /// cross the list's top clip edge.
-fn assert_row_one_straddles(app: &mut waterui_testing::OffscreenApp) {
+fn assert_row_one_straddles(app: &mut OffscreenApp) {
     let list = app.query().role(Role::LIST).single().bounds();
-    let row = app
-        .query()
-        .role(Role::LIST_ITEM)
-        .label(row_label(1))
-        .single()
-        .bounds();
+    let row = row_one(app).bounds();
     assert!(
         row.y() < list.y() && row.y() + row.height() > list.y(),
         "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
@@ -90,8 +112,23 @@ fn assert_row_one_straddles(app: &mut waterui_testing::OffscreenApp) {
 /// there fires the row's action.
 #[test]
 fn tap_at_on_a_partially_straddling_row_fires_its_action() {
-    let (mut app, taps, selection) = mount_scrolled_list(PARTIAL_SCROLL);
+    let (mut app, taps, selection) = mount_list();
+    let clip = clip_top(&mut app);
+    let row = row_one(&mut app);
+    let (strip_top, strip_bottom) = strip_edges(&app, row.id());
+
+    // Put the strip's midpoint exactly on the clip edge: its top half is
+    // clipped while the lower half stays visible — the partial straddle.
+    scroll_by(&mut app, strip_top.midpoint(strip_bottom) - clip);
     assert_row_one_straddles(&mut app);
+    let top_edge = app
+        .activation_point(row.id(), 0.5, 0.0)
+        .expect("a partially visible strip still resolves a point")
+        .1;
+    assert!(
+        top_edge <= clip + 1.0,
+        "the strip's clipped top edge resolves at the clip: edge={top_edge} clip={clip}"
+    );
 
     app.query()
         .role(Role::LIST_ITEM)
@@ -112,8 +149,22 @@ fn tap_at_on_a_partially_straddling_row_fires_its_action() {
 #[test]
 #[should_panic(expected = "is not visible")]
 fn tap_at_on_a_fully_clipped_row_fails_not_visible() {
-    let (mut app, _taps, _selection) = mount_scrolled_list(FULL_SCROLL);
+    let (mut app, _taps, _selection) = mount_list();
+    let clip = clip_top(&mut app);
+    let row = row_one(&mut app);
+    let row_bottom = row.bounds().y() + row.bounds().height();
+    let (_strip_top, strip_bottom) = strip_edges(&app, row.id());
+
+    // Put the midpoint of the row's bottom padding on the clip edge: the
+    // whole strip is above the viewport while half the padding still
+    // straddles it.
+    scroll_by(&mut app, strip_bottom.midpoint(row_bottom) - clip);
     assert_row_one_straddles(&mut app);
+    assert_eq!(
+        app.activation_point(row.id(), 0.5, 0.5),
+        Err(AccessibilityActivationPointError::EmptyFragment),
+        "the fully clipped strip leaves no pointer-reachable fragment"
+    );
 
     app.query()
         .role(Role::LIST_ITEM)
