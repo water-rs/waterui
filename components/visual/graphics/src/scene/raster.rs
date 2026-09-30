@@ -1,4 +1,12 @@
 //! CPU rasterisation of a [`Picture`] through `cherenkov_cpu`.
+
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "the engine's wasm32 API is !Send by design (Rc-based backend handles) and every future executes on the browser's single-threaded executor"
+    )
+)]
 //!
 //! The FFI backends rasterise a [`Picture`] here to hand the pixels to a
 //! platform image view. It needs no GPU device, which is the point — a static
@@ -139,10 +147,32 @@ impl Rasterizer {
     /// [`SurfaceError::Engine`] when the engine's render thread fails to
     /// start, [`SurfaceError`] itself when the offscreen target cannot be
     /// created.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(width: u32, height: u32) -> Result<Self, SurfaceError> {
         let engine = Rc::new(Engine::<Raster>::new(RasterConfig::default())?);
         let surface =
             engine.surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))?;
+        Ok(Self {
+            resources: SceneResources::new(Rc::clone(&engine)),
+            engine,
+            surface,
+            installed: HeldResources::empty(),
+            width,
+            height,
+        })
+    }
+
+    /// A rasteriser producing `width × height` bitmaps.
+    ///
+    /// # Errors
+    ///
+    /// [`SurfaceError`] when the offscreen target cannot be created.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn new(width: u32, height: u32) -> Result<Self, SurfaceError> {
+        let engine = Rc::new(Engine::<Raster>::new(RasterConfig::default()).await?);
+        let surface = engine
+            .surface(Offscreen::new((width, height), OffscreenFormat::LinearF16))
+            .await?;
         Ok(Self {
             resources: SceneResources::new(Rc::clone(&engine)),
             engine,
@@ -171,6 +201,7 @@ impl Rasterizer {
     /// # Panics
     ///
     /// When `recording` names resources registered on another engine.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn rasterize(
         &mut self,
         recording: &PictureRecording,
@@ -180,6 +211,29 @@ impl Rasterizer {
         resources.hold(recording.held());
         let held = resources.finish();
         self.show(recording.picture().clone(), held, transform)
+    }
+
+    /// Rasterises `recording` drawn under `transform` (the caller maps its
+    /// points onto these pixels there).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] when the render or the readback fails.
+    ///
+    /// # Panics
+    ///
+    /// When `recording` names resources registered on another engine.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn rasterize(
+        &mut self,
+        recording: &PictureRecording,
+        transform: Affine,
+    ) -> Result<RgbaBitmap, RenderError> {
+        let mut resources = self.resources.recording();
+        resources.hold(recording.held());
+        let held = resources.finish();
+        self.show(recording.picture().clone(), held, transform)
+            .await
     }
 
     /// Records `content` laid out at this rasteriser's pixel size divided by
@@ -192,6 +246,7 @@ impl Rasterizer {
     /// # Errors
     ///
     /// [`RenderError`] when the render or the readback fails.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn rasterize_scene(
         &mut self,
         content: &mut dyn SceneContent,
@@ -210,8 +265,39 @@ impl Rasterizer {
         self.show(recorded, held, Affine::scale(f64::from(scale)))
     }
 
+    /// Records `content` laid out at this rasteriser's pixel size divided by
+    /// `scale`, in points, and rasterises it at `scale` pixels per point.
+    ///
+    /// The content records against [`Rasterizer::resources`], so what it
+    /// registers while drawing is this engine's; it keeps those handles
+    /// across calls the way it would on a window.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError`] when the render or the readback fails.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn rasterize_scene(
+        &mut self,
+        content: &mut dyn SceneContent,
+        scale: f32,
+    ) -> Result<RgbaBitmap, RenderError> {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a rasteriser's sides are at most 65535 pixels, which f32 holds exactly"
+        )]
+        let (width, height) = (self.width as f32 / scale, self.height as f32 / scale);
+        let mut resources = self.resources.recording();
+        let recorded = self.surface.record(|recorder: &mut Recorder| {
+            content.build_scene(recorder, &mut resources, width, height);
+        });
+        let held = resources.finish();
+        self.show(recorded, held, Affine::scale(f64::from(scale)))
+            .await
+    }
+
     /// Installs `content` on the root under `transform`, then lets go of what
     /// the drawing it replaces held, renders and reads the pixels back.
+    #[cfg(not(target_arch = "wasm32"))]
     fn show(
         &mut self,
         content: impl Into<LayerContent<Raster>>,
@@ -234,6 +320,32 @@ impl Rasterizer {
             data: present_srgb8(1.0, &readback.pixels),
         })
     }
+
+    /// Installs `content` on the root under `transform`, then lets go of what
+    /// the drawing it replaces held, renders and reads the pixels back.
+    #[cfg(target_arch = "wasm32")]
+    async fn show(
+        &mut self,
+        content: impl Into<LayerContent<Raster>>,
+        held: HeldResources,
+        transform: Affine,
+    ) -> Result<RgbaBitmap, RenderError> {
+        let root = self.surface.root();
+        self.surface.update(|tx| {
+            tx[root].transform(transform);
+            tx[root].content(content.into());
+        });
+        self.installed = held;
+        self.engine.render(FrameTime::now()).await?;
+        let readback = self.surface.readback().await?;
+        Ok(RgbaBitmap {
+            width: self.width,
+            height: self.height,
+            // An image view in a platform surface is an SDR sRGB destination:
+            // the presentation pass tone-maps to its ceiling.
+            data: present_srgb8(1.0, &readback.pixels),
+        })
+    }
 }
 
 /// Rasterises `recording` once into a `width × height` pixel bitmap, drawing
@@ -245,6 +357,7 @@ impl Rasterizer {
 /// # Errors
 ///
 /// As [`Rasterizer::new`] and [`Rasterizer::rasterize`].
+#[cfg(not(target_arch = "wasm32"))]
 pub fn rasterize_picture(
     recording: &PictureRecording,
     width: u32,
@@ -253,6 +366,29 @@ pub fn rasterize_picture(
 ) -> Result<RgbaBitmap, RasterizeError> {
     Rasterizer::new(width, height)?
         .rasterize(recording, transform)
+        .map_err(RasterizeError::Render)
+}
+
+/// Rasterises `recording` once into a `width × height` pixel bitmap, drawing
+/// it under `transform`; see [`Rasterizer`] for repeated drawings.
+///
+/// A fresh engine draws it, so the recording can name no engine resource:
+/// one that does was recorded against another engine, and panics.
+///
+/// # Errors
+///
+/// As [`Rasterizer::new`] and [`Rasterizer::rasterize`].
+#[cfg(target_arch = "wasm32")]
+pub async fn rasterize_picture(
+    recording: &PictureRecording,
+    width: u32,
+    height: u32,
+    transform: Affine,
+) -> Result<RgbaBitmap, RasterizeError> {
+    Rasterizer::new(width, height)
+        .await?
+        .rasterize(recording, transform)
+        .await
         .map_err(RasterizeError::Render)
 }
 

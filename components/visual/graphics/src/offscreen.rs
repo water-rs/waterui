@@ -1,4 +1,12 @@
 //! Rendering scene content into pixels through a Cherenkov offscreen target.
+
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "the engine's wasm32 API is !Send by design (Rc-based backend handles) and every future executes on the browser's single-threaded executor"
+    )
+)]
 //!
 //! Previews, exports and tests want a drawing as an image rather than on a
 //! window. An [`OffscreenRenderer`] owns an `Engine<Gpu>`, records the content
@@ -202,7 +210,7 @@ impl<B: Backend> fmt::Debug for OffscreenRenderer<B> {
     }
 }
 
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
 impl OffscreenRenderer<Gpu> {
     /// Creates a GPU engine on the default adapter.
     ///
@@ -213,7 +221,18 @@ impl OffscreenRenderer<Gpu> {
     }
 }
 
-#[cfg(feature = "cpu")]
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+impl OffscreenRenderer<Gpu> {
+    /// Creates a GPU engine on the default adapter.
+    ///
+    /// # Errors
+    /// [`EngineError`] when no adapter is available.
+    pub async fn new() -> Result<Self, OffscreenError> {
+        Self::with_config(GpuConfig::default()).await
+    }
+}
+
+#[cfg(all(feature = "cpu", not(target_arch = "wasm32")))]
 impl OffscreenRenderer<Raster> {
     /// Creates a CPU raster engine.
     ///
@@ -224,13 +243,38 @@ impl OffscreenRenderer<Raster> {
     }
 }
 
+#[cfg(all(feature = "cpu", target_arch = "wasm32"))]
+impl OffscreenRenderer<Raster> {
+    /// Creates a CPU raster engine.
+    ///
+    /// # Errors
+    /// [`EngineError`] when the raster backend cannot initialise.
+    pub async fn cpu() -> Result<Self, OffscreenError> {
+        Self::with_config(RasterConfig::default()).await
+    }
+}
+
 impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// Creates an engine with an explicit backend configuration.
     ///
     /// # Errors
     /// [`EngineError`] when the backend cannot initialise.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
         let engine = Rc::new(Engine::<B>::new(config)?);
+        Ok(Self {
+            resources: SceneResources::new(Rc::clone(&engine)),
+            engine,
+        })
+    }
+
+    /// Creates an engine with an explicit backend configuration.
+    ///
+    /// # Errors
+    /// [`EngineError`] when the backend cannot initialise.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
+        let engine = Rc::new(Engine::<B>::new(config).await?);
         Ok(Self {
             resources: SceneResources::new(Rc::clone(&engine)),
             engine,
@@ -256,6 +300,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// # Errors
     /// [`OffscreenError`] when the surface cannot be created, the frame does
     /// not render, or the target cannot be read back.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render(
         &self,
         content: &mut dyn SceneContent,
@@ -278,6 +323,43 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         self.show(&surface, recorded, held)
     }
 
+    /// Records `content` laid out at `size / scale` points, renders one frame
+    /// at `size` pixels and reads it back.
+    ///
+    /// The content records against this engine's [`SceneResources`], so what
+    /// it registers while drawing is this engine's; it keeps those handles
+    /// across renders the way it would on a window. The recording holds what
+    /// it names until the frame has been read back.
+    ///
+    /// # Errors
+    /// [`OffscreenError`] when the surface cannot be created, the frame does
+    /// not render, or the target cannot be read back.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn render(
+        &self,
+        content: &mut dyn SceneContent,
+        size: OffscreenSize,
+        scale: f32,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        let width = pixels_to_points(size.width(), scale);
+        let height = pixels_to_points(size.height(), scale);
+        let surface = self
+            .engine
+            .surface(Offscreen::new(
+                (size.width(), size.height()),
+                OffscreenFormat::LinearF16,
+            ))
+            .await?;
+        let mut resources = self.resources.recording();
+        let recorded = surface.record(|recorder: &mut Recorder| {
+            recorder.transform(Affine::scale(f64::from(scale)), |recorder| {
+                content.build_scene(recorder, &mut resources, width, height);
+            });
+        });
+        let held = resources.finish();
+        self.show(&surface, recorded, held).await
+    }
+
     /// Renders a recorded `picture` under `transform` into `size` pixels and
     /// reads it back.
     ///
@@ -287,6 +369,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ///
     /// # Panics
     /// When `picture` names resources registered on another engine.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_picture(
         &self,
         picture: &PictureRecording,
@@ -306,8 +389,41 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         self.show(&surface, recorded, held)
     }
 
+    /// Renders a recorded `picture` under `transform` into `size` pixels and
+    /// reads it back.
+    ///
+    /// # Errors
+    /// [`OffscreenError`] when the surface cannot be created, the frame does
+    /// not render, or the target cannot be read back.
+    ///
+    /// # Panics
+    /// When `picture` names resources registered on another engine.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn render_picture(
+        &self,
+        picture: &PictureRecording,
+        size: OffscreenSize,
+        transform: Affine,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        let surface = self
+            .engine
+            .surface(Offscreen::new(
+                (size.width(), size.height()),
+                OffscreenFormat::LinearF16,
+            ))
+            .await?;
+        let mut resources = self.resources.recording();
+        resources.hold(picture.held());
+        let recorded = surface.record(|recorder: &mut Recorder| {
+            recorder.picture(picture.picture(), transform);
+        });
+        let held = resources.finish();
+        self.show(&surface, recorded, held).await
+    }
+
     /// Installs `recorded` on `surface`'s root, renders it and reads it back,
     /// holding what it names until the pixels are read.
+    #[cfg(not(target_arch = "wasm32"))]
     fn show(
         &self,
         surface: &Surface<B>,
@@ -319,6 +435,24 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         });
         self.engine.render(FrameTime::now())?;
         let image = OffscreenImage::from_readback(&surface.readback()?);
+        drop(held);
+        Ok(image)
+    }
+
+    /// Installs `recorded` on `surface`'s root, renders it and reads it back,
+    /// holding what it names until the pixels are read.
+    #[cfg(target_arch = "wasm32")]
+    async fn show(
+        &self,
+        surface: &Surface<B>,
+        recorded: Content,
+        held: HeldResources,
+    ) -> Result<OffscreenImage, OffscreenError> {
+        surface.update(|tx| {
+            tx[surface.root()].content(recorded);
+        });
+        self.engine.render(FrameTime::now()).await?;
+        let image = OffscreenImage::from_readback(&surface.readback().await?);
         drop(held);
         Ok(image)
     }
