@@ -191,15 +191,6 @@ pub(crate) struct ScrollTarget {
     pub(crate) order: usize,
 }
 
-#[derive(Clone)]
-pub(crate) struct TrackpadPanTarget {
-    pub(crate) bounds: kurbo::Rect,
-    pub(crate) action: TrackpadPanAction,
-    /// See [`ScrollTarget::depth`].
-    pub(crate) depth: usize,
-    pub(crate) order: usize,
-}
-
 /// A native subview the host platform hit-tests for itself, together with the
 /// `WaterUI`-drawn content that has to take clicks away from it.
 ///
@@ -242,7 +233,6 @@ pub(crate) type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub(crate) type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
 pub(crate) type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
 pub(crate) type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
-pub(crate) type TrackpadPanAction = Rc<RefCell<dyn FnMut(f32, f32, TouchPhase) -> bool>>;
 
 /// How Enter/Space activates a keyboard-focused control — a per-runtime
 /// contract, not a feature one.
@@ -342,7 +332,6 @@ pub(crate) struct HitTestState {
     /// still receives hit state through `GpuFrame::pointer`.
     pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
-    pub(crate) trackpad_pan_targets: Vec<TrackpadPanTarget>,
     pub(crate) hit_test_opacity: f32,
     pub(crate) hit_test_order: usize,
     /// The tree order of the candidate keyboard focus last rested on —
@@ -414,7 +403,6 @@ impl HitTestState {
         self.drop_targets.clear();
         self.context_menu_targets.clear();
         self.scroll_targets.clear();
-        self.trackpad_pan_targets.clear();
         self.modal_interaction = None;
         self.hit_clip_stack.clear();
         // `bubbled_key_sinks` survives: a press bubbled this frame may only
@@ -2914,17 +2902,7 @@ impl HydrolysisRenderer {
     ) -> bool {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let finished = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
-        let pan_priority = self
-            .hit_test
-            .trackpad_pan_targets
-            .iter()
-            .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
-            .map(|(index, target)| {
-                SemanticCore::target_hit_priority(target.depth, target.order, index)
-            })
-            .max();
-        let scroll_priority = self
+        let contender_priority = self
             .hit_test
             .scroll_targets
             .iter()
@@ -2934,7 +2912,6 @@ impl HydrolysisRenderer {
                 SemanticCore::target_hit_priority(target.depth, target.order, index)
             })
             .max();
-        let contender_priority = pan_priority.max(scroll_priority);
         if let Some((_, target, position)) =
             self.embedded_target_wins_at(point, contender_priority, None)
         {
@@ -2942,11 +2919,6 @@ impl HydrolysisRenderer {
                 .sink
                 .scroll(position, dx, dy, ScrollUnit::Pixel, finished);
             return true;
-        }
-        for target in self.hit_test.trackpad_pan_targets.iter_mut().rev() {
-            if target.bounds.contains(point) {
-                return (target.action.borrow_mut())(dx, dy, phase);
-            }
         }
         self.handle_scroll(x, y, dx, dy, false)
     }
@@ -3618,23 +3590,6 @@ impl SemanticCore {
             bounds,
             action: Rc::new(RefCell::new(action)),
             handle,
-            depth: self.render_depth,
-            order,
-        });
-    }
-
-    pub(crate) fn register_trackpad_pan_target<F>(&mut self, bounds: kurbo::Rect, action: F)
-    where
-        F: 'static + FnMut(f32, f32, TouchPhase) -> bool,
-    {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        self.hit_test.trackpad_pan_targets.push(TrackpadPanTarget {
-            bounds,
-            action: Rc::new(RefCell::new(action)),
             depth: self.render_depth,
             order,
         });

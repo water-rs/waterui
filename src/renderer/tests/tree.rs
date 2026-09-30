@@ -1158,11 +1158,10 @@ fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
 }
 
 /// A GPU filter (`.blur(...)`) is built and flushed through the retained tree as a
-/// node-owned `AppliedFilter`, not the old dispatch capture/replay path. The node
-/// owns its `AppliedFilterRuntime` (textures) and registers it in the renderer's
-/// retained-filter registry at build; a re-flush of the geometry-static tree keeps
-/// the same runtime alive (it is pruned only when its node is dropped), so the
-/// filter survives across frames without a cursor-bound effect slot.
+/// node-owned filtered mount, not the old dispatch capture/replay path. The node
+/// owns its `FilteredRuntime`; a re-flush of the geometry-static tree keeps the
+/// same runtime alive (it is pruned only when its node is dropped), so the filter
+/// mount survives across frames without a cursor-bound effect slot.
 #[test]
 fn applied_filter_renders_through_retained_tree() {
     fn blurred_box() -> AnyView {
@@ -1188,20 +1187,24 @@ fn applied_filter_renders_through_retained_tree() {
     );
     renderer.finish_rebuild_frame();
 
-    assert!(
-        !renderer.node_applied_filters.is_empty(),
-        "a .blur() view must build a node-owned AppliedFilter on the retained tree \
-         (registered at build), not fall through to the dispatch/capture path"
+    let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
+    assert!(flushed, "the retained tree must re-flush");
+    assert_eq!(
+        renderer.render_layer_stats().filtered_layers,
+        1,
+        "a .blur() view must mount a node-owned filtered layer on the retained tree, \
+         not fall through to a dispatch/capture path"
     );
 
     // A geometry-static re-flush keeps the node — and thus its filter runtime —
     // alive (pruned only on node drop, by Rc strong count).
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
-    assert!(flushed, "the retained tree must re-flush");
-    assert!(
-        !renderer.node_applied_filters.is_empty(),
-        "the node-owned filter runtime must survive a geometry-static re-flush \
-         (the retained AppliedFilter node keeps owning it across frames)"
+    assert!(flushed, "the retained tree must re-flush a second time");
+    assert_eq!(
+        renderer.render_layer_stats().filtered_layers,
+        1,
+        "the node-owned filter mount must survive a geometry-static re-flush \
+         (the retained FilteredView node keeps owning it across frames)"
     );
 }
 
@@ -1739,8 +1742,11 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
             // `label` is Some: the subtree may be absent (its mount not yet
             // applied) but a mounted subtree must show HELLO — pill ink with
             // only the probe's glyph pixels is a mounted-but-empty tear.
+            // Measured: probe-only ink ≈ 76, mounted-with-HELLO ink ≈ 125
+            // (the Cherenkov rasterizer's glyph coverage is tighter than the
+            // pre-cutover threshold of 150 assumed).
             assert!(
-                *pill == 0 || *ink >= 150,
+                *pill == 0 || *ink >= 100,
                 "issue #155 torn frame on {edge}->Some (frame {i}): mounted subtree \
                  (pill={pill}) presented without the current text (ink={ink})"
             );

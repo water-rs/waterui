@@ -22,11 +22,10 @@ pub(crate) struct RenderLayerStats {
     pub(crate) composited_scene_layers: u32,
     /// Composited layers that were recorded scene segments.
     pub(crate) scene_segment_layers: u32,
-    /// Composited layers that were embedded GPU surfaces.
-    pub(crate) gpu_surface_layers: u32,
-    /// GPU surfaces that rendered straight into the window's own target,
-    /// skipping the offscreen intermediate and the composite entirely.
-    pub(crate) direct_gpu_surfaces: u32,
+    /// Composited layers that were embedded GPU content mounts.
+    pub(crate) gpu_content_layers: u32,
+    /// Composited layers that were filtered subtrees.
+    pub(crate) filtered_layers: u32,
 }
 
 pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
@@ -300,13 +299,6 @@ impl HydrolysisRenderer {
         self.window_root_transform = root_transform;
     }
 
-    /// The window's viewport in physical pixels: where the root transform puts
-    /// the window's logical bounds.
-    pub(crate) fn window_viewport(&self) -> kurbo::Rect {
-        self.window_root_transform
-            .transform_rect_bbox(self.window_bounds)
-    }
-
     pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
         (&mut self.core.state, &mut self.scene)
     }
@@ -341,10 +333,7 @@ impl HydrolysisRenderer {
         self.state.counters.reset_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
-        self.frame_applied_filter_count = 0;
-        self.frame_applied_filter_capture = Duration::ZERO;
-        self.frame_applied_filter_effect = Duration::ZERO;
-        self.subtree_captures.begin_frame();
+        self.frame_filtered_count = 0;
         #[cfg(feature = "accessibility")]
         self.accessibility.reset_scene();
     }
@@ -356,10 +345,7 @@ impl HydrolysisRenderer {
         self.state.measurement.begin_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
-        self.frame_applied_filter_count = 0;
-        self.frame_applied_filter_capture = Duration::ZERO;
-        self.frame_applied_filter_effect = Duration::ZERO;
-        self.subtree_captures.begin_frame();
+        self.frame_filtered_count = 0;
         self.lifecycle.begin_rebuild_frame();
         self.hit_test.begin_rebuild_frame();
         self.gesture_group_ids.clear();
@@ -384,9 +370,7 @@ impl HydrolysisRenderer {
         self.state.measurement.begin_frame();
         self.frame_clip_layers = 0;
         self.frame_max_clip_depth = 0;
-        self.frame_applied_filter_count = 0;
-        self.frame_applied_filter_capture = Duration::ZERO;
-        self.frame_applied_filter_effect = Duration::ZERO;
+        self.frame_filtered_count = 0;
     }
 
     pub fn finish_rebuild_frame(&mut self) {
@@ -430,29 +414,6 @@ impl HydrolysisRenderer {
 
     pub(crate) fn draw_context(&mut self, ctx: RenderContext) -> SceneDrawContext<'_> {
         SceneDrawContext::with_root_transform(&mut self.scene, ctx.transform)
-    }
-
-    pub fn set_frame_resources(
-        &mut self,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        device_loss: &waterui_graphics::DeviceLoss,
-        gpu_context_id: u64,
-        shared_device: &cherenkov_gpu::interop::SharedDevice,
-    ) {
-        self.state.set_frame_resources(
-            adapter,
-            device,
-            queue,
-            device_loss,
-            gpu_context_id,
-            shared_device,
-        );
-    }
-
-    pub fn clear_frame_resources(&mut self) {
-        self.state.clear_frame_resources();
     }
 
     pub(crate) fn push_layer_rect(
@@ -670,36 +631,27 @@ impl HydrolysisRenderer {
                 .count(),
         )
         .expect("hydrolysis scene segment layer count exceeds u32");
-        // What was rendered directly is recorded by the render pass itself, not
-        // re-derived from the layer's `direct_to_target` flag: that flag says
-        // the layer is eligible on geometry, structure and opacity, and the
-        // render pass adds the one condition only it can see — that the target
-        // already carries the format the view was set up for.
-        let direct_gpu_surfaces = self.frame_direct_gpu_surfaces;
-        let external_frame_layers = u32::try_from(
+        let gpu_content_layers = u32::try_from(
             self.compositor
                 .render_layers
                 .iter()
-                .filter(|layer| {
-                    matches!(
-                        layer,
-                        RenderLayer::GpuSurface(_) | RenderLayer::ExternalTexture(_)
-                    )
-                })
+                .filter(|layer| matches!(layer, RenderLayer::GpuContent(_)))
                 .count(),
         )
-        .expect("hydrolysis external frame layer count exceeds u32");
-        let gpu_surface_layers = external_frame_layers
-            .checked_sub(direct_gpu_surfaces)
-            .expect("hydrolysis render layer count accounting underflow");
-        let composited_scene_layers = scene_layers
-            .checked_sub(direct_gpu_surfaces)
-            .expect("hydrolysis render layer count accounting underflow");
+        .expect("hydrolysis GPU content layer count exceeds u32");
+        let filtered_layers = u32::try_from(
+            self.compositor
+                .render_layers
+                .iter()
+                .filter(|layer| matches!(layer, RenderLayer::Filtered(_)))
+                .count(),
+        )
+        .expect("hydrolysis filtered layer count exceeds u32");
         RenderLayerStats {
-            composited_scene_layers,
+            composited_scene_layers: scene_layers,
             scene_segment_layers,
-            gpu_surface_layers,
-            direct_gpu_surfaces,
+            gpu_content_layers,
+            filtered_layers,
         }
     }
 

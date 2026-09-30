@@ -25,7 +25,7 @@ impl RenderNode {
             RenderNode::Retain(node) => node.child.priority(),
             RenderNode::Env(node) => node.child.priority(),
             RenderNode::Dynamic(node) => node.child.borrow().priority(),
-            RenderNode::AppliedFilter(node) => node.child.priority(),
+            RenderNode::Filtered(node) => node.child.priority(),
             RenderNode::Widget(node) => node.behavior.priority(),
             _ => 0,
         }
@@ -53,9 +53,8 @@ impl RenderNode {
             RenderNode::Env(node) => node.child.is_empty(),
             RenderNode::Dynamic(node) => node.child.borrow().is_empty(),
             RenderNode::Wrapper(node) => node.child.is_empty(),
-            RenderNode::AppliedFilter(node) => node.child.is_empty(),
-            // An effect over a child that draws nothing draws nothing itself.
-            RenderNode::ViewEffect(node) => node.child.borrow().is_empty(),
+            // A filter over a child that draws nothing draws nothing itself.
+            RenderNode::Filtered(node) => node.child.is_empty(),
             _ => false,
         }
     }
@@ -84,12 +83,12 @@ impl RenderNode {
             RenderNode::SceneView(node) => {
                 scene_stretch_axis(node.content.borrow().intrinsic_size())
             }
-            // A GpuSurface fills its proposal (`GpuView::stretch_axis` default);
-            // a ViewEffect is a `StretchAxis::None` raw view; an AppliedFilter is
-            // a layout-transparent wrapper delegating to its child.
-            RenderNode::GpuSurface(_) => StretchAxis::Both,
-            RenderNode::ViewEffect(_) => StretchAxis::None,
-            RenderNode::AppliedFilter(node) => node.child.stretch(),
+            // GPU content fills its proposal; a filtered view is a
+            // layout-transparent wrapper delegating to its child.
+            RenderNode::GpuContent(node) => {
+                scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
+            }
+            RenderNode::Filtered(node) => node.child.stretch(),
             RenderNode::Scroll(_) => StretchAxis::Both,
             // The same stack laid out eagerly is content-sized on both axes, so a
             // lazy one has to be too: making a stack virtualizable must not change
@@ -221,20 +220,19 @@ impl RenderNode {
                     resolved.height.unwrap_or(0.0),
                 ))
             }
-            // A GpuSurface fills its proposal, like a self-drawn scene.
-            RenderNode::GpuSurface(_) => ViewDimensions::new(Size::new(
-                proposal.width.unwrap_or(0.0),
-                proposal.height.unwrap_or(0.0),
-            )),
-            // A ViewEffect and an AppliedFilter are sized by their content: the
-            // effect captures the child into a texture at the child's bounds.
-            RenderNode::ViewEffect(node) => node
-                .child
-                .borrow()
-                .measure(state, &node.env, theme, proposal),
-            RenderNode::AppliedFilter(node) => {
-                node.child.measure(state, &node.env, theme, proposal)
+            // GPU content answers like a scene: content that is naturally a
+            // size is content-sized; content without one fills the proposal.
+            RenderNode::GpuContent(node) => {
+                let resolved =
+                    resolve_scene_proposal(node.runtime.borrow().view.intrinsic_size(), proposal);
+                ViewDimensions::new(Size::new(
+                    resolved.width.unwrap_or(0.0),
+                    resolved.height.unwrap_or(0.0),
+                ))
             }
+            // A filtered view is sized by its content: the engine applies the
+            // filter to the mount the child's layers hang from.
+            RenderNode::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
             RenderNode::Scroll(node) => {
                 // layout-spec.md §6: a scroll claims the whole offer — a
                 // finite proposal on either axis is answered with that
@@ -328,7 +326,7 @@ impl RenderNode {
                 RenderNode::Scale(inner) => node = &inner.child,
                 RenderNode::Rotation(inner) => node = &inner.child,
                 RenderNode::Offset(inner) => node = &inner.child,
-                RenderNode::AppliedFilter(inner) => node = &inner.child,
+                RenderNode::Filtered(inner) => node = &inner.child,
                 _ => return None,
             }
         }
@@ -360,10 +358,7 @@ impl RenderNode {
             RenderNode::Dynamic(node) => node.child.borrow_mut().prepare_for_measure(renderer),
             RenderNode::Env(node) => node.child.prepare_for_measure(renderer),
             RenderNode::Wrapper(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::AppliedFilter(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::ViewEffect(node) => {
-                node.child.borrow_mut().prepare_for_measure(renderer);
-            }
+            RenderNode::Filtered(node) => node.child.prepare_for_measure(renderer),
             RenderNode::Container(node) => {
                 for child in &mut node.children {
                     child.prepare_for_measure(renderer);
@@ -381,7 +376,7 @@ impl RenderNode {
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            | RenderNode::GpuSurface(_) => {}
+            | RenderNode::GpuContent(_) => {}
         }
     }
 
@@ -528,24 +523,17 @@ impl RenderNode {
                 node.viewport = size;
             }
             RenderNode::Collection(node) => node.layout(renderer, proposal, size),
-            // Effects preserve the selected proposal even when their bounds stay equal.
-            RenderNode::ViewEffect(node) => {
-                let node_env = node.env.clone();
-                node.child
-                    .borrow_mut()
-                    .layout(renderer, &node_env, proposal, size);
-            }
-            RenderNode::AppliedFilter(node) => {
+            RenderNode::Filtered(node) => {
                 let node_env = node.env.clone();
                 node.child.layout(renderer, &node_env, proposal, size);
             }
             // A lazy stack places its items lazily at flush (offset-dependent); a
-            // widget leaf or GpuSurface renders itself at flush from `ctx.bounds`.
-            // Nothing to pre-lay-out for any of these.
+            // widget leaf or GPU content view renders itself at flush from
+            // `ctx.bounds`. Nothing to pre-lay-out for any of these.
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            | RenderNode::GpuSurface(_)
+            | RenderNode::GpuContent(_)
             | RenderNode::LazyStack(_)
             | RenderNode::Widget(_) => {}
         }
@@ -631,7 +619,7 @@ impl RenderNode {
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            | RenderNode::GpuSurface(_)
+            | RenderNode::GpuContent(_)
             | RenderNode::Widget(_) => {}
             RenderNode::Opacity(node) => node.child.signature_into(frame, hasher),
             RenderNode::Scale(node) => node.child.signature_into(frame, hasher),
@@ -641,8 +629,7 @@ impl RenderNode {
             RenderNode::Env(node) => node.child.signature_into(frame, hasher),
             RenderNode::Wrapper(node) => node.child.signature_into(frame, hasher),
             RenderNode::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
-            RenderNode::ViewEffect(node) => node.child.borrow().signature_into(frame, hasher),
-            RenderNode::AppliedFilter(node) => node.child.signature_into(frame, hasher),
+            RenderNode::Filtered(node) => node.child.signature_into(frame, hasher),
             RenderNode::Container(node) => {
                 node.placed.len().hash(hasher);
                 for (child, rect) in node.children.iter().zip(&node.placed) {

@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use waterui_core::view_renderer::{CustomViewRenderer, RenderResult, RenderSize};
 use waterui_core::{AnyView, Environment};
-use waterui_graphics::SceneViewMergeToParent;
+use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 use crate::platform::{OffscreenSurface, SurfaceProvider};
 use crate::readback::readback_texture_rgba8;
@@ -66,29 +66,34 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 *surface.borrow_mut() = Some(offscreen);
             }
 
-            let mut surface = surface.borrow_mut();
-            let surface = surface
-                .as_mut()
-                .expect("hydrolysis view renderer surface must initialize before rendering");
-            surface.resize(width, height);
-            let frame = surface
-                .acquire()
-                .expect("hydrolysis view renderer failed to acquire offscreen frame");
+            // The surface borrow ends before the render future is awaited:
+            // a suspended frame cannot hold a `RefCell` borrow another task
+            // might need while the browser device is awaited.
+            let (frame, adapter, device, queue, device_loss, format) = {
+                let mut borrowed = surface.borrow_mut();
+                let surface = borrowed
+                    .as_mut()
+                    .expect("hydrolysis view renderer surface must initialize before rendering");
+                surface.resize(width, height);
+                let frame = surface
+                    .acquire()
+                    .expect("hydrolysis view renderer failed to acquire offscreen frame");
+                (
+                    frame,
+                    surface.adapter().clone(),
+                    surface.device().clone(),
+                    surface.queue().clone(),
+                    surface.device_loss().clone(),
+                    surface.format(),
+                )
+            };
 
             let rgba_data = {
-                let device = surface.device();
-                let queue = surface.queue();
-                let device_loss = surface.device_loss().clone();
+                let device = &device;
+                let queue = &queue;
+                let device_loss = device_loss.clone();
                 let mut renderer =
-                    HydrolysisRenderer::new(surface.adapter(), device, Rc::clone(&self.theme));
-                renderer.set_frame_resources(
-                    surface.adapter(),
-                    device,
-                    queue,
-                    &device_loss,
-                    surface.gpu_context_id(),
-                    &surface.shared_device(),
-                );
+                    HydrolysisRenderer::new(&adapter, device, Rc::clone(&self.theme));
                 renderer.reset_scene();
                 renderer.begin_rebuild_frame();
 
@@ -104,31 +109,28 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                     kurbo::Affine::IDENTITY,
                 );
                 renderer.finish_rebuild_frame();
-                renderer.render_scene_to_texture(crate::renderer::HydrolysisRenderTarget {
-                    adapter: surface.adapter(),
-                    device,
-                    queue,
-                    device_loss,
-                    gpu_context_id: surface.gpu_context_id(),
-                    shared_device: surface.shared_device(),
-                    display_scale: 1.0,
-                    headroom: 1.0,
-                    persistent: true,
-                    texture: Some(frame.texture()),
-                    view: frame.view(),
-                    format: surface.format(),
-                    width,
-                    height,
-                    base_color: peniko::Color::TRANSPARENT,
-                });
+                crate::engine::engine_await!(renderer.render_scene_to_texture(
+                    crate::renderer::HydrolysisRenderTarget {
+                        adapter: &adapter,
+                        device,
+                        queue,
+                        device_loss,
+                        texture: Some(frame.texture()),
+                        format,
+                        width,
+                        height,
+                        base_color: cherenkov::WorkingColor::TRANSPARENT,
+                    }
+                ));
                 renderer.migration_counters_mut().gpu_submissions += 1;
-                let rgba_data =
-                    readback_texture_rgba8(device, queue, frame.texture(), width, height);
-                renderer.clear_frame_resources();
-                rgba_data
+                readback_texture_rgba8(device, queue, frame.texture(), width, height)
             };
 
-            surface.present(frame);
+            surface
+                .borrow_mut()
+                .as_mut()
+                .expect("hydrolysis view renderer surface lost its surface")
+                .present(frame);
 
             RenderResult {
                 rgba_data,

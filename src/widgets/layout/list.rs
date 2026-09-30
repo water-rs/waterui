@@ -33,13 +33,12 @@ use waterui_text::Text;
 
 use crate::platform::Modifiers;
 use crate::renderer::lazy::VirtualExtentIndex;
-use crate::renderer::resolved_color_to_peniko;
 use crate::widgets::draw_scroll_indicators;
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt as _};
 use waterui::theme::color;
-use waterui_backend_core::widget::{Brush, DrawContext as _};
 use waterui_core::resolve::Resolvable as _;
+use waterui_graphics::cherenkov::Draw as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
@@ -1534,17 +1533,15 @@ pub(crate) fn render_list_parts(
         // `SelectionForeground` against it (see `selection_themed` in the list
         // component), so the pair has to come from the same place.
         let selection_fill = selected.then(|| {
-            resolved_color_to_peniko(
-                ctx.renderer_mut()
-                    .read_signal(&color::SelectionContainer.resolve(&row_env).computed()),
-            )
+            ctx.renderer_mut()
+                .read_signal(&color::SelectionContainer.resolve(&row_env).computed())
         });
         {
             let theme = ctx.theme();
             let mut draw = ctx.draw_context();
             theme.draw_list_row_background(&mut draw, row_rect, index % 2 == 1);
             if let Some(fill) = selection_fill {
-                draw.fill_rect(row_rect, &Brush::Solid(fill));
+                draw.fill(row_rect, fill);
             }
             if lifted_id == Some(row_id) {
                 theme.draw_list_row_lifted(&mut draw, row_rect, REORDER_LIFT_ELEVATION);

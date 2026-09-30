@@ -532,18 +532,18 @@ impl HydrolysisRenderer {
 
                     let mut run_x = glyph_run.offset() + ink_shift;
                     let run_y = glyph_run.baseline();
-                    let glyphs: Vec<waterui_graphics::Glyph> = glyph_run
+                    let glyphs: Vec<crate::renderer::Glyph> = glyph_run
                         .glyphs()
                         .map(move |glyph| {
                             let x = run_x + glyph.x;
                             let y = run_y - glyph.y;
                             run_x += glyph.advance;
-                            waterui_graphics::Glyph { id: glyph.id, x, y }
+                            crate::renderer::Glyph { id: glyph.id, x, y }
                         })
                         .collect();
 
                     counters.font_registrations += 1;
-                    scene.glyphs(waterui_graphics::GlyphRun {
+                    scene.glyphs(&crate::renderer::GlyphRun {
                         font: run.font(),
                         font_size: run.font_size(),
                         normalized_coords,

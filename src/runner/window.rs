@@ -273,22 +273,21 @@ pub struct FrameCounters {
     pub scene_layers: u32,
     /// Number of recorded scene segment layers submitted for this frame.
     pub scene_segment_layers: u32,
-    /// Number of embedded GPU surface layers submitted for this frame.
-    pub gpu_surface_layers: u32,
-    /// Number of GPU surfaces that rendered straight into the window's own
-    /// target this frame, skipping the offscreen intermediate and the
-    /// compositor pass. At most one: the path exists only for a surface that is
-    /// the window's whole content.
-    pub direct_gpu_surfaces: u32,
+    /// Number of mounted `GpuContentView` layers submitted for this frame.
+    pub gpu_content_layers: u32,
     /// Number of clip scopes pushed while building this frame.
     pub clip_layers: u32,
     /// Maximum nested clip depth while building this frame.
     pub max_clip_depth: u32,
-    /// Number of AppliedFilter nodes dispatched in this frame.
+    /// Number of `FilteredView` mounts submitted in this frame.
+    pub filtered_layers: u32,
+    /// Filter effects that encoded in this frame.
     pub applied_filter_count: u32,
-    /// Time spent capturing AppliedFilter input subtrees, in microseconds.
+    /// Filtered-subtree capture time in this frame, in microseconds: `0` —
+    /// the engine captures inside the same render pass as the effect encode
+    /// and reports no per-phase split.
     pub applied_filter_capture_us: u64,
-    /// Time spent running AppliedFilter GPU effects, in microseconds.
+    /// Filter effect encode time in this frame, in microseconds.
     pub applied_filter_effect_us: u64,
     /// Whether this frame rendered to the target.
     pub rendered: bool,
@@ -361,30 +360,39 @@ pub(super) fn window_clear_color(window: &Window, env: &Environment) -> peniko::
 
 pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> peniko::Color {
     let resolved = color.resolve(env).snapshot();
-    let srgb = resolved.to_srgb_with_headroom();
-    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
+    let srgb = waterui_graphics::color::working::to_srgb(resolved);
+    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.components[3]])
 }
 
 #[cfg(hydrolysis_winit)]
 pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
     match &window.background {
         WindowBackground::Opaque => false,
-        WindowBackground::Color(color) => color.resolve(env).snapshot().opacity < 1.0,
+        WindowBackground::Color(color) => color.resolve(env).snapshot().components[3] < 1.0,
     }
 }
 
-/// Runs one frame and reports whether it was presented to the surface — an
-/// idle frame, or one whose surface had to be reconfigured, is not.
-pub(super) fn render_window<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
-    env: &Environment,
-    drain_local_tasks: &mut dyn FnMut() -> bool,
-) -> bool {
-    let result = render_window_with_capture(runtime, env, FrameReader::Display, drain_local_tasks);
+crate::engine::cfg_async_fn! {
+    /// Runs one frame and reports whether it was presented to the surface — an
+    /// idle frame, or one whose surface had to be reconfigured, is not.
+    ///
+    /// Async on wasm32, where the engine render inside awaits the browser device.
+    pub(super) fn render_window<P: GpuSurfaceWindow>(
+        runtime: &mut RuntimeWindow<P>,
+        env: &Environment,
+        drain_local_tasks: &mut dyn FnMut() -> bool,
+    ) -> bool {
+    let result = crate::engine::engine_await!(render_window_with_capture(
+        runtime,
+        env,
+        FrameReader::Display,
+        drain_local_tasks
+    ));
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
     let _ = (result.rebuilt, result.snapshot);
     result.profile.counters.rendered
+    }
 }
 
 pub(super) const fn surface_error_requires_reconfigure(
@@ -502,14 +510,6 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
     let (width, height) = surface.size();
     let bounds = create_bounds(width, height, scale_factor);
     let root_transform = kurbo::Affine::scale(scale_factor);
-    runtime.renderer.set_frame_resources(
-        surface.adapter(),
-        surface.device(),
-        surface.queue(),
-        surface.device_loss(),
-        surface.gpu_context_id(),
-        &surface.shared_device(),
-    );
 
     let pump_started_at = Instant::now();
     let mut phases = FramePhases::default();
@@ -522,7 +522,6 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
     }
 
     let mut built = false;
-    let mut flushed = false;
     match runtime.mode {
         FrameMode::Idle => {}
         FrameMode::Refresh | FrameMode::Animate if !runtime.renderer.has_render_tree() => {
@@ -535,7 +534,6 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
                 &mut phases,
             );
             built = true;
-            flushed = true;
             runtime.clear_frame_mode();
             // Anything the build itself flagged as needing another pass — a hover
             // change under the pointer, a renderer-side structural request raised
@@ -561,7 +559,6 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
         FrameMode::Refresh | FrameMode::Animate => {
             refresh_window_scene(runtime, env, &mut phases);
             runtime.clear_frame_mode();
-            flushed = true;
         }
     }
     if runtime.renderer.take_next_frame_rebuild_request() {
@@ -575,19 +572,13 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     phases.rebuild = pump_started_at.elapsed();
-    ScenePumpOutcome {
-        built,
-        flushed,
-        phases,
-    }
+    ScenePumpOutcome { built, phases }
 }
 
 /// What one scene pump did: whether the retained tree was built for the first
-/// time, and whether any flush (build, re-encode, or refresh) ran at all this
-/// frame. An idle pump leaves both false.
+/// time. An idle pump leaves it false.
 pub(super) struct ScenePumpOutcome {
     pub(super) built: bool,
-    pub(super) flushed: bool,
     pub(super) phases: FramePhases,
 }
 
@@ -641,7 +632,6 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
 
     let rebuilt = pump_window_scene(runtime, env, &mut || false).built;
     apply_window_size_limits(runtime, env);
-    runtime.renderer.clear_frame_resources();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
@@ -664,42 +654,54 @@ struct SurfaceRenderResult {
     snapshot: Option<HeadlessSnapshot>,
 }
 
-fn render_to_surface(
-    renderer: &mut HydrolysisRenderer,
-    surface: &mut dyn crate::platform::SurfaceProvider,
-    clear_color: peniko::Color,
-    display_scale: f64,
-    capture_snapshot: bool,
-    render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::HydrolysisRenderTarget<'_>, bool),
-) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+crate::engine::cfg_async_fn! {
+    fn render_to_surface {
+        renderer: &mut HydrolysisRenderer,
+        surface: &mut dyn crate::platform::SurfaceProvider,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture_snapshot: bool,
+        render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::FrameRenderTarget<'_>, bool),
+    } {
+        renderer: &mut HydrolysisRenderer,
+        surface: &mut dyn crate::platform::SurfaceProvider,
+        clear_color: peniko::Color,
+        display_scale: f64,
+        capture_snapshot: bool,
+        render: impl AsyncFnOnce(
+            &mut HydrolysisRenderer,
+            crate::renderer::FrameRenderTarget<'_>,
+            bool,
+        ),
+    } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
     let (width, height) = surface.size();
     let format = surface.format();
     let premultiply_alpha = surface.premultiply_alpha();
+    let context = surface.device_loss().gpu_context();
     let acquire_started_at = Instant::now();
     let frame = acquire_surface_frame(surface)?;
     let acquire = acquire_started_at.elapsed();
     let render_started_at = Instant::now();
-    render(
+    crate::engine::engine_await!(render(
         renderer,
-        crate::renderer::HydrolysisRenderTarget {
+        crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
             device: surface.device(),
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
-            gpu_context_id: surface.gpu_context_id(),
-            shared_device: surface.shared_device(),
+            gpu_context_id: context.context_id,
+            shared_device: context.shared_device,
             display_scale,
             headroom: surface.display_headroom(),
             persistent: true,
             texture: Some(frame.texture()),
-            view: frame.view(),
             format,
             width,
             height,
-            base_color: clear_color,
+            base_color: crate::renderer::working_color(clear_color),
         },
         premultiply_alpha,
-    );
+    ));
     let render = render_started_at.elapsed();
     #[cfg(feature = "frame-profile")]
     {
@@ -749,6 +751,7 @@ fn render_to_surface(
         present,
         snapshot,
     })
+    }
 }
 
 /// Who reads the pixels of a frame `render_window_with_capture` renders.
@@ -793,12 +796,15 @@ impl FrameReader {
     }
 }
 
-pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
-    runtime: &mut RuntimeWindow<P>,
-    env: &Environment,
-    reader: FrameReader,
-    drain_local_tasks: &mut dyn FnMut() -> bool,
-) -> RenderWindowResult {
+crate::engine::cfg_async_fn! {
+    /// Async on wasm32, where the surface render inside awaits the browser
+    /// device.
+    pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
+        runtime: &mut RuntimeWindow<P>,
+        env: &Environment,
+        reader: FrameReader,
+        drain_local_tasks: &mut dyn FnMut() -> bool,
+    ) -> RenderWindowResult {
     let capture_snapshot = reader.captures();
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
@@ -832,17 +838,6 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
         let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
         #[cfg(hydrolysis_macos_system_webview)]
         let (width, height) = runtime.platform.content_size();
-        // The redraw-only filter refresh exists for frames that present without
-        // re-flushing the tree (an animated filter while the scene is idle). Any
-        // flush already ran every filter through its node, so refreshing again
-        // here would execute animated filters twice per frame.
-        if !pump_outcome.flushed {
-            runtime.renderer.begin_redraw_frame();
-            let surface = runtime.platform.surface();
-            runtime
-                .renderer
-                .refresh_active_applied_filters(surface.device(), surface.queue());
-        }
         runtime
             .renderer
             .prepare_transient_text_input_overlay(env, root_transform);
@@ -919,12 +914,13 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                 platform.clear_hybrid_composition();
             }
             let scale_factor = runtime.platform.scale_factor();
-            render_to_surface(
+            crate::engine::engine_await!(render_to_surface(
                 &mut runtime.renderer,
                 runtime.platform.surface(),
                 clear_color,
                 scale_factor,
                 capture_snapshot,
+                #[cfg(not(target_arch = "wasm32"))]
                 |renderer, target, premultiply_alpha| {
                     renderer.render_scene_to_surface_with_alpha_mode(
                         target,
@@ -932,18 +928,29 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                         reader.rasterizes(),
                     );
                 },
-            )
+                #[cfg(target_arch = "wasm32")]
+                async |renderer, target, premultiply_alpha| {
+                    renderer
+                        .render_scene_to_surface_with_alpha_mode(
+                            target,
+                            premultiply_alpha,
+                            reader.rasterizes(),
+                        )
+                        .await;
+                },
+            ))
         };
 
         #[cfg(not(hydrolysis_macos_system_webview))]
         let render_result = {
             let scale_factor = runtime.platform.scale_factor();
-            render_to_surface(
+            crate::engine::engine_await!(render_to_surface(
                 &mut runtime.renderer,
                 runtime.platform.surface(),
                 clear_color,
                 scale_factor,
                 capture_snapshot,
+                #[cfg(not(target_arch = "wasm32"))]
                 |renderer, target, premultiply_alpha| {
                     renderer.render_scene_to_surface_with_alpha_mode(
                         target,
@@ -951,7 +958,17 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                         reader.rasterizes(),
                     );
                 },
-            )
+                #[cfg(target_arch = "wasm32")]
+                async |renderer, target, premultiply_alpha| {
+                    renderer
+                        .render_scene_to_surface_with_alpha_mode(
+                            target,
+                            premultiply_alpha,
+                            reader.rasterizes(),
+                        )
+                        .await;
+                },
+            ))
         };
 
         #[cfg(hydrolysis_macos_system_webview)]
@@ -995,8 +1012,8 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                             measurement_cache_misses,
                             scene_layers: layer_stats.composited_scene_layers,
                             scene_segment_layers: layer_stats.scene_segment_layers,
-                            gpu_surface_layers: layer_stats.gpu_surface_layers,
-                            direct_gpu_surfaces: layer_stats.direct_gpu_surfaces,
+                            gpu_content_layers: layer_stats.gpu_content_layers,
+                            filtered_layers: layer_stats.filtered_layers,
                             clip_layers,
                             max_clip_depth,
                             applied_filter_count,
@@ -1022,7 +1039,6 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
         {
             stages = runtime.renderer.take_frame_stage_times();
         }
-        runtime.renderer.clear_frame_resources();
         let (measurement_cache_hits, measurement_cache_misses) =
             runtime.renderer.measurement_cache_stats();
         let layer_stats = runtime.renderer.render_layer_stats();
@@ -1046,8 +1062,8 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                 measurement_cache_misses,
                 scene_layers: layer_stats.composited_scene_layers,
                 scene_segment_layers: layer_stats.scene_segment_layers,
-                gpu_surface_layers: layer_stats.gpu_surface_layers,
-                direct_gpu_surfaces: layer_stats.direct_gpu_surfaces,
+                gpu_content_layers: layer_stats.gpu_content_layers,
+                filtered_layers: layer_stats.filtered_layers,
                 clip_layers,
                 max_clip_depth,
                 applied_filter_count,
@@ -1074,9 +1090,7 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
                     present: present_duration,
                     total: elapsed_or_zero(frame_started_at),
                     rebuild_iterations: u32::from(pump_outcome.built),
-                    applied_filter_count,
-                    applied_filter_capture_us,
-                    applied_filter_effect_us,
+                    filtered_layers: layer_stats.filtered_layers,
                     rebuilt: pump_outcome.built,
                 },
             );
@@ -1125,6 +1139,7 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
         #[cfg(feature = "frame-profile")]
         stages,
         profile,
+    }
     }
 }
 
@@ -1184,28 +1199,7 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
 
     runtime.request_refresh();
     let scale_factor = runtime.platform.scale_factor();
-    let (width, height, adapter, device, queue, device_loss, gpu_context_id, shared_device) = {
-        let surface = runtime.platform.surface();
-        let (width, height) = surface.size();
-        (
-            width,
-            height,
-            surface.adapter().clone(),
-            surface.device().clone(),
-            surface.queue().clone(),
-            surface.device_loss().clone(),
-            surface.gpu_context_id(),
-            surface.shared_device(),
-        )
-    };
-    runtime.renderer.set_frame_resources(
-        &adapter,
-        &device,
-        &queue,
-        &device_loss,
-        gpu_context_id,
-        &shared_device,
-    );
+    let (width, height) = runtime.platform.surface().size();
     let bounds = create_bounds(width, height, scale_factor);
     let transform = kurbo::Affine::scale(scale_factor);
     assert!(
@@ -1666,11 +1660,6 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if runtime.renderer.poll_gpu_surface_redraw_handles() {
-        tracing::debug!("wake cause: gpu surface redraw handle");
-        runtime.platform.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
-    }
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.

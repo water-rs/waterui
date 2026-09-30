@@ -772,7 +772,7 @@ pub(crate) struct ColorNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
-    pub(crate) color: Computed<ResolvedColor>,
+    pub(crate) color: Computed<cherenkov::WorkingColor>,
 }
 
 pub(crate) struct TextNode {
@@ -929,247 +929,35 @@ pub(crate) struct SceneViewNode {
     pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
 }
 
-/// An embedded `GpuSurface` leaf that OWNS its `EmbeddedGpuSurfaceRuntime`
-/// (textures, setup state, redraw handle) — the node analogue of
-/// [`SceneViewNode`], for a `Native<GpuSurface>` reached through the retained
-/// tree. Identity is structural: a reactive swap builds a fresh node with a
-/// fresh runtime, and a per-frame re-flush re-binds the *same* runtime via an
-/// `Rc`-carrying compositor layer, so there is no cursor-ordered slot to desync.
-/// The runtime is shared (`Rc<RefCell<…>>`) with the renderer's node-surface
-/// registry so its off-thread redraw handle is polled even on frames that do not
-/// re-flush the tree.
-pub(crate) struct GpuSurfaceNode {
+/// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node
+/// analogue of [`SceneViewNode`], for a `Native<GpuContentView>` reached
+/// through the retained tree. Identity is structural: a reactive swap builds
+/// a fresh node with a fresh runtime (and a fresh one-shot engine-content
+/// install), while a per-frame re-flush re-binds the *same* runtime via an
+/// `Rc`-carrying compositor layer, so there is no cursor-ordered slot to
+/// desync.
+pub(crate) struct GpuContentNode {
     pub(super) accessibility_identity: Rc<()>,
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
-    pub(super) runtime: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
+    pub(super) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
 }
 
-/// A `ViewEffect` leaf that OWNS its `ViewEffectRuntime` (the effect renderer +
-/// setup state) and builds its captured child as a persistent [`RenderNode`], so
-/// reactive descendants inside the effect's content reach their own dedicated
-/// nodes and stay live. Each flush renders the child node into an input texture,
-/// runs the effect into an output texture, and draws the output image — mirroring
-/// the dispatch path's `render_view_effect` exactly, but with no cursor-bound
-/// effect slot.
-pub(crate) struct ViewEffectNode {
+/// A `FilteredView` wrapper that OWNS its [`FilteredRuntime`]
+/// (the unregistered effect source plus its `ParamGuards`, then the engine
+/// `Filter` handle after first registration) and builds its wrapped child as
+/// a persistent [`RenderNode`]. Layout-transparent: it measures, lays out,
+/// and patches the child exactly as the child would on its own. Each flush
+/// presents the child's layers inside a keyed filtered mount — the engine
+/// applies the filter across the whole group.
+pub(crate) struct FilteredNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
-    pub(super) runtime: Rc<RefCell<ViewEffectRuntime>>,
-    /// The effect's content, built once as a persistent node (recursed into, not
-    /// baked), re-rendered into the input texture each flush.
-    pub(super) child: RefCell<RenderNode>,
-    pub(super) env: Environment,
-}
-
-/// An `AppliedFilter` metadata wrapper that OWNS its `AppliedFilterRuntime`
-/// (input/output textures, setup state, output image) and builds its wrapped
-/// child as a persistent [`RenderNode`]. Layout-transparent: it measures, lays
-/// out, and patches the child exactly as the child would on its own. Each flush
-/// renders the child into the runtime's input texture, runs the filter into the
-/// output texture, and draws the resulting image — reusing the runtime's
-/// texture-reuse logic verbatim, with no cursor-bound effect slot.
-pub(crate) struct AppliedFilterNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
-    pub(super) runtime: Rc<RefCell<AppliedFilterRuntime>>,
+    pub(super) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
     pub(super) child: RenderNode,
     pub(super) env: Environment,
-}
-
-impl GpuSurfaceNode {
-    /// Push a GPU-surface compositor layer that carries the node-owned runtime by
-    /// `Rc` (no cursor-ordered slot). Mirrors the dispatch path's
-    /// [`HydrolysisRenderer::render_gpu_surface`] exactly, but with an `Owned`
-    /// layer source so a per-frame re-flush re-binds the same runtime.
-    pub(crate) fn flush(
-        &self,
-        renderer: &mut HydrolysisRenderer,
-        ctx: RenderContext,
-        #[cfg(feature = "accessibility")] focus_node: Option<AccessibilityNodeId>,
-    ) {
-        let hit_rect = transformed_rect(ctx.hit_transform, ctx.bounds);
-        renderer.push_gpu_surface_layer(
-            GpuSurfaceSource::Owned(Rc::clone(&self.runtime)),
-            crate::renderer::retained::RenderKey {
-                render: self.render_id,
-                presentation: crate::renderer::retained::PresentationId::ORDINARY,
-            },
-            ctx.transform,
-            ctx.bounds,
-            hit_rect,
-        );
-        // A view that handles its own input receives the pointer, keyboard,
-        // IME and scroll events landing on this layer directly, and owns the
-        // gesture: it gets raw scroll deltas instead of the pan state
-        // `GpuFrame` exposes, so the two never both interpret one gesture.
-        if self.runtime.borrow().wants_input_events() {
-            renderer.register_surface_input_target(
-                ctx.bounds,
-                ctx.hit_transform,
-                Rc::clone(&self.runtime),
-                #[cfg(feature = "accessibility")]
-                focus_node,
-            );
-            return;
-        }
-        let runtime = Rc::clone(&self.runtime);
-        renderer.register_trackpad_pan_target(hit_rect, move |dx, dy, phase| {
-            runtime.borrow_mut().handle_trackpad_pan(dx, dy, phase)
-        });
-    }
-}
-
-impl ViewEffectNode {
-    /// Render the captured child node into an input texture, run the effect into
-    /// an output texture, and draw the output image — the node analogue of the
-    /// dispatch path's [`HydrolysisRenderer::render_view_effect`], with the
-    /// runtime and child owned by this node (no cursor-bound effect slot).
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub(crate) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
-        let (device, queue) = {
-            let (device, queue) = renderer.state().frame_resources();
-            (device.clone(), queue.clone())
-        };
-        if !ViewEffectRuntime::ensure_setup(
-            &self.runtime,
-            renderer.effect_setup_resources(&device, &queue),
-            renderer.frame_signals(),
-        ) {
-            return;
-        }
-        let mut runtime = self.runtime.borrow_mut();
-
-        let input_width = (ctx.bounds.width().max(1.0).round()) as u32;
-        let input_height = (ctx.bounds.height().max(1.0).round()) as u32;
-        let output_size = runtime.effect().output_size();
-        let (output_width, output_height) = output_size.compute(input_width, input_height);
-        assert!(
-            !(output_width == 0 || output_height == 0),
-            "hydrolysis ViewEffect requires non-zero output dimensions"
-        );
-
-        let (input_texture, input_view) = {
-            let (texture, view) = runtime.input_texture(&device, input_width, input_height);
-            (texture.clone(), view.clone())
-        };
-        renderer.render_child_node_to_texture(
-            &self.child.borrow(),
-            ctx,
-            &self.env,
-            ChildTextureTarget {
-                texture: &input_texture,
-                view: &input_view,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                width: input_width,
-                height: input_height,
-            },
-        );
-
-        let (output_texture, output_view) = {
-            let (texture, view) = runtime.output_texture(&device, output_width, output_height);
-            (texture.clone(), view.clone())
-        };
-
-        let input = ViewEffectInput {
-            device: &device,
-            queue: &queue,
-            texture: &input_texture,
-            view: input_view,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: input_width,
-            height: input_height,
-        };
-        let output = ViewEffectOutput {
-            device: &device,
-            queue: &queue,
-            texture: &output_texture,
-            view: output_view,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: output_width,
-            height: output_height,
-        };
-        let needs_redraw = runtime.effect_mut().render(&input, &output);
-        if needs_redraw {
-            renderer.signals.request_refresh();
-        }
-        drop(runtime);
-
-        renderer.push_external_texture_layer(
-            crate::renderer::retained::RenderKey {
-                render: self.render_id,
-                presentation: crate::renderer::retained::PresentationId::ORDINARY,
-            },
-            output_texture,
-            wgpu::TextureFormat::Rgba8Unorm,
-            ctx.transform,
-            ctx.bounds,
-        );
-    }
-}
-
-impl AppliedFilterNode {
-    /// Flush the wrapped child into the frame's capture atlas, queue the filter
-    /// to run from that slot, and draw the filter's output image — the node
-    /// analogue of the dispatch path's
-    /// [`HydrolysisRenderer::render_applied_filter_metadata`], reusing the
-    /// runtime's texture-reuse logic verbatim, with no cursor-bound effect slot.
-    ///
-    /// The filter itself runs when the atlas level is flushed
-    /// ([`HydrolysisRenderer::flush_subtree_captures`]), which happens before
-    /// the scene that draws the output image is rendered, so one compositor
-    /// pass and one submit serve every filter of the level.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    pub(crate) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {
-        let (device, queue) = {
-            let (device, queue) = renderer.state().frame_resources();
-            (device.clone(), queue.clone())
-        };
-        if !AppliedFilterRuntime::ensure_setup(
-            &self.runtime,
-            renderer.effect_setup_resources(&device, &queue),
-            renderer.frame_signals(),
-        ) {
-            return;
-        }
-
-        let width = (ctx.bounds.width().max(1.0).round()) as u32;
-        let height = (ctx.bounds.height().max(1.0).round()) as u32;
-        // A tree flush always recaptures the child: whole-scene redraw is the
-        // renderer's contract, and skipping the capture is exactly how a
-        // filtered subtree freezes at stale pixels. The redraw-only refresh
-        // path (which never re-flushes the tree) is the one place the cached
-        // input is legitimately reused.
-        let capture_started_at = Instant::now();
-        renderer.capture_child_into_atlas(
-            &self.child,
-            ctx,
-            &self.env,
-            &self.runtime,
-            width,
-            height,
-        );
-        renderer.frame_applied_filter_capture += capture_started_at.elapsed();
-
-        let (output_texture, _output_width, _output_height) = self
-            .runtime
-            .borrow_mut()
-            .prepare_output(&device, width, height);
-
-        renderer.push_external_texture_layer(
-            crate::renderer::retained::RenderKey {
-                render: self.render_id,
-                presentation: crate::renderer::retained::PresentationId::ORDINARY,
-            },
-            output_texture,
-            wgpu::TextureFormat::Rgba8Unorm,
-            ctx.transform,
-            ctx.bounds,
-        );
-    }
 }
 
 pub(crate) struct DynamicHostNode {

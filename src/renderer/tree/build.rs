@@ -3,6 +3,7 @@
 //! env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
 
 use super::*;
+use crate::gpu_view::GpuContentRuntime;
 
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
@@ -19,15 +20,6 @@ impl RenderNode {
                 return RenderNode::Color(ColorNode {
                     render_id: RenderId::next(),
                     color: (*color).into_inner().resolve(env),
-                });
-            }
-            Err(view) => view,
-        };
-        let view = match view.downcast::<Native<ResolvedColor>>() {
-            Ok(color) => {
-                return RenderNode::Color(ColorNode {
-                    render_id: RenderId::next(),
-                    color: Computed::constant((*color).into_inner()),
                 });
             }
             Err(view) => view,
@@ -252,30 +244,15 @@ impl RenderNode {
             Ok(meta) => return RenderNode::build(meta.content, env, renderer),
             Err(view) => view,
         };
+        // Dynamic-range metadata used to scope a preference read by the retired
+        // GPU-surface path; Cherenkov's engine owns headroom per surface, so
+        // both pass through to the content like `Secure` above.
         let view = match view.downcast::<Metadata<StandardDynamicRange>>() {
-            Ok(meta) => {
-                let mut scoped = env.clone();
-                scoped.insert(DynamicRangePreference(false));
-                let child = RenderNode::build(meta.content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode {
-                    render_id: RenderId::next(),
-                    env: scoped,
-                    child,
-                }));
-            }
+            Ok(meta) => return RenderNode::build(meta.content, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<HighDynamicRange>>() {
-            Ok(meta) => {
-                let mut scoped = env.clone();
-                scoped.insert(DynamicRangePreference(true));
-                let child = RenderNode::build(meta.content, &scoped, renderer);
-                return RenderNode::Env(Box::new(EnvNode {
-                    render_id: RenderId::next(),
-                    env: scoped,
-                    child,
-                }));
-            }
+            Ok(meta) => return RenderNode::build(meta.content, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<IgnoreSafeArea>>() {
@@ -596,22 +573,15 @@ impl RenderNode {
         // new content and a per-frame re-flush re-binds the *same* runtime. Holding
         // the runtime in a frame-ordered slot instead lets the ordering drift out of
         // step with the tree and hand a leaf another leaf's runtime.
-        let view = match view.downcast::<Native<GpuSurface>>() {
-            Ok(surface) => {
-                return RenderNode::build_gpu_surface((*surface).into_inner(), env, renderer);
+        let view = match view.downcast::<Native<GpuContentView>>() {
+            Ok(view) => {
+                return RenderNode::build_gpu_content((*view).into_inner());
             }
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<ViewEffectErased>>() {
-            Ok(effect) => {
-                return RenderNode::build_view_effect((*effect).into_inner(), env, renderer);
-            }
-            Err(view) => view,
-        };
-        let view = match view.downcast::<Metadata<AppliedFilter>>() {
-            Ok(meta) => {
-                let Metadata { content, value } = *meta;
-                return RenderNode::build_applied_filter(value, content, env, renderer);
+        let view = match view.downcast::<Native<FilteredView>>() {
+            Ok(filtered) => {
+                return RenderNode::build_filtered((*filtered).into_inner(), env, renderer);
             }
             Err(view) => view,
         };
@@ -701,7 +671,7 @@ impl RenderNode {
             Ok(icon) => unsupported_system_icon(icon.as_inner()),
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<ResolvedGradient>>() {
+        let view = match view.downcast::<Native<waterui_graphics::Gradient>>() {
             Ok(gradient) => return RenderNode::build_gradient((*gradient).into_inner(), env),
             Err(view) => view,
         };
@@ -1026,58 +996,34 @@ impl RenderNode {
         }))
     }
 
-    /// Build an embedded `GpuSurface` node owning its
-    /// [`EmbeddedGpuSurfaceRuntime`] directly. The runtime is shared with the
-    /// renderer's node-surface registry so its off-thread redraw handle is polled
-    /// even on frames that do not re-flush the tree.
-    fn build_gpu_surface(
-        surface: GpuSurface,
-        env: &Environment,
-        renderer: &mut SemanticCore,
-    ) -> RenderNode {
-        let runtime = Rc::new(RefCell::new(EmbeddedGpuSurfaceRuntime::new(surface, env)));
-        renderer.register_node_gpu_surface(Rc::clone(&runtime));
-        RenderNode::GpuSurface(Box::new(GpuSurfaceNode {
+    /// Build a `GpuContentView` node owning its [`GpuContentRuntime`] — the
+    /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
+    /// producer inside is taken exactly once, when the node's first
+    /// `GpuContentLayer` installs it on the window's engine.
+    fn build_gpu_content(view: GpuContentView) -> RenderNode {
+        RenderNode::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
-            runtime,
+            runtime: Rc::new(RefCell::new(GpuContentRuntime::new(view))),
         }))
     }
 
-    /// Build a `ViewEffect` node owning its [`ViewEffectRuntime`] and building its
-    /// captured content as a persistent child [`RenderNode`] (recursed into, not
-    /// baked), so reactive descendants inside the effect stay live.
-    fn build_view_effect(
-        mut effect: ViewEffectErased,
+    /// Build a `FilteredView` node owning its [`FilteredRuntime`] and building
+    /// its wrapped content as a persistent child [`RenderNode`], so reactive
+    /// descendants inside the filtered subtree stay live.
+    fn build_filtered(
+        filtered: FilteredView,
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> RenderNode {
-        let content = effect.take_content();
+        let FilteredView {
+            content,
+            effect,
+            guards,
+        } = filtered;
+        let runtime = Rc::new(RefCell::new(FilteredRuntime::new(effect, guards)));
         let child = RenderNode::build(normalize_layout_view(content, env), env, renderer);
-        let runtime = Rc::new(RefCell::new(ViewEffectRuntime::new(effect)));
-        renderer.register_node_view_effect(Rc::clone(&runtime));
-        RenderNode::ViewEffect(Box::new(ViewEffectNode {
-            render_id: RenderId::next(),
-            runtime,
-            child: RefCell::new(child),
-            env: env.clone(),
-        }))
-    }
-
-    /// Build an `AppliedFilter` node owning its [`AppliedFilterRuntime`]
-    /// (input/output textures) and building its wrapped content as a persistent
-    /// child [`RenderNode`]. The runtime is registered with the renderer so
-    /// animated filters refresh on redraw-only frames.
-    fn build_applied_filter(
-        filter: AppliedFilter,
-        content: AnyView,
-        env: &Environment,
-        renderer: &mut SemanticCore,
-    ) -> RenderNode {
-        let runtime = Rc::new(RefCell::new(AppliedFilterRuntime::new(filter)));
-        renderer.register_node_applied_filter(Rc::clone(&runtime));
-        let child = RenderNode::build(normalize_layout_view(content, env), env, renderer);
-        RenderNode::AppliedFilter(Box::new(AppliedFilterNode {
+        RenderNode::Filtered(Box::new(FilteredNode {
             render_id: RenderId::next(),
             runtime,
             child,

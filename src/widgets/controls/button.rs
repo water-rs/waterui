@@ -3,7 +3,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, local_interaction_state, measure_label_intrinsic, measure_view_intrinsic,
-    popup_menu_nodes, resolved_color_to_peniko, transformed_rect,
+    popup_menu_nodes, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -603,7 +603,7 @@ pub(crate) fn render_button_parts(
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         if let Some(interaction_style) = interaction_style {
             let color_signal = interaction_style.state_layer_color.resolve(env);
-            let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+            let color = ctx.renderer_mut().read_signal(&color_signal);
             let mut draw = ctx.draw_context();
             theme.draw_interaction_state_layer(
                 &mut draw,
@@ -614,7 +614,7 @@ pub(crate) fn render_button_parts(
             );
         } else if let Some(floating_style) = floating_style {
             let color_signal = floating_style.state_layer_color.resolve(env);
-            let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+            let color = ctx.renderer_mut().read_signal(&color_signal);
             let corner_radius =
                 bounds.width().min(bounds.height()) * f64::from(floating_style.clip_radius);
             let mut draw = ctx.draw_context();
@@ -923,7 +923,7 @@ struct SelectResolvedColor {
 }
 
 impl waterui_core::resolve::Resolvable for SelectResolvedColor {
-    type Resolved = waterui_graphics::color::ResolvedColor;
+    type Resolved = waterui_graphics::color::WorkingColor;
 
     fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
         let when_true = self.when_true.resolve(env);

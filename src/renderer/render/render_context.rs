@@ -68,15 +68,6 @@ impl RenderContext {
             bounds,
         }
     }
-
-    #[must_use]
-    pub(crate) fn with_identity_transforms(&self, bounds: kurbo::Rect) -> Self {
-        Self {
-            transform: kurbo::Affine::IDENTITY,
-            hit_transform: kurbo::Affine::IDENTITY,
-            bounds,
-        }
-    }
 }
 
 impl<'a> WidgetRenderContext<'a> {

@@ -298,7 +298,6 @@ pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         Environment,
         Retain,
         Opacity,
-        AppliedFilter,
         Scale,
         Rotation,
         Offset,
@@ -459,7 +458,6 @@ fn normalize_layout_view_with_budget(
         LayoutPriority,
         Retain,
         Opacity,
-        AppliedFilter,
         Scale,
         Rotation,
         Offset,
@@ -617,76 +615,6 @@ pub(crate) fn estimate_layout_intrinsic<'a>(
     }
     let refs: Vec<&dyn SubView> = subviews.iter().map(|view| view as &dyn SubView).collect();
     layout.size_that_fits(ProposalSize::UNSPECIFIED, &refs)
-}
-
-pub(crate) fn resolved_color_to_peniko(color: ResolvedColor) -> peniko::Color {
-    let srgb = color.to_srgb_with_headroom();
-    peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity])
-}
-
-pub(crate) fn resolved_gradient_to_brush(
-    gradient: &ResolvedGradient,
-    bounds: kurbo::Rect,
-) -> peniko::Brush {
-    let mut stops: Vec<peniko::ColorStop> = gradient.stops.iter().map(to_peniko_stop).collect();
-
-    let brush = match gradient.gradient_type {
-        GradientType::Linear => {
-            let start = resolved_point_to_kurbo(gradient.start_point, bounds);
-            let end = resolved_point_to_kurbo(gradient.end_point, bounds);
-            peniko::Gradient::new_linear(start, end).with_stops(&*stops)
-        }
-        GradientType::Radial => {
-            let center = resolved_point_to_kurbo(gradient.start_point, bounds);
-            let radius_scale = bounds.width().min(bounds.height()) as f32;
-            let start_radius = gradient.start_value * radius_scale;
-            let end_radius = gradient.end_value * radius_scale;
-            peniko::Gradient::new_two_point_radial(center, start_radius, center, end_radius)
-                .with_stops(&*stops)
-        }
-        GradientType::Angular => {
-            let sweep = gradient.end_value - gradient.start_value;
-            let sweep_fraction = f64::from(sweep) / TAU;
-            if sweep_fraction < 1.0 {
-                let last_color = stops
-                    .last()
-                    .expect("resolved gradient must contain at least one stop")
-                    .color;
-                for stop in &mut stops {
-                    stop.offset = (f64::from(stop.offset) * sweep_fraction) as f32;
-                }
-                stops.push(peniko::ColorStop {
-                    offset: sweep_fraction as f32,
-                    color: last_color,
-                });
-                stops.push(peniko::ColorStop {
-                    offset: 1.0,
-                    color: last_color,
-                });
-            }
-            let center = resolved_point_to_kurbo(gradient.start_point, bounds);
-            peniko::Gradient::new_sweep(center, gradient.start_value, 0.0).with_stops(&*stops)
-        }
-        GradientType::Mesh => {
-            panic!("resolved mesh gradient must not be dispatched through ResolvedGradient")
-        }
-    };
-
-    peniko::Brush::Gradient(brush)
-}
-
-fn resolved_point_to_kurbo(point: [f32; 2], bounds: kurbo::Rect) -> kurbo::Point {
-    kurbo::Point::new(
-        f64::from(point[0]) * bounds.width(),
-        f64::from(point[1]) * bounds.height(),
-    )
-}
-
-fn to_peniko_stop(stop: &ResolvedGradientStop) -> peniko::ColorStop {
-    peniko::ColorStop {
-        offset: stop.position,
-        color: resolved_color_to_peniko(stop.color).into(),
-    }
 }
 
 /// Resolves a shape into a concrete path for `bounds`.
@@ -969,13 +897,15 @@ pub(crate) fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) 
     )
 }
 
-pub(crate) fn resolved_color_to_rgba8(color: ResolvedColor) -> [u8; 4] {
-    let srgb = color.to_srgb_with_headroom();
+/// The sRGB8 encoding of a resolved working colour — the form parley's text
+/// layout takes for its brush.
+pub(crate) fn working_color_to_rgba8(color: cherenkov::WorkingColor) -> [u8; 4] {
+    let srgb = waterui_graphics::color::working::to_srgb(color);
     [
         (srgb.red.clamp(0.0, 1.0) * 255.0).round() as u8,
         (srgb.green.clamp(0.0, 1.0) * 255.0).round() as u8,
         (srgb.blue.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+        (color.components[3].clamp(0.0, 1.0) * 255.0).round() as u8,
     ]
 }
 

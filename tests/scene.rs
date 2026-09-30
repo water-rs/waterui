@@ -9,11 +9,11 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use kurbo::Shape as _;
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::hstack;
-use waterui::graphics::{Scene2D, SceneContent, SceneView};
+use waterui::graphics::cherenkov::{Draw, Recorder};
+use waterui::graphics::{RecordingResources, SceneContent, SceneView};
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::text;
@@ -25,20 +25,20 @@ use waterui_testing::{NodeBounds, OffscreenApp, Role, ui};
 struct TestSceneContent(Rc<Cell<bool>>);
 
 impl SceneContent for TestSceneContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> bool {
         self.0.set(true);
-        let rect = kurbo::Rect::from_origin_size(
-            kurbo::Point::new(8.0, 8.0),
-            kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
-        )
-        .to_path(0.1);
-        let brush: peniko::Brush = peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
-        scene.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            &brush,
-            None,
-            &rect,
+        recorder.fill(
+            kurbo::Rect::from_origin_size(
+                kurbo::Point::new(8.0, 8.0),
+                kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
+            ),
+            cherenkov::Paint::Solid(cherenkov::WorkingColor::new([1.0, 0.0, 0.0, 1.0])),
         );
         false
     }
@@ -57,19 +57,19 @@ impl NaturallySizedContent {
 }
 
 impl SceneContent for NaturallySizedContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
-        let rect = kurbo::Rect::from_origin_size(
-            kurbo::Point::ZERO,
-            kurbo::Size::new(f64::from(width), f64::from(height)),
-        )
-        .to_path(0.1);
-        let brush: peniko::Brush = peniko::Color::new([0.0, 0.4, 1.0, 1.0]).into();
-        scene.fill(
-            peniko::Fill::NonZero,
-            kurbo::Affine::IDENTITY,
-            &brush,
-            None,
-            &rect,
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        recorder.fill(
+            kurbo::Rect::from_origin_size(
+                kurbo::Point::ZERO,
+                kurbo::Size::new(f64::from(width), f64::from(height)),
+            ),
+            cherenkov::Paint::Solid(cherenkov::WorkingColor::new([0.0, 0.4, 1.0, 1.0])),
         );
         false
     }

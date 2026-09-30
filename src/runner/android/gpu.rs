@@ -71,6 +71,7 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         })
         .await
         .map_err(|error| {
@@ -87,12 +88,12 @@ struct AndroidGpuContextInner {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    device_loss: waterui_graphics::DeviceLoss,
+    device_loss: crate::platform::DeviceLoss,
 }
 
 impl Drop for AndroidGpuContextInner {
     fn drop(&mut self) {
-        waterui_graphics::shared_context::drain_device_before_teardown(&self.device);
+        crate::platform::drain_device_before_teardown(&self.device);
     }
 }
 
@@ -157,10 +158,9 @@ impl AndroidGpuContext {
             "failed to find compute-capable wgpu adapter",
         );
         let required_limits = crate::platform::required_device_limits(&adapter);
-        let required_features =
-            waterui_graphics::shared_context::required_media_features(adapter.features())
-                | (adapter.features()
-                    & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
+        let required_features = crate::platform::required_media_features(adapter.features())
+            | (adapter.features()
+                & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
@@ -176,11 +176,18 @@ impl AndroidGpuContext {
                     "hydrolysis android: failed to request wgpu device: {error}"
                 ))
             })?;
-        let device_loss = waterui_graphics::DeviceLoss::observe(&device);
+        let context_id = crate::platform::next_gpu_context_id();
+        let shared_device = cherenkov_gpu::interop::SharedDevice {
+            instance: instance.clone(),
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
+        };
+        let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
         Ok(Self {
             inner: Arc::new(AndroidGpuContextInner {
                 instance,
-                context_id: crate::platform::next_gpu_context_id(),
+                context_id,
                 adapter,
                 device,
                 queue,
@@ -301,6 +308,7 @@ impl AndroidSurface {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: width.max(1),
             height: height.max(1),
             // FIFO vsync-paced presentation with the plan's swapchain depth.
@@ -410,7 +418,7 @@ impl SurfaceProvider for AndroidSurface {
         &self.gpu.inner.queue
     }
 
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+    fn device_loss(&self) -> &crate::platform::DeviceLoss {
         &self.gpu.inner.device_loss
     }
 
@@ -438,7 +446,7 @@ impl SurfaceProvider for AndroidSurface {
         let SurfaceFrame::Android { output, .. } = frame else {
             panic!("hydrolysis android: surface frame mismatched attachment");
         };
-        output.present();
+        self.queue().present(output);
     }
 
     fn size(&self) -> (u32, u32) {

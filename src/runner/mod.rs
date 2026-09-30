@@ -214,7 +214,7 @@ pub fn run(app: App, style: impl crate::Style) {
         env,
         last_window: _,
     } = app.into_parts();
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();

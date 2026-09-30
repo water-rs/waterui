@@ -696,9 +696,12 @@ fn the_panels_corners_show_the_scrim_and_their_shadow_lands_on_it() {
     for frame in [menu, accessory] {
         // The panel's interior beside its top-left corner is the surface.
         let surface = pixel(&opened, frame.x0 as u32 + 8, frame.y0 as u32 + 2);
-        // Inside the corner's cut-off region — within the frame's rect, past
-        // the 4pt radius — the scrim shows through: never the surface.
-        let wedge = pixel(&opened, frame.x0 as u32 + 1, frame.y0 as u32 + 1);
+        // The corner-most pixel of the frame's rect sits past the rounded
+        // corner's arc — inside the cut-off region — so the scrim shows
+        // through there, never the surface. The neighbouring pixel is the
+        // arc's AA fringe, whose surface coverage differs between
+        // rasterizers, so the assertion stays on the cut-off's own pixel.
+        let wedge = pixel(&opened, frame.x0 as u32, frame.y0 as u32);
         assert!(
             !near(wedge, surface, 40) && luma(wedge) <= luma(scrim) + 20,
             "the corner cut-off shows the scrim, not the surface — wedge {wedge:?}, scrim {scrim:?}, surface {surface:?}"

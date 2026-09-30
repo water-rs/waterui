@@ -8,13 +8,20 @@
 //!   layer at that stack position. Membership shifts every frame, so the
 //!   mount carries no identity — it only keeps the engine layer alive
 //!   while the content payload is replaced.
-//! - **Keyed mounts** are identity-bearing: a GPU surface's mount lives
-//!   under its [`RenderKey`], created on first appearance and dropped —
-//!   detached at the next commit — the first frame it is absent. Clip and
-//!   opacity scopes a surface is drawn under become a persistent chain of
-//!   wrapper layers above its content mount, each carrying one clip and
-//!   one alpha. This is the mount "reused across frames, never rebuilt
-//!   per frame".
+//! - **Keyed mounts** are identity-bearing: a GPU content view's or filtered
+//!   group's mount lives under its [`RenderKey`], created on first appearance
+//!   and dropped — detached at the next commit — the first frame it is
+//!   absent. Clip and opacity scopes the view is drawn under become a
+//!   persistent chain of wrapper layers above its content mount, each
+//!   carrying one clip and one alpha. This is the mount "reused across
+//!   frames, never rebuilt per frame".
+//!
+//! A keyed mount may also own a **group body**: the positional segment
+//! layers and committed order of the children a filtered mount draws under
+//! its content layer. Group children are mounts like any other — a keyed
+//! child simply has its ordered layer pushed under the group's content
+//! layer rather than the surface root — so the same `RenderKey` identity
+//! works at any depth.
 //!
 //! Wrapper layers are never destroyed while their mount lives: dropping a
 //! [`cherenkov::Layer`] removes its whole subtree at the next commit, so a
@@ -26,6 +33,7 @@
 
 use super::identity::RenderKey;
 use rustc_hash::{FxHashMap, FxHashSet};
+use waterui_graphics::HeldResources;
 
 /// One slot in the surface root's desired child order for a presented frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +57,24 @@ pub(crate) struct AncestryScope {
     pub(crate) opacity: f32,
 }
 
+/// The child mounts under a filtered mount's content layer: positional
+/// segment layers plus the order committed last frame. Group children are
+/// ordinary mounts — only their parent link differs — so this carries no
+/// keyed state of its own.
+#[derive(Default)]
+struct GroupBody {
+    /// Positional segment layers, grown to the group's segment count and
+    /// truncated when it falls.
+    segments: Vec<cherenkov::Layer>,
+    /// The registrations each segment's installed content names, kept until
+    /// the segment's content is replaced or the layer pruned — parallel to
+    /// `segments`.
+    held: Vec<Option<HeldResources>>,
+    /// The resolved child order committed under the content layer last
+    /// frame — engine layer ids, so an ancestry change still counts.
+    order_ids: Vec<cherenkov::LayerId>,
+}
+
 /// The engine layers one [`RenderKey`] owns: an ancestry chain of clip and
 /// opacity wrappers (outermost first) above the content mount.
 struct KeyedMount {
@@ -59,9 +85,16 @@ struct KeyedMount {
     /// its subtree at the next commit, so a shrinking ancestry parks its
     /// excess instead.
     parked: Vec<cherenkov::Layer>,
-    /// The content layer: the frame's produced texture or drawing attaches
-    /// here, innermost under the wrapper chain.
+    /// The content layer: the frame's produced texture, drawing or filter
+    /// attaches here, innermost under the wrapper chain. A filtered mount's
+    /// children parent under this layer, so the filter covers them all.
     content: cherenkov::Layer,
+    /// The registrations the recording installed on `content` names — kept
+    /// until the recording that replaces it is installed, or the mount drops.
+    held: Option<HeldResources>,
+    /// The group's segment layers and committed order, allocated when the
+    /// first filtered child mounts under `content`.
+    group: Option<GroupBody>,
 }
 
 impl KeyedMount {
@@ -82,10 +115,16 @@ pub(crate) struct Mounts {
     /// shrunk — truncated — when it falls. Segment layers never carry
     /// children, so truncation destroys no mount state.
     segments: Vec<cherenkov::Layer>,
+    /// The registrations each segment's installed content names, parallel to
+    /// `segments` — released when the segment's content is replaced or the
+    /// layer truncated.
+    segment_held: Vec<Option<HeldResources>>,
     /// Identity-bearing mounts, keyed by the visual node's [`RenderKey`].
     keyed: FxHashMap<RenderKey, KeyedMount>,
     /// The overlay layer, created on first transient scene and kept.
     overlay: Option<cherenkov::Layer>,
+    /// The registrations the overlay's installed content names.
+    overlay_held: Option<HeldResources>,
     /// The resolved child order committed last frame — engine layer ids,
     /// not slots, so an ancestry change that swaps a mount's ordered layer
     /// still counts as an order change.
@@ -112,8 +151,10 @@ impl Mounts {
     pub(crate) fn new() -> Self {
         Self {
             segments: Vec::new(),
+            segment_held: Vec::new(),
             keyed: FxHashMap::default(),
             overlay: None,
+            overlay_held: None,
             order_ids: Vec::new(),
             frame_created: 0,
             frame_removed: 0,
@@ -156,6 +197,8 @@ impl Mounts {
                             wrappers: Vec::new(),
                             parked: Vec::new(),
                             content: surface.layer(),
+                            held: None,
+                            group: None,
                         }
                     })
                     .content
@@ -246,6 +289,153 @@ impl Mounts {
         }
     }
 
+    /// The segment layer `key`'s group orders group child `index` under,
+    /// creating the group body and segment layers on first use.
+    ///
+    /// The layer is the group's positional mount at `index`; its parent
+    /// link is committed by [`Self::sync_group_order`].
+    pub(crate) fn group_layer(
+        &mut self,
+        surface: &cherenkov::Surface<cherenkov_gpu::Gpu>,
+        key: RenderKey,
+        index: usize,
+    ) -> &cherenkov::Layer {
+        let mount = self
+            .keyed
+            .get_mut(&key)
+            .expect("hydrolysis mounts: group layer for an uncreated mount");
+        let group = mount.group.get_or_insert_with(GroupBody::default);
+        while group.segments.len() <= index {
+            group.segments.push(surface.layer());
+            self.frame_created += 1;
+        }
+        &group.segments[index]
+    }
+
+    /// The layer `key`'s group orders for `slot`: a group segment, or a
+    /// keyed mount's ordered layer — the same resolution [`Self::ordered`]
+    /// applies at the root, with segments drawn from the group body. An
+    /// overlay slot is a programmer error inside a group.
+    pub(crate) fn ordered_in_group(&self, group: RenderKey, slot: MountSlot) -> &cherenkov::Layer {
+        match slot {
+            MountSlot::Segment(index) => {
+                &self
+                    .keyed
+                    .get(&group)
+                    .expect("hydrolysis mounts: group order for an uncreated mount")
+                    .group
+                    .as_ref()
+                    .expect("hydrolysis mounts: group order sync before first group layer")
+                    .segments[index]
+            }
+            MountSlot::Keyed(key) => self.ordered(MountSlot::Keyed(key)),
+            MountSlot::Overlay => {
+                panic!("hydrolysis mounts: overlay slot inside a filtered group")
+            }
+        }
+    }
+
+    /// Stores the registrations the recording installed on `slot`'s content
+    /// layer names — `parent` is the filtered group's key, `None` at the
+    /// surface root. Replaces whatever the slot held before: the previous
+    /// set releases once the replacement content is installed, which is the
+    /// ordering the caller already guarantees by installing content first.
+    pub(crate) fn set_held(
+        &mut self,
+        parent: Option<RenderKey>,
+        slot: MountSlot,
+        held: HeldResources,
+    ) {
+        match (parent, slot) {
+            (Some(parent), MountSlot::Segment(index)) => {
+                let group = self
+                    .keyed
+                    .get_mut(&parent)
+                    .and_then(|mount| mount.group.as_mut())
+                    .expect("hydrolysis mounts: held registrations for an uncreated group");
+                while group.held.len() <= index {
+                    group.held.push(None);
+                }
+                group.held[index] = Some(held);
+            }
+            (Some(_), MountSlot::Overlay) => {
+                panic!("hydrolysis mounts: overlay slot inside a filtered group")
+            }
+            (None, MountSlot::Segment(index)) => {
+                while self.segment_held.len() <= index {
+                    self.segment_held.push(None);
+                }
+                self.segment_held[index] = Some(held);
+            }
+            (None, MountSlot::Overlay) => {
+                self.overlay_held = Some(held);
+            }
+            (_, MountSlot::Keyed(key)) => {
+                self.keyed
+                    .get_mut(&key)
+                    .expect("hydrolysis mounts: held registrations for an uncreated mount")
+                    .held = Some(held);
+            }
+        }
+    }
+
+    /// Commits this frame's child order under `key`'s content layer — the
+    /// children a filtered mount draws under its filter.
+    ///
+    /// `order` lists group slots in bottom-to-top order; a keyed slot's
+    /// ordered layer is pushed under the content layer just as a root slot
+    /// is pushed under the root. Excess group segments truncate; the group
+    /// body itself stays allocated for the mount's life.
+    pub(crate) fn sync_group_order(
+        &mut self,
+        tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
+        key: RenderKey,
+        order: &[MountSlot],
+    ) {
+        let order_ids: Vec<cherenkov::LayerId> = order
+            .iter()
+            .map(|slot| self.ordered_in_group(key, *slot).id())
+            .collect();
+        {
+            let mount = self
+                .keyed
+                .get_mut(&key)
+                .expect("hydrolysis mounts: group order for an uncreated mount");
+            // A group whose children are all keyed mounts owns no segment
+            // layers — the body materializes on the first order sync.
+            let group = mount.group.get_or_insert_with(GroupBody::default);
+
+            let segment_count = order
+                .iter()
+                .filter_map(|slot| match slot {
+                    MountSlot::Segment(index) => Some(*index + 1),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0);
+            if group.segments.len() > segment_count {
+                self.frame_removed += (group.segments.len() - segment_count) as u64;
+            }
+            group.segments.truncate(segment_count);
+            group.held.truncate(segment_count);
+
+            if order_ids == group.order_ids {
+                return;
+            }
+            group.order_ids = order_ids;
+        }
+
+        let parent = &self
+            .keyed
+            .get(&key)
+            .expect("hydrolysis mounts: group parent vanished during sync")
+            .content;
+        for slot in order {
+            let child = self.ordered_in_group(key, *slot);
+            tx[parent].push(child);
+        }
+    }
+
     /// Commits this frame's child order and prunes mounts that did not
     /// appear in it.
     ///
@@ -281,9 +471,11 @@ impl Mounts {
             self.frame_removed += (self.segments.len() - segment_count) as u64;
         }
         self.segments.truncate(segment_count);
+        self.segment_held.truncate(segment_count);
         if !order.contains(&MountSlot::Overlay) {
             self.frame_removed += u64::from(self.overlay.is_some());
             self.overlay = None;
+            self.overlay_held = None;
         }
 
         let order_ids: Vec<cherenkov::LayerId> =
@@ -297,16 +489,5 @@ impl Mounts {
             let child = self.ordered(*slot);
             tx[root].push(child);
         }
-    }
-
-    /// Statistics the migration counters report per frame.
-    pub(crate) fn layer_count(&self) -> usize {
-        self.segments.len()
-            + self
-                .keyed
-                .values()
-                .map(|mount| mount.wrappers.len() + mount.parked.len() + 1)
-                .sum::<usize>()
-            + usize::from(self.overlay.is_some())
     }
 }

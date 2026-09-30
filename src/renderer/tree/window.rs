@@ -107,17 +107,16 @@ impl RenderNode {
                 }
                 changed
             }
-            // A ViewEffect and an AppliedFilter wrap a child render node whose
-            // reactive descendants must keep patching, so the walk recurses into
-            // them (the effect itself owns its runtime, with no structural patch).
-            RenderNode::ViewEffect(node) => node.child.borrow_mut().patch(renderer),
-            RenderNode::AppliedFilter(node) => node.child.patch(renderer),
+            // A filtered view wraps a child render node whose reactive
+            // descendants must keep patching, so the walk recurses into it
+            // (the filter itself owns its runtime, with no structural patch).
+            RenderNode::Filtered(node) => node.child.patch(renderer),
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            // A GpuSurface owns its runtime and re-renders every flush; like a
+            // GPU content owns its runtime and produces every frame; like a
             // self-drawn scene it has no structural patch.
-            | RenderNode::GpuSurface(_)
+            | RenderNode::GpuContent(_)
             // A widget leaf re-dispatches from its live config every flush, so it
             // needs no structural patch.
             | RenderNode::Widget(_) => false,
@@ -163,14 +162,11 @@ impl RenderNode {
                 }
             }
             RenderNode::Scroll(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::ViewEffect(node) => {
-                node.child.borrow().collect_dynamic_identities_into(out);
-            }
-            RenderNode::AppliedFilter(node) => node.child.collect_dynamic_identities_into(out),
+            RenderNode::Filtered(node) => node.child.collect_dynamic_identities_into(out),
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            | RenderNode::GpuSurface(_)
+            | RenderNode::GpuContent(_)
             | RenderNode::Widget(_) => {}
             RenderNode::LazyStack(node) => node
                 .item_cache
@@ -210,8 +206,7 @@ impl RenderNode {
                 }
                 dirty
             }
-            RenderNode::ViewEffect(node) => node.child.borrow_mut().take_layout_dirty(),
-            RenderNode::AppliedFilter(node) => node.child.take_layout_dirty(),
+            RenderNode::Filtered(node) => node.child.take_layout_dirty(),
             RenderNode::Collection(node) => node
                 .entries
                 .iter_mut()
@@ -220,7 +215,7 @@ impl RenderNode {
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            | RenderNode::GpuSurface(_)
+            | RenderNode::GpuContent(_)
             | RenderNode::Widget(_) => false,
         }
     }
@@ -380,9 +375,9 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    /// Build the retained tree before its first sized frame. Embedded GPU hosts
-    /// use this during async setup so every statically reachable `GpuSurface`
-    /// can finish its own setup before the first render target is presented.
+    /// Build the retained tree before its first sized frame, so statically
+    /// reachable nodes exist before the first render target is presented.
+    #[cfg(test)]
     pub(crate) fn prepare_window_tree(&mut self, content: AnyView, env: &Environment) {
         assert!(
             self.render_tree.is_none(),
@@ -444,7 +439,6 @@ impl HydrolysisRenderer {
             #[cfg(feature = "frame-profile")]
             let encode_started_at = Instant::now();
             tree.flush(self, ctx, env);
-            self.flush_subtree_captures(0);
             self.render_anchored_overlays(transform);
             #[cfg(feature = "frame-profile")]
             {
@@ -471,7 +465,6 @@ impl HydrolysisRenderer {
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
         node.flush(self, ctx, env);
-        self.flush_subtree_captures(0);
         self.render_anchored_overlays(transform);
         #[cfg(feature = "frame-profile")]
         {
@@ -545,9 +538,6 @@ impl HydrolysisRenderer {
         let encode_started_at = Instant::now();
         let ctx = safe_area_context(content_rect, transform, hit_transform);
         tree.flush(self, ctx, env);
-        // Every filtered subtree captured during the flush is rendered and
-        // filtered now, before the scene that draws their outputs is.
-        self.flush_subtree_captures(0);
         // The overlay-mode text context menu re-encodes with the frame it floats
         // over; drawing it only on the one-time build path would leave it visible
         // for a single frame.

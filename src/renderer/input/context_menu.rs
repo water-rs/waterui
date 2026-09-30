@@ -428,7 +428,6 @@ impl HydrolysisRenderer {
         let hover_start = self.hit_test.hover_targets.len();
         let drop_start = self.hit_test.drop_targets.len();
         let scroll_start = self.hit_test.scroll_targets.len();
-        let pan_start = self.hit_test.trackpad_pan_targets.len();
         let menu_start = self.hit_test.context_menu_targets.len();
         let text_start = self.text_editing.text_input_targets.len();
         let embedded_start = self.hit_test.embedded_input_targets.len();
@@ -455,7 +454,6 @@ impl HydrolysisRenderer {
         self.hit_test.hover_targets.truncate(hover_start);
         self.hit_test.drop_targets.truncate(drop_start);
         self.hit_test.scroll_targets.truncate(scroll_start);
-        self.hit_test.trackpad_pan_targets.truncate(pan_start);
         self.hit_test.context_menu_targets.truncate(menu_start);
         self.text_editing.text_input_targets.truncate(text_start);
         self.hit_test
@@ -560,7 +558,7 @@ impl HydrolysisRenderer {
                 scene.blurred_rounded_rect(
                     transform,
                     layout.lift,
-                    shadow,
+                    working_color(shadow),
                     CONTEXT_MENU_LIFT_RADIUS,
                     CONTEXT_MENU_LIFT_SHADOW_RADIUS,
                 );

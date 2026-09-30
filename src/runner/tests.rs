@@ -805,7 +805,7 @@ impl SurfaceProvider for RecoveringSurface {
         self.inner.queue()
     }
 
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+    fn device_loss(&self) -> &crate::platform::DeviceLoss {
         self.inner.device_loss()
     }
 

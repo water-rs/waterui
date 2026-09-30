@@ -4,17 +4,22 @@
 //! `Queue::write_texture` untouched and panic there with a message naming
 //! neither the image nor the view; the unwind then panicked again in the
 //! swapchain destructor and aborted the process. Validation now happens at
-//! the first hydrolysis-owned point — the `Scene2D` handed to
-//! `SceneContent::build_scene` — and the panic names the expected and actual
-//! byte counts and the format.
+//! the first owned point on each ingest path: `assert_well_formed_image`
+//! guards the peniko payloads `Recording::image` lowers, and
+//! `cherenkov::ImageData::new` — whose `Err` names the expected and actual
+//! byte counts and the format — guards the `SceneResources::image`
+//! registration a `SceneContent::build_scene` drives.
 
 use std::cell::RefCell;
+use std::sync::Arc;
 
-use kurbo::Affine;
-use peniko::{Blob, Brush, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+use cherenkov::{Draw, ImagePattern, Paint, Rgba8, Sampling};
+use kurbo::Rect;
+use peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use waterui::{AnyView, View};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
@@ -70,53 +75,86 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
     )
 }
 
-/// Scene content that pushes a single image brush command into the scene it
-/// is handed — the real `build_scene` ingest boundary from the issue.
+/// Scene content that records a single image op into the scene it is handed —
+/// the real `build_scene` ingest boundary from the issue.
 struct ImagePane {
-    draw: fn(&mut dyn Scene2D),
+    draw: fn(&mut Recorder, &mut RecordingResources<'_>, &mut ImageHandle),
+    /// The live registration the recordings name. `Registered` is RAII — the
+    /// engine unregisters the image when the last handle drops, so a pane that
+    /// registers keeps the handle for the pane's life.
+    image: ImageHandle,
 }
 
+/// A retained `Registered` image handle, `None` until the pane registers.
+type ImageHandle = Option<waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>;
+
 impl SceneContent for ImagePane {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
-        (self.draw)(scene);
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
+        (self.draw)(recorder, resources, &mut self.image);
         false
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
 }
 
-/// The issue's verbatim failure: `draw_image` of a grayscale buffer labelled
-/// `Rgba8`, through the retained tree's scene flush.
+/// The bytes the issue's malformed case ships — the 100-byte grayscale plane
+/// a 10x10 `Rgba8` upload needs 400 of.
+fn malformed_blob() -> Arc<[u8]> {
+    Arc::from(vec![0u8; 100])
+}
+
+/// The issue's verbatim failure: an image upload of a grayscale buffer
+/// labelled `Rgba8`, through the retained tree's scene flush.
 #[test]
-#[should_panic(
-    expected = "Rgba8 at 10x10 needs width*height*bytes_per_pixel = 400 bytes, but the blob holds 100 bytes"
-)]
-fn scene_view_rejects_malformed_image_at_draw_image() {
+#[should_panic(expected = "10x10 Rgba8 needs 400 bytes, got 100")]
+fn scene_view_rejects_malformed_image_at_image_upload() {
     let mut runtime = runtime_with(SceneView::new(ImagePane {
-        draw: |scene| {
-            scene.draw_image(&ImageBrush::new(malformed_image()), Affine::IDENTITY);
+        draw: |recorder, resources, _| {
+            let image = resources
+                .image(
+                    cherenkov::ImageData::<Rgba8>::new(10, 10, malformed_blob())
+                        .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
+                )
+                .expect("hydrolysis scene ingest: image registration failed");
+            let image = resources.name(&image);
+            recorder.image(image, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Linear);
         },
+        image: None,
     }));
     let _ = runtime.pump(false);
 }
 
-/// The same malformed buffer carried inside a `Brush::Image` fill: the ingest
-/// check must see through the brush, not just the `draw_image` entrypoint.
+/// The same malformed buffer carried inside an `ImagePattern` fill: the
+/// ingest check must see through the paint, not just the `image` entrypoint.
 #[test]
-#[should_panic(
-    expected = "Rgba8 at 10x10 needs width*height*bytes_per_pixel = 400 bytes, but the blob holds 100 bytes"
-)]
-fn scene_view_rejects_malformed_image_inside_a_fill_brush() {
+#[should_panic(expected = "10x10 Rgba8 needs 400 bytes, got 100")]
+fn scene_view_rejects_malformed_image_inside_a_fill_paint() {
     let mut runtime = runtime_with(SceneView::new(ImagePane {
-        draw: |scene| {
-            scene.fill(
-                peniko::Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Image(ImageBrush::new(malformed_image())),
-                None,
-                &kurbo::BezPath::from_svg("M0,0 L10,0 L10,10 Z").expect("static path parses"),
+        draw: |recorder, resources, _| {
+            let image = resources
+                .image(
+                    cherenkov::ImageData::<Rgba8>::new(10, 10, malformed_blob())
+                        .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
+                )
+                .expect("hydrolysis scene ingest: image registration failed");
+            recorder.fill(
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                Paint::Image(ImagePattern {
+                    image: resources.name(&image),
+                    transform: kurbo::Affine::IDENTITY,
+                    extend_x: cherenkov::Extend::Pad,
+                    extend_y: cherenkov::Extend::Pad,
+                    sampling: Sampling::Linear,
+                }),
             );
         },
+        image: None,
     }));
     let _ = runtime.pump(false);
 }
@@ -126,9 +164,25 @@ fn scene_view_rejects_malformed_image_inside_a_fill_brush() {
 #[test]
 fn scene_view_accepts_a_well_formed_image() {
     let mut runtime = runtime_with(SceneView::new(ImagePane {
-        draw: |scene| {
-            scene.draw_image(&ImageBrush::new(well_formed_image()), Affine::IDENTITY);
+        draw: |recorder, resources, image| {
+            if image.is_none() {
+                *image = Some(
+                    resources
+                        .image(
+                            cherenkov::ImageData::<Rgba8>::new(
+                                10,
+                                10,
+                                Arc::<[u8]>::from(vec![0u8; 400]),
+                            )
+                            .expect("a well-formed Rgba8 image is accepted"),
+                        )
+                        .expect("hydrolysis scene ingest: image registration failed"),
+                );
+            }
+            let id = resources.name(image.as_ref().expect("the pane registered its image"));
+            recorder.image(id, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Linear);
         },
+        image: None,
     }));
     let _ = runtime.pump(false);
 }

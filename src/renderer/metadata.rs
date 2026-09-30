@@ -66,20 +66,16 @@ impl HydrolysisRenderer {
             return;
         }
 
-        let brush = resolved_color_to_peniko(border.color.resolve(env).snapshot());
+        let paint = || Paint::Solid(border.color.resolve(env).snapshot());
         let width = f64::from(border.width);
 
         if border.edges.all() && border.corner_radius > 0.0 {
             let rounded =
                 kurbo::RoundedRect::from_rect(ctx.bounds, f64::from(border.corner_radius));
             let stroke = kurbo::Stroke::new(width);
-            renderer.scene.stroke(
-                &stroke,
-                ctx.transform,
-                &peniko::Brush::Solid(brush),
-                None,
-                &rounded,
-            );
+            renderer
+                .scene
+                .stroke_paint(&stroke, ctx.transform, paint(), &rounded);
             return;
         }
 
@@ -90,13 +86,9 @@ impl HydrolysisRenderer {
                 ctx.bounds.x1,
                 ctx.bounds.y0 + width,
             );
-            renderer.scene.fill(
-                peniko::Fill::NonZero,
-                ctx.transform,
-                &peniko::Brush::Solid(brush),
-                None,
-                &top,
-            );
+            renderer
+                .scene
+                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &top);
         }
         if border.edges.bottom {
             let bottom = kurbo::Rect::new(
@@ -105,13 +97,9 @@ impl HydrolysisRenderer {
                 ctx.bounds.x1,
                 ctx.bounds.y1,
             );
-            renderer.scene.fill(
-                peniko::Fill::NonZero,
-                ctx.transform,
-                &peniko::Brush::Solid(brush),
-                None,
-                &bottom,
-            );
+            renderer
+                .scene
+                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &bottom);
         }
         if border.edges.leading {
             let leading = kurbo::Rect::new(
@@ -120,13 +108,9 @@ impl HydrolysisRenderer {
                 ctx.bounds.x0 + width,
                 ctx.bounds.y1,
             );
-            renderer.scene.fill(
-                peniko::Fill::NonZero,
-                ctx.transform,
-                &peniko::Brush::Solid(brush),
-                None,
-                &leading,
-            );
+            renderer
+                .scene
+                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &leading);
         }
         if border.edges.trailing {
             let trailing = kurbo::Rect::new(
@@ -135,13 +119,9 @@ impl HydrolysisRenderer {
                 ctx.bounds.x1,
                 ctx.bounds.y1,
             );
-            renderer.scene.fill(
-                peniko::Fill::NonZero,
-                ctx.transform,
-                &peniko::Brush::Solid(brush),
-                None,
-                &trailing,
-            );
+            renderer
+                .scene
+                .fill_paint(peniko::Fill::NonZero, ctx.transform, paint(), &trailing);
         }
     }
 
@@ -164,7 +144,7 @@ impl HydrolysisRenderer {
             ctx.bounds.x1 + offset_x,
             ctx.bounds.y1 + offset_y,
         );
-        let shadow_color = resolved_color_to_peniko(shadow.color.resolve(env).snapshot());
+        let shadow_color = shadow.color.resolve(env).snapshot();
 
         // The silhouette states the caster's shape. `kind_clip_shape` — the
         // same resolver a clip uses to decide between the uniform rounded-rect
@@ -206,7 +186,7 @@ impl HydrolysisRenderer {
         transform: kurbo::Affine,
         silhouette: &ClipShape,
         rect: kurbo::Rect,
-        color: peniko::Color,
+        color: WorkingColor,
         blur: f64,
     ) {
         // The same resolution `apply_clip_shape` performs — structured kind
@@ -219,11 +199,10 @@ impl HydrolysisRenderer {
         let placement = transform * kurbo::Affine::translate((rect.x0, rect.y0));
 
         if blur <= 0.0 {
-            renderer.scene.fill(
+            renderer.scene.fill_paint(
                 peniko::Fill::NonZero,
                 placement,
-                &peniko::Brush::Solid(color),
-                None,
+                Paint::Solid(color),
                 &local_path,
             );
             return;
@@ -253,9 +232,12 @@ impl HydrolysisRenderer {
         ctx: RenderContext,
         render_content: impl FnOnce(&mut HydrolysisRenderer),
     ) {
-        let theme = renderer.theme();
-        let mut draw = SceneDrawContext::with_root_transform(&mut renderer.scene, ctx.transform);
-        theme.draw_text_context_menu_panel(&mut draw, ctx.bounds);
+        {
+            let theme = renderer.theme();
+            let mut draw =
+                SceneDrawContext::with_root_transform(&mut renderer.scene, ctx.transform);
+            theme.draw_text_context_menu_panel(&mut draw, ctx.bounds);
+        }
         render_content(renderer);
     }
 
@@ -518,17 +500,19 @@ impl HydrolysisRenderer {
             }
 
             let color_signal = style.state_layer_color.resolve(env);
-            let color = resolved_color_to_peniko(renderer.read_signal(&color_signal));
+            let color = renderer.read_signal(&color_signal);
             let interaction = local_interaction_state(interaction, ctx.hit_transform);
-            let theme = renderer.theme();
-            let mut draw = renderer.draw_context(ctx);
-            theme.draw_interaction_state_layer(
-                &mut draw,
-                style.state_layer_bounds(ctx.bounds),
-                style.state_layer_radii,
-                color,
-                interaction,
-            );
+            {
+                let theme = renderer.theme();
+                let mut draw = renderer.draw_context(ctx);
+                theme.draw_interaction_state_layer(
+                    &mut draw,
+                    style.state_layer_bounds(ctx.bounds),
+                    style.state_layer_radii,
+                    color,
+                    interaction,
+                );
+            }
 
             if !disabled {
                 renderer.register_interactive_pointer_target_with_keyboard(
