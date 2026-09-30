@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
-use hydrolysis::HeadlessRuntime;
+use hydrolysis::{AccessibilityActivationPointError, HeadlessRuntime};
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;
@@ -473,6 +473,18 @@ impl<R: RuntimeDriver> ElementRef<R> {
     }
 }
 
+/// Asserts normalized element coordinates are finite and inside `[0, 1]`.
+fn assert_normalized(normalized_x: f32, normalized_y: f32) {
+    assert!(
+        normalized_x.is_finite() && normalized_y.is_finite(),
+        "waterui-testing normalized coordinates must be finite"
+    );
+    assert!(
+        (0.0..=1.0).contains(&normalized_x) && (0.0..=1.0).contains(&normalized_y),
+        "waterui-testing normalized coordinates must be within [0, 1]"
+    );
+}
+
 /// The geometry and pointer surface only a rendered session's elements
 /// expose.
 impl ElementRef<HeadlessRuntime> {
@@ -504,14 +516,7 @@ impl ElementRef<HeadlessRuntime> {
     /// Panics if either coordinate is non-finite or outside `[0, 1]`.
     #[must_use]
     pub fn normalized_point(&self, normalized_x: f32, normalized_y: f32) -> (f32, f32) {
-        assert!(
-            normalized_x.is_finite() && normalized_y.is_finite(),
-            "waterui-testing normalized coordinates must be finite"
-        );
-        assert!(
-            (0.0..=1.0).contains(&normalized_x) && (0.0..=1.0).contains(&normalized_y),
-            "waterui-testing normalized coordinates must be within [0, 1]"
-        );
+        assert_normalized(normalized_x, normalized_y);
         let bounds = self.bounds();
         (
             bounds.width().mul_add(normalized_x, bounds.x()),
@@ -520,6 +525,16 @@ impl ElementRef<HeadlessRuntime> {
     }
 
     /// Performs a pointer tap at the provided normalized coordinates.
+    ///
+    /// The point resolves against the element's interaction owner projected
+    /// through its clip chain and the window, so a tap on a partly visible
+    /// element lands inside its visible fragment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
+    /// when no reachable point exists — a fully clipped element reports
+    /// itself as not visible instead of dead-tapping inside the clip.
     pub fn tap_at(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -527,7 +542,22 @@ impl ElementRef<HeadlessRuntime> {
         normalized_y: f32,
     ) {
         app.assert_current_element(self, "tap_at");
-        let (x, y) = self.normalized_point(normalized_x, normalized_y);
+        assert_normalized(normalized_x, normalized_y);
+        let (x, y) = app
+            .activation_point(self.node_id, normalized_x, normalized_y)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "waterui-testing tap_at cannot reach element {}: {}",
+                    self.debug_summary(),
+                    match error {
+                        AccessibilityActivationPointError::EmptyFragment => {
+                            "the target is not visible: its clip chain and the window bounds leave no pointer-reachable fragment"
+                                .to_owned()
+                        }
+                        other => other.to_string(),
+                    },
+                )
+            });
         app.tap_at(x, y);
     }
 
