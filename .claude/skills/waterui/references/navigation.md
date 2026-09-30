@@ -262,8 +262,12 @@ The `Window` builder, precisely:
   title bar). The style is reactive: setting the binding (or
   `window.handle().set_style(..)`) re-applies it to the open window, e.g. to toggle
   decorations. "Frosted" and "transparent" are **not** styles — they are backgrounds:
-- `.background(..)` accepts a `Color` (a translucent one gives a transparent window) or a
-  `Material` (frosted glass; applied to the window's content, best-effort per backend).
+- `.background(..)` accepts a `Color` (a translucent one gives a transparent window), a
+  `WindowBackground` (`Opaque` is the theme background) or a `Binding<WindowBackground>`,
+  or a `Material` (frosted glass; applied to the window's content, best-effort per
+  backend). The background is reactive: setting the binding (or
+  `window.handle().set_background(..)`) re-applies it to the open window, e.g. to toggle
+  between opaque and translucent.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
   take one `impl IntoComputed<Size>` (a `Size` or a signal of one, not two floats);
   without a min, the backend derives one by measuring content at a zero proposal.

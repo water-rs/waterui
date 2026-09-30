@@ -7,9 +7,10 @@ use std::rc::Rc;
 use nami::SignalExt as _;
 use waterui::window::{
     Activation, Monitor, MonitorSelector, Window, WindowBackground, WindowManager, WindowPlacement,
-    WindowState, WindowStyle,
+    WindowState, WindowStyle, resolve_background,
 };
 use waterui::{AnyView, Str};
+use waterui_graphics::color::ResolvedColor;
 use waterui_layout::{Rect, Size};
 
 use crate::components::layout::WuiRect;
@@ -19,7 +20,6 @@ use crate::ffi_binding;
 use crate::{
     IntoFFI, IntoRust, WuiAnyView, WuiEnv,
     closure::ForeignCallbackContext,
-    color::WuiColor,
     reactive::{WuiBinding, WuiComputed},
 };
 
@@ -293,31 +293,29 @@ impl IntoRust for WuiWindowState {
 ffi_binding!(WindowState, WuiWindowState, window_state);
 crate::ffi_watcher!(WindowState, WuiWindowState, window_state);
 
-/// FFI-compatible representation of [`WindowBackground`].
+/// Resolves a window's reactive background to the colour the native backend
+/// paints behind the window's content, consuming `background`.
 ///
-/// Only supports Opaque and Color. Material blur effects are handled
-/// via `MaterialBackground` metadata on the window content.
-#[repr(C)]
-#[derive(Debug)]
-pub enum WuiWindowBackground {
-    /// Opaque system default background.
-    Opaque,
-    /// Solid color background (can be semi-transparent via alpha).
-    /// Native must resolve the color using the environment.
-    Color {
-        /// Pointer to the reactive color to resolve and apply as the window background.
-        color: *mut WuiColor,
-    },
-}
-
-impl From<WindowBackground> for WuiWindowBackground {
-    fn from(bg: WindowBackground) -> Self {
-        match bg {
-            WindowBackground::Opaque => Self::Opaque,
-            WindowBackground::Color(color) => Self::Color {
-                color: color.into_ffi(),
-            },
-        }
+/// The returned signal follows both a change of the background — including a
+/// switch between opaque and a translucent colour — and a change of the colour
+/// it resolves to. A colour whose opacity is below one asks for a translucent
+/// window.
+///
+/// # Safety
+///
+/// `background` must be the owning `WuiWindow.background` handle, consumed by
+/// this call and not used afterwards; `env` must be a valid `WuiEnv` borrowed
+/// for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_resolve_window_background(
+    background: *mut WuiComputed<WindowBackground>,
+    env: *const WuiEnv,
+) -> *mut WuiComputed<ResolvedColor> {
+    // SAFETY: the caller contract makes `background` an owning handle reclaimed
+    // exactly once here, and `env` a valid borrow for the call.
+    unsafe {
+        let background = Box::from_raw(background).0;
+        resolve_background(&background, &*env).into_ffi()
     }
 }
 
@@ -342,8 +340,9 @@ pub struct WuiWindow {
     /// The visual style of the window, observed so a change after the window
     /// is shown is re-applied.
     pub style: *mut WuiComputed<WindowStyle>,
-    /// The background style of the window.
-    pub background: WuiWindowBackground,
+    /// The window's reactive background. Resolve it with
+    /// `waterui_resolve_window_background`, which consumes it.
+    pub background: *mut WuiComputed<WindowBackground>,
     /// Explicit minimum content size, or null to derive the minimum from the
     /// content's layout (the root view measured at a zero proposal).
     pub min_size: *mut WuiComputed<Size>,
@@ -398,24 +397,21 @@ impl<T> Drop for OwnedFfiHandle<T> {
     }
 }
 
+/// The window properties Android's root activity realizes.
 #[cfg(any(feature = "android-jni", test))]
-impl WuiWindowBackground {
-    fn into_android_owned_color(self) -> Option<OwnedFfiHandle<WuiColor>> {
-        match self {
-            Self::Opaque => None,
-            Self::Color { color } => Some(OwnedFfiHandle::required(
-                color,
-                "WuiWindow.background.color",
-            )),
-        }
-    }
+pub(crate) struct WuiAndroidWindow {
+    /// The root content view.
+    pub(crate) content: OwnedFfiHandle<WuiAnyView>,
+    /// The resolved background colour, applied with `setBackgroundDrawable`.
+    pub(crate) background: OwnedFfiHandle<WuiComputed<ResolvedColor>>,
 }
 
 #[cfg(any(feature = "android-jni", test))]
 impl WuiWindow {
-    /// Retains the only window property consumed by Android's root activity and
-    /// releases every other Rust-owned FFI handle.
-    pub(crate) fn into_android_content(self) -> OwnedFfiHandle<WuiAnyView> {
+    /// Retains the window properties Android's root activity consumes —
+    /// resolving the background in `env` — and releases every other
+    /// Rust-owned FFI handle.
+    pub(crate) fn into_android_window(self, env: &waterui::Environment) -> WuiAndroidWindow {
         let Self {
             title,
             closable: _,
@@ -441,18 +437,28 @@ impl WuiWindow {
             OwnedFfiHandle::required(state, "WuiWindow.state"),
             OwnedFfiHandle::optional(toolbar),
             OwnedFfiHandle::required(style, "WuiWindow.style"),
-            background.into_android_owned_color(),
             OwnedFfiHandle::optional(min_size),
             OwnedFfiHandle::optional(max_size),
         );
+        let background = OwnedFfiHandle::required(background, "WuiWindow.background");
+        // SAFETY: `background` is this window's owning handle; taking it out
+        // of the wrapper hands the one release to the resolved signal.
+        let background = unsafe { Box::from_raw(background.into_raw()) }.0;
+        let background = OwnedFfiHandle::required(
+            resolve_background(&background, env).into_ffi(),
+            "resolved window background",
+        );
         let content = OwnedFfiHandle::required(content, "WuiWindow.content");
         drop(unused_handles);
-        content
+        WuiAndroidWindow {
+            content,
+            background,
+        }
     }
 
     /// Releases a window which Android cannot represent.
-    pub(crate) fn dispose_android(self) {
-        drop(self.into_android_content());
+    pub(crate) fn dispose_android(self, env: &waterui::Environment) {
+        drop(self.into_android_window(env));
     }
 }
 
@@ -489,7 +495,7 @@ impl IntoFFI for Window {
             state: self.state.into_ffi(),
             toolbar,
             style: self.style.computed().into_ffi(),
-            background: self.background.into(),
+            background: self.background.computed().into_ffi(),
             min_size: self.min_size.into_ffi(),
             max_size: self.max_size.into_ffi(),
             placement: placement_into_ffi(self.placement),
