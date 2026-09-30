@@ -601,6 +601,11 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
     // order the renderer releases them in (water-rs/waterui#1213).
     let _ = window.core.read_signal(&window.window.frame);
     let _ = window.core.read_signal(&window.window.state);
+    let _ = window.core.read_signal(&window.window.level);
+    let _ = window.core.read_signal(&window.window.attention);
+    if let Some(increments) = window.window.resize_increments.as_ref() {
+        let _ = window.core.read_signal(increments);
+    }
     #[cfg(feature = "accessibility")]
     window
         .core

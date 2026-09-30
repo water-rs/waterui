@@ -237,6 +237,11 @@ pub enum InputEvent {
     /// told focus left and returned so it can report the transition (a
     /// terminal's DECSET 1004 focus tracking, for one).
     Focused(bool),
+    /// The window server reports the window's maximized flag — carried with
+    /// the `Resized` a chrome-driven maximize or restore produces, so the
+    /// app-side `Window::state` binding tracks the real window instead of
+    /// drifting when the user toggles maximization through the titlebar.
+    Maximized(bool),
     CloseRequested,
     /// One file of an OS file drag is hovering the window (winit
     /// `WindowEvent::HoveredFile`). winit emits one event per file of the
@@ -1487,7 +1492,7 @@ mod winit_impl {
     use objc2_quartz_core::{CAMetalLayer, CAShapeLayer};
     #[cfg(hydrolysis_macos_system_webview)]
     use objc2_web_kit::WKWebView;
-    use waterui::window::WindowState;
+    use waterui::window::{UserAttention, WindowLevel, WindowState};
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
@@ -2515,6 +2520,31 @@ mod winit_impl {
         }
     }
 
+    /// One platform call toward a requested `WindowState`. Entering a state
+    /// clears the states it is leaving first — an X11 `set_maximized(true)`
+    /// on a minimized or fullscreen window is dropped or applied on top of
+    /// the stale state, so every transition unwinds the rest.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WindowStateOp {
+        Maximized(bool),
+        Minimized(bool),
+        Fullscreen,
+        NoFullscreen,
+        Hide,
+    }
+
+    /// The ordered calls realizing `state` from any prior state.
+    fn window_state_ops(state: WindowState) -> &'static [WindowStateOp] {
+        use WindowStateOp::{Fullscreen, Hide, Maximized, Minimized, NoFullscreen};
+        match state {
+            WindowState::Normal => &[Maximized(false), Minimized(false), NoFullscreen],
+            WindowState::Minimized => &[Maximized(false), NoFullscreen, Minimized(true)],
+            WindowState::Maximized => &[Minimized(false), NoFullscreen, Maximized(true)],
+            WindowState::Fullscreen => &[Maximized(false), Minimized(false), Fullscreen],
+            WindowState::Closed => &[Hide],
+        }
+    }
+
     /// Snapshot of the window properties `apply_properties` last pushed to the
     /// native window, so unchanged syncs cost no platform calls.
     #[derive(Clone, Debug, PartialEq)]
@@ -2524,6 +2554,9 @@ mod winit_impl {
         decorations: bool,
         state: WindowState,
         frame: waterui_core::layout::Rect,
+        level: WindowLevel,
+        attention: Option<UserAttention>,
+        resize_increments: Option<waterui_core::layout::Size>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -2644,24 +2677,47 @@ mod winit_impl {
             self.hybrid_compositor.overlay_surface(index)
         }
 
+        /// Pushes the requested `WindowLevel` to the window server. Shared by
+        /// `apply_properties` and the first-mapped-event re-delivery.
+        fn apply_window_level(&self, level: WindowLevel) {
+            self.window.set_window_level(match level {
+                WindowLevel::Normal => winit::window::WindowLevel::Normal,
+                WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+            });
+        }
+
+        /// Pushes the requested `UserAttention` to the window server. Shared by
+        /// `apply_properties` and the first-mapped-event re-delivery.
+        fn apply_window_attention(&self, attention: Option<UserAttention>) {
+            self.window
+                .request_user_attention(attention.map(|urgency| match urgency {
+                    UserAttention::Informational => winit::window::UserAttentionType::Informational,
+                    UserAttention::Critical => winit::window::UserAttentionType::Critical,
+                }));
+        }
+
         /// Pushes the requested `WindowState` to the window server. Shared
         /// by `apply_properties` and the first-mapped-event re-delivery: on
         /// X11 the same call made of an unmapped window is dropped.
         fn apply_window_state(&self, state: WindowState) {
-            match state {
-                WindowState::Normal => {
-                    self.window.set_minimized(false);
-                    self.window.set_fullscreen(None);
-                }
-                WindowState::Minimized => {
-                    self.window.set_minimized(true);
-                }
-                WindowState::Fullscreen => {
-                    self.window
-                        .set_fullscreen(Some(Fullscreen::Borderless(None)));
-                }
-                WindowState::Closed => {
-                    self.window.set_visible(false);
+            for op in window_state_ops(state) {
+                match op {
+                    WindowStateOp::Maximized(maximized) => {
+                        self.window.set_maximized(*maximized);
+                    }
+                    WindowStateOp::Minimized(minimized) => {
+                        self.window.set_minimized(*minimized);
+                    }
+                    WindowStateOp::Fullscreen => {
+                        self.window
+                            .set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    }
+                    WindowStateOp::NoFullscreen => {
+                        self.window.set_fullscreen(None);
+                    }
+                    WindowStateOp::Hide => {
+                        self.window.set_visible(false);
+                    }
                 }
             }
         }
@@ -2917,6 +2973,13 @@ mod winit_impl {
                 self.window.set_outer_position(request.position);
                 let _ = self.window.request_inner_size(request.size);
                 self.apply_window_state(request.state);
+                // Level and attention are EWMH client messages too: requests
+                // made of the unmapped window were dropped the same way, so
+                // the last-applied values are re-delivered here.
+                if let Some(properties) = self.applied_properties.clone() {
+                    self.apply_window_level(properties.level);
+                    self.apply_window_attention(properties.attention);
+                }
             }
             match event {
                 WindowEvent::CloseRequested => {
@@ -2928,6 +2991,11 @@ mod winit_impl {
                         width: size.width.max(1),
                         height: size.height.max(1),
                     });
+                    // A maximize or restore through the window chrome arrives
+                    // as this same `Resized` — the binding write-back rides on
+                    // it so `Window::state` observes the chrome's move.
+                    self.pending_events
+                        .push(InputEvent::Maximized(self.window.is_maximized()));
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     assert!(
@@ -3209,6 +3277,12 @@ mod winit_impl {
                 decorations,
                 state,
                 frame,
+                level: window.level.snapshot(),
+                attention: window.attention.snapshot(),
+                resize_increments: window
+                    .resize_increments
+                    .as_ref()
+                    .map(|signal| signal.snapshot()),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -3220,6 +3294,19 @@ mod winit_impl {
             }
             if applied.is_none_or(|p| p.decorations != properties.decorations) {
                 self.window.set_decorations(properties.decorations);
+            }
+            if applied.is_none_or(|p| p.level != properties.level) {
+                self.apply_window_level(properties.level);
+            }
+            if applied.is_none_or(|p| p.attention != properties.attention) {
+                self.apply_window_attention(properties.attention);
+            }
+            if applied.is_none_or(|p| p.resize_increments != properties.resize_increments) {
+                self.window.set_resize_increments(
+                    properties.resize_increments.map(|size| {
+                        LogicalSize::new(f64::from(size.width), f64::from(size.height))
+                    }),
+                );
             }
             // The frame binding is pushed to the window only when it changed
             // since the previous pump. A user-driven resize or move lands in
@@ -3560,6 +3647,82 @@ mod winit_impl {
                 width: 2.0,
                 height: 14.0,
                 purpose,
+            }
+        }
+
+        /// Every window-state transition must land in the requested state from
+        /// any prior state: entering a state unwinds the ones it leaves, the
+        /// way `Normal` always did.
+        #[test]
+        fn window_state_transitions_land_from_any_prior_state() {
+            use super::{WindowStateOp, window_state_ops};
+            use waterui::window::WindowState;
+
+            // The flags a platform window carries between calls, applied in
+            // the order `window_state_ops` emits them.
+            #[derive(Clone, Copy)]
+            struct Flags {
+                maximized: bool,
+                minimized: bool,
+                fullscreen: bool,
+            }
+            let start = |state: WindowState| match state {
+                WindowState::Normal | WindowState::Closed => Flags {
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: false,
+                },
+                WindowState::Minimized => Flags {
+                    maximized: false,
+                    minimized: true,
+                    fullscreen: false,
+                },
+                WindowState::Maximized => Flags {
+                    maximized: true,
+                    minimized: false,
+                    fullscreen: false,
+                },
+                WindowState::Fullscreen => Flags {
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: true,
+                },
+            };
+            let settle = |mut flags: Flags, ops: &[WindowStateOp]| {
+                for op in ops {
+                    match op {
+                        WindowStateOp::Maximized(v) => flags.maximized = *v,
+                        WindowStateOp::Minimized(v) => flags.minimized = *v,
+                        WindowStateOp::Fullscreen => flags.fullscreen = true,
+                        WindowStateOp::NoFullscreen => flags.fullscreen = false,
+                        WindowStateOp::Hide => {}
+                    }
+                }
+                flags
+            };
+
+            for from in [
+                WindowState::Normal,
+                WindowState::Minimized,
+                WindowState::Maximized,
+                WindowState::Fullscreen,
+            ] {
+                for to in [
+                    WindowState::Normal,
+                    WindowState::Minimized,
+                    WindowState::Maximized,
+                    WindowState::Fullscreen,
+                ] {
+                    let flags = settle(start(from), window_state_ops(to));
+                    let landed = match (flags.maximized, flags.minimized, flags.fullscreen) {
+                        (false, false, false) => WindowState::Normal,
+                        (false, true, false) => WindowState::Minimized,
+                        (true, false, false) => WindowState::Maximized,
+                        (false, false, true) => WindowState::Fullscreen,
+                        _ => panic!("{from:?} -> {to:?} left a mixed state"),
+                    };
+                    assert_eq!(landed, to, "{from:?} -> {to:?} must land in {to:?}");
+                }
             }
         }
 
