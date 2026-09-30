@@ -1,4 +1,4 @@
-use waterui::app::{App, AppParts, LastWindowPolicy};
+use waterui::app::App;
 use waterui_controls::menu::resolve_menu_bar_items;
 
 use crate::{IntoFFI, WuiEnv, array::WuiArray, views::WuiAnyViews, window::WuiWindow};
@@ -7,15 +7,6 @@ use crate::{WuiAnyView, window::OwnedFfiHandle};
 #[cfg(feature = "android-jni")]
 use core::ffi::c_void;
 
-into_ffi! {
-    LastWindowPolicy,
-    /// What the native host does once the application has no open window.
-    pub enum WuiLastWindowPolicy {
-        Quit,
-        StayResident,
-    }
-}
-
 /// FFI-compatible representation of an application.
 ///
 /// This struct is returned by value from `waterui_app()`.
@@ -23,16 +14,38 @@ into_ffi! {
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiApp {
-    /// The windows opened at startup, in declaration order; possibly none.
+    /// Array of windows. The first window is the main window.
     pub windows: WuiArray<WuiWindow>,
     /// The application menu bar as resolved menu items.
     pub menu_bar: *mut WuiAnyViews,
     /// The application environment containing injected services.
     /// Returned to native for use during rendering.
     pub env: *mut WuiEnv,
-    /// What the host does once the application has no open window, at startup
-    /// included.
-    pub last_window_policy: WuiLastWindowPolicy,
+    /// What the runner does once the application has no open window.
+    pub last_window: WuiLastWindowPolicy,
+}
+
+/// What the runner does once the application has no open window.
+#[repr(u32)]
+#[derive(Debug)]
+pub enum WuiLastWindowPolicy {
+    /// End the application once its last window closes, and at startup when
+    /// it declares no window at all.
+    Quit = 0,
+    /// Keep the application running with no window, until it quits
+    /// explicitly or the system asks it to.
+    StayResident = 1,
+}
+
+impl IntoFFI for waterui::app::LastWindowPolicy {
+    type FFI = WuiLastWindowPolicy;
+
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Quit => WuiLastWindowPolicy::Quit,
+            Self::StayResident => WuiLastWindowPolicy::StayResident,
+        }
+    }
 }
 
 /// Raw handles transferred from the exported app entry point to Android JNI.
@@ -71,9 +84,7 @@ impl WuiApp {
             mut windows,
             menu_bar,
             env,
-            // Android has one root activity and no windowless state, so the
-            // policy has nothing to govern there.
-            last_window_policy: _,
+            last_window: _,
         } = self;
         let menu_bar = OwnedFfiHandle::required(menu_bar, "WuiApp.menu_bar");
         let env = OwnedFfiHandle::required(env, "WuiApp.env");
@@ -87,10 +98,7 @@ impl WuiApp {
                 window.dispose_android();
             }
             windows.consume();
-            panic!(
-                "Android backend requires exactly one window, got {window_count}: Android has one \
-                 root activity and no windowless foreground state"
-            );
+            panic!("Android backend requires exactly one window, got {window_count}");
         }
 
         // SAFETY: the branch above proves the array is non-empty, so the first element
@@ -123,18 +131,13 @@ impl IntoFFI for App {
     type FFI = WuiApp;
 
     fn into_ffi(self) -> Self::FFI {
-        let AppParts {
-            windows,
-            menu_bar,
-            env,
-            last_window,
-        } = self.into_parts();
-        let menu_bar = crate::menu_items_views(resolve_menu_bar_items(&menu_bar, &env));
+        let parts = self.into_parts();
+        let menu_bar = crate::menu_items_views(resolve_menu_bar_items(&parts.menu_bar, &parts.env));
         WuiApp {
-            windows: windows.into_ffi(),
+            windows: parts.windows.into_ffi(),
             menu_bar,
-            env: env.into_ffi(),
-            last_window_policy: last_window.into_ffi(),
+            env: parts.env.into_ffi(),
+            last_window: parts.last_window.into_ffi(),
         }
     }
 }
@@ -235,7 +238,7 @@ mod tests {
             }),
             menu_bar,
             env: env.into_ffi(),
-            last_window_policy: WuiLastWindowPolicy::Quit,
+            last_window: WuiLastWindowPolicy::Quit,
         }
     }
 
@@ -301,10 +304,7 @@ mod tests {
 
             assert_eq!(
                 panic_message(payload.as_ref()),
-                format!(
-                    "Android backend requires exactly one window, got {window_count}: Android \
-                     has one root activity and no windowless foreground state"
-                )
+                format!("Android backend requires exactly one window, got {window_count}")
             );
             assert_eq!(storage_drops.get(), 1);
             assert_eq!(toolbar_drops.get(), window_count);

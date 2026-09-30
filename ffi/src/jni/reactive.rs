@@ -33,8 +33,8 @@ const WATCHER_STRUCT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/Watc
 const WATCHER_STRUCT_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(JJJ)V");
 const WATCHER_METADATA_CLASS: &JNIStr = jni_str!("dev/waterui/android/reactive/WuiWatcherMetadata");
 const WATCHER_METADATA_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(J)V");
-const RESOLVED_COLOR_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedColorStruct");
-const RESOLVED_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFFF)V");
+const WORKING_COLOR_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/WorkingColorStruct");
+const WORKING_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFF)V");
 const BITMAP_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/BitmapStruct");
 const BITMAP_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(IILjava/nio/ByteBuffer;J)V");
 const RESOLVED_FONT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedFontStruct");
@@ -98,27 +98,22 @@ where
 // Helper Functions for Complex Type Conversion
 // ============================================================================
 
-/// Create a `ResolvedColorStruct` Java object from Rust values.
-fn create_resolved_color_struct<'local>(
+/// Create a `WorkingColorStruct` Java object from a colour.
+fn create_working_color_struct<'local>(
     env: &mut Env<'local>,
-    red: f32,
-    green: f32,
-    blue: f32,
-    opacity: f32,
-    headroom: f32,
+    color: crate::color::WuiWorkingColor,
 ) -> JObject<'local> {
     env.new_object(
-        RESOLVED_COLOR_CLASS,
-        RESOLVED_COLOR_CTOR,
+        WORKING_COLOR_CLASS,
+        WORKING_COLOR_CTOR,
         &[
-            JValue::Float(red),
-            JValue::Float(green),
-            JValue::Float(blue),
-            JValue::Float(opacity),
-            JValue::Float(headroom),
+            JValue::Float(color.red),
+            JValue::Float(color.green),
+            JValue::Float(color.blue),
+            JValue::Float(color.alpha),
         ],
     )
-    .expect("Failed to create ResolvedColorStruct")
+    .expect("Failed to create WorkingColorStruct")
 }
 
 /// Create a `ResolvedFontStruct` Java object from Rust values.
@@ -693,8 +688,8 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedBitmap<'l
     computed_ptr: jlong,
 ) -> jobject {
     use crate::IntoFFI;
+    use crate::components::picture::RgbaBitmap;
     use waterui::Signal;
-    use waterui_graphics::scene2d_cpu::RgbaBitmap;
 
     // SAFETY: Kotlin passes back the computed pointer `pictureBitmap` handed it,
     // which stays alive until `dropComputedBitmap` and is only ever read here.
@@ -733,27 +728,24 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropBitmap<'local>(
     }
 }
 
-/// Read a `ResolvedColor` computed value and return Java `ResolvedColorStruct`.
+/// Read a `WorkingColor` computed value and return Java `WorkingColorStruct`.
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedColor<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedWorkingColor<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
     use crate::IntoFFI;
-    use crate::color::WuiResolvedColor;
     use waterui::Signal;
-    use waterui_graphics::color::ResolvedColor;
+    use waterui_graphics::WorkingColor;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
-    // `WuiComputed<ResolvedColor>` and is only read here.
-    let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedColor>) };
-    let resolved: ResolvedColor = computed.snapshot();
-    let ffi: WuiResolvedColor = resolved.into_ffi();
+    // `WuiComputed<WorkingColor>` and is only read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<WorkingColor>) };
+    let color = computed.snapshot().into_ffi();
 
     super::with_env(&mut env, |env| {
-        create_resolved_color_struct(env, ffi.red, ffi.green, ffi.blue, ffi.opacity, ffi.headroom)
-            .into_raw()
+        create_working_color_struct(env, color).into_raw()
     })
 }
 
@@ -1261,7 +1253,7 @@ unsafe extern "C" fn watcher_call_color(
     invoke_owned_pointer_callback(data, value.cast(), metadata_ptr);
 }
 
-/// Call function for `ResolvedColor` watcher.
+/// Call function for `Bitmap` watcher.
 unsafe extern "C" fn watcher_call_bitmap(
     data: *mut (),
     value: crate::components::picture::WuiBitmap,
@@ -1284,20 +1276,19 @@ unsafe extern "C" fn watcher_call_bitmap(
     });
 }
 
-unsafe extern "C" fn watcher_call_resolved_color(
+unsafe extern "C" fn watcher_call_working_color(
     data: *mut (),
-    value: crate::color::WuiResolvedColor,
+    value: crate::color::WuiWorkingColor,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
-        let java_value = watcher_data.constructor(RESOLVED_COLOR_CLASS).new_object(
+        let java_value = watcher_data.constructor(WORKING_COLOR_CLASS).new_object(
             env,
             &[
                 JValue::Float(value.red).as_jni(),
                 JValue::Float(value.green).as_jni(),
                 JValue::Float(value.blue).as_jni(),
-                JValue::Float(value.opacity).as_jni(),
-                JValue::Float(value.headroom).as_jni(),
+                JValue::Float(value.alpha).as_jni(),
             ],
         );
 
@@ -1665,9 +1656,9 @@ jni_create_watcher_typed!(
     ]
 );
 jni_create_watcher_typed!(
-    ResolvedColor,
-    watcher_call_resolved_color,
-    &[(RESOLVED_COLOR_CLASS, RESOLVED_COLOR_CTOR)]
+    WorkingColor,
+    watcher_call_working_color,
+    &[(WORKING_COLOR_CLASS, WORKING_COLOR_CTOR)]
 );
 jni_create_watcher_typed!(Bitmap, watcher_call_bitmap, &[(BITMAP_CLASS, BITMAP_CTOR)]);
 jni_create_watcher_typed!(

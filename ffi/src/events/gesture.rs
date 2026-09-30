@@ -5,17 +5,6 @@ use crate::action::WuiAction;
 use alloc::boxed::Box;
 use waterui::gesture::{Gesture, GestureObserver};
 
-/// `WuiGesture.buttons` bit for the primary button.
-pub const WATERUI_POINTER_BUTTON_PRIMARY: u8 = 1 << 0;
-/// `WuiGesture.buttons` bit for the secondary button.
-pub const WATERUI_POINTER_BUTTON_SECONDARY: u8 = 1 << 1;
-/// `WuiGesture.buttons` bit for the middle button.
-pub const WATERUI_POINTER_BUTTON_MIDDLE: u8 = 1 << 2;
-/// `WuiGesture.buttons` bit for the "back" side button.
-pub const WATERUI_POINTER_BUTTON_BACK: u8 = 1 << 3;
-/// `WuiGesture.buttons` bit for the "forward" side button.
-pub const WATERUI_POINTER_BUTTON_FORWARD: u8 = 1 << 4;
-
 /// FFI-safe representation of a gesture type.
 #[repr(C)]
 #[derive(Debug)]
@@ -24,23 +13,16 @@ pub enum WuiGesture {
     Tap {
         /// Number of taps required to recognize the gesture.
         count: u32,
-        /// Mask of buttons that can tap (`WATERUI_POINTER_BUTTON_*`);
-        /// `WATERUI_POINTER_BUTTON_PRIMARY` for a default gesture.
-        buttons: u8,
     },
     /// A long-press gesture requiring a minimum duration.
     LongPress {
         /// Minimum press duration in milliseconds before the gesture fires.
         duration: u32,
-        /// Mask of buttons that can press (`WATERUI_POINTER_BUTTON_*`).
-        buttons: u8,
     },
     /// A drag gesture with minimum distance threshold.
     Drag {
         /// Minimum drag distance (in points) before the gesture fires.
         min_distance: f32,
-        /// Mask of buttons that can drag (`WATERUI_POINTER_BUTTON_*`).
-        buttons: u8,
     },
     /// A magnification (pinch) gesture with initial scale.
     Magnification {
@@ -79,17 +61,12 @@ impl IntoFFI for Gesture {
     type FFI = WuiGesture;
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Self::Tap(tap) => WuiGesture::Tap {
-                count: tap.count,
-                buttons: tap.buttons.bits(),
-            },
+            Self::Tap(tap) => WuiGesture::Tap { count: tap.count },
             Self::LongPress(lp) => WuiGesture::LongPress {
                 duration: lp.duration,
-                buttons: lp.buttons.bits(),
             },
             Self::Drag(drag) => WuiGesture::Drag {
                 min_distance: drag.min_distance,
-                buttons: drag.buttons.bits(),
             },
             Self::Magnification(mag) => WuiGesture::Magnification {
                 initial_scale: mag.initial_scale,

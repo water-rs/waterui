@@ -1,70 +1,107 @@
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Mutex;
 
 use cef::PaintElementType;
 use num_traits::ToPrimitive as _;
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame};
+use waterui_graphics::gpu::{Context, Frame};
 
 use crate::CefPopupRect;
 
+/// The device handles the render thread's [`Context`] hands to the UI side, so
+/// the page's frame sink can import shared textures with the same device.
+pub(super) struct GpuHandles {
+    pub(super) adapter: wgpu::Adapter,
+    pub(super) device: wgpu::Device,
+    pub(super) queue: wgpu::Queue,
+}
+
+struct MailboxState {
+    view_frame: Option<wgpu::Texture>,
+    popup_frame: Option<wgpu::Texture>,
+    popup_rect: Option<CefPopupRect>,
+    gpu_handles: Option<GpuHandles>,
+    waker: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+/// Crosses the UI/render boundary both ways: Chromium's paint callback on the
+/// UI thread publishes owned frame textures and popup state, the render
+/// thread's [`crate::gpu::CefGpuContent`] drains them, and the one-time device
+/// handles travel the other way for the UI side to install the sink.
 pub(super) struct OwnedFrameMailbox {
-    view_frame: RefCell<Option<wgpu::Texture>>,
-    popup_frame: RefCell<Option<wgpu::Texture>>,
-    popup_rect: RefCell<Option<CefPopupRect>>,
-    waker: RefCell<Option<Rc<dyn Fn()>>>,
+    state: Mutex<MailboxState>,
 }
 
 impl OwnedFrameMailbox {
     pub(super) fn new() -> Self {
         Self {
-            view_frame: RefCell::new(None),
-            popup_frame: RefCell::new(None),
-            popup_rect: RefCell::new(None),
-            waker: RefCell::new(None),
+            state: Mutex::new(MailboxState {
+                view_frame: None,
+                popup_frame: None,
+                popup_rect: None,
+                gpu_handles: None,
+                waker: None,
+            }),
         }
     }
 
-    pub(super) fn set_waker(&self, waker: Rc<dyn Fn()>) {
-        self.waker.replace(Some(waker));
+    fn lock(&self) -> std::sync::MutexGuard<'_, MailboxState> {
+        self.state.lock().expect("CEF frame mailbox poisoned")
+    }
+
+    pub(super) fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        self.lock().waker = Some(Box::new(waker));
+    }
+
+    pub(super) fn set_gpu_handles(&self, handles: GpuHandles) {
+        self.lock().gpu_handles = Some(handles);
+    }
+
+    pub(super) fn take_gpu_handles(&self) -> Option<GpuHandles> {
+        self.lock().gpu_handles.take()
     }
 
     pub(super) fn publish(&self, element: PaintElementType, frame: wgpu::Texture) {
-        match element {
-            PaintElementType::VIEW => {
-                self.view_frame.replace(Some(frame));
+        {
+            let mut state = self.lock();
+            match element {
+                PaintElementType::VIEW => {
+                    state.view_frame = Some(frame);
+                }
+                PaintElementType::POPUP => {
+                    state.popup_frame = Some(frame);
+                }
+                element => panic!("CEF returned unsupported paint element {element:?}"),
             }
-            PaintElementType::POPUP => {
-                self.popup_frame.replace(Some(frame));
-            }
-            element => panic!("CEF returned unsupported paint element {element:?}"),
         }
         self.wake();
     }
 
     pub(super) fn set_popup_rect(&self, rect: Option<CefPopupRect>) {
-        self.popup_rect.replace(rect);
-        if rect.is_none() {
-            self.popup_frame.borrow_mut().take();
+        {
+            let mut state = self.lock();
+            state.popup_rect = rect;
+            if rect.is_none() {
+                state.popup_frame.take();
+            }
         }
         self.wake();
     }
 
     fn wake(&self) {
-        if let Some(waker) = self.waker.borrow().as_ref() {
+        if let Some(waker) = self.lock().waker.as_ref() {
             waker();
         }
     }
 
     pub(super) fn take_view(&self) -> Option<wgpu::Texture> {
-        self.view_frame.borrow_mut().take()
+        self.lock().view_frame.take()
     }
 
     pub(super) fn take_popup(&self) -> Option<wgpu::Texture> {
-        self.popup_frame.borrow_mut().take()
+        self.lock().popup_frame.take()
     }
 
     pub(super) fn popup_rect(&self) -> Option<CefPopupRect> {
-        *self.popup_rect.borrow()
+        self.lock().popup_rect
     }
 }
 
@@ -130,7 +167,7 @@ struct SourceTexture {
 }
 
 impl TexturePresenter {
-    pub(super) fn new(context: &GpuContext<'_>) -> Self {
+    pub(super) fn new(context: &Context<'_>) -> Self {
         let shader = context
             .device
             .create_shader_module(wgpu::include_wgsl!("cef_blit.wgsl"));
@@ -192,7 +229,7 @@ impl TexturePresenter {
                     entry_point: Some("fragment_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: context.surface_format,
+                        format: context.format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -213,7 +250,7 @@ impl TexturePresenter {
             pipeline,
             bind_group_layout,
             sampler,
-            target_format: context.surface_format,
+            target_format: context.format,
             source: None,
             popup: None,
             popup_rect: None,
@@ -245,7 +282,7 @@ impl TexturePresenter {
         }
     }
 
-    pub(super) fn render(&self, frame: &mut GpuFrame<'_>, scale: f64) -> bool {
+    pub(super) fn render(&self, frame: &mut Frame<'_>, scale: f64) -> bool {
         assert_eq!(
             frame.format, self.target_format,
             "CEF target format changed after setup"
@@ -293,7 +330,7 @@ impl TexturePresenter {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("waterui_cef_blit"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
+                    view: frame.view,
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
@@ -362,7 +399,7 @@ fn write_rect(queue: &wgpu::Queue, buffer: &wgpu::Buffer, rect: [f32; 4]) {
     queue.write_buffer(buffer, 0, &bytes);
 }
 
-fn clear_target(frame: &GpuFrame<'_>) {
+fn clear_target(frame: &Frame<'_>) {
     let mut encoder = frame
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -372,7 +409,7 @@ fn clear_target(frame: &GpuFrame<'_>) {
         let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("waterui_cef_empty"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &frame.view,
+                view: frame.view,
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {

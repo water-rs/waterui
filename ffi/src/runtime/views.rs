@@ -9,7 +9,6 @@ use crate::{
 };
 use alloc::{boxed::Box, vec::Vec};
 use core::hash::Hash;
-use nami::collection::CollectionChange;
 use nami::watcher::WatcherGuard;
 use nami::{Signal, SignalExt};
 use waterui_core::id::SelfId;
@@ -169,7 +168,10 @@ where
     fn watch(
         &self,
         range: impl core::ops::RangeBounds<usize>,
-        watcher: impl for<'a> Fn(nami::watcher::Context<&'a [Self::Id]>, CollectionChange) + 'static,
+        watcher: impl for<'a> Fn(
+            nami::watcher::Context<&'a [Self::Id]>,
+            nami::collection::CollectionChange,
+        ) + 'static,
     ) -> Self::Guard {
         let start = match range.start_bound() {
             core::ops::Bound::Included(index) => *index,
@@ -189,11 +191,10 @@ where
                     .map(|index| id_at(&items, index))
                     .collect::<Vec<_>>()
             });
-            // A whole-`Vec` signal cannot say which items changed: every
-            // notification is a whole-value replacement by definition.
+            let len = ctx.value().len();
             watcher(
                 ctx.as_deref(),
-                CollectionChange::everything(ctx.value().len()),
+                nami::collection::CollectionChange::everything(len),
             );
         })
     }

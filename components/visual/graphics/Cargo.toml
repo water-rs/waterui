@@ -22,6 +22,7 @@ gpu = [
     "dep:thiserror",
     "dep:filtrate",
     "dep:wgpu",
+    "dep:bytemuck",
     "dep:image",
     "dep:mp4parse",
 ]
@@ -40,6 +41,7 @@ color.workspace = true
 filtrate = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
+bytemuck = { version = "1", optional = true, features = ["derive"] }
 keyboard-types.workspace = true
 thiserror = { workspace = true, optional = true }
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder

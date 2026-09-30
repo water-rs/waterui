@@ -83,3 +83,8 @@ pub use filtrate;
 /// [`GpuContent`] cannot end up with a version-mismatched `wgpu`.
 #[cfg(feature = "gpu")]
 pub use wgpu;
+
+/// Plain-bytes casts for the uniform/vertex data [`GpuContent`] writes to GPU
+/// buffers, re-exported so a content author uses one version of it.
+#[cfg(feature = "gpu")]
+pub use bytemuck;

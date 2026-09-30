@@ -446,7 +446,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `Chart` (12 kinds) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuSurface` icon sets |
+| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` |
 
 ## Verify before declaring done
