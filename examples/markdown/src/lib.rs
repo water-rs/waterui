@@ -99,7 +99,10 @@ pub fn demo() -> impl View {
     };
 
     zstack((
-        scroll(include_markdown!("example.md").padding()),
+        // The Find row floats over the document's top-leading corner; the
+        // deeper top inset reserves its height so the overlay cannot cover
+        // the heading.
+        scroll(include_markdown!("example.md").padding_with([52.0, 14.0, 14.0, 14.0])),
         vstack((
             hstack((
                 button("Find").action(
