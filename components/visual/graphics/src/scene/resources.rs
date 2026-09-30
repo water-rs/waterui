@@ -440,6 +440,17 @@ impl SceneResources {
             move |_| backend.register_shader(source),
         )
     }
+
+    /// How many registrations the table lists across every kind — dead
+    /// entries included, which is what a test of the cleanup has to see.
+    #[cfg(test)]
+    fn listed(&self) -> usize {
+        let table = &self.table;
+        table.fonts.borrow().len()
+            + table.images_rgba8.borrow().len()
+            + table.images_rgba16f.borrow().len()
+            + table.shaders_cache.borrow().len()
+    }
 }
 
 impl fmt::Debug for SceneResources {
@@ -679,9 +690,13 @@ pub(crate) mod tests {
             "an image the content stopped holding is released while the content is mounted"
         );
         assert!(content.image.is_none());
+        assert_eq!(
+            mount.resources.listed(),
+            0,
+            "a released registration must leave the table, not linger as a dead entry"
+        );
 
-        // The table kept no dead entry: the same source is a new
-        // registration now, not the released one.
+        // The same source is a new registration now, not the released one.
         let fresh = mount
             .resources
             .image(one_pixel())
@@ -690,6 +705,13 @@ pub(crate) mod tests {
         assert_eq!(
             added_images(&mount.probe.try_iter().collect::<Vec<_>>()),
             [fresh.id()]
+        );
+        assert_eq!(mount.resources.listed(), 1);
+        drop(fresh);
+        assert_eq!(
+            mount.resources.listed(),
+            0,
+            "dropping the last handle takes the entry out of the table"
         );
     }
 }
