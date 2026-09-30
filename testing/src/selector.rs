@@ -487,7 +487,44 @@ fn assert_normalized(normalized_x: f32, normalized_y: f32) {
 
 /// The geometry and pointer surface only a rendered session's elements
 /// expose.
+///
+/// Every pointer method resolves its point through the element's clip
+/// chain and the window bounds — the spot a real pointer could reach —
+/// never against the raw logical bounds, which may lie under a clip.
 impl ElementRef<HeadlessRuntime> {
+    /// Resolves normalized coordinates to the point a pointer can reach on
+    /// the element: the fraction inside its interaction owner's region,
+    /// projected through the owner's clip chain and the window bounds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
+    /// when no reachable point exists — a fully clipped element reports
+    /// itself as not visible instead of touching whatever lies under the
+    /// clip.
+    fn pointer_point(
+        &self,
+        app: &SemanticApp<HeadlessRuntime>,
+        op: &str,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) -> (f32, f32) {
+        assert_normalized(normalized_x, normalized_y);
+        app.activation_point(self.node_id, normalized_x, normalized_y)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "waterui-testing {op} cannot reach element {}: {}",
+                    self.debug_summary(),
+                    match error {
+                        AccessibilityActivationPointError::EmptyFragment => {
+                            "the target is not visible: its clip chain and the window bounds leave no pointer-reachable fragment"
+                                .to_owned()
+                        }
+                        other => other.to_string(),
+                    },
+                )
+            })
+    }
     /// Returns node bounds.
     ///
     /// # Panics
@@ -542,33 +579,31 @@ impl ElementRef<HeadlessRuntime> {
         normalized_y: f32,
     ) {
         app.assert_current_element(self, "tap_at");
-        assert_normalized(normalized_x, normalized_y);
-        let (x, y) = app
-            .activation_point(self.node_id, normalized_x, normalized_y)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "waterui-testing tap_at cannot reach element {}: {}",
-                    self.debug_summary(),
-                    match error {
-                        AccessibilityActivationPointError::EmptyFragment => {
-                            "the target is not visible: its clip chain and the window bounds leave no pointer-reachable fragment"
-                                .to_owned()
-                        }
-                        other => other.to_string(),
-                    },
-                )
-            });
+        let (x, y) = self.pointer_point(app, "tap_at", normalized_x, normalized_y);
         app.tap_at(x, y);
     }
 
-    /// Moves hover to the element center.
+    /// Moves hover to the point a pointer can reach at the element's
+    /// center.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no reachable point exists — a fully clipped element
+    /// reports itself as not visible instead of hovering under the clip.
     pub fn hover(&self, app: &mut SemanticApp<HeadlessRuntime>) {
         app.assert_current_element(self, "hover");
-        let (x, y) = self.center();
+        let (x, y) = self.pointer_point(app, "hover", 0.5, 0.5);
         app.hover_at(x, y);
     }
 
-    /// Moves hover to the provided normalized coordinates within the element.
+    /// Moves hover to the provided normalized coordinates within the
+    /// element, resolved against the fragment a pointer can reach.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
+    /// when no reachable point exists — a fully clipped element reports
+    /// itself as not visible instead of hovering under the clip.
     pub fn hover_at(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -576,7 +611,7 @@ impl ElementRef<HeadlessRuntime> {
         normalized_y: f32,
     ) {
         app.assert_current_element(self, "hover_at");
-        let (x, y) = self.normalized_point(normalized_x, normalized_y);
+        let (x, y) = self.pointer_point(app, "hover_at", normalized_x, normalized_y);
         app.hover_at(x, y);
     }
 
@@ -586,6 +621,15 @@ impl ElementRef<HeadlessRuntime> {
     }
 
     /// Drags from the element center by a delta with step/timing control.
+    ///
+    /// The start point resolves against the fragment a pointer can reach,
+    /// so a drag begun on a partly visible element presses inside it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no reachable start point exists — a fully clipped
+    /// element reports itself as not visible instead of pressing under
+    /// the clip.
     pub fn drag_by_with(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -594,11 +638,18 @@ impl ElementRef<HeadlessRuntime> {
         options: crate::app::DragOptions,
     ) {
         app.assert_current_element(self, "drag_by");
-        let (x, y) = self.center();
+        let (x, y) = self.pointer_point(app, "drag_by", 0.5, 0.5);
         app.drag_from_to_with(x, y, x + dx, y + dy, options);
     }
 
-    /// Drags between two normalized coordinates within the element.
+    /// Drags between two normalized coordinates within the element, each
+    /// resolved against the fragment a pointer can reach.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a coordinate is non-finite or outside `[0, 1]`, or when
+    /// no reachable point exists — a fully clipped element reports itself
+    /// as not visible instead of pressing under the clip.
     pub fn drag_between(
         &self,
         app: &mut SemanticApp<HeadlessRuntime>,
@@ -608,15 +659,22 @@ impl ElementRef<HeadlessRuntime> {
         to_y: f32,
     ) {
         app.assert_current_element(self, "drag_between");
-        let (start_x, start_y) = self.normalized_point(from_x, from_y);
-        let (end_x, end_y) = self.normalized_point(to_x, to_y);
+        let (start_x, start_y) = self.pointer_point(app, "drag_between", from_x, from_y);
+        let (end_x, end_y) = self.pointer_point(app, "drag_between", to_x, to_y);
         app.drag_from_to(start_x, start_y, end_x, end_y);
     }
 
-    /// Applies a magnification gesture centered on the element.
+    /// Applies a magnification gesture centered on the element, at the
+    /// point a pointer can reach.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no reachable point exists — a fully clipped element
+    /// reports itself as not visible instead of magnifying under the
+    /// clip.
     pub fn magnify(&self, app: &mut SemanticApp<HeadlessRuntime>, factor: f32) {
         app.assert_current_element(self, "magnify");
-        let (x, y) = self.center();
+        let (x, y) = self.pointer_point(app, "magnify", 0.5, 0.5);
         app.magnify_at(x, y, factor);
     }
 }
