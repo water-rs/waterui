@@ -37,7 +37,7 @@
 use waterui_core::layout::{Point as LayoutPoint, Rect as LayoutRect, Size as LayoutSize};
 use waterui_graphics::input::{Code, Key, ScrollUnit, SurfaceInputEvent, SurfacePointerButton};
 
-use super::gpu_content::{WuiGpuContentState, with_view};
+use super::gpu_content::WuiGpuContentState;
 use crate::components::layouting::layout::WuiRect;
 use crate::events::key::modifiers_from_ffi;
 use crate::{IntoFFI, IntoRust, WuiStr};
@@ -289,7 +289,7 @@ impl IntoRust for WuiSurfaceInputEvent {
 /// `state` must be a valid pointer returned by
 /// [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create).
 #[unsafe(no_mangle)]
-pub const unsafe extern "C" fn waterui_gpu_content_wants_input_events(
+pub unsafe extern "C" fn waterui_gpu_content_wants_input_events(
     state: *const WuiGpuContentState,
 ) -> bool {
     // SAFETY: the caller contract requires `state` to be a valid handle that stays
@@ -337,7 +337,7 @@ pub unsafe extern "C" fn waterui_gpu_content_send_input_event(
     if !state.wants_input_events() {
         return false;
     }
-    with_view(state, |view| view.input(&event));
+    state.input(&event);
     true
 }
 

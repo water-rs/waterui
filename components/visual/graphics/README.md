@@ -133,6 +133,36 @@ pub trait GpuContent: Send + 'static {
 - `setup()` - Called once on the render thread; create pipelines, buffers, bind groups
 - `render()` - Called per frame with `Frame` carrying `device`, `queue`, `texture`, `view`, `format`, `width`, `height`, `scale`, `elapsed`, `delta`
 
+### External Frames
+
+Frames that already live in GPU memory — a video decoder's `CVPixelBuffer`, an
+`AHardwareBuffer`, a dmabuf — are not drawn by content. An
+`ExternalFrameSource` imports their planes onto the host's device and
+publishes `cherenkov_gpu::interop::ExternalFrame`s, which become the content
+of the `ExternalFrameView`'s own engine layer:
+
+```rust
+pub trait ExternalFrameSource: 'static {
+    fn start(&mut self, output: FrameOutput);
+    fn is_opaque(&self) -> bool { false }
+    fn intrinsic_size(&self) -> Option<Size> { None }
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions { /* fill proposal */ }
+    fn preferred_surface_hdr(&self) -> Option<bool> { None }
+}
+```
+
+- `start()` - Called on the UI thread each time a host builds the layer —
+  first presentation, and again on the new device after a device loss. The
+  `FrameOutput` is cloneable and `Send` on native targets; the decoder thread
+  imports planes onto `output.device()` and calls `output.present(frame)`.
+- A newer frame replaces one the host has not drawn yet; the host drains the
+  newest frame once per engine pass, so publishing never rebuilds the view.
+- The engine samples the planes in place and converts them with the frame's
+  `FrameColor` (matrix, range, siting, primaries, transfer, reference white)
+  behind its `FrameSync`.
+- `present` returns `RetiredOutput` once the host that started the output is
+  gone; stop producing for it.
+
 ### Offscreen Rendering
 
 `GpuRuntime::render_content(content, size, scale)` renders a `GpuContent` to an
@@ -144,6 +174,9 @@ content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 ### Gpu Module
 
 - `GpuContentView::new(content)` - Create a view from a `GpuContent`
+- `ExternalFrameView::new(source)` - Create a view from an `ExternalFrameSource`
+- `FrameOutput` - Where a source publishes frames: `device()`, `queue()`, `present(frame)`
+- `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture
 - `Context` - GPU resources during setup (adapter, device, queue, format, redraw)
 - `Frame` - Frame data during render (device, queue, texture, view, dimensions, timings)
 - `GpuRuntime` - Shared wgpu runtime for offscreen and host-driven rendering

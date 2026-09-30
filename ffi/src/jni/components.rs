@@ -1886,6 +1886,41 @@ unsafe extern "C" fn drop_android_gpu_content_redraw_target(context: *mut c_void
     }
 }
 
+/// Wraps a freshly created GPU-layer state for Kotlin: installs `owner`'s
+/// `requestNativeRedraw` as its redraw callback and boxes the JNI handle.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+fn wrap_gpu_content_state(
+    env: &Env<'_>,
+    owner: &JObject<'_>,
+    state: *mut crate::components::gpu_content::WuiGpuContentState,
+    entry_point: &'static str,
+) -> jlong {
+    let redraw_target = Box::new(AndroidGpuContentRedrawTarget {
+        jvm: env.get_java_vm().unwrap_or_else(|error| {
+            panic!("WatcherJni.{entry_point} failed to access JavaVM: {error}")
+        }),
+        owner: env.new_global_ref(owner).unwrap_or_else(|error| {
+            panic!("WatcherJni.{entry_point} failed to retain owner view: {error}")
+        }),
+    });
+    let redraw_context = Box::into_raw(redraw_target).cast::<c_void>();
+    // SAFETY: `state` was just created by the caller, and `redraw_context` is the
+    // payload the two entry points above expect, whose ownership moves to the state.
+    unsafe {
+        crate::components::gpu_content::waterui_gpu_content_set_redraw_callback(
+            state,
+            redraw_context,
+            wake_android_gpu_content,
+            drop_android_gpu_content_redraw_target,
+        );
+    }
+    let wrapper = Box::new(JniGpuContentState {
+        state,
+        window: None,
+    });
+    Box::into_raw(wrapper) as jlong
+}
+
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentCreate<'local>(
@@ -1907,36 +1942,61 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentCreate<'loc
                 wui_env_ptr as *const crate::WuiEnv,
             )
         };
-        let redraw_target = Box::new(AndroidGpuContentRedrawTarget {
-            jvm: env
-                .get_java_vm()
-                .expect("WatcherJni.gpuContentCreate failed to access JavaVM"),
-            owner: env
-                .new_global_ref(owner)
-                .expect("WatcherJni.gpuContentCreate failed to retain owner view"),
-        });
-        let redraw_context = Box::into_raw(redraw_target).cast::<c_void>();
-        // SAFETY: `state` was just created above, and `redraw_context` is the payload
-        // the two entry points above expect, whose ownership moves to the surface.
-        unsafe {
-            crate::components::gpu_content::waterui_gpu_content_set_redraw_callback(
-                state,
-                redraw_context,
-                wake_android_gpu_content,
-                drop_android_gpu_content_redraw_target,
-            );
-        }
-        let wrapper = Box::new(JniGpuContentState {
-            state,
-            window: None,
-        });
-        Box::into_raw(wrapper) as jlong
+        wrap_gpu_content_state(env, &owner, state, "gpuContentCreate")
     })
+}
+
+/// `WatcherJni.externalFrameCreate(owner, descriptorPtr, envPtr)`: the
+/// `ExternalFrameView` counterpart of `gpuContentCreate`. The returned handle
+/// is driven by the same `gpuContent*` entry points.
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_externalFrameCreate<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    owner: JObject<'local>,
+    descriptor_ptr: jlong,
+    wui_env_ptr: jlong,
+) -> jlong {
+    super::with_env(&mut env, |env| {
+        // SAFETY: Kotlin passes back the boxed descriptor `ExternalFrameStruct`
+        // carried, still owning its view, and consumes it here exactly once;
+        // `wui_env_ptr` is the live app environment.
+        let state = unsafe {
+            let mut descriptor = Box::from_raw(
+                descriptor_ptr as *mut crate::components::gpu_content::WuiExternalFrame,
+            );
+            crate::components::gpu_content::waterui_external_frame_create(
+                &raw mut *descriptor,
+                wui_env_ptr as *const crate::WuiEnv,
+            )
+        };
+        wrap_gpu_content_state(env, &owner, state, "externalFrameCreate")
+    })
+}
+
+/// `WatcherJni.gpuContentSetVisible(statePtr, visible)`: reports whether the
+/// view is shown (`onStart`/`onStop`, `SurfaceHolder` callbacks).
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentSetVisible<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+    visible: jboolean,
+) {
+    // SAFETY: Kotlin passes back the handle `gpuContentCreate` or
+    // `externalFrameCreate` returned, live until `gpuContentDrop`.
+    let wrapper = unsafe { &*(state_ptr as *const JniGpuContentState) };
+    // SAFETY: `wrapper.state` is the state created alongside it, still live.
+    unsafe {
+        crate::components::gpu_content::waterui_gpu_content_set_visible(wrapper.state, visible);
+    }
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentIsReady<'local>(
+const extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentIsReady<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
@@ -2187,9 +2247,7 @@ fn surface_pointer_button(
 /// Whether this GPU view takes its own keyboard, IME and scroll input.
 #[cfg(all(target_os = "android", feature = "gpu"))]
 #[unsafe(no_mangle)]
-const extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentWantsInputEvents<
-    'local,
->(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentWantsInputEvents<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     state_ptr: jlong,
