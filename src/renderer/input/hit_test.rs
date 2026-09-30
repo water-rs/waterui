@@ -377,6 +377,12 @@ pub(crate) struct HitTestState {
     /// hit region flushed inside a scroll viewport can't outlive the paint
     /// clip (water-rs/hydrolysis#252).
     pub(crate) hit_clip_stack: Vec<kurbo::Rect>,
+    /// The window's logical bounds — the outermost clip every hittable point
+    /// must land in. `set_window_viewport` mirrors it here each frame so the
+    /// activation-point projection bounds its result the same way pointer
+    /// input is bounded (water-rs/hydrolysis#27); `ZERO` before the first
+    /// viewport assignment, which projects every point to an empty fragment.
+    pub(crate) window_bounds: kurbo::Rect,
 }
 
 impl HitTestState {

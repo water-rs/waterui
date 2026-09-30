@@ -4,6 +4,8 @@ use super::*;
 #[cfg(feature = "frame-profile")]
 use crate::platform::SurfaceProvider as _;
 use crate::renderer::MenuShortcutRegistry;
+#[cfg(feature = "accessibility")]
+use crate::renderer::accessibility::AccessibilityActivationPointError;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
@@ -622,6 +624,70 @@ impl HeadlessRuntime {
                 .iter_mut()
                 .map(|popup| &mut *popup.renderer),
         )
+    }
+
+    /// The point a pointer could actually reach inside `node`'s accessibility
+    /// bounds.
+    ///
+    /// Node bounds stay the logical rectangle; visibility is a projection
+    /// resolved here, at the point of use (water-rs/waterui#1323 §4). What
+    /// projects is the region a pointer can activate: for a node whose
+    /// `Click` was delegated by a silenced interaction owner (a `List` row
+    /// standing in for its `on_tap` strip), that owner's own hit region and
+    /// clip; otherwise the node's logical rectangle intersected with the
+    /// clip chain in effect when it registered — either way, intersected with
+    /// the window bounds (water-rs/waterui#1323 §5). The requested spot is
+    /// clamped into the visible fragment. The callers that must produce a
+    /// real point — a testing `tap_at`, an automation `pointer tap` —
+    /// resolve through this query instead of the bounds' centre, which may
+    /// sit inside a clipped region where nothing can be hit
+    /// (water-rs/hydrolysis#27). A node with no visible fragment fails with
+    /// [`AccessibilityActivationPointError::EmptyFragment`]; an off-screen
+    /// point is never returned.
+    ///
+    /// `(x_fraction, y_fraction)` pick a spot inside the projected region —
+    /// `0.5, 0.5` is its centre.
+    ///
+    /// Popup-window node ids are shifted into their own stride in the merged
+    /// update the same way [`Self::perform_accessibility_action`] demultiplexes
+    /// them back: a target in a popup's range resolves on that window's core —
+    /// its own clip and window bounds — and translates the result by the
+    /// popup frame's origin, so the returned point sits in the merged
+    /// coordinates a pointer tap pushed to this runtime resolves against.
+    /// A shifted id for a closed popup fails with
+    /// [`AccessibilityActivationPointError::NoNode`].
+    #[cfg(feature = "accessibility")]
+    pub fn accessibility_activation_point(
+        &self,
+        node_id: accesskit::NodeId,
+        x_fraction: f64,
+        y_fraction: f64,
+    ) -> Result<kurbo::Point, AccessibilityActivationPointError> {
+        /// The same id range
+        /// [`SemanticCore::take_merged_accessibility_tree_update`] assigns
+        /// each popup.
+        const WINDOW_ID_STRIDE: u64 = 1 << 32;
+
+        let target = node_id.0;
+        if target >= WINDOW_ID_STRIDE {
+            let index = target / WINDOW_ID_STRIDE - 1;
+            let Some(popup) = self.popup_windows.get(index as usize) else {
+                return Err(AccessibilityActivationPointError::NoNode);
+            };
+            let point = popup.renderer.accessibility_activation_point(
+                accesskit::NodeId(target % WINDOW_ID_STRIDE),
+                x_fraction,
+                y_fraction,
+            )?;
+            let frame = crate::platform::validated_window_frame(popup.window.frame.snapshot());
+            return Ok(kurbo::Point::new(
+                point.x + f64::from(frame.x()),
+                point.y + f64::from(frame.y()),
+            ));
+        }
+        self.runtime
+            .renderer
+            .accessibility_activation_point(node_id, x_fraction, y_fraction)
     }
 
     /// Where the runner would anchor the platform's input-method panel.

@@ -65,6 +65,8 @@ pub use platform::{
     OffscreenSurface, OffscreenWindow, PlatformWindow, PointerButton, PointerKind, SurfaceError,
     SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, WindowSafeArea,
 };
+#[cfg(feature = "accessibility")]
+pub use renderer::accessibility::AccessibilityActivationPointError;
 #[cfg(feature = "frame-profile")]
 pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};

@@ -7,8 +7,6 @@ use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
 #[cfg(feature = "accessibility")]
-use waterui::gesture::PointerButton as WuiPointerButton;
-#[cfg(feature = "accessibility")]
 use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
@@ -56,11 +54,12 @@ impl ScopedAccessibilityIdentifier {
 pub(crate) struct ScopedAccessibilitySemantics {
     identity: Rc<()>,
     /// The `Activate` a representative silenced by this scope's claim delegates
-    /// to the claiming node. Shared across clones — `Environment` clones share
+    /// to the claiming node, with the interaction owner's hit region it was
+    /// captured at. Shared across clones — `Environment` clones share
     /// their `Rc` values and [`crate::renderer::restore_a11y_naming_scope`]
     /// clones the scope itself — so a donation always lands in the slot the
     /// claimer drains.
-    delegated_activation: Rc<RefCell<Option<AccessibilityActivation>>>,
+    delegated_activation: Rc<RefCell<Option<DelegatedActivation>>>,
     /// Text a descendant donated to the claim's accessible name (see
     /// [`AccessibilityNameFromContents`]). `Some` once any leaf donated — even
     /// if the joined string is empty — so the claimer can tell "text was
@@ -86,18 +85,29 @@ impl ScopedAccessibilitySemantics {
     }
 
     /// Deposit `activation` for the node claiming this scope — called by a tap
-    /// gesture whose own element the claim silences. The first donor wins: the
-    /// claim stands in for the nearest actionable representative.
-    pub(crate) fn delegate_activation(&self, activation: AccessibilityActivation) {
+    /// gesture whose own element the claim silences. `interaction` is the
+    /// donor's hit region and effective clip in window hit-test space, the
+    /// placement [`SemanticCore::accessibility_activation_point`] projects
+    /// (water-rs/waterui#1323 §5); `None` on the semantic walk, which has no
+    /// geometry to carry. The first donor wins: the claim stands in for the
+    /// nearest actionable representative.
+    pub(crate) fn delegate_activation(
+        &self,
+        activation: AccessibilityActivation,
+        interaction: Option<NodePlacement>,
+    ) {
         let mut slot = self.delegated_activation.borrow_mut();
         if slot.is_none() {
-            *slot = Some(activation);
+            *slot = Some(DelegatedActivation {
+                activation,
+                interaction,
+            });
         }
     }
 
     /// Take the activation silenced representatives delegated, if any — the
     /// claiming node drains it after its subtree has been walked.
-    pub(crate) fn take_delegated_activation(&self) -> Option<AccessibilityActivation> {
+    pub(crate) fn take_delegated_activation(&self) -> Option<DelegatedActivation> {
         self.delegated_activation.borrow_mut().take()
     }
 
@@ -163,6 +173,27 @@ fn accessibility_role_names_from_contents(role: &AccessibilityRole) -> bool {
     )
 }
 
+/// The `f32`-representable points inside the half-open range `[lo, hi)`, as
+/// `(nearest, farthest)`.
+///
+/// Pointer input is delivered in `f32`, so an activation point survives only
+/// if the narrowing keeps it inside the fragment: `hi` yields the largest
+/// `f32` strictly below it, `lo` the smallest `f32` at or above it. `None`
+/// when no `f32` lands inside — a sliver thinner than one `f32` ulp is as
+/// unreachable as an empty fragment (water-rs/hydrolysis#27).
+#[cfg(feature = "accessibility")]
+fn f32_interior_range(lo: f64, hi: f64) -> Option<(f32, f32)> {
+    let lo = match lo as f32 {
+        narrowed if f64::from(narrowed) >= lo => narrowed,
+        narrowed => narrowed.next_up(),
+    };
+    let hi = match hi as f32 {
+        narrowed if f64::from(narrowed) < hi => narrowed,
+        narrowed => narrowed.next_down(),
+    };
+    (lo <= hi).then_some((lo, hi))
+}
+
 #[cfg(feature = "accessibility")]
 pub(crate) const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
 #[cfg(feature = "accessibility")]
@@ -187,6 +218,41 @@ enum AccessibilityLocalNodeKey {
 #[cfg(feature = "accessibility")]
 pub(crate) type AccessibilityActivation =
     Rc<RefCell<dyn FnMut(&mut SemanticCore, &Environment) -> bool>>;
+
+/// Where an emitted accessibility node sits in window hit-test space: its
+/// logical bounds — the rectangle the tree reports — and the effective clip
+/// in force when it registered.
+///
+/// The clip stays out of the reported bounds (water-rs/waterui#1323 §4): it
+/// is kept beside the node so
+/// [`SemanticCore::accessibility_activation_point`] can project the logical
+/// rectangle into the fragment a pointer can actually reach.
+#[cfg(feature = "accessibility")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NodePlacement {
+    pub(crate) bounds: kurbo::Rect,
+    pub(crate) clip: Option<kurbo::Rect>,
+}
+
+/// An activation a silenced interaction owner donated to a claiming node,
+/// with the hit region the donation was captured at.
+///
+/// Pointer hit-testing belongs to the interaction owner — its explicit hit
+/// region, transform and clips — not to the node that ends up answering for
+/// it (water-rs/waterui#1323 §5). [`SemanticCore::accessibility_activation_point`]
+/// therefore projects a delegated node's point through `interaction` rather
+/// than the node's logical rectangle: a `List` row straddling a clip can
+/// leave a visible sliver where its silenced `on_tap` strip is already fully
+/// clipped, and only the region projection tells those apart
+/// (water-rs/hydrolysis#27).
+#[cfg(feature = "accessibility")]
+pub(crate) struct DelegatedActivation {
+    pub(crate) activation: AccessibilityActivation,
+    /// The donating gesture's hit region and effective clip, in window
+    /// hit-test space. `None` on the semantic walk — it carries no geometry,
+    /// so its nodes carry no point at all.
+    pub(crate) interaction: Option<NodePlacement>,
+}
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
@@ -279,6 +345,23 @@ pub(crate) struct AccessibilityBuilder {
     /// stack, where an unregistered id panics the first child attach.
     /// `finalize_tree_update` prunes links stamped for suppressed nodes.
     pub(crate) interaction_nodes: BTreeMap<InteractionKey, AccessibilityNodeId>,
+    /// Activations a silenced interaction owner delegated into a node, each
+    /// with the hit region it was captured at — a `List` row's `Click`
+    /// dispatches the tap gesture its content silenced into the row's naming
+    /// scope (water-rs/hydrolysis#27), and
+    /// [`SemanticCore::accessibility_activation_point`] projects the node's
+    /// point through that interaction owner's region, not the node's logical
+    /// rectangle (water-rs/waterui#1323 §5). A donation never replaces the
+    /// node's own action target: it rides alongside for the targets that
+    /// dispatch retained actions directly.
+    pub(crate) delegated_activations: BTreeMap<AccessibilityNodeId, DelegatedActivation>,
+    /// The effective clip — the top of the hit clip stack — in effect when
+    /// each bounded node registered, in window hit-test space. Reported node
+    /// bounds stay the logical rectangle; this is how
+    /// [`SemanticCore::accessibility_activation_point`] projects them onto the
+    /// fragment a pointer can actually reach (water-rs/hydrolysis#27,
+    /// water-rs/waterui#1323 §4).
+    pub(crate) node_clips: BTreeMap<AccessibilityNodeId, kurbo::Rect>,
     /// The `OnKeyPress` scope chain each focusable interaction identity was
     /// registered under — how a bubble resolves the handlers of a focused
     /// node whose registration emitted no live target this frame (the
@@ -320,6 +403,8 @@ impl Default for AccessibilityBuilder {
             actions: BTreeMap::new(),
             focus_bindings: BTreeMap::new(),
             interaction_nodes: BTreeMap::new(),
+            delegated_activations: BTreeMap::new(),
+            node_clips: BTreeMap::new(),
             focus_key_handlers: BTreeMap::new(),
             next_node_id: ACCESSIBILITY_FIRST_NODE_ID,
             node_ids: BTreeMap::new(),
@@ -365,6 +450,8 @@ impl AccessibilityBuilder {
         self.actions.clear();
         self.focus_bindings.clear();
         self.interaction_nodes.clear();
+        self.delegated_activations.clear();
+        self.node_clips.clear();
         self.focus_key_handlers.clear();
         self.active_node_keys.clear();
         self.owner_ordinals.clear();
@@ -522,14 +609,15 @@ impl AccessibilityBuilder {
 
     /// Registers `node` and returns its stable id.
     ///
-    /// `bounds` is the flushed hit rect — `Some` for the rendered runtime,
-    /// `None` for the semantic runtime, whose nodes carry no geometry at all.
-    /// A `Some` rect with non-positive extent is not an element and registers
-    /// nothing, matching the layout-driven emission's contract.
+    /// `placement` is the flushed hit rect and the effective clip — `Some`
+    /// for the rendered runtime, `None` for the semantic runtime, whose nodes
+    /// carry no geometry at all. A `Some` rect with non-positive extent is not
+    /// an element and registers nothing, matching the layout-driven emission's
+    /// contract.
     pub(crate) fn register_node_internal(
         &mut self,
         mut node: AccessibilityNode,
-        bounds: Option<kurbo::Rect>,
+        placement: Option<NodePlacement>,
         env: &Environment,
         action_target: Option<AccessibilityActionTarget>,
         attach_to_root: bool,
@@ -538,7 +626,9 @@ impl AccessibilityBuilder {
         if self.suppression_depth > 0 {
             return None;
         }
-        if bounds.is_some_and(|bounds| bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+        if placement.is_some_and(|placement| {
+            placement.bounds.width() <= 0.0 || placement.bounds.height() <= 0.0
+        }) {
             return None;
         }
         // This node represents the view the enclosing naming scope wraps, so it
@@ -567,8 +657,11 @@ impl AccessibilityBuilder {
             node.set_author_id(scope.value().as_str().to_string());
         }
         let node_id = self.stable_node_id(semantic_key);
-        if let Some(bounds) = bounds {
-            node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+        if let Some(placement) = placement {
+            node.set_bounds(kurbo_rect_to_accesskit_rect(placement.bounds));
+            if let Some(clip) = placement.clip {
+                self.node_clips.insert(node_id, clip);
+            }
         }
         self.nodes.push((node_id, node));
         if attach_to_root {
@@ -599,20 +692,38 @@ impl AccessibilityBuilder {
             .is_some_and(|scope| self.consumed_semantics_scopes.contains(&scope.key()))
     }
 
-    /// Bind `node_id`'s `Click` to `activation`, advertising the `Focus` and
-    /// `Click` actions a tap gesture's own node would have carried.
+    /// Bind `node_id`'s `Click` to the donated `activation`, advertising the
+    /// `Focus` and `Click` actions a tap gesture's own node would have
+    /// carried.
     ///
     /// Called with the activation a silenced tap delegated to this node's
     /// naming scope — the node stands in for that gesture, so it must be no
     /// less activatable than the view it represents. A node that already has
-    /// an action target — or is disabled and advertises no actions — is left
-    /// alone: a donation never overrides a real action.
+    /// an action target keeps it — a donation never overrides a real action —
+    /// but a target that dispatches retained activations (a `List` row's
+    /// `Click`) still resolves the donation, so it is retained on the side.
+    /// The donor's hit region is kept either way: it is the interaction
+    /// owner's geometry the activation-point query projects through
+    /// (water-rs/waterui#1323 §5). A disabled node advertises no actions and
+    /// takes neither.
     fn attach_delegated_activation(
         &mut self,
         node_id: AccessibilityNodeId,
-        activation: AccessibilityActivation,
+        donation: DelegatedActivation,
     ) {
         if self.actions.contains_key(&node_id) {
+            self.delegated_activations
+                .entry(node_id)
+                .and_modify(|stored| {
+                    // The semantic walk's donation carries no geometry and
+                    // lands first; the rendered walk's carries the
+                    // interaction owner's real placement. Geometry upgrades,
+                    // never downgrades — the first donor's placement stands.
+                    if stored.interaction.is_none() {
+                        stored.interaction = donation.interaction;
+                    }
+                })
+                .or_insert(donation);
             return;
         }
         let Some(node) = self
@@ -629,8 +740,11 @@ impl AccessibilityBuilder {
         node.add_action(AccessibilityAction::Click);
         self.actions.insert(
             node_id,
-            AccessibilityActionTarget::Activate { action: activation },
+            AccessibilityActionTarget::Activate {
+                action: Rc::clone(&donation.activation),
+            },
         );
+        self.delegated_activations.insert(node_id, donation);
     }
 
     /// Name `node_id` from the descendant text its claim consumed (see
@@ -709,6 +823,13 @@ impl AccessibilityBuilder {
         }
         if let Some(target) = self.actions.remove(&container_id) {
             self.actions.entry(child_id).or_insert(target);
+        }
+        // A delegated activation rides with its target: the surviving child
+        // dispatches it and projects its point through the donor's region.
+        if let Some(donation) = self.delegated_activations.remove(&container_id) {
+            self.delegated_activations
+                .entry(child_id)
+                .or_insert(donation);
         }
         // The scope's automation id was claimed by the container, so it would
         // vanish with it. A child that carries its own id keeps it, matching
@@ -1215,56 +1336,32 @@ impl SemanticCore {
             .insert(key.clone(), node_id);
     }
 
-    /// `Click` on a `List` row resolves the activation a pointer click on
-    /// the row's centre would run — Enter/Space on a focused row lands
-    /// here, so a tap target, an inner button, or nothing at all behave
-    /// exactly as they do under the pointer (water-rs/waterui#1223).
+    /// `Click` on a `List` row dispatches the activation the row's content
+    /// retained for it — Enter/Space on a focused row lands here, so a tap
+    /// target, an inner button, or nothing at all behave exactly as they do
+    /// under the pointer (water-rs/waterui#1223).
     ///
-    /// The rendered runtime's nodes carry hit bounds: gesture recognizers
-    /// see the press first, then the topmost pointer target covering the
-    /// point — the order a real click resolves them in. The semantic walk
-    /// emits no pointer machinery, so the node a pointer would hit is the
-    /// innermost descendant advertising `Click`, resolved purely through
-    /// the accessibility tree.
+    /// No pointer press is synthesized at the bounds' centre: a row
+    /// straddling a clip has its centre where no pointer can hit, and the
+    /// synthesized press dead-clicked on just such a row
+    /// (water-rs/hydrolysis#27, water-rs/waterui#1323 §5). The row's silenced
+    /// tap gesture delegates its activation into the row's naming scope at
+    /// flush, which the row drains here. A row with no retained tap resolves
+    /// the node a pointer at its centre would hit in the accessibility
+    /// tree's own terms — the innermost descendant advertising `Click`.
     #[cfg(feature = "accessibility")]
     pub(crate) fn click_list_row(
         &mut self,
         row_node: AccessibilityNodeId,
         env: &Environment,
     ) -> bool {
-        if let Some(centre) = self.accessibility.nodes.iter().find_map(|(id, node)| {
-            (*id == row_node)
-                .then(|| node.bounds())
-                .flatten()
-                .map(|bounds| {
-                    kurbo::Point::new((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0)
-                })
-        }) {
-            let at = self.frame_instant;
-            // An assistive-technology activation is a primary press.
-            let mut changed =
-                self.gesture_engine
-                    .handle_pointer_down(centre, at, WuiPointerButton::Primary, env);
-            changed |=
-                self.gesture_engine
-                    .handle_pointer_up(centre, at, WuiPointerButton::Primary, env);
-            if let Some(index) = self
-                .hit_test
-                .pointer_targets
-                .iter()
-                .enumerate()
-                .filter(|(_, target)| target.bounds.contains(centre))
-                .max_by(|(left_index, left), (right_index, right)| {
-                    Self::target_hit_priority(left.depth, left.order, *left_index).cmp(
-                        &Self::target_hit_priority(right.depth, right.order, *right_index),
-                    )
-                })
-                .map(|(index, _)| index)
-            {
-                let target = self.hit_test.pointer_targets[index].clone();
-                changed |= (target.action.borrow_mut())(self, centre, env);
-            }
-            return changed;
+        if let Some(activation) = self
+            .accessibility
+            .delegated_activations
+            .get(&row_node)
+            .map(|donation| Rc::clone(&donation.activation))
+        {
+            return (activation.borrow_mut())(self, env);
         }
         if let Some(dest) = self.clickable_descendant(row_node) {
             return self.handle_accessibility_action(
@@ -1314,6 +1411,98 @@ impl SemanticCore {
                 inside.contains(id) && node.supports_action(AccessibilityAction::Click)
             })
             .map(|(id, _)| *id)
+    }
+
+    /// Resolves the point a pointer could actually reach inside `node_id`'s
+    /// accessibility bounds.
+    ///
+    /// A node's reported bounds are its logical rectangle — visibility is a
+    /// projection concern resolved here, at the point of use
+    /// (water-rs/waterui#1323 §4). What projects is the region a pointer can
+    /// activate: for a node whose `Click` was delegated by a silenced
+    /// interaction owner (a `List` row standing in for its `on_tap` strip),
+    /// that owner's own hit region and clip; otherwise the node's logical
+    /// rectangle intersected with the clip chain in effect when it
+    /// registered (the same [`HitTestState::hit_clip_stack`] data the pointer
+    /// path clips hit regions with, water-rs/hydrolysis#252) — either way,
+    /// intersected with the window bounds (water-rs/waterui#1323 §5). The
+    /// callers that must produce a real point — a testing `tap_at`, an
+    /// automation `pointer tap` — resolve through this query instead of the
+    /// bounds' centre, which may sit inside a clipped region where nothing
+    /// can be hit (water-rs/hydrolysis#27).
+    ///
+    /// `(x_fraction, y_fraction)` pick a spot inside the projected region —
+    /// `0.5, 0.5` is its centre; the result is clamped into the visible
+    /// fragment, so a spot clipped away lands on the nearest point a pointer
+    /// can reach. An element with no visible fragment fails loudly with
+    /// [`AccessibilityActivationPointError::EmptyFragment`] — an off-screen
+    /// point is never returned.
+    #[cfg(feature = "accessibility")]
+    pub fn accessibility_activation_point(
+        &self,
+        node_id: AccessibilityNodeId,
+        x_fraction: f64,
+        y_fraction: f64,
+    ) -> Result<kurbo::Point, AccessibilityActivationPointError> {
+        let Some((_, node)) = self
+            .accessibility
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == node_id)
+        else {
+            return Err(AccessibilityActivationPointError::NoNode);
+        };
+        // A node whose activation was delegated resolves against the
+        // interaction owner's hit region — the gesture's own bounds and
+        // effective clip — not the node's logical rectangle: a `List` row's
+        // sliver can outlive the silenced `on_tap` strip that answers for it
+        // (water-rs/waterui#1323 §5). Otherwise the node's own placement
+        // stands in: the tree it registered is what a pointer sees.
+        let (bounds, clip) = match self
+            .accessibility
+            .delegated_activations
+            .get(&node_id)
+            .and_then(|donation| donation.interaction)
+        {
+            Some(placement) => (placement.bounds, placement.clip),
+            None => {
+                let Some(bounds) = node.bounds() else {
+                    // The semantic walk emits nodes with no geometry at all —
+                    // there is no rectangle to project.
+                    return Err(AccessibilityActivationPointError::NoBounds);
+                };
+                (
+                    kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+                    self.accessibility.node_clips.get(&node_id).copied(),
+                )
+            }
+        };
+        let mut fragment = bounds;
+        if let Some(clip) = clip {
+            fragment = fragment.intersect(clip);
+        }
+        fragment = fragment.intersect(self.hit_test.window_bounds);
+        if fragment.width() <= 0.0 || fragment.height() <= 0.0 {
+            return Err(AccessibilityActivationPointError::EmptyFragment);
+        }
+        // Hit-test space is half-open and pointer input arrives in `f32`, so
+        // the point must come from the range an `f32` event can still land
+        // inside: clamping to `x1 - ε` in `f64` narrows back onto the excluded
+        // edge whenever ε is below the `f32` ulp at that magnitude.
+        let Some((x0, x1)) = f32_interior_range(fragment.x0, fragment.x1) else {
+            return Err(AccessibilityActivationPointError::EmptyFragment);
+        };
+        let Some((y0, y1)) = f32_interior_range(fragment.y0, fragment.y1) else {
+            return Err(AccessibilityActivationPointError::EmptyFragment);
+        };
+        let requested = kurbo::Point::new(
+            bounds.x0 + bounds.width() * x_fraction,
+            bounds.y0 + bounds.height() * y_fraction,
+        );
+        Ok(kurbo::Point::new(
+            f64::from((requested.x as f32).clamp(x0, x1)),
+            f64::from((requested.y as f32).clamp(y0, y1)),
+        ))
     }
 
     /// Reveal row `index` of the list `handle` scrolls: the minimum scroll
@@ -1483,9 +1672,13 @@ impl SemanticCore {
             };
         }
         self.watch_accessibility_state(env);
+        let placement = bounds.map(|bounds| NodePlacement {
+            bounds,
+            clip: self.hit_test.hit_clip_stack.last().copied(),
+        });
         let Some(node_id) = self
             .accessibility
-            .register_node_internal(node, bounds, env, None, true, None)
+            .register_node_internal(node, placement, env, None, true, None)
         else {
             // Bounds are positive (or semantic `None`) and the scope is unclaimed,
             // so registration can only have declined because the whole subtree is
@@ -1661,9 +1854,13 @@ impl SemanticCore {
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
+        let placement = NodePlacement {
+            bounds,
+            clip: self.hit_test.hit_clip_stack.last().copied(),
+        };
         self.accessibility.register_node_internal(
             node,
-            Some(bounds),
+            Some(placement),
             env,
             action_target,
             true,
@@ -1752,9 +1949,13 @@ impl SemanticCore {
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
+        let placement = NodePlacement {
+            bounds,
+            clip: self.hit_test.hit_clip_stack.last().copied(),
+        };
         self.accessibility.register_node_internal(
             node,
-            Some(bounds),
+            Some(placement),
             env,
             action_target,
             false,
@@ -1784,9 +1985,13 @@ impl SemanticCore {
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
+        let placement = NodePlacement {
+            bounds,
+            clip: self.hit_test.hit_clip_stack.last().copied(),
+        };
         self.accessibility.register_node_internal(
             node,
-            Some(bounds),
+            Some(placement),
             env,
             action_target,
             false,
