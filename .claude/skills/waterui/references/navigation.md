@@ -273,6 +273,11 @@ The `Window` builder, precisely:
   without a min, the backend derives one by measuring content at a zero proposal.
 - `.toolbar(..)` — window-level chrome; it installs `LabelDisplayMode::IconOnly` for its
   items automatically.
+- `.icon(..)` — the window's own icon: decoded pixels
+  (`waterui::graphics::peniko::ImageData`) or a `Binding<Option<ImageData>>`; `None` keeps
+  the application icon the CLI stages, and `window.handle().set_icon(..)` changes it
+  later. Applied on X11/Windows (hydrolysis), GTK and `WinUI`; macOS, iOS, Android and
+  Wayland have no per-window icon and keep the application icon.
 
 `WindowState` variants: `Normal`, `Closed` (**the `Default`**), `Minimized`,
 `Fullscreen`. `WindowState` is held in a binding, so opening, closing, minimizing, and

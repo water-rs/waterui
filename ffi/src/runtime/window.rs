@@ -500,6 +500,8 @@ impl IntoFFI for Window {
             max_size: self.max_size.into_ffi(),
             placement: placement_into_ffi(self.placement),
             activation: self.activation.into(),
+            // `icon` does not cross: AppKit, UIKit and Android have no
+            // per-window icon, and it is documented as unsupported there.
         }
     }
 }

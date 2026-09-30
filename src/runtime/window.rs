@@ -25,7 +25,7 @@ use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::Int
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View, flatten_signal};
-use waterui_graphics::{Color, color::ResolvedColor};
+use waterui_graphics::{Color, color::ResolvedColor, peniko::ImageData};
 use waterui_layout::{Point, Rect, Size};
 
 use crate::app::{application_identifier, application_name};
@@ -157,6 +157,39 @@ pub struct Window {
     /// How showing and clicking the window affects keyboard focus and app
     /// activation. See [`Activation`] for the per-platform notes.
     pub activation: Activation,
+    /// The window's own icon, or `None` for the application icon.
+    ///
+    /// Reactive: backends apply a change to a shown window, so an app can
+    /// switch icons at runtime (with its theme, say). `None` — the default —
+    /// keeps the icon the `water` CLI stages for the application.
+    ///
+    /// Platform support: hydrolysis on X11 and Windows (winit's
+    /// `set_window_icon`), GTK through the toplevel's icon list, and `WinUI`
+    /// through `AppWindow`'s icon. `AppKit`, `UIKit` and Android identify an
+    /// application by one icon and have no per-window icon, and Wayland's
+    /// winit toplevel carries none: this is unsupported there, and those
+    /// platforms keep showing the application icon.
+    pub icon: Binding<Option<ImageData>>,
+}
+
+/// Conversion into the reactive icon a [`Window`] carries: decoded pixels for
+/// a fixed icon, or a binding the app keeps to change the icon later (`None`
+/// keeps the application icon).
+pub trait IntoWindowIcon {
+    /// Converts into the window's icon binding.
+    fn into_window_icon(self) -> Binding<Option<ImageData>>;
+}
+
+impl IntoWindowIcon for ImageData {
+    fn into_window_icon(self) -> Binding<Option<ImageData>> {
+        Binding::container(Some(self))
+    }
+}
+
+impl IntoWindowIcon for Binding<Option<ImageData>> {
+    fn into_window_icon(self) -> Binding<Option<ImageData>> {
+        self
+    }
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -448,6 +481,7 @@ impl Window {
             instance_name: None,
             placement: None,
             activation: Activation::default(),
+            icon: Binding::container(None),
         }
     }
 
@@ -521,6 +555,16 @@ impl Window {
     #[must_use]
     pub const fn activation(mut self, activation: Activation) -> Self {
         self.activation = activation;
+        self
+    }
+
+    /// Set the window's own icon: decoded pixels, or a
+    /// `Binding<Option<ImageData>>` to change it after the window is shown.
+    ///
+    /// See [`Self::icon`] for the default and platform support notes.
+    #[must_use]
+    pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
+        self.icon = icon.into_window_icon();
         self
     }
 
@@ -665,6 +709,7 @@ impl Window {
             state: self.state.clone(),
             style: self.style.clone(),
             background: self.background.clone(),
+            icon: self.icon.clone(),
         }
     }
 
@@ -753,6 +798,7 @@ pub struct WindowHandle {
     state: Binding<WindowState>,
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
+    icon: Binding<Option<ImageData>>,
 }
 
 impl WindowHandle {
@@ -791,6 +837,13 @@ impl WindowHandle {
     /// shown window.
     pub fn set_background(&self, background: impl Into<WindowBackground>) {
         self.background.set(background.into());
+    }
+
+    /// Set the window's own icon, or `None` for the application icon; the
+    /// backend re-applies it to the shown window. See [`Window::icon`] for
+    /// platform support.
+    pub fn set_icon(&self, icon: Option<ImageData>) {
+        self.icon.set(icon);
     }
 }
 

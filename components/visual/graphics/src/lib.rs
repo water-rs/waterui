@@ -36,6 +36,10 @@ pub use gradients::gradient::{
 pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
 #[cfg(feature = "gpu")]
 pub use image::{image_analysis, image_decode, image_generator};
+/// The paint and image vocabulary [`scene2d`] draws with, re-exported so
+/// decoded pixels ([`peniko::ImageData`]) can be named without a direct
+/// dependency on the same `peniko` release.
+pub use peniko;
 #[cfg(feature = "cpu-scene")]
 pub use scene::scene2d_cpu;
 pub use scene::{picture, scene_view, scene2d};
