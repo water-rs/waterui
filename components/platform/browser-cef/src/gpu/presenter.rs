@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use cef::PaintElementType;
 use num_traits::ToPrimitive as _;
@@ -19,7 +19,7 @@ struct MailboxState {
     popup_frame: Option<wgpu::Texture>,
     popup_rect: Option<CefPopupRect>,
     gpu_handles: Option<GpuHandles>,
-    waker: Option<Box<dyn Fn() + Send + Sync>>,
+    waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Crosses the UI/render boundary both ways: Chromium's paint callback on the
@@ -48,7 +48,7 @@ impl OwnedFrameMailbox {
     }
 
     pub(super) fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
-        self.lock().waker = Some(Box::new(waker));
+        self.lock().waker = Some(Arc::new(waker));
     }
 
     pub(super) fn set_gpu_handles(&self, handles: GpuHandles) {
@@ -87,7 +87,10 @@ impl OwnedFrameMailbox {
     }
 
     fn wake(&self) {
-        if let Some(waker) = self.lock().waker.as_ref() {
+        // The foreign redraw callback is invoked with the lock dropped: the
+        // waker may schedule work that calls back into this mailbox.
+        let waker = self.lock().waker.clone();
+        if let Some(waker) = waker {
             waker();
         }
     }
