@@ -1381,6 +1381,68 @@ impl ShapeExt for Path {}
 mod tests {
     use super::*;
 
+    /// The morph clock runs while the content is mounted: installing the
+    /// host's invalidator starts the driver, which advances `progress`, and
+    /// clearing it drops the driver's task.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_morph_clock_runs_from_mount_to_unmount() {
+        use executor_core::async_executor::AsyncLocalExecutor;
+        use futures_lite::future;
+        use nami::Signal as _;
+        use std::rc::Rc;
+
+        let executor = Rc::new(AsyncLocalExecutor::new());
+        executor_core::try_init_local_executor(Rc::clone(&executor))
+            .unwrap_or_else(|_| panic!("the test thread already had a local executor"));
+
+        let morphable = |kind| kind_to_morph_shape(kind).expect("a built-in morphable shape");
+        let mut content = MorphContent::new(
+            morphable(ShapeKind::Rect),
+            morphable(ShapeKind::Circle),
+            nami::constant(WorkingColor::BLACK).computed(),
+            MorphAnimation::default(),
+            None,
+        );
+        let (reporter, readings) = async_channel::unbounded();
+        let _watch = content.progress.watch(move |context| {
+            let _ = reporter.try_send(context.into_value());
+        });
+        let running = |content: &MorphContent| {
+            content
+                .driver
+                .as_ref()
+                .expect("content without a progress signal owns its driver")
+                .task
+                .is_some()
+        };
+        assert!(!running(&content), "nothing runs before mount");
+
+        content.set_invalidator(Some(Rc::new(|| {})));
+        assert!(running(&content), "mounting starts the morph clock");
+        let progressed = future::block_on(executor.run(future::or(
+            async {
+                loop {
+                    let progress = readings.recv().await.expect("the progress watch ended");
+                    if progress > 0.0 {
+                        break progress;
+                    }
+                }
+            },
+            async {
+                native_executor::sleep(Duration::from_secs(5)).await;
+                panic!("the mounted morph clock never advanced progress");
+            },
+        )));
+        assert!(progressed > 0.0);
+
+        content.set_invalidator(None);
+        assert!(
+            !running(&content),
+            "unmounting drops the morph clock's task"
+        );
+    }
+
     #[test]
     fn rounded_rectangle_radius_is_clamped() {
         let kind = RoundedRectangle::new(9.0).shape_kind();
