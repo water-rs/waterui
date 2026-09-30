@@ -1,12 +1,4 @@
 //! CPU rasterisation of a [`Picture`] through `cherenkov_cpu`.
-
-#![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        clippy::future_not_send,
-        reason = "the engine's wasm32 API is !Send by design (Rc-based backend handles) and every future executes on the browser's single-threaded executor"
-    )
-)]
 //!
 //! The FFI backends rasterise a [`Picture`] here to hand the pixels to a
 //! platform image view. It needs no GPU device, which is the point — a static
@@ -168,6 +160,13 @@ impl Rasterizer {
     ///
     /// [`SurfaceError`] when the offscreen target cannot be created.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn new(width: u32, height: u32) -> Result<Self, SurfaceError> {
         let engine = Rc::new(Engine::<Raster>::new(RasterConfig::default()).await?);
         let surface = engine
@@ -224,6 +223,13 @@ impl Rasterizer {
     ///
     /// When `recording` names resources registered on another engine.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn rasterize(
         &mut self,
         recording: &PictureRecording,
@@ -276,6 +282,13 @@ impl Rasterizer {
     ///
     /// [`RenderError`] when the render or the readback fails.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn rasterize_scene(
         &mut self,
         content: &mut dyn SceneContent,
@@ -324,6 +337,13 @@ impl Rasterizer {
     /// Installs `content` on the root under `transform`, then lets go of what
     /// the drawing it replaces held, renders and reads the pixels back.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     async fn show(
         &mut self,
         content: impl Into<LayerContent<Raster>>,
@@ -379,6 +399,13 @@ pub fn rasterize_picture(
 ///
 /// As [`Rasterizer::new`] and [`Rasterizer::rasterize`].
 #[cfg(target_arch = "wasm32")]
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+    )
+)]
 pub async fn rasterize_picture(
     recording: &PictureRecording,
     width: u32,

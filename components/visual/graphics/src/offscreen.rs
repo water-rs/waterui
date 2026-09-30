@@ -1,12 +1,4 @@
 //! Rendering scene content into pixels through a Cherenkov offscreen target.
-
-#![cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        clippy::future_not_send,
-        reason = "the engine's wasm32 API is !Send by design (Rc-based backend handles) and every future executes on the browser's single-threaded executor"
-    )
-)]
 //!
 //! Previews, exports and tests want a drawing as an image rather than on a
 //! window. An [`OffscreenRenderer`] owns an `Engine<Gpu>`, records the content
@@ -227,6 +219,13 @@ impl OffscreenRenderer<Gpu> {
     ///
     /// # Errors
     /// [`EngineError`] when no adapter is available.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn new() -> Result<Self, OffscreenError> {
         Self::with_config(GpuConfig::default()).await
     }
@@ -335,6 +334,13 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// [`OffscreenError`] when the surface cannot be created, the frame does
     /// not render, or the target cannot be read back.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn render(
         &self,
         content: &mut dyn SceneContent,
@@ -399,6 +405,13 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// # Panics
     /// When `picture` names resources registered on another engine.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     pub async fn render_picture(
         &self,
         picture: &PictureRecording,
@@ -442,6 +455,13 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// Installs `recorded` on `surface`'s root, renders it and reads it back,
     /// holding what it names until the pixels are read.
     #[cfg(target_arch = "wasm32")]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+        )
+    )]
     async fn show(
         &self,
         surface: &Surface<B>,
