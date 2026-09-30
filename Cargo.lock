@@ -1225,7 +1225,7 @@ dependencies = [
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 dependencies = [
  "color",
  "filtrate-core",
@@ -1243,7 +1243,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 dependencies = [
  "cherenkov",
  "filtrate-core",
@@ -1261,7 +1261,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 dependencies = [
  "bytemuck",
  "cherenkov",
@@ -1289,7 +1289,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 dependencies = [
  "naga 30.0.1",
  "thiserror 2.0.21",
@@ -2709,7 +2709,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -2727,12 +2727,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
+source = "git+https://github.com/water-rs/cherenkov?rev=a7708216db67bbf976e1fe36429a6a54cf82ba8a#a7708216db67bbf976e1fe36429a6a54cf82ba8a"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -9884,7 +9884,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=2ef1c9fbf77805454bed32e685c71010adeb2a6d#2ef1c9fbf77805454bed32e685c71010adeb2a6d"
+source = "git+https://github.com/water-rs/barcode?rev=4c530503f6e3277f44511f327db463a195482abd#4c530503f6e3277f44511f327db463a195482abd"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -9965,7 +9965,7 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=a210eac2b8bcf627e2116ef30002683b237d7bd2#a210eac2b8bcf627e2116ef30002683b237d7bd2"
+source = "git+https://github.com/water-rs/canvas?rev=a024239e18055ac851e639a177d9309ac4a2f821#a024239e18055ac851e639a177d9309ac4a2f821"
 dependencies = [
  "cherenkov",
  "image",
@@ -10239,7 +10239,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=be59d588f8dff02ac9388dbd4b3a8c43a19985e6#be59d588f8dff02ac9388dbd4b3a8c43a19985e6"
+source = "git+https://github.com/water-rs/image?rev=08b84660f471039d598f3ac037d37854ebac8043#08b84660f471039d598f3ac037d37854ebac8043"
 dependencies = [
  "executor-core",
  "half",
@@ -10601,7 +10601,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=b42c9ee10ee2e5a780c070dea3ea972edf333a1a#b42c9ee10ee2e5a780c070dea3ea972edf333a1a"
+source = "git+https://github.com/water-rs/svg?rev=16362805a6babc99a8937a1b75f2ccb831e93f43#16362805a6babc99a8937a1b75f2ccb831e93f43"
 dependencies = [
  "cherenkov",
  "suiteki",
