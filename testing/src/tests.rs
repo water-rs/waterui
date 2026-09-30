@@ -6,14 +6,14 @@ use std::time::Duration;
 use crate::driver::{DriverPumpResult, ResourceSampler};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
 use hydrolysis::InputEvent;
-use vello::kurbo::Shape;
 use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
-use waterui::graphics::SceneViewMergeToParent;
+use waterui::graphics::cherenkov::{self, Draw as _, Recorder, kurbo};
 use waterui::graphics::color::Srgb;
-use waterui::graphics::{Scene2D, SceneContent, SceneView};
+use waterui::graphics::scene_view::SceneViewMergeToParent;
+use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
@@ -984,21 +984,20 @@ fn scene_view_exposes_accessibility_node_semantically() {
 struct TestSceneContent(Rc<Cell<bool>>);
 
 impl SceneContent for TestSceneContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> bool {
         self.0.set(true);
-        let rect = vello::kurbo::Rect::from_origin_size(
-            vello::kurbo::Point::new(8.0, 8.0),
-            vello::kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
-        )
-        .to_path(0.1);
-        let brush: vello::peniko::Brush = vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
-            &brush,
-            None,
-            &rect,
+        let rect = kurbo::Rect::from_origin_size(
+            (8.0, 8.0),
+            (f64::from(width.min(40.0)), f64::from(height.min(24.0))),
         );
+        let red = cherenkov::Color::<cherenkov::Srgb>::new([1.0, 0.0, 0.0, 1.0]);
+        recorder.fill(rect, WorkingColor::from(red));
         false
     }
 }
