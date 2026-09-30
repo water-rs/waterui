@@ -200,14 +200,23 @@ impl WuiGpuContentState {
     /// Android reattaches the surface without reconfiguring the FFI state: the
     /// still-attached `layer` is the handle `create_attached_surface` needs to
     /// rebuild the native binding on the new device.
+    ///
+    /// While the runtime's rebuild is in flight the returned context is still
+    /// the lost one — nothing may touch it, so this returns early and the
+    /// frame reports pending until the fresh generation lands.
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     fn ensure_current_context(&mut self) {
         let context = self.runtime.context();
-        if context.generation() == self.context_generation {
+        if context.device_lost_reason().is_some() {
+            return;
+        }
+        let attached = !self.attached_layer.is_null();
+        if context.generation() == self.context_generation && (!attached || self.surface.is_some())
+        {
             return;
         }
         self.renderer = None;
-        if self.surface.is_some() {
+        if attached {
             let (surface, config) = create_attached_surface(
                 &context,
                 self.attached_layer,
@@ -216,7 +225,9 @@ impl WuiGpuContentState {
                 self.attached_prefers_hdr,
                 "waterui_gpu_content_render",
             );
+            let format = config.format;
             self.surface = Some((surface, config));
+            self.prepare_format(format);
         }
         self.context_generation = context.generation();
     }
@@ -233,6 +244,18 @@ impl WuiGpuContentState {
         self.dirty
             .store(false, core::sync::atomic::Ordering::Release);
         self.view.frame();
+        // A renderer bound to a context generation that has since been lost
+        // and rebuilt holds a dead device; recreate it on the current one.
+        // Apple has no `ensure_current_context`, so this is the only place a
+        // stale renderer is dropped there.
+        let generation = self.runtime.context().generation();
+        if self
+            .renderer
+            .as_ref()
+            .is_some_and(|renderer| renderer.generation() != generation)
+        {
+            self.renderer = None;
+        }
         if self.renderer.is_none() {
             let redraw = self.redraw.clone();
             let content =
@@ -605,6 +628,7 @@ fn create_attached_surface(
     let config = wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
+        color_space: wgpu::SurfaceColorSpace::Auto,
         width,
         height,
         present_mode: wgpu::PresentMode::Fifo,
@@ -644,7 +668,7 @@ pub unsafe extern "C" fn waterui_gpu_content_attach(
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
     assert!(
-        state.surface.is_none(),
+        state.attached_layer.is_null(),
         "waterui_gpu_content_attach: native surface is already attached"
     );
     assert!(
@@ -653,6 +677,15 @@ pub unsafe extern "C" fn waterui_gpu_content_attach(
     );
 
     let context = state.runtime.context();
+    state.attached_layer = layer;
+    state.attached_prefers_hdr = prefers_hdr;
+    state.surface_size = (width, height);
+    if context.device_lost_reason().is_some() {
+        // The runtime's rebuild is still in flight; `ensure_current_context`
+        // materializes the surface from these retained arguments once the
+        // fresh context lands. Nothing may touch the dead device here.
+        return;
+    }
     let (surface, config) = create_attached_surface(
         &context,
         layer,
@@ -663,9 +696,6 @@ pub unsafe extern "C" fn waterui_gpu_content_attach(
     );
     let format = config.format;
     state.surface = Some((surface, config));
-    state.attached_layer = layer;
-    state.attached_prefers_hdr = prefers_hdr;
-    state.surface_size = (width, height);
     state.context_generation = context.generation();
     state.prepare_format(format);
 }
@@ -710,12 +740,14 @@ pub unsafe extern "C" fn waterui_gpu_content_detach(state: *mut WuiGpuContentSta
     // SAFETY: the caller contract requires `state` to be a valid handle, alive and
     // not otherwise borrowed for this call; the exclusive borrow ends here.
     let state = unsafe { crate::borrow_ffi_mut(state) };
-    drop(
-        state
-            .surface
-            .take()
-            .expect("waterui_gpu_content_detach: native surface is already detached"),
+    assert!(
+        !state.attached_layer.is_null(),
+        "waterui_gpu_content_detach: native surface is already detached"
     );
+    state.attached_layer = core::ptr::null_mut();
+    // `surface` can be absent when an attach raced the runtime's rebuild and
+    // was deferred; the attach is still cancelled.
+    drop(state.surface.take());
 }
 
 /// Detaches the native presentation surface (non-Apple only).
@@ -750,8 +782,10 @@ pub unsafe extern "C" fn waterui_gpu_content_detach(_state: *mut WuiGpuContentSt
 /// # Panics
 ///
 /// Panics if `width` or `height` is zero, if `scale` or `headroom` is not
-/// positive and finite, or if nothing is attached. Panics unconditionally on
-/// Apple platforms.
+/// positive and finite, or if a persistent surface-acquire failure survives
+/// the one reconfigure-and-retry. A detach that races the call returns
+/// `true` — the frame stays pending rather than aborting the host. Panics
+/// unconditionally on Apple platforms.
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_gpu_content_render(
@@ -813,7 +847,7 @@ pub unsafe extern "C" fn waterui_gpu_content_render(
             let format = output.texture.format();
             let still_pending =
                 state.render_into(&output.texture, format, (width, height), display);
-            output.present();
+            gpu.queue().present(output);
             gpu.note_frame_presented();
             still_pending
         },
@@ -956,10 +990,17 @@ pub unsafe extern "C" fn waterui_gpu_content_render_to_metal_texture(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     };
+    let context = state.runtime.context();
+    if context.device_lost_reason().is_some() {
+        // The runtime's rebuild is still in flight; nothing may touch the
+        // dead device, so the frame reports pending until the fresh context
+        // lands.
+        return true;
+    }
     // SAFETY: the HAL texture above was created from this runtime's device, which is
     // the device the wgpu texture is being created on.
     let wgpu_texture = unsafe {
-        state.runtime.device().create_texture_from_hal::<MetalApi>(
+        context.device().create_texture_from_hal::<MetalApi>(
             hal_texture,
             &desc,
             wgpu::wgt::TextureUses::COLOR_TARGET,
@@ -968,7 +1009,7 @@ pub unsafe extern "C" fn waterui_gpu_content_render_to_metal_texture(
     let needs_redraw = state.render_into(&wgpu_texture, format, (width, height), display);
     // The host reads the texture after the queue drains; ordering the frame's
     // work before this empty submission is what it waits on.
-    state.runtime.queue().submit([]);
+    context.queue().submit([]);
     needs_redraw
 }
 
