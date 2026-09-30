@@ -18,7 +18,7 @@ use cherenkov::{
 };
 use nami::{Binding, SignalExt};
 use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
-use waterui_graphics::{Registered, SceneContent, SceneResources, SceneView};
+use waterui_graphics::{Picture, RecordingResources, Registered, SceneContent, SceneView};
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
 /// Display P3 components directly, which sRGB cannot hold, so pixel
@@ -60,17 +60,17 @@ fn a_clip_scopes_the_commands_inside_it() {
     // A fill covering the whole surface, clipped to the left half: the right
     // half must come back transparent, because the clip is a scope boundary,
     // not a hint.
-    let mut recorder = Recorder::new();
-    recorder.clip(Rect::new(0.0, 0.0, 4.0, 8.0).to_path(0.05), |scene| {
-        scene.fill(
-            Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.05),
-            srgb(1.0, 0.0, 0.0),
-        );
+    let recording = Picture::record(|recorder| {
+        recorder.clip(Rect::new(0.0, 0.0, 4.0, 8.0).to_path(0.05), |scene| {
+            scene.fill(
+                Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.05),
+                srgb(1.0, 0.0, 0.0),
+            );
+        });
     });
-    let content = recorder.finish();
     let bitmap = Rasterizer::new(8, 8)
         .expect("engine failed to start")
-        .rasterize(content, Affine::IDENTITY)
+        .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
     let left = pixel(&bitmap, 1, 4);
     let right = pixel(&bitmap, 7, 4);
@@ -108,11 +108,19 @@ fn an_image_draws_where_the_recording_put_it() {
         .image(tiny_image())
         .expect("image registration failed");
 
-    let mut recorder = Recorder::new();
-    // The image's own rect fills its destination: left half red, right blue.
-    recorder.image(image.id(), Rect::new(0.0, 0.0, 8.0, 8.0), Sampling::Nearest);
+    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
+        // The image's own rect fills its destination: left half red, right
+        // blue.
+        recorder.image(
+            names.name(&image),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+            Sampling::Nearest,
+        );
+    });
+    // The recording holds the image; the code that registered it need not.
+    drop(image);
     let bitmap = rasterizer
-        .rasterize(recorder.finish(), Affine::IDENTITY)
+        .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
     let left = pixel(&bitmap, 2, 4);
     let right = pixel(&bitmap, 6, 4);
@@ -133,24 +141,25 @@ fn a_glyph_run_draws_its_glyphs() {
         .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
         .expect("font registration failed");
 
-    let mut recorder = Recorder::new();
-    recorder.glyphs(
-        GlyphRun {
-            font: font.id(),
-            size: 28.0,
-            coords: Vec::new(),
-            glyphs: vec![Glyph {
-                id: u32::from(glyph),
-                x: 4.0,
-                y: 28.0,
-                transform: None,
-            }],
-            style: GlyphStyle::Fill,
-        },
-        srgb(1.0, 1.0, 1.0),
-    );
+    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
+        recorder.glyphs(
+            GlyphRun {
+                font: names.name(&font),
+                size: 28.0,
+                coords: Vec::new(),
+                glyphs: vec![Glyph {
+                    id: u32::from(glyph),
+                    x: 4.0,
+                    y: 28.0,
+                    transform: None,
+                }],
+                style: GlyphStyle::Fill,
+            },
+            srgb(1.0, 1.0, 1.0),
+        );
+    });
     let bitmap = rasterizer
-        .rasterize(recorder.finish(), Affine::IDENTITY)
+        .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
     assert!(
         bitmap.data().as_chunks::<4>().0.iter().any(|px| px[3] > 0),
@@ -172,8 +181,7 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
             .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
             .expect("font registration failed");
         assert_eq!(
-            first.id(),
-            second.id(),
+            first, second,
             "the same font source must mint one engine registration while it is held"
         );
 
@@ -184,9 +192,11 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
         let image_b = resources
             .image(tiny_image())
             .expect("image registration failed");
-        assert_eq!(image_a.id(), image_b.id());
-        (first.id(), image_a.id())
-        // Every handle drops here; the table stays.
+        assert_eq!(image_a, image_b);
+        let mut names = resources.recording();
+        (names.name(&first), names.name(&image_a))
+        // Every handle, and the recording that named them, drops here; the
+        // table stays.
     };
 
     // The table outlives the handles but never kept them: the released
@@ -194,15 +204,16 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
     let third = resources
         .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
         .expect("font registration failed");
-    assert_ne!(
-        first_id,
-        third.id(),
-        "a released registration must not come back"
-    );
     let image_c = resources
         .image(tiny_image())
         .expect("image registration failed");
-    assert_ne!(image_id, image_c.id());
+    let mut names = resources.recording();
+    assert_ne!(
+        first_id,
+        names.name(&third),
+        "a released registration must not come back"
+    );
+    assert_ne!(image_id, names.name(&image_c));
 }
 
 /// Content that draws nothing on its first two frames and first draws an
@@ -216,7 +227,7 @@ impl SceneContent for LateImage {
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         _width: f32,
         _height: f32,
     ) -> bool {
@@ -227,7 +238,11 @@ impl SceneContent for LateImage {
                     .image(tiny_image())
                     .expect("image registration failed")
             });
-            recorder.image(image.id(), Rect::new(0.0, 0.0, 8.0, 8.0), Sampling::Nearest);
+            recorder.image(
+                resources.name(image),
+                Rect::new(0.0, 0.0, 8.0, 8.0),
+                Sampling::Nearest,
+            );
         }
         false
     }
@@ -241,10 +256,8 @@ fn an_image_first_drawn_on_the_third_frame_reaches_the_pixels() {
         image: None,
     };
     let mut frame = |content: &mut LateImage| {
-        let mut recorder = Recorder::new();
-        assert!(!content.build_scene(&mut recorder, rasterizer.resources(), 8.0, 8.0));
         rasterizer
-            .rasterize(recorder.finish(), Affine::IDENTITY)
+            .rasterize_scene(content, 1.0)
             .expect("rasterise failed")
     };
 

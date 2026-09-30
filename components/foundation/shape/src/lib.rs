@@ -40,9 +40,9 @@ use waterui_graphics::cherenkov::kurbo::Rect;
 use waterui_graphics::cherenkov::{Draw as _, Recorder, Shader, ShaderPaint, ShaderSource};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
-use waterui_graphics::scene_view::{SceneContent, SceneView};
+use waterui_graphics::scene_view::{SceneContent, SceneInvalidator, SceneView};
 #[cfg(feature = "gpu")]
-use waterui_graphics::{Registered, SceneResources, WorkingColor};
+use waterui_graphics::{RecordingResources, Registered, WorkingColor};
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
 use web_time::Instant;
 
@@ -1296,28 +1296,18 @@ impl SceneContent for MorphContent {
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool {
-        let shader = self
-            .shader
-            .get_or_insert_with(|| {
-                resources
-                    .shader(ShaderSource::wgsl(MORPH_FRAGMENT))
-                    .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
-            })
-            .id();
-        // The morph starts with the content's first frame: the progress it
-        // drives reaches the recording through the bound paint below.
-        if let Some(driver) = &mut self.driver
-            && driver.task.is_none()
-        {
-            driver.task = Some(executor_core::spawn_local(drive_morph(
-                driver.progress.clone(),
-                driver.animation,
-            )));
-        }
+        let shader = self.shader.get_or_insert_with(|| {
+            resources
+                .shader(ShaderSource::wgsl(MORPH_FRAGMENT))
+                .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
+        });
+        let shader = resources.name(shader);
+        // The progress the driver writes reaches the recording through the
+        // bound paint below, without another call here.
         let (from, to) = (self.from, self.to);
         let paint = self
             .progress
@@ -1331,6 +1321,21 @@ impl SceneContent for MorphContent {
             paint,
         );
         false
+    }
+
+    /// The morph clock runs while the content is mounted: from the host
+    /// installing its invalidator at mount to the host clearing it.
+    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        let Some(driver) = &mut self.driver else {
+            return;
+        };
+        if invalidator.is_some() {
+            driver.task.get_or_insert_with(|| {
+                executor_core::spawn_local(drive_morph(driver.progress.clone(), driver.animation))
+            });
+        } else {
+            driver.task = None;
+        }
     }
 }
 
@@ -1375,6 +1380,68 @@ impl ShapeExt for Path {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The morph clock runs while the content is mounted: installing the
+    /// host's invalidator starts the driver, which advances `progress`, and
+    /// clearing it drops the driver's task.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_morph_clock_runs_from_mount_to_unmount() {
+        use executor_core::async_executor::AsyncLocalExecutor;
+        use futures_lite::future;
+        use nami::Signal as _;
+        use std::rc::Rc;
+
+        let executor = Rc::new(AsyncLocalExecutor::new());
+        executor_core::try_init_local_executor(Rc::clone(&executor))
+            .unwrap_or_else(|_| panic!("the test thread already had a local executor"));
+
+        let morphable = |kind| kind_to_morph_shape(kind).expect("a built-in morphable shape");
+        let mut content = MorphContent::new(
+            morphable(ShapeKind::Rect),
+            morphable(ShapeKind::Circle),
+            nami::constant(WorkingColor::BLACK).computed(),
+            MorphAnimation::default(),
+            None,
+        );
+        let (reporter, readings) = async_channel::unbounded();
+        let _watch = content.progress.watch(move |context| {
+            let _ = reporter.try_send(context.into_value());
+        });
+        let running = |content: &MorphContent| {
+            content
+                .driver
+                .as_ref()
+                .expect("content without a progress signal owns its driver")
+                .task
+                .is_some()
+        };
+        assert!(!running(&content), "nothing runs before mount");
+
+        content.set_invalidator(Some(Rc::new(|| {})));
+        assert!(running(&content), "mounting starts the morph clock");
+        let progressed = future::block_on(executor.run(future::or(
+            async {
+                loop {
+                    let progress = readings.recv().await.expect("the progress watch ended");
+                    if progress > 0.0 {
+                        break progress;
+                    }
+                }
+            },
+            async {
+                native_executor::sleep(Duration::from_secs(5)).await;
+                panic!("the mounted morph clock never advanced progress");
+            },
+        )));
+        assert!(progressed > 0.0);
+
+        content.set_invalidator(None);
+        assert!(
+            !running(&content),
+            "unmounting drops the morph clock's task"
+        );
+    }
 
     #[test]
     fn rounded_rectangle_radius_is_clamped() {
