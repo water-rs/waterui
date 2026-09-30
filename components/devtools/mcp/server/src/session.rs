@@ -514,39 +514,19 @@ impl<'a> Session<'a> {
         self.finish_input(args.settle)
     }
 
-    /// Maps `x`/`y` to viewport coordinates: absolute logical pixels, or
-    /// fractions of the anchor node's bounds when `node` is set.
-    fn anchor_point(
+    /// Resolves the point a pointer event dispatches at: viewport `x`/`y`
+    /// verbatim, or a point inside the anchor node's interaction owner
+    /// projected through its clip chain and the window when `node` is
+    /// set — the point a pointer can actually reach, never a spot inside
+    /// the clipped region where the event would land on whatever lies
+    /// beneath the clip.
+    fn pointer_point(
         &mut self,
+        kind: PointerKind,
         node: Option<u64>,
         x: f32,
         y: f32,
     ) -> Result<(f32, f32), ToolResult> {
-        let Some(id) = node else {
-            return Ok((x, y));
-        };
-        let Some(element) = self.app.element(NodeId::from(AccessibilityNodeId(id))) else {
-            return Err(ToolResult::error(format!(
-                "anchor node #{id} is not in the current tree"
-            )));
-        };
-        let Some(bounds) = element.node().bounds() else {
-            return Err(ToolResult::error(format!(
-                "anchor node #{id} reports no bounds"
-            )));
-        };
-        Ok((
-            bounds.width().mul_add(x, bounds.x()),
-            bounds.height().mul_add(y, bounds.y()),
-        ))
-    }
-
-    /// Resolves the point a `tap` dispatches at: viewport `x`/`y` verbatim,
-    /// or a point inside the anchor node's interaction owner projected
-    /// through its clip chain and the window when `node` is set — the point
-    /// a pointer can actually reach, never a spot inside the clipped region
-    /// where the press would land on whatever lies beneath the clip.
-    fn tap_point(&mut self, node: Option<u64>, x: f32, y: f32) -> Result<(f32, f32), ToolResult> {
         let Some(id) = node else {
             return Ok((x, y));
         };
@@ -557,21 +537,18 @@ impl<'a> Session<'a> {
             )));
         };
         let line = tree::node_line(element.node(), self.app.tree().focus() == node_id);
-        self.app
-            .activation_point(node_id, x, y)
-            .map_err(|error| ToolResult::error(format!("pointer tap cannot reach {line}: {error}")))
+        self.app.activation_point(node_id, x, y).map_err(|error| {
+            ToolResult::error(format!(
+                "pointer {} cannot reach {line}: {error}",
+                tree::snake_case(&format!("{kind:?}"))
+            ))
+        })
     }
 
     fn pointer(&mut self, args: &PointerArgs) -> ToolResult {
-        let (x, y) = match args.kind {
-            PointerKind::Tap => match self.tap_point(args.node, args.x, args.y) {
-                Ok(point) => point,
-                Err(result) => return result,
-            },
-            _ => match self.anchor_point(args.node, args.x, args.y) {
-                Ok(point) => point,
-                Err(result) => return result,
-            },
+        let (x, y) = match self.pointer_point(args.kind, args.node, args.x, args.y) {
+            Ok(point) => point,
+            Err(result) => return result,
         };
         match args.kind {
             PointerKind::Tap => {
@@ -588,7 +565,7 @@ impl<'a> Session<'a> {
                     return ToolResult::error("`drag` requires `to_x` and `to_y`");
                 };
                 let anchor = args.to_node.or(args.node);
-                let (to_x, to_y) = match self.anchor_point(anchor, to_x, to_y) {
+                let (to_x, to_y) = match self.pointer_point(PointerKind::Drag, anchor, to_x, to_y) {
                     Ok(point) => point,
                     Err(result) => return result,
                 };
