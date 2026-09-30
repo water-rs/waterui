@@ -328,29 +328,6 @@ typedef enum WuiLayoutDirection {
 } WuiLayoutDirection;
 
 /**
- * The kind of value a drag carries or a drop destination accepts.
- */
-typedef enum WuiTransferKind {
-  /**
-   * Plain text.
-   */
-  WuiTransferKind_Text = 0,
-  /**
-   * A URL.
-   */
-  WuiTransferKind_Url = 1,
-  /**
-   * A list of file URLs.
-   */
-  WuiTransferKind_Files = 2,
-  /**
-   * An application value that stays in the process; it has no pasteboard
-   * representation.
-   */
-  WuiTransferKind_InProcess = 3,
-} WuiTransferKind;
-
-/**
  * FFI-safe representation of a material blur style.
  *
  * Maps to `SwiftUI`'s Material types on Apple platforms.
@@ -483,6 +460,20 @@ typedef enum WuiCursorStyle {
    */
   WuiCursorStyle_Copy = 15,
 } WuiCursorStyle;
+
+/**
+ * FFI-safe representation of a drag data type tag.
+ */
+typedef enum WuiDragDataTag {
+  /**
+   * Plain text content.
+   */
+  WuiDragDataTag_Text = 0,
+  /**
+   * A URL string.
+   */
+  WuiDragDataTag_Url = 1,
+} WuiDragDataTag;
 
 /**
  * Whether a key handler consumed a key, as `KeyHandling` crosses the ABI.
@@ -692,7 +683,47 @@ typedef enum WuiWindowState {
    * The window is maximized to fullscreen.
    */
   WuiWindowState_Fullscreen = 3,
+  /**
+   * The window fills the screen's work area, keeping its chrome and
+   * the system's panels.
+   */
+  WuiWindowState_Maximized = 4,
 } WuiWindowState;
+
+/**
+ * FFI-compatible representation of [`WindowLevel`].
+ */
+typedef enum WuiWindowLevel {
+  /**
+   * The window stacks with other windows as focus moves between them.
+   */
+  WuiWindowLevel_Normal = 0,
+  /**
+   * The window stays above other applications' normal windows.
+   */
+  WuiWindowLevel_AlwaysOnTop = 1,
+} WuiWindowLevel;
+
+/**
+ * FFI-compatible representation of `Option<`[`UserAttention`]`>`.
+ *
+ * `None` is a variant of the enum itself so that watching the attention
+ * binding reports a withdrawn request without a second out-of-band channel.
+ */
+typedef enum WuiUserAttention {
+  /**
+   * No attention request is pending.
+   */
+  WuiUserAttention_None = 0,
+  /**
+   * Something the user may want to look at: a finished task, a mention.
+   */
+  WuiUserAttention_Informational = 1,
+  /**
+   * Something the user must act on.
+   */
+  WuiUserAttention_Critical = 2,
+} WuiUserAttention;
 
 /**
  * FFI-compatible representation of [`WindowStyle`].
@@ -711,42 +742,6 @@ typedef enum WuiWindowStyle {
    */
   WuiWindowStyle_FullSizeContentView = 2,
 } WuiWindowStyle;
-
-/**
- * FFI mirror of [`MonitorSelector`].
- */
-typedef enum WuiMonitorSelector {
-  /**
-   * The platform's primary display.
-   */
-  WuiMonitorSelector_Primary = 0,
-  /**
-   * The display under the pointer when the window is shown.
-   */
-  WuiMonitorSelector_Pointer = 1,
-  /**
-   * The display holding this application's focused window (`Primary` when none).
-   */
-  WuiMonitorSelector_Focused = 2,
-} WuiMonitorSelector;
-
-/**
- * FFI mirror of [`Activation`].
- */
-typedef enum WuiActivation {
-  /**
-   * Showing the window activates the app and focuses the window.
-   */
-  WuiActivation_OnShow = 0,
-  /**
-   * Showing does not take focus; a click on the window does.
-   */
-  WuiActivation_OnClick = 1,
-  /**
-   * The window never takes keyboard focus or activates the app.
-   */
-  WuiActivation_Never = 2,
-} WuiActivation;
 
 /**
  * Visual presentation mode for the label slot of every control.
@@ -856,32 +851,6 @@ typedef enum WuiToggleStyle {
    */
   WuiToggleStyle_Checkbox,
 } WuiToggleStyle;
-
-/**
- *C ABI mirror of `ControlSize`.
- */
-typedef enum WuiControlSize {
-  /**
-   *Mirrors `ControlSize::ExtraSmall`.
-   */
-  WuiControlSize_ExtraSmall,
-  /**
-   *Mirrors `ControlSize::Small`.
-   */
-  WuiControlSize_Small,
-  /**
-   *Mirrors `ControlSize::Medium`.
-   */
-  WuiControlSize_Medium,
-  /**
-   *Mirrors `ControlSize::Large`.
-   */
-  WuiControlSize_Large,
-  /**
-   *Mirrors `ControlSize::ExtraLarge`.
-   */
-  WuiControlSize_ExtraLarge,
-} WuiControlSize;
 
 /**
  *C ABI mirror of `PickerStyle`.
@@ -1694,21 +1663,6 @@ typedef enum WuiScrollUnit {
 } WuiScrollUnit;
 
 /**
- *C ABI mirror of `LastWindowPolicy`.
- * What the native host does once the application has no open window.
- */
-typedef enum WuiLastWindowPolicy {
-  /**
-   *Mirrors `LastWindowPolicy::Quit`.
-   */
-  WuiLastWindowPolicy_Quit,
-  /**
-   *Mirrors `LastWindowPolicy::StayResident`.
-   */
-  WuiLastWindowPolicy_StayResident,
-} WuiLastWindowPolicy;
-
-/**
  * 2D affine transform stored as a row-major 2x3 matrix.
  *
  * The transform maps a point `(x, y)` to:
@@ -1779,6 +1733,14 @@ typedef struct Binding_MapStatus Binding_MapStatus;
  * changes, it can notify watchers that have registered interest in the value.
  */
 typedef struct Binding_Option_LiveWindow Binding_Option_LiveWindow;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_Option_UserAttention Binding_Option_UserAttention;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -2018,6 +1980,14 @@ typedef struct Computed_Vec_Date Computed_Vec_Date;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_WindowLevel Computed_WindowLevel;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_bool Computed_bool;
 
 /**
@@ -2129,11 +2099,6 @@ typedef struct WuiCefSurfaceState WuiCefSurfaceState;
 typedef struct WuiColor WuiColor;
 
 /**
- * Opaque handle to the value one drag carries.
- */
-typedef struct WuiDragPayload WuiDragPayload;
-
-/**
  * Opaque wrapper for Draggable.
  */
 typedef struct WuiDraggableWrapper WuiDraggableWrapper;
@@ -2229,11 +2194,6 @@ typedef struct WuiSharedAction WuiSharedAction;
  *Opaque FFI handle owning a `AnyViewBuilder<NavigationView>`.
  */
 typedef struct WuiTabContent WuiTabContent;
-
-/**
- *Opaque FFI handle owning a `ValueFormatter`.
- */
-typedef struct WuiValueFormatter WuiValueFormatter;
 
 /**
  *Opaque FFI handle owning a `PlayerController`.
@@ -2362,6 +2322,14 @@ typedef struct WuiWatcher_Option_Location WuiWatcher_Option_Location;
  * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
+typedef struct WuiWatcher_Option_UserAttention WuiWatcher_Option_UserAttention;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Rect WuiWatcher_Rect;
 
 /**
@@ -2467,6 +2435,14 @@ typedef struct WuiWatcher_Vec_Id WuiWatcher_Vec_Id;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_VideoTrackSelection WuiWatcher_VideoTrackSelection;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_WindowLevel WuiWatcher_WindowLevel;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -4047,13 +4023,7 @@ typedef struct WuiSize {
  * origin point and a size, relative to its parent's coordinate space.
  */
 typedef struct WuiRect {
-  /**
-   * The rectangle's origin.
-   */
   struct WuiPoint origin;
-  /**
-   * The rectangle's size.
-   */
   struct WuiSize size;
 } WuiRect;
 
@@ -4135,11 +4105,6 @@ typedef struct WuiDropDestination {
    * Opaque pointer to the drop handler.
    */
   struct WuiDropHandler *handler;
-  /**
-   * The kind of payload the destination accepts. A backend registers for the
-   * matching pasteboard type; `InProcess` destinations register for none.
-   */
-  enum WuiTransferKind accepted_kind;
 } WuiDropDestination;
 
 /**
@@ -4459,36 +4424,18 @@ typedef struct WuiAnimation {
 } WuiAnimation;
 
 /**
- * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ * FFI-safe representation of drag data.
  */
-typedef struct WuiArraySlice_WuiStr {
-  struct WuiStr *head;
-  uintptr_t len;
-} WuiArraySlice_WuiStr;
-
-/**
- * The pair of function pointers `WuiArray` uses to view and free its backing storage.
- *
- * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
- * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
- */
-typedef struct WuiArrayVTable_WuiStr {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiStr (*slice)(const void*);
-} WuiArrayVTable_WuiStr;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- *
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiStr {
-  NonNull data;
-  struct WuiArrayVTable_WuiStr vtable;
-} WuiArray_WuiStr;
+typedef struct WuiDragData {
+  /**
+   * The type of data.
+   */
+  enum WuiDragDataTag tag;
+  /**
+   * The content (text or URL string).
+   */
+  struct WuiStr value;
+} WuiDragData;
 
 /**
  * A key press handed to a native `OnKeyPress` handler.
@@ -4952,6 +4899,24 @@ typedef struct WuiResolvedFont {
 typedef struct Binding_WindowState WuiBinding_WindowState;
 
 /**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_WindowLevel WuiComputed_WindowLevel;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
+typedef struct Binding_Option_UserAttention WuiBinding_Option_UserAttention;
+
+/**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_binding_*`,
@@ -5000,62 +4965,6 @@ typedef struct WuiWindowBackground {
  * by the `ffi_computed!` macro.
  */
 typedef struct Computed_Size WuiComputed_Size;
-
-/**
- * FFI mirror of [`Monitor`], built by the native backend that resolved the
- * placement's selector.
- *
- * `name` is a borrowed NUL-terminated UTF-8 string (null when the platform
- * reports no name): the native caller keeps it alive for the duration of the
- * `place` call only — the Rust side copies what it needs before returning.
- */
-typedef struct WuiMonitor {
-  /**
-   * Bounds in the global logical coordinate space.
-   */
-  struct WuiRect frame;
-  /**
-   * `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
-   */
-  struct WuiRect visible_frame;
-  /**
-   * Physical pixels per logical point.
-   */
-  double scale_factor;
-  /**
-   * The platform's name for the display, or null.
-   */
-  const char *name;
-} WuiMonitor;
-
-/**
- * Native invocation of [`WindowPlacement::place`]: the backend fills a
- * [`WuiMonitor`] for the resolved selector and receives the frame to write.
- */
-typedef struct WuiRect (*WuiPlaceFn)(const void *context, const struct WuiMonitor *monitor);
-
-/**
- * FFI mirror of [`WindowPlacement`]: the selector plus the `place` closure as
- * the usual context/call/drop triple.
- */
-typedef struct WuiWindowPlacement {
-  /**
-   * Which monitor the backend resolves before calling `call`.
-   */
-  enum WuiMonitorSelector monitor;
-  /**
-   * The `place` closure's context, registered with `call` and `drop`.
-   */
-  void *context;
-  /**
-   * Resolved monitor in, window frame out.
-   */
-  WuiPlaceFn call;
-  /**
-   * Releases `context` exactly once when the window record is disposed.
-   */
-  void (*drop)(void*);
-} WuiWindowPlacement;
 
 /**
  * FFI-compatible representation of a window.
@@ -5107,14 +5016,19 @@ typedef struct WuiWindow {
    */
   WuiComputed_Size *max_size;
   /**
-   * Monitor selection plus the `place` callback, or null for the
-   * platform's default placement.
+   * Where the window stacks relative to other applications' windows.
    */
-  struct WuiWindowPlacement *placement;
+  WuiComputed_WindowLevel *level;
   /**
-   * How showing and clicking the window affects focus and app activation.
+   * The window's request for the user's attention. The backend sets it back
+   * to `None` when the window gains focus.
    */
-  enum WuiActivation activation;
+  WuiBinding_Option_UserAttention *attention;
+  /**
+   * The steps the window's content size moves in while the user resizes it,
+   * or null for continuous resizing.
+   */
+  WuiComputed_Size *resize_increments;
 } WuiWindow;
 
 /**
@@ -5289,14 +5203,6 @@ typedef struct WuiSlider {
    *Mirrors the `value` field of `SliderConfig`.
    */
   WuiBinding_f64 *value;
-  /**
-   *Mirrors the `size` field of `SliderConfig`.
-   */
-  enum WuiControlSize size;
-  /**
-   *Mirrors the `value_indicator` field of `SliderConfig`.
-   */
-  struct WuiValueFormatter *value_indicator;
 } WuiSlider;
 
 /**
@@ -6138,18 +6044,6 @@ typedef struct WuiScrollView {
    * request to the same target. Null if no controller is attached.
    */
   WuiComputed_i32 *scroll_generation;
-  /**
-   * Binding the backend writes the horizontal content offset, in points,
-   * into as the view scrolls — for `ScrollView::report_offset`. The
-   * binding is written, never read; null if none is connected.
-   */
-  WuiBinding_f32 *offset_x;
-  /**
-   * Binding the backend writes the vertical content offset, in points,
-   * into as the view scrolls — for `ScrollView::report_offset`. The
-   * binding is written, never read; null if none is connected.
-   */
-  WuiBinding_f32 *offset_y;
 } WuiScrollView;
 
 /**
@@ -6400,6 +6294,38 @@ typedef struct Binding_VideoTrackSelection WuiBinding_VideoTrackSelection;
  * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
  */
 typedef struct Binding_TrackCatalog WuiBinding_TrackCatalog;
+
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
+typedef struct WuiArraySlice_WuiStr {
+  struct WuiStr *head;
+  uintptr_t len;
+} WuiArraySlice_WuiStr;
+
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
+typedef struct WuiArrayVTable_WuiStr {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiStr (*slice)(const void*);
+} WuiArrayVTable_WuiStr;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiStr {
+  NonNull data;
+  struct WuiArrayVTable_WuiStr vtable;
+} WuiArray_WuiStr;
 
 /**
  * Native representation of one selectable audio track.
@@ -8185,7 +8111,7 @@ typedef struct WuiArray_WuiWindow {
  */
 typedef struct WuiApp {
   /**
-   * The windows opened at startup, in declaration order; possibly none.
+   * Array of windows. The first window is the main window.
    */
   struct WuiArray_WuiWindow windows;
   /**
@@ -8197,11 +8123,6 @@ typedef struct WuiApp {
    * Returned to native for use during rendering.
    */
   struct WuiEnv *env;
-  /**
-   * What the host does once the application has no open window, at startup
-   * included.
-   */
-  enum WuiLastWindowPolicy last_window_policy;
 } WuiApp;
 
 
@@ -9363,110 +9284,13 @@ struct WuiWatcher_CursorStyle *waterui_new_watcher_cursor_style(void *data,
                                                                 void (*drop)(void*));
 
 /**
- * The kind of value `payload` carries.
- *
- * # Safety
- *
- * * `payload` must be a valid pointer to a live `WuiDragPayload`.
- */
-enum WuiTransferKind waterui_drag_payload_kind(const struct WuiDragPayload *payload);
-
-/**
- * The text a [`WuiTransferKind::Text`] payload carries.
- *
- * # Safety
- *
- * * `payload` must be a valid pointer to a live `WuiDragPayload`.
- *
- * # Panics
- *
- * Panics if the payload is not text.
- */
-struct WuiStr waterui_drag_payload_text(const struct WuiDragPayload *payload);
-
-/**
- * The URL a [`WuiTransferKind::Url`] payload carries, as a string.
- *
- * # Safety
- *
- * * `payload` must be a valid pointer to a live `WuiDragPayload`.
- *
- * # Panics
- *
- * Panics if the payload is not a URL.
- */
-struct WuiStr waterui_drag_payload_url(const struct WuiDragPayload *payload);
-
-/**
- * The file URLs a [`WuiTransferKind::Files`] payload carries.
- *
- * # Safety
- *
- * * `payload` must be a valid pointer to a live `WuiDragPayload`.
- *
- * # Panics
- *
- * Panics if the payload is not a file list.
- */
-struct WuiArray_WuiStr waterui_drag_payload_files(const struct WuiDragPayload *payload);
-
-/**
- * Creates a text payload for a drag arriving from another application.
- *
- * # Safety
- *
- * * `text` must be an owning `WuiStr`; it is consumed.
- */
-struct WuiDragPayload *waterui_drag_payload_from_text(struct WuiStr text);
-
-/**
- * Creates a URL payload for a drag arriving from another application.
- *
- * # Safety
- *
- * * `url` must be an owning `WuiStr` holding a valid URL; it is consumed.
- *
- * # Panics
- *
- * Panics if `url` does not parse.
- */
-struct WuiDragPayload *waterui_drag_payload_from_url(struct WuiStr url);
-
-/**
- * Creates a file-list payload from file URLs for a drag arriving from another
- * application.
- *
- * # Safety
- *
- * * `urls` must be an owning `WuiArray` of owning `WuiStr` URLs; it is consumed.
- *
- * # Panics
- *
- * Panics if any URL does not parse.
- */
-struct WuiDragPayload *waterui_drag_payload_from_files(struct WuiArray_WuiStr urls);
-
-/**
- * Releases a payload handle.
- *
- * # Safety
- *
- * * `payload` must be an owning pointer returned by this module and not
- *   released before.
- */
-void waterui_drop_drag_payload(struct WuiDragPayload *payload);
-
-/**
- * Reads the payload of a drag starting now from a draggable.
- *
- * The returned handle is owned by the caller and released with
- * [`waterui_drop_drag_payload`].
+ * Gets the current drag data value from a draggable.
  *
  * # Safety
  *
  * * `draggable` must be a valid pointer to a `WuiDraggable`.
  */
-struct WuiDragPayload *waterui_draggable_payload(const struct WuiDraggable *draggable);
+struct WuiDragData waterui_draggable_get_data(const struct WuiDraggable *draggable);
 
 /**
  * Drops a draggable.
@@ -9478,38 +9302,22 @@ struct WuiDragPayload *waterui_draggable_payload(const struct WuiDraggable *drag
 void waterui_drop_draggable(struct WuiDraggable *draggable);
 
 /**
- * Returns `true` if `dest` accepts `payload`: the payload has the type the
- * destination's handler takes. A backend highlights and delivers only
- * accepted drags.
+ * Calls the drop handler with the given data.
  *
  * # Safety
  *
- * * `dest` must be a valid pointer to a `WuiDropDestination`.
- * * `payload` must be a valid pointer to a live `WuiDragPayload`.
- */
-bool waterui_drop_destination_accepts(const struct WuiDropDestination *dest,
-                                      const struct WuiDragPayload *payload);
-
-/**
- * Delivers a dropped payload to the destination's handler. The payload stays
- * owned by the caller.
- *
- * # Safety
- *
- * * `dest` must be a valid pointer to a `WuiDropDestination`.
+ * * `handler` must be a valid pointer to a `WuiDropDestination`.
  * * `env` must be a valid pointer to a `WuiEnv`.
- * * `payload` must be a valid pointer to a live `WuiDragPayload`.
- *
- * # Panics
- *
- * Panics if the destination does not accept the payload.
+ * * `data_tag` must be a valid `WuiDragDataTag` value.
+ * * `data_value` must be a valid null-terminated UTF-8 string.
  */
 void waterui_call_drop_handler(const struct WuiDropDestination *dest,
                                const struct WuiEnv *env,
-                               const struct WuiDragPayload *payload);
+                               enum WuiDragDataTag data_tag,
+                               const char *data_value);
 
 /**
- * Reports that an accepted drag entered the destination.
+ * Calls the enter handler if set.
  *
  * # Safety
  *
@@ -9520,7 +9328,7 @@ void waterui_call_drop_enter_handler(const struct WuiDropDestination *dest,
                                      const struct WuiEnv *env);
 
 /**
- * Reports that an accepted drag left the destination without dropping.
+ * Calls the exit handler if set.
  *
  * # Safety
  *
@@ -10610,6 +10418,88 @@ struct WuiWatcher_WindowState *waterui_new_watcher_window_state(void *data,
                                                                 void (*drop)(void*));
 
 /**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiWindowLevel waterui_read_computed_window_level(const WuiComputed_WindowLevel *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_window_level(const WuiComputed_WindowLevel *computed,
+                                                            struct WuiWatcher_WindowLevel *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_window_level(WuiComputed_WindowLevel *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_WindowLevel *waterui_new_watcher_window_level(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiWindowLevel,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+enum WuiUserAttention waterui_read_binding_user_attention(const WuiBinding_Option_UserAttention *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_user_attention(WuiBinding_Option_UserAttention *binding,
+                                        enum WuiUserAttention value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_user_attention(const WuiBinding_Option_UserAttention *binding,
+                                                             struct WuiWatcher_Option_UserAttention *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_user_attention(WuiBinding_Option_UserAttention *binding);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_Option_UserAttention *waterui_new_watcher_user_attention(void *data,
+                                                                           void (*call)(void*,
+                                                                                        enum WuiUserAttention,
+                                                                                        struct WuiWatcherMetadata*),
+                                                                           void (*drop)(void*));
+
+/**
  * Installs a `WindowManager` into the environment from a native function pointer.
  *
  * Native backends call this during initialization to register their window
@@ -10675,25 +10565,6 @@ struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_button_id(void);
-
-/**
- * # Safety
- * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
- */
-void waterui_drop_value_formatter(struct WuiValueFormatter *value);
-
-/**
- * Formats a slider value through the given formatter, producing the text the
- * value indicator shows above the thumb while it is dragged.
- *
- * The returned `WuiStr` is owned by the caller.
- *
- * # Safety
- *
- * * `formatter` must be a valid pointer to a `WuiValueFormatter` that stays
- *   alive for the duration of the call; it is only borrowed.
- */
-struct WuiStr waterui_call_value_formatter(const struct WuiValueFormatter *formatter, double value);
 
 /**
  * # Safety

@@ -391,21 +391,28 @@ pub fn navigation_block_11(env: Environment) -> App {
 // ---------------------------------------------------------------------------
 // navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`,
 // `.background(..)` with a Color or a Material, `.resizable(bool)`,
-// `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each), and
-// the `WindowState` variants. Not counted as a rust block.
+// `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
+// `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
+// `WindowHandle` controls. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
-    use waterui::window::{Window, WindowState, WindowStyle};
+    use waterui::window::{UserAttention, Window, WindowLevel, WindowState, WindowStyle};
 
     let state = binding::<WindowState>(WindowState::default());
 
-    let _ = Window::new("W", state.clone(), || text("c"))
+    let window = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Titled)
         .background(Color::transparent())
         .resizable(true)
         .min_size(Size::new(320.0, 240.0))
-        .max_size(Size::new(1920.0, 1080.0));
+        .max_size(Size::new(1920.0, 1080.0))
+        .level(WindowLevel::AlwaysOnTop)
+        .resize_increments(Size::new(80.0, 24.0));
+    let handle = window.handle();
+    handle.maximize();
+    handle.request_attention(UserAttention::Informational);
+    handle.cancel_attention();
     let _ = Window::new("W", state, || text("c"))
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
@@ -414,6 +421,7 @@ pub fn navigation_window_builder_prose() {
     let _ = WindowState::Normal;
     let _ = WindowState::Closed;
     let _ = WindowState::Minimized;
+    let _ = WindowState::Maximized;
     let _ = WindowState::Fullscreen;
 }
 

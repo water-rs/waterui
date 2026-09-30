@@ -267,10 +267,20 @@ The `Window` builder, precisely:
   without a min, the backend derives one by measuring content at a zero proposal.
 - `.toolbar(..)` — window-level chrome; it installs `LabelDisplayMode::IconOnly` for its
   items automatically.
+- `.level(..)` — one `impl IntoComputed<WindowLevel>`; `WindowLevel::Normal` (default)
+  or `AlwaysOnTop` to float above other applications' windows.
+- `.resize_increments(..)` — one `impl IntoComputed<Size>`; the window's content size
+  then snaps to those steps while the user resizes.
 
 `WindowState` variants: `Normal`, `Closed` (**the `Default`**), `Minimized`,
-`Fullscreen`. `WindowState` is held in a binding, so opening, closing, minimizing, and
-restoring are ordinary reactive state changes:
+`Maximized`, `Fullscreen`. `WindowState` is held in a binding, so opening, closing,
+minimizing, maximizing, and restoring are ordinary reactive state changes:
+
+`Window::handle()` returns a `WindowHandle` that survives after the window is shown:
+`close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`,
+`request_attention(UserAttention::Informational | UserAttention::Critical)` (the
+backend clears it when the window gains focus), `cancel_attention()`, and
+`set_frame(Rect)`.
 
 ```rust
 button("Open Window")
