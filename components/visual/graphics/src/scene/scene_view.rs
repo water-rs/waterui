@@ -67,6 +67,10 @@ pub trait SceneContent: 'static {
     /// Registering returns a [`Registered`] handle, which content keeps for
     /// as long as it goes on drawing the resource; asking again for a source
     /// it still holds returns the same registration without a new upload.
+    /// A new registration is a round trip to the render thread and blocks
+    /// this call — and so the host's frame — until the engine has the
+    /// resource; see the blocking contract on
+    /// [`SceneResources`](crate::resources::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
     /// from a handle, so name the resource in every call that draws it rather
