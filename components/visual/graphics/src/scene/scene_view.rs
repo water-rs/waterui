@@ -165,7 +165,7 @@ pub trait SceneContent: 'static {
     /// game board — returns `true`, and whichever realization draws it then
     /// routes the events landing on it to [`SceneContent::input`]: a backend
     /// that merges the scene into its own tree registers the content as an
-    /// input target, and the `GpuSurface` realization forwards its surface's
+    /// input target, and the `GpuContentView` realization forwards its surface's
     /// events. Content that only draws — the common case — leaves this
     /// `false`, claims no focus, and every event keeps going to the widgets
     /// around it.
@@ -204,7 +204,7 @@ pub trait SceneContent: 'static {
 /// Fills in the axes a proposal left open from scene content's intrinsic size.
 ///
 /// This is the one rule every realization of a [`SceneView`] measures by — the
-/// `GpuSurface` one, hydrolysis' retained tree, dew's display list — so a scene
+/// `GpuContentView` one, hydrolysis' retained tree, dew's display list — so a scene
 /// cannot be sized differently depending on which backend drew it.
 ///
 /// - Content with no intrinsic size is returned unchanged, so a scene that takes

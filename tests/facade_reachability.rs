@@ -43,7 +43,7 @@ use waterui::graphics::{
     ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
 };
 
-// Apps implementing `GpuView`/`Effect` must be able to use the same `wgpu` this
+// Apps implementing `GpuContent`/`Effect` must be able to use the same `wgpu` this
 // build links, rather than hand-adding a version that may not match.
 #[cfg(feature = "gpu")]
 use waterui::graphics::wgpu;

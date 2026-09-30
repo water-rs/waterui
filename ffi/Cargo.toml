@@ -13,6 +13,7 @@ keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
 categories = ["gui", "api-bindings"]
 
 [dependencies]
+arc-swap = { workspace = true, optional = true }
 # Not workspace-inherited: the workspace entry carries default features (gpu
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
@@ -22,9 +23,6 @@ categories = ["gui", "api-bindings"]
 # of what the application resolved. This crate only needs the inspector.
 waterui = { version = "0.5.2", path = "..", default-features = false, features = ["inspector"] }
 waterui-core.workspace = true
-# The shared anchored-overlay placement contract the metadata and
-# `waterui_anchored_overlay_place` expose to native backends.
-waterui-backend-core = { workspace = true, features = ["overlay"] }
 waterui-text.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -37,8 +35,8 @@ executor-core.workspace = true
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
 waterui-graphics = { workspace = true, features = ["cpu"] }
-# The geometry vocabulary of the `GpuSurface` input contract: surface-local
-# points on the way in, the IME caret rect on the way out.
+# The geometry vocabulary of the `GpuContentView` input contract:
+# surface-local points on the way in, the IME caret rect on the way out.
 kurbo = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
@@ -63,11 +61,6 @@ waterui-chromium = { workspace = true, optional = true }
 
 # The one display query a native host makes, for the executor's frame budget.
 waterkit-screen = { workspace = true, optional = true }
-
-[target.'cfg(unix)'.dependencies]
-# A cdylib loaded by a foreign main never runs `lang_start`, so `init` must
-# install the SIGPIPE ignore a normal Rust binary would.
-libc = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Android's video surface bridge is marshalled through this crate, so the
@@ -110,13 +103,14 @@ media = ["dep:waterui-video", "dep:waterkit-audio"]
 # Default-on here for the same reason as `video`; the managed crate forwards it
 # only when the app links `waterui-webview`.
 webview = ["dep:waterui-webview", "dep:cookie", "dep:base64"]
-# The GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg) and
-# every GPU-backed FFI surface (GpuSurface, ViewEffect, AppliedFilter, the
-# GPU video pipeline). Default-on so existing consumers are unaffected;
-# disabling it removes the wgpu/vello graph and the corresponding
-# `waterui_*` symbols, so an app that opts out of `waterui/gpu` is not
-# silently re-rooted through the FFI crate.
+# The GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
+# waterui-svg) and every GPU-backed FFI surface (GpuContent, the GPU video
+# pipeline). Default-on so existing consumers are unaffected; disabling it
+# removes the wgpu graph and the corresponding `waterui_*` symbols, so an app
+# that opts out of `waterui/gpu` is not silently re-rooted through the FFI
+# crate.
 gpu = [
+    "dep:arc-swap",
     "waterui/gpu",
     "waterui-graphics/gpu",
     "dep:waterui-svg",
@@ -185,4 +179,3 @@ ignored = ["waterui-svg"]
 
 [dev-dependencies]
 kurbo.workspace = true
-peniko.workspace = true

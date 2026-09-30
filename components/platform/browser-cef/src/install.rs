@@ -3,12 +3,11 @@
 //! Which browser engine draws a `WebView` is the application's choice, not the
 //! renderer's: an app that wants Chromium depends on this crate and calls
 //! [`install`] from its composition root. The renderer stays engine-agnostic —
-//! it draws the [`GpuSurface`] this hook returns exactly like any other — and a
-//! build that never asks for CEF links none of it.
+//! it draws the `GpuContentView` this hook returns exactly like any other —
+//! and a build that never asks for CEF links none of it.
 
 use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
-use waterui_graphics::gpu_surface::GpuSurface;
 
 use crate::{CefRuntime, CefRuntimeConfiguration};
 
@@ -75,16 +74,16 @@ pub fn install(env: &mut Environment) {
             )
             .page()
             .clone();
-        // The CEF view takes its own input: it reports `wants_input_events`, so
-        // a renderer routes what lands on this layer straight into this crate's
-        // adapter and owns no Chromium semantics.
-        let surface = GpuSurface::new(crate::gpu_view_with_input(page));
+        // The CEF view takes its own input: it reports `wants_input_events`,
+        // so a renderer routes what lands on this layer straight into this
+        // crate's adapter and owns no Chromium semantics.
+        let surface = crate::gpu_view_with_input(page);
         // The semantic `WebView` owns the subscriptions that drive
         // `can_go_back` / `can_go_forward`, the event signal, and the URL and
         // user-agent bindings. Dropping it here would leave a live page whose
         // reactive state had gone dead.
         // The page is drawn into a texture the host tree cannot see into, so
-        // the surface publishes the accessibility node itself.
+        // the view publishes the accessibility node itself.
         AnyView::new(Metadata::new(
             default_role(env, surface, AccessibilityRole::Group),
             Retain::new(webview),
@@ -132,9 +131,9 @@ pub fn install_chromium(env: &mut Environment) {
                  the ChromiumController in this environment is not CEF's",
             )
             .clone();
-        let surface = GpuSurface::new(crate::gpu_view_with_input(page));
+        let surface = crate::gpu_view_with_input(page);
         // The page is drawn into a texture the host tree cannot see into, so
-        // the surface publishes the accessibility node itself.
+        // the view publishes the accessibility node itself.
         AnyView::new(Metadata::new(
             default_role(env, surface, AccessibilityRole::Group),
             Retain::new(chromium),

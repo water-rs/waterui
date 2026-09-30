@@ -1092,7 +1092,7 @@ impl View for MorphShape {
         native
     }
 
-    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuSurface`
+    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuContentView`
     /// fallback), both of which fill both axes.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         waterui_core::layout::StretchAxis::Both

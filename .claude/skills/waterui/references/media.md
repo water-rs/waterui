@@ -188,13 +188,13 @@ shader!("starfield.wgsl").size(400.0, 500.0)   // fragment shader from src/, no 
 ```
 
 `shader!` resolves the path against the calling crate's `src/` and expands to a view. For
-full control, implement `GpuView` (async `setup(&mut self, ctx, env)` owns persistent GPU
-resources; sync `render(&mut self, frame)` draws — call `frame.request_redraw()` at the
-end to keep animating) and wrap it: `GpuSurface::new(renderer).size(w, h)`. One renderer
-instance lives for the surface's lifetime. Inside `render` you are outside the reactive
-graph: holding cloned `Binding`s on the renderer struct and `.snapshot()`ing them per frame is
-correct there. `waterui::graphics` re-exports `bytemuck`. Verify GPU components with
-offscreen rendering, never by reasoning about the code.
+full control, implement `GpuContent` (sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
+resources; `render(&mut self, frame: &mut Frame<'_>)` draws — call `frame.request_redraw()` at the
+end to keep animating) and wrap it: `GpuContentView::new(content).size(w, h)`. The content is `Send`
+and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
+state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
+plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
+`bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
 
 Particles (`waterui-particle`, imported as `use waterui_particle::ParticleSystem;`):
 

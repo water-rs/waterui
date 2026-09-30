@@ -1,18 +1,20 @@
+use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
+use waterui_graphics::gpu::GpuContentView;
 use wgpu_external_frame::shared_handle::SharedHandleFrame;
 
-use super::presenter::{OwnedFrameMailbox, TexturePresenter, copy_source_texture};
-use super::{request_browser_frame, sync_browser_viewport};
+use super::presenter::{GpuHandles, OwnedFrameMailbox, copy_source_texture};
+use super::{CefGpuContent, CefUiBridge};
 use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct WindowsFrameSink {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    mailbox: Rc<OwnedFrameMailbox>,
+    mailbox: Arc<OwnedFrameMailbox>,
 }
 
 impl AcceleratedFrameSink for WindowsFrameSink {
@@ -63,65 +65,28 @@ impl AcceleratedFrameSink for WindowsFrameSink {
     }
 }
 
-pub(super) struct CefGpuView {
-    page: CefPageHandle,
-    mailbox: Rc<OwnedFrameMailbox>,
-    presenter: Option<TexturePresenter>,
-}
-
-impl CefGpuView {
-    pub(super) fn new(page: CefPageHandle) -> Self {
-        Self {
-            page,
-            mailbox: Rc::new(OwnedFrameMailbox::new()),
-            presenter: None,
-        }
+fn make_frame_sink(handles: GpuHandles, mailbox: Arc<OwnedFrameMailbox>) -> WindowsFrameSink {
+    assert_eq!(
+        handles.adapter.get_info().backend,
+        wgpu::Backend::Dx12,
+        "CEF shared D3D texture composition requires WaterUI's Direct3D 12 backend"
+    );
+    WindowsFrameSink {
+        device: handles.device,
+        queue: handles.queue,
+        mailbox,
     }
 }
 
-impl GpuView for CefGpuView {
-    #[expect(
-        clippy::future_not_send,
-        reason = "CEF, Direct3D 12, and WaterUI view state are confined to the UI thread"
-    )]
-    async fn setup(&mut self, context: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        assert_eq!(
-            context.adapter.get_info().backend,
-            wgpu::Backend::Dx12,
-            "CEF shared D3D texture composition requires WaterUI's Direct3D 12 backend"
-        );
-        let redraw = context.redraw_handle.clone();
-        self.mailbox
-            .set_waker(Rc::new(move || redraw.request_redraw()));
-        self.page.set_frame_sink(WindowsFrameSink {
-            device: context.device.clone(),
-            queue: context.queue.clone(),
-            mailbox: Rc::clone(&self.mailbox),
-        });
-        self.presenter = Some(TexturePresenter::new(context));
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame<'_>) {
-        // No pump here. Chromium's message loop belongs to
-        // `CefRuntime::start_message_pump`, which Chromium itself paces; running
-        // `do_message_loop_work` inside the render callback put whatever the
-        // browser had queued — parsing, script, compositing — on the main thread
-        // inside one frame's budget, which is what tripped the stall probe every
-        // few seconds on an idle page. Rendering presents the newest frame the
-        // sink has published and nothing else.
-        request_browser_frame(&self.page, frame);
-        let scale = sync_browser_viewport(&self.page, frame);
-        let presenter = self
-            .presenter
-            .as_mut()
-            .expect("CEF GPU view rendered before setup");
-        if let Some(texture) = self.mailbox.take_view() {
-            presenter.set_source(texture);
-        }
-        if let Some(texture) = self.mailbox.take_popup() {
-            presenter.set_popup_source(texture);
-        }
-        presenter.set_popup_rect(self.mailbox.popup_rect());
-        presenter.render(frame, scale);
-    }
+pub(super) fn gpu_view(page: CefPageHandle) -> GpuContentView {
+    let (content, shared) = CefGpuContent::new();
+    let bridge = RefCell::new(CefUiBridge::new(page, shared, make_frame_sink));
+    // No pump here. Chromium's message loop belongs to
+    // `CefRuntime::start_message_pump`, which Chromium itself paces; running
+    // `do_message_loop_work` inside the render callback put whatever the
+    // browser had queued — parsing, script, compositing — on the main thread
+    // inside one frame's budget, which is what tripped the stall probe every
+    // few seconds on an idle page. The UI hook installs the sink and requests
+    // the next compositor frame and nothing else.
+    GpuContentView::new(content).on_frame(move || bridge.borrow_mut().frame())
 }

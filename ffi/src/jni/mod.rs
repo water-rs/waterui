@@ -15,7 +15,6 @@ pub mod drag_drop;
 pub mod ffi_bridge;
 pub mod inspector;
 pub mod navigation;
-pub mod overlay;
 pub mod reactive;
 #[cfg(feature = "webview")]
 pub mod webview_bridge;

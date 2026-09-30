@@ -4,7 +4,7 @@ use crate::reactive::WuiWatcherMetadata;
 
 use crate::IntoFFI;
 
-/// FFI-safe representation of an animation.
+/// FFI-safe representation of a `WaterUI` animation.
 ///
 /// cbindgen generates a tagged union with:
 /// - `WuiAnimation_Tag` enum for variant discrimination
@@ -13,14 +13,14 @@ use crate::IntoFFI;
 #[repr(C)]
 #[derive(Debug)]
 pub enum WuiAnimation {
-    /// No animation - changes apply immediately
-    None,
-    /// Timed cubic bezier animation with control points
+    /// The platform's default animation for the change.
+    SystemDefault,
+    /// Timed cubic bezier curve with control points
     ///
     /// Native backends can use these control points with:
     /// - Apple: `CAMediaTimingFunction(controlPoints:)`
     /// - Android: `PathInterpolator(x1, y1, x2, y2)`
-    Bezier {
+    Curve {
         /// Duration in milliseconds
         duration_ms: u64,
         /// First control point X (0.0 to 1.0)
@@ -34,32 +34,27 @@ pub enum WuiAnimation {
     },
     /// Spring animation with physics-based movement
     Spring {
-        /// Stiffness of the spring (higher = faster)
+        /// The spring stiffness; higher values animate faster
         stiffness: f32,
-        /// Damping factor (higher = less bounce)
+        /// The damping coefficient; higher values reduce bouncing
         damping: f32,
     },
 }
 
+#[allow(clippy::cast_possible_truncation)]
 impl IntoFFI for Animation {
     type FFI = WuiAnimation;
 
     fn into_ffi(self) -> Self::FFI {
         match self {
-            Self::Default => WuiAnimation::Bezier {
-                duration_ms: 250,
-                x1: 0.42,
-                y1: 0.0,
-                x2: 0.58,
-                y2: 1.0,
-            },
+            Self::Default => WuiAnimation::SystemDefault,
             Self::Bezier {
                 duration,
                 x1,
                 y1,
                 x2,
                 y2,
-            } => WuiAnimation::Bezier {
+            } => WuiAnimation::Curve {
                 duration_ms: u64::try_from(duration.as_millis())
                     .expect("Animation duration exceeds u64::MAX milliseconds"),
                 x1,
@@ -85,6 +80,6 @@ pub unsafe extern "C" fn waterui_get_animation(
     unsafe {
         (*metadata)
             .try_get::<Animation>()
-            .map_or(WuiAnimation::None, IntoFFI::into_ffi)
+            .map_or(WuiAnimation::SystemDefault, IntoFFI::into_ffi)
     }
 }

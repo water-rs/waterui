@@ -8,12 +8,12 @@
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::mem::ManuallyDrop;
 
 use nami::SignalExt;
 use waterui_graphics::Picture;
-use waterui_graphics::scene2d_cpu::{Rasterizer, RgbaBitmap};
+use waterui_graphics::cherenkov_cpu::Raster;
+use waterui_graphics::offscreen::{OffscreenRenderer, OffscreenSize};
 
 #[cfg(feature = "c-api")]
 use crate::reactive::WuiComputed;
@@ -66,6 +66,34 @@ impl IntoFFI for Picture {
 
 ffi_view!(Picture, WuiPicture, picture);
 
+/// A rasterised picture: premultiplied RGBA8 pixels, rows top to bottom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RgbaBitmap {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+impl RgbaBitmap {
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The pixel bytes, `width * height * 4` of them.
+    #[must_use]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 /// Premultiplied RGBA8 pixels, `width * height * 4` bytes, owned by the
 /// receiver until `waterui_drop_bitmap`.
 #[repr(C)]
@@ -87,8 +115,8 @@ impl IntoFFI for RgbaBitmap {
     type FFI = WuiBitmap;
 
     fn into_ffi(self) -> Self::FFI {
-        let (width, height) = (self.width(), self.height());
-        let mut data = ManuallyDrop::new(self.into_data());
+        let (width, height) = (self.width, self.height);
+        let mut data = ManuallyDrop::new(self.data);
         WuiBitmap {
             width,
             height,
@@ -113,18 +141,38 @@ pub unsafe extern "C" fn waterui_drop_bitmap(bitmap: WuiBitmap) {
 ffi_computed!(RgbaBitmap, WuiBitmap, bitmap);
 
 /// The picture rasterised at `scale` pixels per point, as a signal that
-/// follows the drawing. One rasteriser serves every re-draw of the picture.
+/// follows the drawing. One CPU engine serves every re-draw of the picture.
+///
+/// # Panics
+///
+/// Panics when the raster engine cannot be created or a frame fails to
+/// render: a picture that cannot be shown is a bug in the drawing, not a
+/// runtime condition a host can recover from.
 pub(crate) fn bitmap_signal(picture: &Picture, scale: f32) -> waterui::Computed<RgbaBitmap> {
     let (width, height) = picture.pixel_size(scale);
+    let size = OffscreenSize::try_from_pixels(width, height)
+        .expect("Picture::pixel_size never yields a zero axis");
     #[expect(
         clippy::cast_precision_loss,
         reason = "pixel_size bounds both sides to 65535, which f32 holds exactly"
     )]
     let transform = picture.transform_to(width as f32, height as f32);
-    let rasterizer = Rc::new(RefCell::new(Rasterizer::new(width, height)));
+    let renderer = Rc::new(
+        OffscreenRenderer::<Raster>::cpu()
+            .unwrap_or_else(|error| panic!("picture raster engine failed to start: {error}")),
+    );
     picture
         .recording()
-        .map(move |recording| rasterizer.borrow_mut().rasterize(&recording, transform))
+        .map(move |recording| {
+            let image = renderer
+                .render_picture(&recording, size, transform)
+                .unwrap_or_else(|error| panic!("picture failed to rasterise: {error}"));
+            RgbaBitmap {
+                width,
+                height,
+                data: image.premultiplied_rgba8(),
+            }
+        })
         .computed()
 }
 
@@ -164,27 +212,24 @@ pub unsafe extern "C" fn waterui_drop_picture(picture: *mut WuiPictureHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kurbo::{Affine, Rect, Shape};
-    use peniko::{Brush, Color, Fill};
     use waterui::Signal;
     use waterui_core::layout::Size;
     use waterui_core::{binding, constant};
+    use waterui_graphics::cherenkov::kurbo::Rect;
+    use waterui_graphics::cherenkov::{Draw, Paint, WorkingColor};
 
-    fn square(color: Color) -> alloc::sync::Arc<waterui_graphics::SceneRecording> {
+    const BLACK: WorkingColor = WorkingColor::new([0.0, 0.0, 0.0, 1.0]);
+    const WHITE: WorkingColor = WorkingColor::new([1.0, 1.0, 1.0, 1.0]);
+
+    fn square(color: WorkingColor) -> waterui_graphics::cherenkov::Picture {
         Picture::record(|scene| {
-            scene.fill(
-                Fill::NonZero,
-                Affine::IDENTITY,
-                &Brush::Solid(color),
-                None,
-                &Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.1),
-            );
+            scene.fill(Rect::new(0.0, 0.0, 10.0, 10.0), Paint::Solid(color));
         })
     }
 
     #[test]
     fn a_bitmap_signal_rasterises_at_the_display_scale() {
-        let picture = Picture::new(Size::new(10.0, 5.0), constant(square(Color::BLACK)));
+        let picture = Picture::new(Size::new(10.0, 5.0), constant(square(BLACK)));
         let bitmap = bitmap_signal(&picture, 3.0).snapshot();
         assert_eq!((bitmap.width(), bitmap.height()), (30, 15));
         assert_eq!(bitmap.data().len(), 30 * 15 * 4);
@@ -193,17 +238,17 @@ mod tests {
 
     #[test]
     fn a_new_drawing_reaches_the_bitmap_signal() {
-        let tint = binding(Color::BLACK);
+        let tint = binding(BLACK);
         let picture = Picture::new(Size::new(10.0, 10.0), tint.map(square));
         let bitmaps = bitmap_signal(&picture, 1.0);
         assert_eq!(&bitmaps.snapshot().data()[..4], &[0, 0, 0, 255]);
-        tint.set(Color::WHITE);
+        tint.set(WHITE);
         assert_eq!(&bitmaps.snapshot().data()[..4], &[255, 255, 255, 255]);
     }
 
     #[test]
     fn a_bitmap_crosses_the_boundary_and_comes_back_whole() {
-        let picture = Picture::new(Size::new(2.0, 2.0), constant(square(Color::BLACK)));
+        let picture = Picture::new(Size::new(2.0, 2.0), constant(square(BLACK)));
         let ffi = bitmap_signal(&picture, 1.0).snapshot().into_ffi();
         assert_eq!((ffi.width, ffi.height, ffi.len), (2, 2, 16));
         // SAFETY: `ffi` came from `into_ffi` just above and is dropped once.

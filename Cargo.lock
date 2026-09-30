@@ -1119,6 +1119,7 @@ version = "0.29.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ecb53484c9c167ba674026b656d8a27d7657a58e6066aa902bfb1a4aa00ae20"
 dependencies = [
+ "clap",
  "heck",
  "indexmap 2.14.2",
  "log",
@@ -1224,13 +1225,14 @@ dependencies = [
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 dependencies = [
  "color",
  "filtrate-core",
  "kurbo",
  "libm",
  "nami-core",
+ "rustc-hash 2.1.3",
  "serde",
  "thiserror 2.0.21",
  "tracing",
@@ -1241,7 +1243,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 dependencies = [
  "cherenkov",
  "filtrate-core",
@@ -1250,6 +1252,7 @@ dependencies = [
  "libm",
  "png",
  "rayon",
+ "rustc-hash 2.1.3",
  "skrifa",
  "thiserror 2.0.21",
  "tracing",
@@ -1258,7 +1261,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 dependencies = [
  "bytemuck",
  "cherenkov",
@@ -1286,7 +1289,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 dependencies = [
  "naga 30.0.1",
  "thiserror 2.0.21",
@@ -2706,7 +2709,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -2724,12 +2727,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=23d94a8a#23d94a8adaf2d0607ec15d257d5cab3162456f78"
+source = "git+https://github.com/water-rs/cherenkov?rev=8476ba05147d909bf1d067531761727efda0173d#8476ba05147d909bf1d067531761727efda0173d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -9881,13 +9884,12 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=7455379d3b6ef88a9a767c62438f93c2d0835874#7455379d3b6ef88a9a767c62438f93c2d0835874"
+source = "git+https://github.com/water-rs/barcode?rev=2ef1c9fbf77805454bed32e685c71010adeb2a6d#2ef1c9fbf77805454bed32e685c71010adeb2a6d"
 dependencies = [
  "barcoders",
  "fast_qr",
  "kurbo",
  "nami",
- "peniko",
  "thiserror 2.0.21",
  "waterui-core",
  "waterui-graphics",
@@ -9963,13 +9965,14 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=e56945bd4c71a7d3cf8f9c9a040624ec07851418#e56945bd4c71a7d3cf8f9c9a040624ec07851418"
+source = "git+https://github.com/water-rs/canvas?rev=a210eac2b8bcf627e2116ef30002683b237d7bd2#a210eac2b8bcf627e2116ef30002683b237d7bd2"
 dependencies = [
+ "cherenkov",
  "image",
  "kurbo",
  "nami",
  "parley",
- "peniko",
+ "tracing",
  "waterui-core",
  "waterui-graphics",
 ]
@@ -10053,6 +10056,7 @@ dependencies = [
 name = "waterui-ffi"
 version = "0.5.2"
 dependencies = [
+ "arc-swap",
  "ash",
  "async-channel",
  "base64 0.23.1",
@@ -10062,7 +10066,6 @@ dependencies = [
  "jiff",
  "jni 0.22.4",
  "kurbo",
- "libc",
  "nami",
  "native-executor",
  "ndk-context",
@@ -10070,7 +10073,6 @@ dependencies = [
  "objc2",
  "objc2-metal",
  "pastey 0.2.3",
- "peniko",
  "pollster 1.0.1",
  "raw-window-handle",
  "suiteki",
@@ -10081,7 +10083,6 @@ dependencies = [
  "waterkit-audio",
  "waterkit-screen",
  "waterui",
- "waterui-backend-core",
  "waterui-browser-cef",
  "waterui-chromium",
  "waterui-controls",
@@ -10107,9 +10108,6 @@ name = "waterui-ffi-generator"
 version = "0.1.0"
 dependencies = [
  "cbindgen",
- "prettyplease 0.2.37",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -10143,6 +10141,7 @@ name = "waterui-graphics"
 version = "0.5.1"
 dependencies = [
  "arc-swap",
+ "bytemuck",
  "cherenkov",
  "cherenkov-cpu",
  "cherenkov-gpu",
@@ -10240,14 +10239,13 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=5625b8a224600c57fd8f9d464762bf78792a40fc#5625b8a224600c57fd8f9d464762bf78792a40fc"
+source = "git+https://github.com/water-rs/image?rev=be59d588f8dff02ac9388dbd4b3a8c43a19985e6#be59d588f8dff02ac9388dbd4b3a8c43a19985e6"
 dependencies = [
+ "executor-core",
  "half",
  "image",
- "kurbo",
  "mp4-atom 0.14.0",
  "num-traits",
- "peniko",
  "waterkit-codec",
  "waterui-core",
  "waterui-graphics",
@@ -10603,11 +10601,9 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c634f1f71f1ff3820c205885566faec45a0477e16a60a5a5b800615a17724654"
+source = "git+https://github.com/water-rs/svg?rev=b42c9ee10ee2e5a780c070dea3ea972edf333a1a#b42c9ee10ee2e5a780c070dea3ea972edf333a1a"
 dependencies = [
- "kurbo",
- "peniko",
+ "cherenkov",
  "suiteki",
  "tracing",
  "usvg",
@@ -10628,10 +10624,10 @@ dependencies = [
  "hydrolysis",
  "hydrolysis-m3",
  "image",
+ "kurbo",
  "pollster 1.0.1",
  "serde_json",
  "sysinfo",
- "vello",
  "waterui",
  "waterui-backend-core",
  "waterui-canvas",

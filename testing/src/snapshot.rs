@@ -5,6 +5,8 @@ use hydrolysis::{
     HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow, Style, WidgetTheme,
 };
 use waterui::graphics::SceneViewMergeToParent;
+use waterui::graphics::WorkingColor;
+use waterui::graphics::cherenkov::kurbo;
 use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
@@ -101,7 +103,7 @@ impl TestHost {
             let surface = platform.surface();
             HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
         };
-        let bounds = vello::kurbo::Rect::new(
+        let bounds = kurbo::Rect::new(
             0.0,
             0.0,
             f64::from(self.width.max(1)),
@@ -122,8 +124,8 @@ impl TestHost {
             AnyView::new(view),
             &env,
             bounds,
-            vello::kurbo::Affine::IDENTITY,
-            vello::kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
+            kurbo::Affine::IDENTITY,
         );
         renderer.finish_rebuild_frame();
 
@@ -140,7 +142,7 @@ impl TestHost {
             format: surface.format(),
             width: self.width.max(1),
             height: self.height.max(1),
-            base_color: vello::peniko::Color::TRANSPARENT,
+            base_color: WorkingColor::TRANSPARENT,
         });
         let rgba8 = readback_texture_rgba8(
             surface.device(),

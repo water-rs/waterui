@@ -5,7 +5,7 @@
 //! scroll events that reach it, not just the pointer state a frame exposes.
 //!
 //! Two kinds of view receive them: a
-//! [`GpuView`](crate::gpu_surface::GpuView), which owns a GPU surface, and a
+//! [`GpuContentView`](crate::gpu::GpuContentView), which owns a GPU layer, and a
 //! [`SceneContent`](crate::scene_view::SceneContent), which records into a
 //! `cherenkov::Recorder` and lets the backend decide how the scene reaches
 //! the screen.
@@ -68,7 +68,7 @@ pub enum ScrollUnit {
 
 /// One input event delivered to a view that asked for input.
 ///
-/// The receiver is a [`GpuView`](crate::gpu_surface::GpuView) or a
+/// The receiver is a [`GpuContentView`](crate::gpu::GpuContentView) or a
 /// [`SceneContent`](crate::scene_view::SceneContent) returning `true` from its
 /// `wants_input_events`.
 ///
