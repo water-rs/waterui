@@ -13,6 +13,7 @@ Demonstrates WaterUI's visual filter system with interactive controls and animat
 | **Hue Rotation** | degrees | 0-360 | Shift colors around the color wheel |
 | **Grayscale** | intensity | 0-1.0 | Convert to grayscale |
 | **Opacity** | value | 0-1.0 | Transparency level |
+| **Shader effect** | scanline strength | 0-1.0 | Your own WGSL post-process (`src/shaders/crt.wgsl`) |
 
 ## Running the Example
 
@@ -76,6 +77,24 @@ let blur_amount = is_focused
 
 background_view.blur(blur_amount)
 ```
+
+### Your Own Shader
+
+```rust
+use waterui::graphics::ShaderEffect;
+
+// The WGSL module defines `@fragment fn main(in: VertexOutput)`; a prelude
+// supplies `input_texture`, `input_sampler`, `uniforms.time`, `effect_param(i)`.
+let crt = ShaderEffect::new(include_str!("shaders/crt.wgsl"))
+    .expect("shaders/crt.wgsl is valid WGSL")
+    .animated();
+
+sample_view.filter(crt).param(strength)
+```
+
+`ShaderEffect::new` validates the WGSL and returns an error for a broken
+shader. Applied to a window's root view, the effect post-processes everything
+the window's content draws.
 
 ## Platform Notes
 

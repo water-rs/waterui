@@ -196,6 +196,28 @@ graph: holding cloned `Binding`s on the renderer struct and `.snapshot()`ing the
 correct there. `waterui::graphics` re-exports `bytemuck`. Verify GPU components with
 offscreen rendering, never by reasoning about the code.
 
+To post-process content that is already drawn — a terminal's CRT pass, scanlines, an
+animated distortion — run your own WGSL over it as a filter:
+
+```rust
+use waterui::graphics::ShaderEffect;
+
+let crt = ShaderEffect::new(include_str!("crt.wgsl"))?   // validated here: bad WGSL is an Err, never a blank view
+    .animated();                                           // reads uniforms.time, so redraw every frame
+terminal.filter(crt).param(strength.clone())               // effect_param(0u) in WGSL; takes a signal
+```
+
+The module defines `@fragment fn main(in: VertexOutput) -> @location(0) vec4<f32>` and
+gets `input_texture`, `input_sampler`, `effect_param(i)` and `uniforms` (`time`,
+`time_delta`, `frame`, `resolution`, `input_resolution`) from a prelude; `in.uv` is
+`(0, 0)` at the top-left, so `textureSample(input_texture, input_sampler, in.uv)` reads
+the pixel underneath. Colors are premultiplied alpha in and out. Up to 16 parameters;
+signal parameters update the effect without rebuilding the view. Applied to a window's
+root view it post-processes everything the window's content draws — but not the window
+background behind it, so give the root its own `.background(..)` when the shader should
+see one. A shader read at run time (a user's config file) is a `Result` to handle where
+you read it.
+
 Particles (`waterui-particle`, imported as `use waterui_particle::ParticleSystem;`):
 
 ```rust

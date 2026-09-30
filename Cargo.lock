@@ -2707,19 +2707,21 @@ dependencies = [
 name = "filter-example"
 version = "0.1.0"
 dependencies = [
+ "hydrolysis-m3",
  "waterui",
+ "waterui-testing",
 ]
 
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16b2d5dcd0f9ccfb26c5db8447b7371e9957ddd7893a8a8c077c9c077b55d7d3"
+source = "git+https://github.com/water-rs/filtrate?rev=d6577f4ea695d1120282dd8fa2a738d62978f09f#d6577f4ea695d1120282dd8fa2a738d62978f09f"
 dependencies = [
  "bytemuck",
  "filtrate-core",
  "filtrate-derive",
  "image",
+ "naga 29.0.4",
  "num-traits",
  "shaderloom",
  "thiserror 2.0.21",
@@ -2731,14 +2733,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27c1b316c214801461fc21a6fe1d9b8baf2c885f43a3cf5e1a86db969433ea9d"
+source = "git+https://github.com/water-rs/filtrate?rev=d6577f4ea695d1120282dd8fa2a738d62978f09f#d6577f4ea695d1120282dd8fa2a738d62978f09f"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1122b58ca680672293776e7cfe92450d191c97a00de39fc96c6b1550f033a6d5"
+source = "git+https://github.com/water-rs/filtrate?rev=d6577f4ea695d1120282dd8fa2a738d62978f09f#d6577f4ea695d1120282dd8fa2a738d62978f09f"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -7912,10 +7912,15 @@ dependencies = [
 [[package]]
 name = "shaderloom"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abfe38a4a8d473f595240dd001b51c5778b30ee439a0c5f4960554a977bcba93"
+source = "git+https://github.com/water-rs/shaderloom?rev=fec1801849979239097cabbf2ad813e56a91132d#fec1801849979239097cabbf2ad813e56a91132d"
 dependencies = [
  "naga 29.0.4",
+ "prettyplease 0.3.0",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 3.0.6",
+ "toml 1.1.6+spec-1.1.0",
  "wgpu",
 ]
 

@@ -19,7 +19,7 @@
 
 extern crate alloc;
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
@@ -28,7 +28,8 @@ use core::time::Duration;
 pub use filtrate::effect::EffectRedrawCallback;
 pub use filtrate::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRenderResult, EffectSetupResult, FilterAdapter, HdrPolicy, WgslModuleCache,
+    EffectRenderResult, EffectSetupResult, FilterAdapter, HdrPolicy, SHADER_EFFECT_MAX_PARAMS,
+    ShaderEffect, ShaderEffectError, WgslModuleCache,
 };
 use filtrate_core::{
     AnimatedCallback, AnimatedTarget, Chain, Filter, FilterParam, Interpolator, WatchGuard,
@@ -145,6 +146,12 @@ pub struct AppliedFilter {
     redraw_handle: RedrawHandle,
     /// Whether the effect's wake callback has been bound to `redraw_handle`.
     wake_bound: bool,
+    /// Reactive-parameter subscriptions the effect does not own itself.
+    ///
+    /// A [`ShaderEffect`] stays `Send` by leaving its parameter subscriptions
+    /// to the caller; they live here, on the UI thread, for exactly as long
+    /// as the backend keeps this filter.
+    subscriptions: Vec<WatchGuard>,
 }
 
 impl fmt::Debug for AppliedFilter {
@@ -162,6 +169,7 @@ impl AppliedFilter {
             filter: Box::new(filter),
             redraw_handle: RedrawHandle::new(),
             wake_bound: false,
+            subscriptions: Vec::new(),
         }
     }
 
@@ -188,11 +196,16 @@ impl AppliedFilter {
             !inner.wake_bound && !outer.wake_bound,
             "AppliedFilter::chained needs filters no host is driving yet"
         );
-        Self::new(EffectChain {
-            first: inner.filter,
-            second: outer.filter,
-            intermediate: None,
-        })
+        let mut subscriptions = inner.subscriptions;
+        subscriptions.extend(outer.subscriptions);
+        Self {
+            subscriptions,
+            ..Self::new(EffectChain {
+                first: inner.filter,
+                second: outer.filter,
+                intermediate: None,
+            })
+        }
     }
 
     /// Returns a clone of the handle used to wake the native renderer, binding
@@ -409,6 +422,9 @@ impl Effect for EffectChain {
 pub struct Filtered<V: View, F: Effect> {
     content: V,
     filter: F,
+    /// Subscriptions of reactive parameters the effect does not own, handed
+    /// to the [`AppliedFilter`] this view lowers to.
+    subscriptions: Vec<WatchGuard>,
 }
 
 impl<V: View, F: Effect> fmt::Debug for Filtered<V, F> {
@@ -421,7 +437,53 @@ impl<V: View, F: Effect> Filtered<V, F> {
     /// Create a new filtered view with a `Effect`.
     #[must_use]
     pub const fn new(content: V, filter: F) -> Self {
-        Self { content, filter }
+        Self {
+            content,
+            filter,
+            subscriptions: Vec::new(),
+        }
+    }
+}
+
+impl<V: View> Filtered<V, ShaderEffect> {
+    /// Adds a parameter to the shader, readable in WGSL as `effect_param(n)`
+    /// where `n` counts the parameters added before it — first those the
+    /// [`ShaderEffect`] was built with, then these.
+    ///
+    /// A reactive value re-renders the effect when it changes, without
+    /// rebuilding the view, and follows the animation attached to the
+    /// change.
+    ///
+    /// ```rust
+    /// use waterui::graphics::ShaderEffect;
+    /// use waterui::prelude::*;
+    ///
+    /// # fn crt(terminal: impl View, strength: Binding<f32>) -> impl View {
+    /// let shader = ShaderEffect::new(
+    ///     "@fragment
+    ///     fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+    ///         let color = textureSample(input_texture, input_sampler, in.uv);
+    ///         let row = u32(in.position.y) + u32(uniforms.time * 6.0);
+    ///         let line = select(1.0, 0.0, (row / 2u) % 2u == 1u);
+    ///         return vec4<f32>(color.rgb * mix(1.0, line, effect_param(0u)), color.a);
+    ///     }",
+    /// )
+    /// .expect("the CRT shader is valid WGSL")
+    /// .animated();
+    /// terminal.filter(shader).param(strength.animated())
+    /// # }
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics when the effect already carries [`SHADER_EFFECT_MAX_PARAMS`]
+    /// parameters.
+    #[must_use]
+    pub fn param(mut self, value: impl IntoSignalF32) -> Self {
+        let (filter, subscription) = self.filter.watch_param(&reactive(value));
+        self.filter = filter;
+        self.subscriptions.push(subscription);
+        self
     }
 }
 
@@ -591,7 +653,13 @@ impl<V: View, F: Filter> Filtered<V, FilterAdapter<F>> {
 
 impl<V: View, F: Effect> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
-        Metadata::new(self.content, AppliedFilter::new(self.filter))
+        Metadata::new(
+            self.content,
+            AppliedFilter {
+                subscriptions: self.subscriptions,
+                ..AppliedFilter::new(self.filter)
+            },
+        )
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -779,10 +847,13 @@ pub fn blur_from_radius_signal(radius: Reactive<Computed<f32>>) -> Blur {
 
 /// Extension methods for applying filters to views.
 pub trait FilterViewExt: View + Sized {
-    /// Apply a `Effect` to this view.
+    /// Apply an `Effect` to this view.
     ///
     /// For the high-level `Filter` API with automatic optimization,
-    /// use convenience methods like `.blur()`, `.brightness()`, etc.
+    /// use convenience methods like `.blur()`, `.brightness()`, etc. An
+    /// application's own WGSL runs as a [`ShaderEffect`]; applied to a
+    /// window's root view it post-processes everything the window's content
+    /// draws, and [`Filtered::param`] feeds it reactive parameters.
     fn filter<F: Effect>(self, filter: F) -> Filtered<Self, F> {
         Filtered::new(self, filter)
     }
@@ -1785,6 +1856,36 @@ mod tests {
         );
 
         assert_eq!(chained.output_size(10, 20), (60, 120));
+    }
+
+    /// A `ShaderEffect` leaves its parameter subscriptions to the caller, so
+    /// the view must hand them to the `AppliedFilter` the backend keeps: a
+    /// subscription dropped with the view would leave a live filter deaf to
+    /// its parameters.
+    #[test]
+    fn a_shader_parameter_reaches_the_host_through_the_applied_filter() {
+        let strength = nami::binding(0.25_f32);
+        let shader = ShaderEffect::new(
+            "@fragment
+            fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                return textureSample(input_texture, input_sampler, in.uv) * effect_param(0u);
+            }",
+        )
+        .expect("the test shader is valid WGSL");
+        let filtered = ().filter(shader).param(strength.clone());
+
+        let lowered = waterui_core::AnyView::new(filtered.body(&Environment::new()))
+            .downcast::<Metadata<AppliedFilter>>()
+            .expect("a filtered view lowers to AppliedFilter metadata");
+        let mut filter = lowered.value;
+        let handle = filter.redraw_handle();
+
+        assert!(!handle.take_dirty());
+        strength.set(0.75);
+        assert!(
+            handle.take_dirty(),
+            "a parameter change must wake the host driving the filter"
+        );
     }
 
     /// A filter a host is already driving has spent its one installation, and

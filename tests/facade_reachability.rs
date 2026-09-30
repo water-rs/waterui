@@ -36,11 +36,12 @@ use waterui::easing::{EasingCurve, Interpolatable};
 use waterui::Intensity;
 
 // `.filter(F)` requires `F: Effect`; the whole family is at the graphics root
-// beside the `ViewEffect` family it mirrors.
+// beside the `ViewEffect` family it mirrors, with the application-WGSL effect.
 #[cfg(feature = "gpu")]
 use waterui::graphics::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-    ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
+    ShaderEffect, ShaderEffectError, ViewEffect, ViewEffectContext, ViewEffectInput,
+    ViewEffectOutput,
 };
 
 // Apps implementing `GpuView`/`Effect` must be able to use the same `wgpu` this

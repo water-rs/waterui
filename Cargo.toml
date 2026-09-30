@@ -589,6 +589,19 @@ glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6
 nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 
+# `filtrate::ShaderEffect`, the application-supplied WGSL post-process effect
+# (#1301), is unreleased. All three filtrate crates ride the same rev so the
+# graph carries one `FilterParam` trait; drop these once a filtrate release
+# carries the effect.
+filtrate = { git = "https://github.com/water-rs/filtrate", rev = "d6577f4ea695d1120282dd8fa2a738d62978f09f" }
+filtrate-core = { git = "https://github.com/water-rs/filtrate", rev = "d6577f4ea695d1120282dd8fa2a738d62978f09f" }
+filtrate-derive = { git = "https://github.com/water-rs/filtrate", rev = "d6577f4ea695d1120282dd8fa2a738d62978f09f" }
+# That filtrate rev ships its static shaders pre-translated through
+# shaderloom's packaged-artifact API and `runtime` feature, which are not on
+# crates.io yet; this is the shaderloom rev filtrate itself pins. Drop it with
+# the filtrate entries.
+shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "fec1801849979239097cabbf2ad813e56a91132d" }
+
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
 # devin/chore/nami-snapshot head before the branch is pushed.

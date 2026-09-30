@@ -92,8 +92,9 @@ pub use filter_view::{
     DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterViewExt, Filtered, Gamma, GaussianBlur,
     Gloom, Grayscale, HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope,
     LineHalftone, MirrorTile, MotionBlur, PerspectiveCorrection, PerspectiveTransform,
-    PinchDistortion, Pixellate, Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion,
-    UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
+    PinchDistortion, Pixellate, SHADER_EFFECT_MAX_PARAMS, Saturation, Sepia, ShaderEffect,
+    ShaderEffectError, Sharpen, TemperatureTint, TwirlDistortion, UnsharpMask, Vibrance, Vignette,
+    VortexDistortion, WhitePoint, ZoomBlur,
 };
 /// The `Effect` family that `.filter(F)` requires, at the graphics root
 /// alongside the `ViewEffect` family it mirrors.

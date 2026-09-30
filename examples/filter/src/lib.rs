@@ -8,6 +8,7 @@
 //! - Hue Rotation - Shift colors around the color wheel
 //! - Grayscale - Convert to grayscale
 //! - Opacity - Adjust transparency
+//! - Shader effect - The application's own WGSL post-process (a CRT pass)
 //!
 //! All filters support reactive values and can be animated using
 //! the `.with(Animation::...)` modifier.
@@ -16,7 +17,8 @@ use core::time::Duration;
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::graphics::{
-    EffectRenderer, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput, wgpu,
+    EffectRenderer, ShaderEffect, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
+    wgpu,
 };
 use waterui::prelude::slider::slider;
 use waterui::prelude::*;
@@ -290,6 +292,43 @@ fn combined_section(
     .padding()
 }
 
+/// The CRT post-process, built from the WGSL module in `shaders/crt.wgsl`.
+///
+/// The shader ships with the example, so a compile error here is a bug in the
+/// example and fails fast. An application that reads a user's shader at run
+/// time handles the `ShaderEffectError` where it reads the file instead.
+fn crt_shader() -> ShaderEffect {
+    ShaderEffect::new(include_str!("shaders/crt.wgsl"))
+        .expect("shaders/crt.wgsl is valid WGSL")
+        .animated()
+}
+
+/// Demo: an application-supplied WGSL post-process
+fn shader_effect_section(scanlines: &Binding<f64>) -> impl View {
+    let animated_scanlines = scanlines
+        .clone()
+        .map(|v| v as f32)
+        .with(Animation::ease_in_out(Duration::from_millis(300)));
+
+    vstack((
+        text("Shader Effect").headline(),
+        "Run your own WGSL over rendered content, redrawn every frame",
+        sample_content()
+            .filter(crt_shader())
+            .param(animated_scanlines)
+            .min_height(100.0),
+        slider("Scanline strength", scanlines)
+            .range(0.0..=1.0)
+            .hide_label(),
+        hstack((
+            set_f64_button("Off", 0.0, scanlines),
+            set_f64_button("Soft", 0.35, scanlines),
+            set_f64_button("Hard", 0.8, scanlines),
+        )),
+    ))
+    .padding()
+}
+
 /// Root view: interactive showcase of every filter section.
 pub fn demo() -> impl View {
     // State for individual filter sections (using f64 for Slider compatibility)
@@ -305,6 +344,9 @@ pub fn demo() -> impl View {
     let combined_blur = Binding::f64(0.0);
     let combined_saturation = Binding::f64(1.0);
     let combined_hue = Binding::f64(0.0);
+
+    // State for the shader effect section
+    let scanlines = Binding::f64(0.35);
 
     scroll(
         vstack((
@@ -332,6 +374,8 @@ pub fn demo() -> impl View {
                 opacity_section(&opacity),
                 Divider,
                 combined_section(&combined_blur, &combined_saturation, &combined_hue),
+                Divider,
+                shader_effect_section(&scanlines),
             )),
         ))
         .padding_with(16.0),
@@ -445,6 +489,23 @@ fn effect_in_filter_preview() -> impl View {
     .padding()
 }
 
+/// The CRT shader over the swatch grid.
+///
+/// Curvature bends the grid's straight edges, the corners fall off into the
+/// vignette, and dark scanlines cross every swatch; a flat, unlined grid means
+/// the shader never ran over the capture.
+#[preview]
+fn shader_effect_preview() -> impl View {
+    vstack((
+        text("Shader effect").headline(),
+        sample_content()
+            .filter(crt_shader())
+            .param(0.6)
+            .size(220.0, 140.0),
+    ))
+    .padding()
+}
+
 #[preview]
 fn filter_preview() -> impl View {
     vstack((
@@ -461,4 +522,34 @@ fn filter_preview() -> impl View {
 
 pub fn app(env: Environment) -> App {
     App::new(demo, env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{crt_shader, sample_content};
+    use core::time::Duration;
+    use waterui::prelude::*;
+    use waterui_testing::{OffscreenApp, Styled, UiBuilder};
+
+    /// The CRT shader as a window post-process: applied to the window's root
+    /// view, whose opaque backdrop fills the window, so the capture is the
+    /// whole frame. The prompt must stay in the accessibility tree through the
+    /// filter; the two captures a quarter second apart are reviewed by eye for
+    /// curvature, vignette and scanlines that roll between them.
+    #[ignore = "writes visual acceptance PNG files for direct image review"]
+    #[waterui::test(theme = hydrolysis_m3::Material3::defaults(), viewport = (480, 320))]
+    fn crt_post_processes_the_window_root(ui: UiBuilder<Styled<hydrolysis_m3::Material3>>) {
+        let mut app: OffscreenApp = ui.mount_offscreen(|| {
+            zstack((
+                Color::srgb(12, 16, 14),
+                vstack((text("user@host:~$ ls"), sample_content())).padding(),
+            ))
+            .filter(crt_shader())
+            .param(0.6)
+        });
+        app.query().label_contains("user@host").assert_exists();
+        let _ = app.capture_snapshot("filter-example", "shader-effect", "window-root-0ms");
+        app.pump_for(Duration::from_millis(250));
+        let _ = app.capture_snapshot("filter-example", "shader-effect", "window-root-250ms");
+    }
 }
