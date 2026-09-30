@@ -3390,7 +3390,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 
 /// water-rs/hydrolysis#51: after the single-child collapse the surviving
 /// element reports the labelled container's resolved extent — the size it
-/// answered to the placement proposal, centred on the content it placed — not
+/// answered to the placement proposal, centred on the assigned frame — not
 /// the child's assigned frame. A root `button.padding(8)` is assigned the
 /// whole window while the padding answers only the button's fit plus its
 /// insets, so announcing the child's (8, 8, 144, 144) frame announces the
@@ -3431,22 +3431,23 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
         bounds.width(),
         bounds.height(),
     );
-    // Symmetric padding places its content envelope at the window's centre.
+    // Symmetric padding's envelope and the assigned frame share the window's
+    // centre — either anchor gives (80, 80) here.
     let center_x = (bounds.x0 + bounds.x1) / 2.0;
     let center_y = (bounds.y0 + bounds.y1) / 2.0;
     assert!(
         (center_x - 80.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
-        "the resolved extent must sit over the placed content, got centre ({center_x}, {center_y})",
+        "the resolved extent must centre on the assigned frame, got centre ({center_x}, {center_y})",
     );
 }
 
-/// water-rs/hydrolysis#51: the resolved extent is centred on the envelope the
-/// container's `place` produced, not on the assigned frame — asymmetric
-/// insets shift the content off the window's centre and the reported bounds
-/// must follow it.
+/// water-rs/hydrolysis#51: the resolved extent is centred on the assigned
+/// frame — asymmetric insets shift the placed envelope off the window's
+/// centre, but the view's own answer to its proposal is positioned within the
+/// assigned bounds, so the reported bounds must not follow the content.
 #[cfg(feature = "accessibility")]
 #[test]
-fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_placed_content() {
+fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let mut state = HydroState::default();
@@ -3486,12 +3487,18 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_placed_content() 
         bounds.height(),
     );
     // Leading-only insets place the content envelope at (20, 0, 140, 160),
-    // centred at (90, 80) — not the window's centre.
+    // centred at (90, 80) — the resolved extent must NOT follow it: the
+    // padded view's answer centres on the assigned frame (80, 80), and every
+    // edge of the reported bounds must stay inside the 160x160 window.
     let center_x = (bounds.x0 + bounds.x1) / 2.0;
     let center_y = (bounds.y0 + bounds.y1) / 2.0;
     assert!(
-        (center_x - 90.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
-        "the resolved extent must centre on the placed envelope (90, 80), got ({center_x}, {center_y})",
+        (center_x - 80.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
+        "the resolved extent must centre on the assigned frame (80, 80), got ({center_x}, {center_y})",
+    );
+    assert!(
+        bounds.x0 >= -0.5 && bounds.y0 >= -0.5 && bounds.x1 <= 160.5 && bounds.y1 <= 160.5,
+        "a view entirely inside the window must report bounds inside it, got {bounds:?}",
     );
 }
 

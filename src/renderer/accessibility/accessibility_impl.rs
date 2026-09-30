@@ -847,8 +847,8 @@ impl AccessibilityBuilder {
             child.set_role(role);
         }
         // The element reports the scope owner's resolved extent — the size the
-        // container answered to the placement proposal, positioned over the
-        // content it placed — not the assigned frame nor the child's own
+        // container answered to the placement proposal, centred on the
+        // assigned frame — not the assigned frame nor the child's own
         // placement (water-rs/hydrolysis#51).
         if let Some(resolved) = resolved_bounds
             && resolved.width() > 0.0
@@ -934,8 +934,8 @@ pub(crate) struct AccessibilityContainerScope {
     /// The node this scope synthesized for the container, when it did.
     container_node: Option<AccessibilityNodeId>,
     /// The extent the container resolved at layout — the size it answered to
-    /// the placement proposal, positioned over the content it placed — kept so
-    /// the element the scope collapses onto reports it instead of the assigned
+    /// the placement proposal, centred on the assigned frame — kept so the
+    /// element the scope collapses onto reports it instead of the assigned
     /// frame or the child's (water-rs/hydrolysis#51).
     resolved_bounds: Option<kurbo::Rect>,
     /// The naming scope that node's registration claimed — the channel
@@ -1619,7 +1619,7 @@ impl SemanticCore {
     /// ([`accessibility_container_child_environment`] returned `Some`), and must
     /// flush its children under that returned environment. `resolved_bounds`
     /// is the extent the container resolved at layout — the size it answered
-    /// to the placement proposal, positioned over the content it placed — the
+    /// to the placement proposal, centred on the assigned frame — the
     /// bounds the element reports when the scope collapses onto its single
     /// semantic child (water-rs/hydrolysis#51).
     #[cfg(feature = "accessibility")]

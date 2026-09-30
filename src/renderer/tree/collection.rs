@@ -3,6 +3,7 @@
 
 #[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
+#[cfg(feature = "accessibility")]
 use super::layout::resolved_content_rect;
 use super::*;
 use std::rc::Rc;
@@ -203,9 +204,10 @@ pub(crate) struct CollectionNode {
     /// position; flush clips it to the presence factor.
     pub(super) placed: Vec<Rect>,
     /// The extent this collection resolved at layout — the size it answered to
-    /// the selected proposal, centred on the envelope `place` produced — kept
-    /// beside `placed` so a naming-scope owner reports its own extent when the
+    /// the selected proposal, centred on the assigned frame — kept beside
+    /// `placed` so a naming-scope owner reports its own extent when the
     /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    #[cfg(feature = "accessibility")]
     pub(super) resolved: Rect,
     /// Resolved membership transition, or `None` when the collection pops.
     pub(super) transition: Option<CollectionTransitionRuntime>,
@@ -424,7 +426,7 @@ impl CollectionNode {
     ) {
         let env = self.env.clone();
         let theme = renderer.theme();
-        let (mut placements, answer) = {
+        let mut placements = {
             let cell = RefCell::new(&mut renderer.state);
             let subs: Vec<NodeSubView> = self
                 .entries
@@ -432,10 +434,14 @@ impl CollectionNode {
                 .map(|entry| NodeSubView::new(&entry.node, &cell, &env, &theme))
                 .collect();
             let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
-            (
-                self.layout.place(Rect::from_size(size), proposal, &refs),
-                self.layout.size_that_fits(proposal, &refs),
-            )
+            // Only the accessibility scope reads `resolved` — skip the measure
+            // in builds without it.
+            #[cfg(feature = "accessibility")]
+            {
+                self.resolved =
+                    resolved_content_rect(self.layout.size_that_fits(proposal, &refs), size);
+            }
+            self.layout.place(Rect::from_size(size), proposal, &refs)
         };
         if self.has_active_transition()
             && let Some(runtime) = &self.transition
@@ -481,7 +487,6 @@ impl CollectionNode {
             .into_iter()
             .map(|placement| placement.frame)
             .collect();
-        self.resolved = resolved_content_rect(answer, size, &self.placed);
     }
 
     pub(super) fn flush(&self, renderer: &mut HydrolysisRenderer, ctx: RenderContext) {

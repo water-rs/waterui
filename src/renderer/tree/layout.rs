@@ -400,7 +400,7 @@ impl RenderNode {
         let theme = renderer.theme();
         match self {
             RenderNode::Container(container) => {
-                let (placements, answer) = {
+                let placements = {
                     let cell = RefCell::new(&mut renderer.state);
                     let subs: Vec<NodeSubView> = container
                         .children
@@ -409,12 +409,18 @@ impl RenderNode {
                         .collect();
                     let refs: Vec<&dyn SubView> =
                         subs.iter().map(|sub| sub as &dyn SubView).collect();
-                    (
-                        container
-                            .layout
-                            .place(Rect::from_size(size), proposal, &refs),
-                        container.layout.size_that_fits(proposal, &refs),
-                    )
+                    // Only the accessibility scope reads `resolved` — skip the
+                    // measure in builds without it.
+                    #[cfg(feature = "accessibility")]
+                    {
+                        container.resolved = resolved_content_rect(
+                            container.layout.size_that_fits(proposal, &refs),
+                            size,
+                        );
+                    }
+                    container
+                        .layout
+                        .place(Rect::from_size(size), proposal, &refs)
                 };
                 for (child, placement) in container.children.iter_mut().zip(&placements) {
                     child.layout(renderer, env, placement.proposal, *placement.frame.size());
@@ -423,7 +429,6 @@ impl RenderNode {
                     .into_iter()
                     .map(|placement| placement.frame)
                     .collect();
-                container.resolved = resolved_content_rect(answer, size, &container.placed);
             }
             // Transform/opacity wrappers are layout-transparent: the child lays out
             // at the same concrete size as the wrapper.
@@ -557,16 +562,18 @@ impl RenderNode {
 }
 
 /// The rect a container resolved for itself — the size it answered to the
-/// selected proposal, centred on the envelope `place` produced — in the same
-/// local space as `placed`. A container is routinely assigned more than it
-/// answered (a window's `Overlay` places its base over the whole bounds), so
-/// the assigned frame is not the element's own extent; centring the answer on
-/// the placed content reports where the view actually sits, matching the
-/// centre-anchored underfill convention the layout contract and SwiftUI share.
-/// A non-finite answer axis falls back to the assigned extent on that axis,
-/// and a childless container — whose `place` produced no envelope — centres
-/// its answer in the assigned frame.
-pub(super) fn resolved_content_rect(answer: Size, assigned: Size, placed: &[Rect]) -> Rect {
+/// selected proposal, centred on the assigned frame — in the same local space
+/// as `placed`. A container is routinely assigned more than it answered (a
+/// window's `Overlay` places its base over the whole bounds), so the assigned
+/// frame is not the element's own extent; centring the answer on the assigned
+/// frame reports where the view actually sits, matching the centre-anchored
+/// underfill convention the layout contract and SwiftUI share. Anchoring on
+/// the placed envelope instead would shift the rect by wherever the children
+/// happen to sit — a leading-inset padding pushes it outside the assigned
+/// frame entirely. A non-finite answer axis falls back to the assigned extent
+/// on that axis.
+#[cfg(feature = "accessibility")]
+pub(super) fn resolved_content_rect(answer: Size, assigned: Size) -> Rect {
     let width = if answer.width.is_finite() {
         answer.width
     } else {
@@ -577,18 +584,7 @@ pub(super) fn resolved_content_rect(answer: Size, assigned: Size, placed: &[Rect
     } else {
         assigned.height
     };
-    let envelope = placed.iter().fold(Option::<Rect>::None, |acc, rect| {
-        Some(acc.map_or(*rect, |acc| {
-            Rect::new(
-                Point::new(acc.min_x().min(rect.min_x()), acc.min_y().min(rect.min_y())),
-                Size::new(
-                    acc.max_x().max(rect.max_x()) - acc.min_x().min(rect.min_x()),
-                    acc.max_y().max(rect.max_y()) - acc.min_y().min(rect.min_y()),
-                ),
-            )
-        }))
-    });
-    let center = envelope.map_or_else(|| Rect::from_size(assigned).center(), |rect| rect.center());
+    let center = Rect::from_size(assigned).center();
     Rect::new(
         Point::new(center.x - width / 2.0, center.y - height / 2.0),
         Size::new(width, height),
