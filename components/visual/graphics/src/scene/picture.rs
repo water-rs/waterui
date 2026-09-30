@@ -24,6 +24,12 @@ use crate::scene_view::{
 /// [`SceneResources`], and it holds those registrations for as long as it —
 /// or any recording that draws it — is alive, so the code that recorded it
 /// can let its own handles go.
+///
+/// The display list never leaves it on its own. Everything that draws a
+/// recording takes the recording whole — a scene merging a [`Picture`], a
+/// `Rasterizer`, an `OffscreenRenderer` — and holds its
+/// registrations for as long as it may draw them, so the ids in the list
+/// cannot outlive what they name.
 #[derive(Clone, Debug)]
 pub struct PictureRecording {
     picture: cherenkov::Picture,
@@ -31,16 +37,14 @@ pub struct PictureRecording {
 }
 
 impl PictureRecording {
-    /// The display list.
-    #[must_use]
-    pub const fn picture(&self) -> &cherenkov::Picture {
+    /// The display list, for a drawer that holds [`Self::held`] beside it.
+    pub(crate) const fn picture(&self) -> &cherenkov::Picture {
         &self.picture
     }
 
     /// The registrations the display list names; a recording that draws
     /// this one holds them through [`RecordingResources::hold`].
-    #[must_use]
-    pub const fn held(&self) -> &HeldResources {
+    pub(crate) const fn held(&self) -> &HeldResources {
         &self.held
     }
 }
