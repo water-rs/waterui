@@ -12165,14 +12165,14 @@ dependencies = [
 [[patch.unused]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=ef46abff2e13514ce407d917af8dfb7facede174#ef46abff2e13514ce407d917af8dfb7facede174"
+source = "git+https://github.com/water-rs/cherenkov?rev=b31a480dbf08c54751f077251afd9d2607be9396#b31a480dbf08c54751f077251afd9d2607be9396"
 
 [[patch.unused]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=ef46abff2e13514ce407d917af8dfb7facede174#ef46abff2e13514ce407d917af8dfb7facede174"
+source = "git+https://github.com/water-rs/cherenkov?rev=b31a480dbf08c54751f077251afd9d2607be9396#b31a480dbf08c54751f077251afd9d2607be9396"
 
 [[patch.unused]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=ef46abff2e13514ce407d917af8dfb7facede174#ef46abff2e13514ce407d917af8dfb7facede174"
+source = "git+https://github.com/water-rs/cherenkov?rev=b31a480dbf08c54751f077251afd9d2607be9396#b31a480dbf08c54751f077251afd9d2607be9396"

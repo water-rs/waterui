@@ -208,9 +208,9 @@ waterkit-build = "0.1.4"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # filtrate lives in the Cherenkov repository; the engine and the filters must
 # share one `filtrate-core`, so all three come from the same revision.
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
 waterui-barcode = "0.3.0"
 waterui-particle = "0.2.0"
 waterui-chart = "0.3.0"
@@ -250,9 +250,9 @@ encase = "0.12"
 # The rendering engine. Cherenkov is not on crates.io: every crate of it is
 # consumed from the same git revision, never a branch
 # or a path, so the graph carries exactly one `Content`, `Paint` and `Shape`.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
 # Cherenkov's colour arithmetic; named directly for the authoring spaces
 # (`Oklch`) the engine does not re-export.
 color = "0.3.3"
@@ -492,9 +492,9 @@ waterui-macros = { path = "macros" }
 waterui = { path = "." }
 # Every filtrate in the graph must be Cherenkov's, or a filter type built
 # against the registry crate cannot be handed to the engine.
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "13d6b405741e8eda69c1013c27d5f7ce512645b6" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "f464c9229c49dfd4b0684326c98fa591d57b474d" }
 waterui-assets = { path = "components/assets/runtime" }
 waterui-assets-core = { path = "components/assets/core" }
 waterui-backend-core = { path = "backends/core" }
