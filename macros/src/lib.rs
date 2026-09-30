@@ -244,8 +244,8 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
 }
 
-/// Marks an owned `Clone` type as an [`Extractor`](waterui::extract::Extractor)
-/// over the `.state(&value)` injection channel.
+/// Marks an owned `Clone` type as a `waterui::extract::Extractor` over the
+/// `.state(&value)` injection channel.
 ///
 /// `State<T>` is the wrapper for a type the app cannot implement traits for —
 /// `Binding<Str>`, a third-party value. Naming it for a type the app *does*
@@ -272,7 +272,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// The generated `Extractor` implementation delegates to
-/// [`State<Self>`](waterui::extract::State), so `.state(&value)` remains the
+/// `waterui::extract::State<Self>`, so `.state(&value)` remains the
 /// injection mechanism and a bare `T` parameter shares extraction positions
 /// with `State<T>` parameters of the same type — the first `.state()` call
 /// feeds the first parameter of that type.
@@ -281,7 +281,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 /// attribute so a missing `Clone` reports here rather than inside the
 /// expansion. For an owned type that should read a value installed directly in
 /// the environment instead of through `.state()`, use
-/// [`impl_extractor!`](waterui::impl_extractor).
+/// `waterui::impl_extractor!`.
 #[proc_macro_attribute]
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     state::expand(args, input)

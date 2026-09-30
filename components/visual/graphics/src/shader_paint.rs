@@ -17,7 +17,7 @@ use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{Environment, View};
 
-use crate::scene::resources::{Registered, SceneResources};
+use crate::scene::resources::{RecordingResources, Registered};
 use crate::scene_view::{SceneContent, SceneView};
 
 /// A view painted by a WGSL fragment shader.
@@ -100,18 +100,16 @@ impl SceneContent for ShaderContent {
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool {
-        let id = self
-            .shader
-            .get_or_insert_with(|| {
-                resources
-                    .shader(self.source.clone())
-                    .unwrap_or_else(|error| panic!("shader paint: {error}"))
-            })
-            .id();
+        let shader = self.shader.get_or_insert_with(|| {
+            resources
+                .shader(self.source.clone())
+                .unwrap_or_else(|error| panic!("shader paint: {error}"))
+        });
+        let id = resources.name(shader);
         let paint = self.uniforms.map(move |uniforms| ShaderPaint {
             shader: id,
             uniforms,

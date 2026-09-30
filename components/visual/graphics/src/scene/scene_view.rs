@@ -11,7 +11,7 @@ use waterui_core::layout::{ProposalSize, Size, StretchAxis};
 use waterui_core::{AnyView, Environment, Native, NativeView, View};
 
 use crate::input::SurfaceInputEvent;
-use crate::scene::resources::SceneResources;
+use crate::scene::resources::RecordingResources;
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
@@ -39,8 +39,8 @@ pub fn invalidate_on_change<S: Signal>(
 
 /// Object-safe scene producer for `SceneView`.
 pub trait SceneContent: 'static {
-    /// Records this content's drawing into `recorder`, registering through
-    /// `resources` whatever engine resource the recording names.
+    /// Records this content's drawing into `recorder`, registering and naming
+    /// through `resources` whatever engine resource the drawing uses.
     ///
     /// The recorder is the engine's live recording target: constant operands
     /// freeze into the [`Content`](cherenkov::Content) it finishes, and
@@ -55,46 +55,55 @@ pub trait SceneContent: 'static {
     ///
     /// A recorder only names fonts, images and shader paints by id; the
     /// engine that draws the recording owns the registrations behind those
-    /// ids. `resources` is that engine's registration table, and it arrives
-    /// with every frame — rather than once at mount, or as a registration
-    /// handle the content retains from mount — because the moment a content
-    /// first needs a resource is the moment it first records the resource's
-    /// id: here, on whichever frame that is. A canvas whose closure reaches
-    /// for a new font on its tenth frame, or an image whose source signal
-    /// delivers a new picture, registers it in the call that draws it and
-    /// records the id straight away. Nothing is queued for a later hook, no
-    /// mount hook has to have run before the first frame, and content never
-    /// holds on to the engine: the table is the host's and is only borrowed
-    /// for the duration of the call, so content cannot keep an engine alive
-    /// past its host or register against one the host has let go of.
+    /// ids. `resources` is this recording's share of that engine's
+    /// registration table, and it arrives with every call — rather than once
+    /// at mount — because the moment a content first needs a resource is the
+    /// moment it first records it: here, on whichever frame that is. A canvas
+    /// whose closure reaches for a new font on its tenth frame, or an image
+    /// whose source signal delivers a new picture, registers it in the call
+    /// that draws it and records it straight away. Content never holds on to
+    /// the engine: `resources` is borrowed for the duration of the call.
     ///
-    /// Content owns what it registers. Each call returns a
-    /// [`Registered`](crate::resources::Registered) handle, and the
-    /// registration lives exactly as long as some content holds a handle to
-    /// it: the table dedupes live registrations but never keeps one alive.
-    /// Content therefore keeps the handles its current recording names —
-    /// asking again for a source it still holds returns the same
-    /// registration without a new upload — and drops a handle once it stops
-    /// drawing the resource, which releases it while the content is still
-    /// mounted.
+    /// Registering returns a [`Registered`] handle, which content keeps for
+    /// as long as it goes on drawing the resource; asking again for a source
+    /// it still holds returns the same registration without a new upload.
+    /// A new registration is a round trip to the render thread and blocks
+    /// this call — and so the host's frame — until the engine has the
+    /// resource; see the blocking contract on
+    /// [`SceneResources`](crate::resources::SceneResources#blocking).
+    /// The id to record comes from [`RecordingResources::name`], which holds
+    /// the registration for this recording. It is the only way to get an id
+    /// from a handle, so name the resource in every call that draws it rather
+    /// than keeping an id from an earlier one.
     ///
-    /// Drop a handle only here, after or while recording a drawing that no
-    /// longer names it: the host installs this call's recording before the
-    /// engine renders again, so the recording that still named the resource
-    /// is never drawn after the release. Content that learns between frames
-    /// that it needs a different resource asks for a frame through its
-    /// invalidator and makes the swap in the next call.
+    /// Because the recording holds what it names, content drops a handle as
+    /// soon as it stops drawing the resource, in the very call that records
+    /// the drawing without it. The recording still installed keeps the
+    /// resource until the host has installed the one that replaces it, so the
+    /// release never reaches a recording that can still be drawn — whether the
+    /// host renders before installing this call's recording or discards it.
+    ///
+    /// A host calls this with the [`RecordingResources`] of the recording
+    /// `recorder` records into, and keeps that recording's
+    /// [`HeldResources`](crate::resources::HeldResources) for as long as the
+    /// recording is installed.
     ///
     /// Returns true when the content requires another frame to be rendered.
+    ///
+    /// [`Registered`]: crate::resources::Registered
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool;
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
+    ///
+    /// The host installs one when it mounts the content and clears it with
+    /// `None` when it unmounts it, so this is also where content starts and
+    /// stops frame sources of its own, such as an animation clock.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
 
     /// The size this drawing is naturally, in logical points.
@@ -361,7 +370,7 @@ impl View for SceneView {
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeView, ProposalSize, Recorder, SceneContent, SceneResources, SceneView, Size,
+        NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
         StretchAxis, resolve_scene_proposal, scene_stretch_axis,
     };
 
@@ -372,7 +381,7 @@ mod tests {
         fn build_scene(
             &mut self,
             _recorder: &mut Recorder,
-            _resources: &SceneResources,
+            _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
         ) -> bool {
@@ -391,7 +400,7 @@ mod tests {
         fn build_scene(
             &mut self,
             _recorder: &mut Recorder,
-            _resources: &SceneResources,
+            _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
         ) -> bool {
@@ -406,7 +415,7 @@ mod tests {
         fn build_scene(
             &mut self,
             _recorder: &mut Recorder,
-            _resources: &SceneResources,
+            _resources: &mut RecordingResources<'_>,
             _width: f32,
             _height: f32,
         ) -> bool {

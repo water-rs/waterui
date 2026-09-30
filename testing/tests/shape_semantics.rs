@@ -1,9 +1,10 @@
-//! End-to-end accessibility-semantics tests for the `shape` component.
+//! End-to-end accessibility-semantics tests for the `shape` component,
+//! driven through the Hydrolysis semantic harness.
 
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
-use waterui_shape::{Circle, RoundedRectangle, ShapeExt};
+use waterui::shape::{Circle, RoundedRectangle, ShapeExt};
 use waterui_testing::{Role, SemanticApp};
 
 fn filled_circle_view() -> impl waterui::View {
