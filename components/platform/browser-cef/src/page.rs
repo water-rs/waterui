@@ -868,7 +868,15 @@ impl CefPageHandle {
             Some(&WindowInfo {
                 windowless_rendering_enabled: 1,
                 shared_texture_enabled: 1,
-                external_begin_frame_enabled: 1,
+                // Externally issued begin frames exist only for headless and
+                // Linux/Windows displays: on macOS the display's begin-frame
+                // source is `ExternalBeginFrameSourceMojoMac`, whose issue call
+                // is a `NOTREACHED` no-op — the first send still latches
+                // `begin_frame_pending_`, so every later request silently
+                // early-returns and the compositor never gets kicked again.
+                // With the flag off, CEF paces frames itself on vsync and
+                // damage at `windowless_frame_rate`.
+                external_begin_frame_enabled: i32::from(cfg!(not(target_os = "macos"))),
                 ..Default::default()
             }),
             Some(&mut client),
@@ -933,6 +941,10 @@ impl CefPageHandle {
     }
 
     /// Requests one compositor frame for this windowless browser.
+    ///
+    /// Only meaningful where external begin frames are a real mechanism —
+    /// macOS builds disable them and never call this.
+    #[cfg(not(target_os = "macos"))]
     pub fn request_frame(&self) {
         self.host.send_external_begin_frame();
     }
