@@ -52,7 +52,6 @@ use core::cell::RefCell;
 use core::fmt;
 use core::hash::{Hash, Hasher};
 use core::mem::discriminant;
-use core::ops::Deref;
 use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -449,8 +448,20 @@ impl fmt::Debug for HeldResources {
 }
 
 /// The resource side of one recording: registration through the engine's
-/// [`SceneResources`], which this dereferences to, and the set of every
-/// registration the recording names.
+/// [`SceneResources`], and the set of every registration the recording names.
+///
+/// It forwards the table's registration methods and nothing else. In
+/// particular it offers no way to begin another recording, whose names would
+/// be held only by a set that nobody installs:
+///
+/// ```compile_fail
+/// # use waterui_graphics::cherenkov::{Image, Rgba8};
+/// # use waterui_graphics::{RecordingResources, Registered};
+/// fn stale_id(resources: &RecordingResources<'_>, image: &Registered<Image<Rgba8>>) {
+///     // The id would be held by a temporary that drops at the semicolon.
+///     let _ = resources.recording().name(image);
+/// }
+/// ```
 ///
 /// A host begins one with [`SceneResources::recording`] for each recording it
 /// makes, hands it to every [`SceneContent::build_scene`] that records into
@@ -509,6 +520,45 @@ impl RecordingResources<'_> {
         }
     }
 
+    /// Registers `source`; see [`SceneResources::font`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneResources::font`].
+    pub fn font(&self, source: FontSource) -> Result<Registered<Font>, ResourceError> {
+        self.resources.font(source)
+    }
+
+    /// Registers `Rgba8` image data; see [`SceneResources::image`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneResources::image`].
+    pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<Image<Rgba8>>, ResourceError> {
+        self.resources.image(data)
+    }
+
+    /// Registers `Rgba16Float` image data; see [`SceneResources::image16f`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneResources::image16f`].
+    pub fn image16f(
+        &self,
+        data: ImageData<Rgba16F>,
+    ) -> Result<Registered<Image<Rgba16F>>, ResourceError> {
+        self.resources.image16f(data)
+    }
+
+    /// Registers a shader paint's WGSL source; see [`SceneResources::shader`].
+    ///
+    /// # Errors
+    ///
+    /// As [`SceneResources::shader`].
+    pub fn shader(&self, source: ShaderSource) -> Result<Registered<Shader>, ResourceError> {
+        self.resources.shader(source)
+    }
+
     /// The registrations this recording names, for the host to keep beside
     /// it; see [`HeldResources`].
     #[must_use = "the recording names these resources; keep them for as long as it is installed"]
@@ -517,14 +567,6 @@ impl RecordingResources<'_> {
             table: Rc::downgrade(&self.resources.table),
             entries: self.held.into_values().collect(),
         }
-    }
-}
-
-impl Deref for RecordingResources<'_> {
-    type Target = SceneResources;
-
-    fn deref(&self) -> &SceneResources {
-        self.resources
     }
 }
 
