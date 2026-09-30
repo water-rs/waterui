@@ -989,17 +989,24 @@ pub(crate) mod tests {
     }
 
     /// Content whose first two frames are a plain fill, whose third frame
-    /// first draws an image, whose fourth draws it again, and which draws
-    /// the fill alone — and lets the image go — from its fifth frame on.
+    /// first draws an image, which draws it again up to its `last` frame, and
+    /// which draws the fill alone — and lets the image go — after that.
     struct LateImage {
         frame: u32,
+        last: u32,
         image: Option<Registered<Image<Rgba8>>>,
     }
 
     impl LateImage {
+        /// Draws the image on its third and fourth frames.
         const fn new() -> Self {
+            Self::drawing_until(4)
+        }
+
+        const fn drawing_until(last: u32) -> Self {
             Self {
                 frame: 0,
+                last,
                 image: None,
             }
         }
@@ -1016,7 +1023,7 @@ pub(crate) mod tests {
             self.frame += 1;
             let bounds = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
             recorder.fill(bounds, WorkingColor::BLACK);
-            if (3..=4).contains(&self.frame) {
+            if (3..=self.last).contains(&self.frame) {
                 let image = self.image.get_or_insert_with(|| {
                     resources
                         .image(one_pixel())
@@ -1238,7 +1245,7 @@ pub(crate) mod tests {
     #[test]
     fn a_recording_not_yet_installed_cannot_release_what_the_installed_one_draws() {
         let mount = Mount::new();
-        let mut content = LateImage::new();
+        let mut content = LateImage::drawing_until(5);
         for _ in 0..3 {
             mount.frame(&mut content);
         }
@@ -1247,9 +1254,26 @@ pub(crate) mod tests {
             panic!("the fourth frame draws the image: {:?}", fourth.drawn);
         };
 
-        // The fifth recording lets the image go, and the host renders before
-        // installing it: the fourth recording is still the one drawn.
+        // The fifth recording names the image too, so its set shares the
+        // registration the installed fourth recording holds. The host
+        // discards it: dropping its share must not release what the
+        // installed recording draws.
         let fifth = mount.record(&mut content);
+        assert_eq!(fifth.drawn, [id]);
+        assert!(
+            !fifth.held.entries.is_empty(),
+            "the discarded recording must hold the image for this step to test anything"
+        );
+        drop(fifth);
+        assert!(
+            removed_images(&mount.render()).is_empty(),
+            "a discarded recording must not release what the installed one draws"
+        );
+
+        // The sixth recording lets the image go, and the host renders before
+        // installing it: the fourth recording is still the one drawn.
+        let sixth = mount.record(&mut content);
+        assert!(sixth.drawn.is_empty());
         assert!(content.image.is_none());
         let rendered = mount.render();
         assert!(
@@ -1263,17 +1287,16 @@ pub(crate) mod tests {
             "the image was released while the installed recording still drew it: {rendered:?}"
         );
 
-        // The host discards that recording instead, and renders again.
-        drop(fifth);
-        assert!(
-            removed_images(&mount.render()).is_empty(),
-            "a discarded recording must not release what the installed one draws"
+        // Installing it stops drawing the image, and releases it.
+        mount.install(sixth);
+        let events = mount.render();
+        assert_released_then_replaced(
+            &FrameReport {
+                drawn: Vec::new(),
+                events,
+            },
+            id,
         );
-
-        // The next recording that is installed stops drawing the image.
-        let sixth = mount.frame(&mut content);
-        assert!(sixth.drawn.is_empty());
-        assert_released_then_replaced(&sixth, id);
     }
 
     #[test]
