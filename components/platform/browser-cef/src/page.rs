@@ -922,6 +922,12 @@ impl CefPageHandle {
             "headless CEF pages cannot install a frame presenter"
         );
         self.state.frame_sink.replace(Some(Rc::new(sink)));
+        // A windowless browser starts hidden and `RenderWidgetHostViewOSR`
+        // builds its video consumer — the object that issues accelerated
+        // paints — only when the view is shown. Installing a presenter is the
+        // moment this page becomes displayable, so show it here, before the
+        // first resize/invalidation asks Chromium for a frame.
+        self.host.was_hidden(0);
         self.host.was_resized();
         self.host.invalidate(PaintElementType::VIEW);
     }
