@@ -278,6 +278,12 @@ The `Window` builder, precisely:
   the application icon the CLI stages, and `window.handle().set_icon(..)` changes it
   later. Applied on X11/Windows (hydrolysis), GTK and `WinUI`; macOS, iOS, Android and
   Wayland have no per-window icon and keep the application icon.
+- `.present_mode(PresentMode::Unsynchronized)` — present frames without waiting for the
+  display (uncapped, may tear; for latency measurement). `DisplaySynchronized` is the
+  default. `.color_space(WindowColorSpace::Preferred(WindowColorRange::WideGamut))` asks
+  for `Standard`, `WideGamut` or `HighDynamicRange` output; `Required(..)` makes a range
+  the platform cannot give an error instead of a narrower substitute. Both are fixed when
+  the window is created; a backend that cannot honour a request reports an error.
 
 `WindowState` variants: `Normal`, `Closed` (**the `Default`**), `Minimized`,
 `Fullscreen`. `WindowState` is held in a binding, so opening, closing, minimizing, and

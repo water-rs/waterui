@@ -6,8 +6,8 @@ use std::rc::Rc;
 
 use nami::SignalExt as _;
 use waterui::window::{
-    Activation, Monitor, MonitorSelector, Window, WindowBackground, WindowManager, WindowPlacement,
-    WindowState, WindowStyle, resolve_background,
+    Activation, Monitor, MonitorSelector, PresentMode, Window, WindowBackground, WindowColorRange,
+    WindowColorSpace, WindowManager, WindowPlacement, WindowState, WindowStyle, resolve_background,
 };
 use waterui::{AnyView, Str};
 use waterui_graphics::color::ResolvedColor;
@@ -33,6 +33,84 @@ pub enum WuiWindowStyle {
     Borderless = 1,
     /// Window where content extends into the title bar area.
     FullSizeContentView = 2,
+}
+
+/// FFI mirror of [`PresentMode`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiPresentMode {
+    /// Each frame waits for the display's refresh.
+    DisplaySynchronized = 0,
+    /// Each frame is presented as soon as it is ready; frames may tear.
+    Unsynchronized = 1,
+}
+
+impl From<PresentMode> for WuiPresentMode {
+    fn from(mode: PresentMode) -> Self {
+        match mode {
+            PresentMode::DisplaySynchronized => Self::DisplaySynchronized,
+            PresentMode::Unsynchronized => Self::Unsynchronized,
+        }
+    }
+}
+
+/// FFI mirror of [`WindowColorRange`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiWindowColorRange {
+    /// Standard dynamic range in the sRGB gamut.
+    Standard = 0,
+    /// Standard dynamic range in a gamut wider than sRGB (Display P3).
+    WideGamut = 1,
+    /// High dynamic range in a wide gamut.
+    HighDynamicRange = 2,
+}
+
+impl From<WindowColorRange> for WuiWindowColorRange {
+    fn from(range: WindowColorRange) -> Self {
+        match range {
+            WindowColorRange::Standard => Self::Standard,
+            WindowColorRange::WideGamut => Self::WideGamut,
+            WindowColorRange::HighDynamicRange => Self::HighDynamicRange,
+        }
+    }
+}
+
+/// How firmly a window asks for [`WuiWindowColorSpace::range`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiColorSpaceRequest {
+    /// The window asks for nothing; the backend negotiates and `range` is
+    /// meaningless.
+    Negotiated = 0,
+    /// The widest range up to `range` the display offers.
+    Preferred = 1,
+    /// Exactly `range`, or an error.
+    Required = 2,
+}
+
+/// FFI mirror of `Option<WindowColorSpace>`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WuiWindowColorSpace {
+    /// How firmly the range is asked for.
+    pub request: WuiColorSpaceRequest,
+    /// The range asked for; `Standard` when `request` is `Negotiated`.
+    pub range: WuiWindowColorRange,
+}
+
+impl From<Option<WindowColorSpace>> for WuiWindowColorSpace {
+    fn from(color_space: Option<WindowColorSpace>) -> Self {
+        let (request, range) = match color_space {
+            None => (WuiColorSpaceRequest::Negotiated, WindowColorRange::Standard),
+            Some(WindowColorSpace::Preferred(range)) => (WuiColorSpaceRequest::Preferred, range),
+            Some(WindowColorSpace::Required(range)) => (WuiColorSpaceRequest::Required, range),
+        };
+        Self {
+            request,
+            range: range.into(),
+        }
+    }
 }
 
 /// FFI mirror of [`MonitorSelector`].
@@ -353,6 +431,10 @@ pub struct WuiWindow {
     pub placement: *mut WuiWindowPlacement,
     /// How showing and clicking the window affects focus and app activation.
     pub activation: WuiActivation,
+    /// Whether frames wait for the display's refresh; fixed at creation.
+    pub present_mode: WuiPresentMode,
+    /// The colour range the output asks for; fixed at creation.
+    pub color_space: WuiWindowColorSpace,
 }
 
 /// A uniquely owned pointer produced by [`IntoFFI`].
@@ -404,6 +486,8 @@ pub(crate) struct WuiAndroidWindow {
     pub(crate) content: OwnedFfiHandle<WuiAnyView>,
     /// The resolved background colour, applied with `setBackgroundDrawable`.
     pub(crate) background: OwnedFfiHandle<WuiComputed<ResolvedColor>>,
+    /// The colour range asked for, applied with `Window.setColorMode`.
+    pub(crate) color_space: WuiWindowColorSpace,
 }
 
 #[cfg(any(feature = "android-jni", test))]
@@ -426,10 +510,19 @@ impl WuiWindow {
             max_size,
             placement,
             activation: _,
+            present_mode,
+            color_space,
         } = self;
         // SAFETY: `placement` is the pointer `placement_into_ffi` produced for
         // this window, not yet released.
         unsafe { dispose_placement(placement) };
+        // Android composites every window in step with the display and has
+        // no per-window switch for it.
+        assert!(
+            present_mode == WuiPresentMode::DisplaySynchronized,
+            "Android cannot present a window unsynchronized from the display: it has no \
+             per-window presentation control"
+        );
 
         let unused_handles = (
             OwnedFfiHandle::required(title, "WuiWindow.title"),
@@ -453,6 +546,7 @@ impl WuiWindow {
         WuiAndroidWindow {
             content,
             background,
+            color_space,
         }
     }
 
@@ -500,6 +594,8 @@ impl IntoFFI for Window {
             max_size: self.max_size.into_ffi(),
             placement: placement_into_ffi(self.placement),
             activation: self.activation.into(),
+            present_mode: self.present_mode.into(),
+            color_space: self.color_space.into(),
             // `icon` does not cross: AppKit, UIKit and Android have no
             // per-window icon, and it is documented as unsupported there.
         }

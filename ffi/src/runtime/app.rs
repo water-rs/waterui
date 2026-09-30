@@ -6,7 +6,7 @@ use crate::{IntoFFI, WuiEnv, array::WuiArray, views::WuiAnyViews, window::WuiWin
 use crate::{
     WuiAnyView,
     reactive::WuiComputed,
-    window::{OwnedFfiHandle, WuiAndroidWindow},
+    window::{OwnedFfiHandle, WuiAndroidWindow, WuiWindowColorSpace},
 };
 #[cfg(feature = "android-jni")]
 use core::ffi::c_void;
@@ -51,6 +51,10 @@ pub struct WuiAndroidAppHandles {
     pub env: *mut c_void,
     /// A `WuiComputed<ResolvedColor>`: the window's resolved background.
     pub background: *mut c_void,
+    /// `WuiColorSpaceRequest` as its discriminant.
+    pub color_space_request: i32,
+    /// `WuiWindowColorRange` as its discriminant.
+    pub color_space_range: i32,
 }
 
 /// The handles transferred to Android's single root activity.
@@ -68,11 +72,13 @@ impl WuiAndroidApp {
         *mut WuiAnyView,
         *mut WuiEnv,
         *mut WuiComputed<ResolvedColor>,
+        WuiWindowColorSpace,
     ) {
         (
             self.window.content.into_raw(),
             self.env.into_raw(),
             self.window.background.into_raw(),
+            self.window.color_space,
         )
     }
 }
@@ -127,16 +133,19 @@ impl WuiApp {
         }
     }
 
-    /// Projects and transfers the two Android-owned handles across the C ABI.
+    /// Projects and transfers the Android-owned handles across the C ABI.
     #[cfg(feature = "android-jni")]
     #[doc(hidden)]
     #[must_use]
     pub fn into_android_handles(self) -> WuiAndroidAppHandles {
-        let (content, env, background) = self.into_android_projection().into_raw_parts();
+        let (content, env, background, color_space) =
+            self.into_android_projection().into_raw_parts();
         WuiAndroidAppHandles {
             content: content.cast(),
             env: env.cast(),
             background: background.cast(),
+            color_space_request: color_space.request as i32,
+            color_space_range: color_space.range as i32,
         }
     }
 }
@@ -294,7 +303,11 @@ mod tests {
         assert!(!projection.window.background.as_ptr().is_null());
         assert!(!projection.env.as_ptr().is_null());
 
-        let (content, env, background) = projection.into_raw_parts();
+        let (content, env, background, color_space) = projection.into_raw_parts();
+        assert_eq!(
+            color_space.request,
+            crate::window::WuiColorSpaceRequest::Negotiated
+        );
         // SAFETY: the caller contract makes `content` an owning handle consumed here.
         let content: AnyView = unsafe { IntoRust::into_rust(content) };
         // SAFETY: likewise for `env`.

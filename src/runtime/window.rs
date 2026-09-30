@@ -170,6 +170,79 @@ pub struct Window {
     /// winit toplevel carries none: this is unsupported there, and those
     /// platforms keep showing the application icon.
     pub icon: Binding<Option<ImageData>>,
+    /// Whether the window's frames wait for the display's refresh.
+    ///
+    /// Fixed when the window is created. A backend that cannot present the
+    /// requested way reports an error instead of substituting another mode.
+    /// See [`PresentMode`] for the per-platform notes.
+    pub present_mode: PresentMode,
+    /// The colour range the window's output asks for, or `None` to let the
+    /// backend negotiate the widest range the display offers.
+    ///
+    /// Fixed when the window is created. See [`WindowColorSpace`] for the
+    /// per-platform notes.
+    pub color_space: Option<WindowColorSpace>,
+}
+
+/// Whether a window's frames wait for the display's refresh.
+///
+/// # Platform Support
+///
+/// - **Hydrolysis**: maps onto the window surface's presentation.
+/// - **macOS**, **GTK**, **Windows (`WinUI`)**, **Android**: the system
+///   compositor presents every window in step with the display and offers no
+///   per-window switch, so only [`Self::DisplaySynchronized`] is available
+///   there; the Apple backend composites its GPU content through Core
+///   Animation rather than a `CAMetalLayer` it could take off the display
+///   link. A window asking for [`Self::Unsynchronized`] on these backends is
+///   an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PresentMode {
+    /// Each frame waits for the display's refresh: no tearing, at most one
+    /// frame per refresh.
+    #[default]
+    DisplaySynchronized,
+    /// Each frame is presented as soon as it is ready, without waiting for
+    /// the display's refresh: the frame rate is uncapped and frames may tear.
+    /// This is for measuring input latency, not for shipping.
+    Unsynchronized,
+}
+
+/// The range of colours a window's output covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowColorRange {
+    /// Standard dynamic range in the sRGB gamut.
+    Standard,
+    /// Standard dynamic range in a gamut wider than sRGB, such as Display P3.
+    WideGamut,
+    /// High dynamic range: brightness beyond standard white, in a wide gamut.
+    HighDynamicRange,
+}
+
+/// How a window asks for its output's colour range.
+///
+/// # Platform Support
+///
+/// - **Hydrolysis**: selects the window surface's format and colour space.
+/// - **macOS**: `NSWindow.colorSpace` — sRGB for
+///   [`WindowColorRange::Standard`], Display P3 for
+///   [`WindowColorRange::WideGamut`]. An `AppKit` window's backing store has no
+///   high-dynamic-range colour space, so [`WindowColorRange::HighDynamicRange`]
+///   can only be preferred there, where it takes Display P3.
+/// - **Android**: `Window.setColorMode` — the default, wide-colour-gamut or
+///   HDR colour mode, checked against what the display reports.
+/// - **GTK**, **Windows (`WinUI`)**: the toolkit negotiates the window's
+///   colour with the compositor and takes no request, so only
+///   [`WindowColorRange::Standard`] can be required there; a preference
+///   leaves the toolkit's choice in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowColorSpace {
+    /// The widest range up to this one that the display offers; narrower
+    /// output is acceptable.
+    Preferred(WindowColorRange),
+    /// Exactly this range: a backend or display that cannot provide it is an
+    /// error, never a silent substitution.
+    Required(WindowColorRange),
 }
 
 /// Conversion into the reactive icon a [`Window`] carries: decoded pixels for
@@ -482,6 +555,8 @@ impl Window {
             placement: None,
             activation: Activation::default(),
             icon: Binding::container(None),
+            present_mode: PresentMode::default(),
+            color_space: None,
         }
     }
 
@@ -565,6 +640,24 @@ impl Window {
     #[must_use]
     pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
         self.icon = icon.into_window_icon();
+        self
+    }
+
+    /// Set whether the window's frames wait for the display's refresh.
+    ///
+    /// See [`PresentMode`] for platform support.
+    #[must_use]
+    pub const fn present_mode(mut self, present_mode: PresentMode) -> Self {
+        self.present_mode = present_mode;
+        self
+    }
+
+    /// Ask for the colour range of the window's output.
+    ///
+    /// See [`WindowColorSpace`] for platform support.
+    #[must_use]
+    pub const fn color_space(mut self, color_space: WindowColorSpace) -> Self {
+        self.color_space = Some(color_space);
         self
     }
 

@@ -392,7 +392,8 @@ pub fn navigation_block_11(env: Environment) -> App {
 // navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`
 // with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
 // `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`,
-// `.icon(..)` with decoded `ImageData`, `set_icon(..)`,
+// `.icon(..)` with decoded `ImageData`, `set_icon(..)`, `.present_mode(..)`,
+// `.color_space(..)`,
 // `.background(..)` with a Color or a Material, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each), and
 // the `WindowState` variants. Not counted as a rust block.
@@ -400,7 +401,10 @@ pub fn navigation_block_11(env: Environment) -> App {
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::graphics::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
-    use waterui::window::{Window, WindowBackground, WindowState, WindowStyle};
+    use waterui::window::{
+        PresentMode, Window, WindowBackground, WindowColorRange, WindowColorSpace, WindowState,
+        WindowStyle,
+    };
 
     let state = binding::<WindowState>(WindowState::default());
 
@@ -431,6 +435,11 @@ pub fn navigation_window_builder_prose() {
     };
     let window = Window::new("W", binding(WindowState::Normal), || text("c")).icon(icon);
     window.handle().set_icon(None);
+    let _ = Window::new("W", binding(WindowState::Normal), || text("c"))
+        .present_mode(PresentMode::Unsynchronized)
+        .color_space(WindowColorSpace::Preferred(WindowColorRange::WideGamut));
+    let _ = WindowColorSpace::Required(WindowColorRange::HighDynamicRange);
+    let _ = (PresentMode::DisplaySynchronized, WindowColorRange::Standard);
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;

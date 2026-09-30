@@ -63,11 +63,13 @@ fn app_to_java<'local>(env: &mut Env<'local>, app: &WuiAndroidAppHandles) -> JOb
         .expect("AppStruct class not found");
     env.new_object(
         &app_struct_class,
-        jni_sig!("(JJJ)V"),
+        jni_sig!("(JJJII)V"),
         &[
             JValue::Long(app.content as jlong),
             JValue::Long(app.env as jlong),
             JValue::Long(app.background as jlong),
+            JValue::Int(app.color_space_request),
+            JValue::Int(app.color_space_range),
         ],
     )
     .expect("Failed to create AppStruct")
