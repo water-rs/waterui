@@ -82,10 +82,10 @@ pub struct PerfStats {
     pub measurement_cache_misses: u64,
     /// Maximum compositor layers submitted by one sampled frame.
     pub scene_layers: u64,
-    /// Maximum Vello scene layers submitted by one sampled frame.
-    pub vello_scene_layers: u64,
-    /// Maximum embedded GPU surface layers submitted by one sampled frame.
-    pub gpu_surface_layers: u64,
+    /// Maximum recorded scene-segment layers submitted by one sampled frame.
+    pub scene_segment_layers: u64,
+    /// Maximum embedded GPU content mounts submitted by one sampled frame.
+    pub gpu_content_layers: u64,
     /// Maximum clip layers pushed by one sampled frame.
     pub clip_layers: u64,
     /// Maximum nested clip depth observed across sampled frames.
@@ -199,14 +199,14 @@ impl PerfStats {
                 .map(|frame| u64::from(frame.profile.counters.scene_layers))
                 .max()
                 .unwrap_or_default(),
-            vello_scene_layers: frames
+            scene_segment_layers: frames
                 .iter()
-                .map(|frame| u64::from(frame.profile.counters.vello_scene_layers))
+                .map(|frame| u64::from(frame.profile.counters.scene_segment_layers))
                 .max()
                 .unwrap_or_default(),
-            gpu_surface_layers: frames
+            gpu_content_layers: frames
                 .iter()
-                .map(|frame| u64::from(frame.profile.counters.gpu_surface_layers))
+                .map(|frame| u64::from(frame.profile.counters.gpu_content_layers))
                 .max()
                 .unwrap_or_default(),
             clip_layers: frames
