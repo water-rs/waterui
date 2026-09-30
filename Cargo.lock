@@ -8,6 +8,8 @@ version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "438a7081a65b95c668db56591a4fef9bc5dad275f448bd6223fc6949d823db38"
 dependencies = [
+ "enumn",
+ "serde",
  "uuid",
 ]
 
@@ -182,6 +184,23 @@ dependencies = [
  "jni 0.21.1",
  "ndk-context",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "android_log-sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_logger"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbb4e440d04be07da1f1bf44fb4495ebd58669372fe0cffa6e48595ac5bd88a3"
+dependencies = [
+ "android_log-sys",
+ "env_filter 0.1.4",
+ "log",
 ]
 
 [[package]]
@@ -2416,6 +2435,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "enumn"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f9ed6b3789237c8a0c1c505af1c7eb2c560df6186f01b098c3a1064ea532f38"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
 name = "env_filter"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2433,7 +2473,7 @@ checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
 dependencies = [
  "anstream",
  "anstyle",
- "env_filter",
+ "env_filter 2.0.0",
  "jiff",
  "log",
 ]
@@ -3505,23 +3545,29 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=481c20cc44bb64a764f472a775af8a6714831712#481c20cc44bb64a764f472a775af8a6714831712"
+source = "git+https://github.com/water-rs/hydrolysis?rev=b4bc68c260fe009ac13f72dc726e8fc2330b9764#b4bc68c260fe009ac13f72dc726e8fc2330b9764"
 dependencies = [
  "accesskit",
+ "android_logger",
  "async-task",
  "cfg_aliases",
  "executor-core",
  "icu_properties",
+ "jni 0.21.1",
  "js-sys",
  "keyboard-types",
  "kurbo",
+ "libc",
+ "log",
  "lru 0.18.5",
  "nami",
  "native-executor",
+ "ndk",
  "parley",
  "peniko",
  "png",
  "pollster 1.0.1",
+ "raw-window-handle",
  "rayon",
  "rustc-hash 2.1.3",
  "serde",
@@ -3529,6 +3575,7 @@ dependencies = [
  "shaderloom",
  "skrifa",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "unicode-segmentation",
  "vello",

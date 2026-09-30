@@ -5,7 +5,9 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
-use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
+use hydrolysis::{
+    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style,
+};
 use waterui::app::{App, AppParts};
 use waterui::window::Window;
 use waterui::{Plugin, ViewExt as _};
@@ -1516,6 +1518,40 @@ impl SemanticApp<HeadlessRuntime> {
     pub fn queue_hover_at(&mut self, x: f32, y: f32) {
         self.runtime
             .push_input_event(driver::pointer_move_event(x, y));
+    }
+
+    /// Resolves the viewport point a pointer can activate on `node_id`'s
+    /// interaction owner, at the normalized position inside the owner's
+    /// region.
+    ///
+    /// The point is projected through the owner's clip chain and the window
+    /// bounds, so a partly visible element's point lands inside its visible
+    /// fragment — never in the clipped region where a press would hit
+    /// whatever lies beneath the clip, or nothing at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessibilityActivationPointError`] when the node is absent
+    /// from the runtime's accessibility state, carries no bounds, or the
+    /// clip chain and the window leave no visible fragment — a fully
+    /// clipped target has no point a pointer can reach.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "waterui-testing exposes f32 logical coordinates for pointer synthesis"
+    )]
+    pub fn activation_point(
+        &self,
+        node_id: NodeId,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) -> Result<(f32, f32), AccessibilityActivationPointError> {
+        self.runtime
+            .accessibility_activation_point(
+                node_id.as_accesskit(),
+                f64::from(normalized_x),
+                f64::from(normalized_y),
+            )
+            .map(|point| (point.x as f32, point.y as f32))
     }
 
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.

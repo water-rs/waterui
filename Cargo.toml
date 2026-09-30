@@ -510,9 +510,11 @@ waterui-webview = { path = "components/platform/webview" }
 # The executor now takes its refresh rate from the host (#1201), and the
 # registry hydrolysis still calls the removed display probe. This is the
 # hydrolysis revision that supplies the rate from winit's monitors,
-# implements the icon-button contract (water-rs/hydrolysis#115), and
-# renders the framework-owned ListSelection (water-rs/waterui#1226); drop
-# it when a hydrolysis release carries those changes.
+# implements the icon-button contract (water-rs/hydrolysis#115),
+# renders the framework-owned ListSelection (water-rs/waterui#1226), and
+# resolves pointer activation points through the node's clip chain
+# (water-rs/hydrolysis#27); drop it when a hydrolysis release carries
+# those changes.
 # hydrolysis is pinned by the migration block at the bottom of this table.
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
@@ -587,7 +589,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "481c20cc44bb64a764f472a775af8a6714831712" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "b4bc68c260fe009ac13f72dc726e8fc2330b9764" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "5625b8a224600c57fd8f9d464762bf78792a40fc" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
