@@ -54,7 +54,7 @@ remote = ["dep:zenwave", "waterui-url/remote"]
 futures-lite.workspace = true
 waterui = { path = "../../..", features = ["video-gpu"] }
 waterui-testing = { path = "../../../testing" }
-waterkit-codec = { version = "0.1.2", features = ["software-fallback"] }
+waterkit-codec = { version = "0.1.2", features = ["software-decode"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 
 
