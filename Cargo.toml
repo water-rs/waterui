@@ -570,8 +570,8 @@ waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d2
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "01f3d3fc2907065eff815f623ac7d9e12fa9943b" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "481c20cc44bb64a764f472a775af8a6714831712" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "b8447310045c9c11fa07c18a9ee6130f1b4ccd11" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16362805a6babc99a8937a1b75f2ccb831e93f43" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
