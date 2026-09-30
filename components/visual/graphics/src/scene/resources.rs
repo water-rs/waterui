@@ -628,6 +628,21 @@ impl Table {
 /// frame with the source it holds costs one lookup; identical bytes from
 /// another allocation are hashed once and compared.
 ///
+/// # Blocking
+///
+/// A request for a source whose registration is live returns without
+/// touching the engine. Any other request — [`font`](Self::font),
+/// [`image`](Self::image), [`image16f`](Self::image16f) or
+/// [`shader`](Self::shader) — is a round trip to the engine's render
+/// thread, and blocks the calling thread until the
+/// render thread has parsed the font, converted and uploaded the image, or
+/// compiled and validated the shader. Called from
+/// [`SceneContent::build_scene`], that is the host's frame: a first-time
+/// registration stalls the frame that first draws the resource, by as long
+/// as that work takes. The blocking is what makes the id valid the moment it
+/// is recorded, with no frame in which the recording names a resource the
+/// engine does not have yet.
+///
 /// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 pub struct SceneResources {
     table: Rc<Table>,
@@ -715,6 +730,9 @@ impl SceneResources {
     /// with the `Arc` the registration was made from is a single lookup; an
     /// identical font in another allocation is hashed and compared.
     ///
+    /// A new registration blocks until the render thread has made it; see
+    /// [Blocking](Self#blocking).
+    ///
     /// # Errors
     ///
     /// [`ResourceError::Font`] when the data cannot be used,
@@ -737,6 +755,9 @@ impl SceneResources {
     /// share one registration; as with fonts, asking again with the same
     /// `Arc` is a single lookup.
     ///
+    /// A new registration blocks until the render thread has made it; see
+    /// [Blocking](Self#blocking).
+    ///
     /// # Errors
     ///
     /// [`ResourceError::Image`] when the backend rejects the upload,
@@ -753,6 +774,9 @@ impl SceneResources {
 
     /// Registers `Rgba16Float` image data — the format HDR and linear-space
     /// sources upload as — deduplicated as [`image`](Self::image) is.
+    ///
+    /// A new registration blocks until the render thread has made it; see
+    /// [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
@@ -776,6 +800,9 @@ impl SceneResources {
     /// While any handle to it is held, the same source text with the same
     /// `animated` flag maps to that one registration. Static text asked for
     /// again is a single lookup; owned text is hashed and compared.
+    ///
+    /// A new registration blocks until the render thread has made it; see
+    /// [Blocking](Self#blocking).
     ///
     /// # Errors
     ///
