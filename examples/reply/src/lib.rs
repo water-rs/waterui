@@ -17,6 +17,7 @@ use waterui::component::vstack;
 use waterui::layout::{ContentMode, Point};
 use waterui::media::Photo;
 use waterui::metadata::Metadata;
+use waterui::navigation::{ColumnWidth, NavigationSplitView, NavigationView};
 use waterui::prelude::*;
 use waterui::shape::{Capsule, FixedRoundedRectangle, ShapeExt};
 use waterui::text::font::{Body, Caption, Font, FontWeight, Subheadline};
@@ -48,9 +49,12 @@ use mdi::trash_can_outline;
 use mdi::video_outline;
 
 const RAIL_WIDTH: f32 = 80.0;
-/// Minimum list-pane width; the pane splits the remaining width evenly with
-/// the detail pane (`splitFraction = 0.5`).
-const LIST_MIN_WIDTH: f32 = 360.0;
+/// The list pane's width in the expanded two-column split (`splitFraction =
+/// 0.5` against the detail pane).
+const LIST_WIDTH: f32 = 360.0;
+/// The narrowest the list pane may go: small enough that rail-plus-list still
+/// fits the compact (393pt) phone column when the split collapses.
+const LIST_COMPACT_MIN_WIDTH: f32 = 300.0;
 /// `CornerMedium` — list and thread cards.
 const CARD_RADIUS: f32 = 12.0;
 const AVATAR: f32 = 40.0;
@@ -300,11 +304,15 @@ fn avatar_of(name: &'static str) -> Url {
     })
 }
 
-fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) -> impl View {
+fn thread_card(
+    thread: &'static Thread,
+    selected: Binding<Option<usize>>,
+    index: usize,
+) -> impl View {
     let container = signal_color(
         selected
             .clone()
-            .equal_to(index)
+            .equal_to(Some(index))
             .select(Color::new(SecondaryContainer), Color::new(SurfaceVariant))
             .computed(),
     );
@@ -343,8 +351,8 @@ fn thread_card(thread: &'static Thread, selected: Binding<usize>, index: usize) 
     .padding_with(20.0)
     .background(container)
     .clip(FixedRoundedRectangle::new(CARD_RADIUS))
-    .on_tap(move |State(selected): State<Binding<usize>>| {
-        selected.set(index);
+    .on_tap(move |State(selected): State<Binding<Option<usize>>>| {
+        selected.set(Some(index));
     })
     .state(&selected)
     .a11y_label(thread.subject)
@@ -405,7 +413,7 @@ fn rail(selected_rail: Binding<usize>) -> impl View {
     .background(color::Surface)
 }
 
-fn list_pane(selected: Binding<usize>) -> impl View {
+fn list_pane(selected: Binding<Option<usize>>) -> impl View {
     scroll(
         vstack((
             search_bar(),
@@ -421,7 +429,7 @@ fn list_pane(selected: Binding<usize>) -> impl View {
         .spacing(16.0)
         .padding_with([16.0, 16.0, 4.0, 12.0]),
     )
-    .min_width(LIST_MIN_WIDTH)
+    .min_width(LIST_COMPACT_MIN_WIDTH)
     .max_width(f32::INFINITY)
     .max_height(f32::INFINITY)
 }
@@ -520,29 +528,42 @@ fn detail_pane(thread: &'static Thread) -> impl View {
     .max_height(f32::INFINITY)
 }
 
-fn reply(selected: Binding<usize>, selected_rail: Binding<usize>) -> impl View {
+/// The three zones ride a two-column `NavigationSplitView` — rail-plus-list
+/// as the sidebar, the reading pane as the detail — so a compact width
+/// collapses them into a single navigation stack instead of clipping.
+fn reply(selected: Binding<Option<usize>>, selected_rail: Binding<usize>) -> impl View {
     themed(
-        hstack((
-            rail(selected_rail),
-            list_pane(selected.clone()),
-            watch(selected, move |index| detail_pane(&THREADS[index]))
-                .max_width(f32::INFINITY)
-                .max_height(f32::INFINITY),
+        NavigationSplitView::new(
+            &selected,
+            {
+                let selected = selected.clone();
+                let selected_rail = selected_rail.clone();
+                move || {
+                    hstack((rail(selected_rail.clone()), list_pane(selected.clone())))
+                        .spacing(0.0)
+                        .max_height(f32::INFINITY)
+                        .background(color::Background)
+                }
+            },
+            move |index| NavigationView::new(THREADS[index].subject, detail_pane(&THREADS[index])),
+        )
+        .sidebar_width(ColumnWidth::new(
+            RAIL_WIDTH + LIST_WIDTH,
+            RAIL_WIDTH + LIST_WIDTH,
+            RAIL_WIDTH + LIST_WIDTH,
         ))
-        .spacing(0.0)
-        .max_height(f32::INFINITY)
-        .background(color::Background),
+        .placeholder(move || text("Select a thread")),
     )
 }
 
 /// Self-contained entry for previews and embedding.
 #[preview]
 pub fn demo() -> impl View {
-    reply(binding(1usize), binding(0usize))
+    reply(binding(Some(1usize)), binding(0usize))
 }
 
 pub fn app(env: Environment) -> App {
-    let selected = binding(1usize);
+    let selected = binding(Some(1usize));
     let selected_rail = binding(0usize);
     App::new(move || reply(selected.clone(), selected_rail.clone()), env)
 }
