@@ -279,6 +279,12 @@ impl Query<'_, HeadlessRuntime> {
     }
 
     /// Performs a tap at a normalized point inside the matching element.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the element has no visible fragment a pointer can reach —
+    /// a fully clipped element reports not visible rather than tapping into
+    /// whatever lies under the clip.
     pub fn tap_at(self, normalized_x: f32, normalized_y: f32) {
         let element = self.app.resolve_single(&self.selector);
         element.tap_at(self.app, normalized_x, normalized_y);

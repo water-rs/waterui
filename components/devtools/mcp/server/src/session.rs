@@ -541,10 +541,37 @@ impl<'a> Session<'a> {
         ))
     }
 
+    /// Resolves the point a `tap` dispatches at: viewport `x`/`y` verbatim,
+    /// or a point inside the anchor node's interaction owner projected
+    /// through its clip chain and the window when `node` is set — the point
+    /// a pointer can actually reach, never a spot inside the clipped region
+    /// where the press would land on whatever lies beneath the clip.
+    fn tap_point(&mut self, node: Option<u64>, x: f32, y: f32) -> Result<(f32, f32), ToolResult> {
+        let Some(id) = node else {
+            return Ok((x, y));
+        };
+        let node_id = NodeId::from(AccessibilityNodeId(id));
+        let Some(element) = self.app.element(node_id) else {
+            return Err(ToolResult::error(format!(
+                "anchor node #{id} is not in the current tree"
+            )));
+        };
+        let line = tree::node_line(element.node(), self.app.tree().focus() == node_id);
+        self.app
+            .activation_point(node_id, x, y)
+            .map_err(|error| ToolResult::error(format!("pointer tap cannot reach {line}: {error}")))
+    }
+
     fn pointer(&mut self, args: &PointerArgs) -> ToolResult {
-        let (x, y) = match self.anchor_point(args.node, args.x, args.y) {
-            Ok(point) => point,
-            Err(result) => return result,
+        let (x, y) = match args.kind {
+            PointerKind::Tap => match self.tap_point(args.node, args.x, args.y) {
+                Ok(point) => point,
+                Err(result) => return result,
+            },
+            _ => match self.anchor_point(args.node, args.x, args.y) {
+                Ok(point) => point,
+                Err(result) => return result,
+            },
         };
         match args.kind {
             PointerKind::Tap => {
