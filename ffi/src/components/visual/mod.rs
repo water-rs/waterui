@@ -95,19 +95,15 @@ fn retry_surface_acquire(
             tracing::debug!(context, "surface acquire timed out; skipping frame");
             None
         }
+        // One reconfigure-and-retry is the whole budget: a persistent failure
+        // is a dead or misconfigured surface, and the panic names the cause
+        // like `checked_surface_configure` does instead of leaving a black
+        // surface plus per-frame error spam.
         Ok(status) => {
-            tracing::error!(
-                context,
-                "acquire after reconfigure failed: {status:?} with {config:?}"
-            );
-            None
+            panic!("{context}: acquire after reconfigure failed: {status:?} with {config:?}")
         }
         Err(error) => {
-            tracing::error!(
-                context,
-                "acquire after reconfigure failed: {error} with {config:?}"
-            );
-            None
+            panic!("{context}: acquire after reconfigure failed: {error} with {config:?}")
         }
     }
 }
