@@ -298,6 +298,10 @@ impl HydrolysisRenderer {
     ) {
         self.window_bounds = bounds;
         self.window_root_transform = root_transform;
+        // The activation-point projection intersects node bounds with the
+        // window bounds alongside the node's clip chain — both in the same
+        // window hit-test space the hit clip stack uses.
+        self.hit_test.window_bounds = bounds;
         let viewport = self.window_viewport();
         let (w, h) = (
             viewport.width().ceil() as u32,

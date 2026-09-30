@@ -18,7 +18,7 @@
 //!   subsystems
 
 #[cfg(feature = "accessibility")]
-mod accessibility;
+pub mod accessibility;
 mod bindings;
 mod color;
 mod effects;
@@ -213,8 +213,8 @@ const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
 
 #[cfg(feature = "accessibility")]
 pub(crate) use accessibility::{
-    AccessibilityActionTarget, AccessibilityActivation, accessibility_container_child_environment,
-    slider_step_for_range,
+    AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
+    ScopedAccessibilitySemantics, accessibility_container_child_environment, slider_step_for_range,
 };
 pub(crate) use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
