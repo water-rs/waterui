@@ -11,7 +11,10 @@
 extern crate alloc;
 
 pub mod runtime;
-pub use runtime::{GpuContentRenderer, GpuRuntime, GpuRuntimeError, preferred_surface_format};
+pub use runtime::{
+    DeviceLoss, GpuContentRenderer, GpuRuntime, GpuRuntimeError, SharedGpuContext,
+    preferred_surface_format,
+};
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -20,7 +23,9 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::time::Duration;
 
-use waterui_core::layout::{Size, StretchAxis};
+use std::sync::Mutex;
+
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Adapter, Device, Queue, Texture, TextureFormat, TextureView};
 
@@ -157,7 +162,42 @@ pub trait GpuContent: Send + 'static {
 
     /// The size the content is naturally, in logical points; `None` takes
     /// whatever the layout gives.
+    ///
+    /// Content whose natural size only resolves asynchronously — a decoder
+    /// that learns the stream dimensions after setup — leaves this `None` and
+    /// answers [`measure`](Self::measure) instead.
     fn intrinsic_size(&self) -> Option<Size> {
+        None
+    }
+
+    /// Measures the content against a layout proposal.
+    ///
+    /// The default answers [`intrinsic_size`](Self::intrinsic_size) when it
+    /// knows one and fills the proposal otherwise. Override it for content
+    /// whose size resolves at runtime: the measurement is read again for every
+    /// layout pass, so an asynchronous source reports its size as soon as it
+    /// has one — announce the change through [`Context::redraw`].
+    ///
+    /// This is layout-only and must not touch GPU or render state.
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        ViewDimensions::new(self.intrinsic_size().unwrap_or_else(|| {
+            Size::new(
+                proposal.width.unwrap_or(0.0),
+                proposal.height.unwrap_or(0.0),
+            )
+        }))
+    }
+
+    /// Which dynamic range the content prefers its presentation target to
+    /// carry.
+    ///
+    /// - `Some(true)`: prefer an HDR target.
+    /// - `Some(false)`: prefer an SDR target.
+    /// - `None` — the default — means follow the host's surrounding policy.
+    ///
+    /// The view's own [`prefer_hdr_surface`](GpuContentView::prefer_hdr_surface)
+    /// overrides this answer.
+    fn preferred_surface_hdr(&self) -> Option<bool> {
         None
     }
 }
@@ -184,8 +224,10 @@ pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 /// which case it is that size and does not stretch.
 pub struct GpuContentView {
     content: Option<Box<dyn GpuContent>>,
+    content_handle: Option<GpuContentHandle>,
     intrinsic_size: Option<Size>,
     opaque: bool,
+    surface_prefers_hdr: Option<bool>,
     input: Option<InputHandler>,
     frame: Option<FrameHook>,
     caret: Option<CaretQuery>,
@@ -211,6 +253,8 @@ impl GpuContentView {
             intrinsic_size: content.intrinsic_size(),
             opaque: content.is_opaque(),
             content: Some(Box::new(content)),
+            content_handle: None,
+            surface_prefers_hdr: None,
             input: None,
             frame: None,
             caret: None,
@@ -287,10 +331,70 @@ impl GpuContentView {
         self.intrinsic_size
     }
 
+    /// Measures this view's content against a layout proposal.
+    ///
+    /// Unlike [`intrinsic_size`](Self::intrinsic_size) — the snapshot taken at
+    /// [`GpuContentView::new`] — this asks the live content, so a source whose
+    /// size resolves asynchronously reports it once it has one.
+    #[must_use]
+    pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.content_handle.as_ref().map_or_else(
+            || {
+                self.content.as_ref().map_or_else(
+                    || {
+                        ViewDimensions::new(Size::new(
+                            proposal.width.unwrap_or(0.0),
+                            proposal.height.unwrap_or(0.0),
+                        ))
+                    },
+                    |content| content.measure(proposal),
+                )
+            },
+            |handle| handle.measure(proposal),
+        )
+    }
+
     /// Whether the content is opaque.
     #[must_use]
     pub const fn is_opaque(&self) -> bool {
         self.opaque
+    }
+
+    /// Prefer HDR presentation formats for this content even when the
+    /// surrounding platform style is SDR.
+    ///
+    /// This overrides the surrounding platform style for this surface only.
+    #[must_use]
+    pub const fn prefer_hdr_surface(mut self) -> Self {
+        self.surface_prefers_hdr = Some(true);
+        self
+    }
+
+    /// Prefer SDR presentation formats for this content even when HDR is
+    /// available.
+    ///
+    /// This overrides the surrounding platform style for this surface only.
+    #[must_use]
+    pub const fn prefer_sdr_surface(mut self) -> Self {
+        self.surface_prefers_hdr = Some(false);
+        self
+    }
+
+    /// Resolves this view's explicit or content-provided HDR preference.
+    ///
+    /// `None` means follow the surrounding platform style.
+    #[must_use]
+    pub fn resolved_hdr_preference(&self) -> Option<bool> {
+        self.surface_prefers_hdr.or_else(|| {
+            self.content_handle
+                .as_ref()
+                .and_then(GpuContentHandle::preferred_surface_hdr)
+                .or_else(|| {
+                    self.content
+                        .as_ref()
+                        .and_then(|content| content.preferred_surface_hdr())
+                })
+        })
     }
 
     /// The accessibility name.
@@ -317,7 +421,32 @@ impl GpuContentView {
         &mut self,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> cherenkov_gpu::interop::GpuContentBox {
-        cherenkov_gpu::interop::GpuContentBox::new(EngineContent(self.take_content()), wake)
+        cherenkov_gpu::interop::GpuContentBox::new(self.engine_content(), wake)
+    }
+
+    /// A shareable handle to this view's content for the engine.
+    ///
+    /// Every call answers a handle to the *same* content object: a host that
+    /// rebuilds its engine layer after device loss re-installs a fresh handle
+    /// so the engine's setup runs the one content on the new device, keeping
+    /// the state the content had accumulated.
+    ///
+    /// # Panics
+    /// Panics if the content was already taken with [`take_content`].
+    ///
+    /// [`take_content`]: Self::take_content
+    pub fn engine_content(&mut self) -> GpuContentHandle {
+        if self.content_handle.is_none() {
+            let content = self
+                .content
+                .take()
+                .expect("GpuContentView content installed twice");
+            self.content_handle = Some(GpuContentHandle::new(content));
+        }
+        self.content_handle
+            .as_ref()
+            .expect("GpuContentView content installed twice")
+            .clone()
     }
 
     /// Takes the content out for installation on a layer.
@@ -352,16 +481,58 @@ impl View for GpuContentView {
     }
 }
 
-/// Projects `WaterUI`'s producer contract onto the engine's render context.
-struct EngineContent(Box<dyn GpuContent>);
+/// Shared access to a [`GpuContent`] after the engine took it.
+///
+/// The engine drives the content through this handle; the view keeps a clone
+/// so UI-side queries — layout measurement, the HDR preference — still reach
+/// the live content, and so a rebuilt engine can re-install the same object
+/// after device loss.
+pub struct GpuContentHandle(Arc<Mutex<Box<dyn GpuContent>>>);
 
-impl cherenkov_gpu::interop::GpuContent for EngineContent {
+impl fmt::Debug for GpuContentHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GpuContentHandle").finish_non_exhaustive()
+    }
+}
+
+impl Clone for GpuContentHandle {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl GpuContentHandle {
+    fn new(content: Box<dyn GpuContent>) -> Self {
+        Self(Arc::new(Mutex::new(content)))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn GpuContent>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Measures the content against a layout proposal, from the UI thread.
+    #[must_use]
+    pub fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.lock().measure(proposal)
+    }
+
+    /// The content's HDR preference for its presentation target.
+    #[must_use]
+    pub fn preferred_surface_hdr(&self) -> Option<bool> {
+        self.lock().preferred_surface_hdr()
+    }
+}
+
+/// Projects `WaterUI`'s producer contract onto the engine's render context.
+impl cherenkov_gpu::interop::GpuContent for GpuContentHandle {
     fn setup(
         &mut self,
         gpu: &cherenkov_gpu::interop::wgpu::Context<'_>,
     ) -> impl core::future::Future<Output = ()> {
         let redraw = gpu.redraw.clone();
-        self.0.setup(&Context {
+        self.lock().setup(&Context {
             adapter: gpu.adapter,
             device: gpu.device,
             queue: gpu.queue,
@@ -382,7 +553,7 @@ impl cherenkov_gpu::interop::GpuContent for EngineContent {
             gpu.scale,
             (gpu.elapsed, gpu.delta),
         );
-        self.0.render(&mut frame);
+        self.lock().render(&mut frame);
         if frame.redraw_requested() {
             gpu.request_redraw();
         }
