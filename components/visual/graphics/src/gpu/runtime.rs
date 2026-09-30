@@ -28,6 +28,15 @@ pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
     Adapter(#[from] wgpu::RequestAdapterError),
+    /// The adapter refuses passthrough shaders, which a device shared with
+    /// cherenkov requires on Vulkan and Metal (cherenkov issue #57).
+    #[error(
+        "{backend:?} adapter does not offer Features::PASSTHROUGH_SHADERS, which a device shared with cherenkov-gpu requires"
+    )]
+    PassthroughShadersUnsupported {
+        /// The backend the adapter reported.
+        backend: wgpu::Backend,
+    },
     /// The adapter refused the device.
     #[error(transparent)]
     Device(#[from] wgpu::RequestDeviceError),
@@ -170,9 +179,26 @@ impl SharedGpuContext {
                 apply_limit_buckets: false,
             })
             .await?;
+        // cherenkov's fixed shaders are precompiled and load through wgpu's
+        // passthrough API on Vulkan and Metal (cherenkov issue #57): a device
+        // handed to cherenkov-gpu via `SharedDevice` must request the feature.
+        let backend = adapter.get_info().backend;
+        let required_features = match backend {
+            wgpu::Backend::Vulkan | wgpu::Backend::Metal => {
+                if !adapter
+                    .features()
+                    .contains(wgpu::Features::PASSTHROUGH_SHADERS)
+                {
+                    return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
+                }
+                wgpu::Features::PASSTHROUGH_SHADERS
+            }
+            _ => wgpu::Features::empty(),
+        };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("waterui GpuRuntime"),
+                required_features,
                 ..Default::default()
             })
             .await?;
