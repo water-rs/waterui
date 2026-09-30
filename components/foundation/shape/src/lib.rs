@@ -42,7 +42,7 @@ use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
 use waterui_graphics::scene_view::{SceneContent, SceneView};
 #[cfg(feature = "gpu")]
-use waterui_graphics::{Registered, SceneResources, WorkingColor};
+use waterui_graphics::{RecordingResources, Registered, WorkingColor};
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
 use web_time::Instant;
 
@@ -1296,18 +1296,16 @@ impl SceneContent for MorphContent {
     fn build_scene(
         &mut self,
         recorder: &mut Recorder,
-        resources: &SceneResources,
+        resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,
     ) -> bool {
-        let shader = self
-            .shader
-            .get_or_insert_with(|| {
-                resources
-                    .shader(ShaderSource::wgsl(MORPH_FRAGMENT))
-                    .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
-            })
-            .id();
+        let shader = self.shader.get_or_insert_with(|| {
+            resources
+                .shader(ShaderSource::wgsl(MORPH_FRAGMENT))
+                .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
+        });
+        let shader = resources.name(shader);
         // The morph starts with the content's first frame: the progress it
         // drives reaches the recording through the bound paint below.
         if let Some(driver) = &mut self.driver

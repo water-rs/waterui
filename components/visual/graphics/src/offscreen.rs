@@ -14,8 +14,8 @@ use std::path::Path;
 
 use cherenkov::kurbo::Affine;
 use cherenkov::{
-    Backend, Draw as _, Engine, EngineError, FrameTime, Offscreen, OffscreenFormat, Readback,
-    Recorder, RenderError, Rgba8, Rgba16F, SurfaceError, Uploads,
+    Backend, Content, Draw as _, Engine, EngineError, FrameTime, Offscreen, OffscreenFormat,
+    Readback, Recorder, RenderError, Rgba8, Rgba16F, Surface, SurfaceError, Uploads,
 };
 #[cfg(feature = "cpu")]
 use cherenkov_cpu::{Raster, RasterConfig};
@@ -23,7 +23,8 @@ use cherenkov_cpu::{Raster, RasterConfig};
 use cherenkov_gpu::{Gpu, GpuConfig};
 use image::ImageEncoder as _;
 
-use crate::scene::resources::{SceneCaps, SceneResources};
+use crate::scene::picture::PictureRecording;
+use crate::scene::resources::{HeldResources, SceneCaps, SceneResources};
 use crate::scene::scene_view::SceneContent;
 
 /// A non-empty pixel size for an offscreen target.
@@ -249,7 +250,8 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ///
     /// The content records against this engine's [`SceneResources`], so what
     /// it registers while drawing is this engine's; it keeps those handles
-    /// across renders the way it would on a window.
+    /// across renders the way it would on a window. The recording holds what
+    /// it names until the frame has been read back.
     ///
     /// # Errors
     /// [`OffscreenError`] when the surface cannot be created, the frame does
@@ -266,16 +268,14 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
             (size.width(), size.height()),
             OffscreenFormat::LinearF16,
         ))?;
+        let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
             recorder.transform(Affine::scale(f64::from(scale)), |recorder| {
-                content.build_scene(recorder, &self.resources, width, height);
+                content.build_scene(recorder, &mut resources, width, height);
             });
         });
-        surface.update(|tx| {
-            tx[surface.root()].content(recorded);
-        });
-        self.engine.render(FrameTime::now())?;
-        Ok(OffscreenImage::from_readback(&surface.readback()?))
+        let held = resources.finish();
+        self.show(&surface, recorded, held)
     }
 
     /// Renders a recorded `picture` under `transform` into `size` pixels and
@@ -284,9 +284,12 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// # Errors
     /// [`OffscreenError`] when the surface cannot be created, the frame does
     /// not render, or the target cannot be read back.
+    ///
+    /// # Panics
+    /// When `picture` names resources registered on another engine.
     pub fn render_picture(
         &self,
-        picture: &cherenkov::Picture,
+        picture: &PictureRecording,
         size: OffscreenSize,
         transform: Affine,
     ) -> Result<OffscreenImage, OffscreenError> {
@@ -294,14 +297,30 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
             (size.width(), size.height()),
             OffscreenFormat::LinearF16,
         ))?;
+        let mut resources = self.resources.recording();
+        resources.hold(picture.held());
         let recorded = surface.record(|recorder: &mut Recorder| {
-            recorder.picture(picture, transform);
+            recorder.picture(picture.picture(), transform);
         });
+        let held = resources.finish();
+        self.show(&surface, recorded, held)
+    }
+
+    /// Installs `recorded` on `surface`'s root, renders it and reads it back,
+    /// holding what it names until the pixels are read.
+    fn show(
+        &self,
+        surface: &Surface<B>,
+        recorded: Content,
+        held: HeldResources,
+    ) -> Result<OffscreenImage, OffscreenError> {
         surface.update(|tx| {
             tx[surface.root()].content(recorded);
         });
         self.engine.render(FrameTime::now())?;
-        Ok(OffscreenImage::from_readback(&surface.readback()?))
+        let image = OffscreenImage::from_readback(&surface.readback()?);
+        drop(held);
+        Ok(image)
     }
 }
 
