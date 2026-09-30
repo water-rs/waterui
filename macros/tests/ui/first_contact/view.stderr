@@ -1,4 +1,4 @@
-error[E0277]: expected a `FnOnce()` closure, found `ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>`
+error[E0277]: expected an `FnOnce()` closure, found `ForEach<Vec<Row>, {closure@$DIR/tests/ui/first_contact/view.rs:17:32: 17:37}, waterui::component::Text>`
   --> tests/ui/first_contact/view.rs:17:13
    |
 17 |     vstack((ForEach::new(rows, |row| text(row.name)),))
