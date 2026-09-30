@@ -60,7 +60,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
 apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "7081966a6bfbebc62375edf071877da745020953"
+android-backend-revision = "9190496e1236950ce184340ebc9b3f7774d0e97e"
 # The Hydrolysis Android host the `water` CLI composites into a generated
 # Gradle project for `--platform android --backend hydrolysis`. The revision
 # is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
@@ -68,7 +68,7 @@ android-backend-revision = "7081966a6bfbebc62375edf071877da745020953"
 # revision rather than a branch. `subdirectory` names the Gradle composite
 # root inside the checkout.
 hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
-hydrolysis-android-host-revision = "bd40f61d601402f51cb7127c67200f510eda8b54"
+hydrolysis-android-host-revision = "5c3cde060083c9996a1280fe52c8e19ad9b9dcbc"
 hydrolysis-android-host-subdirectory = "android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
@@ -598,7 +598,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "bd40f61d601402f51cb7127c67200f510eda8b54" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "5c3cde060083c9996a1280fe52c8e19ad9b9dcbc" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "5625b8a224600c57fd8f9d464762bf78792a40fc" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
@@ -627,5 +627,5 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f20
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "21079369d865ed542eff4656c5a9c622dada71de" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "ecc306c8cb30e5dc81e4fc56455f722c23895414" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "c90e8461959fba6d085ce653240fa6f3d88df9de" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "696f011421c1d2d845c0f639cba500dc9f071418" }

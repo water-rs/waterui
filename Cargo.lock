@@ -3545,7 +3545,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=bd40f61d601402f51cb7127c67200f510eda8b54#bd40f61d601402f51cb7127c67200f510eda8b54"
+source = "git+https://github.com/water-rs/hydrolysis?rev=5c3cde060083c9996a1280fe52c8e19ad9b9dcbc#5c3cde060083c9996a1280fe52c8e19ad9b9dcbc"
 dependencies = [
  "accesskit",
  "android_logger",
@@ -12543,9 +12543,9 @@ source = "git+https://github.com/water-rs/dew?rev=1b683d0daab9a119396fb3b31d31bc
 [[patch.unused]]
 name = "waterui-gtk"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/gtk-backend?rev=21079369d865ed542eff4656c5a9c622dada71de#21079369d865ed542eff4656c5a9c622dada71de"
+source = "git+https://github.com/water-rs/gtk-backend?rev=c90e8461959fba6d085ce653240fa6f3d88df9de#c90e8461959fba6d085ce653240fa6f3d88df9de"
 
 [[patch.unused]]
 name = "waterui-winui"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/waterui-winui?rev=ecc306c8cb30e5dc81e4fc56455f722c23895414#ecc306c8cb30e5dc81e4fc56455f722c23895414"
+source = "git+https://github.com/water-rs/waterui-winui?rev=696f011421c1d2d845c0f639cba500dc9f071418#696f011421c1d2d845c0f639cba500dc9f071418"
