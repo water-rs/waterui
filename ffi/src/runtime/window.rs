@@ -531,6 +531,11 @@ impl WuiWindow {
         // this window, not yet released.
         unsafe { dispose_placement(placement) };
 
+        // Android's single-Activity model has no window states: the `state`
+        // binding is dropped, so a `Maximized` write maps to Normal — the
+        // window is the activity, always filling the screen. `level`,
+        // `attention` and `resize_increments` are dropped the same way; they
+        // have no Android meaning.
         let unused_handles = (
             OwnedFfiHandle::required(title, "WuiWindow.title"),
             OwnedFfiHandle::optional(frame),
