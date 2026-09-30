@@ -1153,10 +1153,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// The frame released `id` and installed a recording that no longer
-    /// names it with no frame rendered in between: the release may reach the
-    /// engine ahead of the install that stops drawing the image, but nothing
-    /// draws the old recording after it.
+    /// The frame installed a recording that no longer names `id` and released
+    /// the registration too, both inside the frame's event batch: the release
+    /// commit and the content install travel on different queues, so either
+    /// may land first — what matters is that no frame renders between them.
     fn assert_released_then_replaced(report: &FrameReport, id: ImageId) {
         let events = &report.events;
         assert_eq!(removed_images(events), [id], "{events:?}");
@@ -1164,7 +1164,7 @@ pub(crate) mod tests {
         let installed = position(events, |event| matches!(event, Event::SetContent(..)));
         let rendered = position(events, |event| matches!(event, Event::Frame(_)));
         assert!(
-            released < installed && installed < rendered,
+            released < rendered && installed < rendered,
             "a frame rendered between the release and the install replacing its recording: {events:?}"
         );
     }

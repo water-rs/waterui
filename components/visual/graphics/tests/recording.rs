@@ -146,13 +146,14 @@ fn a_glyph_run_draws_its_glyphs() {
             GlyphRun {
                 font: names.name(&font),
                 size: 28.0,
-                coords: Vec::new(),
+                coords: Vec::new().into(),
                 glyphs: vec![Glyph {
                     id: u32::from(glyph),
                     x: 4.0,
                     y: 28.0,
                     transform: None,
-                }],
+                }]
+                .into(),
                 style: GlyphStyle::Fill,
             },
             srgb(1.0, 1.0, 1.0),

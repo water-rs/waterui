@@ -22,7 +22,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
-use cherenkov::{Animation, curve_value, settled, spring_step};
+use cherenkov::{Animation, RenderTransfer, curve_value, settled, spring_step};
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, Chain, Effect, EffectContext, EffectInput, EffectOutput,
@@ -241,13 +241,13 @@ impl<E: Effect> ErasedEffect for E {
     }
 }
 
-trait EffectSource: Send {
+trait EffectSource: RenderTransfer {
     fn build(self: Box<Self>) -> Box<dyn ErasedEffect>;
 }
 
 struct FromFilter<F>(F);
 
-impl<F: Filter + Send> EffectSource for FromFilter<F> {
+impl<F: Filter + RenderTransfer> EffectSource for FromFilter<F> {
     fn build(self: Box<Self>) -> Box<dyn ErasedEffect> {
         Box::new(Executor::new(self.0))
     }
@@ -255,13 +255,13 @@ impl<F: Filter + Send> EffectSource for FromFilter<F> {
 
 struct FromEffect<E>(E);
 
-impl<E: Effect + Send> EffectSource for FromEffect<E> {
+impl<E: Effect + RenderTransfer> EffectSource for FromEffect<E> {
     fn build(self: Box<Self>) -> Box<dyn ErasedEffect> {
         Box::new(self.0)
     }
 }
 
-/// A filter or effect, erased and `Send`, as a backend receives it.
+/// A filter or effect, erased for the render thread, as a backend receives it.
 ///
 /// The backend moves it to its render thread and calls [`build`](Self::build)
 /// there; the result runs against the engine's device.
@@ -275,12 +275,12 @@ impl fmt::Debug for AnyEffect {
 
 impl AnyEffect {
     /// Erases a custom effect.
-    pub fn new(effect: impl Effect + Send) -> Self {
+    pub fn new(effect: impl Effect + RenderTransfer) -> Self {
         Self(Box::new(FromEffect(effect)))
     }
 
     /// Erases a filter, to run through `filtrate`'s [`Executor`].
-    pub fn filter(filter: impl Filter + Send) -> Self {
+    pub fn filter(filter: impl Filter + RenderTransfer) -> Self {
         Self(Box::new(FromFilter(filter)))
     }
 
@@ -299,7 +299,7 @@ pub struct Filtered<V, F> {
     guards: ParamGuards,
 }
 
-impl<V: View, F: Filter + Send> Filtered<V, F> {
+impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     /// Applies `filter` to `view`.
     pub fn new(view: V, filter: F) -> Self {
         Self::bound(view, filter, ParamGuards::default())
@@ -315,11 +315,11 @@ impl<V: View, F: Filter + Send> Filtered<V, F> {
     }
 
     /// Appends `next` to the filter chain.
-    pub fn then<G: Filter + Send>(self, next: G) -> Filtered<V, Chain<F, G>> {
+    pub fn then<G: Filter + RenderTransfer>(self, next: G) -> Filtered<V, Chain<F, G>> {
         self.then_bound(next, ParamGuards::default())
     }
 
-    fn then_bound<G: Filter + Send>(
+    fn then_bound<G: Filter + RenderTransfer>(
         mut self,
         next: G,
         guards: ParamGuards,
@@ -333,7 +333,7 @@ impl<V: View, F: Filter + Send> Filtered<V, F> {
     }
 }
 
-impl<V: View, F: Filter + Send> View for Filtered<V, F> {
+impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
     fn body(self, _env: &Environment) -> impl View {
         FilteredView {
             content: AnyView::new(self.view),
@@ -364,7 +364,7 @@ pub struct FilteredView {
 
 impl FilteredView {
     /// Applies a custom effect to `view`.
-    pub fn new(view: impl View, effect: impl Effect + Send) -> Self {
+    pub fn new(view: impl View, effect: impl Effect + RenderTransfer) -> Self {
         Self {
             content: AnyView::new(view),
             effect: AnyEffect::new(effect),
@@ -390,7 +390,7 @@ macro_rules! inherent_single_param_filter {
     };
 }
 
-impl<V: View, F: Filter + Send> Filtered<V, F> {
+impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
     inherent_single_param_filter!(blur, Blur);
     inherent_single_param_filter!(brightness, Brightness);
     inherent_single_param_filter!(contrast, Contrast);
@@ -550,12 +550,12 @@ pub type ToneCurve = filtrate::filters::ToneCurve<Reactive>;
 /// Filters on any view: `.filter(F)`, `.effect(E)` and the named shortcuts.
 pub trait FilterViewExt: View + Sized {
     /// Apply a `filtrate` filter to this view.
-    fn filter<F: Filter + Send>(self, filter: F) -> Filtered<Self, F> {
+    fn filter<F: Filter + RenderTransfer>(self, filter: F) -> Filtered<Self, F> {
         Filtered::new(self, filter)
     }
 
     /// Apply a custom `filtrate` effect to this view.
-    fn effect(self, effect: impl Effect + Send) -> FilteredView {
+    fn effect(self, effect: impl Effect + RenderTransfer) -> FilteredView {
         FilteredView::new(self, effect)
     }
 
