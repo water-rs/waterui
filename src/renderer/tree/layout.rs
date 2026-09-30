@@ -409,6 +409,15 @@ impl RenderNode {
                         .collect();
                     let refs: Vec<&dyn SubView> =
                         subs.iter().map(|sub| sub as &dyn SubView).collect();
+                    // Only the accessibility scope reads `resolved` — skip the
+                    // measure in builds without it.
+                    #[cfg(feature = "accessibility")]
+                    {
+                        container.resolved = resolved_content_rect(
+                            container.layout.size_that_fits(proposal, &refs),
+                            size,
+                        );
+                    }
                     container
                         .layout
                         .place(Rect::from_size(size), proposal, &refs)
@@ -550,6 +559,48 @@ impl RenderNode {
             | RenderNode::Widget(_) => {}
         }
     }
+}
+
+/// The rect a container resolved for itself — the size it answered to the
+/// selected proposal, centred on the assigned frame — in the same local space
+/// as `placed`. A container is routinely assigned more than it answered (a
+/// window's `Overlay` places its base over the whole bounds), so the assigned
+/// frame is not the element's own extent; centring the answer on the assigned
+/// frame reports where the view actually sits, matching the centre-anchored
+/// underfill convention the layout contract and SwiftUI share. Anchoring on
+/// the placed envelope instead would shift the rect by wherever the children
+/// happen to sit — a leading-inset padding pushes it outside the assigned
+/// frame entirely. A non-finite answer axis falls back to the assigned extent
+/// on that axis.
+#[cfg(feature = "accessibility")]
+pub(super) fn resolved_content_rect(answer: Size, assigned: Size) -> Rect {
+    let width = if answer.width.is_finite() {
+        answer.width
+    } else {
+        assigned.width
+    };
+    let height = if answer.height.is_finite() {
+        answer.height
+    } else {
+        assigned.height
+    };
+    let center = Rect::from_size(assigned).center();
+    Rect::new(
+        Point::new(center.x - width / 2.0, center.y - height / 2.0),
+        Size::new(width, height),
+    )
+}
+
+/// `rect` in kurbo coordinates — [`Rect`] is the f32 layout space while
+/// `RenderContext` geometry is kurbo f64.
+#[cfg(feature = "accessibility")]
+pub(super) fn kurbo_rect(rect: Rect) -> kurbo::Rect {
+    kurbo::Rect::new(
+        f64::from(rect.x()),
+        f64::from(rect.y()),
+        f64::from(rect.max_x()),
+        f64::from(rect.max_y()),
+    )
 }
 
 /// A deterministic digest of a layout pass's output — FNV-1a over every node's
