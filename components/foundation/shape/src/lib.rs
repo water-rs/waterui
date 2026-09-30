@@ -40,7 +40,7 @@ use waterui_graphics::cherenkov::kurbo::Rect;
 use waterui_graphics::cherenkov::{Draw as _, Recorder, Shader, ShaderPaint, ShaderSource};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
-use waterui_graphics::scene_view::{SceneContent, SceneView};
+use waterui_graphics::scene_view::{SceneContent, SceneInvalidator, SceneView};
 #[cfg(feature = "gpu")]
 use waterui_graphics::{RecordingResources, Registered, WorkingColor};
 #[cfg(all(feature = "gpu", target_arch = "wasm32"))]
@@ -1306,16 +1306,8 @@ impl SceneContent for MorphContent {
                 .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
         });
         let shader = resources.name(shader);
-        // The morph starts with the content's first frame: the progress it
-        // drives reaches the recording through the bound paint below.
-        if let Some(driver) = &mut self.driver
-            && driver.task.is_none()
-        {
-            driver.task = Some(executor_core::spawn_local(drive_morph(
-                driver.progress.clone(),
-                driver.animation,
-            )));
-        }
+        // The progress the driver writes reaches the recording through the
+        // bound paint below, without another call here.
         let (from, to) = (self.from, self.to);
         let paint = self
             .progress
@@ -1329,6 +1321,21 @@ impl SceneContent for MorphContent {
             paint,
         );
         false
+    }
+
+    /// The morph clock runs while the content is mounted: from the host
+    /// installing its invalidator at mount to the host clearing it.
+    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        let Some(driver) = &mut self.driver else {
+            return;
+        };
+        if invalidator.is_some() {
+            driver.task.get_or_insert_with(|| {
+                executor_core::spawn_local(drive_morph(driver.progress.clone(), driver.animation))
+            });
+        } else {
+            driver.task = None;
+        }
     }
 }
 
