@@ -23,6 +23,9 @@ arc-swap = { workspace = true, optional = true }
 # of what the application resolved. This crate only needs the inspector.
 waterui = { version = "0.5.2", path = "..", default-features = false, features = ["inspector"] }
 waterui-core.workspace = true
+# The shared anchored-overlay placement contract the metadata and
+# `waterui_anchored_overlay_place` expose to native backends.
+waterui-backend-core = { workspace = true, features = ["overlay"] }
 waterui-text.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
@@ -61,6 +64,11 @@ waterui-chromium = { workspace = true, optional = true }
 
 # The one display query a native host makes, for the executor's frame budget.
 waterkit-screen = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+# A cdylib loaded by a foreign main never runs `lang_start`, so `init` must
+# install the SIGPIPE ignore a normal Rust binary would.
+libc = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 # Android's video surface bridge is marshalled through this crate, so the

@@ -2,10 +2,16 @@
 use core::ptr::NonNull;
 #[cfg(not(target_vendor = "apple"))]
 use core::ptr::null_mut;
+use std::rc::Rc;
 
-use waterui::window::{Window, WindowBackground, WindowManager, WindowState, WindowStyle};
+use waterui::window::{
+    Activation, Monitor, MonitorSelector, Window, WindowBackground, WindowManager, WindowPlacement,
+    WindowState, WindowStyle,
+};
 use waterui::{AnyView, Str};
 use waterui_layout::{Rect, Size};
+
+use crate::components::layout::WuiRect;
 
 #[cfg(feature = "c-api")]
 use crate::ffi_binding;
@@ -26,6 +32,192 @@ pub enum WuiWindowStyle {
     Borderless = 1,
     /// Window where content extends into the title bar area.
     FullSizeContentView = 2,
+}
+
+/// FFI mirror of [`MonitorSelector`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiMonitorSelector {
+    /// The platform's primary display.
+    Primary = 0,
+    /// The display under the pointer when the window is shown.
+    Pointer = 1,
+    /// The display holding this application's focused window (`Primary` when none).
+    Focused = 2,
+}
+
+impl From<WuiMonitorSelector> for MonitorSelector {
+    fn from(selector: WuiMonitorSelector) -> Self {
+        match selector {
+            WuiMonitorSelector::Primary => Self::Primary,
+            WuiMonitorSelector::Pointer => Self::Pointer,
+            WuiMonitorSelector::Focused => Self::Focused,
+        }
+    }
+}
+
+impl From<MonitorSelector> for WuiMonitorSelector {
+    fn from(selector: MonitorSelector) -> Self {
+        match selector {
+            MonitorSelector::Primary => Self::Primary,
+            MonitorSelector::Pointer => Self::Pointer,
+            MonitorSelector::Focused => Self::Focused,
+        }
+    }
+}
+
+/// FFI mirror of [`Activation`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiActivation {
+    /// Showing the window activates the app and focuses the window.
+    OnShow = 0,
+    /// Showing does not take focus; a click on the window does.
+    OnClick = 1,
+    /// The window never takes keyboard focus or activates the app.
+    Never = 2,
+}
+
+impl From<WuiActivation> for Activation {
+    fn from(activation: WuiActivation) -> Self {
+        match activation {
+            WuiActivation::OnShow => Self::OnShow,
+            WuiActivation::OnClick => Self::OnClick,
+            WuiActivation::Never => Self::Never,
+        }
+    }
+}
+
+impl From<Activation> for WuiActivation {
+    fn from(activation: Activation) -> Self {
+        match activation {
+            Activation::OnShow => Self::OnShow,
+            Activation::OnClick => Self::OnClick,
+            Activation::Never => Self::Never,
+        }
+    }
+}
+
+/// FFI mirror of [`Monitor`], built by the native backend that resolved the
+/// placement's selector.
+///
+/// `name` is a borrowed NUL-terminated UTF-8 string (null when the platform
+/// reports no name): the native caller keeps it alive for the duration of the
+/// `place` call only — the Rust side copies what it needs before returning.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiMonitor {
+    /// Bounds in the global logical coordinate space.
+    pub frame: WuiRect,
+    /// `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+    pub visible_frame: WuiRect,
+    /// Physical pixels per logical point.
+    pub scale_factor: f64,
+    /// The platform's name for the display, or null.
+    pub name: *const core::ffi::c_char,
+}
+
+impl WuiMonitor {
+    /// Converts the borrowed monitor the native backend built into the
+    /// [`Monitor`] the `place` closure expects. Only called while the backend's
+    /// `name` pointer is still valid.
+    fn as_rust(&self) -> Monitor {
+        let rect = |r: &WuiRect| {
+            Rect::new(
+                waterui_layout::Point::new(r.origin.x, r.origin.y),
+                Size::new(r.size.width, r.size.height),
+            )
+        };
+        Monitor {
+            frame: rect(&self.frame),
+            visible_frame: rect(&self.visible_frame),
+            scale_factor: self.scale_factor,
+            name: if self.name.is_null() {
+                None
+            } else {
+                // SAFETY: the caller contract gives `name` a NUL-terminated
+                // UTF-8 string valid for this call.
+                let bytes = unsafe { core::ffi::CStr::from_ptr(self.name) }.to_bytes();
+                Some(Str::from(String::from_utf8_lossy(bytes).into_owned()))
+            },
+        }
+    }
+}
+
+/// Native invocation of [`WindowPlacement::place`]: the backend fills a
+/// [`WuiMonitor`] for the resolved selector and receives the frame to write.
+pub type WuiPlaceFn =
+    unsafe extern "C" fn(context: *const (), monitor: *const WuiMonitor) -> WuiRect;
+
+/// FFI mirror of [`WindowPlacement`]: the selector plus the `place` closure as
+/// the usual context/call/drop triple.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiWindowPlacement {
+    /// Which monitor the backend resolves before calling `call`.
+    pub monitor: WuiMonitorSelector,
+    /// The `place` closure's context, registered with `call` and `drop`.
+    pub context: *mut (),
+    /// Resolved monitor in, window frame out.
+    pub call: WuiPlaceFn,
+    /// Releases `context` exactly once when the window record is disposed.
+    pub drop: unsafe extern "C" fn(*mut ()),
+}
+
+/// Calls a `place` closure held in a `WuiWindowPlacement`'s context.
+///
+/// # Safety
+/// `data` is the `Box::into_raw` of the `Rc<dyn Fn(&Monitor) -> Rect>` the
+/// conversion stored, and `monitor` points at a valid `WuiMonitor` whose `name`
+/// lives for the call.
+unsafe extern "C" fn placement_call(data: *const (), monitor: *const WuiMonitor) -> WuiRect {
+    // SAFETY: upheld by the caller contract on `placement_into_ffi`.
+    let place = unsafe { &*(data.cast::<Rc<dyn Fn(&Monitor) -> Rect>>()) };
+    // SAFETY: `monitor` points at the valid `WuiMonitor` the caller passed.
+    let monitor = unsafe { (*monitor).as_rust() };
+    place(&monitor).into_ffi()
+}
+
+/// Releases a `place` closure boxed by `placement_into_ffi`.
+///
+/// # Safety
+/// `data` is the pointer `placement_into_ffi` produced, released exactly once.
+unsafe extern "C" fn placement_drop(data: *mut ()) {
+    // SAFETY: `data` is the `Box::into_raw` of the `place` closure.
+    unsafe { drop(Box::from_raw(data.cast::<Rc<dyn Fn(&Monitor) -> Rect>>())) };
+}
+
+/// Moves a [`WindowPlacement`] into its FFI triple, or null for `None`.
+fn placement_into_ffi(placement: Option<WindowPlacement>) -> *mut WuiWindowPlacement {
+    let Some(placement) = placement else {
+        return core::ptr::null_mut();
+    };
+    let context = Box::into_raw(Box::new(placement.place)).cast::<()>();
+    Box::into_raw(Box::new(WuiWindowPlacement {
+        monitor: placement.monitor.into(),
+        context,
+        call: placement_call,
+        drop: placement_drop,
+    }))
+}
+
+/// Disposes an FFI placement: releases the context through its `drop`, then
+/// the record itself.
+///
+/// # Safety
+/// `placement` is a pointer produced by `placement_into_ffi` (or null), not
+/// already released.
+#[cfg(any(feature = "android-jni", test))]
+unsafe fn dispose_placement(placement: *mut WuiWindowPlacement) {
+    if placement.is_null() {
+        return;
+    }
+    // SAFETY: the record and its context are the ones `placement_into_ffi`
+    // registered; each is released exactly once.
+    unsafe {
+        ((*placement).drop)((*placement).context);
+        drop(Box::from_raw(placement));
+    }
 }
 
 impl From<WindowStyle> for WuiWindowStyle {
@@ -144,6 +336,11 @@ pub struct WuiWindow {
     pub min_size: *mut WuiComputed<Size>,
     /// Explicit maximum content size, or null for an unconstrained window.
     pub max_size: *mut WuiComputed<Size>,
+    /// Monitor selection plus the `place` callback, or null for the
+    /// platform's default placement.
+    pub placement: *mut WuiWindowPlacement,
+    /// How showing and clicking the window affects focus and app activation.
+    pub activation: WuiActivation,
 }
 
 /// A uniquely owned pointer produced by [`IntoFFI`].
@@ -218,7 +415,12 @@ impl WuiWindow {
             background,
             min_size,
             max_size,
+            placement,
+            activation: _,
         } = self;
+        // SAFETY: `placement` is the pointer `placement_into_ffi` produced for
+        // this window, not yet released.
+        unsafe { dispose_placement(placement) };
 
         let unused_handles = (
             OwnedFfiHandle::required(title, "WuiWindow.title"),
@@ -276,6 +478,8 @@ impl IntoFFI for Window {
             background: self.background.into(),
             min_size: self.min_size.into_ffi(),
             max_size: self.max_size.into_ffi(),
+            placement: placement_into_ffi(self.placement),
+            activation: self.activation.into(),
         }
     }
 }
