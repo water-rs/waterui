@@ -215,13 +215,14 @@ mod tests {
     use waterui::Signal;
     use waterui_core::layout::Size;
     use waterui_core::{binding, constant};
+    use waterui_graphics::PictureRecording;
     use waterui_graphics::cherenkov::kurbo::Rect;
     use waterui_graphics::cherenkov::{Draw, Paint, WorkingColor};
 
     const BLACK: WorkingColor = WorkingColor::new([0.0, 0.0, 0.0, 1.0]);
     const WHITE: WorkingColor = WorkingColor::new([1.0, 1.0, 1.0, 1.0]);
 
-    fn square(color: WorkingColor) -> waterui_graphics::cherenkov::Picture {
+    fn square(color: WorkingColor) -> PictureRecording {
         Picture::record(|scene| {
             scene.fill(Rect::new(0.0, 0.0, 10.0, 10.0), Paint::Solid(color));
         })
