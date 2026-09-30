@@ -2,7 +2,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use hydrolysis::{
-    HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, PlatformWindow, Style, WidgetTheme,
+    HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style, WidgetTheme,
 };
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
@@ -111,12 +111,6 @@ impl TestHost {
         );
 
         let surface = platform.surface();
-        renderer.set_frame_resources(
-            surface.adapter(),
-            surface.device(),
-            surface.queue(),
-            surface.device_loss(),
-        );
         renderer.reset_scene();
         renderer.begin_rebuild_frame();
         let env = self.env.clone().extending(SceneViewMergeToParent);
@@ -138,7 +132,6 @@ impl TestHost {
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
             texture: Some(frame.texture()),
-            view: frame.view(),
             format: surface.format(),
             width: self.width.max(1),
             height: self.height.max(1),
@@ -151,7 +144,6 @@ impl TestHost {
             self.width.max(1),
             self.height.max(1),
         );
-        renderer.clear_frame_resources();
         surface.present(frame);
         drop(renderer);
         drop(platform);
@@ -254,7 +246,9 @@ pub fn readback_texture_rgba8(
         .expect("waterui-testing readback callback dropped")
         .expect("waterui-testing failed to map readback buffer");
 
-    let mapped = slice.get_mapped_range();
+    let mapped = slice
+        .get_mapped_range()
+        .expect("waterui-testing readback slice must be mappable");
     let mut pixels = vec![0_u8; (width * height * BYTES_PER_PIXEL) as usize];
     for row in 0..height as usize {
         let source_start = row * padded_bytes_per_row as usize;
