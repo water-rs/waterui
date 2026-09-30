@@ -100,6 +100,10 @@ pub trait SceneContent: 'static {
     ) -> bool;
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
+    ///
+    /// The host installs one when it mounts the content and clears it with
+    /// `None` when it unmounts it, so this is also where content starts and
+    /// stops frame sources of its own, such as an animation clock.
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
 
     /// The size this drawing is naturally, in logical points.
