@@ -2064,6 +2064,39 @@ impl ToJavaStruct for crate::components::gpu_content::WuiGpuContent {
     }
 }
 
+/// `WuiExternalFrame -> ExternalFrameStruct(descriptorPtr, hasIntrinsicSize,
+/// width, height, isOpaque)`
+///
+/// `descriptorPtr` is the boxed descriptor, still owning its view; Kotlin hands
+/// it to `WatcherJni.externalFrameCreate`, which consumes it.
+#[cfg(feature = "gpu")]
+impl ToJavaStruct for crate::components::gpu_content::WuiExternalFrame {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/ExternalFrameStruct"))
+            .expect("ExternalFrameStruct class not found");
+        let (has_intrinsic_size, width, height, is_opaque) = (
+            self.has_intrinsic_size,
+            self.intrinsic_size.width,
+            self.intrinsic_size.height,
+            self.is_opaque,
+        );
+        let descriptor = Box::into_raw(Box::new(self));
+        env.new_object(
+            &class,
+            jni_sig!("(JZFFZ)V"),
+            &[
+                JValue::Long(descriptor as jlong),
+                JValue::Bool(has_intrinsic_size),
+                JValue::Float(width),
+                JValue::Float(height),
+                JValue::Bool(is_opaque),
+            ],
+        )
+        .expect("Failed to create ExternalFrameStruct")
+    }
+}
+
 /// `WuiPicture -> PictureStruct(picturePtr, width, height, label, value)`
 impl ToJavaStruct for crate::components::picture::WuiPicture {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {

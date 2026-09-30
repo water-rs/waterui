@@ -1,10 +1,16 @@
-//! FFI bindings for [`GpuContentView`]: user GPU work a native host presents.
+//! FFI bindings for the GPU-layer views a native host presents:
+//! [`GpuContentView`] — user GPU work — and [`ExternalFrameView`] — frames a
+//! producer publishes from GPU memory it already owns.
 //!
 //! Cherenkov owns content rendering and composition. The native host presents
-//! the engine texture on the environment's shared [`GpuRuntime`]:
+//! the engine texture on the environment's shared [`GpuRuntime`]. Both views
+//! share one host state and every entry point below except their
+//! constructors:
 //!
-//! 1. `waterui_gpu_content_create` consumes the view descriptor and returns
-//!    the state the host owns for the semantic view's lifetime.
+//! 1. `waterui_gpu_content_create` (for a `GpuContentView` descriptor) or
+//!    `waterui_external_frame_create` (for an `ExternalFrameView` descriptor)
+//!    consumes the view descriptor and returns the state the host owns for the
+//!    semantic view's lifetime.
 //! 2. Somewhere to draw, which differs by platform:
 //!    - Android attaches a `SurfaceView`'s `ANativeWindow` with
 //!      `waterui_gpu_content_attach`, replaces it as its lifecycle demands, and
@@ -15,6 +21,9 @@
 //!      `waterui_gpu_content_render_to_metal_texture`; `attach`, `detach` and
 //!      `render` panic there.
 //! 3. Rendering whenever the installed redraw callback fires.
+//!    `waterui_gpu_content_set_visible` reports when the view stops or starts
+//!    being visible: while hidden the callback does not fire, and becoming
+//!    visible fires it once so exactly one frame renders from current state.
 //! 4. `waterui_gpu_content_drop` when the semantic view is destroyed.
 //!
 //! # Thread affinity
@@ -38,14 +47,15 @@ use {
 };
 
 use waterui_core::Str;
-use waterui_core::layout::Size;
-use waterui_graphics::cherenkov::{Display, Next};
-use waterui_graphics::cherenkov_gpu;
+use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
+use waterui_graphics::cherenkov::{Display, Next, kurbo};
 #[cfg(not(any(target_os = "macos", target_os = "ios")))]
 use waterui_graphics::gpu::SharedGpuContext;
 use waterui_graphics::gpu::{
-    GpuContentHandle, GpuContentRenderer, GpuContentView, GpuRuntime, RedrawHandle,
+    ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
+    GpuContentView, GpuRuntime, RedrawHandle,
 };
+use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 
 use crate::components::layouting::layout::{WuiProposalSize, WuiSize, WuiViewDimensions};
@@ -94,14 +104,198 @@ impl IntoFFI for GpuContentView {
 // Generate waterui_gpu_content_id() and waterui_force_as_gpu_content()
 ffi_view!(GpuContentView, WuiGpuContent, gpu_content);
 
+/// FFI representation of an [`ExternalFrameView`].
+///
+/// The native backend consumes it with `waterui_external_frame_create`, which
+/// returns the same [`WuiGpuContentState`] a `GpuContentView` gets; every other
+/// `waterui_gpu_content_*` entry point then drives it. An external-frame view
+/// takes no input.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiExternalFrame {
+    /// Opaque pointer to the boxed `ExternalFrameView`, consumed by
+    /// `waterui_external_frame_create` and null afterwards.
+    pub view: *mut c_void,
+    /// Whether the source has an intrinsic size (`intrinsic_size` is then
+    /// meaningful); otherwise it fills whatever layout offers.
+    pub has_intrinsic_size: bool,
+    /// The frames' natural size in logical points.
+    pub intrinsic_size: WuiSize,
+    /// Whether every pixel of every frame is opaque.
+    pub is_opaque: bool,
+}
+
+impl IntoFFI for ExternalFrameView {
+    type FFI = WuiExternalFrame;
+
+    fn into_ffi(self) -> Self::FFI {
+        let intrinsic_size = self.intrinsic_size();
+        let is_opaque = self.is_opaque();
+        let view = Box::into_raw(Box::new(self)).cast::<c_void>();
+        WuiExternalFrame {
+            view,
+            has_intrinsic_size: intrinsic_size.is_some(),
+            intrinsic_size: intrinsic_size.unwrap_or(Size::new(0.0, 0.0)).into_ffi(),
+            is_opaque,
+        }
+    }
+}
+
+// Generate waterui_external_frame_id() and waterui_force_as_external_frame()
+ffi_view!(ExternalFrameView, WuiExternalFrame, external_frame);
+
+/// The view half of a [`WuiGpuContentState`]: what the host presents and how
+/// its engine layer is built.
+trait HostedView {
+    /// Measures the view against a layout proposal.
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions;
+    /// The accessibility name.
+    fn accessibility_label(&self) -> Option<&str>;
+    /// The accessibility value.
+    fn accessibility_value(&self) -> Option<&str>;
+    /// Whether the view takes input events.
+    fn wants_input_events(&self) -> bool;
+    /// Routes an input event; only called when the view takes input.
+    fn input(&self, event: &SurfaceInputEvent);
+    /// The view's text caret, in logical view-local coordinates.
+    fn ime_caret(&self) -> Option<kurbo::Rect>;
+    /// Runs the view's per-frame UI hook before the engine pass.
+    fn before_frame(&self);
+    /// Builds the view's engine layer on the runtime's current context.
+    fn renderer(
+        &mut self,
+        runtime: &GpuRuntime,
+        redraw: &RedrawHandle,
+        size: OffscreenSize,
+    ) -> Box<dyn HostedRenderer>;
+}
+
+/// The engine half of a [`WuiGpuContentState`]: one device generation's
+/// layer, rebuilt from the [`HostedView`] after device loss.
+trait HostedRenderer {
+    /// The context generation the renderer was built under.
+    fn generation(&self) -> u64;
+    /// Renders and composites into the host's texture.
+    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next;
+}
+
+impl HostedView for GpuContentView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        Self::measure(self, proposal)
+    }
+
+    fn accessibility_label(&self) -> Option<&str> {
+        Self::accessibility_label(self)
+    }
+
+    fn accessibility_value(&self) -> Option<&str> {
+        Self::accessibility_value(self)
+    }
+
+    fn wants_input_events(&self) -> bool {
+        Self::wants_input_events(self)
+    }
+
+    fn input(&self, event: &SurfaceInputEvent) {
+        Self::input(self, event);
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        Self::ime_caret(self)
+    }
+
+    fn before_frame(&self) {
+        self.frame();
+    }
+
+    fn renderer(
+        &mut self,
+        runtime: &GpuRuntime,
+        redraw: &RedrawHandle,
+        size: OffscreenSize,
+    ) -> Box<dyn HostedRenderer> {
+        // `engine_content` answers the same content object every time, so a
+        // renderer rebuilt after device loss re-installs it with its state.
+        let redraw = redraw.clone();
+        let content = waterui_graphics::cherenkov_gpu::interop::GpuContentBox::new(
+            self.engine_content(),
+            move || redraw.request_redraw(),
+        );
+        Box::new(GpuContentRenderer::new(runtime, content, size))
+    }
+}
+
+impl HostedRenderer for GpuContentRenderer {
+    fn generation(&self) -> u64 {
+        Self::generation(self)
+    }
+
+    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
+        Self::present(self, target, display)
+    }
+}
+
+impl HostedView for ExternalFrameView {
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
+        Self::measure(self, proposal)
+    }
+
+    fn accessibility_label(&self) -> Option<&str> {
+        Self::accessibility_label(self)
+    }
+
+    fn accessibility_value(&self) -> Option<&str> {
+        Self::accessibility_value(self)
+    }
+
+    fn wants_input_events(&self) -> bool {
+        false
+    }
+
+    fn input(&self, _event: &SurfaceInputEvent) {
+        unreachable!("an ExternalFrameView takes no input; hosts check wants_input_events first");
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        None
+    }
+
+    fn before_frame(&self) {}
+
+    fn renderer(
+        &mut self,
+        runtime: &GpuRuntime,
+        redraw: &RedrawHandle,
+        size: OffscreenSize,
+    ) -> Box<dyn HostedRenderer> {
+        let stream: ExternalFrameStream = self.stream();
+        Box::new(ExternalFrameRenderer::new(
+            runtime,
+            &stream,
+            size,
+            redraw.clone(),
+        ))
+    }
+}
+
+impl HostedRenderer for ExternalFrameRenderer {
+    fn generation(&self) -> u64 {
+        Self::generation(self)
+    }
+
+    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
+        Self::present(self, target, display)
+    }
+}
+
 /// Opaque state held by the native backend after initialization.
+///
+/// One state type hosts both a `GpuContentView` and an `ExternalFrameView`:
+/// they differ only in how their engine layer is built.
 pub struct WuiGpuContentState {
     runtime: GpuRuntime,
-    view: GpuContentView,
-    /// The content once it has been handed to the engine — a shareable handle
-    /// so a rebuilt context re-installs the same content object.
-    content: Option<GpuContentHandle>,
-    renderer: Option<GpuContentRenderer>,
+    view: Box<dyn HostedView>,
+    renderer: Option<Box<dyn HostedRenderer>>,
     /// The format the content was set up for; `None` until the first target
     /// declares one. It never changes afterwards.
     format: Option<wgpu::TextureFormat>,
@@ -133,6 +327,9 @@ pub struct WuiGpuContentState {
     waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>>,
     /// Whether the content asked for a frame since the last render.
     dirty: Arc<core::sync::atomic::AtomicBool>,
+    /// Whether the host reports the view visible; a hidden view's redraw
+    /// requests only mark it dirty.
+    visible: Arc<core::sync::atomic::AtomicBool>,
 }
 
 impl core::fmt::Debug for WuiGpuContentState {
@@ -145,8 +342,13 @@ impl core::fmt::Debug for WuiGpuContentState {
 
 impl WuiGpuContentState {
     /// Whether the semantic view takes its own input.
-    pub(super) const fn wants_input_events(&self) -> bool {
+    pub(super) fn wants_input_events(&self) -> bool {
         self.view.wants_input_events()
+    }
+
+    /// Routes an input event to a view that takes input.
+    pub(super) fn input(&self, event: &SurfaceInputEvent) {
+        self.view.input(event);
     }
 
     /// The view's text caret, in logical view-local coordinates.
@@ -163,29 +365,25 @@ impl WuiGpuContentState {
         }
     }
 
-    /// Measures the content against a layout proposal without touching
+    /// Measures the view against a layout proposal without touching
     /// presentation resources.
-    ///
-    /// `None` means the content moved to the engine already and answers
-    /// through the retained handle; a content that never measured reports the
-    /// proposal filled.
-    pub(crate) fn measure(
-        &self,
-        proposal: waterui_core::layout::ProposalSize,
-    ) -> waterui_core::layout::ViewDimensions {
+    pub(crate) fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
         self.view.measure(proposal)
     }
 
-    /// The content's engine-facing handle, created on first use and kept so a
-    /// rebuilt context re-installs the same content object.
-    fn content_handle(&mut self) -> GpuContentHandle {
-        if self.content.is_none() {
-            self.content = Some(self.view.engine_content());
+    /// Records whether the host shows the view.
+    ///
+    /// Hiding stops redraw requests from reaching the host; becoming visible
+    /// wakes it once, so exactly one frame renders from the current state.
+    fn set_visible(&self, visible: bool) {
+        use core::sync::atomic::Ordering;
+        if self.visible.swap(visible, Ordering::AcqRel) == visible || !visible {
+            return;
         }
-        self.content
-            .as_ref()
-            .expect("content handle created above")
-            .clone()
+        self.dirty.store(true, Ordering::Release);
+        if let Some(target) = self.waker.load().as_ref() {
+            target.wake();
+        }
     }
 
     /// Ensures the state's device-bound resources run on the runtime's current
@@ -233,6 +431,10 @@ impl WuiGpuContentState {
     }
 
     /// Renders through the retained engine and presents its composed texture.
+    ///
+    /// The renderer — engine, surface and the view's layer — is built lazily
+    /// on the first frame and rebuilt from the view whenever the runtime's
+    /// context generation moves on.
     fn render_into(
         &mut self,
         texture: &wgpu::Texture,
@@ -243,7 +445,7 @@ impl WuiGpuContentState {
         assert_eq!(texture.format(), format, "native texture format mismatch");
         self.dirty
             .store(false, core::sync::atomic::Ordering::Release);
-        self.view.frame();
+        self.view.before_frame();
         // A renderer bound to a context generation that has since been lost
         // and rebuilt holds a dead device; recreate it on the current one.
         // Apple has no `ensure_current_context`, so this is the only place a
@@ -257,30 +459,19 @@ impl WuiGpuContentState {
             self.renderer = None;
         }
         if self.renderer.is_none() {
-            let redraw = self.redraw.clone();
-            let content =
-                cherenkov_gpu::interop::GpuContentBox::new(self.content_handle(), move || {
-                    redraw.request_redraw();
-                });
-            self.renderer = Some(GpuContentRenderer::new(
-                self.runtime.clone(),
-                content,
-                OffscreenSize::try_from_pixels(width, height)
-                    .expect("native target must be nonempty"),
-            ));
+            self.renderer = Some(
+                self.view.renderer(
+                    &self.runtime,
+                    &self.redraw,
+                    OffscreenSize::try_from_pixels(width, height)
+                        .expect("native target must be nonempty"),
+                ),
+            );
         }
         let renderer = self.renderer.as_mut().expect("renderer created above");
         renderer.present(texture, display) != Next::Idle
             || self.dirty.load(core::sync::atomic::Ordering::Acquire)
     }
-}
-
-/// Runs `use_view` on the state's view.
-pub(super) fn with_view<T>(
-    state: &WuiGpuContentState,
-    use_view: impl FnOnce(&GpuContentView) -> T,
-) -> T {
-    use_view(&state.view)
 }
 
 /// Native callback invoked when idle content becomes dirty.
@@ -384,7 +575,56 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
     // field is nulled immediately after, so it is reclaimed once.
     let view: GpuContentView = unsafe { *Box::from_raw(descriptor.view.cast::<GpuContentView>()) };
     descriptor.view = core::ptr::null_mut();
+    // SAFETY: forwarded from this function's caller contract.
+    unsafe { create_state(Box::new(view), env) }
+}
 
+/// Creates the persistent state for an `ExternalFrameView`.
+///
+/// The returned state is driven by the same `waterui_gpu_content_*` entry
+/// points as a `GpuContentView`'s.
+///
+/// # Safety
+///
+/// - `frame` must be a valid, unconsumed descriptor returned by
+///   `waterui_force_as_external_frame`.
+/// - `env` must remain valid for this call and hold a GPU runtime
+///   (`waterui_env_install_gpu_runtime`).
+///
+/// # Panics
+///
+/// Panics if the descriptor was already consumed or the environment has no
+/// GPU runtime.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_external_frame_create(
+    frame: *mut WuiExternalFrame,
+    env: *const crate::WuiEnv,
+) -> *mut WuiGpuContentState {
+    // SAFETY: the caller contract requires `frame` to be a valid descriptor that
+    // no one else is borrowing for this call.
+    let descriptor = unsafe { &mut *frame };
+    assert!(
+        !descriptor.view.is_null(),
+        "waterui_external_frame_create: descriptor was already consumed"
+    );
+    // SAFETY: the assert above proves the descriptor still owns its view, and the
+    // field is nulled immediately after, so it is reclaimed once.
+    let view: ExternalFrameView =
+        unsafe { *Box::from_raw(descriptor.view.cast::<ExternalFrameView>()) };
+    descriptor.view = core::ptr::null_mut();
+    // SAFETY: forwarded from this function's caller contract.
+    unsafe { create_state(Box::new(view), env) }
+}
+
+/// The state both constructors return.
+///
+/// # Safety
+///
+/// `env` must remain valid for this call and hold a GPU runtime.
+unsafe fn create_state(
+    view: Box<dyn HostedView>,
+    env: *const crate::WuiEnv,
+) -> *mut WuiGpuContentState {
     // SAFETY: the caller contract requires `env` to be a valid handle alive for this
     // call; it is only borrowed.
     let env = unsafe { &*env }.0.clone();
@@ -392,11 +632,14 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
 
     let waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>> = Arc::default();
     let dirty = Arc::new(core::sync::atomic::AtomicBool::new(false));
+    let visible = Arc::new(core::sync::atomic::AtomicBool::new(true));
     let redraw = {
         let waker = Arc::clone(&waker);
         let dirty = Arc::clone(&dirty);
+        let visible = Arc::clone(&visible);
         RedrawHandle::new(move || {
             if !dirty.swap(true, core::sync::atomic::Ordering::AcqRel)
+                && visible.load(core::sync::atomic::Ordering::Acquire)
                 && let Some(target) = waker.load().as_ref()
             {
                 target.wake();
@@ -409,7 +652,6 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
     Box::into_raw(Box::new(WuiGpuContentState {
         runtime,
         view,
-        content: None,
         renderer: None,
         format: None,
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
@@ -425,6 +667,7 @@ pub unsafe extern "C" fn waterui_gpu_content_create(
         redraw,
         waker,
         dirty,
+        visible,
     }))
 }
 
@@ -455,10 +698,35 @@ pub unsafe extern "C" fn waterui_gpu_content_set_redraw_callback(
     };
     state.waker.store(Some(Arc::new(target)));
     if state.dirty.load(core::sync::atomic::Ordering::Acquire)
+        && state.visible.load(core::sync::atomic::Ordering::Acquire)
         && let Some(target) = state.waker.load().as_ref()
     {
         target.wake();
     }
+}
+
+/// Reports whether the host shows the view.
+///
+/// Hidden means the view's window is minimized, fully occluded or in the
+/// background, or the view is detached from its window. While hidden the
+/// redraw callback does not fire — the content's requests only mark it
+/// dirty — and the host renders nothing. Becoming visible fires the callback
+/// once, so exactly one frame renders from the current state. A state starts
+/// visible.
+///
+/// # Safety
+///
+/// `state` must be a valid pointer returned by [`waterui_gpu_content_create`]
+/// or [`waterui_external_frame_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_gpu_content_set_visible(
+    state: *const WuiGpuContentState,
+    visible: bool,
+) {
+    // SAFETY: the caller contract requires `state` to be a valid handle that stays
+    // alive for this call; it is only borrowed.
+    let state = unsafe { crate::borrow_ffi(state) };
+    state.set_visible(visible);
 }
 
 /// Whether the content has been set up on a target and can render.
@@ -552,6 +820,34 @@ pub unsafe extern "C" fn waterui_gpu_content_hdr_preference(
     }
 }
 
+/// Returns the HDR preference a `WuiExternalFrame` declares.
+///
+/// The view's own `prefer_hdr_surface`/`prefer_sdr_surface` wins over the
+/// source's `preferred_surface_hdr`. This must be called before
+/// `waterui_external_frame_create` consumes the descriptor.
+///
+/// # Safety
+///
+/// - `frame` must be a valid pointer obtained from
+///   `waterui_force_as_external_frame`
+/// - `frame` must not have been consumed by `waterui_external_frame_create`
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_external_frame_hdr_preference(
+    frame: *const WuiExternalFrame,
+) -> WuiGpuContentHdrPreference {
+    // SAFETY: the caller contract requires `frame` to be a valid descriptor alive
+    // for this call.
+    let descriptor = unsafe { &*frame };
+    // SAFETY: a descriptor that has not been consumed holds a live
+    // `ExternalFrameView`; the consuming path nulls the field.
+    let view = unsafe { &*(descriptor.view as *const ExternalFrameView) };
+    let explicit = view.resolved_hdr_preference();
+    WuiGpuContentHdrPreference {
+        has_preference: explicit.is_some(),
+        prefers_hdr: explicit.unwrap_or(false),
+    }
+}
+
 /// Measures the content without touching presentation resources.
 ///
 /// # Safety
@@ -571,10 +867,7 @@ pub unsafe extern "C" fn waterui_gpu_content_measure(
     measure_state(state, unsafe { proposal.into_rust() }).into_ffi()
 }
 
-pub(crate) fn measure_state(
-    state: &WuiGpuContentState,
-    proposal: waterui_core::layout::ProposalSize,
-) -> waterui_core::layout::ViewDimensions {
+pub(crate) fn measure_state(state: &WuiGpuContentState, proposal: ProposalSize) -> ViewDimensions {
     state.measure(proposal)
 }
 
@@ -1100,5 +1393,128 @@ mod tests {
             attached_surface_format(&capabilities(), None, false),
             wgpu::TextureFormat::Bgra8UnormSrgb
         );
+    }
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "ios")))]
+mod visibility_tests {
+    use core::cell::RefCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use std::rc::Rc;
+
+    use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTextureDescriptor, MTLTextureUsage};
+    use waterui_graphics::cherenkov_gpu::interop::{ExternalFrame, FrameColor, RgbAlpha};
+    use waterui_graphics::gpu::{ExternalFrameSource, FrameOutput};
+
+    use super::*;
+
+    /// Hands every output the host starts it with to the test.
+    struct Producer(Rc<RefCell<Vec<FrameOutput>>>);
+
+    impl ExternalFrameSource for Producer {
+        fn start(&mut self, output: FrameOutput) {
+            self.0.borrow_mut().push(output);
+        }
+    }
+
+    unsafe extern "C" fn count_wake(context: *mut c_void) {
+        // SAFETY: the context is the leaked counter the test registered.
+        unsafe { &*context.cast::<AtomicUsize>() }.fetch_add(1, Ordering::SeqCst);
+    }
+
+    const unsafe extern "C" fn keep_counter(_context: *mut c_void) {}
+
+    /// An opaque one-texel frame on `device`.
+    fn frame(device: &wgpu::Device) -> ExternalFrame {
+        let plane = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("visibility test plane"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        ExternalFrame::rgb(plane, RgbAlpha::Opaque, FrameColor::SRGB)
+            .expect("a one-texel RGB plane meets the frame contract")
+    }
+
+    /// A hidden view's published frames do not wake the host; becoming
+    /// visible wakes it exactly once.
+    #[test]
+    fn hidden_external_frames_do_not_wake_the_host() {
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("a Metal adapter is required on test hardware");
+        let mut env = waterui::Environment::new();
+        super::super::gpu_runtime::install_gpu_runtime(&mut env, runtime.clone());
+        let env = crate::WuiEnv(env);
+
+        let outputs = Rc::new(RefCell::new(Vec::new()));
+        let mut descriptor = ExternalFrameView::new(Producer(Rc::clone(&outputs))).into_ffi();
+        // SAFETY: the descriptor is fresh and `env` holds a GPU runtime.
+        let state = unsafe { waterui_external_frame_create(&raw mut descriptor, &raw const env) };
+        let wakes: &'static AtomicUsize = Box::leak(Box::new(AtomicUsize::new(0)));
+        // SAFETY: `state` is live and the counter outlives the process.
+        unsafe {
+            waterui_gpu_content_set_redraw_callback(
+                state,
+                core::ptr::from_ref(wakes).cast_mut().cast(),
+                count_wake,
+                keep_counter,
+            );
+        }
+
+        let context = runtime.context();
+        // SAFETY: the runtime's device is a Metal device on this target.
+        let hal = unsafe { context.device().as_hal::<MetalApi>() }.expect("a Metal device");
+        // SAFETY: a plain 2D descriptor with positive dimensions.
+        let descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::BGRA8Unorm,
+                8,
+                8,
+                false,
+            )
+        };
+        descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+        let target = hal
+            .raw_device()
+            .newTextureWithDescriptor(&descriptor)
+            .expect("the host texture allocates");
+        let target = Retained::as_ptr(&target).cast_mut().cast::<c_void>();
+        // SAFETY: `state` is live and `target` is a live `MTLTexture`.
+        unsafe {
+            waterui_gpu_content_prepare_metal_texture(state, target);
+            waterui_gpu_content_render_to_metal_texture(state, target, 8, 8, 1.0, 1.0);
+        }
+        let output = outputs.borrow()[0].clone();
+        let before = wakes.load(Ordering::SeqCst);
+
+        // SAFETY: `state` is live.
+        unsafe { waterui_gpu_content_set_visible(state, false) };
+        output
+            .present(frame(context.device()))
+            .expect("the output is live");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            before,
+            "a hidden view's frame must not wake the host"
+        );
+
+        // SAFETY: `state` is live.
+        unsafe { waterui_gpu_content_set_visible(state, true) };
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            before + 1,
+            "becoming visible wakes the host once"
+        );
+
+        // SAFETY: `state` came from `waterui_external_frame_create`.
+        unsafe { waterui_gpu_content_drop(state) };
     }
 }

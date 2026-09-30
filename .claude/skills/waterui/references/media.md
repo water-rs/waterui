@@ -196,6 +196,15 @@ state; instead read reactive state in a `.on_frame` hook (UI thread, once per fr
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
 `bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
 
+Frames that already live in GPU memory (a decoder's `CVPixelBuffer`, an `AHardwareBuffer`, a
+dmabuf) are not drawn with `GpuContent`: implement `ExternalFrameSource` and wrap it in
+`ExternalFrameView::new(source)`. `start(&mut self, output: FrameOutput)` runs on the UI thread
+whenever the host builds the view's layer (again after a device loss); hand the `FrameOutput` to
+the decoder thread, import each plane onto `output.device()`, and `output.present(frame)` a
+`cherenkov_gpu::interop::ExternalFrame` carrying its `FrameColor`. The engine samples the planes
+in place — no copy, no shader of your own — and the newest frame wins. Stop producing once
+`present` returns `RetiredOutput`.
+
 Particles (`waterui-particle`, imported as `use waterui_particle::ParticleSystem;`):
 
 ```rust

@@ -117,7 +117,7 @@ mod linux {
             .expect("WPE smoke viewport must be non-zero");
         let mut view = DmaBufGpuView::new(source).into_view();
         let content = view.take_engine_content(|| {});
-        let mut renderer = GpuContentRenderer::new(gpu_runtime.clone(), content, size);
+        let mut renderer = GpuContentRenderer::new(&gpu_runtime, content, size);
         // The UI hook feeds the content's mailbox; run it before presenting so
         // the smoke frame is queued for the render.
         view.frame();
