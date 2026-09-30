@@ -309,6 +309,23 @@ const fn display_refresh_rate() -> waterui::task::RefreshRate {
 /// # Safety
 /// Must run on the platform main thread exactly once.
 unsafe fn __init_impl() -> Option<waterui::inspector::InspectorRuntime> {
+    // A Rust cdylib loaded by a foreign main never runs `lang_start`, so std's
+    // usual SIGPIPE ignore is never installed. A host that pipes this
+    // process's output and exits first would otherwise kill it with SIGPIPE
+    // on the next write; a failed write must surface as `EPIPE` instead, as
+    // it does in a normal Rust binary.
+    #[cfg(unix)]
+    // SAFETY: `signal` only swaps the process-wide SIGPIPE disposition for
+    // `SIG_IGN`; no handler runs Rust code, and init runs once on the main
+    // thread.
+    unsafe {
+        let previous = libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        assert_ne!(
+            previous,
+            libc::SIG_ERR,
+            "libc::signal(SIGPIPE, SIG_IGN) failed"
+        );
+    }
     #[cfg(target_os = "android")]
     // SAFETY: `register_android_main_thread` records the calling thread as the
     // platform main thread, which is only correct when called once from that
@@ -1025,6 +1042,19 @@ pub type WuiMetadataOnEvent = WuiMetadata<WuiOnEvent>;
 
 // Generate waterui_metadata_on_event_id() and waterui_force_as_metadata_on_event()
 ffi_metadata!(OnEvent, WuiMetadataOnEvent, on_event);
+
+// ========== Metadata<OnKeyPress> FFI ==========
+// Key bubbling: a handler attached to a container sees the keys a focused
+// descendant leaves unconsumed, nearest ancestor first.
+
+use crate::events::key::WuiOnKeyPress;
+use waterui_core::key::OnKeyPress;
+
+/// Type alias for `Metadata<OnKeyPress>` FFI struct.
+pub type WuiMetadataOnKeyPress = WuiMetadata<*mut WuiOnKeyPress>;
+
+// Generate waterui_metadata_on_key_press_id() and waterui_force_as_metadata_on_key_press()
+ffi_metadata!(OnKeyPress, WuiMetadataOnKeyPress, on_key_press);
 
 // ========== Metadata<Cursor> FFI ==========
 // Used to set cursor style when hovering over views
@@ -2248,6 +2278,430 @@ pub type WuiMetadataContextMenu = WuiMetadata<WuiContextMenu>;
 
 // Generate waterui_metadata_context_menu_id() and waterui_force_as_metadata_context_menu()
 ffi_metadata!(ResolvedContextMenu, WuiMetadataContextMenu, context_menu);
+
+// ========== Anchored Overlay FFI ==========
+
+use nami::Signal;
+use waterui::metadata::anchored_overlay::{
+    AnchorEdge, AnchorPlacement, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
+};
+use waterui_core::layout::{LayoutDirection, Rect, Size, layout_direction};
+
+#[cfg(feature = "c-api")]
+use crate::components::layout::{WuiRect, WuiSize};
+
+/// C ABI mirror of [`AnchorEdge`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiAnchorEdge {
+    /// Above the anchor.
+    Top = 0,
+    /// Below the anchor.
+    Bottom = 1,
+    /// Before the anchor in the layout direction.
+    Leading = 2,
+    /// After the anchor in the layout direction.
+    Trailing = 3,
+}
+
+impl IntoFFI for AnchorEdge {
+    type FFI = WuiAnchorEdge;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Top => WuiAnchorEdge::Top,
+            Self::Bottom => WuiAnchorEdge::Bottom,
+            Self::Leading => WuiAnchorEdge::Leading,
+            Self::Trailing => WuiAnchorEdge::Trailing,
+        }
+    }
+}
+
+impl IntoRust for WuiAnchorEdge {
+    type Rust = AnchorEdge;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::Top => AnchorEdge::Top,
+            Self::Bottom => AnchorEdge::Bottom,
+            Self::Leading => AnchorEdge::Leading,
+            Self::Trailing => AnchorEdge::Trailing,
+        }
+    }
+}
+
+// A `WuiBinding<WuiAnchorEdge>` (C API) / `BindingAnchorEdge` handle (JNI)
+// carries `AnchoredOverlay::placed_edge`.
+ffi_binding!(AnchorEdge, WuiAnchorEdge, anchor_edge);
+#[cfg(feature = "c-api")]
+ffi_watcher!(AnchorEdge, WuiAnchorEdge, anchor_edge);
+
+#[cfg(feature = "android-jni")]
+jni_binding_primitive!(AnchorEdge, anchor_edge);
+
+/// C ABI mirror of [`EdgeAlignment`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiEdgeAlignment {
+    /// The overlay's start side lines up with the anchor's start side.
+    Start = 0,
+    /// The overlay is centered on the anchor.
+    Center = 1,
+    /// The overlay's end side lines up with the anchor's end side.
+    End = 2,
+}
+
+impl IntoFFI for EdgeAlignment {
+    type FFI = WuiEdgeAlignment;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Start => WuiEdgeAlignment::Start,
+            Self::Center => WuiEdgeAlignment::Center,
+            Self::End => WuiEdgeAlignment::End,
+        }
+    }
+}
+
+impl IntoRust for WuiEdgeAlignment {
+    type Rust = EdgeAlignment;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::Start => EdgeAlignment::Start,
+            Self::Center => EdgeAlignment::Center,
+            Self::End => EdgeAlignment::End,
+        }
+    }
+}
+
+/// C ABI mirror of [`Dismissal`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiDismissal {
+    /// Only setting the binding to `false` closes the overlay.
+    Manual = 0,
+    /// The backend also closes the overlay, writing `false` to its binding,
+    /// when the user interacts outside it.
+    OutsideInteraction = 1,
+}
+
+impl IntoFFI for Dismissal {
+    type FFI = WuiDismissal;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Manual => WuiDismissal::Manual,
+            Self::OutsideInteraction => WuiDismissal::OutsideInteraction,
+        }
+    }
+}
+
+impl IntoRust for WuiDismissal {
+    type Rust = Dismissal;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::Manual => Dismissal::Manual,
+            Self::OutsideInteraction => Dismissal::OutsideInteraction,
+        }
+    }
+}
+
+/// C ABI mirror of [`LayoutDirection`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiLayoutDirection {
+    /// Leading is the physical left edge.
+    LeftToRight = 0,
+    /// Leading is the physical right edge.
+    RightToLeft = 1,
+}
+
+impl IntoRust for WuiLayoutDirection {
+    type Rust = LayoutDirection;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::LeftToRight => LayoutDirection::LeftToRight,
+            Self::RightToLeft => LayoutDirection::RightToLeft,
+        }
+    }
+}
+
+/// C ABI mirror of [`waterui_backend_core::overlay::PhysicalEdge`]: the
+/// physical side of the anchor an overlay landed on — `Leading`/`Trailing`
+/// already resolved under the layout direction.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiPhysicalEdge {
+    /// Above the anchor.
+    Top = 0,
+    /// Below the anchor.
+    Bottom = 1,
+    /// To the anchor's left.
+    Left = 2,
+    /// To the anchor's right.
+    Right = 3,
+}
+
+impl IntoFFI for waterui_backend_core::overlay::PhysicalEdge {
+    type FFI = WuiPhysicalEdge;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Top => WuiPhysicalEdge::Top,
+            Self::Bottom => WuiPhysicalEdge::Bottom,
+            Self::Left => WuiPhysicalEdge::Left,
+            Self::Right => WuiPhysicalEdge::Right,
+        }
+    }
+}
+
+/// C ABI mirror of [`Clamp`]: a flat tagged struct — `margin` only applies
+/// when `tag` is [`WuiClampTag::Window`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiClamp {
+    /// Whether and how the overlay is kept inside the window.
+    pub tag: WuiClampTag,
+    /// The minimum distance from the window's edges, in points.
+    pub margin: f32,
+}
+
+/// The tag half of [`WuiClamp`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiClampTag {
+    /// The overlay may extend past the window's edges.
+    Off = 0,
+    /// The overlay is shifted to stay `margin` points inside the window.
+    Window = 1,
+}
+
+impl IntoFFI for Clamp {
+    type FFI = WuiClamp;
+    fn into_ffi(self) -> Self::FFI {
+        match self {
+            Self::Off => WuiClamp {
+                tag: WuiClampTag::Off,
+                margin: 0.0,
+            },
+            Self::Window { margin } => WuiClamp {
+                tag: WuiClampTag::Window,
+                margin,
+            },
+        }
+    }
+}
+
+impl IntoRust for WuiClamp {
+    type Rust = Clamp;
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self.tag {
+            WuiClampTag::Off => Clamp::Off,
+            WuiClampTag::Window => Clamp::Window {
+                margin: self.margin,
+            },
+        }
+    }
+}
+
+/// C ABI mirror of [`AnchorPlacement`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WuiAnchorPlacement {
+    /// The edge of the anchor the overlay is placed against.
+    pub edge: WuiAnchorEdge,
+    /// How the overlay lines up with the anchor along that edge.
+    pub alignment: WuiEdgeAlignment,
+    /// The distance between the anchor and the overlay, in points.
+    pub gap: f32,
+    /// Whether the overlay moves to the opposite edge when the preferred
+    /// edge has no room for it.
+    pub flip: bool,
+    /// How the overlay is kept inside the window.
+    pub clamp: WuiClamp,
+}
+
+impl IntoFFI for AnchorPlacement {
+    type FFI = WuiAnchorPlacement;
+    fn into_ffi(self) -> Self::FFI {
+        WuiAnchorPlacement {
+            edge: self.edge.into_ffi(),
+            alignment: self.alignment.into_ffi(),
+            gap: self.gap,
+            flip: self.flip,
+            clamp: self.clamp.into_ffi(),
+        }
+    }
+}
+
+impl IntoRust for WuiAnchorPlacement {
+    type Rust = AnchorPlacement;
+    unsafe fn into_rust(self) -> Self::Rust {
+        // SAFETY: `self` is a plain-data C struct; every field's `into_rust`
+        // consumes a value the caller already validated.
+        unsafe {
+            AnchorPlacement {
+                edge: self.edge.into_rust(),
+                alignment: self.alignment.into_rust(),
+                gap: self.gap,
+                flip: self.flip,
+                clamp: self.clamp.into_rust(),
+            }
+        }
+    }
+}
+
+/// FFI-safe representation of an anchored overlay.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiAnchoredOverlay {
+    /// The view presented next to the anchor.
+    pub content: *mut WuiAnyView,
+    /// Whether the overlay is presented; the backend writes `false` when it
+    /// dismisses the overlay itself.
+    pub is_presented: *mut WuiBinding<bool>,
+    /// Where the overlay sits relative to the anchor.
+    pub placement: WuiAnchorPlacement,
+    /// What besides the binding closes the overlay.
+    pub dismissal: WuiDismissal,
+    /// The edge the overlay was placed against after any flip. The backend
+    /// writes it on every placement.
+    pub placed_edge: *mut WuiBinding<AnchorEdge>,
+}
+
+impl IntoFFI for AnchoredOverlay {
+    type FFI = WuiAnchoredOverlay;
+    fn into_ffi(self) -> Self::FFI {
+        WuiAnchoredOverlay {
+            content: self.content.into_ffi(),
+            is_presented: self.is_presented.into_ffi(),
+            placement: self.placement.into_ffi(),
+            dismissal: self.dismissal.into_ffi(),
+            placed_edge: self.placed_edge.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for `Metadata<AnchoredOverlay>` FFI struct
+pub type WuiMetadataAnchoredOverlay = WuiMetadata<WuiAnchoredOverlay>;
+
+// Generate waterui_metadata_anchored_overlay_id() and waterui_force_as_metadata_anchored_overlay()
+ffi_metadata!(
+    AnchoredOverlay,
+    WuiMetadataAnchoredOverlay,
+    anchored_overlay
+);
+
+/// C ABI mirror of [`waterui_backend_core::overlay::AnchoredOverlayPlacement`]:
+/// the overlay's frame in window space and the anchor edge it was placed
+/// against after any flip.
+#[cfg(feature = "c-api")]
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiAnchoredOverlayPlacement {
+    /// The overlay's frame in window space.
+    pub frame: WuiRect,
+    /// The physical edge of the anchor the overlay was placed against, after
+    /// flipping.
+    pub edge: WuiPhysicalEdge,
+    /// `edge` converted back to a logical [`AnchorEdge`] under the resolved
+    /// layout direction — what the backend writes to `placed_edge`.
+    pub logical_edge: WuiAnchorEdge,
+}
+
+/// Computes an anchored overlay's frame in window space.
+///
+/// The same placement contract the Rust backends implement — so a native
+/// backend that positions the overlay itself (a `PopupWindow`, a borderless
+/// child window, a `GtkPopover` GTK cannot steer) calls this instead of
+/// re-implementing it.
+///
+/// `overlay` is the content's ideal size; `window` is the window's bounds and
+/// `anchor` the anchor's frame, both in the same window coordinate space.
+/// `direction` resolves `Leading`/`Trailing` edges and `Start`/`End`
+/// alignments. Pass `NULL` for `env` to compute with the default
+/// left-to-right direction; when non-null the environment's layout direction
+/// wins over `direction`.
+///
+/// # Safety
+///
+/// `env` must be `NULL` or a valid `WuiEnv` pointer; all other inputs are
+/// plain-data FFI mirrors.
+#[cfg(feature = "c-api")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_anchored_overlay_place(
+    anchor: WuiRect,
+    window: WuiRect,
+    overlay: WuiSize,
+    placement: WuiAnchorPlacement,
+    direction: WuiLayoutDirection,
+    env: *const WuiEnv,
+) -> WuiAnchoredOverlayPlacement {
+    // SAFETY: all by-value inputs are plain-data FFI mirrors consumed once;
+    // `env`/`direction` follow the caller contract of `resolve_layout_direction`.
+    let (placed, logical_edge) = unsafe {
+        let (anchor, window, placement) = (
+            anchor.into_rust(),
+            window.into_rust(),
+            placement.into_rust(),
+        );
+        let overlay: Size = overlay.into_rust();
+        anchored_overlay_place(
+            anchor,
+            window,
+            overlay,
+            placement,
+            direction.into_rust(),
+            env,
+        )
+    };
+    WuiAnchoredOverlayPlacement {
+        frame: placed.frame.into_ffi(),
+        edge: placed.edge.into_ffi(),
+        logical_edge: logical_edge.into_ffi(),
+    }
+}
+
+/// The layout direction `env` resolves, or `fallback` when `env` is null.
+///
+/// # Safety
+///
+/// `env` must be null or a valid `WuiEnv` pointer.
+unsafe fn resolve_layout_direction(
+    env: *const WuiEnv,
+    fallback: LayoutDirection,
+) -> LayoutDirection {
+    if env.is_null() {
+        fallback
+    } else {
+        // SAFETY: caller contract — non-null `env` is a valid `WuiEnv`.
+        let env: &waterui::Environment = unsafe { &(*env).0 };
+        layout_direction(env).snapshot()
+    }
+}
+
+/// The shared core of `waterui_anchored_overlay_place` and the JNI
+/// entrypoint: Rust-side inputs in, the placement plus the logical edge a
+/// backend writes to `placed_edge` out.
+///
+/// # Safety
+///
+/// `env` must be null or a valid `WuiEnv` pointer; `direction` applies when
+/// `env` is null.
+pub(crate) unsafe fn anchored_overlay_place(
+    anchor: Rect,
+    window: Rect,
+    overlay: Size,
+    placement: AnchorPlacement,
+    direction: LayoutDirection,
+    env: *const WuiEnv,
+) -> (
+    waterui_backend_core::overlay::AnchoredOverlayPlacement,
+    AnchorEdge,
+) {
+    // SAFETY: forwarded caller contract.
+    let direction = unsafe { resolve_layout_direction(env, direction) };
+    let placed = waterui_backend_core::overlay::place_anchored_overlay(
+        anchor, window, overlay, placement, direction,
+    );
+    let logical = waterui_backend_core::overlay::logical_edge(placed.edge, direction);
+    (placed, logical)
+}
 
 // ========== Menu FFI ==========
 // Menu component that displays a dropdown menu when tapped

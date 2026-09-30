@@ -2,14 +2,14 @@ use crate::components::text::WuiHorizontalAlignment;
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::ffi::c_void;
 use core::fmt;
-use nami::{Signal, SignalExt};
+use nami::{Binding, Signal, SignalExt};
 use waterui_layout::{
     HorizontalAlignment, Layout, Point, ProposalSize, Rect, ScrollView, Size, Spacer, StretchAxis,
     SubView, SubviewPlacement, VerticalAlignment, ViewDimensions,
     container::{FixedContainer, LazyContainer},
     measure_layout,
     padding::EdgeInsets,
-    scroll::Axis,
+    scroll::{Axis, ScrollViewParts},
     stack::LazyStackAxis,
     with_memoized_children,
 };
@@ -48,7 +48,7 @@ pub struct WuiSpacer {
     pub min_length: f32,
 }
 
-ffi_view!(Spacer, WuiSpacer, spacer);
+ffi_view!(Spacer, WuiSpacer, spacer, all(), any());
 
 impl IntoFFI for Spacer {
     type FFI = WuiSpacer;
@@ -597,8 +597,10 @@ impl IntoRust for WuiViewDimensions {
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiRect {
-    origin: WuiPoint,
-    size: WuiSize,
+    /// The rectangle's origin.
+    pub origin: WuiPoint,
+    /// The rectangle's size.
+    pub size: WuiSize,
 }
 
 impl IntoRust for WuiRect {
@@ -927,13 +929,49 @@ pub struct WuiScrollView {
     /// scroll request is issued, letting the backend detect a repeated
     /// request to the same target. Null if no controller is attached.
     pub scroll_generation: *mut crate::reactive::WuiComputed<i32>,
+    /// Binding the backend writes the horizontal content offset, in points,
+    /// into as the view scrolls — for `ScrollView::report_offset`. The
+    /// binding is written, never read; null if none is connected.
+    pub offset_x: *mut crate::reactive::WuiBinding<f32>,
+    /// Binding the backend writes the vertical content offset, in points,
+    /// into as the view scrolls — for `ScrollView::report_offset`. The
+    /// binding is written, never read; null if none is connected.
+    pub offset_y: *mut crate::reactive::WuiBinding<f32>,
 }
 
 impl IntoFFI for ScrollView {
     type FFI = WuiScrollView;
     fn into_ffi(self) -> Self::FFI {
-        let parts = self.into_inner();
-        let (axis, content, controller) = (parts.axis, parts.content, parts.controller);
+        let ScrollViewParts {
+            axis,
+            content,
+            controller,
+            offset,
+            ..
+        } = self.into_inner();
+        let (offset_x, offset_y) = offset.map_or_else(
+            || (core::ptr::null_mut(), core::ptr::null_mut()),
+            |offset| {
+                (
+                    Binding::mapping(
+                        &offset,
+                        |point: Point| point.x,
+                        |binding, x| {
+                            binding.with_mut(|point| point.x = x);
+                        },
+                    )
+                    .into_ffi(),
+                    Binding::mapping(
+                        &offset,
+                        |point: Point| point.y,
+                        |binding, y| {
+                            binding.with_mut(|point| point.y = y);
+                        },
+                    )
+                    .into_ffi(),
+                )
+            },
+        );
         let (target_x, target_y, scroll_generation) = controller.map_or_else(
             || {
                 (
@@ -957,6 +995,8 @@ impl IntoFFI for ScrollView {
             target_x,
             target_y,
             scroll_generation,
+            offset_x,
+            offset_y,
         }
     }
 }

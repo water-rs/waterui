@@ -13,6 +13,11 @@ use crate::IntoFFI;
 #[repr(C)]
 #[derive(Debug)]
 pub enum WuiAnimation {
+    /// No animation: the change applies instantly.
+    ///
+    /// Returned when the watcher carried no animation metadata at all; the
+    /// backend must not substitute its own default.
+    None,
     /// The platform's default animation for the change.
     SystemDefault,
     /// Timed cubic bezier curve with control points
@@ -80,6 +85,6 @@ pub unsafe extern "C" fn waterui_get_animation(
     unsafe {
         (*metadata)
             .try_get::<Animation>()
-            .map_or(WuiAnimation::SystemDefault, IntoFFI::into_ffi)
+            .map_or(WuiAnimation::None, IntoFFI::into_ffi)
     }
 }

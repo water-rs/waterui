@@ -108,6 +108,23 @@ impl JniPrimitive for f64 {
     }
 }
 
+// `AnchorEdge` crosses JNI as its `WuiAnchorEdge` ordinal.
+impl JniPrimitive for waterui::metadata::anchored_overlay::AnchorEdge {
+    type Jni = jint;
+    fn to_jni(self) -> Self::Jni {
+        crate::IntoFFI::into_ffi(self) as jint
+    }
+    fn from_jni(val: Self::Jni) -> Self {
+        match val {
+            0 => Self::Top,
+            1 => Self::Bottom,
+            2 => Self::Leading,
+            3 => Self::Trailing,
+            other => panic!("invalid AnchorEdge ordinal {other} from JNI"),
+        }
+    }
+}
+
 // ============================================================================
 // Pointer conversions
 // ============================================================================
@@ -258,37 +275,68 @@ impl ToJavaStruct for crate::WuiMetadataLifecycleHook {
 /// `MetadataGestureStruct(contentPtr: Long, gestureType: Int, gestureData: GestureDataStruct, actionPtr: Long)`
 ///
 /// Note: `WuiGestureObserver` has `gesture: WuiGesture` and `action: *mut WuiAction`
-fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f32, f32, i64, i64) {
+fn gesture_parts(
+    gesture: &crate::gesture::WuiGesture,
+) -> (i32, i32, i32, f32, f32, f32, i32, i64, i64) {
     match gesture {
-        crate::gesture::WuiGesture::Tap { count } => (
+        crate::gesture::WuiGesture::Tap { count, buttons } => (
             0i32,
             count.cast_signed(),
             0i32,
             0.0f32,
             0.0f32,
             0.0f32,
+            i32::from(*buttons),
             0i64,
             0i64,
         ),
-        crate::gesture::WuiGesture::LongPress { duration } => (
+        crate::gesture::WuiGesture::LongPress { duration, buttons } => (
             1i32,
             0i32,
             duration.cast_signed(),
             0.0f32,
             0.0f32,
             0.0f32,
+            i32::from(*buttons),
             0i64,
             0i64,
         ),
-        crate::gesture::WuiGesture::Drag { min_distance } => {
-            (2i32, 0i32, 0i32, *min_distance, 0.0f32, 0.0f32, 0i64, 0i64)
-        }
-        crate::gesture::WuiGesture::Magnification { initial_scale } => {
-            (3i32, 0i32, 0i32, 0.0f32, *initial_scale, 0.0f32, 0i64, 0i64)
-        }
-        crate::gesture::WuiGesture::Rotation { initial_angle } => {
-            (4i32, 0i32, 0i32, 0.0f32, 0.0f32, *initial_angle, 0i64, 0i64)
-        }
+        crate::gesture::WuiGesture::Drag {
+            min_distance,
+            buttons,
+        } => (
+            2i32,
+            0i32,
+            0i32,
+            *min_distance,
+            0.0f32,
+            0.0f32,
+            i32::from(*buttons),
+            0i64,
+            0i64,
+        ),
+        crate::gesture::WuiGesture::Magnification { initial_scale } => (
+            3i32,
+            0i32,
+            0i32,
+            0.0f32,
+            *initial_scale,
+            0.0f32,
+            0i32,
+            0i64,
+            0i64,
+        ),
+        crate::gesture::WuiGesture::Rotation { initial_angle } => (
+            4i32,
+            0i32,
+            0i32,
+            0.0f32,
+            0.0f32,
+            *initial_angle,
+            0i32,
+            0i64,
+            0i64,
+        ),
         crate::gesture::WuiGesture::Then { first, then } => (
             5i32,
             0i32,
@@ -296,6 +344,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
             0.0f32,
             0.0f32,
             0.0f32,
+            0i32,
             *first as jlong,
             *then as jlong,
         ),
@@ -306,6 +355,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
             0.0f32,
             0.0f32,
             0.0f32,
+            0i32,
             *first as jlong,
             *second as jlong,
         ),
@@ -316,6 +366,7 @@ fn gesture_parts(gesture: &crate::gesture::WuiGesture) -> (i32, i32, i32, f32, f
             0.0f32,
             0.0f32,
             0.0f32,
+            0i32,
             *first as jlong,
             *second as jlong,
         ),
@@ -334,19 +385,21 @@ fn gesture_data_to_java<'local>(
         drag_min_distance,
         magnification_scale,
         rotation_angle,
+        buttons,
         first_ptr,
         second_ptr,
     ) = gesture_parts(gesture);
 
     env.new_object(
         gesture_data_class,
-        jni_sig!("(IIFFFJJ)V"),
+        jni_sig!("(IIFFFIJJ)V"),
         &[
             JValue::Int(tap_count),
             JValue::Int(long_press_duration),
             JValue::Float(drag_min_distance),
             JValue::Float(magnification_scale),
             JValue::Float(rotation_angle),
+            JValue::Int(buttons),
             JValue::Long(first_ptr),
             JValue::Long(second_ptr),
         ],
@@ -370,7 +423,7 @@ pub(super) fn gesture_to_java<'local>(
     let class = env
         .find_class(jni_str!("dev/waterui/android/runtime/GestureStruct"))
         .expect("GestureStruct class not found");
-    let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(gesture);
+    let (gesture_type, _, _, _, _, _, _, _, _) = gesture_parts(gesture);
     let gesture_data = gesture_data_to_java(env, &gesture_data_class, gesture);
     env.new_object(
         &class,
@@ -386,7 +439,7 @@ impl ToJavaStruct for crate::WuiMetadataGesture {
         let gesture_data_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/GestureDataStruct"))
             .expect("GestureDataStruct class not found");
-        let (gesture_type, _, _, _, _, _, _, _) = gesture_parts(&self.value.gesture);
+        let (gesture_type, _, _, _, _, _, _, _, _) = gesture_parts(&self.value.gesture);
         let gesture_data = gesture_data_to_java(env, &gesture_data_class, &self.value.gesture);
 
         let class = env
@@ -426,6 +479,26 @@ impl ToJavaStruct for crate::WuiMetadataOnEvent {
             ],
         )
         .expect("Failed to create MetadataOnEventStruct")
+    }
+}
+
+/// `MetadataOnKeyPressStruct(contentPtr: Long, handlerPtr: Long)`
+impl ToJavaStruct for crate::WuiMetadataOnKeyPress {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataOnKeyPressStruct"
+            ))
+            .expect("MetadataOnKeyPressStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.value as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataOnKeyPressStruct")
     }
 }
 
@@ -575,25 +648,55 @@ impl ToJavaStruct for crate::WuiIgnorableMetadataAccessibilityState {
     }
 }
 
-/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float, cornerRadius: Float)`
+/// `MetadataShadowStruct(contentPtr: Long, colorPtr: Long, offsetX: Float, offsetY: Float, radius: Float, silhouetteKind: ShapeKindStruct, silhouetteCommands: Array<PathCommandStruct>)`
 impl ToJavaStruct for crate::WuiMetadataShadow {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        // The silhouette rides the same (kind, commands) pair a clip shape
+        // does: the kind says what the caster is, the unit-space commands are
+        // the fallback for `ShapeKind::CustomPath`.
+        let commands = self.value.silhouette.commands.as_slice();
+        let path_command_class = env
+            .find_class(jni_str!("dev/waterui/android/runtime/PathCommandStruct"))
+            .expect("PathCommandStruct class not found");
+
+        let java_array = env
+            .new_object_array(
+                super::array_len(commands.len()),
+                &path_command_class,
+                JObject::null(),
+            )
+            .expect("Failed to create PathCommandStruct array");
+
+        for (i, cmd) in commands.iter().enumerate() {
+            let path_cmd = create_path_command_struct(env, cmd);
+            java_array
+                .set_element(env, i, &path_cmd)
+                .expect("Failed to set path command element");
+        }
+
+        let kind = self.value.silhouette.kind.to_java_struct(env);
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/MetadataShadowStruct"))
             .expect("MetadataShadowStruct class not found");
-        env.new_object(
-            &class,
-            jni_sig!("(JJFFFF)V"),
-            &[
-                JValue::Long(self.content as jlong),
-                JValue::Long(self.value.color as jlong),
-                JValue::Float(self.value.offset_x),
-                JValue::Float(self.value.offset_y),
-                JValue::Float(self.value.radius),
-                JValue::Float(self.value.corner_radius),
-            ],
-        )
-        .expect("Failed to create MetadataShadowStruct")
+        let object = env
+            .new_object(
+                &class,
+                jni_sig!(
+                    "(JJFFFLdev/waterui/android/runtime/ShapeKindStruct;[Ldev/waterui/android/runtime/PathCommandStruct;)V"
+                ),
+                &[
+                    JValue::Long(self.content as jlong),
+                    JValue::Long(self.value.color as jlong),
+                    JValue::Float(self.value.offset_x),
+                    JValue::Float(self.value.offset_y),
+                    JValue::Float(self.value.radius),
+                    JValue::Object(&kind),
+                    JValue::Object(&java_array),
+                ],
+            )
+            .expect("Failed to create MetadataShadowStruct");
+        self.value.silhouette.commands.consume();
+        object
     }
 }
 
@@ -840,6 +943,40 @@ impl ToJavaStruct for crate::WuiMetadataContextMenu {
     }
 }
 
+/// `MetadataAnchoredOverlayStruct(contentPtr: Long, overlayContentPtr: Long,
+/// isPresentedPtr: Long, edge: Int, alignment: Int, gap: Float, flip: Boolean,
+/// clampTag: Int, clampMargin: Float, dismissal: Int, placedEdgePtr: Long)`.
+/// `clampTag` is 0 for `Clamp::Off` and 1 for `Clamp::Window`, when
+/// `clampMargin` applies.
+impl ToJavaStruct for crate::WuiMetadataAnchoredOverlay {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let placement = self.value.placement;
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataAnchoredOverlayStruct"
+            ))
+            .expect("MetadataAnchoredOverlayStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJJIIFZIFIJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.value.content as jlong),
+                JValue::Long(self.value.is_presented as jlong),
+                JValue::Int(placement.edge as jint),
+                JValue::Int(placement.alignment as jint),
+                JValue::Float(placement.gap),
+                JValue::Bool(placement.flip),
+                JValue::Int(placement.clamp.tag as jint),
+                JValue::Float(placement.clamp.margin),
+                JValue::Int(self.value.dismissal as jint),
+                JValue::Long(self.value.placed_edge as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataAnchoredOverlayStruct")
+    }
+}
+
 /// `MetadataHittableStruct(contentPtr: Long, enabledPtr: Long)`
 impl ToJavaStruct for crate::WuiMetadataHittable {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
@@ -925,9 +1062,10 @@ impl ToJavaStruct for crate::WuiMetadataDraggable {
     }
 }
 
-/// `MetadataDropDestinationStruct(contentPtr: Long, destinationPtr: Long)`
+/// `MetadataDropDestinationStruct(contentPtr: Long, destinationPtr: Long, acceptedKind: Int)`
 ///
 /// The `WuiDropDestination` is boxed for the same reason as `WuiDraggable`.
+/// `acceptedKind` is the `WuiTransferKind` ordinal the destination accepts.
 impl ToJavaStruct for crate::WuiMetadataDropDestination {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
         let class = env
@@ -935,37 +1073,18 @@ impl ToJavaStruct for crate::WuiMetadataDropDestination {
                 "dev/waterui/android/runtime/MetadataDropDestinationStruct"
             ))
             .expect("MetadataDropDestinationStruct class not found");
+        let accepted_kind = self.value.accepted_kind as jint;
         let destination = Box::into_raw(Box::new(self.value));
         env.new_object(
             &class,
-            jni_sig!("(JJ)V"),
+            jni_sig!("(JJI)V"),
             &[
                 JValue::Long(self.content as jlong),
                 JValue::Long(destination as jlong),
+                JValue::Int(accepted_kind),
             ],
         )
         .expect("Failed to create MetadataDropDestinationStruct")
-    }
-}
-
-/// `DragDataStruct(tag: Int, value: String)`
-impl ToJavaStruct for crate::drag_drop::WuiDragData {
-    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        // SAFETY: this `WuiStr` is owned here, so reclaiming the Rust string
-        // behind it happens exactly once.
-        let value: waterui::Str = unsafe { crate::IntoRust::into_rust(self.value) };
-        let text = env
-            .new_string(value.as_str())
-            .expect("Failed to create drag data string");
-        let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/DragDataStruct"))
-            .expect("DragDataStruct class not found");
-        env.new_object(
-            &class,
-            jni_sig!("(ILjava/lang/String;)V"),
-            &[JValue::Int(self.tag as jint), JValue::Object(&text)],
-        )
-        .expect("Failed to create DragDataStruct")
     }
 }
 

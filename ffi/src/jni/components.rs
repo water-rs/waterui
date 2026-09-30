@@ -1085,15 +1085,17 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationKindDurat
         )
     };
 
+    // Tags mirror the `WuiAnimation` C-ABI discriminants: the Kotlin side
+    // reads them against the same table the regenerated header publishes.
     let (tag, duration_ms): (u32, u32) = match animation {
         crate::animation::WuiAnimation::None => (0, 0),
+        crate::animation::WuiAnimation::SystemDefault => (1, 0),
         crate::animation::WuiAnimation::Curve { duration_ms, .. } => (
-            1,
+            2,
             u32::try_from(duration_ms)
                 .expect("Android animation duration exceeds packed JNI range"),
         ),
-        crate::animation::WuiAnimation::Spring { .. } => (2, 0),
-        crate::animation::WuiAnimation::Decay { .. } => (3, 0),
+        crate::animation::WuiAnimation::Spring { .. } => (3, 0),
     };
 
     ((u64::from(duration_ms) << 32) | u64::from(tag)).cast_signed()
@@ -1115,13 +1117,10 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams12P
 
     let (p1, p2): (f32, f32) = match animation {
         crate::animation::WuiAnimation::Curve { x1, y1, .. } => (x1, y1),
-        crate::animation::WuiAnimation::Spring { response, damping } => (response, damping),
-        crate::animation::WuiAnimation::Decay {
-            velocity_x,
-            velocity_y,
-            ..
-        } => (velocity_x, velocity_y),
-        crate::animation::WuiAnimation::None => (0.0, 0.0),
+        crate::animation::WuiAnimation::Spring { stiffness, damping } => (stiffness, damping),
+        crate::animation::WuiAnimation::None | crate::animation::WuiAnimation::SystemDefault => {
+            (0.0, 0.0)
+        }
     };
 
     ((u64::from(p2.to_bits()) << 32) | u64::from(p1.to_bits())).cast_signed()
@@ -1143,10 +1142,9 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_getAnimationParams34P
 
     let (p3, p4): (f32, f32) = match animation {
         crate::animation::WuiAnimation::Curve { x2, y2, .. } => (x2, y2),
-        crate::animation::WuiAnimation::Decay { deceleration, .. } => (deceleration, 0.0),
-        crate::animation::WuiAnimation::Spring { .. } | crate::animation::WuiAnimation::None => {
-            (0.0, 0.0)
-        }
+        crate::animation::WuiAnimation::None
+        | crate::animation::WuiAnimation::SystemDefault
+        | crate::animation::WuiAnimation::Spring { .. } => (0.0, 0.0),
     };
 
     ((u64::from(p4.to_bits()) << 32) | u64::from(p3.to_bits())).cast_signed()
@@ -1948,6 +1946,31 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentIsReady<'lo
     let wrapper = unsafe { &*(state_ptr as *const JniGpuContentState) };
     // SAFETY: `wrapper.state` is the surface state created alongside it, still live.
     unsafe { crate::components::gpu_content::waterui_gpu_content_is_ready(wrapper.state) }
+}
+
+#[cfg(all(target_os = "android", feature = "gpu"))]
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_gpuContentMeasure<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    state_ptr: jlong,
+    width: jfloat,
+    height: jfloat,
+) -> jobject {
+    super::with_env(&mut env, |env| {
+        // SAFETY: Kotlin passes back the handle `gpuContentCreate` returned, live
+        // until `gpuContentDrop`.
+        let wrapper = unsafe { &*(state_ptr as *const JniGpuContentState) };
+        let proposal = ProposalSize {
+            width: width.is_finite().then_some(width),
+            height: height.is_finite().then_some(height),
+        };
+        // SAFETY: `wrapper.state` is the surface state created alongside it, still
+        // live.
+        let dimensions =
+            unsafe { crate::components::gpu_content::measure_state(&*wrapper.state, proposal) };
+        view_dimensions_to_java(env, &dimensions).into_raw()
+    })
 }
 
 #[cfg(all(target_os = "android", feature = "gpu"))]
