@@ -566,17 +566,19 @@ pub trait FilterViewExt: View + Sized {
     /// # Example
     ///
     /// ```rust
-    /// use waterui::prelude::*;
+    /// use nami::binding;
+    /// use waterui_core::View;
+    /// use waterui_graphics::filter_view::FilterViewExt;
     ///
     /// // Static value
     /// # fn fixed(my_view: impl View) -> impl View {
     /// my_view.blur(10.0)
     /// # }
     ///
-    /// // Reactive value with animation
-    /// # fn animated(my_view: impl View) -> impl View {
-    /// let radius: Binding<f32> = binding(10.0);
-    /// my_view.blur(radius.animated())
+    /// // Reactive value
+    /// # fn reactive(my_view: impl View) -> impl View {
+    /// let radius: nami::Binding<f32> = binding(10.0f32);
+    /// my_view.blur(radius)
     /// # }
     /// ```
     fn blur<T: IntoSignalF32>(self, radius: T) -> Filtered<Self, Blur> {

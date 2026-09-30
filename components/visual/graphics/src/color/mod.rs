@@ -46,22 +46,17 @@ use waterui_core::{
 /// # Examples
 ///
 /// ```rust
-/// use waterui::prelude::*;
+/// use waterui_graphics::Color;
 ///
-/// // Fills entire container
-/// # fn filled() -> impl View {
-/// Color::blue()
-/// # }
+/// // A named colour in the working space.
+/// let blue = Color::blue();
 ///
-/// // Constrained to specific size
-/// # fn sized() -> impl View {
-/// Color::red().width(100.0).height(50.0)
-/// # }
+/// // Space-aware constructors.
+/// let brand = Color::srgb_hex("#0057FF");
+/// let accent = Color::oklch(0.7, 0.15, 250.0);
 ///
-/// // As a background
-/// # fn labelled() -> impl View {
-/// text("Hello").background(Color::yellow())
-/// # }
+/// // Modifiers resolve in the working space.
+/// let translucent = blue.with_opacity(0.5).lighten(0.1);
 /// ```
 //
 // ═══════════════════════════════════════════════════════════════════════════
