@@ -1394,7 +1394,7 @@ pub trait ViewExt: View + Sized {
     /// use waterui::interaction::InteractionState;
     ///
     /// let state = binding(InteractionState::empty());
-    /// let outline = state.map(|s| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
+    /// let outline = state.map(|s: InteractionState| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
     /// let chip = button("Filter").action(|| {}).interaction_state(&state);
     /// ```
     fn interaction_state(self, state: &Binding<InteractionState>) -> impl View {
