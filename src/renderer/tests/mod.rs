@@ -2330,10 +2330,10 @@ impl WidgetTheme for MinimalTestTheme {
 
     fn draw_interaction_state_layer(
         &self,
-        _draw: &mut dyn DrawContext,
+        _draw: &mut Recorder,
         _bounds: Rect,
         radii: RoundedRectRadii,
-        _color: peniko::Color,
+        _color: WorkingColor,
         state: WidgetInteractionState,
     ) {
         self.state_layer_draws.borrow_mut().push((state, radii));

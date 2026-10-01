@@ -445,7 +445,9 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
     env: &Environment,
 ) -> peniko::Color {
     let resolved = runtime.window.resolved_background(env).snapshot();
-    runtime.platform.set_transparent(resolved.components[3] < 1.0);
+    runtime
+        .platform
+        .set_transparent(resolved.components[3] < 1.0);
     let srgb = waterui_graphics::color::working::to_srgb(resolved);
     peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.components[3]])
 }

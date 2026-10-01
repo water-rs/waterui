@@ -528,9 +528,16 @@ impl HydrolysisRenderer {
                 let theme = renderer.theme();
                 let layer_bounds = style.state_layer_bounds(ctx.bounds);
                 let radii = *style.state_layer_radii.resolve(state);
-                let ring = interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
+                let ring =
+                    interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
                 let mut draw = renderer.draw_context(ctx);
-                theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
+                theme.draw_interaction_state_layer(
+                    &mut draw,
+                    layer_bounds,
+                    radii,
+                    color,
+                    interaction,
+                );
                 if let Some((ring_bounds, ring_radii, color, width)) = ring {
                     draw.stroke(
                         kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),

@@ -1,6 +1,5 @@
 use super::*;
 use unicode_segmentation::UnicodeSegmentation;
-use waterui_controls::button::button;
 use waterui_graphics::cherenkov::Draw as _;
 
 /// What became of a key press once the framework finished with it.

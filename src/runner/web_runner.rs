@@ -220,8 +220,7 @@ impl BrowserRunner {
         // wake that carried no armed work answers without one. Only armed
         // work on a visible window encodes a frame.
         if !self.runtime.is_hidden()
-            && (self.runtime.mode.is_pending()
-                || self.runtime.renderer.take_redraw_request())
+            && (self.runtime.mode.is_pending() || self.runtime.renderer.take_redraw_request())
         {
             let presented = render_window(&mut self.runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.runnable_queue)
