@@ -168,7 +168,7 @@ struct MeshContent {
 /// There is no native mesh primitive to bridge on every platform — Android
 /// has none — so a [`Gradient`] carrying a mesh resolves to engine content
 /// here rather than to a `Native<Gradient>` payload a backend would draw.
-pub(crate) fn static_mesh_view(paint: Paint) -> SceneView {
+pub fn static_mesh_view(paint: Paint) -> SceneView {
     SceneView::new(MeshContent {
         paint: nami::constant(paint).computed(),
     })
