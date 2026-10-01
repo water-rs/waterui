@@ -68,7 +68,7 @@ android-backend-revision = "79ddc6f786aaffeacd3e3eafa297aa88ef9df0f6"
 # revision rather than a branch. `subdirectory` names the Gradle composite
 # root inside the checkout.
 hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
-hydrolysis-android-host-revision = "798e581adfd587fe470eb4991bdbb5175315c6ad"
+hydrolysis-android-host-revision = "58ba1497db402f0e4a69f327458958f01546f394"
 hydrolysis-android-host-subdirectory = "android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
@@ -576,7 +576,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "334460886d5e6da7841c58c82835448c26bdcf75" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "798e581adfd587fe470eb4991bdbb5175315c6ad" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "58ba1497db402f0e4a69f327458958f01546f394" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
