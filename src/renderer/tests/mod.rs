@@ -49,6 +49,8 @@ mod list_visibility;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod menu_shortcuts;
 mod mid_flush_subview;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod nested_menu_dispatch;
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
@@ -3084,12 +3086,12 @@ fn secure_text_context_menu_excludes_copy_and_cut() {
 
     let mut env = test_environment();
     crate::localization::install(&mut env);
-    let entries = SemanticCore::build_text_context_menu_entries(&target, &env);
-    let labels = entries
+    let nodes = SemanticCore::build_text_context_menu_nodes(&target, &env);
+    let labels = nodes
         .iter()
-        .filter_map(|entry| match entry {
-            TextContextMenuEntry::Command { label, .. } => Some(label.as_str()),
-            TextContextMenuEntry::Divider => None,
+        .filter_map(|node| match node {
+            PopupMenuNode::Command { plain_label, .. } => Some(plain_label.as_str()),
+            PopupMenuNode::Menu { .. } | PopupMenuNode::Divider => None,
         })
         .collect::<Vec<_>>();
 
