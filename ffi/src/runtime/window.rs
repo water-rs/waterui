@@ -10,7 +10,7 @@ use waterui::window::{
     WindowManager, WindowPlacement, WindowState, WindowStyle, resolve_background,
 };
 use waterui::{AnyView, Str};
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::WorkingColor;
 use waterui_layout::{Rect, Size};
 
 use crate::components::layout::WuiRect;
@@ -408,7 +408,7 @@ crate::ffi_watcher!(Option<UserAttention>, WuiUserAttention, user_attention);
 pub unsafe extern "C" fn waterui_resolve_window_background(
     background: *mut WuiComputed<WindowBackground>,
     env: *const WuiEnv,
-) -> *mut WuiComputed<ResolvedColor> {
+) -> *mut WuiComputed<WorkingColor> {
     // SAFETY: the caller contract makes `background` an owning handle reclaimed
     // exactly once here, and `env` a valid borrow for the call.
     unsafe {
@@ -509,7 +509,7 @@ pub(crate) struct WuiAndroidWindow {
     /// The root content view.
     pub(crate) content: OwnedFfiHandle<WuiAnyView>,
     /// The resolved background colour, applied with `setBackgroundDrawable`.
-    pub(crate) background: OwnedFfiHandle<WuiComputed<ResolvedColor>>,
+    pub(crate) background: OwnedFfiHandle<WuiComputed<WorkingColor>>,
 }
 
 #[cfg(any(feature = "android-jni", test))]

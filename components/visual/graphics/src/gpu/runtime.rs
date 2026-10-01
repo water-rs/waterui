@@ -1296,6 +1296,8 @@ fn plane_size(frame: &ExternalFrame) -> (u32, u32) {
     let plane = match &frame.planes {
         FramePlanes::Yuv { y, .. } => y,
         FramePlanes::Rgb { plane, .. } => plane,
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        FramePlanes::Native(native) => return native.size(),
     };
     (plane.width(), plane.height())
 }
