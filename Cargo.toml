@@ -68,7 +68,7 @@ android-backend-revision = "86833228a2bf493f346150fcdf58ba92f212f837"
 # revision rather than a branch. `subdirectory` names the Gradle composite
 # root inside the checkout.
 hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
-hydrolysis-android-host-revision = "8e2c2a835be40535780e4463639ba2f027fb29b2"
+hydrolysis-android-host-revision = "e2d39577127e08218f32470b1e2ad8d7c19a7714"
 hydrolysis-android-host-subdirectory = "android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
@@ -598,7 +598,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "fd554cc95800e42d92b1029c61f641fd9b349465" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "8e2c2a835be40535780e4463639ba2f027fb29b2" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "e2d39577127e08218f32470b1e2ad8d7c19a7714" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "5625b8a224600c57fd8f9d464762bf78792a40fc" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "e5290913ee8adb22843fd60047f6a845f2391c5b" }
@@ -627,5 +627,5 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f20
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "6ee8972113efde31a8cdc2029e6180fbf4225604" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "47d64658dacb2672b3f2f911411f2789d08bdb73" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
