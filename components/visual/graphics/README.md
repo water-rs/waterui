@@ -9,6 +9,7 @@ GPU and engine rendering primitives for WaterUI applications.
 - **GpuContentView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
 - **SceneView** - a view whose `SceneContent` records vector scenes into `cherenkov::Recorder`
 - **ShaderPaintView** - a view painted by a WGSL fragment shader
+- **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the GPU-animated `AnimatedMeshGradient` and `FlowingGradient`
 - **OffscreenRenderer** - headless rendering of either kind of content to `OffscreenImage`
 - **Effects** - GPU filter, transition and capture effects applied to arbitrary views
 

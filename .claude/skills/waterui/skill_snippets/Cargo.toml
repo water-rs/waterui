@@ -29,7 +29,6 @@ waterui-icons-lucide.workspace = true
 waterui-barcode.workspace = true                             # media.md, Barcode
 waterui-canvas.workspace = true                              # media.md, Canvas
 waterui-chart.workspace = true                               # media.md, charts
-waterui-graphics = { workspace = true, features = ["gpu"] }  # styling.md, GPU gradients
 # i18n.md, formatting: dates, numbers and currency.
 waterui-locale = { workspace = true, features = ["datetime", "number"] }
 waterui-map.workspace = true                                 # media.md, Map

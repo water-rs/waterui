@@ -128,8 +128,8 @@ Some snippets resolve real paths, so the crate carries the files they name:
 
 Beyond `waterui` with every feature the skill documents, the crate depends on exactly the
 crates the skill's snippets name by path (`waterui-barcode`, `waterui-canvas`,
-`waterui-chart`, `waterui-graphics`, `waterui-locale`, `waterui-map`, `waterui-map-gpu`,
-`waterui-particle`, `waterui-url`, `waterkit-permission`, `jiff`, the two icon sets).
+`waterui-chart`, `waterui-locale`, `waterui-map`, `waterui-map-gpu`, `waterui-particle`,
+`waterui-url`, `waterkit-permission`, `jiff`, the two icon sets).
 `serde` is glue for media.md's `#[js_api]` payload type.
 
 The crate deliberately does **not** opt into `[lints] workspace = true`: the workspace's

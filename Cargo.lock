@@ -7741,7 +7741,6 @@ dependencies = [
  "waterui-barcode",
  "waterui-canvas",
  "waterui-chart",
- "waterui-graphics",
  "waterui-icons-lucide",
  "waterui-icons-material-icon",
  "waterui-locale",

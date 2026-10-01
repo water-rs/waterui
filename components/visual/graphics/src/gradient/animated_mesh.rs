@@ -26,6 +26,10 @@ const UNIFORM_LEN: usize = 4 + ANIMATED_MESH_PALETTE_LEN * 3;
 pub struct AnimatedMeshGradientConfig {
     /// Animation speed multiplier on the engine's clock; `0.0` holds the
     /// gradient still and lets the engine idle.
+    ///
+    /// The flow's phase is the engine clock times `speed`, so a new speed
+    /// takes effect from the current clock rather than continuing the old
+    /// phase.
     pub speed: f32,
     /// UV warp strength (controls flow intensity).
     pub warp: f32,

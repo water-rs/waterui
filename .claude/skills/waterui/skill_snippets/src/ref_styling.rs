@@ -227,50 +227,55 @@ pub fn styling_block_07() {
 }
 
 // ---------------------------------------------------------------------------
-// styling.md § "## Backgrounds, materials, gradients" (prose): the prelude's
-// background-descriptor gradient family. Not counted as a rust block.
+// styling.md § "## Backgrounds, materials, gradients" (prose): the prelude
+// carries `Gradient` and `MeshGradient`, and the colour type gradients take.
+// Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn styling_prelude_gradients_prose() {
-    use waterui::gradient::{
-        AngularGradient, ColorStop, LinearGradient, MeshGradient, MeshVertex, RadialGradient,
-        UnitPoint,
-    };
-
-    let _: Option<AngularGradient> = None;
-    let _: Option<ColorStop> = None;
-    let _: Option<LinearGradient> = None;
+    let _: Option<Gradient> = None;
     let _: Option<MeshGradient> = None;
-    let _: Option<MeshVertex> = None;
-    let _: Option<RadialGradient> = None;
-    let _: Option<UnitPoint> = None;
+    let _: Option<waterui::color::WorkingColor> = None;
 }
 
 // ---------------------------------------------------------------------------
 // styling.md § "## Backgrounds, materials, gradients" — rust block 8/15
 // ---------------------------------------------------------------------------
 pub fn styling_block_08() {
-    use waterui_graphics::{
-        AnimatedMeshGradient, AnimatedMeshGradientConfig, MeshGradient, ResolvedColor,
+    let view = Divider;
+
+    use waterui::color::working::from_linear_srgb;
+    use waterui::gradient::{
+        AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
     };
 
-    // Stops take ResolvedColor: a plain struct of five public f32 fields (struct-literal it).
-    let stop = ResolvedColor {
-        red: 1.0,
-        green: 0.3,
-        blue: 0.5,
-        opacity: 1.0,
-        headroom: 0.0,
-    };
+    let rose = Srgb::from_hex("#FF4D80").resolve();
+    let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
 
-    let colors = Binding::container(vec![stop; 9]);
+    let colors = Binding::container(vec![rose; 9]);
 
     let _ = {
-        // colors: any signal of ResolvedColors
+        // fixed colours
+        Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])
+    };
+    let _ = {
+        view.background(Gradient::radial(
+            vec![(0.0, rose), (1.0, sky)],
+            [0.5, 0.5],
+            0.0,
+            0.7,
+        ))
+    };
+    let _ = {
+        // colors: any signal of WorkingColors
         MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)
     };
     let _ = {
-        // animates in-shader, zero CPU
+        // animates in-shader on the engine clock
         AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())
+    };
+    let _ = {
+        // drifting noise bands, GPU only
+        FlowingGradient::new()
     };
 }
 
