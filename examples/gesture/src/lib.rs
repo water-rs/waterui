@@ -138,26 +138,29 @@ fn middle_click_tab_section(tabs: &ReactiveList<TabChip>, open_tabs: &Binding<i3
         text("Middle Click").headline(),
         "Middle-click a tab to close it",
         text!("{count} open tabs", count = open_tabs.clone()),
-        HStack::for_each(tabs.clone(), move |tab| {
-            let tab_id = tab.id;
-            text(tab.title)
-                .padding()
-                .background(Srgb::from_hex("#607D8B").with_opacity(0.3))
-                .gesture(
-                    TapGesture::new().buttons(PointerButtons::MIDDLE),
-                    move |State(tabs): State<ReactiveList<TabChip>>,
-                          State(open_tabs): State<Binding<i32>>| {
-                        if let Some(index) = tabs.snapshot().iter().position(|tab| tab.id == tab_id)
-                        {
-                            let _ = tabs.remove(index);
-                            *open_tabs.get_mut() -= 1;
-                        }
-                    },
-                )
-                .state(&tabs_for_rows)
-                .state(&open_tabs_for_handler)
-        })
-        .spacing(8.0),
+        scroll_horizontal(
+            HStack::for_each(tabs.clone(), move |tab| {
+                let tab_id = tab.id;
+                text(tab.title)
+                    .padding()
+                    .background(Srgb::from_hex("#607D8B").with_opacity(0.3))
+                    .gesture(
+                        TapGesture::new().buttons(PointerButtons::MIDDLE),
+                        move |State(tabs): State<ReactiveList<TabChip>>,
+                              State(open_tabs): State<Binding<i32>>| {
+                            if let Some(index) =
+                                tabs.snapshot().iter().position(|tab| tab.id == tab_id)
+                            {
+                                let _ = tabs.remove(index);
+                                *open_tabs.get_mut() -= 1;
+                            }
+                        },
+                    )
+                    .state(&tabs_for_rows)
+                    .state(&open_tabs_for_handler)
+            })
+            .spacing(8.0),
+        ),
     ))
     .padding()
 }
