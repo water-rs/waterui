@@ -484,9 +484,9 @@ fn bootstrap(paths: &CefRuntimePaths) -> Result<CefBootstrap, i32> {
     // packaged apps install it there and this reuses it — helper subprocesses
     // and tests reach `bootstrap` first and initialize it here instead.
     #[cfg(target_os = "macos")]
-    let sandbox = EARLY_SANDBOX.with(|cell| cell.borrow_mut().take()).unwrap_or_else(|| {
-        PlatformSandbox::initialize(paths, args.as_main_args())
-    });
+    let sandbox = EARLY_SANDBOX
+        .with(|cell| cell.borrow_mut().take())
+        .unwrap_or_else(|| PlatformSandbox::initialize(paths, args.as_main_args()));
     #[cfg(not(target_os = "macos"))]
     let sandbox = PlatformSandbox::initialize(paths, args.as_main_args());
     #[cfg(target_os = "windows")]
