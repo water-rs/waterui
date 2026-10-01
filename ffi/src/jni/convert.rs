@@ -828,6 +828,29 @@ impl ToJavaStruct for crate::WuiMetadataFocused {
     }
 }
 
+/// `MetadataSelectedStruct(contentPtr: Long, selectedPtr: Long)`
+///
+/// Android binds `selectedPtr` (a `WuiComputed<bool>`) to the node's
+/// `isSelected` accessibility state.
+impl ToJavaStruct for crate::WuiMetadataSelected {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataSelectedStruct"
+            ))
+            .expect("MetadataSelectedStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.value.selected as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataSelectedStruct")
+    }
+}
+
 /// `MetadataIgnoreSafeAreaStruct(contentPtr: Long, top: Boolean, bottom: Boolean, leading: Boolean, trailing: Boolean)`
 impl ToJavaStruct for crate::WuiMetadataIgnoreSafeArea {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {

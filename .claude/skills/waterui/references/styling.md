@@ -255,6 +255,14 @@ supplies explicit `FloatingStyle` tokens. Themes may install a `FloatingStyle` i
 environment — read it with `env.get::<FloatingStyle>()` (falling back to
 `FloatingStyle::default()`) when custom chrome must match floating controls.
 
+`FloatingStyle::elevation` is a `StateValue<FloatingElevation>` — the surface's
+ambient and key shadows resolve against the state the control inside reports
+through `.interaction_state`, so a themed FAB can lift on hover
+(`elevation.when(InteractionState::HOVERED, ..)`) without view code wiring
+anything. The same `StateValue` shape keys `InteractionStyle`'s
+`state_layer_radii` and `label_color`, and `focus_ring` draws the M3-style
+focus indicator while a control shows keyboard focus.
+
 ## Icons
 
 Icons come from packaged icon-set crates. **Pick one set per app** and depend on it:

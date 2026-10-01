@@ -8,6 +8,7 @@ use waterui_controls::{ControlSize, button::ButtonStyle};
 use waterui_core::EasingCurve;
 use waterui_core::animation::Animation;
 use waterui_core::handler::SharedAction;
+use waterui_core::interaction::{InteractionState, StateValue};
 use waterui_core::plugin::Plugin;
 use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
@@ -55,8 +56,9 @@ pub struct InteractionStyle {
     pub metrics: ButtonMetrics,
     /// State-layer and ripple color.
     pub state_layer_color: Color,
-    /// State-layer clipping radii.
-    pub state_layer_radii: RoundedRectRadii,
+    /// State-layer clipping radii, per interaction state — a list item's
+    /// shape morphs from 8 to 12 to 16 as it is hovered and pressed.
+    pub state_layer_radii: StateValue<RoundedRectRadii>,
     /// Optional fixed state-layer width.
     pub state_layer_width: Option<f64>,
     /// Optional fixed state-layer height.
@@ -65,12 +67,29 @@ pub struct InteractionStyle {
     pub state_layer_alignment_x: f64,
     /// Vertical alignment of a fixed state layer in the hit bounds.
     pub state_layer_alignment_y: f64,
-    /// Optional enabled label color.
-    pub label_color: Option<Color>,
-    /// Optional disabled label color.
-    pub disabled_label_color: Option<Color>,
+    /// Label color for semantic text labels, per interaction state; `None`
+    /// leaves the label's own color.
+    pub label_color: StateValue<Option<Color>>,
+    /// The ring drawn around the state layer while the control shows
+    /// keyboard focus; `None` draws none.
+    pub focus_ring: Option<FocusRing>,
     /// Whether this pointer action participates in keyboard focus traversal.
     pub keyboard_focusable: bool,
+}
+
+/// A focus indicator drawn around an interactive control while it shows
+/// keyboard focus ([`InteractionState::FOCUSED`]).
+///
+/// The ring follows the state layer's shape, grown outward by `offset`, so it
+/// matches the control's current corner radii.
+#[derive(Debug, Clone)]
+pub struct FocusRing {
+    /// Ring color.
+    pub color: Color,
+    /// Stroke width.
+    pub width: f64,
+    /// Gap between the state layer's edge and the ring's inner edge.
+    pub offset: f64,
 }
 
 impl InteractionStyle {
@@ -85,13 +104,13 @@ impl InteractionStyle {
         Self {
             metrics,
             state_layer_color: state_layer_color.into(),
-            state_layer_radii: state_layer_radii.into(),
+            state_layer_radii: StateValue::new(state_layer_radii.into()),
             state_layer_width: None,
             state_layer_height: None,
             state_layer_alignment_x: 0.5,
             state_layer_alignment_y: 0.5,
-            label_color: None,
-            disabled_label_color: None,
+            label_color: StateValue::new(None),
+            focus_ring: None,
             keyboard_focusable: true,
         }
     }
@@ -130,22 +149,41 @@ impl InteractionStyle {
         Rect::new(x0, y0, x0 + width, y0 + height)
     }
 
-    /// Sets enabled and disabled label colors for semantic text labels.
+    /// Sets the state-layer clipping radii per interaction state.
     #[must_use]
-    pub fn label_colors(mut self, enabled: impl Into<Color>, disabled: impl Into<Color>) -> Self {
-        self.label_color = Some(enabled.into());
-        self.disabled_label_color = Some(disabled.into());
+    pub fn state_layer_radii(mut self, radii: StateValue<RoundedRectRadii>) -> Self {
+        self.state_layer_radii = radii;
         self
     }
 
-    /// Returns the label color for the current enabled state.
+    /// Sets enabled and disabled label colors for semantic text labels.
     #[must_use]
-    pub fn resolved_label_color(&self, disabled: bool) -> Option<Color> {
-        if disabled {
-            self.disabled_label_color.clone()
-        } else {
-            self.label_color.clone()
-        }
+    pub fn label_colors(self, enabled: impl Into<Color>, disabled: impl Into<Color>) -> Self {
+        self.label_color(
+            StateValue::new(Some(enabled.into()))
+                .when(InteractionState::DISABLED, Some(disabled.into())),
+        )
+    }
+
+    /// Sets the label color for semantic text labels per interaction state.
+    #[must_use]
+    pub fn label_color(mut self, color: StateValue<Option<Color>>) -> Self {
+        self.label_color = color;
+        self
+    }
+
+    /// Draws `ring` around the state layer while the control shows keyboard
+    /// focus.
+    #[must_use]
+    pub fn focus_ring(mut self, ring: FocusRing) -> Self {
+        self.focus_ring = Some(ring);
+        self
+    }
+
+    /// Returns the label color for `state`.
+    #[must_use]
+    pub fn resolved_label_color(&self, state: InteractionState) -> Option<Color> {
+        self.label_color.resolve(state).clone()
     }
 
     /// Keeps the interaction pointer-only, for modal scrims and similar layers.
@@ -315,22 +353,15 @@ impl PressWaves {
 }
 
 /// Interactive state snapshot for widget chrome.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "a per-frame state snapshot of independent interaction flags, not a configuration"
-)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WidgetInteractionState {
-    /// The widget is disabled: it must render its inactive appearance and the
-    /// renderer suppresses hover, press, and focus for it, so the remaining
-    /// fields stay at rest while this is `true`.
-    pub disabled: bool,
-    /// Pointer is inside the widget bounds.
-    pub hovered: bool,
-    /// Primary pointer is actively pressing the widget.
-    pub pressed: bool,
-    /// Keyboard focus is visible on the widget.
-    pub focus_visible: bool,
+    /// The widget's interaction flags for this frame — hovered, pressed,
+    /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
+    /// renderer's bookkeeping. Themes read it to resolve [`StateValue`]
+    /// fields directly. When [`InteractionState::DISABLED`] is set the widget
+    /// renders its inactive appearance and the renderer suppresses hover,
+    /// press, and focus, so the remaining flags stay at rest.
+    pub state: InteractionState,
     /// Animated focus affordance progress in the 0.0..=1.0 range.
     pub focus_progress: f32,
     /// Animated state-layer opacity sampled by the renderer.
@@ -343,10 +374,7 @@ pub struct WidgetInteractionState {
 impl WidgetInteractionState {
     /// No active interaction state.
     pub const NONE: Self = Self {
-        disabled: false,
-        hovered: false,
-        pressed: false,
-        focus_visible: false,
+        state: InteractionState::empty(),
         focus_progress: 0.0,
         state_layer_opacity: 0.0,
         press_waves: PressWaves::EMPTY,

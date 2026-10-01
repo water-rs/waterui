@@ -10,6 +10,8 @@
 - Pointer cursor
 - Drag and drop
 - Reactive pressed/hover visuals
+- Reporting a control's state
+- Selected controls
 
 The compiled examples for this file are `examples/gesture`, `examples/hover`, and
 `examples/drag_drop` in the WaterUI repository.
@@ -249,3 +251,49 @@ Note the two opacities: `Color::with_opacity(0.2)` bakes alpha into the color va
 while `.opacity(signal)` is the reactive view modifier doing the cross-fade. Signal
 transforms (`.select`, `.map`, `.zip`) take `&self`, so no `.clone()` is needed before
 them — clone only when a finished signal is consumed twice, as `.scale(x, y)` does.
+
+## Reporting a control's state
+
+`.on_hover_enter`/`.on_hover_exit` report the pointer position of *that* modifier's
+view. When chrome lives around a control it does not own — a floating surface's
+shadow, a chip's outline, a split button's half — ask the backend for the whole
+interaction state instead: `.interaction_state(&binding)` writes the
+`InteractionState` of the outermost interactive control at or inside the view it
+is applied to, every time it changes. The binding sits at `InteractionState::empty()`
+while no interactive control is there.
+
+```rust
+use waterui::interaction::InteractionState;
+use waterui::reactive::{Binding, binding};
+
+let state: Binding<InteractionState> = binding(InteractionState::empty());
+let lift = state.map(|s| if s.contains(InteractionState::HOVERED) { -6.0 } else { 0.0 });
+
+vstack((
+    text!("Chip"),
+    button("Action").action(|| {}),
+))
+.offset(0.0, lift)            // chrome follows the control's state
+.interaction_state(&state)
+```
+
+`InteractionState` is a bitflags set — `HOVERED`, `FOCUSED` (focus-visible only,
+like `:focus-visible`: keyboard focus, never a click), `PRESSED`, `DRAGGED`,
+`SELECTED`, `DISABLED` — so test it with `.contains(...)`, never `==`.
+
+## Selected controls
+
+`.selected(..)` takes `impl IntoComputed<bool>` and marks the interactive control
+it modifies as selected: the control gains `InteractionState::SELECTED` (so its
+style's selected values apply) and assistive technology announces it as selected.
+It applies to the control it modifies — unlike `.disabled(..)` it is *not*
+inherited by nested controls.
+
+```rust
+let selection: Binding<i32> = binding(0);
+text!("Inbox").selected(selection.map(|s| s == 0))
+```
+
+Navigation destinations, tabs, and list items are the usual carriers; combine
+with `.interaction_state` when the row's own chrome (a selection indicator,
+say) must also follow hover or press.

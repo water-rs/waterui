@@ -389,7 +389,9 @@ pub fn navigation_block_11(env: Environment) -> App {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`,
+// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`
+// with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
+// `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`,
 // `.background(..)` with a Color or a Material, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
@@ -397,7 +399,9 @@ pub fn navigation_block_11(env: Environment) -> App {
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
-    use waterui::window::{UserAttention, Window, WindowLevel, WindowState, WindowStyle};
+    use waterui::window::{
+        UserAttention, Window, WindowBackground, WindowLevel, WindowState, WindowStyle,
+    };
 
     let state = binding::<WindowState>(WindowState::default());
 
@@ -413,9 +417,18 @@ pub fn navigation_window_builder_prose() {
     handle.maximize();
     handle.request_attention(UserAttention::Informational);
     handle.cancel_attention();
-    let _ = Window::new("W", state, || text("c"))
+    let _ = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
+    let style = binding(WindowStyle::Titled);
+    let background = binding(WindowBackground::Opaque);
+    let window = Window::new("W", state, || text("c"))
+        .style(style.clone())
+        .background(background.clone());
+    window.handle().set_style(WindowStyle::Borderless);
+    window
+        .handle()
+        .set_background(Color::srgb(0, 0, 0).with_opacity(0.8));
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;

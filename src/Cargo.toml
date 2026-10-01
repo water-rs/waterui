@@ -39,7 +39,7 @@ tracing.workspace = true
 unicode-segmentation = "1.13"
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
-minstant.workspace = true
+web-time.workspace = true
 pulldown-cmark = { version = "0.13", optional = true }
 waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
