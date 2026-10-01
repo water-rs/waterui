@@ -10706,7 +10706,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=01f3d3fc2907065eff815f623ac7d9e12fa9943b#01f3d3fc2907065eff815f623ac7d9e12fa9943b"
+source = "git+https://github.com/water-rs/video-gpu?rev=c4f68918aa1fec77b4637779543bba19f5fef1c6#c4f68918aa1fec77b4637779543bba19f5fef1c6"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -10728,7 +10728,7 @@ dependencies = [
  "waterui-layout",
  "waterui-text",
  "waterui-video",
- "wgpu 29.0.4",
+ "wgpu 30.0.1",
 ]
 
 [[package]]
@@ -11109,9 +11109,8 @@ dependencies = [
 
 [[package]]
 name = "wgpu-external-frame"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "281c4db2ca90300db1f1f44a90332d09dc9f4e551314d2aa36f3d6f15ad307ed"
+version = "0.1.0"
+source = "git+https://github.com/water-rs/wgpu-external-frame?rev=d047b57e6fd8930f95c78b3e4fba7b06cd056b68#d047b57e6fd8930f95c78b3e4fba7b06cd056b68"
 dependencies = [
  "ash",
  "glow",
@@ -11121,7 +11120,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-surface",
  "objc2-metal",
- "wgpu 29.0.4",
+ "wgpu 30.0.1",
  "windows 0.62.2",
 ]
 
