@@ -57,8 +57,9 @@ android-min-api-level = 26
 # Native backends are pinned to compatible commits. The CLI preserves these
 # revisions when scaffolding a project; neither backend rides a gitlink.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-# Proposal-aware placement requires the matching native layout contract.
-apple-backend-version = "0.3.0"
+# The objc2 Rust backend (`waterui-apple`), which the framework's FFI
+# surface and the CLI's entry-owning Apple packaging require.
+apple-backend-revision = "84b13b3e9c60cab1ade9fa5b6e01d18bcde99f55"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-backend-revision = "79ddc6f786aaffeacd3e3eafa297aa88ef9df0f6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
