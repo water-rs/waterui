@@ -943,6 +943,29 @@ fn render_to_surface(
         premultiply_alpha,
     );
     let render = render_started_at.elapsed();
+    // A capture must photograph the frame this pass just encoded, not the
+    // previous composite: the deferred stash the render produced would
+    // otherwise present through the pump's settle pass — after the readback
+    // below. Settle it into this frame first, the same drain `pump_at`
+    // performs for `advance`, so `screenshot` and
+    // `advance(screenshot: true)` return the same image.
+    if capture_snapshot && renderer.has_deferred_legacy_frame() {
+        renderer.flush_deferred_legacy_frame_to_surface(
+            crate::renderer::HydrolysisRenderTarget {
+                adapter: surface.adapter(),
+                device: surface.device(),
+                queue: surface.queue(),
+                device_loss: surface.device_loss().clone(),
+                texture: Some(frame.texture()),
+                view: frame.view(),
+                format,
+                width,
+                height,
+                base_color: clear_color,
+            },
+            premultiply_alpha,
+        );
+    }
     #[cfg(feature = "frame-profile")]
     {
         // The timestamp resolve blocks until the frame's submits finish — the
