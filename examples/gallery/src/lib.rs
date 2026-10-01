@@ -537,6 +537,7 @@ fn slider_demo(volume: &Binding<f64>) -> impl View {
 
     vstack((
         note("Drag a slider; the value indicator follows the thumb and the progress bar reflects the value."),
+        slider("Volume", volume).range(0.0..=100.0),
         vstack(sizes).spacing(8.0),
         text!("Value: {volume}").body(),
         progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
