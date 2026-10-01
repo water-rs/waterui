@@ -2,8 +2,8 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
-    WidgetRenderContext, local_interaction_state, measure_label_intrinsic, measure_view_intrinsic,
-    popup_menu_nodes, resolved_color_to_peniko, transformed_rect,
+    WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
+    measure_view_intrinsic, popup_menu_nodes, resolved_color_to_peniko, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -15,11 +15,12 @@ use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
-use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
+use waterui_backend_core::widget::{ButtonMetrics, DrawContext as _, InteractionStyle};
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
@@ -144,6 +145,10 @@ pub(crate) fn button_accessibility(
             node.set_label(label);
         }
         node.add_action(AccessibilityAction::Focus);
+        // A button under a `Selected` scope it owns announces the state.
+        if renderer.control_selected(env, &crate::renderer::InteractionKey::for_rc(state, 0)) {
+            node.set_selected(true);
+        }
         // A disabled button stays in the tree (focusable, announced as
         // disabled) but exposes no click action and no action target.
         let disabled = renderer.read_signal(&widget_disabled(env));
@@ -533,11 +538,14 @@ pub(crate) fn render_button_parts(
     let hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
-        interaction_key,
+        interaction_key.clone(),
         hit_bounds,
         env,
         disabled,
     );
+    let interaction_flags = ctx
+        .renderer_mut()
+        .reported_interaction_state(&interaction_key);
     if interaction_style.is_none() && floating_style.is_none() {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style, icon_only, interaction);
@@ -586,7 +594,7 @@ pub(crate) fn render_button_parts(
                 button_label_color(
                     &theme,
                     style,
-                    disabled,
+                    interaction_flags,
                     interaction_style.as_ref(),
                     floating_style.as_ref(),
                 )
@@ -604,14 +612,23 @@ pub(crate) fn render_button_parts(
         if let Some(interaction_style) = interaction_style {
             let color_signal = interaction_style.state_layer_color.resolve(env);
             let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
-            let mut draw = ctx.draw_context();
-            theme.draw_interaction_state_layer(
-                &mut draw,
-                interaction_style.state_layer_bounds(bounds),
-                interaction_style.state_layer_radii,
-                color,
-                interaction,
+            let layer_bounds = interaction_style.state_layer_bounds(bounds);
+            let radii = *interaction_style
+                .state_layer_radii
+                .resolve(interaction_flags);
+            let ring = interaction_focus_ring(
+                ctx.renderer_mut(),
+                env,
+                layer_bounds,
+                radii,
+                &interaction_style,
+                interaction_flags,
             );
+            let mut draw = ctx.draw_context();
+            theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
+            if let Some((ring_bounds, ring_radii, brush, width)) = ring {
+                draw.stroke_rounded_rect(ring_bounds, ring_radii, &brush, width);
+            }
         } else if let Some(floating_style) = floating_style {
             let color_signal = floating_style.state_layer_color.resolve(env);
             let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
@@ -837,8 +854,23 @@ fn disabled_aware_label_color(
     interaction_style: Option<&InteractionStyle>,
     floating_style: Option<&FloatingStyle>,
 ) -> Option<Color> {
-    let enabled_color = button_label_color(theme, style, false, interaction_style, floating_style);
-    let disabled_color = button_label_color(theme, style, true, interaction_style, floating_style);
+    // The retained label is styled once at build time, so the ambient flags
+    // beyond DISABLED — which stays live through the `SelectResolvedColor`
+    // condition — come from the environment the label is built under.
+    let enabled_color = button_label_color(
+        theme,
+        style,
+        InteractionState::empty(),
+        interaction_style,
+        floating_style,
+    );
+    let disabled_color = button_label_color(
+        theme,
+        style,
+        InteractionState::DISABLED,
+        interaction_style,
+        floating_style,
+    );
     match (enabled_color, disabled_color) {
         (None, None) => None,
         (Some(when_false), Some(when_true)) => Some(Color::new(SelectResolvedColor {
@@ -885,13 +917,14 @@ fn button_metrics(
     )
 }
 
-fn button_label_color(
+pub(crate) fn button_label_color(
     theme: &Rc<dyn crate::engine::WidgetTheme>,
     style: ButtonStyle,
-    disabled: bool,
+    state: waterui_core::interaction::InteractionState,
     interaction_style: Option<&InteractionStyle>,
     floating_style: Option<&FloatingStyle>,
 ) -> Option<Color> {
+    let disabled = state.contains(waterui_core::interaction::InteractionState::DISABLED);
     interaction_style.map_or_else(
         || {
             floating_style.map_or_else(
@@ -908,7 +941,7 @@ fn button_label_color(
                 },
             )
         },
-        |style| style.resolved_label_color(disabled),
+        |style| style.resolved_label_color(state),
     )
 }
 

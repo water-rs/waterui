@@ -1,7 +1,9 @@
 use super::*;
 use crate::animation::AnimationKey;
-use std::collections::{BTreeMap, BTreeSet};
+use nami::Signal as _;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
+use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
@@ -15,8 +17,25 @@ const INTERACTION_KEYS_PER_IDENTITY: usize =
 
 #[derive(Debug, Default)]
 pub(crate) struct InteractionEngine {
-    states: BTreeMap<InteractionKey, InteractionState>,
+    states: BTreeMap<InteractionKey, WidgetInteractionEntry>,
     active: BTreeSet<InteractionKey>,
+    /// The full reported [`InteractionState`] each active control sampled at
+    /// bind time — draw sites read it back by key instead of repeating the
+    /// `Selected`/drag bookkeeping.
+    reported: BTreeMap<InteractionKey, InteractionState>,
+    /// `Selected` environment entries claimed this frame, keyed by the
+    /// entry's address — the outermost interactive control under the metadata
+    /// owns it, so the flag does not leak into controls nested inside it.
+    selected_claims: BTreeMap<usize, RetainedIdentity>,
+    /// `InteractionReport` bindings claimed this frame, keyed by the report
+    /// binding's signal identity (or the env entry's address when the binding
+    /// has none) — the outermost interactive control inside a reporting view
+    /// writes it.
+    report_claims: BTreeSet<usize>,
+    /// Bindings behind identity-stable report claims, so a scope whose control
+    /// stops reporting (it unmounted or went non-interactive) leaves the
+    /// binding at rest instead of frozen on the last sampled state.
+    live_reports: BTreeMap<usize, nami::Binding<InteractionState>>,
 }
 
 /// Stable identity of one semantic interaction target.
@@ -47,7 +66,7 @@ impl InteractionKey {
 }
 
 #[derive(Debug, Default)]
-struct InteractionState {
+struct WidgetInteractionEntry {
     hovering: bool,
     handles: Option<Rc<InteractionLayerHandles>>,
 }
@@ -75,10 +94,74 @@ impl InteractionFocus {
 impl InteractionEngine {
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.active.clear();
+        self.selected_claims.clear();
+        self.report_claims.clear();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
         self.states.retain(|key, _| self.active.contains(key));
+        self.reported.retain(|key, _| self.active.contains(key));
+        // A report whose control no longer binds goes back to rest —
+        // identity-less claims are not tracked here (their key is the env
+        // entry's per-frame address), and a stale entry would reset a
+        // different binding.
+        self.live_reports.retain(|claim, binding| {
+            if self.report_claims.contains(claim) {
+                return true;
+            }
+            if binding.snapshot() != InteractionState::empty() {
+                binding.set(InteractionState::empty());
+            }
+            false
+        });
+    }
+
+    /// Claims `selected` for `key`'s owner this frame; `true` while `key`
+    /// owns the claim — the outermost interactive control under a `Selected`
+    /// scope wins, so the state does not leak into controls nested inside it.
+    /// Discriminators share one owner so a multi-part control (a stepper's
+    /// halves) reports one selected state.
+    pub(crate) fn claim_selected(&mut self, selected: &Selected, key: &InteractionKey) -> bool {
+        match self
+            .selected_claims
+            .entry(std::ptr::from_ref(selected) as usize)
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(key.owner.clone());
+                true
+            }
+            Entry::Occupied(entry) => *entry.get() == key.owner,
+        }
+    }
+
+    /// Claims `report` for this frame's outermost claimant; `true` only for
+    /// the first control binding under it — the caller then owns the write.
+    /// Identity-stable bindings are kept in `live_reports` so an unclaimed
+    /// report resets to the resting state at frame end.
+    pub(crate) fn claim_report(&mut self, report: &InteractionReport) -> bool {
+        let claim = report.0.identity().map_or_else(
+            || std::ptr::from_ref(report) as usize,
+            |identity| identity.raw(),
+        );
+        if !self.report_claims.insert(claim) {
+            return false;
+        }
+        if report.0.identity().is_some() {
+            self.live_reports.insert(claim, report.0.clone());
+        }
+        true
+    }
+
+    /// Records the resolved flags a bound control reports — draw sites read
+    /// them back through [`Self::reported_state`].
+    pub(crate) fn set_reported_state(&mut self, key: &InteractionKey, state: InteractionState) {
+        self.reported.insert(key.clone(), state);
+    }
+
+    /// The flags `key` reported at bind time; empty for a view that never
+    /// bound an interaction target.
+    pub(crate) fn reported_state(&self, key: &InteractionKey) -> InteractionState {
+        self.reported.get(key).copied().unwrap_or_default()
     }
 
     pub(crate) fn bind_hover(&mut self, key: &InteractionKey) -> (HoverSlot, bool) {

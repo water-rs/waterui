@@ -32,6 +32,7 @@ mod gpu_surface_idle;
 mod gpu_surface_input;
 mod image_ingest;
 mod ime;
+mod interaction_state;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod layer_occlusion;
 mod layout_contract;
@@ -2234,6 +2235,8 @@ pub(crate) struct MinimalTestTheme {
     slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
     /// Every slider track rect the theme was asked to draw.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
+    state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, vello::kurbo::RoundedRectRadii)>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2309,6 +2312,17 @@ impl WidgetTheme for MinimalTestTheme {
         _icon_only: bool,
         _state: WidgetInteractionState,
     ) {
+    }
+
+    fn draw_interaction_state_layer(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        radii: vello::kurbo::RoundedRectRadii,
+        _color: vello::peniko::Color,
+        state: WidgetInteractionState,
+    ) {
+        self.state_layer_draws.borrow_mut().push((state, radii));
     }
 
     fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {

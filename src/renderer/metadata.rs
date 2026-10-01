@@ -6,6 +6,7 @@ use core::num::NonZeroUsize;
 use lru::LruCache;
 
 use super::*;
+use waterui_backend_core::widget::DrawContext as _;
 
 /// How many distinct blurred silhouettes stay cached before the least
 /// recently used is evicted.
@@ -658,6 +659,9 @@ impl HydrolysisRenderer {
                     node.set_label(label);
                 }
                 node.add_action(AccessibilityAction::Focus);
+                if renderer.control_selected(env, &InteractionKey::for_rc(&effect.action, 0)) {
+                    node.set_selected(true);
+                }
                 let action_target = if disabled {
                     node.set_disabled();
                     None
@@ -723,26 +727,31 @@ impl HydrolysisRenderer {
                 .cloned()
         {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
-            let (interaction, press_slot, _) =
-                renderer.bind_control_interaction_target(interaction_key, bounds, env, disabled);
+            let (interaction, press_slot, _) = renderer.bind_control_interaction_target(
+                interaction_key.clone(),
+                bounds,
+                env,
+                disabled,
+            );
             Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
                 renderer.drain_claim_scope(node_id, env);
             }
 
+            let state = renderer.reported_interaction_state(&interaction_key);
             let color_signal = style.state_layer_color.resolve(env);
             let color = resolved_color_to_peniko(renderer.read_signal(&color_signal));
             let interaction = local_interaction_state(interaction, ctx.hit_transform);
             let theme = renderer.theme();
+            let layer_bounds = style.state_layer_bounds(ctx.bounds);
+            let radii = *style.state_layer_radii.resolve(state);
+            let ring = interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
             let mut draw = renderer.draw_context(ctx);
-            theme.draw_interaction_state_layer(
-                &mut draw,
-                style.state_layer_bounds(ctx.bounds),
-                style.state_layer_radii,
-                color,
-                interaction,
-            );
+            theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
+            if let Some((ring_bounds, ring_radii, brush, width)) = ring {
+                draw.stroke_rounded_rect(ring_bounds, ring_radii, &brush, width);
+            }
 
             if !disabled {
                 renderer.register_interactive_pointer_target_with_keyboard(
@@ -833,6 +842,9 @@ impl HydrolysisRenderer {
                 node.set_label(label);
             }
             node.add_action(AccessibilityAction::Focus);
+            if renderer.control_selected(env, &InteractionKey::for_rc(&effect.action, 0)) {
+                node.set_selected(true);
+            }
             let action_target = if disabled {
                 node.set_disabled();
                 None
