@@ -19,7 +19,7 @@
 //! ```
 
 use nami::{Computed, SignalExt};
-use waterui_core::{IntoSignalF32, metadata::MetadataKey, plugin::Plugin};
+use waterui_core::{IntoSignalF32, interaction::StateValue, metadata::MetadataKey, plugin::Plugin};
 use waterui_graphics::color::Color;
 use waterui_shape::{ClipShape, Rectangle, Shape};
 
@@ -47,6 +47,17 @@ pub struct FloatingStyle {
     pub minimum_height: f64,
     /// Opacity applied to floating-button content while disabled.
     pub disabled_content_opacity: f32,
+    /// The surface's elevation per interaction state — a floating action
+    /// button rises one level while hovered.
+    pub elevation: StateValue<FloatingElevation>,
+}
+
+impl Plugin for FloatingStyle {}
+
+/// The two shadows that lift a floating surface: a soft ambient shadow and a
+/// tighter key shadow.
+#[derive(Debug, Clone)]
+pub struct FloatingElevation {
     /// Ambient shadow color.
     pub ambient_shadow_color: Color,
     /// Ambient shadow blur radius.
@@ -60,8 +71,6 @@ pub struct FloatingStyle {
     /// Key shadow vertical offset.
     pub key_shadow_offset_y: f32,
 }
-
-impl Plugin for FloatingStyle {}
 
 impl Default for FloatingStyle {
     fn default() -> Self {
@@ -77,12 +86,14 @@ impl Default for FloatingStyle {
             minimum_width: 44.0,
             minimum_height: 44.0,
             disabled_content_opacity: 0.38,
-            ambient_shadow_color: Color::new(Foreground).with_opacity(0.08),
-            ambient_shadow_radius: 6.0,
-            ambient_shadow_offset_y: 2.0,
-            key_shadow_color: Color::new(Foreground).with_opacity(0.12),
-            key_shadow_radius: 3.0,
-            key_shadow_offset_y: 1.0,
+            elevation: StateValue::new(FloatingElevation {
+                ambient_shadow_color: Color::new(Foreground).with_opacity(0.08),
+                ambient_shadow_radius: 6.0,
+                ambient_shadow_offset_y: 2.0,
+                key_shadow_color: Color::new(Foreground).with_opacity(0.12),
+                key_shadow_radius: 3.0,
+                key_shadow_offset_y: 1.0,
+            }),
         }
     }
 }

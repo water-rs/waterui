@@ -1,10 +1,14 @@
 //! End-to-end semantic tests for the `text` component.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::graphics::color::Srgb;
+use waterui::text::highlight::Language;
 use waterui::text::{code, styled, text};
-use waterui_testing::{Role, SemanticApp};
+use waterui_testing::{Role, SemanticApp, UiBuilder};
 
 fn plain_text_view() -> impl waterui::View {
     text("Visible content")
@@ -52,5 +56,24 @@ fn code_block() -> impl waterui::View {
 #[waterui::test(code_block)]
 fn a_code_block_publishes_its_language_and_copy_action(app: &mut SemanticApp) {
     app.query().role(Role::LABEL).label("Rust").assert_exists();
-    app.query().role(Role::LABEL).label("Copy").assert_exists();
+    app.query().role(Role::BUTTON).label("Copy").assert_exists();
+}
+
+/// The copy affordance is a real button: it shows up in the tree under the
+/// BUTTON role named for its label, and activating it runs the copy — which
+/// the block reports through `on_copied`.
+#[waterui::test()]
+fn activating_the_copy_button_copies(ui: UiBuilder) {
+    let copied = Rc::new(Cell::new(false));
+    let observed = Rc::clone(&copied);
+    let mut app = ui.mount(move || {
+        let observed = Rc::clone(&observed);
+        code(Language::Rust, "fn main() {}")
+            .on_copied(move |_| observed.set(true))
+            .padding_with(16.0)
+    });
+
+    app.query().role(Role::BUTTON).label("Copy").assert_exists();
+    app.query().role(Role::BUTTON).label("Copy").tap();
+    assert!(copied.get(), "activating Copy must run on_copied");
 }

@@ -3,6 +3,8 @@
 //! This module provides modifiers for controlling how views respond to user interactions
 //! such as touch events and hit testing.
 
+pub use waterui_core::interaction::{InteractionReport, InteractionState, Selected, StateValue};
+
 use nami::{Computed, signal::IntoComputed};
 use waterui_core::metadata::MetadataKey;
 

@@ -1055,6 +1055,22 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envDisabled<'local>(
     unsafe { crate::waterui_env_disabled(env_ptr as *const crate::WuiEnv) as jlong }
 }
 
+/// Returns the `InteractionReport` binding `.interaction_state(...)` installs,
+/// or 0 when the view asks for no reporting.
+///
+/// A control that renders itself writes the state of the outermost interactive
+/// control at or inside the reporting view into the returned binding, as
+/// `InteractionState` bits, every time it changes.
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_envInteractionReport<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    env_ptr: jlong,
+) -> jlong {
+    // SAFETY: Kotlin passes back the live app environment handle, only read here.
+    unsafe { crate::waterui_env_interaction_report(env_ptr as *const crate::WuiEnv) as jlong }
+}
+
 #[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_themeColorScheme<'local>(
     _env: EnvUnowned<'local>,

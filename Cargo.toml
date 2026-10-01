@@ -60,7 +60,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
 apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "86833228a2bf493f346150fcdf58ba92f212f837"
+android-backend-revision = "79ddc6f786aaffeacd3e3eafa297aa88ef9df0f6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
 # Gradle project for `--platform android --backend hydrolysis`. The revision
 # is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
@@ -68,7 +68,7 @@ android-backend-revision = "86833228a2bf493f346150fcdf58ba92f212f837"
 # revision rather than a branch. `subdirectory` names the Gradle composite
 # root inside the checkout.
 hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
-hydrolysis-android-host-revision = "06f0b2fafbd0e0fb722cacf993d56cd87f661666"
+hydrolysis-android-host-revision = "d9e484fd5796aa4095804ef1b8b8744f8b7baa8f"
 hydrolysis-android-host-subdirectory = "android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
@@ -324,7 +324,7 @@ swift-bridge-build = "0.1"
 jni = "0.22"
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
-minstant = "0.1"
+web-time = "1.1"
 cpu-time = "1.0"
 # Only the process table is read (`ProcessesToUpdate`, `Pid`), so the disk,
 # network, component-temperature and user backends are not built.
@@ -518,7 +518,7 @@ waterui-webview = { path = "components/platform/webview" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "f04ec615ffd9d844876c97eb780befe3176d57e3" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "c22b46916a1e03aa4d7da3c4132e779b12dd6a1c" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -560,12 +560,12 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45
 # filter library `.filter(F)`/`.effect(E)` and the engine itself agree on:
 # every filtrate in the graph must come from this same revision or a filter
 # type built on one side is a different type on the other.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "8d00976e5a68f3ac2e99d9265d3246b1a7c29ad6" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "8d00976e5a68f3ac2e99d9265d3246b1a7c29ad6" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "8d00976e5a68f3ac2e99d9265d3246b1a7c29ad6" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "8d00976e5a68f3ac2e99d9265d3246b1a7c29ad6" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "8d00976e5a68f3ac2e99d9265d3246b1a7c29ad6" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "8d00976e5a68f3ac2e99d9265d3246b1a7c29ad6" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "f2209fb4225f7432dd97784c99542f54aca242e6" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "f2209fb4225f7432dd97784c99542f54aca242e6" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "f2209fb4225f7432dd97784c99542f54aca242e6" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "f2209fb4225f7432dd97784c99542f54aca242e6" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "f2209fb4225f7432dd97784c99542f54aca242e6" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "f2209fb4225f7432dd97784c99542f54aca242e6" }
 
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
@@ -576,26 +576,26 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "c4f68918aa1fec77b4637779543bba19f5fef1c6" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2da1ec959f2a27c5a9860457ff7f505ee183861c" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "d9e484fd5796aa4095804ef1b8b8744f8b7baa8f" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "f48ab29c10e0c7214aa6850c024eab2b4cbb43ae" }
 # codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
 # 0.1.2 registry release; this is the rev waterkit pins itself.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }
@@ -609,5 +609,5 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f20
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "bfa53ccd47ee733e878f27d878853b4a231d8bff" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "fc4a6d59a0d520200f275f7cd29bfd749e928659" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }

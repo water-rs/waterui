@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use accesskit::{
@@ -296,6 +297,24 @@ fn key_event(key: KeyCode, modifiers: Modifiers, state: KeyState) -> InputEvent 
         state,
         modifiers,
     }
+}
+
+/// One file of an OS file drag hovering the window — winit `HoveredFile`,
+/// emitted once per path the drag carries.
+pub const fn file_hovered_event(path: PathBuf) -> InputEvent {
+    InputEvent::FileHovered { path }
+}
+
+/// One file of an OS file drag dropped on the window — winit `DroppedFile`,
+/// emitted once per path after the `HoveredFile` batch.
+pub const fn file_dropped_event(path: PathBuf) -> InputEvent {
+    InputEvent::FileDropped { path }
+}
+
+/// An OS file drag left the window or ended without a drop — winit
+/// `HoveredFileCancelled`.
+pub const fn file_hover_cancelled_event() -> InputEvent {
+    InputEvent::FileHoverCancelled
 }
 
 /// The `Started`/`Moved`/`Ended` sequence one magnification (pinch) gesture

@@ -159,7 +159,7 @@ impl Avatar {
     ///
     /// This is the general constructor: `fallback` is any view — a monogram of
     /// your own, an icon, a generated identicon. For the ordinary case, where
-    /// the fallback is the initials of the name, use [`avatar`].
+    /// the fallback is the initials of the name, use [`fn@avatar`].
     ///
     /// `name` is required, and required at construction, for the same reason
     /// every `WaterUI` control demands a [`Label`]: a portrait with no name is

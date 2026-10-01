@@ -7,6 +7,7 @@
 
 use std::borrow::Cow;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use aither_core::llm::tool::{Tool, ToolResult, Tools};
@@ -67,6 +68,8 @@ pub trait ToolDispatch: Send + Sync + 'static {
     fn pointer(&self, args: PointerArgs) -> impl Future<Output = ToolResult> + Send;
     /// Dispatch a key press.
     fn key(&self, args: KeyArgs) -> impl Future<Output = ToolResult> + Send;
+    /// Drop files at a point through the OS file-drop input path.
+    fn drop_files(&self, args: DropFilesArgs) -> impl Future<Output = ToolResult> + Send;
     /// Type text into the focused input.
     fn type_text(&self, args: TypeTextArgs) -> impl Future<Output = ToolResult> + Send;
     /// Wait for expectations.
@@ -336,6 +339,39 @@ pub struct KeyArgs {
     pub settle: Option<bool>,
 }
 
+/// Drop one or more files at a viewport point or onto a node, then return
+/// the settled tree.
+///
+/// This drives the same input a platform drop delivers — the host pointer
+/// answer moves to the point, then every path emits the `FileHovered` →
+/// `FileDropped` sequence a real OS drag produces — so the drop destination
+/// under the point enters the drag and receives one `Files` payload. A
+/// drag that hovers without dropping is not a separate tool: hover-only and
+/// cancel are available to `waterui-testing` callers as
+/// `queue_hover_files_at` and `queue_cancel_files_hover`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct DropFilesArgs {
+    /// Absolute file paths to drop — one hovered-then-dropped pair per path,
+    /// in order; the destination receives all of them as one `Files`
+    /// payload.
+    pub paths: Vec<PathBuf>,
+    /// X coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
+    pub x: f32,
+    /// Y coordinate in logical pixels — or a `0`–`1` fraction of the `node`
+    /// bounds when `node` is set.
+    pub y: f32,
+    /// Anchor node id: `x`/`y` become fractions of its bounds (`0.5, 0.5` is
+    /// the center). Fractions outside `0`–`1` extrapolate past the edge.
+    #[serde(default)]
+    pub node: Option<u64>,
+    /// Settle the runtime before returning (default `true`). Pass `false` to
+    /// queue the drop without settling, so `advance` and `screenshot` can
+    /// observe the transient it triggers.
+    #[serde(default)]
+    pub settle: Option<bool>,
+}
+
 /// Type text into the focused text input, then return the settled tree.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TypeTextArgs {
@@ -467,6 +503,13 @@ session_tool!(
     key
 );
 session_tool!(
+    /// The `drop_files` tool.
+    DropFiles,
+    "drop_files",
+    DropFilesArgs,
+    drop_files
+);
+session_tool!(
     /// The `type_text` tool.
     TypeText,
     "type_text",
@@ -503,12 +546,13 @@ session_tool!(
 );
 
 /// The registered tool names, in registration order.
-pub const SESSION_TOOL_NAMES: [&str; 10] = [
+pub const SESSION_TOOL_NAMES: [&str; 11] = [
     "snapshot",
     "find",
     "act",
     "pointer",
     "key",
+    "drop_files",
     "type_text",
     "wait",
     "screenshot",
@@ -516,7 +560,7 @@ pub const SESSION_TOOL_NAMES: [&str; 10] = [
     "advance",
 ];
 
-/// Registers the ten session tools against `dispatch`.
+/// Registers the eleven session tools against `dispatch`.
 ///
 /// # Panics
 ///
@@ -537,6 +581,9 @@ pub fn register_session_tools(tools: &mut Tools, dispatch: Arc<impl ToolDispatch
         .expect("static tool registration cannot fail");
     tools
         .register(Key::new(dispatch.clone()))
+        .expect("static tool registration cannot fail");
+    tools
+        .register(DropFiles::new(dispatch.clone()))
         .expect("static tool registration cannot fail");
     tools
         .register(TypeText::new(dispatch.clone()))
