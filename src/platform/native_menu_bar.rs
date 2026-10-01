@@ -46,6 +46,8 @@ use nami::Computed;
 use nami::Signal as _;
 use nami::watcher::BoxWatcherGuard;
 use waterui::Environment;
+#[cfg(target_os = "macos")]
+use waterui_controls::menu::ResolvedNestedMenu;
 use waterui_controls::menu::{ResolvedCommand, ResolvedMenuItem, Shortcut};
 use waterui_core::handler::SharedAction;
 
@@ -248,6 +250,115 @@ fn append_items(
     }
 }
 
+/// The product name the macOS application menu and its named items are
+/// labeled with: `CFBundleName` from the main bundle's Info.plist (the key
+/// Finder and the Dock read), then `CFBundleDisplayName` for bundles that
+/// set only the display form, and the process name when the binary runs
+/// with no bundle at all.
+#[cfg(target_os = "macos")]
+fn product_name() -> String {
+    use objc2_foundation::{NSBundle, NSProcessInfo, NSString, ns_string};
+    let bundle = NSBundle::mainBundle();
+    for key in [
+        ns_string!("CFBundleName"),
+        ns_string!("CFBundleDisplayName"),
+    ] {
+        if let Some(name) = bundle
+            .objectForInfoDictionaryKey(key)
+            .and_then(|value| value.downcast::<NSString>().ok())
+            .map(|name| name.to_string())
+            .filter(|name| !name.trim().is_empty())
+        {
+            return name;
+        }
+    }
+    NSProcessInfo::processInfo().processName().to_string()
+}
+
+/// A resolved top-level menu's title in plain text.
+#[cfg(target_os = "macos")]
+fn menu_title(menu: &ResolvedNestedMenu) -> String {
+    menu.label.content.snapshot().to_plain().to_string()
+}
+
+/// Builds the standard macOS application menu — About, Services, Hide,
+/// Hide Others, Show All, Quit — as a submenu titled by the product name.
+/// Every bar gets one, so an application that declares no app-level Quit
+/// still has a working one and `NSApp.mainMenu` always opens with the
+/// conventional item set (water-rs/hydrolysis#321).
+///
+/// When the application declares its own application menu — a top-level
+/// `Menu` titled by the product name — its items fold in between About and
+/// Services, the spot macOS conventions reserve for app-level entries like
+/// Settings, instead of standing next to the standard menu as a duplicate
+/// product-named top-level menu. The declared menu's own items signal
+/// still rebuilds the bar on change, like every other nested-items watch.
+#[cfg(target_os = "macos")]
+fn build_app_menu(
+    product_name: &str,
+    declared: Option<&ResolvedNestedMenu>,
+    actions: &mut HashMap<MenuId, SharedAction<()>>,
+    state_watches: &mut Vec<BoxWatcherGuard>,
+    slot: &Rc<RefCell<Option<Bar>>>,
+    top_items: &Computed<Vec<ResolvedMenuItem>>,
+) -> Submenu {
+    let app_menu = Submenu::new(product_name, true);
+    let append = |entry: &dyn muda::IsMenuItem| {
+        app_menu
+            .append(entry)
+            .expect("appending to the application menu failed");
+    };
+    append(&PredefinedMenuItem::about(
+        Some(&format!("About {product_name}")),
+        None,
+    ));
+    if let Some(declared) = declared {
+        let declared_items = declared.items.snapshot();
+        if !declared_items.is_empty() {
+            append(&PredefinedMenuItem::separator());
+            append_items(
+                &append,
+                &declared_items,
+                actions,
+                state_watches,
+                slot,
+                top_items,
+            );
+        }
+        let slot = Rc::clone(slot);
+        let top_items = top_items.clone();
+        state_watches.push(declared.items.watch(move |_| {
+            rebuild_bar(&slot, &top_items);
+        }));
+        append(&PredefinedMenuItem::separator());
+    } else {
+        append(&PredefinedMenuItem::separator());
+    }
+    append(&PredefinedMenuItem::services(None));
+    append(&PredefinedMenuItem::separator());
+    append(&PredefinedMenuItem::hide(Some(&format!(
+        "Hide {product_name}"
+    ))));
+    append(&PredefinedMenuItem::hide_others(None));
+    append(&PredefinedMenuItem::show_all(None));
+    append(&PredefinedMenuItem::separator());
+    append(&PredefinedMenuItem::quit(Some(&format!(
+        "Quit {product_name}"
+    ))));
+    app_menu
+}
+
+/// The index of the application's own application menu in the resolved
+/// top-level list — the first `Menu` titled by the product name, which the
+/// macOS bar folds into the standard application menu instead of showing
+/// twice.
+#[cfg(target_os = "macos")]
+fn declared_app_menu_index(items: &[ResolvedMenuItem], product_name: &str) -> Option<usize> {
+    items.iter().position(
+        |item| matches!(item, ResolvedMenuItem::Menu(menu) if menu_title(menu) == product_name),
+    )
+}
+
 fn build_bar(
     items: &[ResolvedMenuItem],
     slot: &Rc<RefCell<Option<Bar>>>,
@@ -256,11 +367,59 @@ fn build_bar(
     let menu = NativeMenu::new();
     let mut actions = HashMap::new();
     let mut state_watches = Vec::new();
+    let parent = |entry: &dyn muda::IsMenuItem| {
+        menu.append(entry)
+            .expect("appending a top-level item to the menu bar failed");
+    };
+    #[cfg(target_os = "macos")]
+    {
+        let product_name = product_name();
+        let app_index = declared_app_menu_index(items, &product_name);
+        let declared = app_index.map(|index| {
+            let ResolvedMenuItem::Menu(menu) = &items[index] else {
+                unreachable!("the app-menu index points at a menu");
+            };
+            menu
+        });
+        parent(&build_app_menu(
+            &product_name,
+            declared,
+            &mut actions,
+            &mut state_watches,
+            slot,
+            top_items,
+        ));
+        if let Some(index) = app_index {
+            append_items(
+                &parent,
+                &items[..index],
+                &mut actions,
+                &mut state_watches,
+                slot,
+                top_items,
+            );
+            append_items(
+                &parent,
+                &items[index + 1..],
+                &mut actions,
+                &mut state_watches,
+                slot,
+                top_items,
+            );
+        } else {
+            append_items(
+                &parent,
+                items,
+                &mut actions,
+                &mut state_watches,
+                slot,
+                top_items,
+            );
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
     append_items(
-        &|entry| {
-            menu.append(entry)
-                .expect("appending a top-level item to the menu bar failed");
-        },
+        &parent,
         items,
         &mut actions,
         &mut state_watches,
