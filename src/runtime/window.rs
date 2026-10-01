@@ -658,6 +658,13 @@ impl Window {
 
     /// Show the window on screen.
     ///
+    /// The window opens independently of any view's lifetime, which makes
+    /// this the way to show a window that must outlive every other window —
+    /// for example one reopened under
+    /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
+    /// after the last window closed. For window presentation tied to a
+    /// mounted view, see [`conditional_window`].
+    ///
     /// # Panics
     ///
     /// Panics if `WindowManager` is not found in the environment.
@@ -713,7 +720,11 @@ impl WindowPresentation {
 /// window.
 ///
 /// The returned view is invisible and must be placed in the tree, or the
-/// window is never presented.
+/// window is never presented. The presentation lives only as long as the
+/// window hosting that view and ends when the host closes; a window that
+/// must outlive every other window — for example one reopened under
+/// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
+/// after the last window closed — is opened with [`Window::show`] instead.
 pub fn conditional_window<F>(presentation: &WindowPresentation, creator: F) -> impl View + use<F>
 where
     F: Fn(Binding<WindowState>) -> Window + 'static,
