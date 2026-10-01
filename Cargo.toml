@@ -433,7 +433,12 @@ waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "d
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui = { git = "https://github.com/water-rs/waterui", rev = "1fc4ec03f5c4055e3c5e7f2438ec5898490bef53" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "01f3d3fc2907065eff815f623ac7d9e12fa9943b" }
+# waterui-video-gpu: the rev waterui w3-r8's own patch table names
+# (01f3d3fc, video-gpu dev) still imports the retired GpuSurface/GpuView
+# API and does not compile against r8's graphics — no published rev does.
+# The interim local port (wgpu 30, GpuContent/GpuContentView) stays the
+# only open item until the dedicated port lands.
+waterui-video-gpu = { path = "../video-gpu" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "4c530503f6e3277f44511f327db463a195482abd" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
