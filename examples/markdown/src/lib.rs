@@ -111,7 +111,7 @@ pub fn demo() -> impl View {
                 ),
                 spacer(),
             )),
-            when(open.clone(), move || search_bar()),
+            when(open.clone(), search_bar),
             spacer(),
         ))
         .padding(),

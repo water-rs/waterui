@@ -510,9 +510,10 @@ waterui-webview = { path = "components/platform/webview" }
 # registry hydrolysis still calls the removed display probe. This is the
 # hydrolysis revision that supplies the rate from winit's monitors,
 # implements the icon-button contract (water-rs/hydrolysis#115),
-# renders the framework-owned ListSelection (water-rs/waterui#1226), and
+# renders the framework-owned ListSelection (water-rs/waterui#1226),
 # resolves pointer activation points through the node's clip chain
-# (water-rs/hydrolysis#27); drop it when a hydrolysis release carries
+# (water-rs/hydrolysis#27), and carries the macOS menu-bar fix
+# (water-rs/hydrolysis#322); drop it when a hydrolysis release carries
 # those changes.
 # hydrolysis is pinned by the migration block at the bottom of this table.
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
