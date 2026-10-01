@@ -533,7 +533,7 @@ impl HydrolysisRenderer {
                 theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
                 if let Some((ring_bounds, ring_radii, color, width)) = ring {
                     draw.stroke(
-                        kurbo::RoundedRect::new(ring_bounds, ring_radii),
+                        kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
                         kurbo::Stroke::new(width),
                         color,
                     );
