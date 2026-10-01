@@ -196,6 +196,25 @@ impl DeferredLegacyFrame {
     }
 }
 
+/// Take a pending render's readback ticket for verification.
+///
+/// On wasm32 the verify cannot wait on GPU completion — vello's deferred
+/// wait is a hard panic there — so a ticket whose download has not resolved
+/// is put back instead: the stash stays unresolved and a later frame's
+/// drain verifies it once `is_ready` flips. Other targets always take the
+/// ticket; their verify may block on the GPU.
+fn take_readback_ticket(
+    pending: &mut PendingLegacyRender,
+) -> Option<crate::engine::LegacyBumpReadback> {
+    let ticket = pending.readback.take()?;
+    #[cfg(target_arch = "wasm32")]
+    if !ticket.is_ready() {
+        pending.readback = Some(ticket);
+        return None;
+    }
+    Some(ticket)
+}
+
 /// The mask scene [`HydrolysisRenderer::render_active_layers_mask_to_texture`]
 /// draws: the active layers clipped to the target, unioned with the target
 /// rect so uncovered regions stay opaque.
@@ -1673,7 +1692,7 @@ impl HydrolysisRenderer {
             // overflow the same buffers again. The second verify exists to
             // surface a violation of that invariant — a satisfy/covers
             // disagreement with the shader accounting — not to converge.
-            let Some(ticket) = pending.readback.take() else {
+            let Some(ticket) = take_readback_ticket(pending) else {
                 continue;
             };
             let overflowed = match renderer.verify_bump_readbacks(device, vec![ticket]) {
@@ -1703,7 +1722,7 @@ impl HydrolysisRenderer {
                     peniko::Color::TRANSPARENT,
                 )
                 .expect("hydrolysis renderer: failed to re-render legacy layer scene");
-            let Some(ticket) = pending.readback.take() else {
+            let Some(ticket) = take_readback_ticket(pending) else {
                 continue;
             };
             match renderer.verify_bump_readbacks(device, vec![ticket]) {
@@ -1722,12 +1741,19 @@ impl HydrolysisRenderer {
                 }
             }
         }
-        for (renderer, _) in deferred.pooled.drain(..) {
-            self.compositor
-                .legacy_renderer_pool
-                .lock()
-                .expect("hydrolysis renderer: legacy renderer pool poisoned")
-                .push(renderer);
+        for (renderer, pending) in core::mem::take(&mut deferred.pooled) {
+            if pending.readback.is_some() {
+                // An unresolved ticket stays stashed — wasm32 never blocks
+                // so it can remain, and dropping a live ticket panics in
+                // vello's map callback. The pair carries to the next drain.
+                deferred.pooled.push((renderer, pending));
+            } else {
+                self.compositor
+                    .legacy_renderer_pool
+                    .lock()
+                    .expect("hydrolysis renderer: legacy renderer pool poisoned")
+                    .push(renderer);
+            }
         }
 
         let main = &mut deferred.main;
@@ -1738,7 +1764,7 @@ impl HydrolysisRenderer {
         let mut owners = Vec::new();
         let mut tickets = Vec::new();
         for (index, pending) in main.iter_mut().enumerate() {
-            if let Some(ticket) = pending.readback.take() {
+            if let Some(ticket) = take_readback_ticket(pending) {
                 owners.push(index);
                 tickets.push(ticket);
             }
@@ -1793,7 +1819,7 @@ impl HydrolysisRenderer {
         }
         let mut tickets = Vec::new();
         for pending in main.iter_mut() {
-            if let Some(ticket) = pending.readback.take() {
+            if let Some(ticket) = take_readback_ticket(pending) {
                 tickets.push(ticket);
             }
         }
@@ -1827,7 +1853,7 @@ impl HydrolysisRenderer {
         self.compositor
             .deferred_legacy_frame
             .as_ref()
-            .is_some_and(|deferred| !deferred.presented)
+            .is_some_and(|deferred| !deferred.presented || !deferred.verify_ready())
     }
 
     /// The `queue.submit` indices the stashed frame's tickets depend on —
@@ -1940,13 +1966,21 @@ impl HydrolysisRenderer {
                 self.composite_ready_layers(target, &deferred.ready, premultiply_alpha);
             }
         }
-        for layer in deferred.ready {
-            if let Some(leased) = layer.layer_texture {
-                self.compositor.release_layer_texture(leased);
+        if deferred.verify_ready() {
+            for layer in deferred.ready {
+                if let Some(leased) = layer.layer_texture {
+                    self.compositor.release_layer_texture(leased);
+                }
+                if let Some(leased) = layer.mask_texture {
+                    self.compositor.release_layer_texture(leased);
+                }
             }
-            if let Some(leased) = layer.mask_texture {
-                self.compositor.release_layer_texture(leased);
-            }
+        } else {
+            // wasm32: tickets still resolving on the GPU — keep the stash
+            // (verified content included, so the next drain re-composites
+            // it) until a later drain resolves them. Dropping a live
+            // ticket panics inside vello's map callback.
+            self.compositor.deferred_legacy_frame = Some(deferred);
         }
         presented
     }
@@ -2544,6 +2578,15 @@ impl HydrolysisRenderer {
                 // it presented so no settle pass re-presents it; the next
                 // frame still composites the verified output at its top.
                 deferred.presented = true;
+            }
+            // A stash kept for unresolved tickets (wasm32 cannot wait on
+            // the GPU) must not be dropped — vello's map callback panics
+            // sending to a dropped ticket. Its pending renders ride along
+            // with this stash so a later drain still resolves them; their
+            // composited `ready` is already superseded by this frame's.
+            if let Some(mut replaced) = self.compositor.deferred_legacy_frame.take() {
+                deferred.pooled.append(&mut replaced.pooled);
+                deferred.main.append(&mut replaced.main);
             }
             // Stashing the just-verified frame too lets frame two defer
             // without another in-frame wait: its drain resolves instantly,

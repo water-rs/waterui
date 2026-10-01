@@ -183,11 +183,13 @@ x11-dl = { version = "2.21", optional = true }
 x11rb = { version = "0.13", optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
-# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`. The version
-# tracks the `windows-sys` release winit 0.30 already builds against.
+# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
+# version tracks the `windows-sys` release winit 0.30 already builds against.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", optional = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -233,6 +235,8 @@ web-sys = { version = "0.3", optional = true, features = [
     "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
     "KeyboardEvent",
     "Node",
     "PointerEvent",

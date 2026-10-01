@@ -43,7 +43,9 @@ use crate::platform::{
     validated_window_frame,
 };
 use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
-use crate::runner::window::{RuntimeWindow, advance_runtime, handle_input_events, render_window};
+use crate::runner::window::{
+    RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
+};
 use crate::runner::{
     RenderDiagnosticsConfig, init_main_thread_executors, install_headless_window_managers,
     install_native_component_hooks, menu_bar,
@@ -198,6 +200,9 @@ pub(crate) struct AndroidHostWindow {
     /// A redraw the engine asked for that has not yet reached the scheduler;
     /// consumed at the end of the frame transaction as scheduling demand.
     redraw_pending: Cell<bool>,
+    /// The Activity is between `onStart` and `onStop` — half of the Android
+    /// visibility report; the other half is a live surface below.
+    started: bool,
     cursor_style: CursorStyle,
 }
 
@@ -235,8 +240,10 @@ impl AndroidHostWindow {
         }
         // Input is a wake, not a pump: the first queued event posts one
         // Choreographer frame that dispatches the batch; the engine's `Next`
-        // decides whether anything follows.
-        let wakes = self.events.is_empty();
+        // decides whether anything follows. An occluded session queues the
+        // event without the post — it dispatches on the frame visibility
+        // restores.
+        let wakes = self.events.is_empty() && !self.is_occluded();
         self.events.push(event);
         if wakes {
             tracing::debug!(
@@ -284,6 +291,14 @@ impl PlatformWindow for AndroidHostWindow {
 
     fn drain_events(&mut self) -> Vec<InputEvent> {
         std::mem::take(&mut self.events)
+    }
+
+    /// The Android visibility report, from the contract's public APIs: the
+    /// Activity's `onStart`/`onStop` state and the `SurfaceHolder`
+    /// attachment. A stopped activity or a destroyed surface means nothing
+    /// the band could draw reaches the user.
+    fn is_occluded(&self) -> bool {
+        !self.started || !self.surface.is_attached()
     }
 
     fn request_redraw(&self) {
@@ -607,6 +622,7 @@ impl AndroidSession {
             surface: AndroidSurface::new(gpu.clone(), sdk_int),
             bridge,
             redraw_pending: Cell::new(false),
+            started: false,
             cursor_style: CursorStyle::default(),
         };
         platform.apply_properties(&window);
@@ -616,12 +632,15 @@ impl AndroidSession {
         };
         crate::runner::fonts::seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());
-        let runtime = RuntimeWindow::new(
+        let mut runtime = RuntimeWindow::new(
             window,
             platform,
             renderer,
             RenderDiagnosticsConfig::from_env(),
         );
+        // The session mounts parked: the activity's `onStart` and the
+        // surface band's attach are the reports that unpark it.
+        runtime.set_hidden(runtime.platform.is_occluded());
 
         Ok(Box::new(Self {
             env,
@@ -675,7 +694,6 @@ impl AndroidSession {
                     leading as f32 / density,
                     trailing as f32 / density,
                 ));
-                platform.request_redraw();
             }
             (size_changed, insets_changed)
         };
@@ -692,7 +710,19 @@ impl AndroidSession {
         }
         if insets_changed {
             self.runtime.request_refresh();
+            self.runtime.request_redraw();
         }
+    }
+
+    /// The hosting Activity crossed `onStart`/`onStop` — Android's
+    /// visibility signal. Stopping parks the pump even when the surface
+    /// survives; starting posts the single restore frame when the band
+    /// can present again.
+    pub(crate) fn set_visible(&mut self, started: bool) {
+        self.runtime.platform.started = started;
+        // Android has no about-to-wait pass to notice an armed mode — the
+        // restore frame needs the explicit Choreographer post.
+        self.runtime.sync_occlusion_and_post_restore();
     }
 
     /// The one coordinated frame transaction — the scheduler's
@@ -706,7 +736,10 @@ impl AndroidSession {
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let now = Instant::now();
         let deadline = advance_runtime(&mut self.runtime, &self.env, now);
-        if self.runtime.mode.is_pending() && self.runtime.platform.surface.is_attached() {
+        if self.runtime.mode.is_pending()
+            && self.runtime.platform.surface.is_attached()
+            && !self.runtime.is_hidden()
+        {
             let executor = self.executor.clone();
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
             if presented {
@@ -736,9 +769,18 @@ impl AndroidSession {
             );
         }
 
+        // A hidden session reports no continuation: the armed mode stays
+        // armed for the restore frame, but the scheduler must not keep
+        // posting wakes into a parked pump.
+        let redraw_pending = self.runtime.platform.take_redraw_pending();
         let wants_next_frame =
-            self.runtime.mode.is_pending() || self.runtime.platform.take_redraw_pending();
-        if self.presented_once.get() && !wants_next_frame && !self.ready_logged.get() {
+            !self.runtime.is_hidden() && (self.runtime.mode.is_pending() || redraw_pending);
+        if reports_ui_idle(
+            self.presented_once.get(),
+            wants_next_frame,
+            self.runtime.is_hidden(),
+        ) && !self.ready_logged.get()
+        {
             tracing::info!(
                 target: "waterui::hydrolysis::android",
                 "hydrolysis android: first frame presented; ui idle"
@@ -795,9 +837,12 @@ impl AndroidSession {
             .attach(native_window, width, height, generation)
             .map_err(|error| error.to_string())?;
         // A new surface never inherits the old one's presented frame — the
-        // next transaction must re-encode and present.
+        // next transaction must re-encode and present. Attaching while
+        // `started` can un-hide a session parked on a missing surface; a
+        // stale `surfaceCreated` delivered after `onStop` attaches nothing
+        // the user sees, and `started` stays the lifecycle's report.
         self.runtime.request_refresh();
-        self.runtime.platform.request_redraw();
+        self.runtime.sync_occlusion_and_post_restore();
         Ok(())
     }
 
@@ -819,7 +864,12 @@ impl AndroidSession {
             .platform
             .surface
             .resize_for(width, height, generation)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        // A surface parked on a zero-size attach configures here — the
+        // resize that gave the band a real extent can be its un-hide, and
+        // the Choreographer post is the only wake the restore frame gets.
+        self.runtime.sync_occlusion_and_post_restore();
+        Ok(())
     }
 
     /// The band's surface is going away; `generation` names which one, so a
@@ -831,6 +881,9 @@ impl AndroidSession {
             "wake posted: surface detached"
         );
         self.runtime.platform.surface.detach_for(generation);
+        // No surface means nothing to present into: the pump parks until
+        // the band re-attaches or the activity's start report unhides it.
+        self.runtime.sync_occlusion();
     }
 
     /// The scheduler's interaction/animation high-refresh demand changed —

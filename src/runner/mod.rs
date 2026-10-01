@@ -62,6 +62,8 @@ mod web_runner;
 mod window;
 #[cfg(hydrolysis_winit)]
 mod winit_runner;
+#[cfg(hydrolysis_wayland_platform)]
+mod x11_state_watch;
 
 use diagnostics::*;
 #[cfg(not(target_arch = "wasm32"))]

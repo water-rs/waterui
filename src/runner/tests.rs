@@ -1,7 +1,7 @@
 use super::headless::HeadlessPlatformWindow;
 use super::{
     FrameMode, RenderDiagnosticsConfig, RuntimeWindow, acquire_surface_frame, advance_runtime,
-    clamp_window_size, handle_input_events, pump_window_semantics, render_window,
+    clamp_window_size, handle_input_events, pump_window_semantics, render_window, reports_ui_idle,
     schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 use crate::platform::{
@@ -148,6 +148,200 @@ fn text_caret_tick_wakes_redraw_without_layout_rebuild() {
     );
     assert!(runtime.renderer.take_redraw_request());
     assert!(runtime.platform.take_redraw_request());
+}
+
+/// A hidden window parks the pump: no frame renders, no wake deadline or
+/// platform redraw is posted, and work armed while hidden stays armed —
+/// the contract's "no frames, no wakes, no GPU pulls" half. Un-hiding
+/// renders exactly one frame from the current state, not a replay of the
+/// frames that were skipped.
+#[test]
+fn hidden_window_parks_the_pump_and_restores_exactly_one_frame() {
+    let mut runtime = test_runtime_window();
+    let env = crate::renderer::tests::test_environment();
+    let mut now = Instant::now();
+
+    // Settle the mount frames; the window goes idle on its own.
+    let idle_frames = drive_until_idle(&mut runtime, &env, &mut now, 60);
+    assert!(idle_frames < 60, "the window never went idle before hiding");
+    let presented_before = runtime.presented_frames;
+
+    runtime.set_hidden(true);
+    // Work that lands while hidden stays armed: neither the pump tick nor
+    // a platform redraw already in flight when the window hid may render it.
+    runtime.renderer.request_rebuild();
+    now += Duration::from_millis(32);
+    assert!(
+        advance_runtime(&mut runtime, &env, now).is_none(),
+        "a hidden window reports no wake deadline"
+    );
+    assert!(
+        !render_window(&mut runtime, &env, &mut || false),
+        "a hidden window presents no frame"
+    );
+    runtime.platform.request_redraw();
+    assert!(
+        !render_window(&mut runtime, &env, &mut || false),
+        "a stale in-flight wake renders nothing either"
+    );
+    assert_eq!(
+        runtime.presented_frames, presented_before,
+        "frames presented while hidden"
+    );
+    let _ = runtime.platform.take_redraw_request();
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "a hidden window posts no wakes — armed work stays armed"
+    );
+
+    // Visibility returns: the armed rebuild and the refresh the un-hide
+    // schedules produce exactly one frame, and the pump idles after it.
+    runtime.set_hidden(false);
+    assert!(runtime.mode.is_pending(), "un-hiding must arm a refresh");
+    let mut rendered = 0;
+    for _ in 0..10 {
+        now += Duration::from_millis(16);
+        let _ = advance_runtime(&mut runtime, &env, now);
+        let wake = runtime.mode.is_pending() | runtime.platform.take_redraw_request();
+        if !wake {
+            break;
+        }
+        if render_window(&mut runtime, &env, &mut || false) {
+            rendered += 1;
+        }
+    }
+    assert_eq!(rendered, 1, "un-hiding must render exactly one frame");
+}
+
+/// An animation in flight does not wake a hidden pump: no gesture
+/// deadline, no platform redraw — the armed wake the visible pump would
+/// post simply never runs.
+#[test]
+fn hidden_window_reports_no_deadline_for_an_armed_animation() {
+    let mut runtime = test_runtime_window();
+    let now = Instant::now();
+    let motion = TextCaretMotion {
+        fade_cycle_duration: Duration::from_millis(1_000),
+        frame_interval: Duration::from_millis(16),
+        min_opacity: 0.2,
+    };
+    runtime.renderer.set_frame_instant(now);
+    runtime.renderer.set_text_caret_motion(motion);
+    let focused_field = Rc::new(());
+    assert!(
+        runtime
+            .renderer
+            .set_focused_text_input_key(Some(InteractionKey::for_rc(&focused_field, 0)))
+    );
+
+    let env = Environment::new();
+    let deadline = now
+        .checked_add(motion.frame_interval)
+        .expect("test caret deadline overflow");
+
+    // The same arm the caret test proves wakes a visible pump.
+    runtime.set_hidden(true);
+    assert!(
+        advance_runtime(&mut runtime, &env, deadline).is_none(),
+        "an armed caret animation must not wake a hidden window"
+    );
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "an armed caret animation must not post a redraw while hidden"
+    );
+    assert!(
+        !render_window(&mut runtime, &env, &mut || false),
+        "a hidden window presents no frame"
+    );
+}
+
+/// The pump's "first frame presented; ui idle" readiness line must stay
+/// quiet while parked: the Choreographer wake a parked pump cannot unpost
+/// presents nothing, and a present-named line there reads as a frame
+/// presented while hidden — the false positive a device run counts.
+#[test]
+fn hidden_window_reports_no_ui_idle_readiness() {
+    assert!(
+        !reports_ui_idle(true, false, true),
+        "a parked pump must not report 'first frame presented; ui idle'"
+    );
+    assert!(
+        reports_ui_idle(true, false, false),
+        "a visible pump going idle after presenting reports readiness"
+    );
+    assert!(
+        !reports_ui_idle(false, false, false),
+        "readiness requires a presented frame"
+    );
+    assert!(
+        !reports_ui_idle(true, true, false),
+        "readiness requires the pump to be idle"
+    );
+}
+
+/// The un-hide contract hosts without an about-to-wait pass rely on:
+/// `sync_occlusion_and_post_restore` posts exactly one restore wake when
+/// the platform report flips the pump back to visible. It is what the
+/// Android host calls from `set_visible` and `surface_resized` — the
+/// resize that gives a band parked on a 0x0 attach its real extent —
+/// where only a Choreographer post reaches the frame scheduler.
+/// `sync_occlusion` itself must never post: a winit desktop's platform
+/// delivers its own restore event, and a second post would double the
+/// restore frame.
+#[test]
+fn un_hide_sync_posts_exactly_one_restore_wake() {
+    let mut runtime = test_runtime_window();
+    runtime.platform.set_occluded(true);
+    runtime.sync_occlusion();
+    assert!(runtime.is_hidden(), "an occluded report must park the pump");
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "sync_occlusion arms only — the restore post is the host's choice"
+    );
+
+    runtime.platform.set_occluded(false);
+    runtime.sync_occlusion_and_post_restore();
+    assert!(!runtime.is_hidden(), "a clear report must unpark the pump");
+    assert!(
+        runtime.platform.take_redraw_request(),
+        "un-hiding through the posting sync must wake the frame scheduler"
+    );
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "the restore wake is a single post, not a stream"
+    );
+
+    // Re-syncing a window already visible posts nothing again.
+    runtime.sync_occlusion_and_post_restore();
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "a sync that did not un-hide posts no wake"
+    );
+}
+
+/// `request_redraw`'s hidden gate: callers outside `advance_runtime` —
+/// the winit runner's cross-window rebuild flush, GPU settle wakes, a
+/// stale in-flight platform post — reach the platform's redraw post
+/// directly, and a parked window must absorb them. Without the gate each
+/// of those would keep waking a hidden pump.
+#[test]
+fn a_hidden_window_absorbs_direct_redraw_requests() {
+    let mut runtime = test_runtime_window();
+    let _ = runtime.platform.take_redraw_request();
+
+    runtime.set_hidden(true);
+    runtime.request_redraw();
+    assert!(
+        !runtime.platform.take_redraw_request(),
+        "a hidden window must not reach the platform redraw post"
+    );
+
+    runtime.set_hidden(false);
+    runtime.request_redraw();
+    assert!(
+        runtime.platform.take_redraw_request(),
+        "a visible window's redraw request must reach the platform"
+    );
 }
 
 /// The window's effective size limits reach the platform: the content's

@@ -21,7 +21,9 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// The JNI schema this build of the runner speaks — `nativeInit` returns it
 /// and the Kotlin `NativeBridge` refuses a mismatch, so a stale native
 /// library cannot load against a newer host.
-pub(crate) const JNI_SCHEMA: jint = 1;
+///
+/// 2: `nativeSetVisible` (Activity `onStart`/`onStop` → pump visibility).
+pub(crate) const JNI_SCHEMA: jint = 2;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -300,6 +302,21 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceDes
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).surface_detached(generation as u64);
+        Ok(())
+    });
+}
+
+/// The Activity's started state — `onStart`/`onStop` drive the pump's
+/// hidden flag alongside the surface's own attach/detach.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_ptr: jlong,
+    visible: jboolean,
+) {
+    guard(&mut env, |_env| {
+        session(session_ptr).set_visible(visible != 0);
         Ok(())
     });
 }

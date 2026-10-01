@@ -16,6 +16,11 @@ fn app_view(count: Binding<i32>, enabled: Binding<bool>, name: Binding<Str>) -> 
         vstack((
             text("Hydrolysis on Android").title(),
             "Vello paints this UI through the Kotlin host's SurfaceView band.",
+            // Keeps the pump visibly pumping: the Material indeterminate
+            // indicator animates on the shared animation clock, so logcat
+            // shows `frame presented` lines while the window is visible and
+            // none while it is hidden.
+            loading(),
             Divider,
             text!("Tap count: {count}", count = count),
             button("Increment")

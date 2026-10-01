@@ -39,15 +39,22 @@ use crate::renderer::{
     HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
     MenuShortcutRegistry, PopupWindowManager,
 };
+#[cfg(hydrolysis_wayland_platform)]
+use crate::runner::x11_state_watch::{self, X11StateWatch};
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events_with,
     pump_window_semantics, render_window, runtime_window_origin,
 };
 
-enum RunnerEvent {
+pub(super) enum RunnerEvent {
     PollLocalTasks,
     MountPendingWindows,
     AccessKit(AccessKitEvent),
+    /// The X11 state watch saw `_NET_WM_STATE`/`WM_STATE` change or the
+    /// window (un)map — the minimize/restore transition winit drops (see
+    /// `x11_state_watch`).
+    #[cfg(hydrolysis_wayland_platform)]
+    X11VisibilitySignal,
     /// A deferred vello stash's GPU-completion watch resolved: sent by the
     /// poll driver thread once the tickets' submissions have retired. Carries
     /// the stash generation the watch was registered for, so a stale wake
@@ -354,6 +361,8 @@ pub fn run(
         outside_pointer_presses: 0,
         focused_window: None,
         last_pointer_window: None,
+        #[cfg(hydrolysis_wayland_platform)]
+        x11_state_watch: None,
     };
 
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -415,6 +424,12 @@ struct WinitRunner {
     /// pointer position, so for `MonitorSelector::Pointer` this window's
     /// monitor stands in for the pointer's home.
     last_pointer_window: Option<WindowId>,
+    /// The second-connection `_NET_WM_STATE`/unmap watch that delivers the
+    /// X11 transitions winit drops. `None` on Wayland, and stays `None` if
+    /// no connection could be opened — the coverage is then what winit
+    /// delivers, the documented gap.
+    #[cfg(hydrolysis_wayland_platform)]
+    x11_state_watch: Option<X11StateWatch>,
 }
 
 /// Loads the window icon the water CLI stages into the asset bundle root.
@@ -631,6 +646,24 @@ impl WinitRunner {
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
+        #[cfg(hydrolysis_wayland_platform)]
+        if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
+            // The window is on X11, so the app's own server connection is
+            // already up — every watch step is expected to succeed, and a
+            // failure means minimize would go undetected. The window's
+            // creation fails rather than silently covering the gap.
+            if self.x11_state_watch.is_none() {
+                self.x11_state_watch = Some(
+                    X11StateWatch::connect(self.event_proxy.clone())
+                        .expect("hydrolysis runner: failed to start the X11 state watch"),
+                );
+            }
+            self.x11_state_watch
+                .as_ref()
+                .expect("hydrolysis runner: X11 state watch missing after connect")
+                .select(xid)
+                .expect("hydrolysis runner: failed to subscribe to X11 window state events");
+        }
         #[cfg(target_os = "windows")]
         if activates {
             // Windows' menu bar lives on the window: attach the app bar's
@@ -852,7 +885,7 @@ impl WinitRunner {
         for runtime in self.windows.values_mut() {
             if runtime.renderer.take_rebuild_request() {
                 runtime.request_refresh();
-                runtime.platform.request_redraw();
+                runtime.request_redraw();
                 runtime.renderer.migration_counters_mut().host_wakeups += 1;
             }
         }
@@ -864,7 +897,11 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         let _ = self.drain_local_executor_queue();
         self.mount_pending_windows(event_loop);
         for runtime in self.windows.values_mut() {
-            runtime.platform.request_redraw();
+            // A resume can carry the window across a visibility boundary
+            // (iOS foregrounding); the pump reflects what the platform
+            // reports now.
+            runtime.sync_occlusion();
+            runtime.request_redraw();
             runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
     }
@@ -913,6 +950,10 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 adapter.process_event(runtime.platform.native_window(), &event);
             }
             runtime.platform.handle_window_event(&event);
+            // The platform's occlusion report moves into the pump state
+            // here, so a `RedrawRequested` handled below and the next
+            // `about_to_wait` tick both see the window as it is now.
+            runtime.sync_occlusion();
             Self::handle_input_events(runtime, &self.env)
         };
 
@@ -1037,7 +1078,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                 // redraw; a wake for one the frame loop already presented
                 // resolves nothing.
                 if runtime.renderer.has_deferred_legacy_frame() {
-                    runtime.platform.request_redraw();
+                    runtime.request_redraw();
                 }
             }
             RunnerEvent::AccessKit(event) => {
@@ -1081,7 +1122,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                                 "missing accessibility tree update for initial request, scheduling rebuild"
                             );
                             runtime.request_refresh();
-                            runtime.platform.request_redraw();
+                            runtime.request_redraw();
                             runtime.renderer.migration_counters_mut().host_wakeups += 1;
                         }
                     }
@@ -1099,7 +1140,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                             .handle_accessibility_action(request, &action_env)
                         {
                             runtime.request_refresh();
-                            runtime.platform.request_redraw();
+                            runtime.request_redraw();
                             runtime.renderer.migration_counters_mut().host_wakeups += 1;
                         }
                         self.flush_cross_window_rebuild_requests();
@@ -1110,6 +1151,18 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             #[cfg(any(unix, windows))]
             RunnerEvent::Terminate => {
                 self.exit_after_runtime_cleanup(_event_loop);
+            }
+            #[cfg(hydrolysis_wayland_platform)]
+            RunnerEvent::X11VisibilitySignal => {
+                // `_NET_WM_STATE`/`WM_STATE` changed or a window
+                // (un)mapped — a minimize or restore winit emitted no
+                // `WindowEvent` for. The notification only wakes the
+                // re-query: `is_minimized` reads `_NET_WM_STATE_HIDDEN`
+                // again and the pump lands wherever the query puts it.
+                for runtime in self.windows.values_mut() {
+                    runtime.platform.refresh_visibility_signals();
+                    runtime.sync_occlusion();
+                }
             }
         }
     }

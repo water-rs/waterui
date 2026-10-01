@@ -543,6 +543,19 @@ pub trait PlatformWindow: 'static {
     fn pointer_position(&self) -> Option<(f32, f32)> {
         None
     }
+    /// Whether the host reports the window cannot be seen right now:
+    /// minimized, fully occluded, backgrounded, or without a surface to
+    /// present into. The runner parks the frame pump while this holds —
+    /// no frames, no wakes, no GPU-content pulls — and unparks it on the
+    /// first report that flips back.
+    ///
+    /// The default `false` is the explicit gap: a host with no visibility
+    /// signal keeps pumping rather than guessing, which is what the
+    /// contract requires — a platform without a signal is documented,
+    /// never polled.
+    fn is_occluded(&self) -> bool {
+        false
+    }
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     fn set_cursor_style(&mut self, style: CursorStyle);
 }
@@ -1474,6 +1487,7 @@ mod winit_impl {
     #[cfg(hydrolysis_macos_system_webview)]
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use nami::Signal;
     #[cfg(hydrolysis_macos_system_webview)]
@@ -1623,6 +1637,12 @@ mod winit_impl {
         surface: wgpu::Surface<'static>,
         gpu: WinitGpuContext,
         config: wgpu::SurfaceConfiguration,
+        /// The window this surface presents into — `present` asks it for
+        /// the platform's next-frame pacing (`pre_present_notify`), which
+        /// on Wayland requests the frame callback a compositor withholds
+        /// from a hidden surface. `None` for the macOS CoreAnimationLayer
+        /// overlay, which has no winit window of its own.
+        window: Option<Arc<NativeWindow>>,
     }
 
     impl core::fmt::Debug for WinitSurface {
@@ -1744,6 +1764,7 @@ mod winit_impl {
             height: u32,
             requires_transparency: bool,
             on_x11: bool,
+            window: Option<Arc<NativeWindow>>,
         ) -> Self {
             let caps = surface.get_capabilities(&gpu.adapter);
             let format = super::select_hydrolysis_surface_format(&caps);
@@ -1770,6 +1791,7 @@ mod winit_impl {
                 surface,
                 gpu,
                 config,
+                window,
             }
         }
 
@@ -1843,6 +1865,7 @@ mod winit_impl {
                     size.height,
                     requires_transparency,
                     Self::window_is_x11(&window),
+                    Some(window),
                 ),
                 gpu,
             )
@@ -1866,7 +1889,7 @@ mod winit_impl {
                     .create_surface_unsafe(target)
                     .expect("Hydrolysis failed to create a Metal overlay surface")
             };
-            Self::from_surface(surface, gpu.clone(), width, height, true, false)
+            Self::from_surface(surface, gpu.clone(), width, height, true, false, None)
         }
     }
 
@@ -1898,6 +1921,15 @@ mod winit_impl {
         fn present(&mut self, frame: SurfaceFrame) {
             match frame {
                 SurfaceFrame::Window { output, .. } => {
+                    // Ask for the platform's next-frame pacing before
+                    // submitting this frame: on Wayland this requests the
+                    // frame callback that gates `RedrawRequested` — a
+                    // compositor withholds it from a hidden surface, so the
+                    // pump parks there without any explicit signal. The
+                    // call is a no-op on every other platform.
+                    if let Some(window) = &self.window {
+                        window.pre_present_notify();
+                    }
                     output.present();
                     reclaim_device(&self.gpu.device);
                 }
@@ -2594,6 +2626,32 @@ mod winit_impl {
         /// event re-delivers it — the window manager's own initial state
         /// otherwise wins.
         pending_mapped_request: MappedRequestRetry,
+        /// Latest `WindowEvent::Occluded` report: macOS's
+        /// `NSWindow.occlusionState` (miniaturize counts there), the iOS
+        /// scene's backgrounded state, X11 `VisibilityFullyObscured`, the
+        /// web's IntersectionObserver. Winit emits no `Occluded` on
+        /// Windows, Wayland or Android, so this stays false there.
+        occluded: bool,
+        /// The last `Resized` carried a zero client area — how Windows'
+        /// `SIZE_MINIMIZED` reaches winit, and a 0x0 Wayland configure. A
+        /// later `Resized` with a real extent clears it.
+        zero_sized: bool,
+        /// The window's own minimized query — `IsIconic` on Windows,
+        /// `_NET_WM_STATE_HIDDEN` on X11, `isMiniaturized` on AppKit —
+        /// refreshed on the events that can accompany a state change,
+        /// never on a timer. X11 emits no iconify `WindowEvent`, so the
+        /// query on pump wakes is that platform's minimize signal.
+        minimized: bool,
+        /// The DWM's cloaked report (`DWMWA_CLOAKED`), refreshed on the
+        /// same events as `minimized`: how a Windows window hidden by a
+        /// virtual-desktop switch or the shell is detected — cloaking
+        /// likewise arrives as no `WindowEvent`. Always false off
+        /// Windows, which is the only platform that cloaks.
+        cloaked: bool,
+        /// Shared with the GPU-surface redraw waker: a wake posted for a
+        /// window that cannot be seen is dropped before reaching the
+        /// event loop, so external GPU content cannot un-park the pump.
+        occlusion_signal: Arc<AtomicBool>,
         /// Explicit ProMotion opt-in: declares the 120Hz frame-rate demand to
         /// the window server while redraws are being requested. `None` before
         /// macOS 14.
@@ -2617,6 +2675,13 @@ mod winit_impl {
         ) -> (Self, WinitGpuContext) {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
+            let size = window.inner_size();
+            let minimized = window.is_minimized().unwrap_or(false);
+            let zero_sized = size.width == 0 || size.height == 0;
+            #[cfg(target_os = "windows")]
+            let cloaked = window_is_cloaked(&window);
+            #[cfg(not(target_os = "windows"))]
+            let cloaked = false;
             (
                 Self {
                     #[cfg(target_os = "macos")]
@@ -2627,6 +2692,11 @@ mod winit_impl {
                     hybrid_compositor: MacHybridCompositor::new(gpu.clone()),
                     window,
                     surface,
+                    occluded: false,
+                    zero_sized,
+                    minimized,
+                    cloaked,
+                    occlusion_signal: Arc::new(AtomicBool::new(minimized || zero_sized || cloaked)),
                     pending_surface_size: None,
                     pending_events: Vec::new(),
                     pointer_position: (0.0, 0.0),
@@ -2982,10 +3052,22 @@ mod winit_impl {
                 }
             }
             match event {
+                WindowEvent::Occluded(occluded) => {
+                    self.occluded = *occluded;
+                    self.refresh_visibility_signals();
+                }
+                WindowEvent::RedrawRequested => {
+                    // The pump's own wake: the cheapest place to refresh
+                    // the signals that arrive as no event — X11's minimize
+                    // and Windows' cloaked state.
+                    self.refresh_visibility_signals();
+                }
                 WindowEvent::CloseRequested => {
                     self.pending_events.push(InputEvent::CloseRequested);
                 }
                 WindowEvent::Resized(size) => {
+                    self.zero_sized = size.width == 0 || size.height == 0;
+                    self.refresh_visibility_signals();
                     self.pending_surface_size = Some(*size);
                     self.pending_events.push(InputEvent::Resize {
                         width: size.width.max(1),
@@ -3017,6 +3099,7 @@ mod winit_impl {
                     });
                 }
                 WindowEvent::Focused(focused) => {
+                    self.refresh_visibility_signals();
                     self.pending_events.push(InputEvent::Focused(*focused));
                 }
                 WindowEvent::HoveredFile(path) => {
@@ -3213,6 +3296,61 @@ mod winit_impl {
                 },
                 _ => {}
             }
+            // The GPU-content waker reads this before posting a wake: a
+            // signal produced while the window cannot be seen is dropped
+            // rather than waking the loop to render nothing.
+            self.occlusion_signal
+                .store(self.is_occluded(), Ordering::Relaxed);
+        }
+
+        /// Reads the platform's own visibility state into the cached
+        /// signals — `is_minimized` (winit surfaces no event on X11 when
+        /// `_NET_WM_STATE_HIDDEN` flips; the runner's `x11_state_watch`
+        /// turns that property change into a wake) and, on Windows,
+        /// `DWMWA_CLOAKED` (the virtual-desktop or shell cloak, likewise
+        /// delivered as no `WindowEvent`). Called only from the events
+        /// that can accompany a state change, so it is a synchronous
+        /// public-API read on a wake already running, never a timer or a
+        /// poll.
+        pub(crate) fn refresh_visibility_signals(&mut self) {
+            if let Some(minimized) = self.window.is_minimized() {
+                self.minimized = minimized;
+            }
+            #[cfg(target_os = "windows")]
+            {
+                self.cloaked = window_is_cloaked(&self.window);
+            }
+        }
+    }
+
+    /// The DWM's cloaked report for the window's `HWND` — `DWMWA_CLOAKED`
+    /// is nonzero when the shell or a virtual-desktop switch hides the
+    /// window, the only visibility signal Windows gives a process beyond
+    /// minimization. The query itself is the public `DwmGetWindowAttribute`
+    /// API; when it fails the window is reported uncloaked rather than
+    /// guessed.
+    #[cfg(target_os = "windows")]
+    fn window_is_cloaked(native_window: &NativeWindow) -> bool {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+        let Ok(handle) = native_window.window_handle() else {
+            return false;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return false;
+        };
+        let mut cloaked = 0i32;
+        // SAFETY: `hwnd` is the window's live handle for as long as the
+        // `NativeWindow` lives, and `pvAttribute` points at writable memory
+        // of exactly `cbAttribute` bytes, as the API requires.
+        unsafe {
+            DwmGetWindowAttribute(
+                win32.hwnd.get() as HWND,
+                DWMWA_CLOAKED as u32,
+                (&raw mut cloaked).cast(),
+                size_of::<i32>() as u32,
+            ) == 0
+                && cloaked != 0
         }
     }
 
@@ -3383,6 +3521,30 @@ mod winit_impl {
             core::mem::take(&mut self.pending_events)
         }
 
+        /// The window cannot be seen: the window server reported it fully
+        /// occluded (macOS `NSWindow.occlusionState`, iOS scene state, X11
+        /// `VisibilityFullyObscured`), it is minimized by the platform's
+        /// own report (`IsIconic`, `_NET_WM_STATE_HIDDEN`,
+        /// `isMiniaturized`), the DWM cloaked it (Windows `DWMWA_CLOAKED`),
+        /// or its client area is zero (Windows `SIZE_MINIMIZED`, a 0x0
+        /// Wayland configure).
+        ///
+        /// Documented gaps: a Windows window fully covered by other
+        /// windows while neither cloaked nor minimized reports nothing —
+        /// the visibility signals the DWM lets a process query are the
+        /// `DWMWINDOWATTRIBUTE` values of `DwmGetWindowAttribute`
+        /// (<https://learn.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute>),
+        /// and covered-by-other-windows is not one of them. X11's
+        /// `_NET_WM_STATE_HIDDEN` change reaches `is_minimized`'s query
+        /// through the runner's second-connection state watch
+        /// (`x11_state_watch`) — winit selects `PropertyChangeMask` but
+        /// drops the `PropertyNotify` itself. Wayland's signal is instead
+        /// the withheld frame callback, which `pre_present_notify` in
+        /// `present` arms.
+        fn is_occluded(&self) -> bool {
+            self.occluded || self.minimized || self.zero_sized || self.cloaked
+        }
+
         /// The pointer's live position: the host's own answer where it can
         /// be asked, else the last position `CursorMoved`/`Touch` reported —
         /// the fallback keeps the stream that never went quiet (X11 motion
@@ -3462,7 +3624,15 @@ mod winit_impl {
         fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
             let handle = RedrawHandle::new();
             let window = Arc::clone(&self.window);
-            handle.set_waker(Some(Arc::new(move || window.request_redraw())));
+            let occluded = Arc::clone(&self.occlusion_signal);
+            handle.set_waker(Some(Arc::new(move || {
+                // GPU content cannot see the window's pump state, so the
+                // occlusion report is shared as a flag: a frame produced
+                // while the window is hidden posts no wake.
+                if !occluded.load(Ordering::Relaxed) {
+                    window.request_redraw();
+                }
+            })));
             Some(handle)
         }
     }
