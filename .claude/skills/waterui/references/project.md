@@ -40,15 +40,14 @@ Never hand-scaffold a WaterUI project. The generated layout is the source of tru
 CLI keeps it consistent with the backends it builds.
 
 ```bash
-water create "My App"                       # app mode (default)
-water create "My App" --mode playground     # playground mode
+water create "My App"
 water create "My App" --bundle-id dev.example.myapp
 water create "My App" --backends apple,android,hydrolysis
 ```
 
-`--mode playground` is the right default for experiments and examples: the CLI owns the
-native project entirely, so there is no Xcode project or Gradle wrapper to maintain. App
-mode gives you those files to edit when the app needs real native integration.
+There are no modes or package types to choose: every project is entry-owning — WaterUI
+owns the program entry and the CLI generates and manages every backend project, so there
+is no Xcode project or Gradle wrapper in your tree to maintain.
 
 ## Project shape
 
@@ -113,7 +112,6 @@ than features (`waterui-chart`, `waterui-map`, `waterui-barcode`, `waterui-parti
 
 ```toml
 [package]
-type = "app"                              # "app" | "playground"
 name = "My App"
 bundle_identifier = "dev.example.myapp"
 # assets_path = "assets"                  # default

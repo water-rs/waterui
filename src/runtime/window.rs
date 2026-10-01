@@ -147,6 +147,32 @@ pub struct Window {
     /// How showing and clicking the window affects keyboard focus and app
     /// activation. See [`Activation`] for the per-platform notes.
     pub activation: Activation,
+    /// Where the window stacks relative to other applications' windows.
+    ///
+    /// Platform support: hydrolysis/winit, macOS (`NSWindow.level`), GTK
+    /// where the compositor honours keep-above. Mobile platforms and
+    /// embedded displays have no stacking between applications and ignore
+    /// this.
+    pub level: Computed<WindowLevel>,
+    /// The window's request for the user's attention, if one is pending.
+    ///
+    /// Setting it asks the platform to draw the user to the window — a
+    /// flashing taskbar entry, a bouncing dock icon, the window manager's
+    /// demands-attention hint. The request lasts until the user focuses the
+    /// window, at which point the backend sets it back to `None`; setting it to
+    /// `None` withdraws it earlier.
+    ///
+    /// Platform support: hydrolysis/winit (X11, Wayland activation, Windows,
+    /// macOS), macOS (`NSApp.requestUserAttention`). Others ignore it.
+    pub attention: Binding<Option<UserAttention>>,
+    /// The steps the window's content size moves in while the user resizes
+    /// it, such as one character cell of a terminal.
+    ///
+    /// When `None` (the default), the window resizes continuously.
+    ///
+    /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
+    /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
+    pub resize_increments: Option<Computed<Size>>,
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -235,8 +261,34 @@ pub enum WindowState {
     Closed,
     /// The window is minimized.
     Minimized,
+    /// The window fills the screen's work area, keeping its chrome and
+    /// the system's panels.
+    Maximized,
     /// The window is maximized to fullscreen.
     Fullscreen,
+}
+
+/// Where a window stacks relative to other applications' windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowLevel {
+    /// The window stacks with other windows as focus moves between them.
+    #[default]
+    Normal,
+    /// The window stays above other applications' normal windows.
+    AlwaysOnTop,
+}
+
+impl_constant!(WindowLevel);
+
+/// How urgently a window asks for the user's attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserAttention {
+    /// Something the user may want to look at: a finished task, a mention.
+    Informational,
+    /// Something the user must act on. Platforms that distinguish the two
+    /// keep drawing attention until the window is focused (macOS bounces the
+    /// dock icon repeatedly).
+    Critical,
 }
 
 /// The visual style of a window.
@@ -376,6 +428,9 @@ impl Window {
             instance_name: None,
             placement: None,
             activation: Activation::default(),
+            level: Computed::constant(WindowLevel::Normal),
+            attention: Binding::container(None),
+            resize_increments: None,
         }
     }
 
@@ -416,6 +471,25 @@ impl Window {
     #[must_use]
     pub fn instance_name(mut self, instance_name: impl Into<Str>) -> Self {
         self.instance_name = Some(instance_name.into());
+        self
+    }
+
+    /// Set where the window stacks relative to other applications' windows.
+    ///
+    /// See [`Self::level`] for platform support notes.
+    #[must_use]
+    pub fn level(mut self, level: impl IntoComputed<WindowLevel>) -> Self {
+        self.level = level.into_computed();
+        self
+    }
+
+    /// Set the steps the window's content size moves in while the user
+    /// resizes it.
+    ///
+    /// See [`Self::resize_increments`] for platform support notes.
+    #[must_use]
+    pub fn resize_increments(mut self, increments: impl IntoComputed<Size>) -> Self {
+        self.resize_increments = Some(increments.into_computed());
         self
     }
 
@@ -578,6 +652,7 @@ impl Window {
         WindowHandle {
             frame: self.frame.clone(),
             state: self.state.clone(),
+            attention: self.attention.clone(),
         }
     }
 
@@ -664,6 +739,7 @@ where
 pub struct WindowHandle {
     frame: Binding<Rect>,
     state: Binding<WindowState>,
+    attention: Binding<Option<UserAttention>>,
 }
 
 impl WindowHandle {
@@ -677,7 +753,12 @@ impl WindowHandle {
         self.state.set(WindowState::Minimized);
     }
 
-    /// Maximize the window to fullscreen.
+    /// Maximize the window to the screen's work area.
+    pub fn maximize(&self) {
+        self.state.set(WindowState::Maximized);
+    }
+
+    /// Make the window fullscreen.
     pub fn fullscreen(&self) {
         self.state.set(WindowState::Fullscreen);
     }
@@ -685,6 +766,17 @@ impl WindowHandle {
     /// Restore the window to its normal state.
     pub fn restore(&self) {
         self.state.set(WindowState::Normal);
+    }
+
+    /// Ask the platform to draw the user's attention to the window, until
+    /// the user focuses it.
+    pub fn request_attention(&self, urgency: UserAttention) {
+        self.attention.set(Some(urgency));
+    }
+
+    /// Withdraw a pending request for the user's attention.
+    pub fn cancel_attention(&self) {
+        self.attention.set(None);
     }
 
     /// Set the frame of the window.

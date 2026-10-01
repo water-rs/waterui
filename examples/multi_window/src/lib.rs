@@ -6,6 +6,9 @@
 //! - Window backgrounds with Color and Material blur effects
 //! - Window state management and control
 //! - Reactive window handles
+//! - Maximize, always-on-top level, attention requests, and resize increments
+
+use std::time::Duration;
 
 use waterui::app::App;
 use waterui::background::Material;
@@ -13,7 +16,11 @@ use waterui::prelude::theme_color::SurfaceVariant;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
-use waterui::window::{Window, WindowPresentation, WindowState, WindowStyle, conditional_window};
+use waterui::task::{sleep, spawn_local};
+use waterui::window::{
+    UserAttention, Window, WindowHandle, WindowLevel, WindowPresentation, WindowState, WindowStyle,
+    conditional_window,
+};
 
 #[preview]
 pub fn demo() -> impl View {
@@ -25,11 +32,13 @@ pub fn demo() -> impl View {
     let frosted_state = binding::<WindowState>(WindowState::default());
     let transparent_state = binding::<WindowState>(WindowState::default());
     let ultra_thin_state = binding::<WindowState>(WindowState::default());
+    let controls_state = binding::<WindowState>(WindowState::default());
     let standard_window = WindowPresentation::new(&standard_state);
     let borderless_window = WindowPresentation::new(&borderless_state);
     let frosted_window = WindowPresentation::new(&frosted_state);
     let transparent_window = WindowPresentation::new(&transparent_state);
     let ultra_thin_window = WindowPresentation::new(&ultra_thin_state);
+    let controls_window = WindowPresentation::new(&controls_state);
 
     // Use zstack so the invisible window triggers don't affect scroll layout
     zstack((
@@ -77,6 +86,13 @@ pub fn demo() -> impl View {
                         "Subtle frosted effect with UltraThin material",
                         &ultra_thin_state,
                     ),
+                    spacer().height(16.0),
+                    // Section 6: Window Controls
+                    window_section(
+                        "Window Controls",
+                        "Maximize, always-on-top, attention requests, resize increments",
+                        &controls_state,
+                    ),
                 ))
                 .padding_with(12.0),
                 spacer(),
@@ -93,6 +109,7 @@ pub fn demo() -> impl View {
         conditional_window(&frosted_window, create_frosted_window),
         conditional_window(&transparent_window, create_transparent_window),
         conditional_window(&ultra_thin_window, create_ultra_thin_window),
+        conditional_window(&controls_window, create_controls_window),
     ))
 }
 
@@ -183,6 +200,74 @@ fn create_ultra_thin_window(state: Binding<WindowState>) -> Window {
     .style(WindowStyle::Borderless)
     .background(Material::UltraThin)
     .resizable(true)
+}
+
+/// Create a window showcasing the window-control API: maximizing, an
+/// always-on-top toggle, an attention request after a delay, and resize
+/// increments.
+fn create_controls_window(state: Binding<WindowState>) -> Window {
+    let always_on_top = binding(false);
+    let mut window = Window::new("Window Controls", state, || ())
+        .style(WindowStyle::Titled)
+        .resizable(true)
+        .level(always_on_top.map(|on| {
+            if on {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            }
+        }))
+        .resize_increments(Size::new(80.0, 24.0));
+    // The content drives the window through its handle, which is only
+    // available once the `Window` exists, so the builder is installed after.
+    let handle = window.handle();
+    window.content = waterui::handler::AnyViewBuilder::new(move || {
+        AnyView::new(controls_window_content(&handle, &always_on_top))
+    });
+    window
+}
+
+/// Content of the controls window: buttons driving its `WindowHandle`.
+fn controls_window_content(handle: &WindowHandle, always_on_top: &Binding<bool>) -> impl View {
+    vstack((
+        text("Window Controls").title().bold(),
+        spacer().height(16.0),
+        text("Drive this window through its `WindowHandle`. The attention request fires three seconds after the button is pressed, and resizing snaps to 80x24 steps.")
+            .body(),
+        spacer().height(24.0),
+        toggle("Always on Top", always_on_top),
+        spacer().height(12.0),
+        hstack((
+            button("Maximize").action({
+                let handle = handle.clone();
+                move || handle.maximize()
+            }),
+            spacer().width(12.0),
+            button("Restore").action({
+                let handle = handle.clone();
+                move || handle.restore()
+            }),
+        )),
+        spacer().height(12.0),
+        hstack((
+            button("Request Attention in 3s").action({
+                let handle = handle.clone();
+                move || {
+                    let handle = handle.clone();
+                    spawn_local(async move {
+                        sleep(Duration::from_secs(3)).await;
+                        handle.request_attention(UserAttention::Informational);
+                    });
+                }
+            }),
+            spacer().width(12.0),
+            button("Cancel Attention").action({
+                let handle = handle.clone();
+                move || handle.cancel_attention()
+            }),
+        )),
+    ))
+    .padding_with(24.0)
 }
 
 /// Helper function to create window content

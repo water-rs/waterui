@@ -1,6 +1,6 @@
 //! WaterUI + Waterkit Camera Filter Lab
 //!
-//! This playground example demonstrates collaboration between:
+//! This example demonstrates collaboration between:
 //! - WaterUI: camera-style interface + real-time reactive filter pipeline
 //! - Waterkit Permission: camera permission check/request
 //! - Waterkit Camera: native camera streaming + device enumeration

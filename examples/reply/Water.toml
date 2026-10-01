@@ -1,6 +1,5 @@
 waterui_path = "../.."
 [package]
-type = "playground"
 name = "Reply"
 bundle_identifier = "cool.lexo.reply"
 

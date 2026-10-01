@@ -63,6 +63,27 @@ def test_stable_scaffolds_every_released_package_by_version():
     # Backend coordinates are not scaffold packages: they stay in the table.
     assert "apple-backend-url" in scaffold
     assert "android-backend-revision" in scaffold
+    # Host coordinates are not scaffold packages either.
+    assert "hydrolysis-android-host-url" in scaffold
+    assert "hydrolysis-android-host-revision" in scaffold
+    assert "hydrolysis-android-host-subdirectory" in scaffold
+
+
+def test_hydrolysis_android_host_pin_is_scaffolded_on_every_channel():
+    """`--platform android --backend hydrolysis` reads the host coordinates
+    through the resolved framework on all three channels, so the pin must
+    survive the scaffold split regardless of which packages the channel
+    withholds."""
+    for channel in ("dev", "nightly", "stable"):
+        scaffold, _ = framework_manifest.channel_scaffold(FRAMEWORK, channel)
+        assert scaffold["hydrolysis-android-host-url"].startswith(
+            "https://github.com/water-rs/"
+        ), f"{channel} must carry hydrolysis-android-host-url"
+        revision = scaffold["hydrolysis-android-host-revision"]
+        assert len(revision) == 40 and all(
+            character in "0123456789abcdef" for character in revision
+        ), f"{channel} must carry an immutable hydrolysis-android-host-revision"
+        assert scaffold["hydrolysis-android-host-subdirectory"] == "android"
 
 
 def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():

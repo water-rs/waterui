@@ -205,7 +205,7 @@ fi
 # Harness Package.swift resolves ../../../../apple-backend.
 [[ -e "${REPO_ROOT}/../apple-backend" ]] \
   || ln -sfn "${BACKEND}" "${REPO_ROOT}/../apple-backend"
-# A playground picks up a local backend only via <waterui_path>/backends/apple.
+# A project picks up a local backend only via <waterui_path>/backends/apple.
 [[ -e "${REPO_ROOT}/backends/apple" ]] \
   || ln -sfn "${BACKEND}" "${REPO_ROOT}/backends/apple"
 
