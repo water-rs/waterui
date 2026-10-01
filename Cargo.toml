@@ -335,7 +335,7 @@ swift-bridge-build = "0.1"
 jni = "0.22"
 windows = { version = "0.62", features = ["Devices_Geolocation", "Foundation"] }
 zbus = "5"
-minstant = "0.1"
+web-time = "1.1"
 cpu-time = "1.0"
 # Only the process table is read (`ProcessesToUpdate`, `Pid`), so the disk,
 # network, component-temperature and user backends are not built.

@@ -20,7 +20,7 @@ use std::{
 #[cfg(all(any(unix, windows), not(target_os = "espidf")))]
 use cpu_time::ThreadTime;
 use executor_core::LocalExecutor;
-use minstant::Instant;
+use web_time::Instant;
 
 /// The refresh rate a monitored executor derives its frame budget from.
 ///
