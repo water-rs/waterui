@@ -3540,7 +3540,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=d9e484fd5796aa4095804ef1b8b8744f8b7baa8f#d9e484fd5796aa4095804ef1b8b8744f8b7baa8f"
+source = "git+https://github.com/water-rs/hydrolysis?rev=adf828882d96459c60e3f6783d1bd3acb8c2ca90#adf828882d96459c60e3f6783d1bd3acb8c2ca90"
 dependencies = [
  "accesskit",
  "android_logger",
@@ -3596,7 +3596,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=c22b46916a1e03aa4d7da3c4132e779b12dd6a1c#c22b46916a1e03aa4d7da3c4132e779b12dd6a1c"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=0e98c14a707ccb230724cb824c46cfe8e1d6f79e#0e98c14a707ccb230724cb824c46cfe8e1d6f79e"
 dependencies = [
  "cherenkov",
  "hydrolysis",
@@ -10641,7 +10641,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=c4f68918aa1fec77b4637779543bba19f5fef1c6#c4f68918aa1fec77b4637779543bba19f5fef1c6"
+source = "git+https://github.com/water-rs/video-gpu?rev=46f7434dd22bd911e07bb674c70e8f3ccf604003#46f7434dd22bd911e07bb674c70e8f3ccf604003"
 dependencies = [
  "async-channel",
  "executor-core",
