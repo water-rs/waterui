@@ -320,7 +320,7 @@ cargo expand --package waterui-macros
 
 # Test in a real project
 cargo install --locked --git https://github.com/water-rs/cli waterui-cli
-water create macro-test --mode playground
+water create macro-test
 # Add #[form] to a struct and run
 water run --platform ios
 ```

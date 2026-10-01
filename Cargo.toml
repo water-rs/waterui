@@ -60,7 +60,16 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
 apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "986bc4ed98aa68573f50a08cfb869c1d54a66284"
+android-backend-revision = "86833228a2bf493f346150fcdf58ba92f212f837"
+# The Hydrolysis Android host the `water` CLI composites into a generated
+# Gradle project for `--platform android --backend hydrolysis`. The revision
+# is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
+# crate the generated launcher links, so it tracks that crate's pinned
+# revision rather than a branch. `subdirectory` names the Gradle composite
+# root inside the checkout.
+hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
+hydrolysis-android-host-revision = "06f0b2fafbd0e0fb722cacf993d56cd87f661666"
+hydrolysis-android-host-subdirectory = "android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.
@@ -500,9 +509,11 @@ waterui-webview = { path = "components/platform/webview" }
 # The executor now takes its refresh rate from the host (#1201), and the
 # registry hydrolysis still calls the removed display probe. This is the
 # hydrolysis revision that supplies the rate from winit's monitors,
-# implements the icon-button contract (water-rs/hydrolysis#115), and
-# renders the framework-owned ListSelection (water-rs/waterui#1226); drop
-# it when a hydrolysis release carries those changes.
+# implements the icon-button contract (water-rs/hydrolysis#115),
+# renders the framework-owned ListSelection (water-rs/waterui#1226), and
+# resolves pointer activation points through the node's clip chain
+# (water-rs/hydrolysis#27); drop it when a hydrolysis release carries
+# those changes.
 # hydrolysis is pinned by the migration block at the bottom of this table.
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
@@ -572,25 +583,25 @@ waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae8
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "481c20cc44bb64a764f472a775af8a6714831712" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
-waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "2f1e359284b7d1f06f47689fac9a4677753b586b" }
-# codec@2f1e359 asks for shaderloom's `runtime` feature, added after the
-# 0.1.2 registry release; this is the rev waterkit@2f1e359 pins itself.
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
+# codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
+# 0.1.2 registry release; this is the rev waterkit pins itself.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "fec1801849979239097cabbf2ad813e56a91132d" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f2000d36225e72662a653b5751182" }
 
@@ -602,5 +613,5 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f20
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "cc7a9737b1d1acd3117e39833e60f4b575fe4155" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "641c3c2985aad60d90eb60554a0e6f5b3aa7e4b7" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "bfa53ccd47ee733e878f27d878853b4a231d8bff" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "fc4a6d59a0d520200f275f7cd29bfd749e928659" }

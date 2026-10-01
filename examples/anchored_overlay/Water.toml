@@ -1,6 +1,5 @@
 waterui_path = "../.."
 
 [package]
-type = "playground"
 name = "Anchored Overlay Example"
 bundle_identifier = "com.waterui.anchored_overlay_example"

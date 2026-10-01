@@ -1,4 +1,4 @@
-//! Flow Markdown playground.
+//! Flow Markdown example.
 use std::time::Duration;
 
 use waterui::animation::Animation;

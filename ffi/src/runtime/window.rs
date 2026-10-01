@@ -5,8 +5,8 @@ use core::ptr::null_mut;
 use std::rc::Rc;
 
 use waterui::window::{
-    Activation, Monitor, MonitorSelector, Window, WindowBackground, WindowManager, WindowPlacement,
-    WindowState, WindowStyle,
+    Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowLevel,
+    WindowManager, WindowPlacement, WindowState, WindowStyle,
 };
 use waterui::{AnyView, Str};
 use waterui_layout::{Rect, Size};
@@ -242,6 +242,9 @@ pub enum WuiWindowState {
     Minimized = 2,
     /// The window is maximized to fullscreen.
     Fullscreen = 3,
+    /// The window fills the screen's work area, keeping its chrome and
+    /// the system's panels.
+    Maximized = 4,
 }
 
 impl From<WindowState> for WuiWindowState {
@@ -250,6 +253,7 @@ impl From<WindowState> for WuiWindowState {
             WindowState::Normal => Self::Normal,
             WindowState::Closed => Self::Closed,
             WindowState::Minimized => Self::Minimized,
+            WindowState::Maximized => Self::Maximized,
             WindowState::Fullscreen => Self::Fullscreen,
         }
     }
@@ -271,6 +275,7 @@ impl IntoRust for WuiWindowState {
             Self::Normal => WindowState::Normal,
             Self::Closed => WindowState::Closed,
             Self::Minimized => WindowState::Minimized,
+            Self::Maximized => WindowState::Maximized,
             Self::Fullscreen => WindowState::Fullscreen,
         }
     }
@@ -280,6 +285,99 @@ impl IntoRust for WuiWindowState {
 #[cfg(feature = "c-api")]
 ffi_binding!(WindowState, WuiWindowState, window_state);
 crate::ffi_watcher!(WindowState, WuiWindowState, window_state);
+
+/// FFI-compatible representation of [`WindowLevel`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiWindowLevel {
+    /// The window stacks with other windows as focus moves between them.
+    Normal = 0,
+    /// The window stays above other applications' normal windows.
+    AlwaysOnTop = 1,
+}
+
+impl From<WindowLevel> for WuiWindowLevel {
+    fn from(level: WindowLevel) -> Self {
+        match level {
+            WindowLevel::Normal => Self::Normal,
+            WindowLevel::AlwaysOnTop => Self::AlwaysOnTop,
+        }
+    }
+}
+
+impl IntoFFI for WindowLevel {
+    type FFI = WuiWindowLevel;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.into()
+    }
+}
+
+impl IntoRust for WuiWindowLevel {
+    type Rust = WindowLevel;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::Normal => WindowLevel::Normal,
+            Self::AlwaysOnTop => WindowLevel::AlwaysOnTop,
+        }
+    }
+}
+
+// Generate C FFI computed functions and the native watcher for WindowLevel.
+#[cfg(feature = "c-api")]
+crate::ffi_computed!(WindowLevel, WuiWindowLevel, window_level);
+
+/// FFI-compatible representation of `Option<UserAttention>` (see
+/// [`UserAttention`]).
+///
+/// `None` is a variant of the enum itself so that watching the attention
+/// binding reports a withdrawn request without a second out-of-band channel.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiUserAttention {
+    /// No attention request is pending.
+    None = 0,
+    /// Something the user may want to look at: a finished task, a mention.
+    Informational = 1,
+    /// Something the user must act on.
+    Critical = 2,
+}
+
+impl From<UserAttention> for WuiUserAttention {
+    fn from(attention: UserAttention) -> Self {
+        match attention {
+            UserAttention::Informational => Self::Informational,
+            UserAttention::Critical => Self::Critical,
+        }
+    }
+}
+
+impl IntoFFI for Option<UserAttention> {
+    type FFI = WuiUserAttention;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.map_or(WuiUserAttention::None, Into::into)
+    }
+}
+
+impl IntoRust for WuiUserAttention {
+    type Rust = Option<UserAttention>;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::None => None,
+            Self::Informational => Some(UserAttention::Informational),
+            Self::Critical => Some(UserAttention::Critical),
+        }
+    }
+}
+
+// Generate C FFI binding functions and the native watcher for the attention
+// binding.
+#[cfg(feature = "c-api")]
+ffi_binding!(Option<UserAttention>, WuiUserAttention, user_attention);
+crate::ffi_watcher!(Option<UserAttention>, WuiUserAttention, user_attention);
 
 /// FFI-compatible representation of [`WindowBackground`].
 ///
@@ -341,6 +439,14 @@ pub struct WuiWindow {
     pub placement: *mut WuiWindowPlacement,
     /// How showing and clicking the window affects focus and app activation.
     pub activation: WuiActivation,
+    /// Where the window stacks relative to other applications' windows.
+    pub level: *mut WuiComputed<WindowLevel>,
+    /// The window's request for the user's attention. The backend sets it back
+    /// to `None` when the window gains focus.
+    pub attention: *mut WuiBinding<Option<UserAttention>>,
+    /// The steps the window's content size moves in while the user resizes it,
+    /// or null for continuous resizing.
+    pub resize_increments: *mut WuiComputed<Size>,
 }
 
 /// A uniquely owned pointer produced by [`IntoFFI`].
@@ -417,11 +523,19 @@ impl WuiWindow {
             max_size,
             placement,
             activation: _,
+            level,
+            attention,
+            resize_increments,
         } = self;
         // SAFETY: `placement` is the pointer `placement_into_ffi` produced for
         // this window, not yet released.
         unsafe { dispose_placement(placement) };
 
+        // Android's single-Activity model has no window states: the `state`
+        // binding is dropped, so a `Maximized` write maps to Normal — the
+        // window is the activity, always filling the screen. `level`,
+        // `attention` and `resize_increments` are dropped the same way; they
+        // have no Android meaning.
         let unused_handles = (
             OwnedFfiHandle::required(title, "WuiWindow.title"),
             OwnedFfiHandle::optional(frame),
@@ -430,6 +544,9 @@ impl WuiWindow {
             background.into_android_owned_color(),
             OwnedFfiHandle::optional(min_size),
             OwnedFfiHandle::optional(max_size),
+            OwnedFfiHandle::required(level, "WuiWindow.level"),
+            OwnedFfiHandle::required(attention, "WuiWindow.attention"),
+            OwnedFfiHandle::optional(resize_increments),
         );
         let content = OwnedFfiHandle::required(content, "WuiWindow.content");
         drop(unused_handles);
@@ -480,6 +597,9 @@ impl IntoFFI for Window {
             max_size: self.max_size.into_ffi(),
             placement: placement_into_ffi(self.placement),
             activation: self.activation.into(),
+            level: self.level.into_ffi(),
+            attention: self.attention.into_ffi(),
+            resize_increments: self.resize_increments.into_ffi(),
         }
     }
 }

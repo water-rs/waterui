@@ -349,6 +349,20 @@ Both carry the full font API:
 two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`
 or size its container.
 
+A `font::Font` built from a slot carries the same overrides, and every one of them —
+`.family(..)`, `.size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
+`.letter_spacing(..)` — takes a plain value or a signal of one. A family that follows a
+setting is a signal, never a `watch(..)`:
+
+```rust
+let family: Binding<Option<Str>> = Binding::container(None); // e.g. a user setting
+text("~/src").font(font::Font::from(font::Body).family(family.clone()))
+```
+
+`.family(..)` takes a name (`"Menlo"`, a `Str`, a `String`), a signal of one, or a signal
+of `Option<Str>` whose `None` (`font::FontFamily::Inherited`) keeps the family the slot
+resolves to. Changing the signal re-resolves the font in place; the text is not rebuilt.
+
 Richer text:
 
 ```rust

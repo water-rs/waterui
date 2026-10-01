@@ -57,7 +57,7 @@ These are the target architecture and acceptance criteria for repository changes
 - **Self-drawn components are independent versioned crates, not submodules.** SVG, canvas, chart, particle, barcode, and similar components own their implementations, tests, releases, and CI in their own repositories. They consume public `waterui-graphics` APIs and the core/layout/reactivity crates they actually need. Stable integration uses published crate versions. They must not depend on another repository's checkout layout or reach into its source tree for implementation or test resources.
 - **`examples/` keeps only examples whose subject is a native widget or a core framework behavior.** The boundary is the same one the code follows: this repository keeps the native-widget core, self-drawn components live in their own repositories, and a self-drawn component's demonstration belongs to that component's repository too — the barcode demo lives in `water-rs/barcode`, the image demo in `water-rs/image`, not here. Move the complete example, assets, project configuration, and validation responsibility with the component; update workspace membership, CI paths, and links, and remove the main-repository copy once the standalone example works. Use the owning repository's component source and explicit compatible framework dependencies, without relying on the WaterUI checkout layout. `examples/filter` is the single documented exception: it stays because its subject is the framework contract of applying GPU filter effects to arbitrary views, including native widgets — a cross-layer interaction this repository is responsible for. And because that path is GPU-rendered, a backend's e2e suite must verify the filter example **visually, never by pixel-exact comparison**: GPU output is not pixel-stable across platforms, adapters, or execution paths.
 - **Normal dependencies flow from the facade to components to foundations.** A component re-exported by `waterui` must not normally depend back on `waterui`. A backend that consumes the facade cannot also be re-exported by it until that reverse dependency is removed. Repository independence does not itself require a facade re-export of every backend.
-- **Concrete backends also have an independent-repository boundary.** Apple, Android, GTK and Hydrolysis own their platform implementations and CI (Dew is being absorbed into Hydrolysis, water-rs/hydrolysis#187); shared backend contracts remain in WaterUI. The Apple backend is distributed from `water-rs/apple-backend` as a remote Swift package pinned by `apple-backend-version` in the root manifest's `[package.metadata.waterui]` — the model other backends follow as they leave the tree. A local checkout is used instead of the pin through `[backends.apple] backend_path` in an app project's `Water.toml`; a playground rejects backend tables, so it picks up a local checkout only as `<waterui_path>/backends/apple` (a symlink to the checkout works). Rust backends are not exceptions: replace workspace-only assumptions, cross-directory fixtures, and CLI path assumptions with public package interfaces and explicit version metadata before switching consumers. Hydrolysis can remain the integration-test host as a versioned dependency. Preserve each backend's rendering model; extraction is not permission to redesign shared contracts.
+- **Concrete backends also have an independent-repository boundary.** Apple, Android, GTK and Hydrolysis own their platform implementations and CI (Dew is being absorbed into Hydrolysis, water-rs/hydrolysis#187); shared backend contracts remain in WaterUI. The Apple backend is distributed from `water-rs/apple-backend` as a remote Swift package pinned by `apple-backend-version` in the root manifest's `[package.metadata.waterui]` — the model other backends follow as they leave the tree. A local checkout replaces the pin through `<waterui_path>/backends/apple` (a symlink to the checkout works); `Water.toml` has no `[backends.*]` tables. Rust backends are not exceptions: replace workspace-only assumptions, cross-directory fixtures, and CLI path assumptions with public package interfaces and explicit version metadata before switching consumers. Hydrolysis can remain the integration-test host as a versioned dependency. Preserve each backend's rendering model; extraction is not permission to redesign shared contracts.
 - **Keep local ecosystem checkouts together.** Independent component and backend repositories live under `~/Coding/water-rs/`, not as scattered siblings directly under `~/Coding/`. Create new extracted repositories there too. The WaterUI canonical checkout remains at `~/Coding/waterui`, and active agent workspace slots retain their existing paths. When relocating an existing checkout, preserve its entire Git directory, branches, staged and unstaged work, and update operational path references rather than cloning a second development line.
 - **Hydrolysis and its Material 3 theme are two independent repositories.** `hydrolysis` lives in water-rs/hydrolysis and `hydrolysis-m3` in water-rs/hydrolysis-m3; neither is nested in the other and neither is a WaterUI submodule. Each owns its implementation, dedicated examples, assets, tests, CI, and releases. Hydrolysis remains theme-independent and GPU-required; the MD3 package implements public widget/theme contracts without depending on renderer internals. WaterUI's CLI and integration tests select explicit compatible versions of both packages through channel metadata. A change to either is a pull request in its repository and a version bump here, never a crate in this tree.
 - **Reserve submodules for inseparable core dependencies such as nami.** Being first-party, needing independent CI, or being distributed from a Git repository is not sufficient reason to add a submodule. Independently distributed components and backends are consumed through explicit compatible package versions or source revisions, not brought back as submodules. Existing non-core gitlinks must be migrated deliberately, not removed before their replacements work.
@@ -68,6 +68,9 @@ These are the target architecture and acceptance criteria for repository changes
 - **Repository boundaries also define CI ownership.** Each component/backend repository checks its own implementation and platform matrix, with triggers scoped to affected packages and paths. WaterUI checks its foundations, facade exports, and cross-repository integration. Do not recreate the monorepo by running every extracted crate's implementation suite as a WaterUI workspace member. A moved check must have a verified owner; no platform, feature combination, fixture, or correctness signal may disappear during extraction.
 - **CI capacity: the `water-rs` organization is on GitHub Team, with 60 concurrent jobs in total and 20 of them macOS.** Every workflow is designed against that budget, and efficiency and parallelism are a standing concern on every CI touch, not a cleanup for later. Independent work fans out: matrix shards for the example sweeps, one concurrency group per dispatched run (a group shared by unrelated runs serializes them behind each other while runners sit idle), no job waiting on another it does not consume. Measure wall-clock from the Actions run itself, setup and cache restore included. Redundancy — the same dependency graph compiled twice in one run, a cache entry that restores nothing, a job whose output nobody reads, a cold build where a warm one was available — and any run far slower than the work it does are defects: warn the user immediately with the measurement rather than absorbing the cost silently.
 - **The WaterUI dev-push gate is format plus compilation/lint checks, and must finish in under 10 minutes.** Full tests, doctests, examples, expensive platform/feature matrices, coverage, and other complex suites run nightly rather than on the dev-push critical path. Additional PR ABI/security checks remain explicit. Prioritize cache capacity for the frequent compilation gate. Prove the budget with actual Actions wall-clock measurements, including setup and cache overhead; setting a timeout or skipping correctness checks is not proof of success.
+- **Build-time measurements cover only what users pay for.** Never measure the incremental build time of the WaterUI crates themselves, because nobody consumes that number. Measure two things:
+  - the cold build time;
+  - the incremental compile time and the `water preview` time of a real app that depends on WaterUI.
 - **Framework channels are not Rust toolchain channels.** The CLI must support the following framework selections:
 
   | Channel | Source and guarantee |
@@ -245,7 +248,7 @@ Keep the change set strictly scoped to the task.
     Standalone crate/backend-package verification uses the package's own toolchain: Cargo for Rust, SwiftPM for Swift packages, and Gradle for Android packages. This does not authorize hand-scaffolding an application or bypassing water for application deployment. If an application workflow requires direct adb/xcodebuild/other tool use because water lacks the capability, propose adding that capability to the CLI.
 
     Never hand-create or manually scaffold project/app structure. Always use `water create` (or existing generated project files) as the source of truth.
-    For monorepo examples/playgrounds in local dev mode, `Water.toml` must explicitly set `waterui_path = "../.."` to force local backend usage and avoid remote backend resolution.
+    For monorepo examples in local dev mode, `Water.toml` must explicitly set `waterui_path = "../.."` to force local backend usage and avoid remote backend resolution.
 </important>
 
 <important>
@@ -321,16 +324,16 @@ water run --platform ios
 water run --platform android
 water run --platform linux --backend hydrolysis
 
-# Create a playground for quick experimentation
-water create "My Playground" --mode playground
+# Create a project for quick experimentation
+water create "My App"
 
 # Preview a view function (renders to PNG without running full app)
 water preview my_view --platform macos --path ./app --output preview.png
 ```
 
-## Playground mode
+## Project structure
 
-Playground mode allows CLI to delegate the detail of backend integration to the user, for instance, you cannot touch Xcode project directly in playground mode. Playground mode is recommended by default. All waterui project in this repo is in playground mode.
+Every WaterUI project is entry-owning: WaterUI owns the program entry and the CLI generates and manages every backend project, so there is no Xcode or Gradle project in the project directory to edit. `water create` produces exactly this shape; there are no package types or modes to choose.
 
 ## Preview System
 
@@ -410,7 +413,7 @@ Hydrolysis is WaterUI's only self-drawn backend (water-rs/hydrolysis#187). It re
 
 The `water` CLI orchestrates builds across platforms and lives in its own repository, https://github.com/water-rs/cli, with its own `AGENTS.md`, CI, nightly end-to-end suite and release cadence:
 
-- `water create` - Scaffold new project (supports `--mode playground` for quick experiments)
+- `water create` - Scaffold new project
 - `water run` - Build and deploy to device/simulator
 - `water build --platform <platform>` - Build the project for the selected platform and backend
 - `water package` - Package the production (release) build; `--debug` packages an unoptimized one
