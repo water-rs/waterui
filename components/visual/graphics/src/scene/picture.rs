@@ -297,7 +297,7 @@ impl SceneContent for RecordedScene {
 mod tests {
     use super::*;
     use cherenkov::kurbo::{Rect, Shape};
-    use cherenkov::{Sampling, WorkingColor};
+    use cherenkov::{ImageId, Sampling, WorkingColor};
     use nami::{SignalExt, binding, constant};
     use waterui_core::layout::StretchAxis;
 
@@ -405,22 +405,23 @@ mod tests {
         let id = named.expect("the picture named its image");
         // The code that recorded the picture keeps no handle of its own.
         drop(image);
-        assert!(removed_images(&mount.render()).is_empty());
+        assert_eq!(removed_images(&mount.render()), Vec::<ImageId>::new());
 
         let mut content = RecordedScene {
             picture: Picture::new(Size::new(10.0, 10.0), constant(recording)),
             watcher: None,
         };
         let shown = mount.frame(&mut content);
-        assert!(
-            removed_images(&shown.events).is_empty(),
+        assert_eq!(
+            removed_images(&shown.events),
+            Vec::<ImageId>::new(),
             "the image a mounted picture draws was released: {:?}",
             shown.events
         );
         // The picture view goes; the recording that draws it is still
         // installed, and still holds the image.
         drop(content);
-        assert!(removed_images(&mount.render()).is_empty());
+        assert_eq!(removed_images(&mount.render()), Vec::<ImageId>::new());
 
         let replaced = mount.frame(&mut Blank);
         assert_eq!(removed_images(&replaced.events), [id]);

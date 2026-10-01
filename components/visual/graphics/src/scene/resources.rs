@@ -1176,7 +1176,7 @@ pub(crate) mod tests {
 
         for _ in 0..2 {
             let report = mount.frame(&mut content);
-            assert!(report.drawn.is_empty());
+            assert_eq!(report.drawn, Vec::<ImageId>::new());
             assert!(
                 added_images(&report.events).is_empty(),
                 "nothing is registered before the content draws it"
@@ -1193,7 +1193,7 @@ pub(crate) mod tests {
         );
         let id = registered[0];
         assert_registered_then_drawn(&third, id);
-        assert!(removed_images(&third.events).is_empty());
+        assert_eq!(removed_images(&third.events), Vec::<ImageId>::new());
 
         // Asking for the same source while it is held shares the
         // registration instead of uploading it again.
@@ -1216,7 +1216,7 @@ pub(crate) mod tests {
         );
 
         let fifth = mount.frame(&mut content);
-        assert!(fifth.drawn.is_empty());
+        assert_eq!(fifth.drawn, Vec::<ImageId>::new());
         assert!(content.image.is_none());
         assert_released_then_replaced(&fifth, id);
         assert_eq!(
@@ -1273,7 +1273,7 @@ pub(crate) mod tests {
         // The sixth recording lets the image go, and the host renders before
         // installing it: the fourth recording is still the one drawn.
         let sixth = mount.record(&mut content);
-        assert!(sixth.drawn.is_empty());
+        assert_eq!(sixth.drawn, Vec::<ImageId>::new());
         assert!(content.image.is_none());
         let rendered = mount.render();
         assert!(
