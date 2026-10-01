@@ -3406,7 +3406,10 @@ mod winit_impl {
 
         fn apply_properties(&mut self, window: &waterui::window::Window) {
             let title = window.display_title().snapshot();
-            let decorations = !matches!(window.style, waterui::window::WindowStyle::Borderless);
+            let decorations = !matches!(
+                window.style.snapshot(),
+                waterui::window::WindowStyle::Borderless
+            );
             let state = window.state.snapshot();
             let frame = validated_window_frame(window.frame.snapshot());
             let properties = AppliedWindowProperties {
