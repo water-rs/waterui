@@ -153,6 +153,10 @@ pub(crate) enum RenderNode {
     /// An embedded `GpuContentView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
     GpuContent(Box<GpuContentNode>),
+    /// An `ExternalFrameView` leaf owning its `ExternalFrameRuntime`,
+    /// composited through a keyed engine layer that presents the frames its
+    /// source publishes.
+    ExternalFrame(Box<ExternalFrameNode>),
     /// A `FilteredView` wrapper owning its `FilteredRuntime` (the engine
     /// `Filter`) and recursing into its child node — the child mounts inside
     /// the filtered group so the filter covers the whole subtree.
@@ -208,6 +212,7 @@ impl RenderNode {
             Self::LazyStack(node) => node.render_id,
             Self::SceneView(node) => node.render_id,
             Self::GpuContent(node) => node.render_id,
+            Self::ExternalFrame(node) => node.render_id,
             Self::Filtered(node) => node.render_id,
             Self::Dynamic(node) => node.render_id,
             Self::Wrapper(node) => node.render_id,
@@ -238,7 +243,8 @@ impl RenderNode {
             | Self::Text(_)
             | Self::Widget(_)
             | Self::SceneView(_)
-            | Self::GpuContent(_) => {}
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_) => {}
             Self::Container(node) => {
                 for child in &node.children {
                     child.collect_render_ids(out);
@@ -289,6 +295,7 @@ impl RenderNode {
             Self::Scroll(node) => Some(node.accessibility_identity.clone()),
             Self::SceneView(node) => Some(node.accessibility_identity.clone()),
             Self::GpuContent(node) => Some(node.accessibility_identity.clone()),
+            Self::ExternalFrame(node) => Some(node.accessibility_identity.clone()),
             Self::Collection(node) => Some(node.accessibility_identity.clone()),
             Self::LazyStack(node) => Some(node.accessibility_identity.clone()),
             Self::Retain(node) => node.child.accessibility_identity(),

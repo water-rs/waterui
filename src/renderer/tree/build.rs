@@ -3,7 +3,7 @@
 //! env scope, collection, lazy stack, scene/GPU/effect, `Dynamic` host).
 
 use super::*;
-use crate::gpu_view::GpuContentRuntime;
+use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
@@ -581,6 +581,12 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        let view = match view.downcast::<Native<ExternalFrameView>>() {
+            Ok(view) => {
+                return RenderNode::build_external_frame((*view).into_inner());
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Native<FilteredView>>() {
             Ok(filtered) => {
                 return RenderNode::build_filtered((*filtered).into_inner(), env, renderer);
@@ -1009,6 +1015,17 @@ impl RenderNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
             runtime: Rc::new(RefCell::new(GpuContentRuntime::new(view))),
+        }))
+    }
+
+    /// Build an `ExternalFrameView` node owning its [`ExternalFrameRuntime`] —
+    /// the view keeps its UI-side hooks (measure, a11y); the compositor starts
+    /// the stream's source the first time a persistent mount installs it.
+    fn build_external_frame(view: ExternalFrameView) -> RenderNode {
+        RenderNode::ExternalFrame(Box::new(ExternalFrameNode {
+            accessibility_identity: Rc::new(()),
+            render_id: RenderId::next(),
+            runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(view))),
         }))
     }
 

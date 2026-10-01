@@ -88,6 +88,23 @@ pub(crate) struct GpuContentLayer {
     pub(crate) active_layers: Vec<ActiveSceneLayer>,
 }
 
+/// An `ExternalFrameView` leaf presenting this frame: a keyed layer that
+/// drains the stream's mailbox each pass and hands the newest published
+/// frame to the engine as its layer content.
+pub(crate) struct ExternalFrameLayer {
+    /// The mount identity: which visual node presents this content.
+    pub(crate) key: crate::renderer::retained::RenderKey,
+    /// The node-owned view state — the `ExternalFrameView` and its stream's
+    /// frame receiver once the source has been started.
+    pub(crate) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
+    /// Placement transform mapping `bounds` into scene space.
+    pub(crate) transform: kurbo::Affine,
+    /// The content's rect in scene space.
+    pub(crate) bounds: kurbo::Rect,
+    /// The clip/opacity ancestry the layer is shown under.
+    pub(crate) active_layers: Vec<ActiveSceneLayer>,
+}
+
 /// A `FilteredView` wrapper presenting this frame: a keyed layer carrying the
 /// registered `Filter`, whose children mount under it as group layers.
 pub(crate) struct FilteredLayer {
@@ -126,6 +143,9 @@ pub(crate) enum RenderLayer {
     SceneContent(SceneContentLayer),
     /// A `GpuContentView` leaf: install-once GPU content on a keyed layer.
     GpuContent(GpuContentLayer),
+    /// An `ExternalFrameView` leaf: a keyed layer whose content is the newest
+    /// frame the stream's source published, sampled in place.
+    ExternalFrame(ExternalFrameLayer),
     /// A `FilteredView` wrapper: a keyed layer carrying a `Filter`, with its
     /// child layers mounted underneath.
     Filtered(FilteredLayer),
@@ -301,8 +321,13 @@ struct FrameInstall<'a> {
     metrics: &'a std::sync::Arc<crate::renderer::effects::AppliedFilterMetrics>,
     /// The engine's shared resource table — the `build_scene` argument.
     resources: &'a crate::renderer::recording::SceneResources,
-    /// The host's display-link wake, installed on `GpuContent` producers.
+    /// The host's display-link wake, installed on `GpuContent` producers and
+    /// external-frame streams.
     wake: Option<RedrawHandle>,
+    /// The frame's device and queue, for starting external-frame sources —
+    /// planes are imported on the device the window presents through.
+    device: &'a wgpu::Device,
+    queue: &'a wgpu::Queue,
     /// Whether segment recordings re-install their content this frame.
     rasterize: bool,
     /// Device pixels per logical unit on the target's display.
@@ -414,6 +439,43 @@ impl FrameInstall<'_> {
                         layer.bounds,
                         pixels,
                     ));
+                }
+                RenderLayer::ExternalFrame(layer) => {
+                    let slot = MountSlot::Keyed(layer.key);
+                    order.push(slot);
+                    self.live_keys.insert(layer.key);
+                    self.mounts.layer(self.surface, slot);
+                    let scopes = ancestry_scopes(&layer.active_layers);
+                    self.mounts
+                        .set_ancestry(self.surface, tx, layer.key, &scopes);
+                    let target = slot_layer(self.mounts, self.surface, scope, slot);
+                    let visible = scopes.iter().all(|scope| scope.opacity != 0.0);
+                    if visible {
+                        let mut runtime = layer.runtime.borrow_mut();
+                        if runtime.receiver.is_none() {
+                            let redraw = self
+                                .wake
+                                .clone()
+                                .unwrap_or_else(|| RedrawHandle::new(|| {}));
+                            runtime.receiver =
+                                Some(runtime.view.stream().start(self.device, self.queue, redraw));
+                            self.installs += 1;
+                        }
+                        // The mailbox keeps only the newest published frame:
+                        // drain it here so one engine pass presents at most
+                        // one frame, sampled in place with no copy.
+                        if let Some(frame) = runtime.receiver.as_ref().and_then(|r| r.take()) {
+                            runtime.frame_pixels = Some(external_frame_plane_size(&frame));
+                            tx[target].content(self.engine.external_frame(frame));
+                        }
+                        if let Some(pixels) = runtime.frame_pixels {
+                            tx[target].transform(gpu_frame_transform(
+                                layer.transform,
+                                layer.bounds,
+                                pixels,
+                            ));
+                        }
+                    }
                 }
                 RenderLayer::Filtered(layer) => {
                     let slot = MountSlot::Keyed(layer.key);
@@ -724,6 +786,8 @@ impl HydrolysisRenderer {
             metrics: &self.applied_filter_metrics,
             resources: &window.resources,
             wake: host_wake.clone(),
+            device: target.device,
+            queue: target.queue,
             rasterize: rasterize_scene_layers,
             display_scale: target.display_scale,
             needs_redraw: false,
@@ -846,6 +910,17 @@ fn gpu_frame_transform(
             bounds.width() / f64::from(pixels.0),
             bounds.height() / f64::from(pixels.1),
         )
+}
+
+/// A frame's plane size in pixels: the luma plane for YUV, the plane for RGB
+/// — the size the engine emits the frame's quad at in layer space.
+fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (u32, u32) {
+    use cherenkov_gpu::interop::FramePlanes;
+    let plane = match &frame.planes {
+        FramePlanes::Yuv { y, .. } => y,
+        FramePlanes::Rgb { plane, .. } => plane,
+    };
+    (plane.width(), plane.height())
 }
 
 /// The clip/opacity ancestry a surface layer is drawn under, as mount

@@ -459,6 +459,44 @@ impl RenderNode {
                     );
                 }
             }
+            RenderNode::ExternalFrame(node) => {
+                renderer.state.counters.recorded_view_contents += 1;
+                let (content_label, content_value) = {
+                    let view = &node.runtime.borrow().view;
+                    (
+                        view.accessibility_label().map(str::to_owned),
+                        view.accessibility_value().map(str::to_owned),
+                    )
+                };
+                renderer.push_render_owner(&node.accessibility_identity);
+                #[allow(
+                    clippy::let_unit_value,
+                    reason = "without the accessibility feature the stub returns ()"
+                )]
+                let _focus_node = emit_graphics_image_accessibility(
+                    renderer,
+                    Some(ctx),
+                    env,
+                    content_label,
+                    content_value,
+                    false,
+                );
+                renderer.pop_render_owner();
+                renderer.flush_scene_layer();
+                renderer
+                    .compositor
+                    .render_layers
+                    .push(RenderLayer::ExternalFrame(ExternalFrameLayer {
+                        key: crate::renderer::retained::RenderKey {
+                            render: node.render_id,
+                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                        },
+                        runtime: Rc::clone(&node.runtime),
+                        transform: ctx.transform,
+                        bounds: ctx.bounds,
+                        active_layers: renderer.compositor.active_scene_layers.clone(),
+                    }));
+            }
             RenderNode::Filtered(node) => {
                 // Ancestor clips and opacity belong on the filtered mount
                 // itself — the engine's `Filter` covers the mount's whole
@@ -776,6 +814,25 @@ impl RenderNode {
                         focus_node,
                     );
                 }
+            }
+            RenderNode::ExternalFrame(node) => {
+                let (content_label, content_value) = {
+                    let view = &node.runtime.borrow().view;
+                    (
+                        view.accessibility_label().map(str::to_owned),
+                        view.accessibility_value().map(str::to_owned),
+                    )
+                };
+                renderer.push_accessibility_owner(&node.accessibility_identity);
+                emit_graphics_image_accessibility(
+                    renderer,
+                    None,
+                    env,
+                    content_label,
+                    content_value,
+                    false,
+                );
+                renderer.pop_accessibility_owner();
             }
             // The filter is a paint concern: the semantic tree keeps the
             // child exactly as it emits on its own.

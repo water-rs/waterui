@@ -4,7 +4,9 @@ use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{Environment, Native};
 use waterui_graphics::color::Color;
-use waterui_graphics::{FilteredView, GpuContentView, Gradient, SceneView, resolve_scene_proposal};
+use waterui_graphics::{
+    ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView, resolve_scene_proposal,
+};
 use waterui_shape::{ResolvedMorphShape, ResolvedShape};
 
 impl HydroNativeView for Native<GpuContentView> {
@@ -33,6 +35,31 @@ impl HydroNativeView for Native<GpuContentView> {
             view.as_inner().intrinsic_size(),
             proposal,
         ))
+    }
+}
+
+impl HydroNativeView for Native<ExternalFrameView> {
+    fn intrinsic(
+        _state: &mut HydroState,
+        view: &Self,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    ) -> LayoutSize {
+        view.as_inner()
+            .intrinsic_size()
+            .unwrap_or_else(LayoutSize::zero)
+    }
+
+    fn dimensions(
+        _state: &mut HydroState,
+        view: &Self,
+        _env: &Environment,
+        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        proposal: ProposalSize,
+    ) -> ViewDimensions {
+        // The view's own measure honours its intrinsic size where the
+        // container left an axis open and fills the proposal otherwise.
+        view.as_inner().measure(proposal)
     }
 }
 

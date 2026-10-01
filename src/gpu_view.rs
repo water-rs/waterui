@@ -14,7 +14,7 @@
 //! the frame's whole key set, and transient (capture) windows never install
 //! it at all: a capture cannot consume the one install the producer gets.
 
-use waterui_graphics::gpu::GpuContentView;
+use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 
 /// The `GpuContentView` a [`crate::renderer::tree::GpuContentNode`] owns, and
 /// whether its producer has been installed on an engine layer yet.
@@ -35,6 +35,32 @@ impl GpuContentRuntime {
         Self {
             view,
             installed: false,
+        }
+    }
+}
+
+/// The `ExternalFrameView` a [`crate::renderer::tree::ExternalFrameNode`]
+/// owns, and the stream's frame receiver once a mount has started it.
+///
+/// Unlike `GpuContent`, an external-frame source is restartable: the view
+/// hands out a fresh [`ExternalFrameStream`] handle every call, and a lost
+/// device or a reborn mount starts the source again with the new output.
+/// `receiver` is `Some` once the first `ExternalFrameLayer` carrying this
+/// runtime has started the source on the window's device.
+pub(crate) struct ExternalFrameRuntime {
+    pub(crate) view: ExternalFrameView,
+    /// The mailbox drain end, installed by the compositor's install pass.
+    pub(crate) receiver: Option<FrameReceiver>,
+    /// The plane size of the last presented frame, for the stretch transform.
+    pub(crate) frame_pixels: Option<(u32, u32)>,
+}
+
+impl ExternalFrameRuntime {
+    pub(crate) fn new(view: ExternalFrameView) -> Self {
+        Self {
+            view,
+            receiver: None,
+            frame_pixels: None,
         }
     }
 }

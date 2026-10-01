@@ -88,6 +88,9 @@ impl RenderNode {
             RenderNode::GpuContent(node) => {
                 scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
             }
+            RenderNode::ExternalFrame(node) => {
+                scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
+            }
             RenderNode::Filtered(node) => node.child.stretch(),
             RenderNode::Scroll(_) => StretchAxis::Both,
             // The same stack laid out eagerly is content-sized on both axes, so a
@@ -230,6 +233,9 @@ impl RenderNode {
                     resolved.height.unwrap_or(0.0),
                 ))
             }
+            // External frames measure through their source: a stream with an
+            // intrinsic size is content-sized, one without fills the proposal.
+            RenderNode::ExternalFrame(node) => node.runtime.borrow().view.measure(proposal),
             // A filtered view is sized by its content: the engine applies the
             // filter to the mount the child's layers hang from.
             RenderNode::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
@@ -376,7 +382,8 @@ impl RenderNode {
             RenderNode::Color(_)
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
-            | RenderNode::GpuContent(_) => {}
+            | RenderNode::GpuContent(_)
+            | RenderNode::ExternalFrame(_) => {}
         }
     }
 
@@ -543,6 +550,7 @@ impl RenderNode {
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
             | RenderNode::GpuContent(_)
+            | RenderNode::ExternalFrame(_)
             | RenderNode::LazyStack(_)
             | RenderNode::Widget(_) => {}
         }
@@ -671,6 +679,7 @@ impl RenderNode {
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
             | RenderNode::GpuContent(_)
+            | RenderNode::ExternalFrame(_)
             | RenderNode::Widget(_) => {}
             RenderNode::Opacity(node) => node.child.signature_into(frame, hasher),
             RenderNode::Scale(node) => node.child.signature_into(frame, hasher),

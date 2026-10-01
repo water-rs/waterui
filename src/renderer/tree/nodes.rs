@@ -950,6 +950,19 @@ pub(crate) struct GpuContentNode {
     pub(super) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
 }
 
+/// An `ExternalFrameView` leaf that OWNS its [`crate::gpu_view::ExternalFrameRuntime`]
+/// — the node analogue of [`GpuContentNode`], for a `Native<ExternalFrameView>`
+/// reached through the retained tree. The compositor mounts it as its own
+/// engine layer and starts the stream's source on first install; each frame
+/// the layer drains the receiver's mailbox and presents the newest frame.
+pub(crate) struct ExternalFrameNode {
+    pub(super) accessibility_identity: Rc<()>,
+    /// Consumed by the retained-update mount path in H3.
+    #[allow(dead_code)]
+    pub(crate) render_id: RenderId,
+    pub(super) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
+}
+
 /// A `FilteredView` wrapper that OWNS its [`FilteredRuntime`]
 /// (the unregistered effect source plus its `ParamGuards`, then the engine
 /// `Filter` handle after first registration) and builds its wrapped child as

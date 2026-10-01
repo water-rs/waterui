@@ -159,7 +159,7 @@ use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
 use waterui_graphics::cherenkov::{Paint, WorkingColor};
 use waterui_graphics::color::Color;
 use waterui_graphics::gpu::RedrawHandle;
-use waterui_graphics::{FilteredView, GpuContentView, Gradient, SceneView};
+use waterui_graphics::{ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};

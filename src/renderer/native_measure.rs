@@ -119,6 +119,7 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<Dynamic>);
         $macro!(Native<SystemIcon>);
         $macro!(Native<GpuContentView>);
+        $macro!(Native<ExternalFrameView>);
         $macro!(Native<SceneView>);
         $macro!(Native<FilteredView>);
         $macro!(Native<Color>);

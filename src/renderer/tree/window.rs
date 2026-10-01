@@ -117,6 +117,7 @@ impl RenderNode {
             // GPU content owns its runtime and produces every frame; like a
             // self-drawn scene it has no structural patch.
             | RenderNode::GpuContent(_)
+            | RenderNode::ExternalFrame(_)
             // A widget leaf re-dispatches from its live config every flush, so it
             // needs no structural patch.
             | RenderNode::Widget(_) => false,
@@ -167,6 +168,7 @@ impl RenderNode {
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
             | RenderNode::GpuContent(_)
+            | RenderNode::ExternalFrame(_)
             | RenderNode::Widget(_) => {}
             RenderNode::LazyStack(node) => node
                 .item_cache
@@ -216,6 +218,7 @@ impl RenderNode {
             | RenderNode::Text(_)
             | RenderNode::SceneView(_)
             | RenderNode::GpuContent(_)
+            | RenderNode::ExternalFrame(_)
             | RenderNode::Widget(_) => false,
         }
     }
