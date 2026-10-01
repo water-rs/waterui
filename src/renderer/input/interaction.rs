@@ -1,7 +1,9 @@
 use super::*;
 use crate::animation::AnimationKey;
-use std::collections::{BTreeMap, BTreeSet};
+use nami::Signal as _;
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
+use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
@@ -15,8 +17,24 @@ const INTERACTION_KEYS_PER_IDENTITY: usize =
 
 #[derive(Debug, Default)]
 pub(crate) struct InteractionEngine {
-    states: BTreeMap<InteractionKey, InteractionState>,
+    states: BTreeMap<InteractionKey, WidgetInteractionEntry>,
     active: BTreeSet<InteractionKey>,
+    /// The full reported [`InteractionState`] each active control sampled at
+    /// bind time — draw sites read it back by key instead of repeating the
+    /// `Selected`/drag bookkeeping.
+    reported: BTreeMap<InteractionKey, InteractionState>,
+    /// `Selected` environment entries claimed this frame, keyed by the
+    /// entry's address — the outermost interactive control under the metadata
+    /// owns it, so the flag does not leak into controls nested inside it.
+    selected_claims: BTreeMap<usize, RetainedIdentity>,
+    /// `InteractionReport` env entries claimed this frame, keyed by each
+    /// entry's address — the outermost interactive control inside a reporting
+    /// view writes it.
+    report_claims: BTreeSet<usize>,
+    /// Bindings behind live report claims, so a scope whose control stops
+    /// reporting (it unmounted or went non-interactive) leaves the binding at
+    /// rest instead of frozen on the last sampled state.
+    live_reports: BTreeMap<usize, nami::Binding<InteractionState>>,
 }
 
 /// Stable identity of one semantic interaction target.
@@ -47,7 +65,7 @@ impl InteractionKey {
 }
 
 #[derive(Debug, Default)]
-struct InteractionState {
+struct WidgetInteractionEntry {
     hovering: bool,
     handles: Option<Rc<InteractionLayerHandles>>,
 }
@@ -75,10 +93,68 @@ impl InteractionFocus {
 impl InteractionEngine {
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.active.clear();
+        self.selected_claims.clear();
+        self.report_claims.clear();
     }
 
     pub(crate) fn finish_rebuild_frame(&mut self) {
         self.states.retain(|key, _| self.active.contains(key));
+        self.reported.retain(|key, _| self.active.contains(key));
+        // A report whose control no longer binds goes back to rest.
+        self.live_reports.retain(|claim, binding| {
+            if self.report_claims.contains(claim) {
+                return true;
+            }
+            if binding.snapshot() != InteractionState::empty() {
+                binding.set(InteractionState::empty());
+            }
+            false
+        });
+    }
+
+    /// Claims `selected` for `key`'s owner this frame; `true` while `key`
+    /// owns the claim — the outermost interactive control under a `Selected`
+    /// scope wins, so the state does not leak into controls nested inside it.
+    /// Discriminators share one owner so a multi-part control (a stepper's
+    /// halves) reports one selected state.
+    pub(crate) fn claim_selected(&mut self, selected: &Selected, key: &InteractionKey) -> bool {
+        match self
+            .selected_claims
+            .entry(std::ptr::from_ref(selected) as usize)
+        {
+            Entry::Vacant(entry) => {
+                entry.insert(key.owner.clone());
+                true
+            }
+            Entry::Occupied(entry) => *entry.get() == key.owner,
+        }
+    }
+
+    /// Claims `report` for this frame's outermost claimant; `true` only for
+    /// the first control binding under it — the caller then owns the write.
+    /// Claims are keyed by the env entry itself (the `InteractionReport` value
+    /// lives inside the env's `Rc`, so its address is stable while the scope
+    /// is): every binding lands in `live_reports`, identity-bearing or not, so
+    /// an unclaimed report resets to the resting state at frame end.
+    pub(crate) fn claim_report(&mut self, report: &InteractionReport) -> bool {
+        let claim = std::ptr::from_ref(report) as usize;
+        if !self.report_claims.insert(claim) {
+            return false;
+        }
+        self.live_reports.insert(claim, report.0.clone());
+        true
+    }
+
+    /// Records the resolved flags a bound control reports — draw sites read
+    /// them back through [`Self::reported_state`].
+    pub(crate) fn set_reported_state(&mut self, key: &InteractionKey, state: InteractionState) {
+        self.reported.insert(key.clone(), state);
+    }
+
+    /// The flags `key` reported at bind time; empty for a view that never
+    /// bound an interaction target.
+    pub(crate) fn reported_state(&self, key: &InteractionKey) -> InteractionState {
+        self.reported.get(key).copied().unwrap_or_default()
     }
 
     pub(crate) fn bind_hover(&mut self, key: &InteractionKey) -> (HoverSlot, bool) {
@@ -251,16 +327,26 @@ impl InteractionEngine {
         }
         interaction_state.handles = Some(Rc::clone(&handles));
 
+        let mut flags = InteractionState::empty();
+        if input.disabled {
+            flags |= InteractionState::DISABLED;
+        }
+        if hovered {
+            flags |= InteractionState::HOVERED;
+        }
+        // Chrome reads the PHYSICAL press (the reference implementation removes [pressed] the
+        // instant the pointer lifts, so the 28dp pressed thumb and the
+        // pressed tint drop immediately on release). The ripple's Material
+        // minimum-press gating lives in the waves themselves and must not
+        // leak into pressed chrome after release.
+        if handles.pressing() {
+            flags |= InteractionState::PRESSED;
+        }
+        if focus_visible {
+            flags |= InteractionState::FOCUSED;
+        }
         let state = WidgetInteractionState {
-            disabled: input.disabled,
-            hovered,
-            // Chrome reads the PHYSICAL press (the reference implementation removes [pressed] the
-            // instant the pointer lifts, so the 28dp pressed thumb and the
-            // pressed tint drop immediately on release). The ripple's Material
-            // minimum-press gating lives in the waves themselves and must not
-            // leak into pressed chrome after release.
-            pressed: handles.pressing(),
-            focus_visible,
+            state: flags,
             focus_progress: focus_alpha.sample(now),
             state_layer_opacity: hover_alpha.sample(now),
             press_waves: handles.sample_waves(now),
@@ -325,6 +411,7 @@ mod tests {
     use core::time::Duration;
     use std::rc::Rc;
     use waterui::animation::Animation;
+    use waterui::interaction::InteractionState;
     use waterui_backend_core::widget::InteractionMotion;
 
     fn motion() -> InteractionMotion {
@@ -547,9 +634,15 @@ mod tests {
 
         let disabled_at = started + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);
-        assert!(state.disabled);
-        assert!(!state.hovered, "disabled widget must not sample hover");
-        assert!(!state.pressed, "disabled widget must not sample press");
+        assert!(state.state.contains(InteractionState::DISABLED));
+        assert!(
+            !state.state.contains(InteractionState::HOVERED),
+            "disabled widget must not sample hover"
+        );
+        assert!(
+            !state.state.contains(InteractionState::PRESSED),
+            "disabled widget must not sample press"
+        );
 
         // The in-flight ripple is released, fades out (the reference implementation keeps the fade),
         // and must be gone once the fade-out has finished.
@@ -563,8 +656,8 @@ mod tests {
         // Re-enabling starts at rest: the stale press must not resurface.
         let reenabled_at = faded_at + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, reenabled_at, false, false);
-        assert!(!state.disabled);
-        assert!(!state.pressed);
+        assert!(!state.state.contains(InteractionState::DISABLED));
+        assert!(!state.state.contains(InteractionState::PRESSED));
         assert!(state.press_waves.is_empty());
     }
 

@@ -1,5 +1,6 @@
 use super::*;
 use waterui_core::Computed;
+use waterui_core::interaction::Selected;
 use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
 
@@ -323,6 +324,7 @@ pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         Draggable,
         DropDestination,
         Background,
+        Selected,
         NavigationTransitionSource,
         NavigationTransitionDestination
     );
@@ -468,6 +470,7 @@ fn normalize_layout_view_with_budget(
         Shadow,
         Focused,
         Hittable,
+        Selected,
         GestureObserver,
         LifeCycleHook,
         OnEvent,
@@ -622,6 +625,46 @@ pub(crate) fn estimate_layout_intrinsic<'a>(
 pub(crate) fn resolved_color_to_peniko(color: ResolvedColor) -> peniko::Color {
     let srgb = color.to_srgb_with_headroom();
     peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.opacity])
+}
+
+/// The stroke parameters of `style.focus_ring` while `state` is FOCUSED
+/// (keyboard focus): the ring strokes the layer bounds grown by `offset`, so
+/// its inner edge sits `offset` points out — the stroked box and the resolved
+/// radii both grow by `offset + width / 2` — in the ring's color. The caller
+/// strokes it on the draw context it opens after resolving.
+pub(crate) fn interaction_focus_ring(
+    renderer: &mut HydrolysisRenderer,
+    env: &Environment,
+    layer_bounds: kurbo::Rect,
+    layer_radii: kurbo::RoundedRectRadii,
+    style: &waterui_backend_core::widget::InteractionStyle,
+    state: waterui_core::interaction::InteractionState,
+) -> Option<(
+    kurbo::Rect,
+    kurbo::RoundedRectRadii,
+    waterui_backend_core::widget::Brush,
+    f64,
+)> {
+    let ring = style.focus_ring.as_ref()?;
+    if !state.contains(waterui_core::interaction::InteractionState::FOCUSED) {
+        return None;
+    }
+    let grow = ring.offset + ring.width / 2.0;
+    let bounds = layer_bounds.inflate(grow, grow);
+    let radii = kurbo::RoundedRectRadii::new(
+        layer_radii.top_left + grow,
+        layer_radii.top_right + grow,
+        layer_radii.bottom_right + grow,
+        layer_radii.bottom_left + grow,
+    );
+    let color_signal = ring.color.resolve(env);
+    let color = resolved_color_to_peniko(renderer.read_signal(&color_signal));
+    Some((
+        bounds,
+        radii,
+        waterui_backend_core::widget::Brush::from(color),
+        ring.width,
+    ))
 }
 
 pub(crate) fn resolved_gradient_to_brush(

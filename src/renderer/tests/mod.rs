@@ -32,6 +32,7 @@ mod gpu_surface_idle;
 mod gpu_surface_input;
 mod image_ingest;
 mod ime;
+mod interaction_state;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod layer_occlusion;
 mod layout_contract;
@@ -76,8 +77,9 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
-use kurbo::{Affine, BezPath, Point, Rect};
+use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
@@ -1858,7 +1860,7 @@ fn interaction_state_does_not_migrate_between_semantic_identities() {
     let (state, _, _) =
         renderer.bind_interaction_target(second_key, Rect::new(100.0, 100.0, 180.0, 180.0), &env);
 
-    assert!(!state.pressed);
+    assert!(!state.state.contains(InteractionState::PRESSED));
     assert!(state.press_waves.is_empty());
 }
 
@@ -1893,7 +1895,10 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     renderer.set_frame_instant(later);
     renderer.begin_rebuild_frame();
     let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
-    assert!(state.pressed, "held press must stay visually pressed");
+    assert!(
+        state.state.contains(InteractionState::PRESSED),
+        "held press must stay visually pressed"
+    );
     let wave = state
         .press_waves
         .latest()
@@ -1922,7 +1927,7 @@ fn interaction_engine_resolves_focus_state() {
         false,
     );
 
-    assert!(state.focus_visible);
+    assert!(state.state.contains(InteractionState::FOCUSED));
     assert_eq!(state.focus_progress, 1.0);
 }
 
@@ -2234,6 +2239,8 @@ pub(crate) struct MinimalTestTheme {
     slider_metric_sizes: Rc<RefCell<Vec<ControlSize>>>,
     /// Every slider track rect the theme was asked to draw.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
+    /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
+    state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2309,6 +2316,17 @@ impl WidgetTheme for MinimalTestTheme {
         _icon_only: bool,
         _state: WidgetInteractionState,
     ) {
+    }
+
+    fn draw_interaction_state_layer(
+        &self,
+        _draw: &mut dyn DrawContext,
+        _bounds: Rect,
+        radii: RoundedRectRadii,
+        _color: peniko::Color,
+        state: WidgetInteractionState,
+    ) {
+        self.state_layer_draws.borrow_mut().push((state, radii));
     }
 
     fn toggle_metrics(&self, _style: ToggleStyle) -> ToggleMetrics {
