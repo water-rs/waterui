@@ -1,12 +1,12 @@
 [package]
-name = "video-player-example"
+name = "multi-scene-example"
 version = "0.1.0"
 edition = "2024"
 authors = ["Lexo Liu"]
-description = "Video player example for WaterUI framework"
+description = "Multi-scene example for WaterUI framework"
 license.workspace = true
 repository.workspace = true
-keywords = ["ui", "framework", "example", "video"]
+keywords = ["ui", "framework", "example", "scene"]
 categories = ["gui"]
 publish = false
 
@@ -14,4 +14,4 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
-waterui = { workspace = true, features = ["video", "video-gpu"] }
+waterui.workspace = true

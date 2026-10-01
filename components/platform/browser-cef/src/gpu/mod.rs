@@ -43,8 +43,12 @@ fn sync_browser_viewport(page: &CefPageHandle, frame: &GpuFrame<'_>) -> f64 {
 }
 
 #[cfg(target_os = "macos")]
-fn request_browser_frame(page: &CefPageHandle, _frame: &mut GpuFrame<'_>) {
-    page.request_frame();
+fn request_browser_frame(_page: &CefPageHandle, _frame: &mut GpuFrame<'_>) {
+    // `send_external_begin_frame` is a `NOTREACHED` no-op on macOS
+    // (`external_begin_frame_enabled` is off for this target — see the
+    // `WindowInfo` in `page.rs`). The browser produces frames on vsync and
+    // damage at `windowless_frame_rate`, and each delivered paint wakes the
+    // surface through the frame-sink mailbox.
 }
 
 #[cfg(not(target_os = "macos"))]
