@@ -439,7 +439,7 @@ pub trait ViewExt: View + Sized {
     /// The keyboard goes to the focused view first. A key it does not use —
     /// Escape, or an arrow in a single-line text field — bubbles to its
     /// ancestors, nearest first, until a handler returns
-    /// [`KeyHandling::Handled`](crate::key::KeyHandling::Handled). The handler
+    /// [`KeyHandling::Handled`]. The handler
     /// reads the key with `Use<KeyPress>`.
     ///
     /// ```rust
@@ -1243,7 +1243,7 @@ pub trait ViewExt: View + Sized {
     /// Makes this view draggable, carrying `payload`.
     ///
     /// When the user drags this view (click-drag on macOS, long-press-drag on iOS/Android),
-    /// the payload travels to drop destinations that accept its type. [`Str`](crate::Str),
+    /// the payload travels to drop destinations that accept its type. [`Str`],
     /// [`Url`](crate::Url) and [`Files`](crate::drag_drop::Files) also reach other
     /// applications; an application's own [`Transferable`] types stay in the process.
     ///
