@@ -10702,6 +10702,7 @@ dependencies = [
  "aither-mcp",
  "async-channel",
  "futures-lite",
+ "hydrolysis-m3",
  "image",
  "serde",
  "serde_json",
