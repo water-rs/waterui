@@ -468,27 +468,25 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo
     )
 }
 
-pub(super) fn window_clear_color(window: &Window, env: &Environment) -> peniko::Color {
-    match &window.background {
-        WindowBackground::Opaque => {
-            resolve_window_clear_color(Color::new(theme::color::Background), env)
-        }
-        WindowBackground::Color(color) => resolve_window_clear_color(color.clone(), env),
-    }
-}
-
-pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> peniko::Color {
-    let resolved = color.resolve(env).snapshot();
+/// Realizes the window's reactive background for the frame about to be
+/// painted: resolves it, hands the platform whether the window must be
+/// transparent — the composite alpha mode and the native window's
+/// transparency follow a switch between opaque and translucent — and returns
+/// the clear colour. This is the one place the background reaches the
+/// presentation path.
+pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+) -> peniko::Color {
+    let resolved = runtime.window.resolved_background(env).snapshot();
+    runtime.platform.set_transparent(resolved.opacity < 1.0);
     let srgb = resolved.to_srgb_with_headroom();
     peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.opacity])
 }
 
 #[cfg(hydrolysis_winit)]
 pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
-    match &window.background {
-        WindowBackground::Opaque => false,
-        WindowBackground::Color(color) => color.resolve(env).snapshot().opacity < 1.0,
-    }
+    window.resolved_background(env).snapshot().opacity < 1.0
 }
 
 /// Runs one frame and reports whether it was presented to the surface — an
@@ -571,7 +569,7 @@ pub(super) fn flush_deferred_window<P: GpuSurfaceWindow>(
     env: &Environment,
     capture_snapshot: bool,
 ) -> RenderWindowResult {
-    let clear_color = window_clear_color(&runtime.window, env);
+    let clear_color = apply_window_background(runtime, env);
     let render_result = render_to_surface(
         &mut runtime.renderer,
         runtime.platform.surface(),
@@ -848,6 +846,9 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
         let _ = runtime.renderer.read_signal(increments);
     }
     let _ = runtime.renderer.read_signal(&runtime.window.style);
+    // A replaced background repaints with a new clear colour and may switch
+    // the surface between opaque and translucent.
+    let _ = runtime.renderer.read_signal(&runtime.window.background);
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -1074,7 +1075,7 @@ pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
         let rebuild_phases = pump_outcome.phases;
         rebuilt |= pump_outcome.built;
         apply_window_size_limits(runtime, env);
-        let clear_color = window_clear_color(&runtime.window, env);
+        let clear_color = apply_window_background(runtime, env);
 
         let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
         #[cfg(hydrolysis_macos_system_webview)]
