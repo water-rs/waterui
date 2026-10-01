@@ -115,9 +115,9 @@ pub mod prelude {
     #[cfg(feature = "assets")]
     pub use super::{AssetError, AssetKind, Data, asset, assets, include_bundle};
     #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
-    pub use super::{
-        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFile, LargeFileAsset, VideoAsset,
-    };
+    pub use super::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset};
+    #[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+    pub use super::{ImageAsset, VideoAsset};
 
     // Re-export macros. The UI-test attribute is `ui_test` here rather than
     // `test`: glob-importing a macro named `test` shadows the built-in `#[test]`
@@ -182,9 +182,10 @@ pub use waterui_webview as webview;
 #[doc(inline)]
 #[cfg(all(feature = "assets", not(target_arch = "wasm32")))]
 pub use waterui_assets::{
-    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, ImageAsset, LargeFile,
-    LargeFileAsset, VideoAsset,
+    AssetError, AssetKind, AudioAsset, Bundle, Data, DataAsset, FontAsset, LargeFile, LargeFileAsset,
 };
+#[cfg(all(feature = "assets", feature = "media", not(target_arch = "wasm32")))]
+pub use waterui_assets::{ImageAsset, VideoAsset};
 #[cfg(all(feature = "assets", target_arch = "wasm32"))]
 pub use waterui_assets::{AssetError, AssetKind, Data};
 /// `include_web!("web")` — the one-macro web frontend. Its expansion speaks

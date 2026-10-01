@@ -48,9 +48,9 @@ mod data;
 mod large_file;
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub use bundle::{
-    AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFileAsset, VideoAsset, bundle_root,
-};
+pub use bundle::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFileAsset, bundle_root};
+#[cfg(all(feature = "media", not(target_arch = "wasm32")))]
+pub use bundle::{ImageAsset, VideoAsset};
 pub use data::Data;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use large_file::LargeFile;
@@ -68,7 +68,7 @@ pub use waterui_assets_core::{ensure_http_allowed, is_loopback_http_url, is_remo
 pub mod prelude {
     pub use crate::{AssetError, AssetKind, Data};
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-    pub use crate::{
-        AudioAsset, Bundle, DataAsset, FontAsset, ImageAsset, LargeFile, LargeFileAsset, VideoAsset,
-    };
+    pub use crate::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset};
+    #[cfg(all(feature = "media", not(target_arch = "wasm32")))]
+    pub use crate::{ImageAsset, VideoAsset};
 }

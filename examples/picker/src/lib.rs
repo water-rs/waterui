@@ -19,7 +19,7 @@ use waterui::form::picker::date::{DatePicker, DatePickerType};
 use waterui::form::picker::file::FilePicker;
 use waterui::form::picker::multi_date::MultiDatePicker;
 use waterui::form::picker::{Picker, PickerStyle};
-use waterui::media::Url;
+use waterui::Url;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
