@@ -56,7 +56,7 @@ impl Plugin for FloatingStyle {}
 
 /// The two shadows that lift a floating surface: a soft ambient shadow and a
 /// tighter key shadow.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct FloatingElevation {
     /// Ambient shadow color.
     pub ambient_shadow_color: Color,

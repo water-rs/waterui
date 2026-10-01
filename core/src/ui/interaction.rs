@@ -176,9 +176,37 @@ impl Disabled {
 
 #[cfg(test)]
 mod tests {
-    use super::Disabled;
+    use super::{Disabled, InteractionState, StateValue};
     use crate::Environment;
     use nami::{Signal, binding};
+
+    #[test]
+    fn state_value_precedence_is_insertion_order() {
+        let value = StateValue::new("resting")
+            .when(InteractionState::HOVERED, "hovered")
+            .when(InteractionState::PRESSED, "pressed");
+        // An earlier override wins over a later one that also matches.
+        assert_eq!(
+            *value.resolve(InteractionState::HOVERED | InteractionState::PRESSED),
+            "hovered"
+        );
+        assert_eq!(*value.resolve(InteractionState::PRESSED), "pressed");
+        assert_eq!(*value.resolve(InteractionState::empty()), "resting");
+    }
+
+    #[test]
+    fn state_value_combined_flags_require_every_state() {
+        let value = StateValue::new(0)
+            .when(InteractionState::SELECTED | InteractionState::HOVERED, 2)
+            .when(InteractionState::SELECTED, 1);
+        // The combination matches only when every required flag is present.
+        assert_eq!(*value.resolve(InteractionState::SELECTED), 1);
+        assert_eq!(
+            *value.resolve(InteractionState::SELECTED | InteractionState::HOVERED),
+            2
+        );
+        assert_eq!(*value.resolve(InteractionState::HOVERED), 0);
+    }
 
     #[test]
     fn resolve_without_scope_returns_local_signal() {

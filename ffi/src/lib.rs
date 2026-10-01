@@ -726,6 +726,42 @@ pub unsafe extern "C" fn waterui_env_disabled(
         .into_ffi()
 }
 
+/// Returns the `InteractionReport` binding `.interaction_state(...)` installs,
+/// or null when the view asks for no reporting.
+///
+/// A backend that renders interactive controls itself must write the state of
+/// the outermost interactive control at or inside the reporting view into this
+/// binding — as `InteractionState` bits — every time it changes, and must leave
+/// it at the resting state while no interactive control is there. The binding
+/// is a read-write `WuiBinding<i32>` handle; drop it when done.
+///
+/// # Safety
+/// The caller must ensure that `env` is a valid pointer to a properly
+/// initialized `waterui::Environment` instance and that the environment remains
+/// valid for the duration of this function call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_env_interaction_report(
+    env: *const WuiEnv,
+) -> *mut crate::reactive::WuiBinding<i32> {
+    use waterui::Binding;
+    use waterui_core::interaction::InteractionState;
+
+    // SAFETY: the caller guarantees `env` is a valid, live environment pointer
+    // for the duration of this call (see the function-level safety contract).
+    let env = unsafe { borrow_ffi(env) };
+    let Some(report) = env.get::<waterui_core::interaction::InteractionReport>() else {
+        return core::ptr::null_mut();
+    };
+    Binding::mapping(
+        &report.0,
+        |state| i32::from(state.bits()),
+        |binding, bits| {
+            binding.set(InteractionState::from_bits_truncate(bits as u8));
+        },
+    )
+    .into_ffi()
+}
+
 /// Gets the body of a view given the environment
 ///
 /// # Safety
@@ -1341,6 +1377,39 @@ ffi_ignorable_metadata!(
     WuiIgnorableMetadataAccessibilityState,
     accessibility_state_signal
 );
+
+// ========== Metadata<Selected> FFI ==========
+// `.selected(...)` marks the interactive control it modifies as selected.
+// Backends that render interactive controls map this to the platform's
+// selected accessibility trait — `isSelected` on Android, the selected
+// attribute on Apple and GTK.
+
+use waterui_core::interaction::Selected;
+
+/// FFI-safe representation of `Selected`.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiSelected {
+    /// Reactive selected state to bind to the platform's selected
+    /// accessibility trait.
+    pub selected: *mut WuiComputed<bool>,
+}
+
+impl IntoFFI for Selected {
+    type FFI = WuiSelected;
+
+    fn into_ffi(self) -> Self::FFI {
+        WuiSelected {
+            selected: self.0.into_ffi(),
+        }
+    }
+}
+
+/// Type alias for `Metadata<Selected>` FFI struct
+pub type WuiMetadataSelected = WuiMetadata<WuiSelected>;
+
+// Generate waterui_metadata_selected_id() and waterui_force_as_metadata_selected()
+ffi_metadata!(Selected, WuiMetadataSelected, selected);
 
 // ========== Common imports for metadata FFI ==========
 use crate::color::WuiColor;
