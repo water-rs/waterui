@@ -112,6 +112,7 @@ objc2-app-kit = { version = "0.3", optional = true, features = [
 objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
 objc2-foundation = { version = "0.3", optional = true, features = [
     "NSArray",
+    "NSBundle",
     "NSData",
     "NSDate",
     "NSDictionary",
@@ -120,6 +121,7 @@ objc2-foundation = { version = "0.3", optional = true, features = [
     "NSHTTPCookie",
     "NSJSONSerialization",
     "NSObject",
+    "NSProcessInfo",
     "NSRunLoop",
     "NSString",
     "NSURL",

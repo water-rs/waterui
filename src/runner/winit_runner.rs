@@ -249,8 +249,14 @@ pub fn run(
             window.activation == waterui::window::Activation::OnShow
                 && window.state.snapshot() != waterui::window::WindowState::Closed
         });
+        // `NSApp.mainMenu` belongs to hydrolysis: `NativeMenuBar::install`
+        // has already projected the declared menu bar onto it, and winit's
+        // launch-time default menu (EventLoopBuilderExtMacOS::with_default_menu,
+        // `true` by default) would replace it when the application finishes
+        // launching (water-rs/hydrolysis#321).
         event_loop_builder
             .with_activation_policy(ActivationPolicy::Regular)
+            .with_default_menu(false)
             .with_activate_ignoring_other_apps(activate_at_launch);
     }
     let event_loop = event_loop_builder
