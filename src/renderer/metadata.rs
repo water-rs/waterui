@@ -2,7 +2,7 @@
 //! and accessibility metadata wrappers around content views.
 
 use super::*;
-use waterui_backend_core::widget::DrawContext as _;
+use cherenkov::Draw as _;
 
 impl HydrolysisRenderer {
     /// Apply a clip-shape layer around the given content render. Shared by the
