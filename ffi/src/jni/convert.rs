@@ -1217,26 +1217,6 @@ impl ToJavaStruct for crate::gradient::WuiGradientStop {
     }
 }
 
-/// `WuiMeshVertex -> MeshVertexStruct(x, y, color)`
-impl ToJavaStruct for crate::gradient::WuiMeshVertex {
-    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
-        let class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/MeshVertexStruct"))
-            .expect("MeshVertexStruct class not found");
-        let java_color = self.color.to_java_struct(env);
-        env.new_object(
-            &class,
-            jni_sig!("(FFLdev/waterui/android/runtime/WorkingColorStruct;)V"),
-            &[
-                JValue::Float(self.x),
-                JValue::Float(self.y),
-                JValue::Object(&java_color),
-            ],
-        )
-        .expect("Failed to create MeshVertexStruct")
-    }
-}
-
 /// `WuiGradient -> GradientStruct(...)`
 impl ToJavaStruct for crate::gradient::WuiGradient {
     fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
@@ -1260,34 +1240,13 @@ impl ToJavaStruct for crate::gradient::WuiGradient {
                 .expect("Failed to set GradientStopStruct array element");
         }
 
-        let vertex_class = env
-            .find_class(jni_str!("dev/waterui/android/runtime/MeshVertexStruct"))
-            .expect("MeshVertexStruct class not found");
-        let vertex_array = env
-            .new_object_array(
-                super::array_len(self.mesh_vertices.len()),
-                &vertex_class,
-                JObject::null(),
-            )
-            .expect("Failed to create MeshVertexStruct array");
-
-        // SAFETY: as for `stops`; `mesh_vertices` is owned and consumed below.
-        for (index, vertex) in unsafe { take_ffi_array_elements(&self.mesh_vertices) }.enumerate() {
-            let java_vertex = vertex.to_java_struct(env);
-            vertex_array
-                .set_element(env, index, &java_vertex)
-                .expect("Failed to set MeshVertexStruct array element");
-        }
-
         let class = env
             .find_class(jni_str!("dev/waterui/android/runtime/GradientStruct"))
             .expect("GradientStruct class not found");
         let object = env
             .new_object(
                 &class,
-                jni_sig!(
-                    "(I[Ldev/waterui/android/runtime/GradientStopStruct;FFFFFFII[Ldev/waterui/android/runtime/MeshVertexStruct;)V"
-                ),
+                jni_sig!("(I[Ldev/waterui/android/runtime/GradientStopStruct;FFFFFF)V"),
                 &[
                     JValue::Int(self.gradient_type as i32),
                     JValue::Object(&stop_array),
@@ -1297,14 +1256,10 @@ impl ToJavaStruct for crate::gradient::WuiGradient {
                     JValue::Float(self.end_y),
                     JValue::Float(self.start_value),
                     JValue::Float(self.end_value),
-                    JValue::Int(self.mesh_columns.cast_signed()),
-                    JValue::Int(self.mesh_rows.cast_signed()),
-                    JValue::Object(&vertex_array),
                 ],
             )
             .expect("Failed to create GradientStruct");
         self.stops.consume();
-        self.mesh_vertices.consume();
         object
     }
 }

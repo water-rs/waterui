@@ -4386,66 +4386,21 @@ typedef struct WuiArray_WuiGradientStop {
 } WuiArray_WuiGradientStop;
 
 /**
- * C ABI mirror of a mesh gradient vertex in unit space.
- */
-typedef struct WuiMeshVertex {
-  /**
-   * Unit-space x.
-   */
-  float x;
-  /**
-   * Unit-space y.
-   */
-  float y;
-  /**
-   * The vertex colour.
-   */
-  struct WuiWorkingColor color;
-} WuiMeshVertex;
-
-/**
- * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
- */
-typedef struct WuiArraySlice_WuiMeshVertex {
-  struct WuiMeshVertex *head;
-  uintptr_t len;
-} WuiArraySlice_WuiMeshVertex;
-
-/**
- * The pair of function pointers `WuiArray` uses to view and free its backing storage.
- *
- * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
- * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
- */
-typedef struct WuiArrayVTable_WuiMeshVertex {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiMeshVertex (*slice)(const void*);
-} WuiArrayVTable_WuiMeshVertex;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- *
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiMeshVertex {
-  NonNull data;
-  struct WuiArrayVTable_WuiMeshVertex vtable;
-} WuiArray_WuiMeshVertex;
-
-/**
  * C ABI mirror of [`Gradient`], the backend-native gradient payload in unit
- * space. Backends scale it onto the view's bounds.
+ * space.
+ *
+ * Backends scale it onto the view's bounds. A mesh gradient never reaches
+ * this payload: it resolves to engine content, so only linear, radial and
+ * angular gradients cross.
  */
 typedef struct WuiGradient {
   /**
-   * Gradient kind (linear, radial, angular, or mesh).
+   * Gradient kind; `Mesh` is never set (mesh gradients resolve to engine
+   * content, not to this payload).
    */
   enum WuiGradientType gradient_type;
   /**
-   * The colour stops; empty for a mesh.
+   * The colour stops.
    */
   struct WuiArray_WuiGradientStop stops;
   /**
@@ -4472,18 +4427,6 @@ typedef struct WuiGradient {
    * End radius (radial) or end angle in radians (angular).
    */
   float end_value;
-  /**
-   * Mesh grid vertices per row; 0 unless the gradient is a mesh.
-   */
-  uint32_t mesh_columns;
-  /**
-   * Mesh grid vertices per column; 0 unless the gradient is a mesh.
-   */
-  uint32_t mesh_rows;
-  /**
-   * Mesh grid vertices, row by row; empty unless the gradient is a mesh.
-   */
-  struct WuiArray_WuiMeshVertex mesh_vertices;
 } WuiGradient;
 
 /**
