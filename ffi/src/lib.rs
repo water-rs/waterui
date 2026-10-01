@@ -267,7 +267,7 @@ pub unsafe fn __init() -> Option<waterui::inspector::InspectorRuntime> {
 /// The native backend owns the displays, and this entry point runs once on its
 /// main thread, so the query happens here — exactly once per process — rather
 /// than in every executor constructor.
-#[cfg(feature = "gpu")]
+#[cfg(all(feature = "gpu", not(target_vendor = "apple")))]
 fn display_refresh_rate() -> waterui::task::RefreshRate {
     use core::num::NonZeroU32;
     use waterui::task::RefreshRate;
@@ -297,6 +297,72 @@ fn display_refresh_rate() -> waterui::task::RefreshRate {
             RefreshRate::HEADLESS
         }
     }
+}
+
+/// Apple hosts answer the same question from the screens they already own:
+/// `maximumFramesPerSecond` is the `CADisplayLink` ceiling xcap read, so
+/// pulling ScreenCaptureKit/AVFoundation in for one number is pure ambient
+/// cost. The fastest attached screen wins, matching `max_refresh_rate`.
+#[cfg(all(feature = "gpu", target_vendor = "apple"))]
+fn display_refresh_rate() -> waterui::task::RefreshRate {
+    use waterui::task::RefreshRate;
+
+    // Metadata the platform does not expose is not a fault of the app: the
+    // budget only scales stall diagnostics, so it takes the nominal rate.
+    max_frames_per_second().map_or_else(
+        || {
+            tracing::info!(
+                target: "waterui::runtime_guard",
+                "display refresh rate is unavailable; budgeting frames at the nominal rate"
+            );
+            RefreshRate::HEADLESS
+        },
+        RefreshRate::from_millihertz,
+    )
+}
+
+#[cfg(all(feature = "gpu", target_os = "macos"))]
+fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+
+    let mtm = MainThreadMarker::new().expect("__init runs on the main thread");
+    screens_millihertz(
+        NSScreen::screens(mtm)
+            .iter()
+            .map(|screen| screen.maximumFramesPerSecond()),
+    )
+}
+
+#[cfg(all(feature = "gpu", target_vendor = "apple", not(target_os = "macos")))]
+fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
+    use objc2::MainThreadMarker;
+    use objc2_ui_kit::UIScreen;
+
+    let mtm = MainThreadMarker::new().expect("__init runs on the main thread");
+    // `screens` is deprecated in favour of scene-session discovery, but at
+    // `__init` no scene session exists yet — this is the only API that can
+    // answer inside this window.
+    #[expect(deprecated, reason = "no scene session exists at process startup")]
+    screens_millihertz(
+        UIScreen::screens(mtm)
+            .iter()
+            .map(|screen| screen.maximumFramesPerSecond()),
+    )
+}
+
+/// Both Apple branches fold their screens the same way: the fastest attached
+/// screen wins, converted to millihertz for `RefreshRate::from_millihertz`.
+#[cfg(all(feature = "gpu", target_vendor = "apple"))]
+fn screens_millihertz(
+    frames_per_second: impl Iterator<Item = isize>,
+) -> Option<core::num::NonZeroU32> {
+    frames_per_second.max().filter(|fps| *fps > 0).map(|fps| {
+        core::num::NonZeroU32::new(
+            u32::try_from(fps).expect("the filtered positive rate fits a `u32`") * 1000,
+        )
+        .expect("a refresh rate of at least 1 Hz")
+    })
 }
 
 /// Without the GPU stack there is no display query; frames are budgeted at

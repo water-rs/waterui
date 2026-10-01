@@ -217,6 +217,7 @@ pub unsafe extern "C" fn waterui_cef_surface_drop(state: *mut WuiCefSurfaceState
 #[cfg(target_os = "macos")]
 #[unsafe(no_mangle)]
 pub extern "C" fn waterui_cef_prepare_macos_application() {
+    waterui_browser_cef::initialize_sandbox_early();
     waterui_browser_cef::initialize_macos_application();
 }
 

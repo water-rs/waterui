@@ -120,11 +120,13 @@ gpu = [
     "waterui-shape/gpu",
     "dep:waterui-svg",
 ]
-# `asset!` expands media-kind assets into `waterui::media::Photo` /
-# `waterui::video::video`, so the assets feature must carry the media stack.
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
-media = ["dep:waterui-media", "video"]
-video = ["dep:waterui-video"]
+# `asset!` expands image-kind assets into `waterui::media::Photo` (`ImageAsset`,
+# behind `waterui-assets`' `media` feature) and video-kind assets into
+# `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
+# each is enabled only when both sides are present.
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+media = ["dep:waterui-media", "waterui-assets?/media"]
+video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
 # default so an application that never names a remote URL carries no HTTP

@@ -4,7 +4,7 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `media`, `inspector`,
-and `snackbar`. `webview`, `flow-markdown`, and `navigation-restoration` are opt-in — a
+and `snackbar`. `webview`, `video`, `flow-markdown`, and `navigation-restoration` are opt-in — a
 missing module here is usually a missing feature in `Cargo.toml`, not a wrong path:
 
 ```toml

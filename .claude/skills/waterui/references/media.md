@@ -54,7 +54,7 @@ let media = selected.load();             // Media::Image(Url) | Video(Url) | Liv
 
 `LivePhoto::new(source)` displays the live-photo variant.
 
-Video — `video_player(url)` is the one-item shorthand; the general form is a playlist
+Video (feature `video`) — `video_player(url)` is the one-item shorthand; the general form is a playlist
 session whose controller you grab *before* the session moves into the player:
 
 ```rust

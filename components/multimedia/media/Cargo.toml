@@ -19,7 +19,7 @@ waterui-image.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-text.workspace = true
-waterui-video.workspace = true
+waterui-video = { workspace = true, optional = true }
 waterkit-dialog = { workspace = true, optional = true }
 filtrate-core.workspace = true
 executor-core.workspace = true
@@ -45,6 +45,10 @@ waterkit-fs.workspace = true
 [features]
 default = ["std"]
 std = ["waterui-core/std", "dep:waterkit-dialog"]
+# Video playback (`Video`, `VideoPlayer`, `LivePhoto`, video picks in the media
+# picker) re-exports `waterui-video`. Off by default so an image-only
+# application carries no video graph.
+video = ["dep:waterui-video"]
 # Remote media sources (`Photo`/`video` pointed at web URLs) link the `zenwave`
 # HTTP client. Off by default so an application showing only bundled media
 # carries no HTTP client.

@@ -1,8 +1,9 @@
 //! Markdown example for WaterUI.
 //!
-//! The document sits under a search overlay that demonstrates key bubbling:
-//! `on_key_press` on the bar owns Escape while the field keeps focus, and the
-//! field's `on_submit` advances to the next match.
+//! The document sits under a search panel — opened by the Find control above
+//! it — that demonstrates key bubbling: `on_key_press` on the bar owns Escape
+//! while the field keeps focus, and the field's `on_submit` advances to the
+//! next match.
 use waterui::app::App;
 use waterui::key::{Key, KeyHandling, KeyPress, NamedKey};
 use waterui::prelude::theme_color::Surface;
@@ -98,23 +99,25 @@ pub fn demo() -> impl View {
         )
     };
 
-    zstack((
-        scroll(include_markdown!("example.md").padding()),
-        vstack((
-            hstack((
-                button("Find").action(
-                    |State(open): State<Binding<bool>>,
-                     State(focus): State<Binding<Option<&'static str>>>| {
-                        open.set(true);
-                        focus.set(Some("search"));
-                    },
-                ),
-                spacer(),
-            )),
-            when(open.clone(), search_bar),
+    // The Find control sits in the column above the document, so it can
+    // never cover content. The search panel it opens still overlays the
+    // document while it is open — the key-bubbling demo's point.
+    vstack((
+        hstack((
+            button("Find").action(
+                |State(open): State<Binding<bool>>,
+                 State(focus): State<Binding<Option<&'static str>>>| {
+                    open.set(true);
+                    focus.set(Some("search"));
+                },
+            ),
             spacer(),
         ))
-        .padding(),
+        .padding_with([14.0, 0.0, 14.0, 14.0]),
+        zstack((
+            scroll(include_markdown!("example.md").padding()),
+            vstack((when(open.clone(), search_bar), spacer())).padding(),
+        )),
     ))
     .state(&open)
     .state(&current)

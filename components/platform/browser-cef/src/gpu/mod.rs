@@ -163,6 +163,10 @@ impl<S: AcceleratedFrameSink> CefUiBridge<S> {
                 .expect("CEF logical height exceeds u32");
             self.page.set_viewport(logical_width, logical_height, scale);
         }
+        // `external_begin_frame_enabled` is off on macOS — `request_frame`
+        // does not exist there; paints arrive on vsync and damage at
+        // `windowless_frame_rate` and wake the surface through the mailbox.
+        #[cfg(not(target_os = "macos"))]
         self.page.request_frame();
     }
 }
