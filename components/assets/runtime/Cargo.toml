@@ -30,10 +30,13 @@ dirs = { workspace = true, optional = true }
 [features]
 default = ["std"]
 std = ["waterui-core/std"]
-# Bundled media (`Photo`-backed `ImageAsset`, `Video`-/`VideoPlayer`-backed
-# `VideoAsset`) needs the multimedia crates; off by default so an asset-only
-# application carries no media graph.
-media = ["dep:waterui-media", "dep:waterui-video"]
+# Bundled image assets (`Photo`-backed `ImageAsset`) need `waterui-media`; off
+# by default so an asset-only application carries no media graph.
+media = ["dep:waterui-media"]
+# Bundled video assets (`Video`-/`VideoPlayer`-backed `VideoAsset`) need
+# `waterui-video`; off by default so an image-only application carries no
+# video graph.
+video = ["dep:waterui-video"]
 # `Data::from_remote` / `LargeFile::from_remote` download over HTTP via
 # `waterui-assets-core`; off by default so local assets carry no HTTP client.
 remote = [

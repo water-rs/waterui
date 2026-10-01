@@ -5,12 +5,12 @@ use alloc::vec::Vec;
 use std::env;
 use std::path::PathBuf;
 
-#[cfg(feature = "media")]
+#[cfg(any(feature = "media", feature = "video"))]
 use waterui_core::{Environment, View};
 #[cfg(feature = "media")]
 use waterui_media::Photo;
 use waterui_url::Url;
-#[cfg(feature = "media")]
+#[cfg(feature = "video")]
 use waterui_video::{Video, VideoPlayer};
 
 use crate::{AssetError, Data, LargeFile};
@@ -121,16 +121,16 @@ impl View for ImageAsset {
 
 /// Video asset resolved from a `WaterUI` asset bundle.
 ///
-/// Builds [`Video`]/[`VideoPlayer`] views; only available with the `media`
+/// Builds [`Video`]/[`VideoPlayer`] views; only available with the `video`
 /// feature.
-#[cfg(feature = "media")]
+#[cfg(feature = "video")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VideoAsset {
     bundle: Bundle,
     logical_path: &'static str,
 }
 
-#[cfg(feature = "media")]
+#[cfg(feature = "video")]
 impl VideoAsset {
     /// Creates a video asset handle.
     #[must_use]
@@ -160,7 +160,7 @@ impl VideoAsset {
     }
 }
 
-#[cfg(feature = "media")]
+#[cfg(feature = "video")]
 impl View for VideoAsset {
     fn body(self, _env: &Environment) -> impl View {
         self.raw()

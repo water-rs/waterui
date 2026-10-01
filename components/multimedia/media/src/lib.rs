@@ -30,27 +30,26 @@
 //! ```
 //!
 //! ### Video with Controls
+//!
+//! Video playback (`Video`, `VideoPlayer`, `LivePhoto`) is behind the `video`
+//! feature; the remaining examples in this section assume it is enabled.
+//!
 //! ```rust
+//! # #[cfg(feature = "video")] fn demo() {
 //! use waterui_media::{url::Url, video, video_player};
 //!
 //! let url = Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap();
 //! let _video = video::video(url.clone());
 //! let _player = video_player(url);
+//! # }
 //! ```
 //!
 //! ### Unified Media Type
 //! ```rust
-//! use waterui_media::{Media, live::LivePhotoSource, url::Url};
+//! use waterui_media::{Media, url::Url};
 //!
 //! let image = Media::Image(Url::parse("https://waterui.dev/favicon.ico").unwrap());
-//! let video = Media::Video(Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap());
-//! let live_photo = Media::LivePhoto(LivePhotoSource::new(
-//!     Url::parse("https://waterui.dev/favicon.ico").unwrap(),
-//!     Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap(),
-//! ));
 //! assert!(matches!(image, Media::Image(_)));
-//! assert!(matches!(video, Media::Video(_)));
-//! assert!(matches!(live_photo, Media::LivePhoto(_)));
 //! ```
 
 extern crate alloc;
@@ -59,6 +58,7 @@ extern crate alloc;
 ///
 /// This module provides the [`LivePhoto`] component for displaying paired still
 /// and motion resources, including Apple Live Photos and Android Motion Photos.
+#[cfg(feature = "video")]
 pub mod live;
 /// Photo components and types.
 ///
@@ -69,18 +69,18 @@ pub mod photo;
 /// Media picker functionality for platform-native media selection.
 pub mod media_picker;
 /// Video components and types re-exported from `waterui-video`.
+#[cfg(feature = "video")]
 pub mod video {
     pub use waterui_video::video::*;
 }
+pub use {media_picker::MediaPicker, photo::Photo, waterui_image::Image};
+#[cfg(feature = "video")]
 pub use {
     live::LivePhoto,
-    media_picker::MediaPicker,
-    photo::Photo,
     // `ContentMode` is deliberately not re-exported unqualified: the layout crate
     // owns that name in the prelude for its ratio-box fill mode. Video's own
     // gravity mode stays at `media::video::ContentMode`.
     video::{Event, SubtitleSelection, Video, VideoConfig, VideoPlayer, VideoPlayerConfig, Volume},
-    waterui_image::Image,
     waterui_video::{
         Delivery, MediaItem, MediaItemId, PlaybackError, PlaybackPhase, PlaybackSession,
         PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
@@ -95,8 +95,11 @@ pub use filtrate_core::Filter;
 pub mod url;
 pub use url::Url;
 
-use waterui_core::{AnyView, Environment, View, reactive::impl_constant};
+use waterui_core::{AnyView, Environment, View};
+#[cfg(feature = "video")]
+use waterui_core::reactive::impl_constant;
 
+#[cfg(feature = "video")]
 use crate::live::LivePhotoSource;
 
 /// A unified media type that can represent different kinds of media content.
@@ -109,35 +112,43 @@ use crate::live::LivePhotoSource;
 /// # Examples
 ///
 /// ```rust
-/// use waterui_media::{Media, live::LivePhotoSource, url::Url};
+/// use waterui_media::{Media, url::Url};
+/// # #[cfg(feature = "video")] use waterui_media::live::LivePhotoSource;
 ///
 /// let image = Media::Image(Url::parse("https://waterui.dev/favicon.ico").unwrap());
+/// assert!(matches!(image, Media::Image(_)));
+/// # #[cfg(feature = "video")] {
 /// let video = Media::Video(Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap());
 /// let live_photo = Media::LivePhoto(LivePhotoSource::new(
 ///     Url::parse("https://waterui.dev/favicon.ico").unwrap(),
 ///     Url::parse("https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4").unwrap(),
 /// ));
-/// assert!(matches!(image, Media::Image(_)));
 /// assert!(matches!(video, Media::Video(_)));
 /// assert!(matches!(live_photo, Media::LivePhoto(_)));
+/// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Media {
     /// An image from a URL that will be displayed using the [`Photo`] component.
     Image(Url),
     /// A Live Photo with image and video components that will be displayed using the [`LivePhoto`] component.
+    #[cfg(feature = "video")]
     LivePhoto(LivePhotoSource),
     /// A video from a URL that will be displayed using the [`VideoPlayer`] component.
+    #[cfg(feature = "video")]
     Video(Url),
 }
 
+#[cfg(feature = "video")]
 impl_constant!(LivePhotoSource, Media);
 
 impl View for Media {
     fn body(self, _env: &Environment) -> impl View {
         match self {
             Self::Image(url) => AnyView::new(Photo::new(url)),
+            #[cfg(feature = "video")]
             Self::LivePhoto(live) => AnyView::new(LivePhoto::new(live)),
+            #[cfg(feature = "video")]
             Self::Video(url) => AnyView::new(waterui_video::video_player(url)),
         }
     }
@@ -147,7 +158,9 @@ impl View for Media {
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         match self {
             Self::Image(url) => Photo::new(url.clone()).stretch_axis(),
+            #[cfg(feature = "video")]
             Self::LivePhoto(live) => LivePhoto::new(live.clone()).stretch_axis(),
+            #[cfg(feature = "video")]
             Self::Video(url) => waterui_video::video_player(url.clone()).stretch_axis(),
         }
     }
