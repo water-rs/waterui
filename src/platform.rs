@@ -518,6 +518,16 @@ pub trait PlatformWindow: 'static {
     fn applies_size_limits(&self) -> bool {
         false
     }
+    /// Makes the window transparent or opaque to the compositor, following
+    /// a window background that switches between a translucent colour and an
+    /// opaque one after the window exists.
+    ///
+    /// Targets whose presentation has no composite alpha to switch —
+    /// offscreen surfaces keep their straight alpha regardless, and web and
+    /// embedded hosts present into a fixed surface — keep this default no-op.
+    fn set_transparent(&mut self, transparent: bool) {
+        let _ = transparent;
+    }
     fn drain_events(&mut self) -> Vec<InputEvent>;
     fn request_redraw(&self);
     fn scale_factor(&self) -> f64;
@@ -1871,6 +1881,22 @@ mod winit_impl {
             )
         }
 
+        /// Re-selects the composite alpha mode for a window whose background
+        /// switched between opaque and translucent, reconfiguring only when
+        /// the mode actually changes. The selection is the one creation uses,
+        /// so a surface that offers no transparency-capable mode fails the
+        /// same way — on X11 that is a window created opaque, whose visual
+        /// cannot gain an alpha channel afterwards.
+        fn set_transparent(&mut self, transparent: bool) {
+            let caps = self.surface.get_capabilities(&self.gpu.adapter);
+            let alpha_mode =
+                Self::select_alpha_mode(&caps, transparent, &self.gpu.adapter.get_info());
+            if alpha_mode != self.config.alpha_mode {
+                self.config.alpha_mode = alpha_mode;
+                self.surface.configure(&self.gpu.device, &self.config);
+            }
+        }
+
         #[cfg(hydrolysis_macos_system_webview)]
         fn for_core_animation_layer(
             layer: &CAMetalLayer,
@@ -2652,6 +2678,10 @@ mod winit_impl {
         /// window that cannot be seen is dropped before reaching the
         /// event loop, so external GPU content cannot un-park the pump.
         occlusion_signal: Arc<AtomicBool>,
+        /// Whether the window currently presents as transparent, so a
+        /// per-frame background push reaches winit and the surface only when
+        /// the background switches between opaque and translucent.
+        transparent: bool,
         /// Explicit ProMotion opt-in: declares the 120Hz frame-rate demand to
         /// the window server while redraws are being requested. `None` before
         /// macOS 14.
@@ -2706,6 +2736,7 @@ mod winit_impl {
                     applied_size_limits: None,
                     applied_properties: None,
                     pending_mapped_request: MappedRequestRetry::default(),
+                    transparent: requires_transparency,
                 },
                 gpu,
             )
@@ -3402,6 +3433,15 @@ mod winit_impl {
                 max.map(|size| LogicalSize::new(f64::from(size.width), f64::from(size.height))),
             );
             self.applied_size_limits = Some((min, max));
+        }
+
+        fn set_transparent(&mut self, transparent: bool) {
+            if self.transparent == transparent {
+                return;
+            }
+            self.window.set_transparent(transparent);
+            self.surface.set_transparent(transparent);
+            self.transparent = transparent;
         }
 
         fn apply_properties(&mut self, window: &waterui::window::Window) {
