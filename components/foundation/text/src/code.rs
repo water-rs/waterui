@@ -17,10 +17,11 @@ use core::fmt;
 use executor_core::spawn_local;
 use nami::SignalExt;
 use suiteki::Str;
+use waterui_core::accessibility::AccessibilityRole;
 use waterui_core::gesture::{GestureObserver, TapGesture};
 use waterui_core::resolve::Resolvable;
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
-use waterui_core::{AnyView, Environment, Metadata, View};
+use waterui_core::{AnyView, Environment, IgnorableMetadata, Metadata, View};
 use waterui_graphics::color::{
     AccentColor, Color, CurrentColorScheme, MutedForegroundColor, SurfaceVariantColor,
 };
@@ -264,14 +265,22 @@ fn default_rendering(env: &Environment, config: CodeConfig) -> impl View {
 }
 
 fn copy_button(content: String, on_copied: Option<OnCopied>) -> impl View {
-    Metadata::new(
-        text("Copy").color(Color::new(AccentColor)),
-        GestureObserver::new(TapGesture::new(), move |env: Environment| {
-            copy_to_clipboard(&content);
-            if let Some(on_copied) = &on_copied {
-                on_copied.call(&env);
-            }
-        }),
+    // `waterui-controls` depends on this crate, so the `Button` type is out of
+    // reach here; the semantics are attached directly. A tap observer that
+    // resolves with `AccessibilityRole` in its environment registers an
+    // accessibility node of that role — focusable, clickable, activatable —
+    // while the label renders exactly as before.
+    IgnorableMetadata::new(
+        Metadata::new(
+            text("Copy").color(Color::new(AccentColor)),
+            GestureObserver::new(TapGesture::new(), move |env: Environment| {
+                copy_to_clipboard(&content);
+                if let Some(on_copied) = &on_copied {
+                    on_copied.call(&env);
+                }
+            }),
+        ),
+        AccessibilityRole::Button,
     )
 }
 
