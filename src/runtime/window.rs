@@ -914,7 +914,7 @@ mod tests {
         let env = Environment::new();
         let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
         let resolved = resolve_background(&background, &env);
-        assert!(resolved.snapshot().red > 0.99);
+        assert!(resolved.snapshot().components[0] > 0.99);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
         let _guard = resolved.watch({
@@ -927,8 +927,8 @@ mod tests {
 
         let seen = seen.borrow();
         let last = seen.last().expect("the replaced background was delivered");
-        assert!(last.blue > 0.99 && last.red < 0.01);
-        assert!((last.opacity - 0.5).abs() < 1e-6);
-        assert!((resolved.snapshot().opacity - 0.5).abs() < 1e-6);
+        assert!(last.components[2] > 0.99 && last.components[0] < 0.01);
+        assert!((last.components[3] - 0.5).abs() < 1e-6);
+        assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
     }
 }
