@@ -464,21 +464,21 @@ impl Window {
         content: impl ViewBuilder,
     ) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
-        let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
-        #[cfg(feature = "snackbar")]
-        let (snackbar_manager, snackbar_view) = SnackbarManager::new();
+        // Overlay and snackbar state are created inside the builder so each
+        // built instance owns its own managers: a `Dynamic` is single-consumer
+        // and cannot be mounted by more than one scene.
         let content = AnyViewBuilder::new(move || {
-            let overlay_manager = overlay_manager.clone();
-            #[cfg(feature = "snackbar")]
-            let snackbar_manager = snackbar_manager.clone();
+            let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
             let content = content
                 .build()
-                .overlay(overlay_view.clone())
+                .overlay(overlay_view)
                 .with(overlay_manager.clone())
                 .state(&overlay_manager);
             #[cfg(feature = "snackbar")]
+            let (snackbar_manager, snackbar_view) = SnackbarManager::new();
+            #[cfg(feature = "snackbar")]
             let content = content
-                .overlay(snackbar_view.clone())
+                .overlay(snackbar_view)
                 .with(snackbar_manager.clone())
                 .state(&snackbar_manager);
             AnyView::new(content)
