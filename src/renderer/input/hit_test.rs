@@ -3488,6 +3488,7 @@ impl SemanticCore {
     /// Whether `key`'s owner claims the nearest [`Selected`] scope and the
     /// scope reads `true` — the accessibility announcement counterpart of the
     /// SELECTED flag the interaction flags carry.
+    #[cfg(feature = "accessibility")]
     pub(crate) fn control_selected(&mut self, env: &Environment, key: &InteractionKey) -> bool {
         let Some(selected) = env.get::<Selected>() else {
             return false;

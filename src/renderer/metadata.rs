@@ -736,6 +736,11 @@ impl HydrolysisRenderer {
             Self::render_gesture_content(renderer, env, content_env, scope_claimed, render_content);
             #[cfg(feature = "accessibility")]
             if let Some(node_id) = claimed_naming_node {
+                // The node advertises `Focus`; without this link Tab can land
+                // on it semantically while the interaction machinery never
+                // sees the key — FOCUSED would never reach
+                // `.interaction_state` reports or the focus ring.
+                renderer.register_accessibility_focus_link(&interaction_key, node_id);
                 renderer.drain_claim_scope(node_id, env);
             }
 

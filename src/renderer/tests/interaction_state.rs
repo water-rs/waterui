@@ -8,8 +8,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use nami::Signal as _;
+use waterui::accessibility::AccessibilityRole;
 use waterui::gesture::TapGesture;
-use waterui::{AnyView, Binding, Color, ViewExt as _};
+use waterui::{AnyView, Color, ViewExt as _};
 use waterui_backend_core::widget::{ButtonMetrics, FocusRing, InteractionStyle};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
@@ -24,15 +26,6 @@ const POINTER_ID: u64 = 9;
 const WINDOW_WIDTH: u32 = 800;
 const WINDOW_HEIGHT: u32 = 600;
 
-/// A fixed-size pane centered in the window, so hit tests land at (400, 300).
-fn pane() -> AnyView {
-    AnyView::new(hstack((
-        AnyView::new(Color::srgb_hex("#18181B")),
-        AnyView::new(Color::srgb_hex("#3F3F46").width(20.0)),
-        AnyView::new(Color::srgb_hex("#27272A")),
-    )))
-}
-
 fn tap_view() -> AnyView {
     AnyView::new(
         hstack((
@@ -40,7 +33,8 @@ fn tap_view() -> AnyView {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .gesture(TapGesture::new(), || {}),
+                    .gesture(TapGesture::new(), || {})
+                    .a11y_role(AccessibilityRole::Button),
             ),
             AnyView::new(Color::srgb_hex("#27272A")),
         ))
@@ -171,7 +165,7 @@ fn interaction_report_follows_hover_and_press() {
         Color::srgb(0, 0, 0),
         8.0_f64,
     ));
-    let report = Binding::new(InteractionState::empty());
+    let report = nami::binding(InteractionState::empty());
     let view = AnyView::new(
         hstack((
             AnyView::new(Color::srgb_hex("#18181B")),
@@ -187,24 +181,24 @@ fn interaction_report_follows_hover_and_press() {
     );
     let mut runtime = runtime(env, view, MinimalTestTheme::default());
 
-    assert_eq!(report.get(), InteractionState::empty(), "resting");
+    assert_eq!(report.snapshot(), InteractionState::empty(), "resting");
 
     pointer_move(&mut runtime, 400.0, 300.0);
-    assert_eq!(report.get(), InteractionState::HOVERED, "hovered");
+    assert_eq!(report.snapshot(), InteractionState::HOVERED, "hovered");
 
     pointer_down(&mut runtime, 400.0, 300.0);
     assert_eq!(
-        report.get(),
+        report.snapshot(),
         InteractionState::HOVERED | InteractionState::PRESSED,
         "pressed while hovered"
     );
 
     pointer_up(&mut runtime, 400.0, 300.0);
     let _ = runtime.pump(false);
-    assert_eq!(report.get(), InteractionState::HOVERED, "released");
+    assert_eq!(report.snapshot(), InteractionState::HOVERED, "released");
 
     pointer_move(&mut runtime, 10.0, 10.0);
-    assert_eq!(report.get(), InteractionState::empty(), "pointer left");
+    assert_eq!(report.snapshot(), InteractionState::empty(), "pointer left");
 }
 
 /// `.selected(true)` contributes SELECTED to the reported state.
@@ -216,15 +210,15 @@ fn selected_adds_selected_to_reported_state() {
         Color::srgb(0, 0, 0),
         8.0_f64,
     ));
-    let report = Binding::new(InteractionState::empty());
+    let report = nami::binding(InteractionState::empty());
     let view = AnyView::new(
         hstack((
             AnyView::new(Color::srgb_hex("#18181B")),
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .selected(true)
                     .gesture(TapGesture::new(), || {})
+                    .selected(true)
                     .interaction_state(&report),
             ),
             AnyView::new(Color::srgb_hex("#27272A")),
@@ -234,14 +228,14 @@ fn selected_adds_selected_to_reported_state() {
     let mut runtime = runtime(env, view, MinimalTestTheme::default());
 
     assert_eq!(
-        report.get(),
+        report.snapshot(),
         InteractionState::SELECTED,
         "the control reports SELECTED at rest"
     );
 
     pointer_move(&mut runtime, 400.0, 300.0);
     assert_eq!(
-        report.get(),
+        report.snapshot(),
         InteractionState::SELECTED | InteractionState::HOVERED,
         "selected + hovered"
     );
@@ -323,17 +317,26 @@ fn label_color_resolves_disabled() {
         .to_srgb()
     };
 
+    let channel8 = |v: f32| (v * 255.0).round() as u8;
     let enabled = resolve(InteractionState::empty());
     assert_eq!(
-        (enabled.red, enabled.green, enabled.blue),
-        (0.0, 0.0, 1.0),
+        (
+            channel8(enabled.red),
+            channel8(enabled.green),
+            channel8(enabled.blue)
+        ),
+        (0, 0, 255),
         "enabled label color"
     );
 
     let disabled = resolve(InteractionState::DISABLED);
     assert_eq!(
-        (disabled.red, disabled.green, disabled.blue),
-        (128.0 / 255.0, 128.0 / 255.0, 128.0 / 255.0),
+        (
+            channel8(disabled.red),
+            channel8(disabled.green),
+            channel8(disabled.blue)
+        ),
+        (128, 128, 128),
         "disabled label color"
     );
 }
@@ -357,25 +360,49 @@ fn selected_sets_the_accessibility_selected_trait() {
             AnyView::new(
                 Color::srgb_hex("#3F3F46")
                     .width(20.0)
-                    .accessibility_label("handle")
-                    .selected(true)
-                    .gesture(TapGesture::new(), || {}),
+                    .gesture(TapGesture::new(), || {})
+                    .a11y_role(AccessibilityRole::Button)
+                    .a11y_label("handle")
+                    .selected(true),
             ),
             AnyView::new(Color::srgb_hex("#27272A")),
         ))
         .spacing(0.0),
     );
-    let mut runtime = runtime(env, view, MinimalTestTheme::default());
+    // The initial accessibility tree emits on the first pump, so this test
+    // builds its runtime directly rather than going through `runtime()`,
+    // whose warm-up pumps would consume it.
+    let view = RefCell::new(Some(view));
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        view.borrow_mut()
+            .take()
+            .expect("the test view is built once")
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        builder,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        MinimalTestTheme::default(),
+    );
 
-    let update = runtime
-        .pump(false)
-        .tree_update
-        .expect("the pump produced a tree update");
+    let mut update = None;
+    for _ in 0..64 {
+        if let Some(tree) = runtime.pump(false).tree_update {
+            update = Some(tree);
+            break;
+        }
+    }
+    let update = update.expect("the pump produced a tree update");
     let node = update
         .nodes
         .iter()
         .map(|(_, node)| node)
         .find(|node| node.role() == Role::Button)
         .expect("the tap control publishes a Button node");
-    assert!(node.is_selected(), "Selected must set the selected trait");
+    assert_eq!(
+        node.is_selected(),
+        Some(true),
+        "Selected must set the selected trait"
+    );
 }

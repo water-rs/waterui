@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use waterui::graphics::Color;
-use waterui::style::{FloatingStyle, Shadow, Vector};
+use waterui::style::{FloatingElevation, FloatingStyle, Shadow, Vector};
 use waterui::{Binding, View, ViewExt as _};
 use waterui_core::dynamic::watch;
 use waterui_core::handler::AnyViewBuilder;
@@ -48,12 +48,15 @@ fn floating_caster() -> impl View {
         clip_radius: 0.3,
         minimum_width: 0.0,
         minimum_height: 0.0,
-        ambient_shadow_color: Color::srgb(0, 0, 0),
-        ambient_shadow_radius: 1.0,
-        ambient_shadow_offset_y: 0.0,
-        key_shadow_color: Color::srgb(0, 0, 0),
-        key_shadow_radius: 1.0,
-        key_shadow_offset_y: 0.0,
+        elevation: FloatingElevation {
+            ambient_shadow_color: Color::srgb(0, 0, 0),
+            ambient_shadow_radius: 1.0,
+            ambient_shadow_offset_y: 0.0,
+            key_shadow_color: Color::srgb(0, 0, 0),
+            key_shadow_radius: 1.0,
+            key_shadow_offset_y: 0.0,
+        }
+        .into(),
         ..FloatingStyle::default()
     })
 }
