@@ -60,7 +60,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
 apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "86833228a2bf493f346150fcdf58ba92f212f837"
+android-backend-revision = "79ddc6f786aaffeacd3e3eafa297aa88ef9df0f6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
 # Gradle project for `--platform android --backend hydrolysis`. The revision
 # is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
