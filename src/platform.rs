@@ -420,6 +420,11 @@ pub enum InputEvent {
     /// told focus left and returned so it can report the transition (a
     /// terminal's DECSET 1004 focus tracking, for one).
     Focused(bool),
+    /// The window server reports the window's maximized flag — carried with
+    /// the `Resized` a chrome-driven maximize or restore produces, so the
+    /// app-side `Window::state` binding tracks the real window instead of
+    /// drifting when the user toggles maximization through the titlebar.
+    Maximized(bool),
     CloseRequested,
     /// One file of an OS file drag is hovering the window (winit
     /// `WindowEvent::HoveredFile`). winit emits one event per file of the
@@ -719,6 +724,20 @@ pub trait PlatformWindow: 'static {
     /// slow-frame threshold. Returns `None` on headless/offscreen/web paths with no
     /// monitor information, where the renderer falls back to its default pacing.
     fn refresh_rate_hz(&self) -> Option<f64> {
+        None
+    }
+    /// The pointer's live position in this window's logical units, when the
+    /// host can answer.
+    ///
+    /// OS file-drop events carry no coordinates, and a platform that
+    /// suppresses cursor events while an external drag owns the pointer —
+    /// the OLE grab on Windows, `NSDraggingSession` on macOS — leaves the
+    /// event stream's last position stale exactly when a drop needs it. The
+    /// runner asks the host where the pointer actually is when a file event
+    /// arrives; hosts that cannot report it (Wayland, offscreen surfaces)
+    /// return `None` and the dispatch falls back to the last position the
+    /// stream delivered.
+    fn pointer_position(&self) -> Option<(f32, f32)> {
         None
     }
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
@@ -1847,7 +1866,7 @@ mod winit_impl {
     use objc2_quartz_core::{CAMetalLayer, CAShapeLayer};
     #[cfg(hydrolysis_macos_system_webview)]
     use objc2_web_kit::WKWebView;
-    use waterui::window::WindowState;
+    use waterui::window::{UserAttention, WindowLevel, WindowState};
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::{
         dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
@@ -2805,6 +2824,31 @@ mod winit_impl {
         }
     }
 
+    /// One platform call toward a requested `WindowState`. Entering a state
+    /// clears the states it is leaving first — an X11 `set_maximized(true)`
+    /// on a minimized or fullscreen window is dropped or applied on top of
+    /// the stale state, so every transition unwinds the rest.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WindowStateOp {
+        Maximized(bool),
+        Minimized(bool),
+        Fullscreen,
+        NoFullscreen,
+        Hide,
+    }
+
+    /// The ordered calls realizing `state` from any prior state.
+    fn window_state_ops(state: WindowState) -> &'static [WindowStateOp] {
+        use WindowStateOp::{Fullscreen, Hide, Maximized, Minimized, NoFullscreen};
+        match state {
+            WindowState::Normal => &[Maximized(false), Minimized(false), NoFullscreen],
+            WindowState::Minimized => &[Maximized(false), NoFullscreen, Minimized(true)],
+            WindowState::Maximized => &[Minimized(false), NoFullscreen, Maximized(true)],
+            WindowState::Fullscreen => &[Maximized(false), Minimized(false), Fullscreen],
+            WindowState::Closed => &[Hide],
+        }
+    }
+
     /// Snapshot of the window properties `apply_properties` last pushed to the
     /// native window, so unchanged syncs cost no platform calls.
     #[derive(Clone, Debug, PartialEq)]
@@ -2814,6 +2858,9 @@ mod winit_impl {
         decorations: bool,
         state: WindowState,
         frame: waterui_core::layout::Rect,
+        level: WindowLevel,
+        attention: Option<UserAttention>,
+        resize_increments: Option<waterui_core::layout::Size>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -2934,24 +2981,47 @@ mod winit_impl {
             self.hybrid_compositor.overlay_surface(index)
         }
 
+        /// Pushes the requested `WindowLevel` to the window server. Shared by
+        /// `apply_properties` and the first-mapped-event re-delivery.
+        fn apply_window_level(&self, level: WindowLevel) {
+            self.window.set_window_level(match level {
+                WindowLevel::Normal => winit::window::WindowLevel::Normal,
+                WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+            });
+        }
+
+        /// Pushes the requested `UserAttention` to the window server. Shared by
+        /// `apply_properties` and the first-mapped-event re-delivery.
+        fn apply_window_attention(&self, attention: Option<UserAttention>) {
+            self.window
+                .request_user_attention(attention.map(|urgency| match urgency {
+                    UserAttention::Informational => winit::window::UserAttentionType::Informational,
+                    UserAttention::Critical => winit::window::UserAttentionType::Critical,
+                }));
+        }
+
         /// Pushes the requested `WindowState` to the window server. Shared
         /// by `apply_properties` and the first-mapped-event re-delivery: on
         /// X11 the same call made of an unmapped window is dropped.
         fn apply_window_state(&self, state: WindowState) {
-            match state {
-                WindowState::Normal => {
-                    self.window.set_minimized(false);
-                    self.window.set_fullscreen(None);
-                }
-                WindowState::Minimized => {
-                    self.window.set_minimized(true);
-                }
-                WindowState::Fullscreen => {
-                    self.window
-                        .set_fullscreen(Some(Fullscreen::Borderless(None)));
-                }
-                WindowState::Closed => {
-                    self.window.set_visible(false);
+            for op in window_state_ops(state) {
+                match op {
+                    WindowStateOp::Maximized(maximized) => {
+                        self.window.set_maximized(*maximized);
+                    }
+                    WindowStateOp::Minimized(minimized) => {
+                        self.window.set_minimized(*minimized);
+                    }
+                    WindowStateOp::Fullscreen => {
+                        self.window
+                            .set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    }
+                    WindowStateOp::NoFullscreen => {
+                        self.window.set_fullscreen(None);
+                    }
+                    WindowStateOp::Hide => {
+                        self.window.set_visible(false);
+                    }
                 }
             }
         }
@@ -3077,6 +3147,127 @@ mod winit_impl {
             (pulled.x - requested.x).powi(2) + (pulled.y - requested.y).powi(2)
         }
 
+        /// The pointer's live position in window-local logical units as the
+        /// host window system reports it right now — `None` where the host
+        /// cannot be asked.
+        ///
+        /// winit's file events carry no coordinates, and no `CursorMoved`
+        /// arrives while an OS drag owns the pointer — OLE keeps
+        /// `WM_MOUSEMOVE` out of the queue on Windows, and AppKit withholds
+        /// `mouseMoved` for an `NSDraggingSession` — so the event-stream
+        /// position goes stale exactly when a drop needs it. Asking the host
+        /// is the only truthful source there; X11 keeps streaming motion
+        /// during XDND, and the query stays right even if the drag source
+        /// grabs the pointer.
+        fn live_pointer_position(&self) -> Option<(f32, f32)> {
+            #[cfg(target_os = "windows")]
+            {
+                self.windows_live_pointer_position()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                self.macos_live_pointer_position()
+            }
+            #[cfg(hydrolysis_wayland_platform)]
+            {
+                self.x11_live_pointer_position()
+            }
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "macos",
+                hydrolysis_wayland_platform
+            )))]
+            {
+                None
+            }
+        }
+
+        /// `GetCursorPos` mapped into this window's client area
+        /// (`ScreenToClient`), physical pixels converted to logical points —
+        /// the same space `CursorMoved` reports in.
+        #[cfg(target_os = "windows")]
+        fn windows_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+            let RawWindowHandle::Win32(win32) = self.window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            let mut point = POINT { x: 0, y: 0 };
+            if unsafe { GetCursorPos(&mut point) } == 0 {
+                return None;
+            }
+            if unsafe { ScreenToClient(win32.hwnd.get(), &mut point) } == 0 {
+                return None;
+            }
+            let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
+                .to_logical::<f64>(self.window.scale_factor());
+            Some((position.x as f32, position.y as f32))
+        }
+
+        /// `-[NSWindow mouseLocationOutsideOfEventStream]` converted into
+        /// the view's flipped logical space — the answer a `mouseMoved`
+        /// would carry, without the event AppKit withholds during a drag.
+        #[cfg(target_os = "macos")]
+        fn macos_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use objc2_app_kit::NSView;
+            let RawWindowHandle::AppKit(appkit) = self.window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            // SAFETY: winit guarantees `ns_view` is a valid `NSView` for the
+            // window's lifetime — the same borrow `handle_window_event`'s
+            // WebView bridge makes.
+            let view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+            let window = view.window()?;
+            let window_point = window.mouseLocationOutsideOfEventStream();
+            let view_point = view.convertPoint_fromView(window_point, None);
+            // AppKit's window base space grows up from the bottom-left corner;
+            // winit reports logical points down from the top-left. `WinitView`
+            // is flipped, so the two spaces already agree — an unflipped view
+            // needs y mirrored across its height.
+            let y = if view.isFlipped() {
+                view_point.y
+            } else {
+                view.bounds().size.height - view_point.y
+            };
+            Some((view_point.x as f32, y as f32))
+        }
+
+        /// `XQueryPointer` on this window over the connection winit already
+        /// holds: `win_x`/`win_y` are window-local physical pixels,
+        /// converted to logical points.
+        #[cfg(hydrolysis_wayland_platform)]
+        fn x11_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+            use x11rb::protocol::xproto::ConnectionExt as _;
+            use x11rb::xcb_ffi::XCBConnection;
+            let window_xid = match self.window.window_handle().ok()?.as_raw() {
+                RawWindowHandle::Xcb(handle) => handle.window.get(),
+                RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok()?,
+                _ => return None,
+            };
+            let connection_ptr = match self.window.display_handle().ok()?.as_raw() {
+                RawDisplayHandle::Xcb(handle) => handle.connection?.as_ptr(),
+                RawDisplayHandle::Xlib(handle) => {
+                    let display = handle.display?.as_ptr().cast::<x11_dl::xlib::Display>();
+                    let xlib_xcb = x11_dl::xlib_xcb::Xlib_xcb::open().ok()?;
+                    // SAFETY: `display` is winit's live `Display*` and
+                    // `XGetXCBConnection` borrows its XCB side without
+                    // transferring ownership.
+                    unsafe { (xlib_xcb.XGetXCBConnection)(display) }.cast()
+                }
+                _ => return None,
+            };
+            // `should_drop = false`: the connection is winit's — the wrapper
+            // is a borrow, and dropping it must not disconnect.
+            let connection =
+                unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }.ok()?;
+            let reply = connection.query_pointer(window_xid).ok()?.reply().ok()?;
+            let position = PhysicalPosition::new(f64::from(reply.win_x), f64::from(reply.win_y))
+                .to_logical::<f64>(self.window.scale_factor());
+            Some((position.x as f32, position.y as f32))
+        }
+
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
             // The first mapped-signal event re-applies the frame and state
             // the app asked for: requests made of an unmapped window were
@@ -3086,6 +3277,13 @@ mod winit_impl {
                 self.window.set_outer_position(request.position);
                 let _ = self.window.request_inner_size(request.size);
                 self.apply_window_state(request.state);
+                // Level and attention are EWMH client messages too: requests
+                // made of the unmapped window were dropped the same way, so
+                // the last-applied values are re-delivered here.
+                if let Some(properties) = self.applied_properties.clone() {
+                    self.apply_window_level(properties.level);
+                    self.apply_window_attention(properties.attention);
+                }
             }
             match event {
                 WindowEvent::CloseRequested => {
@@ -3097,6 +3295,11 @@ mod winit_impl {
                         width: size.width.max(1),
                         height: size.height.max(1),
                     });
+                    // A maximize or restore through the window chrome arrives
+                    // as this same `Resized` — the binding write-back rides on
+                    // it so `Window::state` observes the chrome's move.
+                    self.pending_events
+                        .push(InputEvent::Maximized(self.window.is_maximized()));
                 }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     assert!(
@@ -3378,6 +3581,12 @@ mod winit_impl {
                 decorations,
                 state,
                 frame,
+                level: window.level.snapshot(),
+                attention: window.attention.snapshot(),
+                resize_increments: window
+                    .resize_increments
+                    .as_ref()
+                    .map(|signal| signal.snapshot()),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -3389,6 +3598,19 @@ mod winit_impl {
             }
             if applied.is_none_or(|p| p.decorations != properties.decorations) {
                 self.window.set_decorations(properties.decorations);
+            }
+            if applied.is_none_or(|p| p.level != properties.level) {
+                self.apply_window_level(properties.level);
+            }
+            if applied.is_none_or(|p| p.attention != properties.attention) {
+                self.apply_window_attention(properties.attention);
+            }
+            if applied.is_none_or(|p| p.resize_increments != properties.resize_increments) {
+                self.window.set_resize_increments(
+                    properties.resize_increments.map(|size| {
+                        LogicalSize::new(f64::from(size.width), f64::from(size.height))
+                    }),
+                );
             }
             // The frame binding is pushed to the window only when it changed
             // since the previous pump. A user-driven resize or move lands in
@@ -3463,6 +3685,14 @@ mod winit_impl {
 
         fn drain_events(&mut self) -> Vec<InputEvent> {
             core::mem::take(&mut self.pending_events)
+        }
+
+        /// The pointer's live position: the host's own answer where it can
+        /// be asked, else the last position `CursorMoved`/`Touch` reported —
+        /// the fallback keeps the stream that never went quiet (X11 motion
+        /// during XDND) supplying it.
+        fn pointer_position(&self) -> Option<(f32, f32)> {
+            self.live_pointer_position().or(Some(self.pointer_position))
         }
 
         fn request_redraw(&self) {
@@ -3719,6 +3949,82 @@ mod winit_impl {
                 width: 2.0,
                 height: 14.0,
                 purpose,
+            }
+        }
+
+        /// Every window-state transition must land in the requested state from
+        /// any prior state: entering a state unwinds the ones it leaves, the
+        /// way `Normal` always did.
+        #[test]
+        fn window_state_transitions_land_from_any_prior_state() {
+            use super::{WindowStateOp, window_state_ops};
+            use waterui::window::WindowState;
+
+            // The flags a platform window carries between calls, applied in
+            // the order `window_state_ops` emits them.
+            #[derive(Clone, Copy)]
+            struct Flags {
+                maximized: bool,
+                minimized: bool,
+                fullscreen: bool,
+            }
+            let start = |state: WindowState| match state {
+                WindowState::Normal | WindowState::Closed => Flags {
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: false,
+                },
+                WindowState::Minimized => Flags {
+                    maximized: false,
+                    minimized: true,
+                    fullscreen: false,
+                },
+                WindowState::Maximized => Flags {
+                    maximized: true,
+                    minimized: false,
+                    fullscreen: false,
+                },
+                WindowState::Fullscreen => Flags {
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: true,
+                },
+            };
+            let settle = |mut flags: Flags, ops: &[WindowStateOp]| {
+                for op in ops {
+                    match op {
+                        WindowStateOp::Maximized(v) => flags.maximized = *v,
+                        WindowStateOp::Minimized(v) => flags.minimized = *v,
+                        WindowStateOp::Fullscreen => flags.fullscreen = true,
+                        WindowStateOp::NoFullscreen => flags.fullscreen = false,
+                        WindowStateOp::Hide => {}
+                    }
+                }
+                flags
+            };
+
+            for from in [
+                WindowState::Normal,
+                WindowState::Minimized,
+                WindowState::Maximized,
+                WindowState::Fullscreen,
+            ] {
+                for to in [
+                    WindowState::Normal,
+                    WindowState::Minimized,
+                    WindowState::Maximized,
+                    WindowState::Fullscreen,
+                ] {
+                    let flags = settle(start(from), window_state_ops(to));
+                    let landed = match (flags.maximized, flags.minimized, flags.fullscreen) {
+                        (false, false, false) => WindowState::Normal,
+                        (false, true, false) => WindowState::Minimized,
+                        (true, false, false) => WindowState::Maximized,
+                        (false, false, true) => WindowState::Fullscreen,
+                        _ => panic!("{from:?} -> {to:?} left a mixed state"),
+                    };
+                    assert_eq!(landed, to, "{from:?} -> {to:?} must land in {to:?}");
+                }
             }
         }
 

@@ -290,6 +290,9 @@ impl PlatformWindow for BrowserWindow {
             WindowState::Fullscreen => {
                 panic!("hydrolysis web platform does not support fullscreen window state yet")
             }
+            WindowState::Maximized => {
+                panic!("hydrolysis web platform does not support maximized window state yet")
+            }
         }
 
         if self.canvas.client_width() == 0 || self.canvas.client_height() == 0 {

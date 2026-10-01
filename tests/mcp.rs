@@ -26,7 +26,7 @@ fn mount() -> OffscreenApp {
     let label = Binding::container(String::from("count: 0"));
     let name = Binding::container(Str::from_static(""));
     ui().theme(hydrolysis_m3::Material3::defaults())
-        .viewport(200, 100)
+        .viewport(200, 180)
         .mount_offscreen(move || {
             let count = count.clone();
             let label = label.clone();

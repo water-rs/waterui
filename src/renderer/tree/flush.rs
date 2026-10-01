@@ -1,6 +1,8 @@
 //! Per-frame flush: [`RenderNode::flush`] re-encodes the laid-out subtree
 //! into the renderer's scene using the cached placements.
 
+#[cfg(feature = "accessibility")]
+use super::layout::kurbo_rect;
 use super::window::window_safe_area_insets;
 use super::*;
 
@@ -56,6 +58,10 @@ impl RenderNode {
                 let container_scope = accessibility_container_child_environment(env).map(|_| {
                     renderer.begin_accessibility_container(
                         transformed_rect(ctx.hit_transform, ctx.bounds),
+                        Some(transformed_rect(
+                            ctx.hit_transform,
+                            kurbo_rect(container.resolved),
+                        )),
                         env,
                     )
                 });

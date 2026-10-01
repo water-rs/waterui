@@ -5,8 +5,8 @@ use std::rc::Rc;
 use crate::gesture::GestureTarget;
 #[cfg(feature = "accessibility")]
 use crate::renderer::{
-    AccessibilityActionTarget, accessibility_container_child_environment,
-    hoist_accessibility_metadata,
+    AccessibilityActionTarget, ScopedAccessibilitySemantics,
+    accessibility_container_child_environment, hoist_accessibility_metadata,
 };
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, VisibleSubviewCache, WidgetRenderContext,
@@ -250,6 +250,15 @@ pub(crate) struct ListRenderState {
     /// steady scroll reuses each visible row's node (keeping its reactive content
     /// live) and only builds rows entering the window.
     item_cache: RefCell<VisibleSubviewCache<ListItemId>>,
+    /// One activation claim scope per row, keyed by the same stable id. The
+    /// row's content sub-view flushes under the environment it was *built*
+    /// under, so the scope each frame inserts into `subtree_env` must be the
+    /// object that retained environment already carries — a fresh scope per
+    /// frame would see a silenced tap's donation land in a cell nothing
+    /// drains (water-rs/hydrolysis#27). Entries retire with the rows leaving
+    /// the visible window.
+    #[cfg(feature = "accessibility")]
+    semantics_scopes: RefCell<std::collections::HashMap<ListItemId, ScopedAccessibilitySemantics>>,
     /// A membership change invalidates index-based extents, including reorder
     /// operations whose collection length stays unchanged.
     rows_dirty: Rc<Cell<bool>>,
@@ -377,6 +386,8 @@ impl ListRenderState {
             extent_index: Rc::new(RefCell::new(VirtualExtentIndex::default())),
             scroll: RefCell::new(None),
             item_cache: RefCell::new(VisibleSubviewCache::new()),
+            #[cfg(feature = "accessibility")]
+            semantics_scopes: RefCell::new(std::collections::HashMap::new()),
             rows_dirty,
             replaced_row_ids,
             applied_scroll_generation: Cell::new(0),
@@ -1024,8 +1035,22 @@ pub(crate) fn list_accessibility(
                     row_node_id,
                 );
                 let deletable = editing && renderer.read_signal(&item.deletable);
-                let subtree_env = accessibility_container_child_environment(&row_a11y_env)
+                let mut subtree_env = accessibility_container_child_environment(&row_a11y_env)
                     .unwrap_or_else(|| row_a11y_env.clone());
+                // Every row is an activation scope of its own: a tap gesture
+                // the row's content silences delegates into the scope —
+                // claimed or not — and the row node drains it as the subtree
+                // ends, so the row's `Click` dispatches the retained action.
+                // The scope is the row's persistent one — the retained
+                // sub-view donates through the environment it was built
+                // under, which holds this same object.
+                let scope = state
+                    .semantics_scopes
+                    .borrow_mut()
+                    .entry(row_id)
+                    .or_insert_with(ScopedAccessibilitySemantics::new)
+                    .clone();
+                subtree_env.insert(scope);
                 if ctx.is_none() {
                     // Emit the row content's own semantics under the row's node:
                     // every text, control and image in the row becomes a child
@@ -1040,6 +1065,7 @@ pub(crate) fn list_accessibility(
                         subview.emit_accessibility(renderer, &subtree_env);
                     }
                     renderer.pop_accessibility_parent();
+                    renderer.drain_claim_scope(row_node_id, &subtree_env);
                 }
                 // Edit mode's delete and reorder controls are pointer-only hit
                 // regions in the draw pass — emit their nodes too, or the tree
@@ -1448,6 +1474,14 @@ pub(crate) fn render_list_parts(
         rows.push(lifted_row);
     }
     let visible_ids: Vec<ListItemId> = rows.iter().map(|(_, id, ..)| *id).collect();
+    // A scope's row is gone once the visible window moves past it, the same
+    // lifetime `item_cache`'s `end_frame` gives the sub-view that carried it.
+    #[cfg(feature = "accessibility")]
+    state
+        .borrow()
+        .semantics_scopes
+        .borrow_mut()
+        .retain(|id, _| visible_ids.contains(id));
 
     for (index, row_id, item, resting_y, row_height, content_size) in rows {
         let row_env = env.clone();
@@ -1464,8 +1498,25 @@ pub(crate) fn render_list_parts(
             (item, scoped)
         };
         #[cfg(feature = "accessibility")]
-        let subtree_env =
-            accessibility_container_child_environment(&row_env).unwrap_or_else(|| row_env.clone());
+        let subtree_env = {
+            let mut subtree_env = accessibility_container_child_environment(&row_env)
+                .unwrap_or_else(|| row_env.clone());
+            // The row's own activation scope: silenced taps delegate into it
+            // and the row node drains them below, so a semantic `Click` on
+            // the row dispatches the retained action rather than a
+            // synthesized press. The scope is the row's persistent one — the
+            // retained sub-view donates through the environment it was built
+            // under, which holds this same object.
+            let scope = state
+                .borrow()
+                .semantics_scopes
+                .borrow_mut()
+                .entry(row_id)
+                .or_insert_with(ScopedAccessibilitySemantics::new)
+                .clone();
+            subtree_env.insert(scope);
+            subtree_env
+        };
         #[cfg(not(feature = "accessibility"))]
         let subtree_env = row_env.clone();
         // Interaction slots per row: 0 and 1 are the reorder handle's up/down
@@ -1818,6 +1869,10 @@ pub(crate) fn render_list_parts(
             #[cfg(feature = "accessibility")]
             if row_parented {
                 ctx.renderer_mut().pop_accessibility_parent();
+                ctx.renderer_mut().drain_claim_scope(
+                    row_node_id.expect("a parented list row always has a registered node"),
+                    &subtree_env,
+                );
             } else {
                 ctx.renderer_mut().pop_accessibility_suppression();
             }

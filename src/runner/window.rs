@@ -592,6 +592,11 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     // instead of needing an unrelated event to wake the loop.
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
+    let _ = runtime.renderer.read_signal(&runtime.window.level);
+    let _ = runtime.renderer.read_signal(&runtime.window.attention);
+    if let Some(increments) = runtime.window.resize_increments.as_ref() {
+        let _ = runtime.renderer.read_signal(increments);
+    }
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -808,6 +813,11 @@ crate::engine::cfg_async_fn! {
     let capture_snapshot = reader.captures();
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
+    let _ = runtime.renderer.read_signal(&runtime.window.level);
+    let _ = runtime.renderer.read_signal(&runtime.window.attention);
+    if let Some(increments) = runtime.window.resize_increments.as_ref() {
+        let _ = runtime.renderer.read_signal(increments);
+    }
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -1211,6 +1221,23 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
     apply_window_size_limits(runtime, env);
 }
 
+/// Seeds the pointer position an OS file event conceptually arrives at:
+/// the host's live answer when it can give one.
+///
+/// winit's `HoveredFile`/`DroppedFile` carry no coordinates, and platforms
+/// that suppress cursor events while an external drag owns the pointer
+/// leave the stream's last position stale or unset — the drop then lands
+/// on a stale point or is discarded outright (water-rs/hydrolysis#127).
+/// Asking the platform where the pointer actually is before dispatching a
+/// file event restores the position winit withheld.
+fn sync_os_pointer_position<P: GpuSurfaceWindow>(runtime: &mut RuntimeWindow<P>) {
+    let Some((x, y)) = runtime.platform.pointer_position() else {
+        return;
+    };
+    runtime.pointer_position = Some((x, y));
+    runtime.renderer.note_pointer_position(x, y);
+}
+
 pub(super) fn handle_input_events_with<P, F>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
@@ -1587,7 +1614,31 @@ where
             InputEvent::ModifiersChanged(modifiers) => {
                 runtime.renderer.update_embedded_modifiers(modifiers);
             }
+            InputEvent::Maximized(maximized) => {
+                // Chrome-driven maximize/restore reached the window server
+                // directly; write it back so `Window::state` tracks the real
+                // window. Only Normal/Maximized are touched — a minimized or
+                // fullscreen window's state is not overridden by the flag.
+                let state = runtime.window.state.snapshot();
+                let next = if maximized {
+                    waterui::window::WindowState::Maximized
+                } else {
+                    waterui::window::WindowState::Normal
+                };
+                if matches!(
+                    state,
+                    waterui::window::WindowState::Normal | waterui::window::WindowState::Maximized
+                ) && state != next
+                {
+                    runtime.window.state.set(next);
+                }
+            }
             InputEvent::Focused(focused) => {
+                // The window gained focus: any outstanding attention request
+                // is spent — the contract hands the binding back as `None`.
+                if focused && runtime.window.attention.snapshot().is_some() {
+                    runtime.window.attention.set(None);
+                }
                 let changed = runtime.renderer.handle_window_focused(focused);
                 tracing::trace!(
                     target: "waterui::hydrolysis::input",
@@ -1599,6 +1650,7 @@ where
                 schedule_redraw_or_refresh(runtime, changed);
             }
             InputEvent::FileHovered { path } => {
+                sync_os_pointer_position(runtime);
                 let event_env = input_env(runtime, env);
                 let changed = runtime.renderer.handle_file_hovered(path, &event_env);
                 schedule_redraw_or_refresh(runtime, changed);
@@ -1608,6 +1660,7 @@ where
                 // delivery is deferred to `finish_os_file_drop` below —
                 // winit reports one event per file and a drop's files can
                 // outlive a single batch.
+                sync_os_pointer_position(runtime);
                 runtime.renderer.handle_file_dropped(path);
             }
             InputEvent::FileHoverCancelled => {

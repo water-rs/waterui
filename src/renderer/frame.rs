@@ -297,6 +297,10 @@ impl HydrolysisRenderer {
     ) {
         self.window_bounds = bounds;
         self.window_root_transform = root_transform;
+        // The activation-point projection intersects node bounds with the
+        // window bounds alongside the node's clip chain — both in the same
+        // window hit-test space the hit clip stack uses.
+        self.hit_test.window_bounds = bounds;
     }
 
     pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {

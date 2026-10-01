@@ -814,6 +814,12 @@ pub(crate) struct ContainerNode {
     /// Child frames cached by [`RenderNode::layout`]; reused by
     /// [`RenderNode::flush`] so a geometry-static frame pays only re-encode.
     pub(crate) placed: Vec<Rect>,
+    /// The extent this container resolved at layout — the size it answered to
+    /// the selected proposal, centred on the assigned frame — kept beside
+    /// `placed` so a naming-scope owner reports its own extent when the
+    /// parent assigned more than it answered (water-rs/hydrolysis#51).
+    #[cfg(feature = "accessibility")]
+    pub(crate) resolved: Rect,
     /// Set by this container's `Layout::watch_invalidation` subscription when a
     /// layout input signal changes (shared with the watcher closure). An outer
     /// `RetainedSubview` consumes it through [`RenderNode::take_layout_dirty`]

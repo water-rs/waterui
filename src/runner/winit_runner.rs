@@ -474,16 +474,20 @@ fn native_window_attributes(
     // `apply_properties` still re-delivers it on the first mapped event:
     // a state written between creation and map, or a manager that ignored
     // the attribute, is covered by the same mapped signal.
-    let fullscreen = matches!(
-        window.state.snapshot(),
-        waterui::window::WindowState::Fullscreen
-    );
+    let state = window.state.snapshot();
+    let fullscreen = matches!(state, waterui::window::WindowState::Fullscreen);
+    let maximized = matches!(state, waterui::window::WindowState::Maximized);
     let attributes = NativeWindow::default_attributes()
         .with_window_icon(icon)
         .with_title(window.display_title().snapshot().as_str())
         .with_resizable(window.resizable)
         .with_visible(false)
         .with_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)))
+        .with_maximized(maximized)
+        .with_window_level(match window.level.snapshot() {
+            waterui::window::WindowLevel::Normal => winit::window::WindowLevel::Normal,
+            waterui::window::WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+        })
         // `Activation::OnClick` and `Never` both map without activation: the
         // platform parts that `with_active` cannot express (X11 `WM_HINTS`,
         // the AppKit style mask, `WS_EX_NOACTIVATE`) are applied after
@@ -526,7 +530,19 @@ fn native_window_attributes(
             None => attributes,
         }
     };
-    attributes
+    // Resize increments write `WM_NORMAL_HINTS` — a stored property, so they
+    // can travel with the map request safely. `with_resize_increments` takes
+    // a size rather than an option, so the attribute applies conditionally.
+    match window.resize_increments.as_ref() {
+        Some(signal) => {
+            let size = signal.snapshot();
+            attributes.with_resize_increments(winit::dpi::LogicalSize::new(
+                f64::from(size.width),
+                f64::from(size.height),
+            ))
+        }
+        None => attributes,
+    }
 }
 
 /// The window's desktop identity as a `(class, instance)` pair.

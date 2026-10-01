@@ -366,6 +366,12 @@ pub(crate) struct HitTestState {
     /// hit region flushed inside a scroll viewport can't outlive the paint
     /// clip (water-rs/hydrolysis#252).
     pub(crate) hit_clip_stack: Vec<kurbo::Rect>,
+    /// The window's logical bounds — the outermost clip every hittable point
+    /// must land in. `set_window_viewport` mirrors it here each frame so the
+    /// activation-point projection bounds its result the same way pointer
+    /// input is bounded (water-rs/hydrolysis#27); `ZERO` before the first
+    /// viewport assignment, which projects every point to an empty fragment.
+    pub(crate) window_bounds: kurbo::Rect,
 }
 
 impl HitTestState {
@@ -760,6 +766,17 @@ impl SemanticCore {
         state
     }
 
+    /// The pointer position the host reported to the runner outside the
+    /// input-event stream.
+    ///
+    /// OS file events carry no coordinates, and a platform may keep cursor
+    /// events out of the stream entirely while an external drag owns the
+    /// pointer, so the runner seeds the drag's position with the host's live
+    /// answer before dispatching them (water-rs/hydrolysis#127).
+    pub fn note_pointer_position(&mut self, x: f32, y: f32) {
+        self.hit_test.pointer_position = Some(kurbo::Point::new(f64::from(x), f64::from(y)));
+    }
+
     /// A file of an OS drag hovered the window (winit `HoveredFile`, one
     /// event per file). The path joins the drag's collected files and the
     /// [`Files`] payload is rebuilt over all of them, so a destination that
@@ -767,7 +784,9 @@ impl SemanticCore {
     /// entered.
     ///
     /// winit's file events carry no position; the hover resolves at the last
-    /// position the window saw (`hit_test.pointer_position`).
+    /// position the window saw (`hit_test.pointer_position`), which the
+    /// runner refreshes from the host's live answer before dispatching the
+    /// event — see [`Self::note_pointer_position`].
     pub fn handle_file_hovered(&mut self, path: PathBuf, env: &Environment) -> bool {
         let payload = {
             let state = self.collect_os_file_drag_path(path);
@@ -826,9 +845,11 @@ impl SemanticCore {
     /// `PlatformWindow::request_redraw` — the same wake a signal change
     /// triggers — so the drop lands even if no further input ever arrives.
     ///
-    /// The drop resolves at the last position the window saw; if the pointer
-    /// was never observed entering, the drop is discarded with an error —
-    /// never silently.
+    /// The drop resolves at the last position the window saw — refreshed by
+    /// the runner's platform query before the file events were dispatched,
+    /// see [`Self::note_pointer_position`]; if the pointer was never
+    /// observed entering, the drop is discarded with an error — never
+    /// silently.
     pub fn finish_os_file_drop(&mut self, env: &Environment) -> bool {
         let Some(state) = self.hit_test.os_file_drag.as_mut() else {
             return false;
