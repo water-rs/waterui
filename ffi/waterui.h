@@ -393,7 +393,11 @@ typedef enum WuiGlassStyle {
 } WuiGlassStyle;
 
 /**
- * C ABI mirror of [`GradientType`], the discriminator for a gradient's shape.
+ * C ABI discriminator for the gradient payloads backends may receive.
+ *
+ * [`GradientType`](waterui_graphics::GradientType) also has a `Mesh`
+ * variant, but a mesh gradient resolves to engine content rather than to
+ * this payload, so it is deliberately not represented here.
  */
 typedef enum WuiGradientType {
   /**
@@ -408,10 +412,6 @@ typedef enum WuiGradientType {
    * Angular (conic) gradient around a center point.
    */
   WuiGradientType_Angular = 2,
-  /**
-   * 2D mesh gradient.
-   */
-  WuiGradientType_Mesh = 3,
 } WuiGradientType;
 
 /**
@@ -4395,8 +4395,7 @@ typedef struct WuiArray_WuiGradientStop {
  */
 typedef struct WuiGradient {
   /**
-   * Gradient kind; `Mesh` is never set (mesh gradients resolve to engine
-   * content, not to this payload).
+   * Gradient kind (linear, radial or angular).
    */
   enum WuiGradientType gradient_type;
   /**

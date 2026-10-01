@@ -1,5 +1,5 @@
+use waterui_graphics::Gradient;
 use waterui_graphics::cherenkov::Paint;
-use waterui_graphics::{Gradient, GradientType};
 
 use crate::{IntoFFI, WuiArray, color::WuiWorkingColor};
 
@@ -13,7 +13,11 @@ pub struct WuiGradientStop {
     pub color: WuiWorkingColor,
 }
 
-/// C ABI mirror of [`GradientType`], the discriminator for a gradient's shape.
+/// C ABI discriminator for the gradient payloads backends may receive.
+///
+/// [`GradientType`](waterui_graphics::GradientType) also has a `Mesh`
+/// variant, but a mesh gradient resolves to engine content rather than to
+/// this payload, so it is deliberately not represented here.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub enum WuiGradientType {
@@ -23,21 +27,6 @@ pub enum WuiGradientType {
     Radial = 1,
     /// Angular (conic) gradient around a center point.
     Angular = 2,
-    /// 2D mesh gradient.
-    Mesh = 3,
-}
-
-impl IntoFFI for GradientType {
-    type FFI = WuiGradientType;
-
-    fn into_ffi(self) -> Self::FFI {
-        match self {
-            Self::Linear => WuiGradientType::Linear,
-            Self::Radial => WuiGradientType::Radial,
-            Self::Angular => WuiGradientType::Angular,
-            Self::Mesh => WuiGradientType::Mesh,
-        }
-    }
 }
 
 /// C ABI mirror of [`Gradient`], the backend-native gradient payload in unit
@@ -49,8 +38,7 @@ impl IntoFFI for GradientType {
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiGradient {
-    /// Gradient kind; `Mesh` is never set (mesh gradients resolve to engine
-    /// content, not to this payload).
+    /// Gradient kind (linear, radial or angular).
     pub gradient_type: WuiGradientType,
     /// The colour stops.
     pub stops: WuiArray<WuiGradientStop>,
@@ -85,10 +73,9 @@ impl IntoFFI for Gradient {
                     .collect::<Vec<_>>(),
             )
         };
-        let gradient_type = self.gradient_type().into_ffi();
         match self.paint() {
             Paint::Linear(linear) => WuiGradient {
-                gradient_type,
+                gradient_type: WuiGradientType::Linear,
                 stops: stops(&linear.stops),
                 start_x: f(linear.start.x),
                 start_y: f(linear.start.y),
@@ -98,7 +85,7 @@ impl IntoFFI for Gradient {
                 end_value: 0.0,
             },
             Paint::Radial(radial) => WuiGradient {
-                gradient_type,
+                gradient_type: WuiGradientType::Radial,
                 stops: stops(&radial.stops),
                 start_x: f(radial.start_center.x),
                 start_y: f(radial.start_center.y),
@@ -108,7 +95,7 @@ impl IntoFFI for Gradient {
                 end_value: f(radial.end_radius),
             },
             Paint::Sweep(sweep) => WuiGradient {
-                gradient_type,
+                gradient_type: WuiGradientType::Angular,
                 stops: stops(&sweep.stops),
                 start_x: f(sweep.center.x),
                 start_y: f(sweep.center.y),
@@ -118,7 +105,9 @@ impl IntoFFI for Gradient {
                 end_value: f(sweep.end_angle),
             },
             Paint::Mesh(_) => {
-                unreachable!("a mesh gradient resolves to engine content, not a native gradient view")
+                unreachable!(
+                    "a mesh gradient resolves to engine content, not a native gradient view"
+                )
             }
             Paint::Solid(_) | Paint::Image(_) | Paint::Shader(_) | Paint::Transformed(_) => {
                 unreachable!("a gradient view only carries gradient paints")
