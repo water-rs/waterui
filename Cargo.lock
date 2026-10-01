@@ -5417,6 +5417,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "multi-scene-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "multi-window-example"
 version = "0.1.0"
 dependencies = [
@@ -10288,7 +10295,9 @@ dependencies = [
  "ndk-context",
  "ndk-sys",
  "objc2",
+ "objc2-app-kit",
  "objc2-metal",
+ "objc2-ui-kit",
  "pastey 0.2.3",
  "peniko",
  "pollster 1.0.1",
