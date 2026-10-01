@@ -518,7 +518,7 @@ waterui-webview = { path = "components/platform/webview" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "f4fbd90c91a45dd8149b790e841ed84ec252761d" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "6042ccae12251d6506b3a55a3ce0d70d13fdd5c4" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -541,13 +541,9 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 # underflowed workgroup-array index and Mali page-faults on it. The fix is
 # ours, offered upstream as linebender/vello#1817 and still open there, so this
 # patch is what carries it — drop it when a release containing that PR ships.
-# The pinned `hydrolysis` still requires `vello ^0.9`; when hydrolysis is
-# repinned onto the Cherenkov stack, this entry and the two below leave with it.
+# `waterui-map-gpu` is the last crate requiring `vello ^0.9`; when it is
+# repinned onto the Cherenkov stack, this entry leaves with it.
 vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
-# `vello_common` and `glifo` ride the same fork so the graph keeps a single
-# copy of each — a second copy would make their paint types different types.
-vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
-glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
 # nami#26 renames `Signal::get` to `Signal::snapshot` (trait-only), removes the
 # inherent `Binding::get`, and renames `BindingMailbox::get`/`get_as` to
 # `snapshot`/`snapshot_as` — a breaking change with no compatibility path.
@@ -580,7 +576,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "01f3d3fc2907065eff815f623ac7d9e12fa9943b" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "481c20cc44bb64a764f472a775af8a6714831712" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2da1ec959f44bb64a764f472a775af8a6714831712" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
@@ -602,7 +598,7 @@ waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "d
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }
 # codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
 # 0.1.2 registry release; this is the rev waterkit pins itself.
-shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "fec1801849979239097cabbf2ad813e56a91132d" }
+shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f2000d36225e72662a653b5751182" }
 
 # The published backend crates still read the pre-rename signal API — their
