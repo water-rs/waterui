@@ -487,7 +487,6 @@ fn normalize_layout_view_with_budget(
         Draggable,
         DropDestination,
         Background,
-        Selected,
         NavigationTransitionSource,
         NavigationTransitionDestination
     );
