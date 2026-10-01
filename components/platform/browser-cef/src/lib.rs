@@ -46,6 +46,8 @@ pub use runtime::install_bootstrap_sandbox_info;
 pub use runtime::{
     CefRuntime, CefRuntimeConfiguration, CefRuntimePaths, PumpDeadline, run_packaged_subprocess,
 };
+#[cfg(target_os = "macos")]
+pub use runtime::initialize_sandbox_early;
 #[cfg(feature = "webview")]
 pub use webview::CefWebViewHandle;
 
