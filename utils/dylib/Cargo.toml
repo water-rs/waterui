@@ -24,7 +24,6 @@ waterui-internal.workspace = true
 default = [
     "gpu",
     "assets",
-    "media",
     "webview",
     "inspector",
     "snackbar",

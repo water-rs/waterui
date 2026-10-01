@@ -81,7 +81,6 @@ cpu-time.workspace = true
 default = [
     "gpu",
     "assets",
-    "media",
     "inspector",
     "snackbar",
     "highlight",
@@ -119,11 +118,13 @@ gpu = [
     "waterui-shape/gpu",
     "dep:waterui-svg",
 ]
-# `asset!` expands media-kind assets into `waterui::media::Photo` /
-# `waterui::video::video`, so the assets feature must carry the media stack.
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
-media = ["dep:waterui-media", "video"]
-video = ["dep:waterui-video"]
+# Bundle/`Data`-style assets carry no media stack: `ImageAsset`/`VideoAsset`
+# follow the `media`/`video` features instead, and `asset!` expands media-kind
+# assets into `waterui::media::Photo` / `waterui::video::video` — a compile
+# error in an app that never opted in, which is the point of the opt-in.
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+media = ["dep:waterui-media", "video", "waterui-assets?/media"]
+video = ["dep:waterui-video", "waterui-assets?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
 # links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
 # default so an application that never names a remote URL carries no HTTP

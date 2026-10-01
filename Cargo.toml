@@ -352,6 +352,9 @@ waterui-dylib = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "testing" }
+# `media` is opt-in, and the avatar tests exercise `Avatar::image`. A
+# dev-dependency on this package turns it on for its own test targets only.
+waterui = { path = ".", features = ["media"] }
 # Writes the test portrait the avatar visual acceptance renders. PNG only:
 # the encoder is all these tests need.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -360,7 +363,6 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 default = [
     "gpu",
     "assets",
-    "media",
     "inspector",
     "snackbar",
     "highlight",
@@ -384,6 +386,10 @@ inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]
 assets = ["waterui-internal/assets", "waterui-dylib?/assets"]
+# Media playback (`Photo`, `Video`, `Audio`) through `waterui-media` /
+# `waterui-video` — codecs and the remote-fetch dependencies behind them.
+# Opt-in: `assets` stays media-free, so an application that wants media names
+# it; that is what lets a packaged build leave the stack out.
 media = ["waterui-internal/media", "waterui-dylib?/media", "video"]
 video = ["waterui-internal/video", "waterui-dylib?/video"]
 # Remote fetching (`Url::fetch`, `Data::from_remote`/`LargeFile::from_remote`,
