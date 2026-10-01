@@ -347,7 +347,7 @@ mod tests {
     fn raw_source_carries_no_arguments() {
         let expr = JsExpr::raw("document.title");
         assert_eq!(expr.source(), "document.title");
-        assert!(expr.args().is_empty());
+        assert_eq!(expr.args(), Vec::<serde_json::Value>::new());
     }
 
     /// The wrapped form is a function *body* that returns the wrapper's promise,

@@ -390,9 +390,9 @@ mod tests {
     fn a_policy_with_nothing_to_match_denies_rather_than_admits() {
         let policy = policy(BridgeOrigins::Initial, "file:///tmp/app.html");
 
-        assert!(policy.rules().is_empty());
+        assert_eq!(policy.rules(), vec![]);
         assert_eq!(policy.wire().as_str(), "");
-        assert!(OriginRule::parse_wire(policy.wire().as_str()).is_empty());
+        assert_eq!(OriginRule::parse_wire(policy.wire().as_str()), vec![]);
         assert_ne!(policy.wire(), policy_any().wire());
     }
 
