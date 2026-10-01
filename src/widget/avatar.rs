@@ -288,7 +288,7 @@ impl View for Avatar {
         let spoken = name.map(|name| name.to_plain()).computed();
 
         let ring_width = ring.as_ref().map_or(0.0, |ring| ring.width);
-        let inner = (size - ring_width * 2.0).max(0.0);
+        let inner = f32::mul_add(ring_width, -2.0, size).max(0.0);
 
         let fallback = fallback.map_or_else(
             || {

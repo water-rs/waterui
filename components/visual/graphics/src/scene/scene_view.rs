@@ -31,7 +31,6 @@ pub type SceneInvalidator = Rc<dyn Fn()>;
 /// caches survive the change, and the next `build_scene` reads the new value.
 /// Keep the guard beside the invalidator and drop both when the invalidator
 /// is cleared, which is what stopping the frames means.
-#[must_use]
 pub fn invalidate_on_change<S: Signal>(
     invalidator: &SceneInvalidator,
     signal: &S,
