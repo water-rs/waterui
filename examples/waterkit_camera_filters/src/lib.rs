@@ -279,10 +279,11 @@ impl SyntheticCameraPreviewRenderer {
             let bridge = bridge.borrow();
             *uniforms
                 .lock()
-                .expect("synthetic preview uniform mailbox poisoned") = filter_params(
-                bridge.active_filter.snapshot(),
-                bridge.filter_strength.snapshot() as f32,
-            );
+                .expect("synthetic preview uniform mailbox poisoned") =
+                FilterUniforms(filter_params(
+                    bridge.active_filter.snapshot(),
+                    bridge.filter_strength.snapshot() as f32,
+                ));
         })
     }
 }
@@ -371,10 +372,10 @@ impl CameraFilterRenderer {
     fn frame(&mut self) {
         let gpu_handles = {
             let mut shared = self.shared.lock().expect("camera mailbox poisoned");
-            shared.uniforms = filter_params(
+            shared.uniforms = FilterUniforms(filter_params(
                 self.active_filter.snapshot(),
                 self.filter_strength.snapshot() as f32,
-            );
+            ));
             shared.gpu_handles.clone()
         };
         let Some((device, queue)) = gpu_handles else {
