@@ -68,6 +68,7 @@ use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
+use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_core::key::{KeyHandling, OnKeyPress};
 
 #[cfg(feature = "std")]
@@ -1381,6 +1382,36 @@ pub trait ViewExt: View + Sized {
                 env,
             )
         })
+    }
+
+    /// Reports the state of the interactive control this modifies — or the
+    /// outermost one inside it — into `state`, whenever it changes.
+    ///
+    /// Use it to style chrome the control does not draw itself:
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::interaction::InteractionState;
+    ///
+    /// let state = binding(InteractionState::empty());
+    /// let outline = state.map(|s: InteractionState| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
+    /// let chip = button("Filter").action(|| {}).interaction_state(&state);
+    /// ```
+    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View {
+        self.install(InteractionReport(state.clone()))
+    }
+
+    /// Marks the interactive control this modifies as selected.
+    ///
+    /// A selected control is in [`InteractionState::SELECTED`], so its
+    /// style's selected values apply — a selected list item's container, a
+    /// selected navigation destination's indicator — and assistive technology
+    /// announces it as selected. It applies to the control it modifies, not to
+    /// controls nested inside that control.
+    ///
+    /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
+    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected> {
+        Metadata::new(self, Selected(is_selected.into_computed()))
     }
 
     /// Injects cloneable state into this view subtree's environment.
