@@ -8,7 +8,7 @@ use crate::CefPopupRect;
 
 /// The device handles the render thread's [`Context`] hands to the UI side, so
 /// the page's frame sink can import shared textures with the same device.
-pub(super) struct GpuHandles {
+pub struct GpuHandles {
     pub(super) adapter: wgpu::Adapter,
     pub(super) device: wgpu::Device,
     pub(super) queue: wgpu::Queue,
@@ -26,7 +26,7 @@ struct MailboxState {
 /// UI thread publishes owned frame textures and popup state, the render
 /// thread's [`crate::gpu::CefGpuContent`] drains them, and the one-time device
 /// handles travel the other way for the UI side to install the sink.
-pub(super) struct OwnedFrameMailbox {
+pub struct OwnedFrameMailbox {
     state: Mutex<MailboxState>,
 }
 
@@ -60,18 +60,17 @@ impl OwnedFrameMailbox {
     }
 
     pub(super) fn publish(&self, element: PaintElementType, frame: wgpu::Texture) {
-        {
-            let mut state = self.lock();
-            match element {
-                PaintElementType::VIEW => {
-                    state.view_frame = Some(frame);
-                }
-                PaintElementType::POPUP => {
-                    state.popup_frame = Some(frame);
-                }
-                element => panic!("CEF returned unsupported paint element {element:?}"),
+        let mut state = self.lock();
+        match element {
+            PaintElementType::VIEW => {
+                state.view_frame = Some(frame);
             }
+            PaintElementType::POPUP => {
+                state.popup_frame = Some(frame);
+            }
+            element => panic!("CEF returned unsupported paint element {element:?}"),
         }
+        drop(state);
         self.wake();
     }
 

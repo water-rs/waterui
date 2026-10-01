@@ -20,7 +20,7 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-mod presenter;
+pub mod presenter;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -32,7 +32,7 @@ type BrowserViewport = (u32, u32, f32);
 
 /// The state the UI hook and the render-side [`CefGpuContent`] share.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub(super) struct CefShared {
+pub struct CefShared {
     pub mailbox: Arc<OwnedFrameMailbox>,
     pub viewport: Arc<Mutex<BrowserViewport>>,
 }
@@ -44,7 +44,7 @@ pub(super) struct CefShared {
 /// every page call lives in [`CefUiBridge`] and the two sides exchange data
 /// through [`OwnedFrameMailbox`] and the shared viewport cell.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub(super) struct CefGpuContent {
+pub struct CefGpuContent {
     mailbox: Arc<OwnedFrameMailbox>,
     viewport: Arc<Mutex<BrowserViewport>>,
     presenter: Option<TexturePresenter>,
@@ -110,7 +110,7 @@ impl GpuContent for CefGpuContent {
 /// logical viewport in step with the last rendered size, and asks Chromium
 /// for the next compositor frame.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub(super) struct CefUiBridge<S: AcceleratedFrameSink> {
+pub struct CefUiBridge<S: AcceleratedFrameSink> {
     page: CefPageHandle,
     shared: CefShared,
     sink_installed: bool,
@@ -119,7 +119,7 @@ pub(super) struct CefUiBridge<S: AcceleratedFrameSink> {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 impl<S: AcceleratedFrameSink> CefUiBridge<S> {
-    pub(super) fn new(
+    pub fn new(
         page: CefPageHandle,
         shared: CefShared,
         make_sink: fn(GpuHandles, Arc<OwnedFrameMailbox>) -> S,
@@ -137,13 +137,13 @@ impl<S: AcceleratedFrameSink> CefUiBridge<S> {
     /// # Panics
     ///
     /// Panics when the logical viewport does not fit a `u32`.
-    pub(super) fn frame(&mut self) {
-        if !self.sink_installed {
-            if let Some(handles) = self.shared.mailbox.take_gpu_handles() {
-                self.page
-                    .set_frame_sink((self.make_sink)(handles, Arc::clone(&self.shared.mailbox)));
-                self.sink_installed = true;
-            }
+    pub fn frame(&mut self) {
+        if !self.sink_installed
+            && let Some(handles) = self.shared.mailbox.take_gpu_handles()
+        {
+            self.page
+                .set_frame_sink((self.make_sink)(handles, Arc::clone(&self.shared.mailbox)));
+            self.sink_installed = true;
         }
         let (width, height, scale) = *self
             .shared
