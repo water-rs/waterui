@@ -4,7 +4,7 @@ extern crate self as waterui;
 #[macro_use]
 mod macros;
 mod appearance;
-pub use appearance::{background, border, filter, floating, gradient, shape, style};
+pub use appearance::{background, border, filter, floating, shape, style};
 pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
@@ -102,11 +102,10 @@ pub mod prelude {
         FlowTablePolicy, flow_markdown,
     };
 
-    // Gradient types
-    pub use super::gradient::{
-        AngularGradient, ColorStop, Gradient, LinearGradient, MeshGradient, MeshVertex,
-        RadialGradient, UnitPoint,
-    };
+    // Gradient views
+    #[cfg(feature = "gpu")]
+    pub use super::gradient::{AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient};
+    pub use super::gradient::{Gradient, MeshGradient};
 
     // Background types (explicit to avoid module name conflict with layout::background)
     pub use super::background::{Background, Glass, GlassStyle, Material};
@@ -140,6 +139,7 @@ pub use waterui_canvas as canvas;
 pub use waterui_chart as chart;
 pub use waterui_form as form;
 pub use waterui_graphics::color;
+pub use waterui_graphics::gradient;
 #[cfg(feature = "gpu")]
 pub use waterui_graphics::{
     GpuContent, GpuContentView, RedrawHandle, ShaderPaintView, image_decode,
