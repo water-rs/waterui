@@ -263,7 +263,7 @@ impl FrameSignals {
 
 #[cfg(test)]
 mod tests {
-    use super::FrameSignals;
+    use super::{BTreeSet, FrameSignals};
     use crate::time::Instant;
 
     fn signals() -> FrameSignals {
@@ -305,7 +305,7 @@ mod tests {
             vec![7]
         );
         assert!(signals.take_patch_request());
-        assert!(signals.take_dirty_dynamic_nodes().is_empty());
+        assert_eq!(signals.take_dirty_dynamic_nodes(), BTreeSet::new());
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
             vec![42]
         );
         assert!(signals.take_patch_request());
-        assert!(signals.take_dirty_collections().is_empty());
+        assert_eq!(signals.take_dirty_collections(), BTreeSet::new());
     }
 
     #[test]
@@ -330,7 +330,7 @@ mod tests {
         signals.mark_collection_dirty(7, signals.rebuild_generation());
         signals.begin_rebuild();
         assert!(!signals.has_patch_request());
-        assert!(signals.take_dirty_collections().is_empty());
+        assert_eq!(signals.take_dirty_collections(), BTreeSet::new());
     }
 
     #[test]
@@ -340,7 +340,7 @@ mod tests {
         let stale_generation = signals.rebuild_generation() - 1;
         signals.mark_dynamic_dirty(1, stale_generation);
         assert!(!signals.has_patch_request());
-        assert!(signals.take_dirty_dynamic_nodes().is_empty());
+        assert_eq!(signals.take_dirty_dynamic_nodes(), BTreeSet::new());
 
         // A node dispatched by the current rebuild may still mark itself dirty.
         signals.mark_dynamic_dirty(2, signals.rebuild_generation());
@@ -369,6 +369,6 @@ mod tests {
         signals.mark_dynamic_dirty(9, signals.rebuild_generation());
         signals.begin_rebuild();
         assert!(!signals.has_patch_request());
-        assert!(signals.take_dirty_dynamic_nodes().is_empty());
+        assert_eq!(signals.take_dirty_dynamic_nodes(), BTreeSet::new());
     }
 }

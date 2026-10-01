@@ -460,7 +460,7 @@ impl WpePage {
     /// Panics when `name` is empty, contains an interior NUL byte, or is
     /// already registered.
     pub fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
-        assert!(!name.is_empty(), "WPE handler name must not be empty");
+        assert_ne!(name, "", "WPE handler name must not be empty");
         // One transport serves every handler name, so registration is bookkeeping
         // only. Re-registering replaces, matching every other backend.
         self.inner

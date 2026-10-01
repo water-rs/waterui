@@ -75,8 +75,8 @@ fn hover_then_cancel_files_hover_ends_the_drag_without_a_drop() {
     let (mut app, received, hovering) = mount_destination();
     app.hover_files_at(CENTER.0, CENTER.1, dropped_paths());
     assert!(hovering.snapshot());
-    assert!(received.snapshot().is_empty());
+    assert_eq!(received.snapshot(), Vec::<PathBuf>::new());
     app.cancel_files_hover();
     assert!(!hovering.snapshot());
-    assert!(received.snapshot().is_empty());
+    assert_eq!(received.snapshot(), Vec::<PathBuf>::new());
 }
