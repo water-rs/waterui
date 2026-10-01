@@ -327,18 +327,11 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
     use objc2_app_kit::NSScreen;
 
     let mtm = MainThreadMarker::new().expect("__init runs on the main thread");
-    NSScreen::screens(mtm)
-        .iter()
-        .map(|screen| screen.maximumFramesPerSecond())
-        .max()
-        .filter(|fps| *fps > 0)
-        .map(|fps| {
-            #[expect(
-                clippy::cast_sign_loss,
-                reason = "the value is positive on this branch"
-            )]
-            core::num::NonZeroU32::new(fps as u32 * 1000).expect("a refresh rate of at least 1 Hz")
-        })
+    screens_millihertz(
+        NSScreen::screens(mtm)
+            .iter()
+            .map(|screen| screen.maximumFramesPerSecond()),
+    )
 }
 
 #[cfg(all(feature = "gpu", target_vendor = "apple", not(target_os = "macos")))]
@@ -351,9 +344,20 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
     // `__init` no scene session exists yet — this is the only API that can
     // answer inside this window.
     #[expect(deprecated, reason = "no scene session exists at process startup")]
-    UIScreen::screens(mtm)
-        .iter()
-        .map(|screen| screen.maximumFramesPerSecond())
+    screens_millihertz(
+        UIScreen::screens(mtm)
+            .iter()
+            .map(|screen| screen.maximumFramesPerSecond()),
+    )
+}
+
+/// Both Apple branches fold their screens the same way: the fastest attached
+/// screen wins, converted to millihertz for `RefreshRate::from_millihertz`.
+#[cfg(all(feature = "gpu", target_vendor = "apple"))]
+fn screens_millihertz(
+    frames_per_second: impl Iterator<Item = isize>,
+) -> Option<core::num::NonZeroU32> {
+    frames_per_second
         .max()
         .filter(|fps| *fps > 0)
         .map(|fps| {

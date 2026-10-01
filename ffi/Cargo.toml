@@ -92,11 +92,15 @@ ash = { workspace = true, optional = true }
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
 objc2 = "0.6"
-objc2-ui-kit = { version = "0.3", default-features = false, features = ["UIScreen"], optional = true }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen"], optional = true }
 objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"], optional = true }
 wgpu-hal = { workspace = true, features = ["metal"], optional = true }
 waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen"], optional = true }
+
+[target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["UIScreen"], optional = true }
 
 
 [lints]
