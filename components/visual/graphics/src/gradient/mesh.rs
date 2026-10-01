@@ -163,6 +163,17 @@ struct MeshContent {
     paint: Computed<Paint>,
 }
 
+/// The self-drawn realization of a mesh gradient whose paint never changes.
+///
+/// There is no native mesh primitive to bridge on every platform — Android
+/// has none — so a [`Gradient`] carrying a mesh resolves to engine content
+/// here rather than to a `Native<Gradient>` payload a backend would draw.
+pub(crate) fn static_mesh_view(paint: Paint) -> SceneView {
+    SceneView::new(MeshContent {
+        paint: nami::constant(paint).computed(),
+    })
+}
+
 impl SceneContent for MeshContent {
     fn build_scene(
         &mut self,

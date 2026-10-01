@@ -250,7 +250,11 @@ impl waterui_core::NativeView for Gradient {
 
 impl View for Gradient {
     fn body(self, _env: &waterui_core::Environment) -> impl View {
-        waterui_core::Native::new(self)
+        if matches!(self.paint(), Paint::Mesh(_)) {
+            waterui_core::AnyView::new(super::mesh::static_mesh_view(self.paint))
+        } else {
+            waterui_core::AnyView::new(waterui_core::Native::new(self))
+        }
     }
 
     fn stretch_axis(&self) -> StretchAxis {
