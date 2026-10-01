@@ -64,11 +64,7 @@ pub(crate) struct WuiAndroidApp {
 impl WuiAndroidApp {
     pub(crate) fn into_raw_parts(
         self,
-    ) -> (
-        *mut WuiAnyView,
-        *mut WuiEnv,
-        *mut WuiComputed<WorkingColor>,
-    ) {
+    ) -> (*mut WuiAnyView, *mut WuiEnv, *mut WuiComputed<WorkingColor>) {
         (
             self.window.content.into_raw(),
             self.env.into_raw(),
