@@ -426,22 +426,15 @@ impl PressWaves {
 }
 
 /// Interactive state snapshot for widget chrome.
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "a per-frame state snapshot of independent interaction flags, not a configuration"
-)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WidgetInteractionState {
-    /// The widget is disabled: it must render its inactive appearance and the
-    /// renderer suppresses hover, press, and focus for it, so the remaining
-    /// fields stay at rest while this is `true`.
-    pub disabled: bool,
-    /// Pointer is inside the widget bounds.
-    pub hovered: bool,
-    /// Primary pointer is actively pressing the widget.
-    pub pressed: bool,
-    /// Keyboard focus is visible on the widget.
-    pub focus_visible: bool,
+    /// The widget's interaction flags for this frame — hovered, pressed,
+    /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
+    /// renderer's bookkeeping. Themes read it to resolve [`StateValue`]
+    /// fields directly. When [`InteractionState::DISABLED`] is set the widget
+    /// renders its inactive appearance and the renderer suppresses hover,
+    /// press, and focus, so the remaining flags stay at rest.
+    pub state: InteractionState,
     /// Animated focus affordance progress in the 0.0..=1.0 range.
     pub focus_progress: f32,
     /// Animated state-layer opacity sampled by the renderer.
@@ -454,10 +447,7 @@ pub struct WidgetInteractionState {
 impl WidgetInteractionState {
     /// No active interaction state.
     pub const NONE: Self = Self {
-        disabled: false,
-        hovered: false,
-        pressed: false,
-        focus_visible: false,
+        state: InteractionState::empty(),
         focus_progress: 0.0,
         state_layer_opacity: 0.0,
         press_waves: PressWaves::EMPTY,
