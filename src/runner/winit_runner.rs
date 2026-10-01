@@ -515,7 +515,7 @@ fn native_window_attributes(
         .with_active(activates && window.activation == waterui::window::Activation::OnShow)
         .with_transparent(super::window_requires_transparency(window, env))
         .with_decorations(!matches!(
-            window.style,
+            window.style.snapshot(),
             waterui::window::WindowStyle::Borderless
         ))
         .with_inner_size(winit::dpi::LogicalSize::new(

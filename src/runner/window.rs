@@ -836,9 +836,10 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
-    // `frame` and `state` drive `apply_properties` below: keep them
-    // subscribed so an app write to either binding schedules a pump
-    // instead of needing an unrelated event to wake the loop.
+    // `frame`, `state`, `level`, `attention`, `resize_increments` and
+    // `style` drive `apply_properties` below: keep them subscribed so an
+    // app write to any of these bindings schedules a pump instead of
+    // needing an unrelated event to wake the loop.
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
     let _ = runtime.renderer.read_signal(&runtime.window.level);
@@ -846,6 +847,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     if let Some(increments) = runtime.window.resize_increments.as_ref() {
         let _ = runtime.renderer.read_signal(increments);
     }
+    let _ = runtime.renderer.read_signal(&runtime.window.style);
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
