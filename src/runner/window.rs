@@ -449,7 +449,6 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
     let srgb = waterui_graphics::color::working::to_srgb(resolved);
     peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.components[3]])
 }
-}
 
 #[cfg(hydrolysis_winit)]
 pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {

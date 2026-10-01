@@ -636,7 +636,6 @@ pub(crate) fn render_button_parts(
                 &interaction_style,
                 interaction_flags,
             );
-            );
             let mut draw = ctx.draw_context();
             theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
             if let Some((ring_bounds, ring_radii, color, width)) = ring {
