@@ -47,12 +47,12 @@ mod data;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 mod large_file;
 
-#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub use bundle::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFileAsset, bundle_root};
 #[cfg(all(feature = "media", not(target_arch = "wasm32")))]
 pub use bundle::ImageAsset;
 #[cfg(all(feature = "video", not(target_arch = "wasm32")))]
 pub use bundle::VideoAsset;
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub use bundle::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFileAsset, bundle_root};
 pub use data::Data;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub use large_file::LargeFile;
@@ -68,11 +68,11 @@ pub use waterui_assets_core::{ensure_http_allowed, is_loopback_http_url, is_remo
 
 /// Prelude for common imports.
 pub mod prelude {
-    pub use crate::{AssetError, AssetKind, Data};
-    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-    pub use crate::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset};
     #[cfg(all(feature = "media", not(target_arch = "wasm32")))]
     pub use crate::ImageAsset;
     #[cfg(all(feature = "video", not(target_arch = "wasm32")))]
     pub use crate::VideoAsset;
+    pub use crate::{AssetError, AssetKind, Data};
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    pub use crate::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset};
 }

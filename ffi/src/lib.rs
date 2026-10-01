@@ -357,16 +357,13 @@ fn max_frames_per_second() -> Option<core::num::NonZeroU32> {
 fn screens_millihertz(
     frames_per_second: impl Iterator<Item = isize>,
 ) -> Option<core::num::NonZeroU32> {
-    frames_per_second
-        .max()
-        .filter(|fps| *fps > 0)
-        .map(|fps| {
-            #[expect(
-                clippy::cast_sign_loss,
-                reason = "the value is positive on this branch"
-            )]
-            core::num::NonZeroU32::new(fps as u32 * 1000).expect("a refresh rate of at least 1 Hz")
-        })
+    frames_per_second.max().filter(|fps| *fps > 0).map(|fps| {
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "the value is positive on this branch"
+        )]
+        core::num::NonZeroU32::new(fps as u32 * 1000).expect("a refresh rate of at least 1 Hz")
+    })
 }
 
 /// Without the GPU stack there is no display query; frames are budgeted at

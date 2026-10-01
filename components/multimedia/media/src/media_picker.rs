@@ -17,10 +17,10 @@ use waterui_text::{Text, text};
 use waterkit_dialog::{LoadedMedia, MediaType, PhotoPicker as KitPhotoPicker};
 
 use crate::Media;
-#[cfg(feature = "std")]
-use crate::url::Url;
 #[cfg(all(feature = "std", feature = "video"))]
 use crate::live::LivePhotoSource;
+#[cfg(feature = "std")]
+use crate::url::Url;
 
 /// A media picker view that lets users select photos, videos, or live media.
 ///

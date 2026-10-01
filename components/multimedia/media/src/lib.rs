@@ -73,7 +73,6 @@ pub mod media_picker;
 pub mod video {
     pub use waterui_video::video::*;
 }
-pub use {media_picker::MediaPicker, photo::Photo, waterui_image::Image};
 #[cfg(feature = "video")]
 pub use {
     live::LivePhoto,
@@ -86,6 +85,7 @@ pub use {
         PlayerController, Playlist, RepeatMode, SubtitleTrack, video_player,
     },
 };
+pub use {media_picker::MediaPicker, photo::Photo, waterui_image::Image};
 
 /// Re-export the stable [`Filter`] trait from `filtrate-core` for
 /// GPU-accelerated image filters.
@@ -95,9 +95,9 @@ pub use filtrate_core::Filter;
 pub mod url;
 pub use url::Url;
 
-use waterui_core::{AnyView, Environment, View};
 #[cfg(feature = "video")]
 use waterui_core::reactive::impl_constant;
+use waterui_core::{AnyView, Environment, View};
 
 #[cfg(feature = "video")]
 use crate::live::LivePhotoSource;
