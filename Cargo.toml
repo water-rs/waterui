@@ -560,12 +560,12 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45
 # filter library `.filter(F)`/`.effect(E)` and the engine itself agree on:
 # every filtrate in the graph must come from this same revision or a filter
 # type built on one side is a different type on the other.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "17f25f46ecb1f12d8ae189be0a99b044d3501b0e" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "17f25f46ecb1f12d8ae189be0a99b044d3501b0e" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "17f25f46ecb1f12d8ae189be0a99b044d3501b0e" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "17f25f46ecb1f12d8ae189be0a99b044d3501b0e" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "17f25f46ecb1f12d8ae189be0a99b044d3501b0e" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "17f25f46ecb1f12d8ae189be0a99b044d3501b0e" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "fd1e36660719bcf2ffecda4649c6243812f536ad" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "fd1e36660719bcf2ffecda4649c6243812f536ad" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "fd1e36660719bcf2ffecda4649c6243812f536ad" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "fd1e36660719bcf2ffecda4649c6243812f536ad" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "fd1e36660719bcf2ffecda4649c6243812f536ad" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "fd1e36660719bcf2ffecda4649c6243812f536ad" }
 
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
