@@ -350,11 +350,11 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo
 }
 
 pub(super) fn window_clear_color(window: &Window, env: &Environment) -> peniko::Color {
-    match &window.background {
+    match window.background.snapshot() {
         WindowBackground::Opaque => {
             resolve_window_clear_color(Color::new(theme::color::Background), env)
         }
-        WindowBackground::Color(color) => resolve_window_clear_color(color.clone(), env),
+        WindowBackground::Color(color) => resolve_window_clear_color(color, env),
     }
 }
 
@@ -366,7 +366,7 @@ pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> pen
 
 #[cfg(hydrolysis_winit)]
 pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
-    match &window.background {
+    match window.background.snapshot() {
         WindowBackground::Opaque => false,
         WindowBackground::Color(color) => color.resolve(env).snapshot().components[3] < 1.0,
     }
