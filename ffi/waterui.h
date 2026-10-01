@@ -673,6 +673,24 @@ typedef enum WuiFontDesign {
 } WuiFontDesign;
 
 /**
+ * FFI-compatible representation of [`WindowStyle`].
+ */
+typedef enum WuiWindowStyle {
+  /**
+   * Standard window with title bar and controls.
+   */
+  WuiWindowStyle_Titled = 0,
+  /**
+   * Borderless window without title bar.
+   */
+  WuiWindowStyle_Borderless = 1,
+  /**
+   * Window where content extends into the title bar area.
+   */
+  WuiWindowStyle_FullSizeContentView = 2,
+} WuiWindowStyle;
+
+/**
  * FFI-compatible representation of [`WindowState`].
  */
 typedef enum WuiWindowState {
@@ -734,24 +752,6 @@ typedef enum WuiUserAttention {
    */
   WuiUserAttention_Critical = 2,
 } WuiUserAttention;
-
-/**
- * FFI-compatible representation of [`WindowStyle`].
- */
-typedef enum WuiWindowStyle {
-  /**
-   * Standard window with title bar and controls.
-   */
-  WuiWindowStyle_Titled = 0,
-  /**
-   * Borderless window without title bar.
-   */
-  WuiWindowStyle_Borderless = 1,
-  /**
-   * Window where content extends into the title bar area.
-   */
-  WuiWindowStyle_FullSizeContentView = 2,
-} WuiWindowStyle;
 
 /**
  * FFI mirror of [`MonitorSelector`].
@@ -2075,6 +2075,14 @@ typedef struct Computed_WindowLevel Computed_WindowLevel;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
+typedef struct Computed_WindowStyle Computed_WindowStyle;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
 typedef struct Computed_bool Computed_bool;
 
 /**
@@ -2548,6 +2556,14 @@ typedef struct WuiWatcher_WindowLevel WuiWatcher_WindowLevel;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_WindowState WuiWatcher_WindowState;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_WindowStyle WuiWatcher_WindowStyle;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -5047,6 +5063,15 @@ typedef struct WuiResolvedFont {
 } WuiResolvedFont;
 
 /**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_WindowStyle WuiComputed_WindowStyle;
+
+/**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_binding_*`,
@@ -5212,9 +5237,10 @@ typedef struct WuiWindow {
    */
   struct WuiAnyView *toolbar;
   /**
-   * The visual style of the window.
+   * The visual style of the window, observed so a change after the window
+   * is shown is re-applied.
    */
-  enum WuiWindowStyle style;
+  WuiComputed_WindowStyle *style;
   /**
    * The background style of the window.
    */
@@ -10735,6 +10761,43 @@ struct WuiWatcherGuard *waterui_anyviews_watch_range(const struct WuiAnyViews *a
                                                                   struct WuiArray_WuiId,
                                                                   struct WuiWatcherMetadata*),
                                                      void (*drop)(void*));
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiWindowStyle waterui_read_computed_window_style(const WuiComputed_WindowStyle *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_window_style(const WuiComputed_WindowStyle *computed,
+                                                            struct WuiWatcher_WindowStyle *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_window_style(WuiComputed_WindowStyle *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_WindowStyle *waterui_new_watcher_window_style(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiWindowStyle,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
 
 /**
  * Reads the current value from a binding

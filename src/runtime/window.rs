@@ -67,8 +67,12 @@ pub struct Window {
     pub toolbar: Option<AnyView>,
     /// The visual style of the window.
     ///
+    /// Reactive: backends observe the binding and re-apply the style when it
+    /// changes after the window is shown, so an app can toggle decorations at
+    /// runtime through [`WindowHandle::set_style`] or its own binding.
+    ///
     /// Notice that it may not be supported on all platforms.
-    pub style: WindowStyle,
+    pub style: Binding<WindowStyle>,
     /// The background style of the window.
     ///
     /// Use this to create transparent or frosted glass windows.
@@ -374,6 +378,12 @@ impl WindowManager {
 impl_constant!(WindowState);
 impl_constant!(WindowStyle);
 
+impl From<WindowStyle> for Binding<WindowStyle> {
+    fn from(style: WindowStyle) -> Self {
+        Self::container(style)
+    }
+}
+
 impl Window {
     /// Create a new window with the specified title, state binding, and content.
     ///
@@ -420,7 +430,7 @@ impl Window {
             content,
             state,
             toolbar: None,
-            style: WindowStyle::default(),
+            style: Binding::container(WindowStyle::default()),
             background: WindowBackground::default(),
             min_size: None,
             max_size: None,
@@ -539,9 +549,12 @@ impl Window {
     }
 
     /// Set the visual style of the window.
+    ///
+    /// Takes a [`WindowStyle`] for a fixed style or a `Binding<WindowStyle>`
+    /// the app keeps to change the style after the window is shown.
     #[must_use]
-    pub const fn style(mut self, style: WindowStyle) -> Self {
-        self.style = style;
+    pub fn style(mut self, style: impl Into<Binding<WindowStyle>>) -> Self {
+        self.style = style.into();
         self
     }
 
@@ -653,6 +666,7 @@ impl Window {
             frame: self.frame.clone(),
             state: self.state.clone(),
             attention: self.attention.clone(),
+            style: self.style.clone(),
         }
     }
 
@@ -751,6 +765,7 @@ pub struct WindowHandle {
     frame: Binding<Rect>,
     state: Binding<WindowState>,
     attention: Binding<Option<UserAttention>>,
+    style: Binding<WindowStyle>,
 }
 
 impl WindowHandle {
@@ -793,5 +808,11 @@ impl WindowHandle {
     /// Set the frame of the window.
     pub fn set_frame(&self, frame: Rect) {
         self.frame.set(frame);
+    }
+
+    /// Set the visual style of the window; the backend re-applies it to the
+    /// shown window.
+    pub fn set_style(&self, style: WindowStyle) {
+        self.style.set(style);
     }
 }

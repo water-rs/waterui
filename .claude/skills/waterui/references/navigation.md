@@ -257,9 +257,11 @@ The `Window` builder, precisely:
 - `Window::new(title, state, content)` — the title is `impl IntoComputed<Str>` (a
   reactive window title is free), `state` is a `Binding<WindowState>` **by value**, and
   `content` is any `Fn() -> impl View`, so a bare function item works.
-- `.style(WindowStyle)` — exactly three variants: `Titled` (default), `Borderless`,
-  `FullSizeContentView` (content extends under the title bar). "Frosted" and
-  "transparent" are **not** styles — they are backgrounds:
+- `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
+  `Titled` (default), `Borderless`, `FullSizeContentView` (content extends under the
+  title bar). The style is reactive: setting the binding (or
+  `window.handle().set_style(..)`) re-applies it to the open window, e.g. to toggle
+  decorations. "Frosted" and "transparent" are **not** styles — they are backgrounds:
 - `.background(..)` accepts a `Color` (a translucent one gives a transparent window) or a
   `Material` (frosted glass; applied to the window's content, best-effort per backend).
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
