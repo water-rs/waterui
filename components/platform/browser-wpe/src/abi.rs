@@ -6,8 +6,13 @@
 
 use std::ffi::{c_char, c_double, c_int, c_uint, c_void};
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 pub const MAX_PLANES: usize = 4;
+
+/// `WaterWpeFrame::kind` for a `WPEBufferDMABuf` frame.
+pub const WATER_WPE_BUFFER_DMA_BUF: u32 = 1;
+/// `WaterWpeFrame::kind` for a `WPEBufferSHM` frame.
+pub const WATER_WPE_BUFFER_SHM: u32 = 2;
 
 #[repr(C)]
 pub struct WaterWpeRuntime {
@@ -41,6 +46,15 @@ pub struct WaterWpeFrame {
     pub offsets: [c_uint; MAX_PLANES],
     pub strides: [c_uint; MAX_PLANES],
     pub rendering_fence_fd: c_int,
+    /// One of the `WATER_WPE_BUFFER_*` constants: which `WPEBuffer` subclass
+    /// produced the frame.
+    pub kind: c_uint,
+    /// `WATER_WPE_BUFFER_SHM` frames only: the buffer's pixels, borrowed for
+    /// the token's lifetime. `format` is a DRM fourcc here too — the bridge
+    /// translates WPE's `WPEPixelFormat`.
+    pub shm_data: *const u8,
+    pub shm_len: usize,
+    pub shm_stride: c_uint,
 }
 
 pub type DestroyNotify = unsafe extern "C" fn(*mut c_void);
@@ -189,5 +203,190 @@ impl WpeApi {
                 frame_release: symbol(library, b"water_wpe_frame_release\0"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `WaterWpeFrame` is one struct declared twice — once in
+    //! `native/waterui_wpe.h` for the bridge, once above for Rust — and the two
+    //! must agree field for field. Parsing the header keeps a drift on either
+    //! side from landing silently: only a compiler would see the real C
+    //! layout, and the bridge is only ever built inside CI.
+
+    use std::mem::{align_of, offset_of, size_of};
+
+    use super::{ABI_VERSION, MAX_PLANES, WaterWpeFrame};
+
+    const HEADER: &str = include_str!("../native/waterui_wpe.h");
+
+    fn header_define(name: &str) -> u64 {
+        let prefix = format!("#define {name} ");
+        let line = HEADER
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with(prefix.as_str()))
+            .unwrap_or_else(|| panic!("{name} is not defined in waterui_wpe.h"));
+        line[prefix.len()..]
+            .trim()
+            .parse()
+            .unwrap_or_else(|error| panic!("{name} is not an integer: {error}"))
+    }
+
+    /// The members of `typedef struct { ... } Name;` as `(type, name, array)`
+    /// triples, comments stripped and pointer stars folded into the type.
+    fn header_struct_fields(name: &str) -> Vec<(String, String, Option<String>)> {
+        let end = HEADER
+            .find(&format!("}} {name};"))
+            .unwrap_or_else(|| panic!("{name} is not declared in waterui_wpe.h"));
+        let start = HEADER[..end].rfind("typedef struct {").map_or_else(
+            || panic!("{name} is not a typedef struct"),
+            |index| index + "typedef struct {".len(),
+        );
+        let mut body = String::new();
+        let mut rest = &HEADER[start..end];
+        while let Some(open) = rest.find("/*") {
+            body.push_str(&rest[..open]);
+            let close = rest[open..]
+                .find("*/")
+                .expect("waterui_wpe.h has an unterminated comment");
+            rest = &rest[open + close + 2..];
+        }
+        body.push_str(rest);
+        body.lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let line = line
+                    .strip_suffix(';')
+                    .unwrap_or_else(|| panic!("bad member declaration `{line}`"));
+                let (declarator, array) = match line.split_once('[') {
+                    Some((declarator, extent)) => (
+                        declarator.trim_end(),
+                        Some(
+                            extent
+                                .strip_suffix(']')
+                                .expect("an array declarator must end with `]`")
+                                .to_owned(),
+                        ),
+                    ),
+                    None => (line, None),
+                };
+                let mut tokens: Vec<&str> = declarator.split_whitespace().collect();
+                let mut name = tokens
+                    .pop()
+                    .expect("a member declaration needs a declarator");
+                let mut pointers = 0;
+                while let Some(stripped) = name.strip_prefix('*') {
+                    pointers += 1;
+                    name = stripped;
+                }
+                let mut ty = tokens.join(" ");
+                for _ in 0..pointers {
+                    ty.push_str(" *");
+                }
+                (ty, name.to_owned(), array)
+            })
+            .collect()
+    }
+
+    /// The `(size, align)` a C type carries on the platforms the bridge runs
+    /// on, expressed through the equivalent Rust type.
+    fn c_layout(ty: &str) -> (usize, usize) {
+        match ty {
+            "void *" | "const uint8_t *" => (size_of::<*const u8>(), align_of::<*const u8>()),
+            "size_t" => (size_of::<usize>(), align_of::<usize>()),
+            "uint64_t" => (size_of::<u64>(), align_of::<u64>()),
+            "int" => (size_of::<i32>(), align_of::<i32>()),
+            "uint32_t" => (size_of::<u32>(), align_of::<u32>()),
+            other => panic!("the test needs a C layout entry for `{other}`"),
+        }
+    }
+
+    fn rust_offset(name: &str) -> usize {
+        match name {
+            "token" => offset_of!(WaterWpeFrame, token),
+            "width" => offset_of!(WaterWpeFrame, width),
+            "height" => offset_of!(WaterWpeFrame, height),
+            "format" => offset_of!(WaterWpeFrame, format),
+            "modifier" => offset_of!(WaterWpeFrame, modifier),
+            "n_planes" => offset_of!(WaterWpeFrame, n_planes),
+            "fds" => offset_of!(WaterWpeFrame, fds),
+            "offsets" => offset_of!(WaterWpeFrame, offsets),
+            "strides" => offset_of!(WaterWpeFrame, strides),
+            "rendering_fence_fd" => offset_of!(WaterWpeFrame, rendering_fence_fd),
+            "kind" => offset_of!(WaterWpeFrame, kind),
+            "shm_data" => offset_of!(WaterWpeFrame, shm_data),
+            "shm_len" => offset_of!(WaterWpeFrame, shm_len),
+            "shm_stride" => offset_of!(WaterWpeFrame, shm_stride),
+            other => panic!("the test needs a Rust offset for field `{other}`"),
+        }
+    }
+
+    #[test]
+    fn water_wpe_frame_matches_the_bridge_header() {
+        assert_eq!(
+            header_define("WATER_WPE_ABI_VERSION"),
+            u64::from(ABI_VERSION)
+        );
+        assert_eq!(header_define("WATER_WPE_MAX_PLANES"), MAX_PLANES as u64);
+
+        let fields = header_struct_fields("WaterWpeFrame");
+        let expected: &[(&str, &str)] = &[
+            ("void *", "token"),
+            ("uint32_t", "width"),
+            ("uint32_t", "height"),
+            ("uint32_t", "format"),
+            ("uint64_t", "modifier"),
+            ("uint32_t", "n_planes"),
+            ("int", "fds"),
+            ("uint32_t", "offsets"),
+            ("uint32_t", "strides"),
+            ("int", "rendering_fence_fd"),
+            ("uint32_t", "kind"),
+            ("const uint8_t *", "shm_data"),
+            ("size_t", "shm_len"),
+            ("uint32_t", "shm_stride"),
+        ];
+        assert_eq!(
+            fields.len(),
+            expected.len(),
+            "WaterWpeFrame field count drifted"
+        );
+
+        // Walk the header's declarations the way a C compiler would: each
+        // member sits at its alignment, then advances by size × extent.
+        let mut offset = 0usize;
+        let mut alignment = 1usize;
+        for ((ty, name, array), &(expected_ty, expected_name)) in fields.iter().zip(expected.iter())
+        {
+            assert_eq!(
+                (ty.as_str(), name.as_str()),
+                (expected_ty, expected_name),
+                "WaterWpeFrame declaration drifted"
+            );
+            let (size, align) = c_layout(ty);
+            let count = array.as_deref().map_or(1, |extent| {
+                usize::try_from(
+                    extent
+                        .parse::<u64>()
+                        .unwrap_or_else(|_| header_define(extent)),
+                )
+                .expect("an array extent must fit usize")
+            });
+            offset = offset.next_multiple_of(align);
+            assert_eq!(
+                offset,
+                rust_offset(name),
+                "field `{name}` sits at a different offset in the header and the Rust struct"
+            );
+            offset += size * count;
+            alignment = alignment.max(align);
+        }
+        assert_eq!(
+            offset.next_multiple_of(alignment),
+            size_of::<WaterWpeFrame>(),
+            "WaterWpeFrame size drifted between the header and the Rust struct"
+        );
     }
 }

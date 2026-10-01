@@ -1,6 +1,12 @@
+// 16 bytes, matching the Rust `options` buffer. Three scalar words pad the
+// struct to the uniform-buffer multiple of 16; a `vec3<u32>` would align to
+// 16 and push the struct to 32 bytes, which wgpu rejects against the
+// pipeline's `min_binding_size`.
 struct FrameOptions {
     force_opaque: u32,
-    _padding: vec3<u32>,
+    _padding0: u32,
+    _padding1: u32,
+    _padding2: u32,
 }
 
 @group(0) @binding(0)

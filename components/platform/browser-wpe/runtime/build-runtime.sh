@@ -140,6 +140,17 @@ sudo apt-get install -y --no-install-recommends \
     pax-utils \
     xdg-dbus-proxy
 
+# A from-source WebKit compile is hours of C++; under ccache a repeat run is
+# dominated by cache hits instead. Opt in when the cache is provisioned —
+# `CCACHE_DIR` set or the binary on `PATH` — and leave a bare host alone.
+compiler_launchers=()
+if [[ -n "${CCACHE_DIR:-}" ]] || command -v ccache >/dev/null; then
+    compiler_launchers=(
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    )
+fi
+
 # `USE_LIBBACKTRACE` defaults on and is a hard requirement when it is, but no
 # Debian or Ubuntu release packages libbacktrace, so configuring fails on every
 # apt-based host. It only symbolizes WebKit's own crash logs, which a shipped
@@ -163,6 +174,7 @@ cmake \
     -DCMAKE_INSTALL_LIBEXECDIR=libexec \
     -DCMAKE_C_COMPILER="$c_compiler" \
     -DCMAKE_CXX_COMPILER="$cxx_compiler" \
+    "${compiler_launchers[@]}" \
     -DBWRAP_EXECUTABLE=/usr/bin/bwrap \
     -DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy \
     -DENABLE_API_TESTS=OFF \
@@ -190,9 +202,14 @@ cmake \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_C_COMPILER="$c_compiler" \
     -DCMAKE_CXX_COMPILER="$cxx_compiler" \
+    "${compiler_launchers[@]}" \
     -DCMAKE_PREFIX_PATH="$prefix"
 cmake --build "$bridge_build_directory"
 cmake --install "$bridge_build_directory"
+
+if [[ ${#compiler_launchers[@]} -gt 0 ]]; then
+    ccache -s
+fi
 
 python3 "$runtime_directory/package-runtime.py" \
     --architecture "$architecture" \

@@ -1,4 +1,4 @@
-//! Native Linux validation for the staged WPE runtime and GPU DMA-BUF path.
+//! Native Linux validation for the staged WPE runtime and GPU frame path.
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -8,29 +8,29 @@ mod linux {
 
     use base64::Engine as _;
     use waterui_browser_wpe::{
-        DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
+        WPE_WEBKIT_VERSION, WpeFrame, WpeFrameSource, WpeGpuView, WpePage, WpeRuntime,
+        WpeRuntimePaths,
     };
     use waterui_core::Environment;
     use waterui_graphics::gpu_surface::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
     use waterui_graphics::shared_context::GpuRuntime;
     use waterui_webview::{BackendEvent, WebViewEvent};
-    use wgpu_external_frame::dma_buf::DmaBufFrame;
 
     const WIDTH: u32 = 640;
     const HEIGHT: u32 = 360;
 
     struct SmokeFrameSource {
-        frame: RefCell<Option<DmaBufFrame>>,
+        frame: RefCell<Option<WpeFrame>>,
     }
 
-    impl DmaBufFrameSource for SmokeFrameSource {
+    impl WpeFrameSource for SmokeFrameSource {
         fn pump(&self) {}
 
         fn resize(&self, _width: u32, _height: u32, _scale: f64) {}
 
         fn set_frame_waker(&self, _waker: Rc<dyn Fn()>) {}
 
-        fn take_frame(&self) -> Option<DmaBufFrame> {
+        fn take_frame(&self) -> Option<WpeFrame> {
             self.frame.borrow_mut().take()
         }
     }
@@ -113,7 +113,7 @@ mod linux {
         let source = SmokeFrameSource {
             frame: RefCell::new(Some(frame)),
         };
-        let surface = GpuSurface::new(DmaBufGpuView::new(source));
+        let surface = GpuSurface::new(WpeGpuView::new(source));
         let config = OffscreenRenderConfig::new(
             OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
                 .expect("WPE smoke viewport must be non-zero"),

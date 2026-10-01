@@ -67,17 +67,34 @@ def copy_file(source: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
     return destination
 
 
+def usrmerge_aliases(path: pathlib.Path) -> list[pathlib.Path]:
+    """The spellings dpkg may have recorded for `path` on a merged-/usr system.
+
+    `resolve()` yields `/usr/lib/...` for every library, but a package built
+    before the usrmerge transition still lists its files as `/lib/...` (on the
+    Ubuntu runners `libcom-err2` records `/lib/<multiarch>/libcom_err.so.2.1`),
+    and `dpkg-query -S` matches the recorded spelling only.
+    """
+    parts = path.parts
+    if len(parts) > 2 and parts[1] == "usr" and parts[2] in {"lib", "lib64", "bin", "sbin"}:
+        return [path, pathlib.Path("/", *parts[2:])]
+    if len(parts) > 1 and parts[1] in {"lib", "lib64", "bin", "sbin"}:
+        return [path, pathlib.Path("/usr", *parts[1:])]
+    return [path]
+
+
 def package_owner(path: pathlib.Path) -> str:
-    result = subprocess.run(
-        ["dpkg-query", "-S", str(path)],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"runtime dependency has no Debian package owner: {path}")
-    return result.stdout.split(":", maxsplit=1)[0].split(",", maxsplit=1)[0]
+    for candidate in usrmerge_aliases(path):
+        result = subprocess.run(
+            ["dpkg-query", "-S", str(candidate)],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            return result.stdout.split(":", maxsplit=1)[0].split(",", maxsplit=1)[0]
+    raise RuntimeError(f"runtime dependency has no Debian package owner: {path}")
 
 
 def copy_plugin_packages(
