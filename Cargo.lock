@@ -12543,9 +12543,9 @@ source = "git+https://github.com/water-rs/dew?rev=1b683d0daab9a119396fb3b31d31bc
 [[patch.unused]]
 name = "waterui-gtk"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/gtk-backend?rev=16349d8e0835540b506eaa2208d502aea3031b08#16349d8e0835540b506eaa2208d502aea3031b08"
+source = "git+https://github.com/water-rs/gtk-backend?rev=b322445b43ac3675af5b26a8176f0b7c6aeadce1#b322445b43ac3675af5b26a8176f0b7c6aeadce1"
 
 [[patch.unused]]
 name = "waterui-winui"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/waterui-winui?rev=221a80cb91686d2af86f7a8c8ef04a573cab81f8#221a80cb91686d2af86f7a8c8ef04a573cab81f8"
+source = "git+https://github.com/water-rs/waterui-winui?rev=2caff81601ac530c01c4234abcb08e7772a781a4#2caff81601ac530c01c4234abcb08e7772a781a4"

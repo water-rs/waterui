@@ -60,7 +60,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # Proposal-aware placement requires the matching native layout contract.
 apple-backend-version = "0.3.0"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "9190496e1236950ce184340ebc9b3f7774d0e97e"
+android-backend-revision = "ca8023829be523e19778ac09c4e9f1ae5741a25d"
 # The Hydrolysis Android host the `water` CLI composites into a generated
 # Gradle project for `--platform android --backend hydrolysis`. The revision
 # is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
@@ -627,5 +627,5 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f20
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "16349d8e0835540b506eaa2208d502aea3031b08" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "221a80cb91686d2af86f7a8c8ef04a573cab81f8" }
+waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "b322445b43ac3675af5b26a8176f0b7c6aeadce1" }
+waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "2caff81601ac530c01c4234abcb08e7772a781a4" }
