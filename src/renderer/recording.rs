@@ -960,12 +960,15 @@ pub(crate) fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint 
             gradient.center = transform * gradient.center;
             Paint::Sweep(gradient)
         }
-        Paint::Mesh(mesh) => Paint::Mesh(cherenkov::MeshGradient::new(
-            mesh.columns(),
-            mesh.rows(),
-            mesh.points().iter().map(|p| transform * *p).collect(),
-            mesh.colors().to_vec(),
-        )),
+        Paint::Mesh(mesh) => Paint::Mesh(
+            cherenkov::MeshGradient::new(
+                mesh.columns(),
+                mesh.rows(),
+                mesh.points().iter().map(|p| transform * *p).collect(),
+                mesh.colors().to_vec(),
+            )
+            .interpolation(mesh.interpolation_mode()),
+        ),
         Paint::Image(mut pattern) => {
             pattern.transform = transform * pattern.transform;
             Paint::Image(pattern)
@@ -1033,5 +1036,44 @@ impl Drop for SceneDrawContext<'_> {
         if !picture.display_list().is_empty() {
             self.scene.draw_picture(self.transform, picture);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cherenkov::{MeshColorInterpolation, MeshGradient};
+    use kurbo::Point;
+
+    use super::*;
+
+    #[test]
+    fn transform_paint_keeps_mesh_interpolation() {
+        let mesh = MeshGradient::new(
+            1,
+            1,
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(0.0, 10.0),
+                Point::new(10.0, 10.0),
+            ],
+            vec![
+                WorkingColor::BLACK,
+                WorkingColor::WHITE,
+                WorkingColor::WHITE,
+                WorkingColor::BLACK,
+            ],
+        )
+        .interpolation(MeshColorInterpolation::Smoothstep);
+        let Paint::Mesh(transformed) =
+            transform_paint(Paint::Mesh(mesh), Some(Affine::translate((4.0, 2.0))))
+        else {
+            panic!("a mesh paint stays a mesh paint");
+        };
+        assert_eq!(
+            transformed.interpolation_mode(),
+            MeshColorInterpolation::Smoothstep
+        );
+        assert_eq!(transformed.points()[0], Point::new(4.0, 2.0));
     }
 }
