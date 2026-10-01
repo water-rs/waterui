@@ -62,7 +62,12 @@ waterui-browser-cef = { workspace = true, optional = true }
 waterui-chromium = { workspace = true, optional = true }
 
 # The one display query a native host makes, for the executor's frame budget.
-waterkit-screen = { workspace = true, optional = true }
+# Apple targets answer it through `maximumFramesPerSecond` on the screen
+# objects below instead, so xcap's ScreenCaptureKit/AVFoundation chain stays
+# out of every Apple app that only wanted a refresh rate.
+[target.'cfg(not(target_vendor = "apple"))'.dependencies.waterkit-screen]
+workspace = true
+optional = true
 
 [target.'cfg(unix)'.dependencies]
 # A cdylib loaded by a foreign main never runs `lang_start`, so `init` must
@@ -87,6 +92,8 @@ ash = { workspace = true, optional = true }
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
 objc2 = "0.6"
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["UIScreen"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSScreen"], optional = true }
 objc2-metal = { version = "0.3", features = ["MTLDevice", "MTLPixelFormat", "MTLTexture"], optional = true }
 wgpu-hal = { workspace = true, features = ["metal"], optional = true }
 waterkit-audio = { workspace = true, default-features = false, features = ["apple-artwork"], optional = true }
@@ -127,7 +134,11 @@ gpu = [
     "dep:pollster",
     "dep:kurbo",
     "dep:futures",
+    # Non-Apple hosts take the refresh rate from xcap; Apple targets read the
+    # platform screen objects declared for ios/macos above.
     "dep:waterkit-screen",
+    "dep:objc2-ui-kit",
+    "dep:objc2-app-kit",
 ]
 # The self-drawn video player and its surface-host bridge. Off by default:
 # selecting it links decoders (rav1d, symphonia, hyper) into every package,
