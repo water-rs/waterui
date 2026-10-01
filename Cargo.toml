@@ -571,12 +571,12 @@ filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "8d0097
 # nami-snapshot migration — converted to git revs of each repo's
 # devin/chore/nami-snapshot head before the branch is pushed.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "4c530503f6e3277f44511f327db463a195482abd" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "a024239e18055ac851e639a177d9309ac4a2f821" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "ac4737d276bcf4e7c498938c0842ab1f5848cf9a" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "01f3d3fc2907065eff815f623ac7d9e12fa9943b" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2da1ec959f44bb64a764f472a775af8a6714831712" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2da1ec959f2a27c5a9860457ff7f505ee183861c" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "d266ae57650a8b74dac0549a436ab89f052d5cc8" }

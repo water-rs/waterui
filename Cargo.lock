@@ -3556,7 +3556,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=2da1ec959f44bb64a764f472a775af8a6714831712#2da1ec959f2a27c5a9860457ff7f505ee183861c"
+source = "git+https://github.com/water-rs/hydrolysis?rev=2da1ec959f2a27c5a9860457ff7f505ee183861c#2da1ec959f2a27c5a9860457ff7f505ee183861c"
 dependencies = [
  "accesskit",
  "android_logger",
@@ -9965,7 +9965,7 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=a024239e18055ac851e639a177d9309ac4a2f821#a024239e18055ac851e639a177d9309ac4a2f821"
+source = "git+https://github.com/water-rs/canvas?rev=ac4737d276bcf4e7c498938c0842ab1f5848cf9a#ac4737d276bcf4e7c498938c0842ab1f5848cf9a"
 dependencies = [
  "cherenkov",
  "image",
