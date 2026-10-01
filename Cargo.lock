@@ -9597,6 +9597,7 @@ name = "waterui"
 version = "0.5.2"
 dependencies = [
  "image",
+ "waterui",
  "waterui-dylib",
  "waterui-internal",
  "waterui-testing",

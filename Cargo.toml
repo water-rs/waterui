@@ -337,6 +337,9 @@ waterui-dylib = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "testing" }
+# `media` is opt-in, and the avatar tests exercise `Avatar::image`. A
+# dev-dependency on this package turns it on for its own test targets only.
+waterui = { path = ".", features = ["media"] }
 # Writes the test portrait the avatar visual acceptance renders. PNG only:
 # the encoder is all these tests need.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -345,7 +348,6 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 default = [
     "gpu",
     "assets",
-    "media",
     "inspector",
     "snackbar",
     "highlight",

@@ -22,7 +22,7 @@ dev = ["waterui/dynamic_linking"]
 compile-gate-tests = []
 
 [dependencies]
-waterui = { workspace = true, features = ["webview", "video", "flow-markdown"] }
+waterui = { workspace = true, features = ["webview", "flow-markdown", "media"] }
 waterui-icons-material-icon.workspace = true
 waterui-icons-lucide.workspace = true
 # Direct-crate dependencies the skill's own snippets name.
