@@ -13,8 +13,6 @@ use alloc::{
 use core::error::Error;
 use core::fmt;
 
-#[cfg(target_arch = "wasm32")]
-use executor_core::spawn_local;
 use nami::SignalExt;
 use suiteki::Str;
 use waterui_core::gesture::{GestureObserver, TapGesture};
@@ -38,13 +36,20 @@ use crate::{
 };
 
 /// Copies text to the system clipboard.
-#[cfg(all(
-    not(target_os = "android"),
-    not(target_arch = "wasm32"),
-    not(target_os = "espidf")
+///
+/// `waterkit_clipboard` keeps serving the selection after `set_text`
+/// returns — an X11 worker thread holds the data, a forked child holds it
+/// on Wayland — so the handle may be scoped to the call.
+#[cfg(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_arch = "wasm32"
 ))]
 fn copy_to_clipboard(text: &str) {
-    match arboard::Clipboard::new() {
+    match waterkit_clipboard::Clipboard::new() {
         Ok(mut clipboard) => {
             if let Err(error) = clipboard.set_text(text) {
                 tracing::error!(%error, "Failed to copy to clipboard");
@@ -56,35 +61,17 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Embedded targets have no system clipboard; copy is a no-op.
-#[cfg(target_os = "espidf")]
+/// `waterkit_clipboard` builds only where a system clipboard exists; other
+/// targets copy nothing.
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "android",
+    target_arch = "wasm32"
+)))]
 fn copy_to_clipboard(_text: &str) {}
-
-/// Copies text to the Android clipboard.
-#[cfg(target_os = "android")]
-fn copy_to_clipboard(text: &str) {
-    if let Err(error) = android_clipboard::set_text(text.to_string()) {
-        tracing::error!(%error, "Failed to copy to clipboard");
-    }
-}
-
-/// Copies text to the browser clipboard.
-#[cfg(target_arch = "wasm32")]
-fn copy_to_clipboard(text: &str) {
-    let clipboard = web_sys::window()
-        .expect("browser window is unavailable for clipboard access")
-        .navigator()
-        .clipboard();
-    let text = text.to_string();
-
-    spawn_local(async move {
-        let promise = clipboard.write_text(&text);
-        if let Err(error) = wasm_bindgen_futures::JsFuture::from(promise).await {
-            tracing::error!(?error, "Failed to write browser clipboard text");
-        }
-    })
-    .detach();
-}
 
 /// What runs after a block's text has landed on the clipboard.
 ///
