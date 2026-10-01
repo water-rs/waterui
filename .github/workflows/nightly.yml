@@ -94,6 +94,9 @@ jobs:
         # backend those tests are baselined against.
         with:
           gpu: "true"
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-llvm-cov@0.9.1
@@ -136,6 +139,9 @@ jobs:
           save-if: false
           cache-on-failure: true
       - uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-hack@0.6.45

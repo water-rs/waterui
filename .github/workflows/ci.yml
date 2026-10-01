@@ -268,6 +268,9 @@ jobs:
           rustc --version
           cargo --version
       - uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-msrv@0.19.3
@@ -334,6 +337,9 @@ jobs:
       # script fails on the missing `libva-dev`, long before anything Android
       # is compiled.
       - uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: nttld/setup-ndk@v1
         id: ndk
         with:

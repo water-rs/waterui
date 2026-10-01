@@ -40,6 +40,9 @@ jobs:
       # the same native libraries a normal build does — without them it dies in
       # `khronos-egl`'s build script and reports nothing about the API at all.
       - uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       # cargo-semver-checks pins the baseline to an exact version, so it needs a
       # published version that still resolves. A crate can be in the index with
       # every version yanked — which is where `waterui` sits, 0.2.0 and 0.2.1
@@ -78,6 +81,9 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
       - uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - name: Install cargo-local-registry
         uses: ./.github/actions/install-tool
         with:
