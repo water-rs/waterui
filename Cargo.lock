@@ -3285,7 +3285,6 @@ version = "0.1.0"
 dependencies = [
  "waterui",
  "waterui-core",
- "waterui-graphics",
 ]
 
 [[package]]
