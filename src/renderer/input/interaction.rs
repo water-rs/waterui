@@ -27,14 +27,13 @@ pub(crate) struct InteractionEngine {
     /// entry's address — the outermost interactive control under the metadata
     /// owns it, so the flag does not leak into controls nested inside it.
     selected_claims: BTreeMap<usize, RetainedIdentity>,
-    /// `InteractionReport` bindings claimed this frame, keyed by the report
-    /// binding's signal identity (or the env entry's address when the binding
-    /// has none) — the outermost interactive control inside a reporting view
-    /// writes it.
+    /// `InteractionReport` env entries claimed this frame, keyed by each
+    /// entry's address — the outermost interactive control inside a reporting
+    /// view writes it.
     report_claims: BTreeSet<usize>,
-    /// Bindings behind identity-stable report claims, so a scope whose control
-    /// stops reporting (it unmounted or went non-interactive) leaves the
-    /// binding at rest instead of frozen on the last sampled state.
+    /// Bindings behind live report claims, so a scope whose control stops
+    /// reporting (it unmounted or went non-interactive) leaves the binding at
+    /// rest instead of frozen on the last sampled state.
     live_reports: BTreeMap<usize, nami::Binding<InteractionState>>,
 }
 
@@ -101,10 +100,7 @@ impl InteractionEngine {
     pub(crate) fn finish_rebuild_frame(&mut self) {
         self.states.retain(|key, _| self.active.contains(key));
         self.reported.retain(|key, _| self.active.contains(key));
-        // A report whose control no longer binds goes back to rest —
-        // identity-less claims are not tracked here (their key is the env
-        // entry's per-frame address), and a stale entry would reset a
-        // different binding.
+        // A report whose control no longer binds goes back to rest.
         self.live_reports.retain(|claim, binding| {
             if self.report_claims.contains(claim) {
                 return true;
@@ -136,19 +132,16 @@ impl InteractionEngine {
 
     /// Claims `report` for this frame's outermost claimant; `true` only for
     /// the first control binding under it — the caller then owns the write.
-    /// Identity-stable bindings are kept in `live_reports` so an unclaimed
-    /// report resets to the resting state at frame end.
+    /// Claims are keyed by the env entry itself (the `InteractionReport` value
+    /// lives inside the env's `Rc`, so its address is stable while the scope
+    /// is): every binding lands in `live_reports`, identity-bearing or not, so
+    /// an unclaimed report resets to the resting state at frame end.
     pub(crate) fn claim_report(&mut self, report: &InteractionReport) -> bool {
-        let claim = report.0.identity().map_or_else(
-            || std::ptr::from_ref(report) as usize,
-            |identity| identity.raw(),
-        );
+        let claim = std::ptr::from_ref(report) as usize;
         if !self.report_claims.insert(claim) {
             return false;
         }
-        if report.0.identity().is_some() {
-            self.live_reports.insert(claim, report.0.clone());
-        }
+        self.live_reports.insert(claim, report.0.clone());
         true
     }
 
