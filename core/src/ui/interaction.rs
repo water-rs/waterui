@@ -58,7 +58,7 @@ bitflags::bitflags! {
 /// assert_eq!(*radius.resolve(InteractionState::HOVERED | InteractionState::PRESSED), 16.0);
 /// assert_eq!(*radius.resolve(InteractionState::empty()), 8.0);
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateValue<T> {
     resting: T,
     overrides: Vec<(InteractionState, T)>,

@@ -305,9 +305,11 @@ pub fn interaction_block_10() -> impl View {
         }
     });
 
-    vstack((text!("Chip"), button("Action").action(|| {})))
-        .offset(0.0, lift)
-        .interaction_state(&state)
+    AnyView::new(
+        vstack((text!("Chip"), button("Action").action(|| {})))
+            .offset(0.0, lift)
+            .interaction_state(&state),
+    )
 }
 
 // ---------------------------------------------------------------------------

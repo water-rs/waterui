@@ -756,7 +756,9 @@ pub unsafe extern "C" fn waterui_env_interaction_report(
         &report.0,
         |state| i32::from(state.bits()),
         |binding, bits| {
-            binding.set(InteractionState::from_bits_truncate(bits as u8));
+            binding.set(InteractionState::from_bits_truncate(
+                u8::try_from(bits).unwrap_or_default(),
+            ));
         },
     )
     .into_ffi()
