@@ -20,8 +20,9 @@ arc-swap = { workspace = true, optional = true }
 # dependency itself and forwards `gpu` explicitly.
 # `assets` is intentionally not enabled here: it implies `media` -> `video`,
 # which would root the codec/media stack into every managed build regardless
-# of what the application resolved. This crate only needs the inspector.
-waterui = { version = "0.5.2", path = "..", default-features = false, features = ["inspector"] }
+# of what the application resolved. The facade's own features are selected
+# through this crate's `default`/`inspector`/`gpu` features instead.
+waterui = { version = "0.5.2", path = "..", default-features = false }
 waterui-core.workspace = true
 # The shared anchored-overlay placement contract the metadata and
 # `waterui_anchored_overlay_place` expose to native backends.
@@ -103,8 +104,14 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = ["UIScree
 workspace = true
 
 [features]
-default = ["std", "c-api", "gpu", "media", "webview"]
+default = ["std", "c-api", "gpu", "media", "webview", "inspector"]
 std = []
+# The devtools Inspector: runtime probes, tree/frame recorders and the
+# tracing layer, plus the wire-protocol stack behind them. Default-on so a
+# direct consumer is unaffected; the managed FFI crate forwards it only for a
+# development (shared-runtime) linkage, so a release package leaves the
+# inspector server stack out entirely.
+inspector = ["waterui/inspector"]
 # The `Video`/`Media` playback surface (player controller, track catalogs,
 # media session) plus the `waterkit_audio` keep-alive the Apple backend's
 # @_silgen_name calls resolve against. Default-on so a direct consumer of this
