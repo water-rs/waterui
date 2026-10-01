@@ -41,6 +41,9 @@ pub(crate) struct ButtonRenderState {
     /// `Some` for a non-title (general) label held as a retained sub-view; `None`
     /// for a `TitleOnly` label rendered as styled text from `config.label`.
     label_view: Option<RetainedSubview>,
+    /// The last [`InteractionState`] the render pass reported for this control,
+    /// feeding the retained label's reactive colour resolution.
+    label_state: nami::Binding<InteractionState>,
 }
 
 impl ButtonRenderState {
@@ -48,6 +51,7 @@ impl ButtonRenderState {
         Self {
             config,
             label_view: None,
+            label_state: nami::Binding::container(InteractionState::empty()),
         }
     }
 
@@ -94,10 +98,10 @@ impl ButtonRenderState {
         let color = if env.get::<ListRowChrome>().is_some() {
             Some(Color::new(waterui::theme::color::Foreground))
         } else {
-            disabled_aware_label_color(
+            state_aware_label_color(
                 &theme,
                 style,
-                &widget_disabled(env),
+                &self.label_state,
                 interaction_style,
                 floating_style,
             )
@@ -546,6 +550,14 @@ pub(crate) fn render_button_parts(
     let interaction_flags = ctx
         .renderer_mut()
         .reported_interaction_state(&interaction_key);
+    // Feed the reported state to the retained label's colour signal so its
+    // `StateValue<Color>` resolves the current override without a rebuild.
+    {
+        let label_state = &state.borrow_mut().label_state;
+        if label_state.snapshot() != interaction_flags {
+            label_state.set(interaction_flags);
+        }
+    }
     if interaction_style.is_none() && floating_style.is_none() {
         let mut draw = ctx.draw_context();
         theme.draw_button_chrome(&mut draw, bounds, style, icon_only, interaction);
@@ -847,42 +859,47 @@ fn button_label_view(color: Option<Color>, label: AnyView, icon_only: bool) -> A
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ListRowChrome;
 
-fn disabled_aware_label_color(
+/// The retained label is built once, so its colour follows the control's
+/// reported [`InteractionState`] reactively: the render pass writes `state`
+/// each frame and the theme's `label_color` [`StateValue`] resolves the
+/// matching override through [`StateValue::resolve`].
+pub(crate) fn state_aware_label_color(
     theme: &Rc<dyn crate::engine::WidgetTheme>,
     style: ButtonStyle,
-    disabled: &nami::Computed<bool>,
+    state: &nami::Binding<InteractionState>,
     interaction_style: Option<&InteractionStyle>,
     floating_style: Option<&FloatingStyle>,
 ) -> Option<Color> {
-    // The retained label is styled once at build time, so the ambient flags
-    // beyond DISABLED — which stays live through the `SelectResolvedColor`
-    // condition — come from the environment the label is built under.
-    let enabled_color = button_label_color(
-        theme,
-        style,
-        InteractionState::empty(),
-        interaction_style,
-        floating_style,
-    );
-    let disabled_color = button_label_color(
-        theme,
-        style,
-        InteractionState::DISABLED,
-        interaction_style,
-        floating_style,
-    );
-    match (enabled_color, disabled_color) {
-        (None, None) => None,
-        (Some(when_false), Some(when_true)) => Some(Color::new(SelectResolvedColor {
-            condition: disabled.clone(),
-            when_true,
-            when_false,
-        })),
-        (enabled_color, disabled_color) => panic!(
-            "theme must override the button label color for both the enabled and \
-             disabled states, or neither (enabled: {enabled_color:?}, disabled: {disabled_color:?})"
-        ),
+    // `StateValue::resolve` needs a concrete flag set, so sample every flag
+    // combination: if no state yields a colour the label stays unstyled.
+    let colorable = (0..=InteractionState::all().bits()).any(|bits| {
+        button_label_color(
+            theme,
+            style,
+            InteractionState::from_bits_truncate(bits),
+            interaction_style,
+            floating_style,
+        )
+        .is_some()
+    });
+    if !colorable {
+        return None;
     }
+    let theme = theme.clone();
+    let interaction_style = interaction_style.cloned();
+    let floating_style = floating_style.cloned();
+    Some(waterui_graphics::color::signal_color(state.clone().map(
+        move |state| {
+            button_label_color(
+                &theme,
+                style,
+                state,
+                interaction_style.as_ref(),
+                floating_style.as_ref(),
+            )
+            .unwrap_or_else(|| Color::new(waterui::theme::color::Foreground))
+        },
+    )))
 }
 
 fn button_metrics(
@@ -943,34 +960,6 @@ pub(crate) fn button_label_color(
         },
         |style| style.resolved_label_color(state),
     )
-}
-
-/// A [`Resolvable`] color that follows `condition`: it resolves to
-/// `when_true` while the signal is `true` and `when_false` otherwise, so a
-/// retained label recolors reactively (e.g. on disable) without being rebuilt.
-#[derive(Debug, Clone)]
-struct SelectResolvedColor {
-    condition: nami::Computed<bool>,
-    when_true: Color,
-    when_false: Color,
-}
-
-impl waterui_core::resolve::Resolvable for SelectResolvedColor {
-    type Resolved = waterui_graphics::color::ResolvedColor;
-
-    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        let when_true = self.when_true.resolve(env);
-        let when_false = self.when_false.resolve(env);
-        nami::zip::zip(
-            nami::zip::zip(self.condition.clone(), when_true),
-            when_false,
-        )
-        .map(
-            |((condition, when_true), when_false)| {
-                if condition { when_true } else { when_false }
-            },
-        )
-    }
 }
 
 fn measure_button_label_intrinsic(

@@ -341,6 +341,51 @@ fn label_color_resolves_disabled() {
     );
 }
 
+/// The retained (non-title) label resolves `label_color` reactively through
+/// the full `InteractionState`, not just DISABLED: writing HOVERED to the
+/// control's state binding recolors it without a rebuild.
+#[test]
+fn retained_label_color_resolves_hovered() {
+    let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let style = InteractionStyle::new(
+        ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
+        Color::srgb(0, 0, 0),
+        8.0_f64,
+    )
+    .label_color(
+        StateValue::new(Some(Color::srgb(0, 0, 255)))
+            .when(InteractionState::HOVERED, Some(Color::srgb(255, 0, 0))),
+    );
+    let env = test_environment();
+    let state = nami::Binding::container(InteractionState::empty());
+    let color = crate::widgets::controls::button::state_aware_label_color(
+        &theme,
+        waterui_controls::button::ButtonStyle::Automatic,
+        &state,
+        Some(&style),
+        None,
+    )
+    .expect("the style overrides the label color");
+    let resolved = color.resolve(&env);
+    let channel8 = |v: f32| (v * 255.0).round() as u8;
+    let rgb = |color: waterui_graphics::color::ResolvedColor| {
+        let srgb = color.to_srgb();
+        (
+            channel8(srgb.red),
+            channel8(srgb.green),
+            channel8(srgb.blue),
+        )
+    };
+
+    assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "resting");
+
+    state.set(InteractionState::HOVERED);
+    assert_eq!(rgb(resolved.snapshot()), (255, 0, 0), "hovered override");
+
+    state.set(InteractionState::empty());
+    assert_eq!(rgb(resolved.snapshot()), (0, 0, 255), "back to resting");
+}
+
 /// `Selected` is announced through the accessibility tree on the control it
 /// modifies.
 #[cfg(feature = "accessibility")]
