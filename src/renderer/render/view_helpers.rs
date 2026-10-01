@@ -635,13 +635,13 @@ pub(crate) fn resolved_color_to_peniko(color: ResolvedColor) -> peniko::Color {
 pub(crate) fn interaction_focus_ring(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
-    layer_bounds: vello::kurbo::Rect,
-    layer_radii: vello::kurbo::RoundedRectRadii,
+    layer_bounds: kurbo::Rect,
+    layer_radii: kurbo::RoundedRectRadii,
     style: &waterui_backend_core::widget::InteractionStyle,
     state: waterui_core::interaction::InteractionState,
 ) -> Option<(
-    vello::kurbo::Rect,
-    vello::kurbo::RoundedRectRadii,
+    kurbo::Rect,
+    kurbo::RoundedRectRadii,
     waterui_backend_core::widget::Brush,
     f64,
 )> {
@@ -651,7 +651,7 @@ pub(crate) fn interaction_focus_ring(
     }
     let grow = ring.offset + ring.width / 2.0;
     let bounds = layer_bounds.inflate(grow, grow);
-    let radii = vello::kurbo::RoundedRectRadii::new(
+    let radii = kurbo::RoundedRectRadii::new(
         layer_radii.top_left + grow,
         layer_radii.top_right + grow,
         layer_radii.bottom_right + grow,

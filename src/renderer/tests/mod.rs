@@ -77,7 +77,7 @@ mod when_payload;
 mod window_background;
 #[cfg(not(target_arch = "wasm32"))]
 mod window_mount;
-use kurbo::{Affine, BezPath, Point, Rect};
+use kurbo::{Affine, BezPath, Point, Rect, RoundedRectRadii};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
 use waterui::interaction::InteractionState;
 use waterui::prelude::text;
@@ -2240,7 +2240,7 @@ pub(crate) struct MinimalTestTheme {
     /// Every slider track rect the theme was asked to draw.
     slider_track_draws: Rc<RefCell<Vec<Rect>>>,
     /// Every `draw_interaction_state_layer` call, as `(state, resolved radii)`.
-    state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, vello::kurbo::RoundedRectRadii)>>>,
+    state_layer_draws: Rc<RefCell<Vec<(WidgetInteractionState, RoundedRectRadii)>>>,
 }
 
 impl crate::Style for MinimalTestTheme {
@@ -2322,8 +2322,8 @@ impl WidgetTheme for MinimalTestTheme {
         &self,
         _draw: &mut dyn DrawContext,
         _bounds: Rect,
-        radii: vello::kurbo::RoundedRectRadii,
-        _color: vello::peniko::Color,
+        radii: RoundedRectRadii,
+        _color: peniko::Color,
         state: WidgetInteractionState,
     ) {
         self.state_layer_draws.borrow_mut().push((state, radii));

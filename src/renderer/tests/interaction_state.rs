@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use kurbo::RoundedRectRadii;
 use nami::Signal as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::gesture::TapGesture;
@@ -113,14 +114,14 @@ fn state_layer_radii_morph_with_reported_state() {
             8.0_f64,
         )
         .state_layer_radii(
-            StateValue::new(vello::kurbo::RoundedRectRadii::from_single_radius(8.0))
+            StateValue::new(RoundedRectRadii::from_single_radius(8.0))
                 .when(
                     InteractionState::PRESSED,
-                    vello::kurbo::RoundedRectRadii::from_single_radius(16.0),
+                    RoundedRectRadii::from_single_radius(16.0),
                 )
                 .when(
                     InteractionState::HOVERED,
-                    vello::kurbo::RoundedRectRadii::from_single_radius(12.0),
+                    RoundedRectRadii::from_single_radius(12.0),
                 ),
         ),
     );
