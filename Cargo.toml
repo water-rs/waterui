@@ -176,11 +176,13 @@ x11-dl = { version = "2.21", optional = true }
 x11rb = { version = "0.13", optional = true }
 
 # `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
-# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`. The version
-# tracks the `windows-sys` release winit 0.30 already builds against.
+# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
+# version tracks the `windows-sys` release winit 0.30 already builds against.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", optional = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -226,6 +228,8 @@ web-sys = { version = "0.3", optional = true, features = [
     "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
     "KeyboardEvent",
     "Node",
     "PointerEvent",
@@ -379,14 +383,13 @@ hydrolysis = { path = "." }
 # The Material 3 theme must implement the five-argument
 # `WidgetTheme::draw_button_chrome` contract added for
 # water-rs/hydrolysis#115.
-# The cutover m3 port is not on any public branch yet; the theme resolves
-# from the sibling checkout (the deliverable bundles carry both).
-hydrolysis-m3 = { path = "../hydrolysis-m3" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "a371b0f9808b4ed5681ced16162b2dd1e875f02f" }
 
 
-# Migrated framework crates pinned to waterui's devin/chore/nami-snapshot
-# branch head so the graph resolves a single nami Signal trait; waterkit
-# rides the same-wave migration head for its VA-API gating.
+# Framework crates pinned to the waterui revision that makes the window
+# style reactive (water-rs/waterui#1299), all from one revision so the graph
+# resolves a single nami Signal trait; waterkit rides the same-wave
+# migration head for its VA-API gating.
 nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "d3aa13bff6590cec752b0bb590022924953491a3" }
@@ -433,12 +436,7 @@ waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "9
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
 waterui = { git = "https://github.com/water-rs/waterui", rev = "d3aa13bff6590cec752b0bb590022924953491a3" }
-# waterui-video-gpu: the rev waterui w3-r9's own patch table names
-# (01f3d3fc, video-gpu dev) still imports the retired GpuSurface/GpuView
-# API and does not compile against r8's graphics — no published rev does.
-# The interim local port (wgpu 30, GpuContent/GpuContentView) stays the
-# only open item until the dedicated port lands.
-waterui-video-gpu = { path = "../video-gpu" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "45d12d854aec5b85c73d0610262c907e97228859" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "4c530503f6e3277f44511f327db463a195482abd" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }

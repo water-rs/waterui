@@ -10,7 +10,7 @@ import android.view.Surface
  */
 object NativeBridge {
     /** Incremented in lock-step with `JNI_SCHEMA` in the Rust runner. */
-    private const val SCHEMA: Int = 1
+    private const val SCHEMA: Int = 2
 
     private var initialized = false
 
@@ -78,6 +78,12 @@ object NativeBridge {
     )
 
     @JvmStatic external fun nativeSurfaceDestroyed(sessionPtr: Long, generation: Long)
+
+    /**
+     * The Activity's started state (`onStart`/`onStop`) — drives the frame
+     * pump's hidden flag together with the surface's attach/detach.
+     */
+    @JvmStatic external fun nativeSetVisible(sessionPtr: Long, visible: Boolean)
 
     @JvmStatic external fun nativeSetHighRefresh(sessionPtr: Long, fps: Float)
 

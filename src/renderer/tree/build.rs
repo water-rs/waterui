@@ -239,6 +239,23 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        // `.selected(...)` is strict `Metadata<Selected>` — it scopes into the
+        // environment like the a11y metadata above: the outermost interactive
+        // control binding under it claims it (`claim_selected`), and the
+        // control's `SELECTED` flag and a11y selected state read it.
+        let view = match view.downcast::<Metadata<waterui_core::interaction::Selected>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let scoped = a11y_scoped_env(env, &value);
+                let child = RenderNode::build(content, &scoped, renderer);
+                return RenderNode::Env(Box::new(EnvNode {
+                    render_id: RenderId::next(),
+                    env: scoped,
+                    child,
+                }));
+            }
+            Err(view) => view,
+        };
         // Passthrough metadata: the dispatch handlers discard the value and just
         // render the content (no-ops in Hydrolysis), so the tree unwraps them to
         // the content directly — fully transparent, keeping reactive descendants live.

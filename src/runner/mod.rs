@@ -29,10 +29,8 @@ use waterui::app::App;
 ))]
 use waterui::app::AppParts;
 use waterui::component::table::TableConfig;
-use waterui::graphics::Color;
-use waterui::theme;
+use waterui::window::Window;
 use waterui::window::WindowManager;
-use waterui::window::{Window, WindowBackground};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
@@ -62,6 +60,8 @@ mod web_runner;
 mod window;
 #[cfg(hydrolysis_winit)]
 mod winit_runner;
+#[cfg(hydrolysis_wayland_platform)]
+mod x11_state_watch;
 
 use diagnostics::*;
 #[cfg(not(target_arch = "wasm32"))]

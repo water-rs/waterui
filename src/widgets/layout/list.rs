@@ -25,6 +25,7 @@ use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
+use waterui_core::interaction::Selected;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{SharedAnyViews, Views};
 use waterui_core::{Environment, Native};
@@ -1496,6 +1497,17 @@ pub(crate) fn render_list_parts(
             let (content, scoped) = hoist_accessibility_metadata(item.content, &row_env);
             item.content = content;
             (item, scoped)
+        };
+        // A selectable row carries its selection as `Selected`, so the row's
+        // press target reports SELECTED — claims are owner-scoped, so nested
+        // controls inside the row do not pick it up.
+        let row_env = match state.borrow().row_selection.clone() {
+            Some(selection) => {
+                let mut env = row_env;
+                env.insert(Selected(selection.is_selected(row_id)));
+                env
+            }
+            None => row_env,
         };
         #[cfg(feature = "accessibility")]
         let subtree_env = {

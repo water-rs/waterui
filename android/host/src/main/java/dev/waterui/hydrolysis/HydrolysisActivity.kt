@@ -39,6 +39,18 @@ abstract class HydrolysisActivity : ComponentActivity() {
     @Deprecated("Configuration retention uses the platform non-configuration contract.")
     override fun onRetainCustomNonConfigurationInstance(): Any? = session
 
+    override fun onStart() {
+        super.onStart()
+        session?.setVisible(true)
+    }
+
+    override fun onStop() {
+        // The Android visibility signal: a stopped window's frame pump
+        // parks — no frames, no Choreographer wakes — until `onStart`.
+        session?.setVisible(false)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         // The session dies only with the activity — a configuration change
         // retains it, and the new host view binds to the same native state.

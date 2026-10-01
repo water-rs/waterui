@@ -179,9 +179,19 @@ pub struct BrowserWindow {
     surface: BrowserSurface,
     pending_events: Rc<RefCell<Vec<InputEvent>>>,
     redraw_requested: Rc<Cell<bool>>,
+    /// The canvas's `IntersectionObserver` report: `true` while the
+    /// browser counts it off-screen — scrolled out of view, or
+    /// `display:none`'d by an app-driven minimized window state.
+    offscreen: Rc<Cell<bool>>,
     scale_factor: Rc<Cell<f64>>,
     pending_resize: Rc<Cell<Option<PendingResize>>>,
     current_cursor_style: CursorStyle,
+    /// Held for its lifetime: the observer keeps reporting only while
+    /// both halves are alive.
+    _intersection_observer: (
+        web_sys::IntersectionObserver,
+        Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)>,
+    ),
     _listeners: Vec<Closure<dyn FnMut(Event)>>,
 }
 
@@ -195,7 +205,7 @@ impl core::fmt::Debug for BrowserWindow {
 }
 
 impl BrowserWindow {
-    pub async fn new(schedule_frame: Rc<dyn Fn()>) -> Self {
+    pub async fn new(schedule_frame: Rc<dyn Fn()>, occlusion_wake: Rc<dyn Fn()>) -> Self {
         let browser_window =
             web_sys::window().expect("hydrolysis web platform: browser window unavailable");
         let document = browser_window
@@ -219,7 +229,7 @@ impl BrowserWindow {
         let surface =
             BrowserSurface::new(canvas.clone(), initial_resize.width, initial_resize.height).await;
 
-        let listeners = register_listeners(
+        let mut listeners = register_listeners(
             &browser_window,
             &canvas,
             &ime_input,
@@ -227,8 +237,38 @@ impl BrowserWindow {
             redraw_requested.clone(),
             scale_factor.clone(),
             pending_resize.clone(),
-            schedule_frame,
+            schedule_frame.clone(),
         );
+        // A hidden page's rAF callback never fires, so the wake also
+        // pulls the occlusion report into the pump synchronously — the
+        // hide must be learned here, or the pump could never log it.
+        listeners.push(add_event_listener(document.as_ref(), "visibilitychange", {
+            let occlusion_wake = occlusion_wake.clone();
+            move |_event| occlusion_wake()
+        }));
+        // `document.hidden` covers a backgrounded tab; what it cannot see
+        // is the page visible while its canvas is not — scrolled out of
+        // view, or `display:none`'d by the app's own minimized state. The
+        // IntersectionObserver is the public API that reports it.
+        let offscreen = Rc::new(Cell::new(false));
+        let intersection_observer = {
+            let offscreen = offscreen.clone();
+            let callback: Closure<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)> =
+                Closure::wrap(Box::new(
+                    move |entries: js_sys::Array, _observer: web_sys::IntersectionObserver| {
+                        for entry in entries.iter() {
+                            let entry =
+                                entry.unchecked_into::<web_sys::IntersectionObserverEntry>();
+                            offscreen.set(!entry.is_intersecting());
+                        }
+                        occlusion_wake();
+                    },
+                ));
+            let observer = web_sys::IntersectionObserver::new(callback.as_ref().unchecked_ref())
+                .expect("hydrolysis web platform: failed to create IntersectionObserver");
+            observer.observe(&canvas);
+            (observer, callback)
+        };
 
         Self {
             browser_window,
@@ -238,9 +278,11 @@ impl BrowserWindow {
             surface,
             pending_events,
             redraw_requested,
+            offscreen,
             scale_factor,
             pending_resize,
             current_cursor_style: CursorStyle::Arrow,
+            _intersection_observer: intersection_observer,
             _listeners: listeners,
         }
     }
@@ -318,6 +360,14 @@ impl PlatformWindow for BrowserWindow {
             self.surface.resize(resize.width, resize.height);
         }
         core::mem::take(&mut self.pending_events.borrow_mut())
+    }
+
+    /// The page's own report: `document.hidden` covers a backgrounded
+    /// tab or window, and the IntersectionObserver cell covers the
+    /// canvas scrolled out of view or `display:none`'d by an app-driven
+    /// minimized state.
+    fn is_occluded(&self) -> bool {
+        self.document.hidden() || self.offscreen.get()
     }
 
     fn request_redraw(&self) {

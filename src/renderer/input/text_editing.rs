@@ -275,40 +275,68 @@ pub(crate) struct TextInputTargetData {
     pub(crate) accessibility_node_id: Option<AccessibilityNodeId>,
 }
 
-#[derive(Clone)]
-#[allow(
-    clippy::large_enum_variant,
-    reason = "context-menu actions are constructed one at a time on user interaction; size is immaterial"
-)]
+#[derive(Clone, Copy)]
 pub(crate) enum TextContextMenuAction {
     Copy,
     Cut,
     Paste,
     SelectAll,
-    Custom(ResolvedCommand),
 }
 
-#[derive(Clone)]
-pub(crate) enum TextContextMenuEntry {
-    Command {
-        label: String,
-        action: Box<TextContextMenuAction>,
-    },
-    Divider,
+/// A built-in selection-menu row as a [`PopupMenuNode`]: its action runs
+/// `action` against `model`/`selection` in the row's dispatch environment —
+/// the environment the menu opened in, which `popup_menu_window` and the
+/// drawn overlay both hand the press.
+fn text_context_menu_builtin_node(
+    label: String,
+    action: TextContextMenuAction,
+    model: &TextInputModel,
+    selection: &Rc<RefCell<TextSelectionSlot>>,
+) -> PopupMenuNode {
+    let model = model.clone();
+    let selection = Rc::clone(selection);
+    let semantic_text = label.clone();
+    let content = label.clone();
+    PopupMenuNode::Command {
+        label: waterui_controls::label::Label::new(semantic_text, move || {
+            AnyView::new(
+                waterui_layout::frame::Frame::new(Text::new(StyledStr::plain(content.clone())))
+                    .alignment(waterui_layout::alignment::Leading)
+                    .max_width(f32::INFINITY),
+            )
+        }),
+        plain_label: label,
+        action: SharedAction::new(move |env: Environment| {
+            let _ = execute_text_context_menu_action(&action, &model, &selection, &env);
+        }),
+        disabled: nami::Computed::constant(false),
+        shortcut: None,
+        subtitle: None,
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct TextContextMenuOverlayRow {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) entry: TextContextMenuEntry,
+    pub(crate) node: PopupMenuNode,
 }
 
 #[derive(Clone)]
 pub(crate) struct TextContextMenuOverlay {
     pub(crate) bounds: kurbo::Rect,
     pub(crate) rows: Vec<TextContextMenuOverlayRow>,
-    pub(crate) model: TextInputModel,
-    pub(crate) selection: Rc<RefCell<TextSelectionSlot>>,
+    /// Open/closed handles for the submenu popup windows this overlay opens.
+    /// Dismissal closes the whole chain.
+    pub(crate) menu_group: PopupMenuStateGroup,
+    /// The overlay's handle in `menu_group`, at index 0: the overlay is drawn,
+    /// not a window, so this sentinel stands in for the root window a
+    /// `.context_menu` chain starts with. A command row's `close_all()` marks
+    /// it `Closed`, which the next render and pointer-down read as "the menu's
+    /// command already ran — dismiss the overlay too".
+    pub(crate) dismiss_state: nami::Binding<WindowState>,
+    /// The widget theme the overlay was opened under: submenu windows draw
+    /// with the same menu metrics and surface treatment.
+    pub(crate) theme: Rc<dyn crate::engine::WidgetTheme>,
     pub(crate) env: Environment,
 }
 
@@ -320,7 +348,7 @@ pub(crate) enum ActiveTextContextMenu {
     },
     NativeWindow {
         target: InteractionKey,
-        state: nami::Binding<WindowState>,
+        group: PopupMenuStateGroup,
     },
 }
 
@@ -761,30 +789,31 @@ pub(crate) fn selection_range_contains_index(
 }
 
 pub(crate) fn text_context_menu_size(
-    entries: &[TextContextMenuEntry],
+    nodes: &[PopupMenuNode],
     metrics: TextContextMenuMetrics,
 ) -> (f64, f64) {
-    let max_label_chars = entries
+    let max_label_chars = nodes
         .iter()
-        .filter_map(|entry| match entry {
-            TextContextMenuEntry::Command { label, .. } => Some(label.chars().count()),
-            TextContextMenuEntry::Divider => None,
+        .filter_map(|node| match node {
+            PopupMenuNode::Command { plain_label, .. }
+            | PopupMenuNode::Menu { plain_label, .. } => Some(plain_label.chars().count()),
+            PopupMenuNode::Divider => None,
         })
         .max()
         .unwrap_or(0) as f64;
     let width = (metrics.horizontal_padding * 2.0 + max_label_chars * metrics.width_per_char)
         .clamp(metrics.min_width, metrics.max_width);
-    let height = (entries.len() as f64 * metrics.row_height).max(metrics.row_height);
+    let height = (nodes.len() as f64 * metrics.row_height).max(metrics.row_height);
     (width, height)
 }
 
 pub(crate) fn text_context_menu_overlay_bounds(
     anchor: kurbo::Point,
-    entries: &[TextContextMenuEntry],
+    nodes: &[PopupMenuNode],
     window_bounds: kurbo::Rect,
     metrics: TextContextMenuMetrics,
 ) -> kurbo::Rect {
-    let (width, height) = text_context_menu_size(entries, metrics);
+    let (width, height) = text_context_menu_size(nodes, metrics);
     let preferred_x = anchor.x;
     let preferred_y = anchor.y;
     let fallback_x = anchor.x - width;
@@ -820,7 +849,7 @@ pub(crate) fn execute_text_context_menu_action(
     action: &TextContextMenuAction,
     model: &TextInputModel,
     selection: &Rc<RefCell<TextSelectionSlot>>,
-    env: &Environment,
+    _env: &Environment,
 ) -> bool {
     match action {
         TextContextMenuAction::Copy => {
@@ -844,10 +873,6 @@ pub(crate) fn execute_text_context_menu_action(
         TextContextMenuAction::SelectAll => {
             let mut slot = selection.borrow_mut();
             select_all_model_text(model, &mut slot)
-        }
-        TextContextMenuAction::Custom(command) => {
-            call_action_discarding_result(&command.action, env);
-            true
         }
     }
 }
@@ -1208,8 +1233,29 @@ impl SemanticCore {
     pub(crate) fn dismiss_active_text_context_menu(&mut self) {
         if let Some(menu) = self.text_editing.active_text_context_menu.take() {
             match menu {
-                ActiveTextContextMenu::Overlay { .. } => self.request_refresh(),
-                ActiveTextContextMenu::NativeWindow { state, .. } => state.set(WindowState::Closed),
+                ActiveTextContextMenu::Overlay { overlay, .. } => {
+                    overlay.menu_group.close_all();
+                    if self
+                        .popup_menu
+                        .active_popup_menu_group
+                        .as_ref()
+                        .is_some_and(|group| Rc::ptr_eq(&group.0, &overlay.menu_group.0))
+                    {
+                        self.popup_menu.active_popup_menu_group = None;
+                    }
+                    self.request_refresh();
+                }
+                ActiveTextContextMenu::NativeWindow { group, .. } => {
+                    group.close_all();
+                    if self
+                        .popup_menu
+                        .active_popup_menu_group
+                        .as_ref()
+                        .is_some_and(|active| Rc::ptr_eq(&active.0, &group.0))
+                    {
+                        self.popup_menu.active_popup_menu_group = None;
+                    }
+                }
             }
         }
     }
@@ -1236,6 +1282,10 @@ impl HydrolysisRenderer {
         else {
             return;
         };
+        if overlay.dismiss_state.snapshot() == WindowState::Closed {
+            self.dismiss_active_text_context_menu();
+            return;
+        }
 
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
@@ -1248,9 +1298,9 @@ impl HydrolysisRenderer {
                 .rows
                 .as_slice()
                 .get(index + 1)
-                .is_some_and(|next| matches!(next.entry, TextContextMenuEntry::Divider));
+                .is_some_and(|next| matches!(next.node, PopupMenuNode::Divider));
             if index + 1 < overlay.rows.len()
-                && !matches!(row.entry, TextContextMenuEntry::Divider)
+                && !matches!(row.node, PopupMenuNode::Divider)
                 && !next_is_divider
             {
                 let separator = kurbo::Rect::new(
@@ -1263,8 +1313,9 @@ impl HydrolysisRenderer {
                 theme.draw_text_context_menu_separator(&mut draw, separator);
             }
 
-            match &row.entry {
-                TextContextMenuEntry::Command { label, .. } => {
+            match &row.node {
+                PopupMenuNode::Command { plain_label, .. }
+                | PopupMenuNode::Menu { plain_label, .. } => {
                     let text_rect = inset_rect(
                         row.bounds,
                         metrics.horizontal_padding,
@@ -1284,12 +1335,12 @@ impl HydrolysisRenderer {
                         state,
                         scene,
                         ctx,
-                        StyledStr::plain(label.clone()),
+                        StyledStr::plain(plain_label.clone()),
                         HorizontalAlignment::Leading,
                         env,
                     );
                 }
-                TextContextMenuEntry::Divider => {
+                PopupMenuNode::Divider => {
                     let separator = kurbo::Rect::new(
                         row.bounds.x0 + metrics.separator_horizontal_inset,
                         row.bounds.y0 + row.bounds.height() * 0.5
@@ -1318,6 +1369,10 @@ impl SemanticCore {
         else {
             return false;
         };
+        if overlay.dismiss_state.snapshot() == WindowState::Closed {
+            self.dismiss_active_text_context_menu();
+            return false;
+        }
         if !overlay.bounds.contains(point) {
             self.dismiss_active_text_context_menu();
             return false;
@@ -1326,21 +1381,59 @@ impl SemanticCore {
             if !row.bounds.contains(point) {
                 continue;
             }
-            match &row.entry {
-                TextContextMenuEntry::Command { action, .. } => {
-                    let changed = execute_text_context_menu_action(
-                        action,
-                        &overlay.model,
-                        &overlay.selection,
-                        &overlay.env,
-                    );
+            match &row.node {
+                PopupMenuNode::Command {
+                    action, disabled, ..
+                } => {
+                    if disabled.snapshot() {
+                        return false;
+                    }
+                    call_action_discarding_result(action, &overlay.env);
                     self.dismiss_active_text_context_menu();
-                    return changed;
+                    return true;
                 }
-                TextContextMenuEntry::Divider => return false,
+                PopupMenuNode::Divider => return false,
+                PopupMenuNode::Menu { items, .. } => {
+                    if items.is_empty() {
+                        return false;
+                    }
+                    self.open_text_context_menu_submenu(&overlay, row.bounds, items.clone());
+                    return true;
+                }
             }
         }
         true
+    }
+
+    /// Opens `items` — a selection-menu row's nested `Menu` — as a submenu
+    /// popup window anchored to the row's trailing edge, through the same
+    /// [`popup_menu_window`] path a `.context_menu` submenu takes. The window
+    /// joins the overlay's menu group at depth 1: the overlay's dismiss
+    /// sentinel holds depth 0, standing in for the root window.
+    fn open_text_context_menu_submenu(
+        &mut self,
+        overlay: &TextContextMenuOverlay,
+        row_bounds: kurbo::Rect,
+        items: Vec<PopupMenuNode>,
+    ) {
+        let env = &overlay.env;
+        let theme = Rc::clone(&overlay.theme);
+        let metrics = theme.text_context_menu_metrics();
+        let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
+        let origin = popup_window_origin(
+            LayoutPoint::new(row_bounds.x1 as f32, row_bounds.y0 as f32),
+            env,
+        );
+        let group = overlay.menu_group.clone();
+        group.truncate(1);
+        let (window, state) =
+            popup_menu_window(items, origin, group.clone(), 1, metrics, text, &theme);
+        group.push(state);
+        env.get::<PopupWindowManager>()
+            .expect("hydrolysis text selection menus require PopupWindowManager in environment")
+            .show(window, env);
+        self.popup_menu.active_popup_menu_group = Some(group);
+        self.request_refresh();
     }
 
     pub(crate) fn focused_text_target_data(
@@ -1639,53 +1732,47 @@ impl SemanticCore {
         set_model_caret_position(&model, &mut slot, next_index)
     }
 
-    pub(crate) fn build_text_context_menu_entries(
+    /// The selection menu's rows as [`PopupMenuNode`]s: built-in editing
+    /// commands become plain command rows, the field's custom
+    /// `selection_menu` items go through the same [`popup_menu_node`]
+    /// conversion `.context_menu` items take — a nested `Menu` keeps its
+    /// structure and opens as a submenu rather than flattening or panicking.
+    pub(crate) fn build_text_context_menu_nodes(
         target: &TextInputTarget,
         env: &Environment,
-    ) -> Vec<TextContextMenuEntry> {
+    ) -> Vec<PopupMenuNode> {
         let has_selection = {
             let slot = target.selection.borrow();
             selected_text_for_model(&target.model, &slot).is_some()
         };
         let has_text = !target.model.plain_text().is_empty();
-        let mut entries = Vec::new();
+        let mut nodes = Vec::new();
+        let builtin = |key: &str, action| {
+            text_context_menu_builtin_node(
+                crate::localization::text(env, key),
+                action,
+                &target.model,
+                &target.selection,
+            )
+        };
         if has_selection && !target.model.is_secure() {
-            entries.push(TextContextMenuEntry::Command {
-                label: crate::localization::text(env, "copy"),
-                action: Box::new(TextContextMenuAction::Copy),
-            });
-            entries.push(TextContextMenuEntry::Command {
-                label: crate::localization::text(env, "cut"),
-                action: Box::new(TextContextMenuAction::Cut),
-            });
+            nodes.push(builtin("copy", TextContextMenuAction::Copy));
+            nodes.push(builtin("cut", TextContextMenuAction::Cut));
         }
-        entries.push(TextContextMenuEntry::Command {
-            label: crate::localization::text(env, "paste"),
-            action: Box::new(TextContextMenuAction::Paste),
-        });
+        nodes.push(builtin("paste", TextContextMenuAction::Paste));
         if has_text {
-            entries.push(TextContextMenuEntry::Command {
-                label: crate::localization::text(env, "select_all"),
-                action: Box::new(TextContextMenuAction::SelectAll),
-            });
+            nodes.push(builtin("select_all", TextContextMenuAction::SelectAll));
         }
         if has_selection {
-            for item in target.model.custom_selection_menu_items() {
-                match item {
-                    ResolvedMenuItem::Command(command) => {
-                        entries.push(TextContextMenuEntry::Command {
-                            label: command.label.content.snapshot().to_plain().to_string(),
-                            action: Box::new(TextContextMenuAction::Custom(command)),
-                        });
-                    }
-                    ResolvedMenuItem::Divider => entries.push(TextContextMenuEntry::Divider),
-                    ResolvedMenuItem::Menu(_) => {
-                        panic!("hydrolysis text selection menus do not support nested menus yet")
-                    }
-                }
-            }
+            nodes.extend(
+                target
+                    .model
+                    .custom_selection_menu_items()
+                    .into_iter()
+                    .map(crate::renderer::views::popup_menu_node),
+            );
         }
-        entries
+        nodes
     }
 }
 
@@ -1710,8 +1797,8 @@ impl HydrolysisRenderer {
         // this dispatch's, so `.state(&value)` overlays reach the item
         // actions (water-rs/hydrolysis#140).
         let menu_env = target.env.layered_on(env);
-        let entries = SemanticCore::build_text_context_menu_entries(&target, &menu_env);
-        if entries.is_empty() {
+        let nodes = SemanticCore::build_text_context_menu_nodes(&target, &menu_env);
+        if nodes.is_empty() {
             self.dismiss_active_text_context_menu();
             return false;
         }
@@ -1725,24 +1812,28 @@ impl HydrolysisRenderer {
         if mode == HydrolysisTextContextMenuMode::Overlay {
             let metrics = self.theme().text_context_menu_metrics();
             let bounds =
-                text_context_menu_overlay_bounds(point, &entries, self.window_bounds, metrics);
-            let mut rows = Vec::with_capacity(entries.len());
-            for (index, entry) in entries.into_iter().enumerate() {
+                text_context_menu_overlay_bounds(point, &nodes, self.window_bounds, metrics);
+            let mut rows = Vec::with_capacity(nodes.len());
+            for (index, node) in nodes.into_iter().enumerate() {
                 let y0 = bounds.y0 + metrics.row_height * index as f64;
                 let row_bounds =
                     kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + metrics.row_height);
                 rows.push(TextContextMenuOverlayRow {
                     bounds: row_bounds,
-                    entry,
+                    node,
                 });
             }
+            let menu_group = PopupMenuStateGroup::new();
+            let dismiss_state = nami::Binding::container(WindowState::Normal);
+            menu_group.push(dismiss_state.clone());
             self.text_editing.active_text_context_menu = Some(ActiveTextContextMenu::Overlay {
                 target: target_key,
                 overlay: TextContextMenuOverlay {
                     bounds,
                     rows,
-                    model: target.model,
-                    selection: target.selection,
+                    menu_group,
+                    dismiss_state,
+                    theme: self.theme(),
                     env: menu_env.clone(),
                 },
             });
@@ -1750,70 +1841,27 @@ impl HydrolysisRenderer {
             return true;
         }
 
-        let menu_state = nami::Binding::container(WindowState::Normal);
+        // The windowed presentation mounts the nodes through the same popup
+        // path a `.context_menu` takes: `show_popup_menu_nodes` sizes the
+        // panel, builds the borderless window, and leaves submenu rows
+        // wired to open deeper popups (water-rs/hydrolysis#317).
         let metrics = self.theme().text_context_menu_metrics();
-        let (width, height) = text_context_menu_size(&entries, metrics);
-        let origin = menu_env
-            .get::<HydrolysisWindowOrigin>()
-            .copied()
-            .expect("hydrolysis text context menu requires HydrolysisWindowOrigin in environment");
-
-        let entries_for_popup = entries.clone();
-        let model = target.model.clone();
-        let selection = Rc::clone(&target.selection);
-        let action_env = menu_env.clone();
-        let menu_state_for_content = menu_state.clone();
-        let popup_content = move || {
-            let mut rows = Vec::with_capacity(entries_for_popup.len());
-            for entry in entries_for_popup.clone() {
-                let state_binding = menu_state_for_content.clone();
-                let model = model.clone();
-                let selection = Rc::clone(&selection);
-                let action_env = action_env.clone();
-                match entry {
-                    TextContextMenuEntry::Command { label, action } => {
-                        let button =
-                            button(label)
-                                .style(ButtonStyle::Borderless)
-                                .action(move || {
-                                    state_binding.set(WindowState::Closed);
-                                    let _ = execute_text_context_menu_action(
-                                        &action,
-                                        &model,
-                                        &selection,
-                                        &action_env,
-                                    );
-                                });
-                        rows.push(AnyView::new(button));
-                    }
-                    TextContextMenuEntry::Divider => rows.push(AnyView::new(Divider)),
-                }
-            }
-            let menu_content: waterui_layout::stack::VStack<(Vec<AnyView>,)> =
-                rows.into_iter().collect();
-            AnyView::new(
-                menu_content
-                    .alignment(HorizontalAlignment::Leading)
-                    .spacing(0.0),
-            )
-        };
-        let mut popup = Window::new(
-            TEXT_CONTEXT_MENU_WINDOW_TITLE,
-            menu_state.clone(),
-            popup_content,
-        )
-        .style(WindowStyle::Borderless)
-        .resizable(false);
-        popup.closable = false;
-        popup.frame.set(LayoutRect::new(
-            LayoutPoint::new(origin.x + point.x as f32, origin.y + point.y as f32),
-            LayoutSize::new(width as f32, height as f32),
-        ));
-        let popup = window_in_opening_environment(popup, &menu_env);
-        popup.show(&menu_env);
+        let theme = self.theme();
+        self.show_popup_menu_nodes(
+            nodes,
+            LayoutPoint::new(point.x as f32, point.y as f32),
+            metrics,
+            &menu_env,
+            &theme,
+        );
+        let group = self
+            .popup_menu
+            .active_popup_menu_group
+            .clone()
+            .expect("show_popup_menu_nodes leaves the opened menu's group registered");
         self.text_editing.active_text_context_menu = Some(ActiveTextContextMenu::NativeWindow {
             target: target_key,
-            state: menu_state,
+            group,
         });
         true
     }

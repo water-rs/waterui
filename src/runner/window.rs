@@ -41,6 +41,15 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
     pub(super) platform: P,
     pub(super) renderer: HydrolysisRenderer,
     pub(super) mode: FrameMode,
+    /// The pump is parked: the host reports the window cannot be seen
+    /// (minimized, occluded, backgrounded or surface-less). While parked no
+    /// frame is produced and no wake is posted — armed work stays armed for
+    /// the frame `set_hidden(false)` schedules when visibility returns.
+    pub(super) hidden: bool,
+    /// Frames this window has presented, counted for the debug-level
+    /// `frame presented` log a hidden-window verification reads: while the
+    /// pump is parked that line must go quiet.
+    pub(super) presented_frames: u64,
     pub(super) pointer_position: Option<(f32, f32)>,
     pub(super) render_diagnostics: RenderDiagnostics,
     /// Last display refresh rate (Hz) observed from the platform, used to detect changes
@@ -75,6 +84,8 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
             platform,
             renderer,
             mode: FrameMode::Refresh,
+            hidden: false,
+            presented_frames: 0,
             pointer_position: None,
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
             refresh_rate_hz: None,
@@ -93,6 +104,80 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     pub(super) fn clear_frame_mode(&mut self) {
         self.mode = FrameMode::Idle;
     }
+
+    /// Whether the pump is parked — the host reports the window cannot be
+    /// seen (minimized, occluded, backgrounded or surface-less).
+    ///
+    /// Exercised by the web and Android runners, which gate their frame
+    /// loops on it; feature-gated builds without them keep it for them.
+    #[allow(dead_code)]
+    pub(super) fn is_hidden(&self) -> bool {
+        self.hidden
+    }
+
+    /// Parks or unparks the pump. Un-hiding arms a refresh — the first
+    /// visible frame is rendered from the current state and time — but
+    /// posts nothing itself: the platform event that carried the
+    /// visibility change wakes the loop, and the mode arm makes
+    /// `advance_runtime` schedule the redraw. Posting one here too would
+    /// double the restore frame on hosts that deliver a platform redraw
+    /// alongside un-hide (X11 `Expose`, macOS `drawRect`, Windows
+    /// `WM_PAINT`).
+    #[allow(dead_code)] // see is_hidden
+    pub(super) fn set_hidden(&mut self, hidden: bool) {
+        if self.hidden == hidden {
+            return;
+        }
+        self.hidden = hidden;
+        tracing::debug!(hidden, "window pump visibility changed");
+        if !hidden {
+            self.request_refresh();
+        }
+    }
+
+    /// Pulls the platform window's occlusion report into the pump state;
+    /// hosts call it after delivering an event that may have moved
+    /// visibility.
+    #[allow(dead_code)] // see is_hidden
+    pub(super) fn sync_occlusion(&mut self) {
+        self.set_hidden(self.platform.is_occluded());
+    }
+
+    /// [`Self::sync_occlusion`] plus the wake the restore frame needs on
+    /// hosts whose frame loop never notices an armed [`FrameMode`] on its
+    /// own: Android's pump is only reached by a Choreographer post, so an
+    /// un-hide there that only armed the mode would leave the last
+    /// presented frame up until the next unrelated wake. Hosts whose
+    /// platform posts its own restore frame (winit desktops: `WM_PAINT`,
+    /// `drawRect`, `Expose`) use [`Self::sync_occlusion`], which arms
+    /// without posting — posting there would double the restore frame.
+    #[allow(dead_code)] // see is_hidden
+    pub(super) fn sync_occlusion_and_post_restore(&mut self) {
+        let was_hidden = self.hidden;
+        self.sync_occlusion();
+        if was_hidden && !self.hidden {
+            self.request_redraw();
+        }
+    }
+
+    /// Posts the host wake the next frame needs. A hidden window posts no
+    /// wakes: the work the wake carried stays armed and applies to the
+    /// frame visibility restores.
+    pub(super) fn request_redraw(&self) {
+        if !self.hidden {
+            self.platform.request_redraw();
+        }
+    }
+}
+
+/// Whether a frame transaction may report the pump's "first frame presented;
+/// ui idle" readiness line: it has presented at least once, and this wake
+/// leaves it idle — but never while hidden. A wake that arrives on a parked
+/// pump presents nothing, and a present-named readiness line emitted there
+/// reads as a frame presented while hidden.
+#[allow(dead_code)] // see RuntimeWindow::is_hidden
+pub(super) fn reports_ui_idle(presented_once: bool, wants_next_frame: bool, hidden: bool) -> bool {
+    presented_once && !wants_next_frame && !hidden
 }
 
 /// Applies the window's effective inner-size limits to the platform window:
@@ -332,7 +417,7 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     // consume it so it does not schedule a stale extra frame later.
     let _ = runtime.renderer.take_rebuild_request();
     runtime.request_refresh();
-    runtime.platform.request_redraw();
+    runtime.request_redraw();
     runtime.renderer.migration_counters_mut().host_wakeups += 1;
 }
 
@@ -349,27 +434,26 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo
     )
 }
 
-pub(super) fn window_clear_color(window: &Window, env: &Environment) -> peniko::Color {
-    match window.background.snapshot() {
-        WindowBackground::Opaque => {
-            resolve_window_clear_color(Color::new(theme::color::Background), env)
-        }
-        WindowBackground::Color(color) => resolve_window_clear_color(color, env),
-    }
-}
-
-pub(super) fn resolve_window_clear_color(color: Color, env: &Environment) -> peniko::Color {
-    let resolved = color.resolve(env).snapshot();
+/// Realizes the window's reactive background for the frame about to be
+/// painted: resolves it, hands the platform whether the window must be
+/// transparent — the composite alpha mode and the native window's
+/// transparency follow a switch between opaque and translucent — and returns
+/// the clear colour. This is the one place the background reaches the
+/// presentation path.
+pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+) -> peniko::Color {
+    let resolved = runtime.window.resolved_background(env).snapshot();
+    runtime.platform.set_transparent(resolved.components[3] < 1.0);
     let srgb = waterui_graphics::color::working::to_srgb(resolved);
     peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.components[3]])
+}
 }
 
 #[cfg(hydrolysis_winit)]
 pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
-    match window.background.snapshot() {
-        WindowBackground::Opaque => false,
-        WindowBackground::Color(color) => color.resolve(env).snapshot().components[3] < 1.0,
-    }
+    window.resolved_background(env).snapshot().components[3] < 1.0
 }
 
 crate::engine::cfg_async_fn! {
@@ -382,6 +466,14 @@ crate::engine::cfg_async_fn! {
         env: &Environment,
         drain_local_tasks: &mut dyn FnMut() -> bool,
     ) -> bool {
+
+    // A hidden window produces no frame: nothing is encoded, submitted or
+    // presented, and a redraw already in flight when it hid is stale —
+    // dropped here rather than rendered.
+    if runtime.hidden {
+        return false;
+    }
+
     let result = crate::engine::engine_await!(render_window_with_capture(
         runtime,
         env,
@@ -391,7 +483,12 @@ crate::engine::cfg_async_fn! {
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
     let _ = (result.rebuilt, result.snapshot);
-    result.profile.counters.rendered
+    let rendered = result.profile.counters.rendered;
+    if rendered {
+        runtime.presented_frames += 1;
+        tracing::debug!(frames = runtime.presented_frames, "frame presented");
+    }
+    rendered
     }
 }
 
@@ -564,11 +661,11 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
     if runtime.renderer.take_next_frame_rebuild_request() {
         // An effect needs another frame.
         runtime.request_refresh();
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     } else if runtime.renderer.animations_active() && !runtime.mode.is_pending() {
         schedule_animation_update(runtime, true);
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     phases.rebuild = pump_started_at.elapsed();
@@ -587,9 +684,10 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
-    // `frame` and `state` drive `apply_properties` below: keep them
-    // subscribed so an app write to either binding schedules a pump
-    // instead of needing an unrelated event to wake the loop.
+    // `frame`, `state`, `level`, `attention`, `resize_increments` and
+    // `style` drive `apply_properties` below: keep them subscribed so an
+    // app write to any of these bindings schedules a pump instead of
+    // needing an unrelated event to wake the loop.
     let _ = runtime.renderer.read_signal(&runtime.window.frame);
     let _ = runtime.renderer.read_signal(&runtime.window.state);
     let _ = runtime.renderer.read_signal(&runtime.window.level);
@@ -597,6 +695,10 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     if let Some(increments) = runtime.window.resize_increments.as_ref() {
         let _ = runtime.renderer.read_signal(increments);
     }
+    let _ = runtime.renderer.read_signal(&runtime.window.style);
+    // A replaced background repaints with a new clear colour and may switch
+    // the surface between opaque and translucent.
+    let _ = runtime.renderer.read_signal(&runtime.window.background);
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -646,7 +748,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
     if runtime.renderer.take_redraw_request() {
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     rebuilt
@@ -843,7 +945,7 @@ crate::engine::cfg_async_fn! {
         let rebuild_phases = pump_outcome.phases;
         rebuilt |= pump_outcome.built;
         apply_window_size_limits(runtime, env);
-        let clear_color = window_clear_color(&runtime.window, env);
+        let clear_color = apply_window_background(runtime, env);
 
         let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
         #[cfg(hydrolysis_macos_system_webview)]
@@ -995,7 +1097,7 @@ crate::engine::cfg_async_fn! {
                 | crate::platform::SurfaceError::Occluded,
             ) => {
                 runtime.request_refresh();
-                runtime.platform.request_redraw();
+                runtime.request_redraw();
                 runtime.renderer.migration_counters_mut().host_wakeups += 1;
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
@@ -1116,7 +1218,7 @@ crate::engine::cfg_async_fn! {
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
     if runtime.renderer.take_redraw_request() {
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     // The engine's own scheduling answer: an in-flight animation asks for its
@@ -1311,7 +1413,7 @@ where
                 );
                 runtime.window.frame.set(frame);
                 runtime.request_refresh();
-                runtime.platform.request_redraw();
+                runtime.request_redraw();
                 runtime.renderer.migration_counters_mut().host_wakeups += 1;
             }
             InputEvent::PointerDown {
@@ -1679,7 +1781,7 @@ where
             // if the runner asks for it — request one follow-up pump through
             // the platform redraw request, the same wake a signal change
             // triggers (platform.rs's signal waker calls `request_redraw`).
-            runtime.platform.request_redraw();
+            runtime.request_redraw();
             runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
         schedule_redraw_or_refresh(runtime, changed);
@@ -1701,6 +1803,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     now: Instant,
 ) -> Option<Instant> {
     runtime.renderer.set_frame_instant(now);
+    // A hidden window does no rendering work — no ticks, no wakes, no
+    // GPU-content pulls. Armed work stays armed: patch, rebuild and
+    // animation requests pending in the renderer apply to the frame
+    // `set_hidden(false)` schedules on un-hide.
+    if runtime.hidden {
+        return None;
+    }
     // Track the display refresh rate so the diagnostics slow-frame threshold reflects the
     // real frame budget (e.g. 8.33ms on a 120Hz panel) instead of a hardcoded 60fps.
     let refresh_rate = runtime.platform.refresh_rate_hz();
@@ -1741,13 +1850,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         // The refresh re-flushes the retained tree, which applies the pending
         // Dynamic patch to only the affected subtree and relays out if it changed size.
         runtime.request_refresh();
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     if runtime.renderer.advance_text_caret_animation(now) {
         tracing::debug!("wake cause: text caret animation");
         runtime.renderer.request_redraw();
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     if runtime.renderer.take_rebuild_request() {
@@ -1760,7 +1869,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     }
     if runtime.mode.is_pending() {
         tracing::debug!("wake cause: frame mode still pending");
-        runtime.platform.request_redraw();
+        runtime.request_redraw();
         runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
     next_deadline

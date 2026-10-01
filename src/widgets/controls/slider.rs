@@ -20,6 +20,7 @@ use waterui_controls::slider::{SliderConfig, ValueFormatter};
 use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
+use waterui_core::interaction::InteractionState;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, ViewDimensions};
 use waterui_text::styled::StyledStr;
@@ -427,7 +428,7 @@ pub(crate) fn render_slider_parts(
     // drag; the theme draws the chrome and the renderer lays the formatted
     // value inside it. It stays visual-only — the slider node already carries
     // the live numeric value to assistive technology.
-    if interaction.pressed
+    if interaction.state.contains(InteractionState::PRESSED)
         && let Some(formatter) = &state.value_indicator
     {
         let indicator_metrics = theme.slider_value_indicator_metrics();

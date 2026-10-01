@@ -13,6 +13,9 @@ pub(super) struct HeadlessPlatformWindow {
     inner: OffscreenWindow,
     pending_events: VecDeque<InputEvent>,
     redraw_requested: Cell<bool>,
+    /// The occlusion report tests drive through [`Self::set_occluded`] —
+    /// the default `false` a headless window behaves with in production.
+    occluded: Cell<bool>,
     /// The pointer position the host knows right now — tracked from the
     /// positional events it dispatched, or set directly when the test's host
     /// knows a position it delivered no event for (an OS drag suppresses
@@ -42,6 +45,7 @@ impl HeadlessPlatformWindow {
             inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
             redraw_requested: Cell::new(false),
+            occluded: Cell::new(false),
             pointer_position: None,
         }
     }
@@ -100,6 +104,10 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.redraw_requested.set(true);
     }
 
+    fn is_occluded(&self) -> bool {
+        self.occluded.get()
+    }
+
     fn scale_factor(&self) -> f64 {
         self.inner.scale_factor()
     }
@@ -122,6 +130,12 @@ impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 impl HeadlessPlatformWindow {
+    /// The occlusion report the next [`RuntimeWindow::sync_occlusion`] pulls
+    /// — a test's stand-in for the window-system visibility signal.
+    pub(super) fn set_occluded(&self, occluded: bool) {
+        self.occluded.set(occluded);
+    }
+
     /// The last (min, max) content-size limits the runner applied, for tests.
     pub(super) fn applied_size_limits(
         &self,
@@ -547,7 +561,7 @@ impl HeadlessRuntime {
     }
 
     pub fn request_redraw(&mut self) {
-        self.runtime.platform.request_redraw();
+        self.runtime.request_redraw();
         self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
     }
 
@@ -605,7 +619,7 @@ impl HeadlessRuntime {
             .handle_accessibility_action(request, &action_env);
         if changed {
             window.request_refresh();
-            window.platform.request_redraw();
+            window.request_redraw();
             window.renderer.migration_counters_mut().host_wakeups += 1;
         }
         changed
@@ -707,7 +721,7 @@ impl HeadlessRuntime {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {
             self.runtime.request_refresh();
-            self.runtime.platform.request_redraw();
+            self.runtime.request_redraw();
             self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
         changed
@@ -884,7 +898,7 @@ impl HeadlessRuntime {
                 popup.window.state.snapshot() != waterui::window::WindowState::Closed
             });
             self.runtime.request_refresh();
-            self.runtime.platform.request_redraw();
+            self.runtime.request_redraw();
             self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
         }
         let should_render = capture_snapshot

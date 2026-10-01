@@ -1,6 +1,8 @@
 package dev.waterui.hydrolysis
 
 import android.os.Build
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 
 /**
  * The mounted WaterUI app: the native session pointer plus the stable object
@@ -29,10 +31,28 @@ class HydrolysisSession internal constructor() {
             "a HydrolysisSession is bound to exactly one host view at a time"
         }
         hostView = view
+        // A session can bind after `onStart` already fired — a late mount
+        // or a config-change rebind — and no later `setVisible` would ever
+        // recover a false parked state. The lifecycle's current state is
+        // the truth; `onStart`/`onStop` keep updating it from here.
+        setVisible(
+            (view.context as? LifecycleOwner)?.lifecycle?.currentState
+                ?.isAtLeast(Lifecycle.State.STARTED) == true
+        )
     }
 
     internal fun unbind(view: HydrolysisHostView) {
         if (hostView === view) hostView = null
+    }
+
+    /**
+     * The owning Activity's started state (`onStart`/`onStop`). A stopped
+     * session parks the frame pump — no frames, no Choreographer wakes —
+     * until the next start; a start with a live surface renders exactly
+     * the one current frame.
+     */
+    internal fun setVisible(visible: Boolean) {
+        NativeBridge.nativeSetVisible(nativePtr, visible)
     }
 
     /** Tears down the native session. Idempotent guard lives in the caller. */

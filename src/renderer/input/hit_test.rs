@@ -8,6 +8,7 @@ use waterui_backend_core::gesture::LONG_PRESS_SLOP;
 use waterui_backend_core::widget::{
     InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
 };
+use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::ScrollUnit;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3348,18 +3349,19 @@ impl HydrolysisRenderer {
         }
         let motion = self.theme().interaction_motion();
         let now = self.frame_instant();
-        let (state, mut press_slot, handles) = self.core.hit_test.interaction.bind_widget_state(
-            &key,
-            WidgetInteractionInput {
-                bounds,
-                hovered,
-                focus,
-                disabled,
-            },
-            &motion,
-            &mut self.core.animation_controller,
-            now,
-        );
+        let (mut state, mut press_slot, handles) =
+            self.core.hit_test.interaction.bind_widget_state(
+                &key,
+                WidgetInteractionInput {
+                    bounds,
+                    hovered,
+                    focus,
+                    disabled,
+                },
+                &motion,
+                &mut self.core.animation_controller,
+                now,
+            );
         if env
             .get::<ModalInteraction>()
             .is_some_and(|modal| modal.is_active())
@@ -3375,6 +3377,10 @@ impl HydrolysisRenderer {
                 self.hit_test.keyboard_focus_binding = Some(focus_binding.focused().clone());
             }
         }
+        let flags = self.interaction_state_flags(env, &key, state);
+        state.state = flags;
+        self.hit_test.interaction.set_reported_state(&key, flags);
+        self.claim_interaction_reports(env, flags);
         // Every widget that binds an interaction target draws its hover/focus/press
         // state layers from the sampled state each flush, so its chrome is
         // state-dependent by construction: a press or hover change must schedule a
@@ -3392,6 +3398,82 @@ impl HydrolysisRenderer {
             });
         }
         (state, press_slot, handles)
+    }
+}
+
+impl SemanticCore {
+    /// The `InteractionKey` of the pointer target currently owning the active
+    /// drag, resolved through the persisted drag signature so the answer
+    /// survives the target list being rebuilt between frames.
+    fn active_pointer_drag_key(&self) -> Option<InteractionKey> {
+        let (depth, order) = self.hit_test.active_pointer_drag_signature?;
+        self.hit_test
+            .pointer_targets
+            .iter()
+            .find(|target| target.captures_drag && target.depth == depth && target.order == order)
+            .and_then(|target| target.press_slot.as_ref().map(|slot| slot.key.clone()))
+    }
+
+    /// Resolves the full [`InteractionState`] `key` reports: the sampled
+    /// hover/press/focus-visible/disabled flags the interaction state already
+    /// carries, DRAGGED while this target owns the active pointer drag, and
+    /// SELECTED when the outermost interactive control under a [`Selected`]
+    /// scope reads `true`.
+    fn interaction_state_flags(
+        &mut self,
+        env: &Environment,
+        key: &InteractionKey,
+        state: WidgetInteractionState,
+    ) -> InteractionState {
+        let mut flags = state.state;
+        if self
+            .active_pointer_drag_key()
+            .is_some_and(|drag| drag == *key)
+        {
+            flags |= InteractionState::DRAGGED;
+        }
+        if let Some(selected) = env.get::<Selected>()
+            && self.hit_test.interaction.claim_selected(selected, key)
+            && self.read_signal(&selected.0)
+        {
+            flags |= InteractionState::SELECTED;
+        }
+        flags
+    }
+
+    /// The [`InteractionState`] a bound control resolved to — how draw sites
+    /// read back the state the reporting bookkeeping already computed.
+    pub(crate) fn reported_interaction_state(&self, key: &InteractionKey) -> InteractionState {
+        self.hit_test.interaction.reported_state(key)
+    }
+
+    /// Whether `key`'s owner claims the nearest [`Selected`] scope and the
+    /// scope reads `true` — the accessibility announcement counterpart of the
+    /// SELECTED flag the interaction flags carry.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn control_selected(&mut self, env: &Environment, key: &InteractionKey) -> bool {
+        let Some(selected) = env.get::<Selected>() else {
+            return false;
+        };
+        self.hit_test.interaction.claim_selected(selected, key) && self.read_signal(&selected.0)
+    }
+
+    /// Writes `state` into every [`InteractionReport`] scope this control
+    /// claims — the outermost interactive control inside each reporting view
+    /// owns the write — and only when the value changed, so a report never
+    /// signals no-op updates.
+    fn claim_interaction_reports(&mut self, env: &Environment, state: InteractionState) {
+        for index in 0.. {
+            let Some(report) = env.get_nth::<InteractionReport>(index) else {
+                break;
+            };
+            if !self.hit_test.interaction.claim_report(report) {
+                continue;
+            }
+            if report.0.snapshot() != state {
+                report.0.set(state);
+            }
+        }
     }
 }
 
