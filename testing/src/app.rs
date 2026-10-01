@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -1701,6 +1702,97 @@ impl SemanticApp<HeadlessRuntime> {
         for event in driver::magnification_events(x, y, factor) {
             self.runtime.push_input_event(event);
         }
+    }
+
+    /// Hovers an OS file drag carrying `paths` over the point, then settles
+    /// resulting updates.
+    ///
+    /// This is the input path a real file drag takes: the platform reports
+    /// the pointer position outside the event stream — winit suppresses
+    /// cursor events while an external drag owns the pointer — and emits one
+    /// `HoveredFile` per path. A drop destination accepting `Files` enters
+    /// its hover state on the next pump.
+    pub fn hover_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        self.queue_hover_files_at(x, y, paths);
+        self.settle();
+    }
+
+    /// Queues the hover half of an OS file drag without the semantic settle
+    /// used by [`Self::hover_files_at`]: the host's pointer answer moves to
+    /// `x`,`y` and one [`InputEvent::FileHovered`](hydrolysis::InputEvent)
+    /// goes out per path. Follow with [`Self::queue_drop_files_at`] to drop
+    /// or [`Self::queue_cancel_files_hover`] to end the drag without one.
+    pub fn queue_hover_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        self.runtime.set_pointer_position(Some((x, y)));
+        for path in paths {
+            self.runtime
+                .push_input_event(driver::file_hovered_event(path.as_ref().to_path_buf()));
+        }
+    }
+
+    /// Drops an OS file drag carrying `paths` at the point — hover, then
+    /// drop — and settles resulting updates.
+    ///
+    /// The destination receives one `Files` payload holding every path;
+    /// winit reports the drag one event per file, so one `FileHovered` per
+    /// path goes out first, then one `FileDropped` per path.
+    pub fn drop_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        self.queue_drop_files_at(x, y, paths);
+        self.settle();
+    }
+
+    /// Queues a whole OS file drop without the semantic settle used by
+    /// [`Self::drop_files_at`]. Delivery lands a drain later than the drop
+    /// events — the runner waits out winit's missing drop-end marker before
+    /// handing the payload to the destination — so it arrives on a
+    /// subsequent pump, inside the next settle or
+    /// [`OffscreenApp::pump_for`].
+    pub fn queue_drop_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        let paths = paths
+            .into_iter()
+            .map(|path| path.as_ref().to_path_buf())
+            .collect::<Vec<_>>();
+        self.queue_hover_files_at(x, y, &paths);
+        for path in paths {
+            self.runtime
+                .push_input_event(driver::file_dropped_event(path));
+        }
+    }
+
+    /// Ends a hovering OS file drag without a drop — winit
+    /// `HoveredFileCancelled` — then settles resulting updates.
+    pub fn cancel_files_hover(&mut self) {
+        self.queue_cancel_files_hover();
+        self.settle();
+    }
+
+    /// Queues a file-drag cancellation without the semantic settle used by
+    /// [`Self::cancel_files_hover`]. The event is processed by the next
+    /// pump, so the destination's exit transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_cancel_files_hover(&mut self) {
+        self.runtime
+            .push_input_event(driver::file_hover_cancelled_event());
     }
 
     /// Pumps one complete offscreen frame at `at`, adopting the instant as the
