@@ -739,6 +739,9 @@ pub unsafe extern "C" fn waterui_env_disabled(
 /// The caller must ensure that `env` is a valid pointer to a properly
 /// initialized `waterui::Environment` instance and that the environment remains
 /// valid for the duration of this function call.
+///
+/// # Panics
+/// Never in practice: the masked setter input is always in `u8` range.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn waterui_env_interaction_report(
     env: *const WuiEnv,
@@ -757,7 +760,7 @@ pub unsafe extern "C" fn waterui_env_interaction_report(
         |state| i32::from(state.bits()),
         |binding, bits| {
             binding.set(InteractionState::from_bits_truncate(
-                u8::try_from(bits).unwrap_or_default(),
+                u8::try_from(bits & 0xFF).expect("masked to u8"),
             ));
         },
     )
