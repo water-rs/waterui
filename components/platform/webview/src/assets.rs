@@ -290,8 +290,12 @@ mod tests {
         let response = dispatch(&server, "HEAD", "/index.html", None);
 
         assert_eq!(response.status, 200);
-        assert!(response.body.is_empty());
-        assert!(!response.headers.is_empty());
+        assert_eq!(response.body, Vec::<u8>::new());
+        assert!(
+            matches!(response.headers.as_slice(), [_, ..]),
+            "expected headers, got {:?}",
+            response.headers
+        );
     }
 
     #[test]

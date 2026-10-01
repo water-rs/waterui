@@ -156,7 +156,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Manifest derivation tests
-        run: uv run --with pytest pytest .github/scripts
+        run: >
+          uv run --with pytest --with 'tree-sitter==0.26.0'
+          --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
 
   # Security audit, license check and unused-dependency check are each a cheap
   # metadata pass over the dependency graph, but were previously three separate

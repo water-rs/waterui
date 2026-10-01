@@ -1361,7 +1361,10 @@ mod tests {
 
         let rich = RichText::from_markdown(markdown);
         let elements = rich.elements();
-        assert!(!elements.is_empty());
+        assert!(
+            matches!(elements, [_, ..]),
+            "expected non-empty elements, got {elements:?}"
+        );
 
         assert!(matches!(elements[0], RichTextElement::Text(_)));
         assert!(matches!(elements[1], RichTextElement::Group { .. }));

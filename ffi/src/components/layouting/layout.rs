@@ -1056,10 +1056,6 @@ mod tests {
 
     #[cfg(feature = "c-api")]
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "min_length is copied verbatim across FFI with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn spacer_crosses_ffi_with_its_minimum_length() {
         use crate::waterui_view_id;
         use waterui_core::{AnyView, Native};
@@ -1102,10 +1098,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "spacing is copied verbatim across FFI from a Computed::constant with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn lazy_stack_queries_report_vstack_configuration() {
         with_layout(
             VStackLayout {
@@ -1129,10 +1121,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "spacing is copied verbatim across FFI from a Computed::constant with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn lazy_stack_queries_report_hstack_configuration() {
         with_layout(
             HStackLayout {
@@ -1156,10 +1144,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::float_cmp,
-        reason = "spacing is copied verbatim across FFI from a Computed::constant with no intervening arithmetic, so exact equality is the correct assertion"
-    )]
     fn layout_watcher_forwards_precise_signal_invalidation() {
         struct Target(Rc<Cell<usize>>);
 

@@ -99,12 +99,18 @@ has to weaken a contract test or amend the document is rejected. The only path
 to a semantic change is a major-version decision recorded by the maintainer.
 
 `.github/workflows/layout-decision.yml` enforces this mechanically: a pull
-request that touches `docs/layout-spec.md`, `components/foundation/layout/src/`,
-or `core/src/ui/layout.rs` fails until it carries the `layout-decision` label.
-Only the maintainer applies that label; an agent never adds it, including to a
-pull request the maintainer approved in conversation. It records his decision
-that the change is either a conformance fix (the code now matches the document)
-or an approved amendment of the document.
+request fails until it carries the `layout-decision` label whenever it can
+change layout semantics — any edit to `docs/layout-spec.md`, a non-test Rust
+file added or deleted under `components/foundation/layout/src/` or at
+`core/src/ui/layout.rs`, or a change to such a file whose parsed syntax tree
+differs after comments, doc comments, lint attributes (`must_use`, `expect`,
+`allow`, `warn`, `deny`, `inline`, `doc`) and `#[cfg(test)]` items are removed;
+`.github/scripts/layout_gate.py` makes that comparison. Lint-only,
+documentation-only and test-only edits cannot change semantics, so they do
+not need the label. Only the maintainer applies that label; an agent never
+adds it, including to a pull request the maintainer approved in conversation.
+It records his decision that the change is either a conformance fix (the code
+now matches the document) or an approved amendment of the document.
 
 A case the document does not decide is not a licence to pick a behaviour in
 code. Every freeze break so far came from such a case found by a dogfood app;

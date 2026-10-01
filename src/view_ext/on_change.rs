@@ -276,7 +276,7 @@ mod tests {
             move |value: i32| seen.borrow_mut().push(value)
         });
         source.set(1);
-        assert!(seen.borrow().is_empty());
+        assert_eq!(*seen.borrow(), Vec::<i32>::new());
 
         let env = Environment::new();
         let _mounted = mount(view, &env);
