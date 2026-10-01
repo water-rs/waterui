@@ -24,8 +24,8 @@ use std::{fmt::Debug, rc::Rc};
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
-use waterui_graphics::Color;
+use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View, flatten_signal};
+use waterui_graphics::{Color, color::ResolvedColor};
 use waterui_layout::{Point, Rect, Size};
 
 use crate::app::{application_identifier, application_name};
@@ -36,6 +36,7 @@ use crate::{
     background::{Material, MaterialBackground},
     component::label::LabelDisplayMode,
     prelude::FullScreenOverlayManager,
+    theme::color::Background,
 };
 
 /// Represents a window in the UI.
@@ -75,9 +76,14 @@ pub struct Window {
     pub style: Binding<WindowStyle>,
     /// The background style of the window.
     ///
-    /// Use this to create transparent or frosted glass windows.
+    /// Use this to create transparent or frosted glass windows. Reactive:
+    /// backends re-apply the background when the binding changes after the
+    /// window is shown, including a switch between [`WindowBackground::Opaque`]
+    /// and a translucent [`WindowBackground::Color`]. Backends paint what
+    /// [`Window::resolved_background`] resolves it to.
+    ///
     /// Notice that it may not be supported on all platforms.
-    pub background: WindowBackground,
+    pub background: Binding<WindowBackground>,
     /// Explicit minimum content size the window can be resized down to.
     ///
     /// When `None` (the default), the backend derives the minimum from the
@@ -309,41 +315,97 @@ pub enum WindowStyle {
     FullSizeContentView,
 }
 
-/// The background style of a window (FFI level).
+/// The background style of a window.
 ///
 /// This only supports opaque or solid color backgrounds.
 /// For blur effects, use `Material` which wraps content with `MaterialBackground` metadata.
 ///
 /// # Platform Support
 ///
-/// - **macOS/iOS**: Supports both opaque and colored backgrounds.
-/// - **Android**: Supports colored backgrounds via `Window.setBackgroundDrawable()`.
-/// - **Linux (GTK)**: Supports colored backgrounds via window CSS/background styling.
+/// - **macOS**: `NSWindow.backgroundColor` and `isOpaque`.
+/// - **Android**: `Window.setBackgroundDrawable()`.
+/// - **Linux (GTK)**: window CSS background.
+/// - **Windows (`WinUI`)**: the content root's background brush.
+/// - **Hydrolysis**: the surface clear colour and composite alpha mode.
 #[derive(Debug, Clone, Default)]
 pub enum WindowBackground {
-    /// Opaque system default background.
+    /// Opaque background in the theme's [`Background`] colour.
     #[default]
     Opaque,
     /// Solid color background (can be semi-transparent via alpha).
     Color(Color),
 }
 
+impl WindowBackground {
+    /// The colour this background paints: the theme's [`Background`] colour
+    /// for [`Self::Opaque`], the declared colour otherwise.
+    #[must_use]
+    pub fn color(&self) -> Color {
+        match self {
+            Self::Opaque => Color::new(Background),
+            Self::Color(color) => color.clone(),
+        }
+    }
+}
+
+impl From<Color> for WindowBackground {
+    fn from(color: Color) -> Self {
+        Self::Color(color)
+    }
+}
+
+impl From<WindowBackground> for Binding<WindowBackground> {
+    fn from(background: WindowBackground) -> Self {
+        Self::container(background)
+    }
+}
+
+/// Resolves a reactive window background to the concrete colour a backend
+/// paints behind the window's content.
+///
+/// The result follows both a change of the background itself — including a
+/// switch between [`WindowBackground::Opaque`] and [`WindowBackground::Color`]
+/// — and a change of the colour it currently resolves to, such as a theme
+/// switch. A colour whose opacity is below one asks for a translucent window.
+#[must_use]
+pub fn resolve_background<S>(background: &S, env: &Environment) -> Computed<ResolvedColor>
+where
+    S: Signal<Output = WindowBackground>,
+{
+    let env = env.clone();
+    flatten_signal(background.map(move |background| background.color().resolve(&env)))
+}
+
 /// Input type for `Window::background()` method.
 ///
-/// Allows setting window background via `Color` or `Material`.
-/// When `Material` is used, the window becomes opaque and the content
-/// is wrapped with a `MaterialBackground` metadata for native blur effects.
+/// Allows setting window background via a `Color`, a [`WindowBackground`], a
+/// `Binding<WindowBackground>` the app keeps to change it later, or a
+/// `Material`. When `Material` is used, the window becomes opaque and the
+/// content is wrapped with a `MaterialBackground` metadata for native blur
+/// effects.
 #[derive(Debug)]
 pub enum WindowBackgroundInput {
-    /// A solid color background.
-    Color(Color),
+    /// A reactive background: a fixed colour or `Opaque`, or a binding.
+    Background(Binding<WindowBackground>),
     /// A material blur effect (wraps content, window stays opaque).
     Material(Material),
 }
 
+impl From<WindowBackground> for WindowBackgroundInput {
+    fn from(background: WindowBackground) -> Self {
+        Self::Background(background.into())
+    }
+}
+
+impl From<Binding<WindowBackground>> for WindowBackgroundInput {
+    fn from(background: Binding<WindowBackground>) -> Self {
+        Self::Background(background)
+    }
+}
+
 impl From<Color> for WindowBackgroundInput {
     fn from(color: Color) -> Self {
-        Self::Color(color)
+        WindowBackground::Color(color).into()
     }
 }
 
@@ -431,7 +493,7 @@ impl Window {
             state,
             toolbar: None,
             style: Binding::container(WindowStyle::default()),
-            background: WindowBackground::default(),
+            background: Binding::container(WindowBackground::default()),
             min_size: None,
             max_size: None,
             app_id: None,
@@ -560,9 +622,12 @@ impl Window {
 
     /// Set the background style of the window.
     ///
-    /// Accepts either a `Color` for solid backgrounds or a `Material` for blur effects.
-    /// When using `Material`, the window stays opaque and the content is wrapped with
-    /// `MaterialBackground` metadata handled by the native backend on a best-effort basis.
+    /// Accepts a `Color` for solid backgrounds, a [`WindowBackground`] or a
+    /// `Binding<WindowBackground>` to change the background after the window
+    /// is shown, or a `Material` for blur effects. When using `Material`, the
+    /// window stays opaque and the content is wrapped with
+    /// `MaterialBackground` metadata handled by the native backend on a
+    /// best-effort basis.
     ///
     /// # Examples
     ///
@@ -581,12 +646,12 @@ impl Window {
     #[must_use]
     pub fn background(mut self, background: impl Into<WindowBackgroundInput>) -> Self {
         match background.into() {
-            WindowBackgroundInput::Color(color) => {
-                self.background = WindowBackground::Color(color);
+            WindowBackgroundInput::Background(background) => {
+                self.background = background;
             }
             WindowBackgroundInput::Material(material) => {
                 // Keep window opaque, wrap content with MaterialBackground metadata
-                self.background = WindowBackground::Opaque;
+                self.background = Binding::container(WindowBackground::Opaque);
                 let content = self.content;
                 self.content = AnyViewBuilder::new(move || {
                     AnyView::new(IgnorableMetadata::new(
@@ -597,6 +662,13 @@ impl Window {
             }
         }
         self
+    }
+
+    /// The colour a backend paints behind the window's content, following the
+    /// reactive [`Self::background`]. See [`resolve_background`].
+    #[must_use]
+    pub fn resolved_background(&self, env: &Environment) -> Computed<ResolvedColor> {
+        resolve_background(&self.background, env)
     }
 
     /// Builds the current window content tree.
@@ -667,6 +739,7 @@ impl Window {
             state: self.state.clone(),
             attention: self.attention.clone(),
             style: self.style.clone(),
+            background: self.background.clone(),
         }
     }
 
@@ -766,6 +839,7 @@ pub struct WindowHandle {
     state: Binding<WindowState>,
     attention: Binding<Option<UserAttention>>,
     style: Binding<WindowStyle>,
+    background: Binding<WindowBackground>,
 }
 
 impl WindowHandle {
@@ -814,5 +888,47 @@ impl WindowHandle {
     /// shown window.
     pub fn set_style(&self, style: WindowStyle) {
         self.style.set(style);
+    }
+
+    /// Set the background of the window; the backend re-applies it to the
+    /// shown window.
+    pub fn set_background(&self, background: impl Into<WindowBackground>) {
+        self.background.set(background.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use nami::{Binding, Signal};
+    use waterui_core::Environment;
+    use waterui_graphics::Color;
+
+    use super::{WindowBackground, resolve_background};
+
+    /// The resolved background follows a replacement of the background
+    /// itself, not only a change of the colour it started with.
+    #[test]
+    fn resolved_background_follows_a_replaced_background() {
+        let env = Environment::new();
+        let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
+        let resolved = resolve_background(&background, &env);
+        assert!(resolved.snapshot().red > 0.99);
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let _guard = resolved.watch({
+            let seen = seen.clone();
+            move |ctx| seen.borrow_mut().push(ctx.into_value())
+        });
+        background.set(WindowBackground::Color(
+            Color::srgb(0, 0, 255).with_opacity(0.5),
+        ));
+
+        let seen = seen.borrow();
+        let last = seen.last().expect("the replaced background was delivered");
+        assert!(last.blue > 0.99 && last.red < 0.01);
+        assert!((last.opacity - 0.5).abs() < 1e-6);
+        assert!((resolved.snapshot().opacity - 0.5).abs() < 1e-6);
     }
 }
