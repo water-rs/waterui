@@ -40,9 +40,6 @@ jobs:
       # `cros-libva` build script, reached through `waterkit-codec`, fails the
       # `waterui-image` verify build on the missing `libva-dev`.
       - uses: ./.github/actions/setup-linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       # Mint a short-lived crates.io token from the GitHub OIDC identity
       # instead of a stored CARGO_REGISTRY_TOKEN (trusted publishing is
       # configured per crate on crates.io).
@@ -133,9 +130,6 @@ jobs:
       # The same native libraries as above: computing the next versions also
       # builds the workspace's metadata against every crate's dependencies.
       - uses: ./.github/actions/setup-linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: ./.github/actions/release-plz
         with:
           command: release-pr

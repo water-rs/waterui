@@ -55,18 +55,7 @@ jobs:
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
-      - name: Install SPIRV-Tools
-        if: runner.os == 'Windows'
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
-          install: mingw-w64-ucrt-x86_64-spirv-tools
-      - name: Put SPIRV-Tools on the PATH
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
+      - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       - uses: ./.github/actions/install-tool
@@ -143,18 +132,7 @@ jobs:
           cache-targets: false
           save-if: false
           cache-on-failure: true
-      - name: Install SPIRV-Tools
-        if: runner.os == 'Windows'
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
-          install: mingw-w64-ucrt-x86_64-spirv-tools
-      - name: Put SPIRV-Tools on the PATH
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
+      - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       - uses: ./.github/actions/install-tool
@@ -207,18 +185,7 @@ jobs:
           cache-on-failure: true
       # Build scripts run under `cargo check` too, so the shader compiler has
       # to be present here as well as in the test job.
-      - name: Install SPIRV-Tools
-        if: runner.os == 'Windows'
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: false
-          install: mingw-w64-ucrt-x86_64-spirv-tools
-      - name: Put SPIRV-Tools on the PATH
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
+      - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       # Compile the CEF backend without its binary distribution (see the test

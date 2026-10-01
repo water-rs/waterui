@@ -65,9 +65,6 @@ jobs:
           save-if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - name: Format
         run: cargo fmt --all -- --check
       # Workspace-wide under default features first: it is the cheapest of the
@@ -176,9 +173,6 @@ jobs:
       # native headers.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       # `waterkit-dialog` is a registry crate now (its browser backend is
       # linted for wasm32 in water-rs/waterkit's own CI), so cargo caps its
       # lints; only the workspace crate is named here.
@@ -228,10 +222,6 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -297,9 +287,6 @@ jobs:
         uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
-      - name: Install SPIRV-Tools
-        run: sudo apt-get update && sudo apt-get install -y spirv-tools
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
