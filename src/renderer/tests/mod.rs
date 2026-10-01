@@ -79,6 +79,7 @@ mod window_background;
 mod window_mount;
 use kurbo::{Affine, BezPath, Point, Rect};
 use waterui::gesture::{DragGesture, GestureObserver, MagnificationGesture};
+use waterui::interaction::InteractionState;
 use waterui::prelude::text;
 use waterui::style::FloatingStyle;
 use waterui::{Binding, Color, Computed, Signal, SignalExt as _, ViewExt as _};
@@ -1859,7 +1860,7 @@ fn interaction_state_does_not_migrate_between_semantic_identities() {
     let (state, _, _) =
         renderer.bind_interaction_target(second_key, Rect::new(100.0, 100.0, 180.0, 180.0), &env);
 
-    assert!(!state.pressed);
+    assert!(!state.state.contains(InteractionState::PRESSED));
     assert!(state.press_waves.is_empty());
 }
 
@@ -1894,7 +1895,10 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     renderer.set_frame_instant(later);
     renderer.begin_rebuild_frame();
     let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
-    assert!(state.pressed, "held press must stay visually pressed");
+    assert!(
+        state.state.contains(InteractionState::PRESSED),
+        "held press must stay visually pressed"
+    );
     let wave = state
         .press_waves
         .latest()
@@ -1923,7 +1927,7 @@ fn interaction_engine_resolves_focus_state() {
         false,
     );
 
-    assert!(state.focus_visible);
+    assert!(state.state.contains(InteractionState::FOCUSED));
     assert_eq!(state.focus_progress, 1.0);
 }
 

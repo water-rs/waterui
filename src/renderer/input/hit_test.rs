@@ -3377,18 +3377,19 @@ impl HydrolysisRenderer {
         }
         let motion = self.theme().interaction_motion();
         let now = self.frame_instant();
-        let (state, mut press_slot, handles) = self.core.hit_test.interaction.bind_widget_state(
-            &key,
-            WidgetInteractionInput {
-                bounds,
-                hovered,
-                focus,
-                disabled,
-            },
-            &motion,
-            &mut self.core.animation_controller,
-            now,
-        );
+        let (mut state, mut press_slot, handles) =
+            self.core.hit_test.interaction.bind_widget_state(
+                &key,
+                WidgetInteractionInput {
+                    bounds,
+                    hovered,
+                    focus,
+                    disabled,
+                },
+                &motion,
+                &mut self.core.animation_controller,
+                now,
+            );
         if env
             .get::<ModalInteraction>()
             .is_some_and(|modal| modal.is_active())
@@ -3405,6 +3406,7 @@ impl HydrolysisRenderer {
             }
         }
         let flags = self.interaction_state_flags(env, &key, state);
+        state.state = flags;
         self.hit_test.interaction.set_reported_state(&key, flags);
         self.claim_interaction_reports(env, flags);
         // Every widget that binds an interaction target draws its hover/focus/press
@@ -3441,29 +3443,17 @@ impl SemanticCore {
     }
 
     /// Resolves the full [`InteractionState`] `key` reports: the sampled
-    /// hover/press/focus-visible/disabled flags from the interaction state,
-    /// DRAGGED while this target owns the active pointer drag, and SELECTED
-    /// when the outermost interactive control under a [`Selected`] scope
-    /// reads `true`.
+    /// hover/press/focus-visible/disabled flags the interaction state already
+    /// carries, DRAGGED while this target owns the active pointer drag, and
+    /// SELECTED when the outermost interactive control under a [`Selected`]
+    /// scope reads `true`.
     fn interaction_state_flags(
         &mut self,
         env: &Environment,
         key: &InteractionKey,
         state: WidgetInteractionState,
     ) -> InteractionState {
-        let mut flags = InteractionState::empty();
-        if state.hovered {
-            flags |= InteractionState::HOVERED;
-        }
-        if state.pressed {
-            flags |= InteractionState::PRESSED;
-        }
-        if state.focus_visible {
-            flags |= InteractionState::FOCUSED;
-        }
-        if state.disabled {
-            flags |= InteractionState::DISABLED;
-        }
+        let mut flags = state.state;
         if self
             .active_pointer_drag_key()
             .is_some_and(|drag| drag == *key)

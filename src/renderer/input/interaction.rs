@@ -334,16 +334,26 @@ impl InteractionEngine {
         }
         interaction_state.handles = Some(Rc::clone(&handles));
 
+        let mut flags = InteractionState::empty();
+        if input.disabled {
+            flags |= InteractionState::DISABLED;
+        }
+        if hovered {
+            flags |= InteractionState::HOVERED;
+        }
+        // Chrome reads the PHYSICAL press (the reference implementation removes [pressed] the
+        // instant the pointer lifts, so the 28dp pressed thumb and the
+        // pressed tint drop immediately on release). The ripple's Material
+        // minimum-press gating lives in the waves themselves and must not
+        // leak into pressed chrome after release.
+        if handles.pressing() {
+            flags |= InteractionState::PRESSED;
+        }
+        if focus_visible {
+            flags |= InteractionState::FOCUSED;
+        }
         let state = WidgetInteractionState {
-            disabled: input.disabled,
-            hovered,
-            // Chrome reads the PHYSICAL press (the reference implementation removes [pressed] the
-            // instant the pointer lifts, so the 28dp pressed thumb and the
-            // pressed tint drop immediately on release). The ripple's Material
-            // minimum-press gating lives in the waves themselves and must not
-            // leak into pressed chrome after release.
-            pressed: handles.pressing(),
-            focus_visible,
+            state: flags,
             focus_progress: focus_alpha.sample(now),
             state_layer_opacity: hover_alpha.sample(now),
             press_waves: handles.sample_waves(now),
@@ -408,6 +418,7 @@ mod tests {
     use core::time::Duration;
     use std::rc::Rc;
     use waterui::animation::Animation;
+    use waterui::interaction::InteractionState;
     use waterui_backend_core::widget::InteractionMotion;
 
     fn motion() -> InteractionMotion {
@@ -630,9 +641,15 @@ mod tests {
 
         let disabled_at = started + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);
-        assert!(state.disabled);
-        assert!(!state.hovered, "disabled widget must not sample hover");
-        assert!(!state.pressed, "disabled widget must not sample press");
+        assert!(state.state.contains(InteractionState::DISABLED));
+        assert!(
+            !state.state.contains(InteractionState::HOVERED),
+            "disabled widget must not sample hover"
+        );
+        assert!(
+            !state.state.contains(InteractionState::PRESSED),
+            "disabled widget must not sample press"
+        );
 
         // The in-flight ripple is released, fades out (the reference implementation keeps the fade),
         // and must be gone once the fade-out has finished.
@@ -646,8 +663,8 @@ mod tests {
         // Re-enabling starts at rest: the stale press must not resurface.
         let reenabled_at = faded_at + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, reenabled_at, false, false);
-        assert!(!state.disabled);
-        assert!(!state.pressed);
+        assert!(!state.state.contains(InteractionState::DISABLED));
+        assert!(!state.state.contains(InteractionState::PRESSED));
         assert!(state.press_waves.is_empty());
     }
 
