@@ -266,7 +266,7 @@ mod tests {
             futures::executor::block_on(session.execute(GetNavigationHistoryParams::default()))
                 .expect("typed CDP command should decode");
         assert_eq!(typed.current_index, 0);
-        assert!(typed.entries.is_empty());
+        assert_eq!(typed.entries, []);
 
         let calls = transport.calls.borrow();
         assert_eq!(calls.len(), 2);

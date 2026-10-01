@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn a_call_with_no_payload_is_accepted() {
         let request = Request::parse(r#"{"id":2,"name":"ping"}"#).expect("well-formed");
-        assert!(request.payload.is_empty());
+        assert_eq!(request.payload, Vec::<u8>::new());
     }
 
     /// Page script can reach the transport directly, so these must be errors

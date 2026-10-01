@@ -246,10 +246,18 @@ mod tests {
         let app = App::new_with_windows(Vec::new(), Environment::new())
             .on_last_window_closed(LastWindowPolicy::StayResident);
 
-        assert!(app.windows().is_empty());
+        assert!(
+            app.windows().is_empty(),
+            "expected no windows, got {:?}",
+            app.windows()
+        );
         assert_eq!(app.last_window_policy(), LastWindowPolicy::StayResident);
         let parts = app.into_parts();
-        assert!(parts.windows.is_empty());
+        assert!(
+            parts.windows.is_empty(),
+            "expected no windows, got {:?}",
+            parts.windows
+        );
         assert_eq!(parts.last_window, LastWindowPolicy::StayResident);
     }
 

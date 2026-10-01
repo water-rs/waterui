@@ -536,7 +536,7 @@ fn test_hstack_empty() {
 
     let bounds = Rect::new(Point::zero(), Size::new(100.0, 100.0));
     let placements = layout.place(bounds, ProposalSize::UNSPECIFIED, &children);
-    assert!(placements.is_empty());
+    assert_eq!(placements, []);
 }
 
 #[test]

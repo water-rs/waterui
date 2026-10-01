@@ -493,7 +493,7 @@ mod tests {
             item.source.as_str(),
             "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"
         );
-        assert!(item.subtitle_tracks.is_empty());
+        assert_eq!(item.subtitle_tracks, []);
         assert_eq!(item.metadata, MediaMetadata::new());
     }
 
