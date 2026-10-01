@@ -1,6 +1,7 @@
 //! Floating-surface presentation for elevated interactive views.
 
-use waterui_core::{Environment, View, plugin::Plugin};
+use nami::binding;
+use waterui_core::{Dynamic, Environment, View, interaction::InteractionState, plugin::Plugin};
 use waterui_shape::{RoundedRectangle, ShapeExt as _};
 
 use crate::{
@@ -68,25 +69,37 @@ where
             .or_else(|| env.get::<FloatingStyle>().cloned())
             .unwrap_or_default();
         let shape = RoundedRectangle::new(style.clip_radius);
-        let ambient_shadow = Shadow::new(
-            style.ambient_shadow_color.clone(),
-            Vector::new(0.0, style.ambient_shadow_offset_y),
-            style.ambient_shadow_radius,
-            shape,
-        );
-        let key_shadow = Shadow::new(
-            style.key_shadow_color.clone(),
-            Vector::new(0.0, style.key_shadow_offset_y),
-            style.key_shadow_radius,
-            shape,
-        );
+        // The surface rises and settles with the control on it, so its shadows
+        // follow the control's interaction state. They are cast by a layer of
+        // their own beneath the clipped surface: clipping the surface must not
+        // cut them off, and a state change rebuilds only that layer.
+        let state = binding(InteractionState::empty());
+        let container = style.container_color.clone();
+        let elevation = style.elevation.clone();
+        let shadows = Dynamic::watch(state.clone(), move |state| {
+            let elevation = elevation.resolve(state);
+            shape
+                .fill(container.clone())
+                .shadow(Shadow::new(
+                    elevation.ambient_shadow_color.clone(),
+                    Vector::new(0.0, elevation.ambient_shadow_offset_y),
+                    elevation.ambient_shadow_radius,
+                    shape,
+                ))
+                .shadow(Shadow::new(
+                    elevation.key_shadow_color.clone(),
+                    Vector::new(0.0, elevation.key_shadow_offset_y),
+                    elevation.key_shadow_radius,
+                    shape,
+                ))
+        });
 
         self.content
             .install(FloatingScope(style.clone()))
+            .interaction_state(&state)
             .background(shape.fill(style.container_color))
             .clip(shape)
-            .shadow(ambient_shadow)
-            .shadow(key_shadow)
+            .background(shadows)
     }
 }
 
