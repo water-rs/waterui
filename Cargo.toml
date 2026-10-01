@@ -518,7 +518,7 @@ waterui-webview = { path = "components/platform/webview" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "47000c9a3765df4867d8e8c18d419b1cec6c0cbb" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "c7e12e54138b2c4ac406cb73067a94218654abab" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -574,7 +574,7 @@ waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "4c530503
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "ac4737d276bcf4e7c498938c0842ab1f5848cf9a" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "5bfec6b5d1b5f377472da806d8b6a97eb743e19d" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "743642ebae12f0b5f3316c646dc69ef6e8ca85b4" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
 hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "17b05b85063795dac4f2dc14645380c2eb869b3b" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
