@@ -35,12 +35,17 @@ use waterui::easing::{EasingCurve, Interpolatable};
 #[cfg(feature = "std")]
 use waterui::Intensity;
 
-// `.filter(F)` requires `F: Effect`; the whole family is at the graphics root
-// beside the `ViewEffect` family it mirrors.
+// `.filter(F)` requires `F: Filter + RenderTransfer` and `.effect(E)` requires
+// `E: Effect + RenderTransfer`; `filtrate` (the filters and effects) and
+// `cherenkov` (the render-transfer trait) are re-exported at the graphics root
+// so an app links the same copies the engine runs.
 #[cfg(feature = "gpu")]
 use waterui::graphics::{
-    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
-    ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
+    cherenkov::RenderTransfer,
+    filtrate::{
+        Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+        Filter,
+    },
 };
 
 // Apps implementing `GpuContent`/`Effect` must be able to use the same `wgpu` this
