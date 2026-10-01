@@ -11,7 +11,8 @@ use alloc::vec::Vec;
 
 use cherenkov::kurbo::{Affine, Point};
 use cherenkov::{
-    ColorStop, LinearGradient, MeshGradient, Paint, RadialGradient, SweepGradient, WorkingColor,
+    ColorStop, LinearGradient, MeshColorInterpolation, MeshGradient, Paint, RadialGradient,
+    SweepGradient, WorkingColor,
 };
 use waterui_core::View;
 use waterui_core::layout::StretchAxis;
@@ -63,6 +64,45 @@ fn point([x, y]: [f32; 2], name: &str) -> Point {
     assert!(x.is_finite(), "{name}.x must be finite");
     assert!(y.is_finite(), "{name}.y must be finite");
     Point::new(f64::from(x), f64::from(y))
+}
+
+/// The mesh paint over a `columns` × `rows` grid of unit-space control points
+/// and their colours, row-major.
+///
+/// # Panics
+/// When the grid has fewer than two vertices on a side, or either list does
+/// not hold exactly `columns * rows` entries.
+pub(super) fn mesh_paint(
+    columns: u32,
+    rows: u32,
+    points: Vec<[f32; 2]>,
+    colors: Vec<WorkingColor>,
+    smooths_colors: bool,
+) -> MeshGradient {
+    assert!(
+        columns >= 2 && rows >= 2,
+        "mesh gradients need at least a 2x2 grid of vertices"
+    );
+    let vertices = (columns * rows) as usize;
+    assert_eq!(
+        points.len(),
+        vertices,
+        "mesh gradients require exactly columns*rows control points"
+    );
+    assert_eq!(
+        colors.len(),
+        vertices,
+        "mesh gradients require exactly columns*rows colours"
+    );
+    let points = points
+        .into_iter()
+        .map(|position| point(position, "mesh gradient vertex"))
+        .collect();
+    MeshGradient::new(columns - 1, rows - 1, points, colors).interpolation(if smooths_colors {
+        MeshColorInterpolation::Smoothstep
+    } else {
+        MeshColorInterpolation::Linear
+    })
 }
 
 /// A gradient view: a [`Paint`] in unit space that fills the view's bounds.
@@ -162,27 +202,24 @@ impl Gradient {
     /// A gradient interpolated across a `columns` × `rows` grid of control
     /// vertices in unit space, row-major.
     ///
+    /// `smooths_colors` eases the colour weights across each patch
+    /// (`t * t * (3 - 2t)` on both patch coordinates) instead of blending them
+    /// bilinearly, which hides the grid's seams.
+    ///
     /// # Panics
     /// When the grid has fewer than two vertices on a side or `vertices`
     /// does not hold exactly `columns * rows` entries.
     #[must_use]
-    pub fn mesh(columns: u32, rows: u32, vertices: Vec<([f32; 2], WorkingColor)>) -> Self {
-        assert!(
-            columns >= 2 && rows >= 2,
-            "mesh gradients need at least a 2x2 grid of vertices"
-        );
-        assert_eq!(
-            vertices.len(),
-            (columns * rows) as usize,
-            "mesh gradients require exactly columns*rows vertices"
-        );
-        let (points, colors): (Vec<Point>, Vec<WorkingColor>) = vertices
-            .into_iter()
-            .map(|(position, color)| (point(position, "mesh gradient vertex"), color))
-            .unzip();
+    pub fn mesh(
+        columns: u32,
+        rows: u32,
+        vertices: Vec<([f32; 2], WorkingColor)>,
+        smooths_colors: bool,
+    ) -> Self {
+        let (points, colors): (Vec<[f32; 2]>, Vec<WorkingColor>) = vertices.into_iter().unzip();
         Self {
             gradient_type: GradientType::Mesh,
-            paint: Paint::Mesh(MeshGradient::new(columns - 1, rows - 1, points, colors)),
+            paint: Paint::Mesh(mesh_paint(columns, rows, points, colors, smooths_colors)),
         }
     }
 
@@ -250,18 +287,24 @@ mod tests {
     }
 
     #[test]
-    fn a_mesh_carries_its_grid() {
-        let gradient = Gradient::mesh(
-            2,
-            2,
-            vec![
-                ([0.0, 0.0], WorkingColor::BLACK),
-                ([1.0, 0.0], WorkingColor::WHITE),
-                ([0.0, 1.0], WorkingColor::WHITE),
-                ([1.0, 1.0], WorkingColor::BLACK),
-            ],
-        );
-        assert_eq!(gradient.gradient_type(), GradientType::Mesh);
-        assert!(matches!(gradient.paint(), Paint::Mesh(_)));
+    fn a_mesh_carries_its_grid_and_interpolation() {
+        let vertices = vec![
+            ([0.0, 0.0], WorkingColor::BLACK),
+            ([1.0, 0.0], WorkingColor::WHITE),
+            ([0.0, 1.0], WorkingColor::WHITE),
+            ([1.0, 1.0], WorkingColor::BLACK),
+        ];
+        for (smooths, mode) in [
+            (true, MeshColorInterpolation::Smoothstep),
+            (false, MeshColorInterpolation::Linear),
+        ] {
+            let gradient = Gradient::mesh(2, 2, vertices.clone(), smooths);
+            assert_eq!(gradient.gradient_type(), GradientType::Mesh);
+            let Paint::Mesh(mesh) = gradient.paint() else {
+                panic!("a mesh gradient is a mesh paint");
+            };
+            assert_eq!((mesh.columns(), mesh.rows()), (1, 1));
+            assert_eq!(mesh.interpolation_mode(), mode);
+        }
     }
 }

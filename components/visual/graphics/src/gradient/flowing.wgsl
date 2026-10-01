@@ -1,5 +1,7 @@
 // Flowing animated gradient shader paint.
-// Uses uniforms.time and uniforms.resolution
+// Uses uniforms.time and uniforms.resolution. The palette is linear sRGB and
+// the field is laid out with y running up, so `main` flips the engine's
+// top-down `uv` and converts the result into the working space.
 
 const PI: f32 = 3.14159265359;
 
@@ -71,7 +73,8 @@ fn palette(t: f32) -> vec3<f32> {
 }
 
 @fragment
-fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+fn main(@location(0) engine_uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let uv = vec2<f32>(engine_uv.x, 1.0 - engine_uv.y);
     let res = max(uniforms.resolution, vec2<f32>(1.0));
     let aspect = res.x / res.y;
     var p = vec2<f32>((uv.x - 0.5) * aspect, uv.y - 0.5);
@@ -96,5 +99,5 @@ fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let vign = smoothstep(1.15, 0.2, length(p));
     col *= 0.85 + 0.15 * vign;
 
-    return vec4<f32>(col, 1.0);
+    return vec4<f32>(cherenkov_linear_srgb(col), 1.0);
 }

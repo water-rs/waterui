@@ -65,6 +65,10 @@ divan = "0.1"
 # `Rgba16Float` host targets.
 wgpu = { workspace = true, features = ["counters"] }
 half = "2"
+# The accessibility-semantics tests mount graphics views in the Hydrolysis
+# semantic tree.
+waterui = { path = "../../.." }
+waterui-testing = { path = "../../../testing" }
 
 # The external-frame tests import real `IOSurface`-backed `CVPixelBuffer`
 # planes onto the Metal device.

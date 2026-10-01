@@ -9,7 +9,7 @@ pub mod color;
 mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
-mod gradients;
+pub mod gradient;
 #[cfg(feature = "gpu")]
 mod image;
 pub mod input;
@@ -47,7 +47,11 @@ pub use gpu::{
     Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuContentView, GpuRuntime,
     InputHandler, RedrawHandle, SharedGpuContext,
 };
-pub use gradients::gradient::{Gradient, GradientType};
+#[cfg(feature = "gpu")]
+pub use gradient::{
+    ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient,
+};
+pub use gradient::{Gradient, GradientType, MeshGradient};
 #[cfg(feature = "gpu")]
 pub use image::image_decode;
 pub use input::{
