@@ -170,8 +170,8 @@ use crate::time::Instant;
 
 /// Subscribes every reactive input of a window declaration once, for the
 /// window's whole lifetime: `title`, `frame`, `state`, `style`,
-/// `background`, `level`, `attention`, and `resize_increments`, `min_size`
-/// and `max_size` when present.
+/// `background`, `level`, `attention`, `icon`, and `resize_increments`,
+/// `min_size` and `max_size` when present.
 ///
 /// Each subscription requests a refresh through
 /// [`SemanticCore::refresh_watch`] — the same `FrameSignals::request_refresh`
@@ -199,6 +199,7 @@ fn subscribe_window_declaration_signals(window: &Window, core: &SemanticCore) ->
         core.refresh_watch(&window.background),
         core.refresh_watch(&window.level),
         core.refresh_watch(&window.attention),
+        core.refresh_watch(&window.icon),
     ];
     for signal in [
         &window.resize_increments,

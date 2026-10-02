@@ -953,7 +953,7 @@ fn native_window_attributes(
     let fullscreen = matches!(state, waterui::window::WindowState::Fullscreen);
     let maximized = matches!(state, waterui::window::WindowState::Maximized);
     let attributes = NativeWindow::default_attributes()
-        .with_window_icon(icon)
+        .with_window_icon(icon.clone())
         .with_title(window.display_title().snapshot().as_str())
         .with_resizable(window.resizable)
         .with_enabled_buttons(crate::platform::enabled_window_buttons(window.closable))
@@ -1005,6 +1005,14 @@ fn native_window_attributes(
             ),
             None => attributes,
         }
+    };
+    // Windows keeps two icons per window: `with_window_icon` set the small
+    // title-bar one (`ICON_SMALL`); the taskbar and Alt-Tab read the big
+    // one (`ICON_BIG`), which only `with_taskbar_icon` stages.
+    #[cfg(target_os = "windows")]
+    let attributes = {
+        use winit::platform::windows::WindowAttributesExtWindows as _;
+        attributes.with_taskbar_icon(icon)
     };
     // Resize increments write `WM_NORMAL_HINTS` — a stored property, so they
     // can travel with the map request safely. `with_resize_increments` takes
@@ -1106,6 +1114,7 @@ impl WinitRunner {
             wake,
             self.gpu_context.as_ref(),
             super::window_requires_transparency(window, &self.env),
+            self.window_icon.clone(),
         ));
         if self.gpu_context.is_none() {
             self.gpu_context = Some(gpu_context);

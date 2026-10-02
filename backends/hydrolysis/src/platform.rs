@@ -3017,12 +3017,16 @@ mod winit_impl {
         resizable: bool,
         closable: bool,
         decorations: bool,
-        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        /// The window's declared `WindowState` — `Normal`, `Minimized`,
+        /// `Maximized`, `Fullscreen` or `Closed`.
         state: WindowState,
         frame: waterui_core::layout::Rect,
         level: WindowLevel,
         attention: Option<UserAttention>,
         resize_increments: Option<waterui_core::layout::Size>,
+        /// The window's own icon, or `None` for the application icon the
+        /// runner staged at creation.
+        icon: Option<waterui::window::WindowIcon>,
     }
 
     /// A monitor's logical rect: `(position, extent)` — the shape
@@ -3064,6 +3068,10 @@ mod winit_impl {
         /// updates the binding, and reading the live geometry against the
         /// stale binding would yank the window straight back to its old frame.
         applied_properties: Option<AppliedWindowProperties>,
+        /// The application icon the runner staged on the window at creation
+        /// (`with_window_icon`): what `apply_properties` restores when the
+        /// declaration's `icon` binding reads `None`.
+        application_icon: Option<winit::window::Icon>,
         /// The requested window frame and state held until the window has
         /// actually mapped (`with_visible(false)`): on X11 a request made
         /// of an unmapped window is dropped, so the first mapped-signal
@@ -3138,7 +3146,7 @@ mod winit_impl {
             wake: RedrawHandle,
             requires_transparency: bool,
         ) -> Self {
-            Self::new_with_shared_gpu(window, wake, None, requires_transparency)
+            Self::new_with_shared_gpu(window, wake, None, requires_transparency, None)
                 .await
                 .0
         }
@@ -3166,6 +3174,10 @@ mod winit_impl {
         /// the last window closes. Post the request to the event loop and
         /// redraw the window there.
         ///
+        /// `application_icon` is the icon the host staged on the window at
+        /// creation: `apply_properties` restores it when the declaration's
+        /// `icon` binding reads `None`.
+        ///
         /// # Panics
         /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
@@ -3173,6 +3185,7 @@ mod winit_impl {
             wake: RedrawHandle,
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
+            application_icon: Option<winit::window::Icon>,
         ) -> (Self, WinitGpuContext) {
             let (surface, gpu) =
                 WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
@@ -3205,6 +3218,7 @@ mod winit_impl {
                     current_cursor_style: CursorStyle::Arrow,
                     applied_size_limits: None,
                     applied_properties: None,
+                    application_icon,
                     pending_mapped_request: MappedRequestRetry::default(),
                     transparent: requires_transparency,
                     #[cfg(any(
@@ -3268,6 +3282,40 @@ mod winit_impl {
                     UserAttention::Informational => winit::window::UserAttentionType::Informational,
                     UserAttention::Critical => winit::window::UserAttentionType::Critical,
                 }));
+        }
+
+        /// Pushes the requested window icon to the window server: the
+        /// declaration's own [`WindowIcon`] converted to winit's, or — on
+        /// `None`, the default — the application icon staged at creation.
+        /// X11 and Windows realize it; winit reports Wayland, macOS and the
+        /// remaining targets unsupported, where the call is a no-op. On
+        /// Windows `set_window_icon` covers only the small title-bar icon
+        /// (`ICON_SMALL`), so the same image also goes to the taskbar and
+        /// Alt-Tab icon (`ICON_BIG`).
+        fn apply_window_icon(&self, icon: Option<&waterui::window::WindowIcon>) {
+            let icon = match icon {
+                Some(icon) => match winit::window::Icon::from_rgba(
+                    icon.rgba().to_vec(),
+                    icon.width(),
+                    icon.height(),
+                ) {
+                    Ok(icon) => Some(icon),
+                    // A `WindowIcon`'s pixels are already validated against
+                    // its size; a failure here is the OS refusing the icon,
+                    // which leaves the previous one in place.
+                    Err(error) => {
+                        tracing::warn!("hydrolysis: window icon rejected by the platform: {error}");
+                        return;
+                    }
+                },
+                None => self.application_icon.clone(),
+            };
+            self.window.set_window_icon(icon.clone());
+            #[cfg(target_os = "windows")]
+            {
+                use winit::platform::windows::WindowExtWindows as _;
+                self.window.set_taskbar_icon(icon);
+            }
         }
 
         /// The `AppKit` half of `set_blur_behind`: while the window asks, an
@@ -4256,6 +4304,7 @@ mod winit_impl {
                     .resize_increments
                     .as_ref()
                     .map(nami::Signal::snapshot),
+                icon: window.icon.snapshot(),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -4284,6 +4333,9 @@ mod winit_impl {
                         LogicalSize::new(f64::from(size.width), f64::from(size.height))
                     }),
                 );
+            }
+            if applied.is_none_or(|p| p.icon != properties.icon) {
+                self.apply_window_icon(properties.icon.as_ref());
             }
             // The frame binding is pushed to the window only when it changed
             // since the previous pump. A user-driven resize or move lands in
