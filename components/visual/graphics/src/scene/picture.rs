@@ -384,7 +384,8 @@ mod tests {
     use super::*;
     use cherenkov::kurbo::{Rect, Shape};
     use cherenkov::testing::Event;
-    use cherenkov::{ImageData, ImageId, Rgba8, Sampling, WorkingColor};
+    use cherenkov::{Command, ImageData, ImageId, Paint, Rgba8, Sampling, WorkingColor};
+    use core::cell::Cell;
     use nami::{SignalExt, binding, constant};
     use waterui_core::layout::StretchAxis;
 
@@ -404,6 +405,30 @@ mod tests {
                     .expect("image source"),
                 )
                 .expect("image registration");
+            recorder.image(
+                resources.name(&image),
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                Sampling::Nearest,
+            );
+        }
+    }
+
+    struct ReplaySource {
+        bytes: alloc::sync::Arc<[u8]>,
+        color: WorkingColor,
+        replays: Rc<Cell<usize>>,
+    }
+
+    impl PictureSource for ReplaySource {
+        fn record(&self, recorder: &mut StaticRecorder, resources: &mut RecordingResources<'_>) {
+            self.replays.set(self.replays.get() + 1);
+            let image = resources
+                .image(
+                    ImageData::<Rgba8>::new(1, 1, alloc::sync::Arc::clone(&self.bytes))
+                        .expect("image source"),
+                )
+                .expect("image registration");
+            recorder.fill(Rect::new(0.0, 0.0, 10.0, 10.0), self.color);
             recorder.image(
                 resources.name(&image),
                 Rect::new(0.0, 0.0, 10.0, 10.0),
@@ -576,6 +601,85 @@ mod tests {
 
         let replaced = mount.frame(&mut Blank);
         assert_eq!(removed_images(&replaced.events), [id]);
+    }
+
+    #[test]
+    fn recovery_replays_once_then_reacts_to_a_new_frozen_picture_source() {
+        use crate::scene::resources::tests::Mount;
+
+        let first_replays = Rc::new(Cell::new(0));
+        let mount_a = Mount::new();
+        let first = Picture::record_with(
+            &mount_a.resources,
+            ReplaySource {
+                bytes: alloc::sync::Arc::from([255, 0, 0, 255]),
+                color: WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+                replays: Rc::clone(&first_replays),
+            },
+        );
+        let recordings = binding(first);
+        let picture = Picture::new(Size::new(10.0, 10.0), recordings.clone());
+        let mut content = RecordedScene {
+            picture,
+            watcher: None,
+            current: None,
+            rebuild_recording: false,
+        };
+        let first_frame = mount_a.frame(&mut content);
+        assert_eq!(first_replays.get(), 1);
+        assert_eq!(first_frame.drawn.len(), 1);
+
+        let mount_b = Mount::new();
+        let _preexisting = mount_b
+            .resources
+            .image(ImageData::<Rgba8>::new(1, 1, [0, 0, 255, 255]).expect("image source"))
+            .expect("preexisting replacement image");
+        content.rebuild_for_engine();
+        let replacement_frame = mount_b.frame(&mut content);
+        assert_eq!(first_replays.get(), 2);
+        assert_eq!(replacement_frame.drawn.len(), 1);
+        let replacement_second_frame = mount_b.frame(&mut content);
+        assert_eq!(first_replays.get(), 2);
+        assert!(
+            !replacement_second_frame
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::AddImage(_))),
+            "the unchanged recovered source must not be replayed on the second frame"
+        );
+
+        let second_replays = Rc::new(Cell::new(0));
+        recordings.set(Picture::record_with(
+            &mount_b.resources,
+            ReplaySource {
+                bytes: alloc::sync::Arc::from([0, 255, 0, 255]),
+                color: WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+                replays: Rc::clone(&second_replays),
+            },
+        ));
+        let changed_frame = mount_b.frame(&mut content);
+        assert_eq!(second_replays.get(), 2);
+        assert!(
+            changed_frame
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::AddImage(_))),
+            "a new frozen source must register its replacement image"
+        );
+
+        let mut resources = mount_b.resources.recording();
+        let mut recorder = Recorder::new();
+        content.build_scene(&mut recorder, &mut resources, 10.0, 10.0);
+        let recorded = recorder.finish();
+        let commands = recorded.snapshot().commands();
+        assert!(matches!(
+            commands.first(),
+            Some(Command::Fill {
+                paint: Paint::Solid(color),
+                ..
+            }) if *color == WorkingColor::new([0.0, 0.0, 1.0, 1.0])
+        ));
+        assert!(matches!(commands.get(1), Some(Command::Image { .. })));
     }
 
     #[test]
