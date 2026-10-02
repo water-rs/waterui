@@ -672,8 +672,8 @@ mod tests {
         let mut resources = mount_b.resources.recording();
         let mut recorder = Recorder::new();
         content.build_scene(&mut recorder, &mut resources, 10.0, 10.0);
-        let mut recorded = recorder.finish();
-        let commands = recorded.snapshot().commands();
+        let mut recording = recorder.finish();
+        let commands = recording.snapshot().commands();
         assert!(matches!(
             commands.first(),
             Some(Command::Fill {

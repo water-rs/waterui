@@ -410,7 +410,7 @@ mod tests {
     struct Tall;
 
     struct Rebuildable {
-        value: u32,
+        value: f32,
     }
 
     impl SceneContent for Rebuildable {
@@ -430,7 +430,7 @@ mod tests {
         }
 
         fn intrinsic_size(&self) -> Option<Size> {
-            Some(Size::new(self.value as f32, 1.0))
+            Some(Size::new(self.value, 1.0))
         }
 
         fn rebuild_for_engine(&mut self) {}
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn reconstruction_replaces_engine_bound_content_and_preserves_semantic_state() {
-        let view = SceneView::new(Rebuildable { value: 37 });
+        let view = SceneView::new(Rebuildable { value: 37.0 });
         let rebuilt = view.rebuild_for_engine();
         assert_eq!(
             rebuilt.intrinsic_size(),
