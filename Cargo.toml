@@ -61,7 +61,7 @@ apple-backend-url = "https://github.com/water-rs/apple-backend.git"
 # surface and the CLI's entry-owning Apple packaging require.
 apple-backend-revision = "84b13b3e9c60cab1ade9fa5b6e01d18bcde99f55"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "79ddc6f786aaffeacd3e3eafa297aa88ef9df0f6"
+android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
 # Gradle project for `--platform android --backend hydrolysis`. The revision
 # is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
