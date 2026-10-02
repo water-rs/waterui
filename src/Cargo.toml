@@ -81,8 +81,6 @@ cpu-time.workspace = true
 default = [
     "gpu",
     "assets",
-    "media",
-    "inspector",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -98,8 +96,9 @@ locale-list = ["waterui-locale/list"]
 # because `code(…)` is a plain authoring API; an application that shows no code
 # drops syntect, two-face, and their syntax and theme tables by opting out.
 highlight = ["waterui-text/highlight"]
-# The devtools Inspector hub and its wire protocol. Default-on for
-# development hosts; embedded firmware disables it — the hub is desktop
+# The devtools Inspector hub and its wire protocol. Opt-in: a packaged
+# application that never attaches an inspector leaves the hub and its server
+# stack out, and embedded firmware disables it anyway — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
 # targets.
 inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]

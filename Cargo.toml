@@ -337,6 +337,9 @@ waterui-dylib = { workspace = true, optional = true }
 
 [dev-dependencies]
 waterui-testing = { path = "testing" }
+# `media` is opt-in, and the avatar tests exercise `Avatar::image`. A
+# dev-dependency on this package turns it on for its own test targets only.
+waterui = { path = ".", features = ["media"] }
 # Writes the test portrait the avatar visual acceptance renders. PNG only:
 # the encoder is all these tests need.
 image = { version = "0.25.10", default-features = false, features = ["png"] }
@@ -345,8 +348,6 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 default = [
     "gpu",
     "assets",
-    "media",
-    "inspector",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -366,6 +367,9 @@ gpu = ["waterui-internal/gpu", "waterui-dylib?/gpu"]
 # because `code(…)` is a plain authoring API; opting out drops syntect, two-face
 # and the syntax and theme tables they carry.
 highlight = ["waterui-internal/highlight", "waterui-dylib?/highlight"]
+# The devtools Inspector hub. Opt-in for packaged builds: `water run` and
+# other development sessions get it through the linkage the CLI selects, while
+# a release package that never attaches the hub leaves its server stack out.
 inspector = ["waterui-internal/inspector", "waterui-dylib?/inspector"]
 inspector-signals = ["inspector", "waterui-internal/inspector-signals"]
 snackbar = ["waterui-internal/snackbar", "waterui-dylib?/snackbar"]

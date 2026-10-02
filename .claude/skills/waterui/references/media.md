@@ -14,6 +14,12 @@ conventions in [components.md](components.md): lowercase ergonomic constructors,
 
 ## Media
 
+`waterui::media` (`Photo`, `Video`, `VideoPlayer`, and the image and video kinds of
+`asset!`) is behind the `media` feature, which is not on by default: add
+`features = ["media"]` to the `waterui` dependency. The `video` feature is separate;
+enable `features = ["media", "video"]` when an application uses both photo and video
+surfaces.
+
 ```rust
 use waterui::media::photo::Event as PhotoEvent;   // the event type needs this alias import
 use waterui::media::{Image, Photo, Url};
