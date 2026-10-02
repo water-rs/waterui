@@ -68,6 +68,18 @@ impl<T: Default, C, R> Default for ViewDispatcher<T, C, R> {
 }
 
 thread_local! {
+    // The initializer is already a `const` block. Clippy agrees everywhere but
+    // the Android targets, where it reports it as one that "can be made const";
+    // the attribute rides on the generated static because the lint is emitted
+    // from inside the macro's expansion and an attribute on the invocation
+    // never reaches it.
+    #[cfg_attr(
+        target_os = "android",
+        allow(
+            clippy::missing_const_for_thread_local,
+            reason = "false positive on this target (rust-lang/rust-clippy#13422); the initializer is already const"
+        )
+    )]
     static DISPATCH_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
