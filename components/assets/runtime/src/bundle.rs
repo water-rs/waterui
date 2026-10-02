@@ -1,9 +1,5 @@
-use alloc::borrow::Cow;
-use alloc::string::ToString;
-use alloc::vec::Vec;
-
-use std::env;
 use std::path::PathBuf;
+use waterui_core::ResourceContext;
 
 #[cfg(any(feature = "media", feature = "video"))]
 use waterui_core::{Environment, View};
@@ -14,8 +10,6 @@ use waterui_url::Url;
 use waterui_video::{Video, VideoPlayer};
 
 use crate::{AssetError, Data, LargeFile};
-
-const ASSETS_ENV: &str = "WATERUI_ASSETS_ROOT";
 
 /// Asset bundle rooted at the packaged `WaterUI` assets directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,13 +38,9 @@ impl Bundle {
 
     /// Resolves a logical asset path to a filesystem path.
     ///
-    /// # Panics
-    ///
-    /// Panics when the `WaterUI` assets root cannot be discovered.
     #[must_use]
-    pub fn path(&self, logical_path: &str) -> PathBuf {
-        let mut root = assets_root()
-            .unwrap_or_else(|error| panic!("WaterUI assets root unavailable: {error}"));
+    pub fn path(&self, resources: &ResourceContext, logical_path: &str) -> PathBuf {
+        let mut root = resources.assets().to_path_buf();
         if !self.prefix.is_empty() {
             root.push(self.prefix);
         }
@@ -62,8 +52,12 @@ impl Bundle {
 
     /// Resolves a logical asset path to a file URL.
     #[must_use]
-    pub fn url(&self, logical_path: &str) -> Url {
-        Url::from_file_path_str(self.path(logical_path).to_string_lossy().into_owned())
+    pub fn url(&self, resources: &ResourceContext, logical_path: &str) -> Url {
+        Url::from_file_path_str(
+            self.path(resources, logical_path)
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }
 
@@ -102,20 +96,20 @@ impl ImageAsset {
 
     /// Resolves this image asset to a file URL.
     #[must_use]
-    pub fn url(&self) -> Url {
-        self.bundle.url(self.logical_path)
+    pub fn url(&self, resources: &ResourceContext) -> Url {
+        self.bundle.url(resources, self.logical_path)
     }
 }
 
 #[cfg(feature = "media")]
 impl View for ImageAsset {
-    fn body(self, _env: &Environment) -> impl View {
-        Photo::new(self.url())
+    fn body(self, env: &Environment) -> impl View {
+        Photo::new(self.url(ResourceContext::from_environment(env)))
     }
 
-    /// Resolves to `Photo`; forwards its axis.
+    /// Matches the non-resizable `Photo` constructed by `body`, independent of its URL.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        Photo::new(self.url()).stretch_axis()
+        waterui_core::layout::StretchAxis::None
     }
 }
 
@@ -143,32 +137,32 @@ impl VideoAsset {
 
     /// Resolves this video asset to a file URL.
     #[must_use]
-    pub fn url(&self) -> Url {
-        self.bundle.url(self.logical_path)
+    pub fn url(&self, resources: &ResourceContext) -> Url {
+        self.bundle.url(resources, self.logical_path)
     }
 
     /// Builds a raw [`Video`] view from this asset.
     #[must_use]
-    pub fn raw(self) -> Video {
-        waterui_video::video(self.url())
+    pub fn raw(self, resources: &ResourceContext) -> Video {
+        waterui_video::video(self.url(resources))
     }
 
     /// Builds a [`VideoPlayer`] view from this asset.
     #[must_use]
-    pub fn player(self) -> VideoPlayer {
-        waterui_video::video_player(self.url())
+    pub fn player(self, resources: &ResourceContext) -> VideoPlayer {
+        waterui_video::video_player(self.url(resources))
     }
 }
 
 #[cfg(feature = "video")]
 impl View for VideoAsset {
-    fn body(self, _env: &Environment) -> impl View {
-        self.raw()
+    fn body(self, env: &Environment) -> impl View {
+        self.raw(ResourceContext::from_environment(env))
     }
 
-    /// Resolves to `Video`; forwards its axis.
+    /// Matches the default fit-mode `Video` constructed by `body`, independent of its URL.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
-        self.raw().stretch_axis()
+        waterui_core::layout::StretchAxis::Horizontal
     }
 }
 
@@ -191,14 +185,14 @@ impl AudioAsset {
 
     /// Resolves this audio asset to a file URL.
     #[must_use]
-    pub fn url(&self) -> Url {
-        self.bundle.url(self.logical_path)
+    pub fn url(&self, resources: &ResourceContext) -> Url {
+        self.bundle.url(resources, self.logical_path)
     }
 
     /// Resolves this audio asset to a filesystem path.
     #[must_use]
-    pub fn path(&self) -> PathBuf {
-        self.bundle.path(self.logical_path)
+    pub fn path(&self, resources: &ResourceContext) -> PathBuf {
+        self.bundle.path(resources, self.logical_path)
     }
 }
 
@@ -224,14 +218,14 @@ impl DataAsset {
     /// # Errors
     ///
     /// Returns [`AssetError`] when the asset cannot be read from disk.
-    pub fn load(&self) -> Result<Data, AssetError> {
-        Data::from_local(self.bundle.path(self.logical_path))
+    pub fn load(&self, resources: &ResourceContext) -> Result<Data, AssetError> {
+        Data::from_local(self.bundle.path(resources, self.logical_path))
     }
 
     /// Resolves this data asset to a filesystem path.
     #[must_use]
-    pub fn path(&self) -> PathBuf {
-        self.bundle.path(self.logical_path)
+    pub fn path(&self, resources: &ResourceContext) -> PathBuf {
+        self.bundle.path(resources, self.logical_path)
     }
 }
 
@@ -257,14 +251,14 @@ impl LargeFileAsset {
     /// # Errors
     ///
     /// Returns [`AssetError`] when the asset cannot be read or memory-mapped.
-    pub async fn load(&self) -> Result<LargeFile, AssetError> {
-        LargeFile::from_local(self.bundle.path(self.logical_path)).await
+    pub async fn load(&self, resources: &ResourceContext) -> Result<LargeFile, AssetError> {
+        LargeFile::from_local(self.bundle.path(resources, self.logical_path)).await
     }
 
     /// Resolves this large-file asset to a filesystem path.
     #[must_use]
-    pub fn path(&self) -> PathBuf {
-        self.bundle.path(self.logical_path)
+    pub fn path(&self, resources: &ResourceContext) -> PathBuf {
+        self.bundle.path(resources, self.logical_path)
     }
 }
 
@@ -287,8 +281,8 @@ impl FontAsset {
 
     /// Resolves this font asset to a filesystem path.
     #[must_use]
-    pub fn path(&self) -> PathBuf {
-        self.bundle.path(self.logical_path)
+    pub fn path(&self, resources: &ResourceContext) -> PathBuf {
+        self.bundle.path(resources, self.logical_path)
     }
 
     /// Returns the logical path inside the asset bundle.
@@ -298,42 +292,49 @@ impl FontAsset {
     }
 }
 
-/// Resolves the root directory of the staged asset bundle.
-///
-/// Honors `WATERUI_ASSETS_ROOT`, then probes executable-relative locations
-/// used by packaged applications. Backends use this to find bundle-adjacent
-/// resources such as the staged window icon.
-///
-/// # Errors
-///
-/// Fails when no staged bundle can be located.
-pub fn bundle_root() -> Result<PathBuf, AssetError> {
-    assets_root()
+/// Root directory owned by this application or embedded instance.
+#[must_use]
+pub fn bundle_root(resources: &ResourceContext) -> &std::path::Path {
+    resources.assets()
 }
 
-fn assets_root() -> Result<PathBuf, AssetError> {
-    if let Some(root) = env::var_os(ASSETS_ENV) {
-        return Ok(PathBuf::from(root));
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn the_same_handle_resolves_against_its_owning_instance() {
+        let first = ResourceContext::new("/first/assets", "/first/fonts");
+        let second = ResourceContext::new("/second/assets", "/second/fonts");
+        let asset = DataAsset::new(Bundle::new("documents"), "readme.json");
+        assert_eq!(
+            asset.path(&first),
+            Path::new("/first/assets/documents/readme.json")
+        );
+        assert_eq!(
+            asset.path(&second),
+            Path::new("/second/assets/documents/readme.json")
+        );
+        assert_eq!(bundle_root(&first), Path::new("/first/assets"));
     }
 
-    let exe = env::current_exe().map_err(|error| AssetError::io(error.to_string()))?;
-    let mut candidates = Vec::new();
-    if let Some(parent) = exe.parent() {
-        candidates.push(parent.join("waterui_assets"));
-        candidates.push(parent.join("resources").join("waterui_assets"));
-        if let Some(grand_parent) = parent.parent() {
-            candidates.push(grand_parent.join("Resources").join("waterui_assets"));
-        }
+    #[cfg(feature = "media")]
+    #[test]
+    fn image_asset_axis_matches_the_resolved_photo() {
+        let context = ResourceContext::new("/fixture/assets", "/fixture/fonts");
+        let image = ImageAsset::new(Bundle::main(), "image.png");
+        assert_eq!(
+            image.stretch_axis(),
+            Photo::new(image.url(&context)).stretch_axis()
+        );
     }
 
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
-        }
+    #[cfg(feature = "video")]
+    #[test]
+    fn video_asset_axis_matches_the_resolved_video() {
+        let context = ResourceContext::new("/fixture/assets", "/fixture/fonts");
+        let video = VideoAsset::new(Bundle::main(), "movie.mp4");
+        assert_eq!(video.stretch_axis(), video.raw(&context).stretch_axis());
     }
-
-    Err(AssetError::invalid_path(
-        Cow::Borrowed(ASSETS_ENV),
-        "set WATERUI_ASSETS_ROOT or package assets into a discoverable resources directory",
-    ))
 }

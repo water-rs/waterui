@@ -23,16 +23,15 @@ fn include_bundle_expands_mount_module() {
 
 #[test]
 fn asset_macro_expands_for_every_kind() {
-    // Image: local and remote resolve to `waterui::media::Photo`.
-    let _local_image = asset!("assets/logo.png");
+    // Packaged paths are relative to ResourceContext's assets root.
+    let _local_image: waterui::ImageAsset = asset!("logo.png");
     let _remote_image = asset!("https://waterui.dev/logo.png");
-    // Video: local paths route through `waterui::Url`.
-    let _local_video = asset!("assets/intro.mp4");
+    let _local_video: waterui::VideoAsset = asset!("intro.mp4");
     let _remote_video = asset!("https://waterui.dev/intro.mp4");
     // Font, audio, data, and large-model handles live at the facade root.
-    let _font = asset!("assets/body.ttf");
-    let _audio = asset!("assets/chime.mp3");
-    let _data = asset!("assets/config.json");
+    let _font: waterui::FontAsset = asset!("body.ttf");
+    let _audio: waterui::AudioAsset = asset!("chime.mp3");
+    let _data: waterui::DataAsset = asset!("config.json");
     let _remote_data = asset!("https://waterui.dev/config.json");
-    let _model = asset!("assets/classifier.onnx");
+    let _model: waterui::LargeFileAsset = asset!("classifier.onnx");
 }

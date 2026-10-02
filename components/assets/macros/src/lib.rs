@@ -320,8 +320,10 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
     expand_mount(&args.mount.to_string(), root, path_span).into()
 }
 
-/// Parsed arguments of an `include_web!("web", out_dir = "…", …)` invocation.
+/// Parsed arguments of an `include_web!(resources, "web", out_dir = "…", …)` invocation.
 struct IncludeWebArgs {
+    /// Resource context borrowed from the application's environment.
+    resources: syn::Expr,
     /// Web project root relative to `CARGO_MANIFEST_DIR`.
     root: LitStr,
     /// Build output directory inside the root (`dist` by default).
@@ -336,8 +338,11 @@ struct IncludeWebArgs {
 
 impl Parse for IncludeWebArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let resources = input.parse()?;
+        input.parse::<Token![,]>()?;
         let root: LitStr = input.parse()?;
         let mut args = Self {
+            resources,
             root,
             out_dir: None,
             entry: None,
@@ -379,11 +384,11 @@ impl Parse for IncludeWebArgs {
 const WEB_MOUNT: &str = "web";
 
 #[proc_macro]
-/// Embeds a web frontend into a view: `include_web!("web")` expands to the
+/// Embeds a web frontend into a view: `include_web!(resources, "web")` expands to the
 /// `WebViewOpen` that serves the project's staged build output over the
 /// engine's asset origin.
 ///
-/// The first argument is the web project root, required, resolved against
+/// The first argument borrows the ResourceContext; the second is the web project root, resolved against
 /// `CARGO_MANIFEST_DIR`; it must contain a `package.json` (the macro points at
 /// the project, not its build output). Named arguments are the complete
 /// configuration surface:
@@ -413,11 +418,12 @@ const WEB_MOUNT: &str = "web";
 ///
 /// The expansion is an ordinary [`WebViewOpen`](waterui_webview::WebViewOpen),
 /// so everything chains as usual:
-/// `include_web!("web").serve(MyApi).inject(..).on_event(..)`.
+/// `include_web!(resources, "web").serve(MyApi).inject(..).on_event(..)`.
 ///
 /// Requires the `webview` and `assets` features of the `waterui` crate.
 pub fn include_web(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeWebArgs);
+    let resources = &args.resources;
     let root_span = args.root.span();
 
     let root = match crate_root().join(args.root.value()).canonicalize() {
@@ -512,7 +518,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                 ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
                 ::core::option::Option::None => #waterui::webview::WebView::open_assets(
                     #waterui::webview::DirectoryServer::new(
-                        #waterui::Bundle::new(#web_root).path("")
+                        #waterui::Bundle::new(#web_root).path(#resources, "")
                     )
                     .spa(#spa)
                     #csp
@@ -527,6 +533,8 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 /// Expands a single asset path into its inferred `WaterUI` asset handle.
+/// Local paths are relative to the packaged asset root. Native handles take
+/// a `ResourceContext` for loading; image/video views obtain it from their environment.
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
     let waterui = match waterui_crate_path() {
@@ -580,14 +588,24 @@ pub fn asset(input: TokenStream) -> TokenStream {
             if is_remote {
                 quote! { #waterui::media::Photo::new(#path_lit) }
             } else {
-                quote! { #waterui::media::Photo::from_path(#path_lit) }
+                quote! {{
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { #waterui::ImageAsset::new(#waterui::Bundle::main(), #path_lit) }
+                    #[cfg(target_arch = "wasm32")]
+                    { #waterui::media::Photo::from_path(#path_lit) }
+                }}
             }
         }
         AssetKind::Video => {
             if is_remote {
                 quote! { #waterui::video::video(#path_lit) }
             } else {
-                quote! { #waterui::video::video(#waterui::Url::from_file_path_str(#path_lit)) }
+                quote! {{
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { #waterui::VideoAsset::new(#waterui::Bundle::main(), #path_lit) }
+                    #[cfg(target_arch = "wasm32")]
+                    { #waterui::video::video(#waterui::Url::from_file_path_str(#path_lit)) }
+                }}
             }
         }
         AssetKind::Audio => {
@@ -605,14 +623,19 @@ pub fn asset(input: TokenStream) -> TokenStream {
             } else if is_remote {
                 quote! { #waterui::Data::from_remote(#path_lit) }
             } else {
-                quote! { #waterui::Data::from_local(#path_lit) }
+                quote! {{
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { #waterui::DataAsset::new(#waterui::Bundle::main(), #path_lit) }
+                    #[cfg(target_arch = "wasm32")]
+                    { #waterui::Data::from_local(#path_lit) }
+                }}
             }
         }
         AssetKind::LargeModel => {
             if is_remote {
                 quote! { #waterui::LargeFile::from_remote(#path_lit) }
             } else {
-                quote! { #waterui::LargeFile::from_local(#path_lit) }
+                quote! { #waterui::LargeFileAsset::new(#waterui::Bundle::main(), #path_lit) }
             }
         }
     };
