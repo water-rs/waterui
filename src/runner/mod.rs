@@ -195,6 +195,10 @@ pub fn run(app: App, style: impl crate::Style) {
     // any async work a view starts (a `GpuView`'s `setup`, above all) never
     // completes and the frame is rendered against uninitialized state.
     let local_executor = executor::HeadlessMainThreadExecutor::thread_shared();
+    // Declared before the runtime state below so it drops after it: closing
+    // and draining the shared queue while this thread's locals are intact is
+    // what keeps a still-queued task out of thread-local teardown (#332).
+    let _executor_teardown = executor::DrainExecutorOnDrop::new(local_executor.clone());
     // This host paces frames itself rather than vsyncing against a panel, so
     // the executor budgets at the headless rate.
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(

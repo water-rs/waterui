@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use executor_core::LocalExecutor;
 use executor_core::async_task::{self, AsyncTask, Runnable};
@@ -161,17 +162,34 @@ fn emit_focusable_node(
 ///
 /// This mirrors what the Apple path does in a test: `spawn_local` hands the work
 /// to the main queue and returns, and a unit test never runs a main loop, so the
-/// future is simply never polled. Runnables are therefore parked in a
-/// thread-local queue and dropped when the thread ends. Do not run them inline —
-/// these futures re-enter the renderer and its GPU work, which deadlocks when
-/// polled in the middle of the render call that spawned them.
-#[derive(Clone, Copy, Debug, Default)]
-struct TestLocalExecutor;
+/// future is simply never polled. Runnables are parked in a channel the test
+/// environment owns (`ParkedRunnables` below), so they are dropped when the
+/// test's last `Environment` clone drops — while this thread's locals are still
+/// alive — instead of inside thread-local teardown, where a task future whose
+/// drop touches a dead thread-local aborts the process
+/// (water-rs/hydrolysis#332). Do not run them inline — these futures re-enter
+/// the renderer and its GPU work, which deadlocks when polled in the middle of
+/// the render call that spawned them.
+#[derive(Clone, Debug)]
+struct TestLocalExecutor {
+    parked_tx: mpsc::Sender<Runnable>,
+}
 
-thread_local! {
-    /// Parks runnables so dropping them (which would cancel the task) is deferred
-    /// to thread teardown rather than happening inside `schedule`.
-    static PARKED_RUNNABLES: RefCell<Vec<Runnable>> = const { RefCell::new(Vec::new()) };
+/// Owns the queue [`TestLocalExecutor`] parks runnables into.
+///
+/// Stored in the environment by [`test_environment`], so the queue's lifetime
+/// is the test's `Environment`: dropping the receiver empties the channel on
+/// the owning thread. A schedule arriving after the owner is gone finds a dead
+/// channel and takes the same bounded-leak path the headless executor uses for
+/// its teardown race — the runnable cannot be dropped on the waker's thread
+/// (async-task's `spawn_local` thread check) and must not wait for
+/// thread-local teardown.
+struct ParkedRunnables {
+    #[expect(
+        dead_code,
+        reason = "held for its Drop — empties the parked queue while thread-locals are alive"
+    )]
+    rx: mpsc::Receiver<Runnable>,
 }
 
 impl LocalExecutor for TestLocalExecutor {
@@ -181,8 +199,11 @@ impl LocalExecutor for TestLocalExecutor {
     where
         Fut: Future + 'static,
     {
-        let (runnable, task) = async_task::spawn_local(fut, |runnable: Runnable| {
-            PARKED_RUNNABLES.with(|parked| parked.borrow_mut().push(runnable));
+        let parked_tx = self.parked_tx.clone();
+        let (runnable, task) = async_task::spawn_local(fut, move |runnable| {
+            if let Err(unsent) = parked_tx.send(runnable) {
+                std::mem::forget(unsent.0);
+            }
         });
         runnable.schedule();
         task
@@ -190,11 +211,17 @@ impl LocalExecutor for TestLocalExecutor {
 }
 
 pub(crate) fn test_environment() -> Environment {
+    let (parked_tx, parked_rx) = mpsc::channel();
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
-        TestLocalExecutor,
+        TestLocalExecutor { parked_tx },
         waterui::task::RefreshRate::HEADLESS,
     ));
-    themed_test_environment()
+    let mut env = themed_test_environment();
+    // The receiver's owner is the environment itself: it drops with the
+    // test's last env clone, emptying the parked queue while thread-locals
+    // are still alive.
+    env.insert(ParkedRunnables { rx: parked_rx });
+    env
 }
 
 /// The same environment, but without pinning this thread's local executor, so

@@ -473,7 +473,7 @@ impl HeadlessRuntime {
             popup_windows: Vec::new(),
             theme,
             fonts,
-            _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
+            _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             _gpu_reclaim: ReclaimGpuOnDrop(gpu.clone()),
             gpu,
             local_executor,
