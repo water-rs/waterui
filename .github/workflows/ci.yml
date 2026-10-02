@@ -309,31 +309,6 @@ jobs:
             exit 1
           fi
 
-  ffi-header:
-    name: FFI Header
-    needs: changes
-    if: needs.changes.outputs.ffi == 'true'
-    # The generator unions one expansion per shipped backend target, so the
-    # header is host-independent — but the Apple-target expansions still need
-    # Xcode's clang, so macOS remains the cheapest host that can run all four.
-    runs-on: macos-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      # The toolchain pin, the cache and the verification all live in the
-      # action, which `ffi-header-cache.yml` runs on pushes to `dev` with
-      # `save: 'true'`. That warmer is the only writer; this job reads.
-      #
-      # The cache hits here where the old one never did: the generator is its
-      # own crate whose build costs cbindgen alone, the one framework compile
-      # left is cbindgen's check-profile expansion — rmeta, a fraction of the
-      # 0.8 GB dev-profile tarball this job measured when it last tried a target
-      # cache — and the nightly it runs on is a fixed date instead of a channel
-      # that moved out from under the key every day.
-      - uses: ./.github/actions/ffi-header
-        with:
-          save: 'false'
-
   android-ffi:
     name: Android FFI
     needs: changes
