@@ -1157,7 +1157,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 dependencies = [
  "color",
  "filtrate-core",
@@ -1175,7 +1175,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 dependencies = [
  "ash",
  "bytemuck",
@@ -1209,7 +1209,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 dependencies = [
  "naga",
  "thiserror 2.0.21",
@@ -2255,7 +2255,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -2273,12 +2273,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2971,7 +2971,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=ff710492d5f8adf335fe534453c6a39713bf4d10#ff710492d5f8adf335fe534453c6a39713bf4d10"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=87b257dbefbc554698440a9f64118ac72d4c8331#87b257dbefbc554698440a9f64118ac72d4c8331"
 dependencies = [
  "cherenkov",
  "hydrolysis",
@@ -10182,7 +10182,7 @@ dependencies = [
 [[patch.unused]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=85a6ab81bc2c73da791f7e1f8295c75690913b2b#85a6ab81bc2c73da791f7e1f8295c75690913b2b"
+source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
 
 [[patch.unused]]
 name = "waterkit-camera"
