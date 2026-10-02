@@ -617,6 +617,20 @@ impl Recording {
         self.open_layers
     }
 
+    /// Each recorded glyph run's transform and run-local glyph offsets, in op
+    /// order — the actual positions a flush lowers. `append` has already folded
+    /// every placement into the op's transform, so `transform * (x, y)` is the
+    /// point the ink lands at. For tests asserting where text paints.
+    #[cfg(test)]
+    pub(crate) fn glyph_runs(&self) -> impl Iterator<Item = (Affine, &[Glyph])> {
+        self.ops.iter().filter_map(|op| match op {
+            Op::Glyphs {
+                transform, glyphs, ..
+            } => Some((*transform, glyphs.as_ref())),
+            _ => None,
+        })
+    }
+
     /// The premultiplied sRGB colours of every solid fill or stroke op, for
     /// tests asserting a colour reached the recording.
     #[cfg(test)]
