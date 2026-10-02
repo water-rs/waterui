@@ -25,6 +25,7 @@ effects = ["dep:filtrate", "dep:arc-swap"]
 # device here.
 gpu = [
     "effects",
+    "filtrate/gpu",
     "dep:cherenkov-gpu",
     "dep:thiserror",
     "dep:wgpu",
