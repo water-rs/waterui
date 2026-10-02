@@ -237,7 +237,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            native_resource_fonts,
+            |env| native_resource_fonts(waterui_core::ResourceContext::from_environment(env)),
         )
     }
 
@@ -266,7 +266,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            native_resource_fonts,
+            |env| native_resource_fonts(waterui_core::ResourceContext::from_environment(env)),
         )
     }
 
@@ -303,7 +303,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::deterministic_test_fonts,
+            |_| super::fonts::deterministic_test_fonts(),
         )
     }
 
@@ -326,13 +326,14 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::deterministic_test_fonts,
+            |_| super::fonts::deterministic_test_fonts(),
         )
     }
 
     /// Same as [`Self::new_for_tests`] but loads the fonts the windowed
-    /// runners use — the system font collection plus `resources/fonts` — via
-    /// [`native_resource_fonts`] instead of the bundled deterministic set.
+    /// runners use — the system font collection plus the staged fonts
+    /// directory — via [`native_resource_fonts`] instead of the bundled
+    /// deterministic set.
     ///
     /// Text-measurement fidelity tests belong here: the deterministic fonts
     /// shape snugly, so a measure-versus-paint divergence that only appears on
@@ -354,7 +355,11 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::native_test_fonts,
+            |env| {
+                super::fonts::native_test_fonts(waterui_core::ResourceContext::from_environment(
+                    env,
+                ))
+            },
         )
     }
 
@@ -384,7 +389,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::deterministic_test_fonts,
+            |_| super::fonts::deterministic_test_fonts(),
         )
     }
 
@@ -395,13 +400,14 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
         style: impl crate::Style,
-        build_fonts: fn() -> parley::FontContext,
+        build_fonts: fn(&Environment) -> parley::FontContext,
     ) -> Self {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
         let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+        waterui_core::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
@@ -416,7 +422,7 @@ impl HeadlessRuntime {
         // seeded from this collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of enumerating
         // the system's fonts for itself.
-        let fonts = FontCollection::new(build_fonts());
+        let fonts = FontCollection::new(build_fonts(&env));
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install

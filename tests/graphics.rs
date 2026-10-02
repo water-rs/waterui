@@ -15,7 +15,7 @@ use waterui::graphics::color::Srgb;
 use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui::shape::{Circle, ShapeExt as _};
-use waterui_graphics::{Gradient, Picture, ShaderPaintView};
+use waterui_graphics::{FlowingGradient, Gradient, Picture, ShaderPaintView};
 use waterui_testing::{OffscreenApp, Role};
 
 fn linear_gradient_view() -> impl waterui::View {
@@ -33,7 +33,7 @@ fn linear_gradient_view() -> impl waterui::View {
 }
 
 fn animated_mesh_gradient_view() -> impl waterui::View {
-    ShaderPaintView::flowing_gradient()
+    FlowingGradient::new()
         .size(180.0, 120.0)
         .a11y_role(AccessibilityRole::Image)
         .a11y_label("Animated mesh gradient")

@@ -277,6 +277,7 @@ pub fn run(
         .map(waterui::inspector::InspectorRuntime::observe_signals);
 
     let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    waterui_core::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -334,9 +335,12 @@ pub fn run(
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(super::native_resource_fonts());
+    let fonts = FontCollection::new(super::native_resource_fonts(
+        waterui_core::ResourceContext::from_environment(&env),
+    ));
     fonts.clone().install(&mut env);
-    let window_icon = load_staged_window_icon();
+    let window_icon =
+        load_staged_window_icon(waterui_core::ResourceContext::from_environment(&env));
     let mut runner = WinitRunner {
         env,
         theme,
@@ -437,8 +441,10 @@ struct WinitRunner {
 ///
 /// Absence is a legitimate state (bare `cargo run`, tests, previews without
 /// staging); a present-but-undecodable icon is reported and skipped.
-fn load_staged_window_icon() -> Option<winit::window::Icon> {
-    let root = waterui_assets::bundle_root().ok()?;
+fn load_staged_window_icon(
+    resources: &waterui_core::ResourceContext,
+) -> Option<winit::window::Icon> {
+    let root = waterui_assets::bundle_root(resources);
     let path = root.join(waterui_assets::WINDOW_ICON_FILE);
     let file = std::fs::File::open(&path).ok()?;
     let decoder = png::Decoder::new(std::io::BufReader::new(file));

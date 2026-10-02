@@ -219,6 +219,7 @@ pub fn run(app: App, style: impl crate::Style) {
         last_window: _,
     } = app.into_parts();
     let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+    waterui_core::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -237,7 +238,9 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(native_resource_fonts());
+    let fonts = FontCollection::new(native_resource_fonts(
+        waterui_core::ResourceContext::from_environment(&env),
+    ));
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()

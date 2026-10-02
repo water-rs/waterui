@@ -260,42 +260,25 @@ pub(crate) fn deterministic_test_fonts() -> parley::FontContext {
     font_cx
 }
 
-/// The system's fonts plus every `.ttf`/`.otf` under the app's `resources/fonts`
-/// directories, with the recognized script fallbacks installed.
+/// The system's fonts plus every `.ttf`/`.otf` under the application's staged
+/// fonts directory, with the recognized script fallbacks installed.
+///
+/// `resources` is the application's own [`waterui_core::ResourceContext`]: the
+/// fonts directory is owned by that context and is never probed from the
+/// process's working directory or executable location, so an embedded host's
+/// fonts come from the roots it installed.
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn native_resource_fonts() -> parley::FontContext {
+pub(super) fn native_resource_fonts(
+    resources: &waterui_core::ResourceContext,
+) -> parley::FontContext {
     use parley::fontique::Blob;
     use std::sync::Arc;
 
-    let mut roots = Vec::new();
-    if let Ok(current_dir) = std::env::current_dir() {
-        roots.push(current_dir.join("resources").join("fonts"));
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(exe_dir) = exe.parent()
-    {
-        roots.push(exe_dir.join("resources").join("fonts"));
-        if let Some(contents_dir) = exe_dir.parent()
-            && contents_dir
-                .file_name()
-                .is_some_and(|name| name == "Contents")
-        {
-            roots.push(
-                contents_dir
-                    .join("Resources")
-                    .join("resources")
-                    .join("fonts"),
-            );
-        }
-    }
-
+    let root = resources.fonts();
     let mut font_cx = parley::FontContext::new();
     let mut resource_fonts = ResourceFontFamilies::default();
-    for root in roots {
-        if !root.exists() {
-            continue;
-        }
-        let entries = std::fs::read_dir(&root).unwrap_or_else(|error| {
+    if root.is_dir() {
+        let entries = std::fs::read_dir(root).unwrap_or_else(|error| {
             panic!(
                 "hydrolysis native font loader failed to read `{}`: {error}",
                 root.display()
@@ -352,11 +335,11 @@ pub(super) fn native_resource_fonts() -> parley::FontContext {
 /// which is what lets a test name a bundled family like `Pacifico` and reach
 /// the overhang face on a host (macOS included) that does not carry it.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
-pub(crate) fn native_test_fonts() -> parley::FontContext {
+pub(crate) fn native_test_fonts(resources: &waterui_core::ResourceContext) -> parley::FontContext {
     use parley::fontique::Blob;
     use std::sync::Arc;
 
-    let mut font_cx = native_resource_fonts();
+    let mut font_cx = native_resource_fonts(resources);
     for (_, bytes) in TEST_FALLBACK_FONTS {
         font_cx
             .collection
@@ -382,7 +365,7 @@ mod tests {
     use waterui_core::layout::HorizontalAlignment;
     use waterui_text::styled::StyledStr;
 
-    use super::{TEST_FONTS, deterministic_test_fonts};
+    use super::{TEST_FALLBACK_FONTS, TEST_FONTS, deterministic_test_fonts, native_resource_fonts};
     use crate::renderer::{TextMeasureService, resolve_text_layout_input};
 
     /// One sample per script a `WaterUI` application is expected to draw.
@@ -439,6 +422,44 @@ mod tests {
             }
         }
         (glyphs, missing, all_bundled)
+    }
+
+    /// The staged fonts directory belongs to the installed `ResourceContext`:
+    /// a face dropped into an arbitrary directory the context points at is
+    /// registered and reachable, and the loader never probes the process's
+    /// own location for one.
+    #[test]
+    fn staged_fonts_directory_supplies_resource_fonts() {
+        let staged =
+            std::env::temp_dir().join(format!("hydrolysis-fonts-test-{}", std::process::id()));
+        let fonts_dir = staged.join("fonts");
+        std::fs::create_dir_all(&fonts_dir).unwrap();
+        let (name, bytes) = TEST_FALLBACK_FONTS
+            .iter()
+            .find(|(name, _)| *name == "PacificoSubset.ttf")
+            .expect("PacificoSubset is pinned in TEST_FALLBACK_FONTS");
+        std::fs::write(fonts_dir.join(name), bytes).unwrap();
+
+        let resources = waterui_core::ResourceContext::new(staged.join("assets"), &fonts_dir);
+        let mut font_cx = native_resource_fonts(&resources);
+
+        let family = font_cx
+            .collection
+            .family_by_name("Pacifico")
+            .expect("the staged Pacifico face must register under its family name");
+        let font = family
+            .fonts()
+            .first()
+            .expect("the Pacifico family has a face")
+            .load(Some(&mut font_cx.source_cache))
+            .expect("the staged face must load");
+        assert_eq!(
+            font.data(),
+            *bytes,
+            "the registered face is the file staged in the context's fonts directory"
+        );
+
+        let _ = std::fs::remove_dir_all(&staged);
     }
 
     /// The defect this collection was fixed for: a cluster the bundled face
