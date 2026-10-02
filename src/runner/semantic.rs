@@ -204,7 +204,7 @@ impl SemanticRuntime {
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
-            _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
+            _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             local_executor,
         }
     }

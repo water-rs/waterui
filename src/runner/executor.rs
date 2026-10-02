@@ -8,8 +8,9 @@
 //! target, wasm32 included — a semantic runtime in the browser has the same
 //! pump-driven shape, just no renderer behind it.
 
+use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 #[cfg(test)]
 use std::sync::{Condvar, Mutex};
@@ -26,6 +27,22 @@ pub(crate) struct HeadlessMainThreadExecutor {
     /// hand-off instant — the safe direction for a settledness probe. Atomic
     /// because wakers clone the sender onto arbitrary threads.
     pending: Arc<AtomicUsize>,
+    /// Open while a pump-driven runtime on this thread owns the queue.
+    ///
+    /// The channel's receiver is never disconnected — `mpsc` offers no close —
+    /// so this flag is the teardown boundary instead: the last owning runtime
+    /// clears it, and every schedule from then on leaks its runnable instead
+    /// of queueing it. Without the gate a waker on another thread could land a
+    /// runnable after the runtime's final drain, and that runnable would sit
+    /// until thread-local teardown dropped it — where dropping a task whose
+    /// destructor touches an already-destroyed thread-local aborts the
+    /// process (water-rs/hydrolysis#332).
+    accepting: Arc<AtomicBool>,
+    /// Pump-driven runtimes currently owning the queue. The last one's
+    /// teardown closes `accepting` and drains to quiescence; earlier drops
+    /// leave the queue open for the survivors. `Cell` because ownership
+    /// changes hands only on this thread, unlike the waker-visible atomics.
+    owners: Rc<Cell<usize>>,
     /// Count of runnables ever delivered to the channel, bumped under the
     /// mutex and signaled on the condvar by the wake path. Tests wait on this
     /// edge — a real timer re-queueing its task — instead of guessing the
@@ -56,6 +73,8 @@ impl HeadlessMainThreadExecutor {
             runnable_tx,
             runnable_rx: Rc::new(runnable_rx),
             pending: Arc::new(AtomicUsize::new(0)),
+            accepting: Arc::new(AtomicBool::new(true)),
+            owners: Rc::new(Cell::new(0)),
             #[cfg(test)]
             queued: Arc::new((Mutex::new(0), Condvar::new())),
         }
@@ -132,11 +151,17 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
     {
         let runnable_tx = self.runnable_tx.clone();
         let pending = Arc::clone(&self.pending);
+        let accepting = Arc::clone(&self.accepting);
         #[cfg(test)]
         let queued = Arc::clone(&self.queued);
         let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
             pending.fetch_add(1, Ordering::SeqCst);
-            match runnable_tx.send(runnable) {
+            let delivery = if accepting.load(Ordering::SeqCst) {
+                runnable_tx.send(runnable).map_err(|unsent| unsent.0)
+            } else {
+                Err(runnable)
+            };
+            match delivery {
                 Ok(()) => {
                     #[cfg(test)]
                     {
@@ -148,11 +173,12 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
                 Err(unsent) => {
                     pending.fetch_sub(1, Ordering::SeqCst);
                     // Teardown race: a waker held by another thread (decoder,
-                    // audio, dispatch callback) fired after the runtime dropped
-                    // the receiver. The task can never run again, and dropping a
-                    // `spawn_local` runnable off its spawning thread panics by
-                    // design (async-task's thread check), so leak it instead —
-                    // bounded to shutdown, reclaimed at process exit.
+                    // audio, dispatch callback) fired after the last owning
+                    // runtime closed the queue. The task can never run again,
+                    // and dropping a `spawn_local` runnable off its spawning
+                    // thread panics by design (async-task's thread check), so
+                    // leak it instead — bounded to shutdown, reclaimed at
+                    // process exit.
                     std::mem::forget(unsent);
                 }
             }
@@ -162,12 +188,49 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
     }
 }
 
-/// Drains the thread-shared executor when the owning runtime drops.
+/// Owns the thread-shared executor on behalf of one pump-driven runtime.
+///
+/// The executor itself lives in a lazily destroyed thread-local, but its
+/// queue must not: a runnable still queued at thread exit is dropped inside
+/// the thread-local destructor, where a task future whose drop touches an
+/// already-destroyed thread-local aborts the process. The last owning
+/// runtime's drop therefore closes the queue and drains it to quiescence
+/// while this thread's locals are still alive.
 #[derive(Debug)]
-pub(super) struct DrainExecutorOnDrop(pub(super) HeadlessMainThreadExecutor);
+pub(super) struct DrainExecutorOnDrop(HeadlessMainThreadExecutor);
+
+impl DrainExecutorOnDrop {
+    pub(super) fn new(executor: HeadlessMainThreadExecutor) -> Self {
+        executor.owners.set(executor.owners.get() + 1);
+        // Reopen the queue a previous runtime's teardown closed: this runtime
+        // drains it from now on, so work queued through the shared executor
+        // runs again.
+        executor.accepting.store(true, Ordering::SeqCst);
+        Self(executor)
+    }
+}
 
 impl Drop for DrainExecutorOnDrop {
     fn drop(&mut self) {
-        let _ = self.0.drain();
+        let remaining = self.0.owners.get() - 1;
+        self.0.owners.set(remaining);
+        if remaining > 0 {
+            // A later-mounted runtime on this thread still pumps the shared
+            // queue; run what is already queued so this teardown strands
+            // nothing, then leave the queue open.
+            let _ = self.0.drain();
+            return;
+        }
+        // Last owner on the thread: close the queue first so a waker on
+        // another thread can no longer land a runnable in it, then drain until
+        // nothing is queued and no send is in flight (`pending` counts both —
+        // it is incremented before the schedule closure reaches its send).
+        // Anything that still loses the race is leaked by the send path, so
+        // the channel is guaranteed empty for thread-local teardown (#332).
+        self.0.accepting.store(false, Ordering::SeqCst);
+        while self.0.has_pending() {
+            self.0.drain();
+            std::thread::yield_now();
+        }
     }
 }
