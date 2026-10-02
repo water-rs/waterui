@@ -15,7 +15,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
@@ -30,7 +30,7 @@ use filtrate::{
     FilterParam, Interpolator, WatchGuard,
 };
 pub use filtrate::{FilterImage, LutImage};
-use nami::Signal;
+use nami::{Signal, signal::IntoComputed};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
@@ -99,6 +99,100 @@ pub struct ParamGuards(Vec<Box<dyn core::any::Any>>);
 impl fmt::Debug for ParamGuards {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("ParamGuards").field(&self.0.len()).finish()
+    }
+}
+
+/// The pixel dimensions of a filtered view's output texture.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum OutputSize {
+    /// Match the captured input dimensions.
+    #[default]
+    MatchInput,
+    /// Use fixed pixel dimensions.
+    Fixed {
+        /// Output width in pixels.
+        width: u32,
+        /// Output height in pixels.
+        height: u32,
+    },
+    /// Scale both input dimensions by a factor.
+    Scale(f32),
+}
+
+nami::impl_constant!(OutputSize);
+
+impl OutputSize {
+    /// Computes output dimensions from the captured input dimensions.
+    #[must_use]
+    pub fn compute(self, input_width: u32, input_height: u32) -> (u32, u32) {
+        match self {
+            Self::MatchInput => (input_width, input_height),
+            Self::Fixed { width, height } => (width, height),
+            Self::Scale(factor) => (
+                scaled_dimension(input_width, factor),
+                scaled_dimension(input_height, factor),
+            ),
+        }
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is rounded and clamped to the u32 range before the cast"
+)]
+fn scaled_dimension(value: u32, factor: f32) -> u32 {
+    (f64::from(value) * f64::from(factor))
+        .round()
+        .clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+type RedrawCallback = dyn Fn() + Send + Sync;
+
+struct Redraw(Arc<RedrawCallback>);
+
+/// Thread-safe output-size policy shared by the UI and render threads.
+#[derive(Clone)]
+struct OutputSizeState {
+    policy: Arc<ArcSwap<Option<OutputSize>>>,
+    redraw: Arc<ArcSwapOption<Redraw>>,
+}
+
+impl OutputSizeState {
+    fn new() -> Self {
+        Self {
+            policy: Arc::new(ArcSwap::from_pointee(None)),
+            redraw: Arc::new(ArcSwapOption::empty()),
+        }
+    }
+
+    fn is_declared(&self) -> bool {
+        self.policy.load().is_some()
+    }
+
+    fn output_size(&self, input_width: u32, input_height: u32) -> Option<(u32, u32)> {
+        self.policy
+            .load()
+            .as_ref()
+            .map(|policy| policy.compute(input_width, input_height))
+    }
+
+    fn set_redraw_callback(&self, callback: EffectRedrawCallback) {
+        self.redraw.store(Some(Arc::new(Redraw(callback))));
+    }
+
+    fn bind(&self, value: impl IntoComputed<OutputSize>, guards: &mut ParamGuards) {
+        let value = value.into_computed();
+        self.policy.store(Arc::new(Some(value.snapshot())));
+        let policy = Arc::clone(&self.policy);
+        let redraw = Arc::clone(&self.redraw);
+        let guard = value.watch(move |context| {
+            policy.store(Arc::new(Some(context.into_value())));
+            if let Some(callback) = redraw.load_full() {
+                (callback.0)();
+            }
+        });
+        guards.0.push(Box::new(guard));
     }
 }
 
@@ -214,6 +308,8 @@ pub trait ErasedEffect {
         output: &EffectOutput<'_>,
         encoder: &mut wgpu::CommandEncoder,
     ) -> EffectRenderResult;
+    /// Resolves the output texture dimensions for an input texture.
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
     /// Whether the effect wants another frame (an animating parameter).
     fn redraw_hint(&self) -> bool;
 }
@@ -236,28 +332,84 @@ impl<E: Effect> ErasedEffect for E {
         Effect::encode_render(self, input, output, encoder)
     }
 
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        Effect::output_size(self, input_width, input_height)
+    }
+
     fn redraw_hint(&self) -> bool {
         Effect::redraw_hint(self)
     }
 }
 
 trait EffectSource: RenderTransfer {
-    fn build(self: Box<Self>) -> Box<dyn ErasedEffect>;
+    fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect>;
 }
 
 struct FromFilter<F>(F);
 
 impl<F: Filter + RenderTransfer> EffectSource for FromFilter<F> {
-    fn build(self: Box<Self>) -> Box<dyn ErasedEffect> {
-        Box::new(Executor::new(self.0))
+    fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
+        if output_size.is_declared() {
+            let policy = output_size.clone();
+            Box::new(OutputSizedEffect {
+                effect: Executor::new(self.0).with_output_size(move |width, height| {
+                    policy.output_size(width, height).unwrap_or((width, height))
+                }),
+                output_size,
+            })
+        } else {
+            Box::new(OutputSizedEffect {
+                effect: Executor::new(self.0),
+                output_size,
+            })
+        }
     }
 }
 
 struct FromEffect<E>(E);
 
 impl<E: Effect + RenderTransfer> EffectSource for FromEffect<E> {
-    fn build(self: Box<Self>) -> Box<dyn ErasedEffect> {
-        Box::new(self.0)
+    fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
+        Box::new(OutputSizedEffect {
+            effect: self.0,
+            output_size,
+        })
+    }
+}
+
+/// Applies an optional output-size declaration while preserving the wrapped effect.
+struct OutputSizedEffect<E> {
+    effect: E,
+    output_size: OutputSizeState,
+}
+
+impl<E: Effect> Effect for OutputSizedEffect<E> {
+    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
+        self.output_size
+            .output_size(input_width, input_height)
+            .unwrap_or_else(|| self.effect.output_size(input_width, input_height))
+    }
+
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+        self.output_size.set_redraw_callback(callback.clone());
+        self.effect.set_redraw_callback(callback);
+    }
+
+    async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
+        self.effect.setup(ctx).await
+    }
+
+    fn encode_render(
+        &mut self,
+        input: &EffectInput,
+        output: &EffectOutput,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
+        self.effect.encode_render(input, output, encoder)
+    }
+
+    fn redraw_hint(&self) -> bool {
+        self.effect.redraw_hint()
     }
 }
 
@@ -265,7 +417,10 @@ impl<E: Effect + RenderTransfer> EffectSource for FromEffect<E> {
 ///
 /// The backend moves it to its render thread and calls [`build`](Self::build)
 /// there; the result runs against the engine's device.
-pub struct AnyEffect(Box<dyn EffectSource>);
+pub struct AnyEffect {
+    source: Box<dyn EffectSource>,
+    output_size: OutputSizeState,
+}
 
 impl fmt::Debug for AnyEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -276,18 +431,28 @@ impl fmt::Debug for AnyEffect {
 impl AnyEffect {
     /// Erases a custom effect.
     pub fn new(effect: impl Effect + RenderTransfer) -> Self {
-        Self(Box::new(FromEffect(effect)))
+        Self {
+            source: Box::new(FromEffect(effect)),
+            output_size: OutputSizeState::new(),
+        }
     }
 
     /// Erases a filter, to run through `filtrate`'s [`Executor`].
     pub fn filter(filter: impl Filter + RenderTransfer) -> Self {
-        Self(Box::new(FromFilter(filter)))
+        Self {
+            source: Box::new(FromFilter(filter)),
+            output_size: OutputSizeState::new(),
+        }
+    }
+
+    fn bind_output_size(&self, size: impl IntoComputed<OutputSize>, guards: &mut ParamGuards) {
+        self.output_size.bind(size, guards);
     }
 
     /// Builds the effect on the render thread.
     #[must_use]
     pub fn build(self) -> Box<dyn ErasedEffect> {
-        self.0.build()
+        self.source.build(self.output_size)
     }
 }
 
@@ -370,6 +535,13 @@ impl FilteredView {
             effect: AnyEffect::new(effect),
             guards: ParamGuards::default(),
         }
+    }
+
+    /// Sets the output texture dimensions without changing layout.
+    #[must_use]
+    pub fn output_size(mut self, size: impl IntoComputed<OutputSize>) -> Self {
+        self.effect.bind_output_size(size, &mut self.guards);
+        self
     }
 }
 
@@ -1457,8 +1629,86 @@ impl<V: View> FilterViewExt for V {}
 
 #[cfg(test)]
 mod tests {
-    use super::{FilterParam as _, ParamGuards};
-    use std::sync::mpsc;
+    use super::{AnyEffect, FilterParam as _, FilteredView, OutputSize, ParamGuards};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+    use waterui_core::AnyView;
+
+    #[test]
+    fn output_size_computes_declared_dimensions() {
+        assert_eq!(OutputSize::MatchInput.compute(10, 20), (10, 20));
+        assert_eq!(
+            OutputSize::Fixed {
+                width: 1920,
+                height: 1080,
+            }
+            .compute(10, 20),
+            (1920, 1080)
+        );
+        assert_eq!(OutputSize::Scale(1.5).compute(10, 20), (15, 30));
+    }
+
+    #[test]
+    fn filtered_view_output_size_reaches_the_effect() {
+        let executor = filtrate::Executor::new(filtrate::filters::Invert)
+            .with_output_size(|width, height| (width * 3, height * 4));
+        assert_eq!(filtrate::Effect::output_size(&executor, 10, 20), (30, 80));
+
+        let filtered = FilteredView {
+            content: AnyView::new(()),
+            effect: AnyEffect::filter(filtrate::filters::Invert),
+            guards: ParamGuards::default(),
+        }
+        .output_size(OutputSize::Fixed {
+            width: 1920,
+            height: 1080,
+        });
+        let FilteredView { effect, guards, .. } = filtered;
+        let effect = effect.build();
+
+        assert_eq!(effect.output_size(10, 20), (1920, 1080));
+        drop(guards);
+    }
+
+    #[test]
+    fn filter_without_declared_size_matches_input() {
+        let filtered = FilteredView {
+            content: AnyView::new(()),
+            effect: AnyEffect::filter(filtrate::filters::Invert),
+            guards: ParamGuards::default(),
+        };
+        let FilteredView { effect, guards, .. } = filtered;
+        let effect = effect.build();
+        assert_eq!(effect.output_size(10, 20), (10, 20));
+        drop(guards);
+    }
+
+    #[test]
+    fn output_size_signal_updates_without_rebuilding_the_effect() {
+        let size = nami::binding(OutputSize::Scale(2.0));
+        let filtered = FilteredView {
+            content: AnyView::new(()),
+            effect: AnyEffect::filter(filtrate::filters::Invert),
+            guards: ParamGuards::default(),
+        }
+        .output_size(size.clone());
+        let FilteredView { effect, guards, .. } = filtered;
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let callback_redraws = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            callback_redraws.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        assert_eq!(effect.output_size(10, 20), (20, 40));
+        size.set(OutputSize::Fixed {
+            width: 30,
+            height: 40,
+        });
+        assert_eq!(effect.output_size(10, 20), (30, 40));
+        assert_eq!(redraws.load(Ordering::Relaxed), 1);
+        drop(guards);
+    }
 
     #[test]
     fn reactive_parameters_keep_independent_subscription_lifetimes() {

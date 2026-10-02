@@ -34,12 +34,12 @@ pub use filter_view::{
     FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur, Gloom, Grayscale, GuidedSmooth,
     HighlightsShadows, HueRotation, Invert, Kaleidoscope, LineHalftone, LutColorGrade, MaskedBlur,
     Median3x3, MirrorTile, MorphologyGradient, MorphologyMax, MorphologyMin, MotionBlur,
-    ParamGuards, PerspectiveCorrection, PerspectiveTransform, PhotoEffectChrome, PhotoEffectFade,
-    PhotoEffectInstant, PhotoEffectMono, PhotoEffectNoir, PhotoEffectProcess, PhotoEffectTonal,
-    PhotoEffectTransfer, PinchDistortion, Pixellate, Prewitt, RadialTransitionToImage, Reactive,
-    Saturation, Sepia, Sharpen, Sobel, SwipeTransitionToImage, TemperatureTint, TemporalDenoise,
-    ToneCurve, TransitionToImage, TwirlDistortion, UnsharpMask, Vibrance, Vignette,
-    VortexDistortion, WhitePoint, ZoomBlur, ZoomTransitionToImage,
+    OutputSize, ParamGuards, PerspectiveCorrection, PerspectiveTransform, PhotoEffectChrome,
+    PhotoEffectFade, PhotoEffectInstant, PhotoEffectMono, PhotoEffectNoir, PhotoEffectProcess,
+    PhotoEffectTonal, PhotoEffectTransfer, PinchDistortion, Pixellate, Prewitt,
+    RadialTransitionToImage, Reactive, Saturation, Sepia, Sharpen, Sobel, SwipeTransitionToImage,
+    TemperatureTint, TemporalDenoise, ToneCurve, TransitionToImage, TwirlDistortion, UnsharpMask,
+    Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur, ZoomTransitionToImage,
 };
 #[cfg(feature = "gpu")]
 pub use gpu::{
