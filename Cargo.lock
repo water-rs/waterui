@@ -9956,6 +9956,7 @@ dependencies = [
  "objc2-metal",
  "pastey 0.2.3",
  "pollster 1.0.1",
+ "shaderloom",
  "thiserror 2.0.21",
  "tracing",
  "ttf-parser",

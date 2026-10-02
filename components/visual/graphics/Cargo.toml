@@ -27,6 +27,7 @@ gpu = [
     "dep:mp4parse",
     "dep:tracing",
     "dep:pollster",
+    "dep:shaderloom",
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
@@ -53,6 +54,10 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 mp4parse = { version = "0.17", optional = true }
 tracing = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
+# Only the runtime half: `build` pulls naga, which a device consumer never
+# needs — the shared device asks shaderloom which features its native shader
+# artifacts require (`shaderloom::required_features`).
+shaderloom = { workspace = true, optional = true, default-features = false, features = ["runtime"] }
 
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.

@@ -31,10 +31,11 @@ pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
     Adapter(#[from] wgpu::RequestAdapterError),
-    /// The adapter refuses passthrough shaders, which a device shared with
-    /// cherenkov requires on Vulkan and Metal (cherenkov issue #57).
+    /// The adapter refuses passthrough shaders, which the precompiled
+    /// shaders this device loads require on Vulkan, Metal and Direct3D 12
+    /// (cherenkov issue #57; shaderloom native artifacts).
     #[error(
-        "{backend:?} adapter does not offer Features::PASSTHROUGH_SHADERS, which a device shared with cherenkov-gpu requires"
+        "{backend:?} adapter does not offer Features::PASSTHROUGH_SHADERS, which the device's precompiled shaders require"
     )]
     PassthroughShadersUnsupported {
         /// The backend the adapter reported.
@@ -191,21 +192,23 @@ impl SharedGpuContext {
             })
             .await?;
         // cherenkov's fixed shaders are precompiled and load through wgpu's
-        // passthrough API on Vulkan and Metal (cherenkov issue #57): a device
-        // handed to cherenkov-gpu via `SharedDevice` must request the feature.
+        // passthrough API on Vulkan and Metal (cherenkov issue #57), and
+        // shaderloom-compiled component shaders load native artifacts the
+        // same way — Direct3D 12 included: a device handed to cherenkov-gpu
+        // via `SharedDevice` or to a shaderloom `CompiledShader` must request
+        // whatever the shader runtime needs where the adapter offers it.
         let backend = adapter.get_info().backend;
-        let required_features = match backend {
-            wgpu::Backend::Vulkan | wgpu::Backend::Metal => {
-                if !adapter
-                    .features()
-                    .contains(wgpu::Features::PASSTHROUGH_SHADERS)
-                {
-                    return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
-                }
-                wgpu::Features::PASSTHROUGH_SHADERS
-            }
-            _ => wgpu::Features::empty(),
-        };
+        let required_features = shaderloom::required_features(adapter.features());
+        // The backends above load passthrough artifacts unconditionally, so
+        // an adapter that withholds the feature cannot run this device at
+        // all — fail here rather than at the first shader load.
+        if matches!(
+            backend,
+            wgpu::Backend::Vulkan | wgpu::Backend::Metal | wgpu::Backend::Dx12
+        ) && !required_features.contains(wgpu::Features::PASSTHROUGH_SHADERS)
+        {
+            return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("waterui GpuRuntime"),
