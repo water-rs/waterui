@@ -105,13 +105,15 @@ impl SemanticRuntime {
         width: u32,
         height: u32,
     ) -> Self {
-        // A native app loads `resources/fonts` from the filesystem; a browser
+        // A native app loads the fonts its `ResourceContext` stages; a browser
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
-        return Self::on_env(env, content, width, height, native_resource_fonts);
+        return Self::on_env(env, content, width, height, |env| {
+            native_resource_fonts(waterui_core::ResourceContext::from_environment(env))
+        });
         #[cfg(target_arch = "wasm32")]
-        Self::on_env(env, content, width, height, parley::FontContext::new)
+        Self::on_env(env, content, width, height, |_| parley::FontContext::new())
     }
 
     /// Creates a semantic runtime for WaterUI test hosts: the same runtime
@@ -125,13 +127,9 @@ impl SemanticRuntime {
         width: u32,
         height: u32,
     ) -> Self {
-        Self::on_env(
-            env,
-            content,
-            width,
-            height,
-            super::fonts::deterministic_test_fonts,
-        )
+        Self::on_env(env, content, width, height, |_| {
+            super::fonts::deterministic_test_fonts()
+        })
     }
 
     fn on_env(
@@ -139,7 +137,7 @@ impl SemanticRuntime {
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
-        build_fonts: fn() -> parley::FontContext,
+        build_fonts: fn(&Environment) -> parley::FontContext,
     ) -> Self {
         // The inspector endpoint is a TCP server a browser page cannot host —
         // on wasm32 the executor installs alone, with no probe to report to.
@@ -154,7 +152,9 @@ impl SemanticRuntime {
             init_global_executor();
             None
         };
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+        #[cfg(not(target_arch = "wasm32"))]
+        waterui_core::install_application_resources(&mut env);
         #[cfg(not(target_arch = "wasm32"))]
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
@@ -165,7 +165,7 @@ impl SemanticRuntime {
         // style-package tokens ever install — widget structure, roles, labels
         // and actions do not depend on one.
         crate::theme::install_theme_tokens(&mut env, None);
-        let fonts = FontCollection::new(build_fonts());
+        let fonts = FontCollection::new(build_fonts(&env));
         fonts.clone().install(&mut env);
 
         // Semantic test binaries have no platform runner to install a tracing
@@ -204,7 +204,7 @@ impl SemanticRuntime {
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
-            _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
+            _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             local_executor,
         }
     }

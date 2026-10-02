@@ -1,11 +1,12 @@
 //! Per-frame counters for the Cherenkov migration acceptance fixtures.
 //!
 //! The migration (water-rs/hydrolysis#205) changes *where* drawing work is
-//! recorded: today every awake frame walks the retained tree and re-encodes
-//! every view into a fresh Vello scene; the target records static structure
-//! once and pushes only live-operand updates. These counters make both ends
-//! of that spectrum measurable from a [`crate::runner::FrameCounters`] — the
-//! Vello-era values are nonzero in ways the engine-era values must not be
+//! recorded: the Vello era walked the retained tree and re-encoded every
+//! view into a fresh scene on every awake frame; the target records static
+//! structure once and pushes only live-operand updates. These counters make
+//! both ends of that spectrum measurable from a
+//! [`crate::runner::FrameCounters`] — the Vello-era values are nonzero in
+//! ways the engine-era values must not be
 //! (`semantic builds`, `recorded view contents`, `font and image
 //! registrations`, `host wakeups`), and the engine-era values start at zero
 //! and become the acceptance signal (`live operand updates`, `layer
@@ -59,8 +60,9 @@ pub struct MigrationCounters {
     /// image-brush ingests and direct image draws. Same engine-era
     /// acceptance: an image is not re-registered per frame.
     pub(crate) image_registrations: u64,
-    /// GPU submissions this frame: every `wgpu::Queue::submit` and every
-    /// `LegacyRenderer::render_recording` issued by the render path.
+    /// GPU submissions this frame: every `wgpu::Queue::submit` the render
+    /// path issues (filter encoders, effect inputs and the like; the
+    /// engine's own submissions are its internals, not counted here).
     pub(crate) gpu_submissions: u64,
     /// Wake requests consumed by the host plumbing this frame: each
     /// `signals.take_*` drain that found a pending frame request, each GPU

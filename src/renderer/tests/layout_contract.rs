@@ -3,8 +3,9 @@ use crate::renderer::{HydrolysisRenderer, tree::RenderNode};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use waterui::{AnyView, Color, Environment, View, ViewExt};
-use waterui_graphics::{
-    EffectRenderer, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
+use waterui_graphics::FilteredView;
+use waterui_graphics::filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
 };
 use waterui_layout::container::FixedContainer;
 use waterui_layout::stack::vstack;
@@ -427,12 +428,20 @@ fn spacer_min_length_is_the_stack_compression_floor() {
 
 struct LayoutOnlyEffect;
 
-impl EffectRenderer for LayoutOnlyEffect {
-    fn setup(&mut self, _ctx: &ViewEffectContext) -> impl std::future::Future<Output = ()> {
-        std::future::ready(())
+impl Effect for LayoutOnlyEffect {
+    fn setup(
+        &mut self,
+        _ctx: &EffectContext<'_>,
+    ) -> impl std::future::Future<Output = EffectSetupResult> {
+        std::future::ready(Ok(()))
     }
 
-    fn render(&mut self, _input: &ViewEffectInput, _output: &ViewEffectOutput) {
+    fn encode_render(
+        &mut self,
+        _input: &EffectInput<'_>,
+        _output: &EffectOutput<'_>,
+        _encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
         panic!("layout-only verification must not invoke effect rendering");
     }
 }
@@ -443,7 +452,7 @@ fn view_effect_relayouts_equal_bounds_with_a_new_proposal() {
     let mut renderer = test_renderer();
     let mut fixture = Fixture::new(
         false,
-        |content| ViewEffect::new(content, LayoutOnlyEffect),
+        |content| FilteredView::new(content, LayoutOnlyEffect),
         &mut renderer,
         &env,
     );

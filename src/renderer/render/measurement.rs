@@ -532,18 +532,18 @@ impl HydrolysisRenderer {
 
                     let mut run_x = glyph_run.offset() + ink_shift;
                     let run_y = glyph_run.baseline();
-                    let glyphs: Vec<waterui_graphics::Glyph> = glyph_run
+                    let glyphs: Vec<crate::renderer::Glyph> = glyph_run
                         .glyphs()
                         .map(move |glyph| {
                             let x = run_x + glyph.x;
                             let y = run_y - glyph.y;
                             run_x += glyph.advance;
-                            waterui_graphics::Glyph { id: glyph.id, x, y }
+                            crate::renderer::Glyph { id: glyph.id, x, y }
                         })
                         .collect();
 
                     counters.font_registrations += 1;
-                    scene.glyphs(waterui_graphics::GlyphRun {
+                    scene.glyphs(&crate::renderer::GlyphRun {
                         font: run.font(),
                         font_size: run.font_size(),
                         normalized_coords,
@@ -1584,21 +1584,10 @@ mod background_tests {
 
     const BACKGROUND: [u8; 4] = [0, 128, 0, 255];
 
-    /// The premultiplied solid colours a scene draws — glyph brushes and
-    /// background fills alike — read straight off the encoding. `0x44` is
-    /// `vello_encoding`'s `DrawTag::COLOR`; each entry consumes
-    /// `tag.info_size()` words of the draw-data stream.
+    /// The premultiplied solid colours a recording draws — glyph brushes and
+    /// background fills alike — read off the recorded ops.
     fn solid_fill_colours(scene: &Recording) -> Vec<u32> {
-        let encoding = scene.legacy_scene().encoding();
-        let mut colours = Vec::new();
-        let mut offset = 0usize;
-        for tag in &encoding.draw_tags {
-            if tag.0 == 0x44 {
-                colours.push(encoding.draw_data[offset]);
-            }
-            offset += tag.info_size() as usize;
-        }
-        colours
+        scene.solid_fill_colours()
     }
 
     fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {

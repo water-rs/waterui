@@ -20,7 +20,6 @@
 #[cfg(feature = "accessibility")]
 pub mod accessibility;
 mod bindings;
-mod color;
 mod effects;
 mod frame;
 #[cfg(feature = "frame-profile")]
@@ -36,7 +35,7 @@ mod navigation;
 mod recording;
 mod render;
 mod retained;
-mod scene_ingest;
+
 mod signals;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -52,18 +51,16 @@ pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub(crate) use identity::*;
 pub use migration_counters::MigrationCounters;
 pub(crate) use native_measure::*;
-pub use recording::{Recording, VelloDrawContext};
-pub(crate) use retained::*;
-pub(crate) use scene_ingest::CheckedScene2D;
 #[cfg(test)]
-pub(crate) use scene_ingest::assert_well_formed_image;
+pub(crate) use recording::assert_well_formed_image;
+pub(crate) use recording::{Glyph, GlyphRun, Recording, SceneDrawContext, working_color};
+pub(crate) use retained::*;
 pub(crate) use tree::*;
 pub(crate) use views::*;
 pub(crate) use waterui_backend_core::frame_signals::FrameSignals;
 
 #[cfg(feature = "accessibility")]
 use accessibility::*;
-use core::f64::consts::TAU;
 use core::num::NonZeroUsize;
 use core::time::Duration;
 pub(crate) use input::*;
@@ -71,20 +68,21 @@ pub(crate) use interaction_layers::*;
 pub(crate) use lifecycle::lazy;
 pub(crate) use lifecycle::*;
 pub(crate) use navigation::*;
+pub(crate) use render::FrameRenderTarget;
 pub use render::HydrolysisRenderTarget;
 pub(crate) use render::WidgetRenderContext;
 pub(crate) use render::*;
 pub(crate) use render::{
     anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
     normalize_layout_view, normalize_view_for_render, path_commands_to_path,
-    resolved_color_to_peniko, resolved_gradient_to_brush, resolved_morph_shape_to_path,
-    resolved_shape_to_path, transformed_rect,
+    resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
 };
 use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
+use std::sync::Arc;
 
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -97,7 +95,6 @@ use accesskit::{
 };
 use executor_core::spawn_local;
 use nami::{Binding, Signal};
-use std::sync::Arc;
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
 #[cfg(feature = "accessibility")]
@@ -159,18 +156,10 @@ use waterui_form::picker::PickerConfig;
 use waterui_form::picker::color::ColorPickerConfig;
 use waterui_form::picker::date::DatePickerConfig;
 use waterui_form::secure::{Secure as FormSecure, SecureFieldConfig};
-use waterui_graphics::color::{Color, ResolvedColor};
-
-use shaderloom::WgslModuleCache;
-use waterui_graphics::filter_view::{EffectContext, EffectInput, EffectOutput};
-use waterui_graphics::gpu_surface::GestureState;
-use waterui_graphics::view_effect::{
-    ViewEffectContext, ViewEffectErased, ViewEffectInput, ViewEffectOutput,
-};
-use waterui_graphics::{
-    AppliedFilter, GpuContext, GpuFrame, GpuSurface, GradientType, PointerState, RedrawHandle,
-    ResolvedGradient, ResolvedGradientStop, SceneEngine, SceneView, SharedSceneRenderer,
-};
+use waterui_graphics::cherenkov::{Paint, WorkingColor};
+use waterui_graphics::color::Color;
+use waterui_graphics::gpu::RedrawHandle;
+use waterui_graphics::{ExternalFrameView, FilteredView, GpuContentView, Gradient, SceneView};
 
 use waterui_icon::SystemIcon;
 use waterui_layout::container::{FixedContainer, LazyContainer};
@@ -188,8 +177,7 @@ use waterui_webview::WebView;
 
 use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};
 use crate::engine::{
-    LegacyRenderer, LegacyRendererOptions, RadioIndicatorState, RadioSelectionMotion,
-    TextCaretMotion, TextContextMenuMetrics, legacy_init_threads,
+    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
 };
 use crate::gesture::GestureEngine;
 use crate::platform::{
@@ -199,9 +187,6 @@ use crate::platform::{
 use crate::scroll::ScrollHandle;
 use crate::time::Instant;
 use crate::widgets::inset_rect;
-
-#[derive(Clone, Copy)]
-pub(crate) struct DynamicRangePreference(pub(crate) bool);
 
 const OPACITY_ANIMATION_KEY: usize = 0x0100_0001;
 const SCALE_X_ANIMATION_KEY: usize = 0x0100_0002;
@@ -260,20 +245,6 @@ pub struct SemanticCore {
     lifecycle: LifecycleState,
     animation_controller: AnimationController,
     frame_instant: Instant,
-    /// Retained render-tree GPU surfaces (`GpuSurfaceNode`-owned runtimes),
-    /// registered at node build time. Polled by
-    /// [`HydrolysisRenderer::poll_gpu_surface_redraw_handles`] for off-thread
-    /// redraw requests; dead entries (node dropped on a Dynamic swap) are pruned
-    /// by strong count.
-    node_gpu_surfaces: Vec<Rc<RefCell<EmbeddedGpuSurfaceRuntime>>>,
-    /// Retained render-tree view effects, registered for exact async setup when
-    /// Hydrolysis itself is hosted inside a `GpuSurface`.
-    node_view_effects: Vec<Weak<RefCell<ViewEffectRuntime>>>,
-    /// Retained render-tree applied filters (`AppliedFilterNode`-owned runtimes),
-    /// registered at node build time. Refreshed by
-    /// [`HydrolysisRenderer::refresh_active_applied_filters`] on redraw-only
-    /// frames; dead entries are pruned by strong count.
-    node_applied_filters: Vec<Rc<RefCell<AppliedFilterRuntime>>>,
     pub(crate) lazy: LazyState,
     pub(crate) navigation: NavigationState,
     #[cfg(feature = "accessibility")]
@@ -316,7 +287,6 @@ pub struct HydrolysisRenderer {
     /// The widget theme the runtime's style supplies to layout and encode.
     /// Never installed into the environment: build and patch cannot reach it.
     theme: Rc<dyn crate::engine::WidgetTheme>,
-    legacy_renderer: LegacyRenderer,
     scene: Recording,
     transient_scene: Option<Recording>,
     compositor: Compositor,
@@ -328,32 +298,30 @@ pub struct HydrolysisRenderer {
     /// [`HydrolysisRenderer::push_gpu_surface_layer`] tests a full-window GPU
     /// surface against.
     window_root_transform: kurbo::Affine,
-    /// Wake target supplied when this renderer itself is hosted by a
-    /// `GpuSurface`. Async setup and renderer-owned redraws from nested surfaces
-    /// use it to wake the parent host without polling frames.
+    /// Wake target supplied when this renderer itself is hosted inside
+    /// another GPU host. Renderer-owned redraws use it to wake the parent host
+    /// without polling frames.
     host_redraw_handle: Option<RedrawHandle>,
-    /// Module cache for shaders that embedded GPU surfaces, view effects and
-    /// filters assemble at runtime. Shared so identical WGSL compiles once.
-    shader_cache: Arc<WgslModuleCache>,
-    /// The scene renderer embedded GPU surfaces share, for the same reason: its
-    /// pipelines belong to the device rather than to any one scene.
-    scene_renderer: Arc<SharedSceneRenderer>,
+    /// Engine window surfaces by GPU-context id: the `TextureTarget` surface,
+    /// the stable mounts under it and the resource registrations its content
+    /// names. Entries whose device was reported lost are pruned at the next
+    /// presented frame.
+    cherenkov_windows: rustc_hash::FxHashMap<u64, crate::renderer::render::CherenkovWindow>,
+    /// The engine's frame scheduling answer from the last presented frame.
+    /// The pump follows it: `Next::Idle` means no animation is running and
+    /// the display link may sleep.
+    engine_next: Option<cherenkov::Next>,
     frame_clip_layers: u32,
     frame_max_clip_depth: u32,
-    /// Whether this frame's window pass was handed straight to a GPU surface
-    /// instead of being composited. Recorded by
-    /// [`HydrolysisRenderer::render_scene_to_surface`] as it decides, so the
-    /// frame report says what happened rather than what was eligible.
-    frame_direct_gpu_surfaces: u32,
+    frame_filtered_count: u32,
+    /// Per-frame applied-filter telemetry the render thread's `EngineEffect`
+    /// calls accumulate into; reset before each `Engine::render` and read back
+    /// into the `frame_applied_filter_*` fields after it.
+    applied_filter_metrics: Arc<crate::renderer::effects::AppliedFilterMetrics>,
     frame_applied_filter_count: u32,
-    frame_applied_filter_capture: Duration,
     frame_applied_filter_effect: Duration,
-    /// The per-frame atlas every filtered subtree is captured through.
-    subtree_captures: SubtreeCaptures,
-    /// Bounded cache of CPU-rasterized blurred shadow silhouettes — shared
-    /// `Blob`s let vello keep the atlas texture across frames; see
-    /// `metadata::BlurredSilhouetteCache`.
-    blurred_silhouettes: metadata::BlurredSilhouetteCache,
+    /// In-flight navigation scene captures (screenshots of outgoing pages
+    /// during a transition).
     navigation_captures: Vec<NavigationSceneCapture>,
     /// CPU stage times accumulated by `flush_window_tree`, plus the GPU spans
     /// the render pass resolves; drained per pump by `take_frame_stage_times`.
@@ -369,29 +337,6 @@ pub struct HydrolysisRenderer {
     /// byte-identical.
     #[cfg(feature = "frame-profile")]
     last_layout_signature: Option<u64>,
-    /// The device-wide pipeline cache persisted between launches; `None` where
-    /// the adapter or platform has no persistent cache (see
-    /// `pipeline_cache.rs`). Held here rather than by the `LegacyRenderer` it
-    /// was handed to so pooled renderers can share it and the renderer can
-    /// write it back once early frames have run the pipelines.
-    #[cfg(hydrolysis_pipeline_cache)]
-    pipeline_cache_store: Option<Arc<crate::pipeline_cache::Store>>,
-    /// Presented frames since this renderer was created; the pipeline cache is
-    /// written back once the first frames have run the pipelines it serves.
-    #[cfg(hydrolysis_pipeline_cache)]
-    presented_frames: u32,
-}
-
-#[cfg(hydrolysis_pipeline_cache)]
-impl Drop for HydrolysisRenderer {
-    /// A clean exit writes back whatever the pipelines compiled since the
-    /// last persist; a kill mid-write still leaves a usable file because the
-    /// write renames over the previous one.
-    fn drop(&mut self) {
-        if let Some(store) = &self.pipeline_cache_store {
-            store.persist();
-        }
-    }
 }
 
 impl core::ops::Deref for HydrolysisRenderer {
@@ -458,9 +403,6 @@ impl SemanticCore {
             lifecycle: LifecycleState::default(),
             animation_controller: AnimationController::default(),
             frame_instant,
-            node_gpu_surfaces: Vec::new(),
-            node_view_effects: Vec::new(),
-            node_applied_filters: Vec::new(),
             lazy: LazyState::default(),
             navigation: NavigationState::default(),
             #[cfg(feature = "accessibility")]
@@ -514,79 +456,35 @@ impl SemanticCore {
 impl HydrolysisRenderer {
     /// A renderer for `device`, which `adapter` produced, drawing with `theme`.
     ///
-    /// The adapter is not a formality: the scene renderer that embedded GPU
-    /// surfaces share is built for the engine `adapter` can actually run, and
-    /// an adapter without indirect execution aborts inside wgpu rather than
-    /// degrading when asked to run the classic compute pipeline.
+    /// The adapter is not a formality: the engine for the frame's GPU context
+    /// is created against what `adapter` can actually run, and an adapter
+    /// without the engine's required features fails inside the engine rather
+    /// than degrading.
     #[must_use]
     pub fn new(
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
+        _adapter: &wgpu::Adapter,
+        _device: &wgpu::Device,
         theme: Rc<dyn crate::engine::WidgetTheme>,
     ) -> Self {
-        Self::new_with_options(
-            adapter,
-            device,
-            theme,
-            LegacyRendererOptions {
-                use_cpu: false,
-                num_init_threads: legacy_init_threads(adapter.get_info().backend),
-                pipeline_cache: None,
-                // Filled from the window viewport at `set_window_viewport`;
-                // until then `None` sizes the bump buffers per render target.
-                buffer_sizes: None,
-            },
-        )
-    }
-
-    /// As [`Self::new`], with the window renderer's Vello options spelled out.
-    #[must_use]
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::arc_with_non_send_sync,
-            reason = "`SharedSceneRenderer` and `WgslModuleCache` own wgpu handles, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The renderer is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
-        )
-    )]
-    pub fn new_with_options(
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        theme: Rc<dyn crate::engine::WidgetTheme>,
-        options: LegacyRendererOptions,
-    ) -> Self {
-        #[cfg(hydrolysis_pipeline_cache)]
-        let mut options = options;
-        #[cfg(hydrolysis_pipeline_cache)]
-        let pipeline_cache_store = if options.pipeline_cache.is_some() {
-            None
-        } else {
-            crate::pipeline_cache::open(device, adapter).inspect(|store| {
-                options.pipeline_cache = Some(store.cache());
-            })
-        };
-        let legacy_renderer =
-            LegacyRenderer::new(device, options).expect("failed to create hydrolysis renderer");
         let frame_instant = Instant::now();
         Self {
             core: SemanticCore::new(frame_instant),
             theme,
-            legacy_renderer,
             scene: Recording::new(),
             transient_scene: None,
             compositor: Compositor::default(),
             window_bounds: kurbo::Rect::ZERO,
             window_root_transform: kurbo::Affine::IDENTITY,
             host_redraw_handle: None,
-            shader_cache: Arc::new(WgslModuleCache::new()),
-            scene_renderer: Arc::new(SharedSceneRenderer::new(SceneEngine::for_adapter(adapter))),
+
+            cherenkov_windows: rustc_hash::FxHashMap::default(),
+            engine_next: None,
             frame_clip_layers: 0,
             frame_max_clip_depth: 0,
-            frame_direct_gpu_surfaces: 0,
+            frame_filtered_count: 0,
+            applied_filter_metrics: Arc::default(),
             frame_applied_filter_count: 0,
-            frame_applied_filter_capture: Duration::ZERO,
             frame_applied_filter_effect: Duration::ZERO,
-            subtree_captures: SubtreeCaptures::default(),
-            blurred_silhouettes: metadata::BlurredSilhouetteCache::new(),
             navigation_captures: Vec::new(),
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
@@ -594,10 +492,6 @@ impl HydrolysisRenderer {
             gpu_profiler: GpuFrameProfiler::new(device),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
-            #[cfg(hydrolysis_pipeline_cache)]
-            pipeline_cache_store,
-            #[cfg(hydrolysis_pipeline_cache)]
-            presented_frames: 0,
         }
     }
 
@@ -605,51 +499,6 @@ impl HydrolysisRenderer {
     /// `Rc` so callers may hold it across further `&mut self` calls.
     pub(crate) fn theme(&self) -> Rc<dyn crate::engine::WidgetTheme> {
         Rc::clone(&self.theme)
-    }
-
-    /// No pipeline cache exists on targets without the persistent store; the
-    /// call site stays unconditioned.
-    #[cfg(not(hydrolysis_pipeline_cache))]
-    #[allow(dead_code)]
-    pub(crate) fn note_frame_presented(&mut self) {}
-
-    /// Record a presented frame. The pipeline cache is written back once the
-    /// second frame has let the driver compile the pipelines the first frames
-    /// needed — early enough that a killed process still leaves the cache
-    /// behind for the next launch.
-    #[cfg(hydrolysis_pipeline_cache)]
-    pub(crate) fn note_frame_presented(&mut self) {
-        self.presented_frames += 1;
-        if self.presented_frames == 2
-            && let Some(store) = &self.pipeline_cache_store
-        {
-            store.persist_on_worker();
-        }
-    }
-
-    /// The pipeline cache pooled legacy renderers should compile against, when
-    /// this device has one.
-    #[cfg(hydrolysis_pipeline_cache)]
-    pub(crate) fn pipeline_cache(&self) -> Option<wgpu::PipelineCache> {
-        self.pipeline_cache_store
-            .as_ref()
-            .map(|store| store.cache())
-    }
-
-    /// No pipeline cache exists on targets without the persistent store; the
-    /// call sites stay unconditioned.
-    #[cfg(not(hydrolysis_pipeline_cache))]
-    #[allow(dead_code)]
-    pub(crate) fn pipeline_cache(&self) -> Option<wgpu::PipelineCache> {
-        None
-    }
-
-    /// How many blurred shadow silhouettes have been CPU-rasterized so far —
-    /// the hook a test uses to prove a moved caster hits the silhouette cache
-    /// instead of re-rasterizing.
-    #[cfg(test)]
-    pub(crate) fn blurred_silhouette_rasterizations(&self) -> usize {
-        self.blurred_silhouettes.rasterizations
     }
 
     /// Runs `f` with accessibility-node registration suppressed. For a control

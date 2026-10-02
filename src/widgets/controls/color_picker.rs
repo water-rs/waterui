@@ -4,16 +4,16 @@ use crate::renderer::AccessibilityActionTarget;
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
-use kurbo::{Rect, RoundedRectRadii};
+use kurbo::Rect;
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui_backend_core::widget::{Brush, DrawContext as _};
 #[cfg(feature = "accessibility")]
 use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
+use waterui_graphics::cherenkov::Draw as _;
 use waterui_graphics::color::Color;
 use waterui_text::styled::StyledStr;
 
@@ -21,7 +21,7 @@ use crate::renderer::RetainedSubview;
 use crate::renderer::local_interaction_state;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, WidgetRenderContext, measure_label_intrinsic,
-    resolved_color_to_peniko, transformed_rect,
+    transformed_rect,
 };
 use crate::widgets::util::inset_rect;
 #[cfg(feature = "accessibility")]
@@ -316,24 +316,18 @@ pub(crate) fn render_color_picker_parts(
     // retained-refresh watcher), so a value change schedules a frame and this
     // persistent node re-renders the new swatch color.
     let color = ctx.renderer_mut().read_signal(&value_binding);
-    let swatch_color = resolved_color_to_peniko(color.resolve(env).snapshot());
+    let swatch_color = color.resolve(env).snapshot();
     {
         let mut draw = ctx.draw_context();
-        draw.fill_rounded_rect(
-            swatch_rect,
-            RoundedRectRadii::from_single_radius(COLOR_SWATCH_RADIUS),
-            &Brush::from(swatch_color),
-        );
-        draw.stroke_rounded_rect(
-            swatch_rect,
-            RoundedRectRadii::from_single_radius(COLOR_SWATCH_RADIUS),
-            &Brush::from(resolved_color_to_peniko(
-                Color::srgb(0, 0, 0)
-                    .with_opacity(0.16)
-                    .resolve(env)
-                    .snapshot(),
-            )),
-            1.0,
+        let swatch_shape = kurbo::RoundedRect::from_rect(swatch_rect, COLOR_SWATCH_RADIUS);
+        draw.fill(swatch_shape, swatch_color);
+        draw.stroke(
+            swatch_shape,
+            kurbo::Stroke::new(1.0),
+            Color::srgb(0, 0, 0)
+                .with_opacity(0.16)
+                .resolve(env)
+                .snapshot(),
         );
     }
 

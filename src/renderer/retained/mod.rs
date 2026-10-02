@@ -3,24 +3,12 @@
 //! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
 
 pub(crate) mod identity;
+pub(crate) mod mount;
 pub(crate) use identity::{PresentationId, RenderId, RenderKey};
+pub(crate) use mount::{MountSlot, Mounts};
 
 use super::signals::SubscribedSnapshot;
 use super::*;
-
-pub(crate) fn affine_near(left: kurbo::Affine, right: kurbo::Affine) -> bool {
-    left.as_coeffs()
-        .iter()
-        .zip(right.as_coeffs())
-        .all(|(left, right)| (*left - right).abs() <= 0.001)
-}
-
-pub(crate) fn rect_near(left: kurbo::Rect, right: kurbo::Rect) -> bool {
-    (left.x0 - right.x0).abs() <= 0.001
-        && (left.y0 - right.y0).abs() <= 0.001
-        && (left.x1 - right.x1).abs() <= 0.001
-        && (left.y1 - right.y1).abs() <= 0.001
-}
 
 impl HydrolysisRenderer {
     #[cfg(test)]

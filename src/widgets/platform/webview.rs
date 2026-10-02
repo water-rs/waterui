@@ -47,9 +47,9 @@ mod macos;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use macos::MacSystemWebViewController;
 
-use crate::renderer::{HydroNativeView, HydroState};
 #[cfg(hydrolysis_macos_system_webview)]
-use crate::renderer::{HydrolysisRenderer, WidgetRenderContext};
+use crate::renderer::WidgetRenderContext;
+use crate::renderer::{HydroNativeView, HydroState};
 
 /// Retains the semantic WebView and its selected native engine for the node lifetime.
 #[cfg(hydrolysis_macos_system_webview)]

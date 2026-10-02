@@ -195,6 +195,10 @@ pub fn run(app: App, style: impl crate::Style) {
     // any async work a view starts (a `GpuView`'s `setup`, above all) never
     // completes and the frame is rendered against uninitialized state.
     let local_executor = executor::HeadlessMainThreadExecutor::thread_shared();
+    // Declared before the runtime state below so it drops after it: closing
+    // and draining the shared queue while this thread's locals are intact is
+    // what keeps a still-queued task out of thread-local teardown (#332).
+    let _executor_teardown = executor::DrainExecutorOnDrop::new(local_executor.clone());
     // This host paces frames itself rather than vsyncing against a panel, so
     // the executor budgets at the headless rate.
     let _ = try_init_local_executor(waterui::task::monitored_local_executor_with_probes(
@@ -214,7 +218,8 @@ pub fn run(app: App, style: impl crate::Style) {
         env,
         last_window: _,
     } = app.into_parts();
-    let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+    let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+    waterui_core::install_application_resources(&mut env);
     waterui::inspector::install(&mut env, inspector);
     let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
     let render_diagnostics_config = RenderDiagnosticsConfig::from_env();
@@ -233,7 +238,9 @@ pub fn run(app: App, style: impl crate::Style) {
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
-    let fonts = FontCollection::new(native_resource_fonts());
+    let fonts = FontCollection::new(native_resource_fonts(
+        waterui_core::ResourceContext::from_environment(&env),
+    ));
     fonts.clone().install(&mut env);
     let shortcuts = env
         .get::<MenuShortcutRegistry>()

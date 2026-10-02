@@ -1,688 +1,221 @@
-//! GPU-composited effects: `AppliedFilter` runtimes and textures, view
-//! effects, scene views, and embedded `GpuSurface` slots/layers.
+//! Filtered-view plumbing: the `filtrate::Effect` adapter the engine runs on
+//! its render thread, and the UI-side runtime a filtered mount owns while its
+//! layer stays live.
+//!
+//! A `FilteredView` carries a declarative [`AnyEffect`] — a recipe, not a GPU
+//! object. [`EngineEffect`] bridges the two worlds: the recipe is `Send`, the
+//! built effect is not, so the adapter is a cell that holds the recipe while
+//! it crosses to the render thread, builds it inside `setup` (which the engine
+//! drives there), and delegates every later call to the built
+//! [`ErasedEffect`].
+//!
+//! [`FilteredRuntime`] is what a mount keeps on the UI side: the unbuilt
+//! source until registration, the engine `Filter` handle once registered (its
+//! drop unregisters the effect), and the [`ParamGuards`] keeping the filter's
+//! reactive parameter subscriptions alive exactly as long as the filter can
+//! write them.
 
-use super::*;
+use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-use shaderloom::WgslModuleCache;
-use waterui_graphics::filter_view::EffectFrameClock;
+use cherenkov::Filter;
+use waterui_graphics::filter_view::ErasedEffect;
+use waterui_graphics::filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
+    EffectSetupResult,
+};
+use waterui_graphics::{AnyEffect, ParamGuards};
 
-#[derive(Clone)]
-pub(crate) struct EffectSetupResources {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    /// Module cache for the shaders effects assemble at runtime on `device`.
-    shader_cache: Arc<WgslModuleCache>,
-    host_redraw_handle: Option<RedrawHandle>,
+/// Per-frame applied-filter telemetry shared between the UI side and the
+/// engine's render thread.
+///
+/// The UI side resets the counters before `Engine::render` and reads them
+/// after it returns — the render is synchronous — while `EngineEffect` calls
+/// accumulate into them from the render thread, so the cells are atomic.
+///
+/// The engine runs a filtered layer's subtree capture inside the same render
+/// pass as the effect encode and reports no per-phase split for it, so the
+/// capture leg of the old vello-era triple is no longer measurable: this cell
+/// counts the encodes it can see and their CPU time only.
+#[derive(Debug, Default)]
+pub(crate) struct AppliedFilterMetrics {
+    /// `encode_render` calls observed this frame.
+    encoded: AtomicU32,
+    /// CPU nanoseconds spent inside `encode_render` this frame.
+    effect_nanos: AtomicU64,
 }
 
-impl EffectSetupResources {
-    fn connect_redraw(&self, handle: &RedrawHandle) {
-        let wake_host: Option<Arc<dyn Fn() + Send + Sync>> =
-            self.host_redraw_handle.as_ref().map(|host| {
-                let host = host.clone();
-                Arc::new(move || host.request_redraw()) as Arc<dyn Fn() + Send + Sync>
-            });
-        handle.set_waker(wake_host);
+impl AppliedFilterMetrics {
+    /// Zeroes the frame counters before the engine renders.
+    pub(crate) fn reset(&self) {
+        self.encoded.store(0, Ordering::Relaxed);
+        self.effect_nanos.store(0, Ordering::Relaxed);
     }
 
-    fn wake_host(&self) {
-        if let Some(handle) = &self.host_redraw_handle {
-            handle.request_redraw();
-        }
+    /// Filters that encoded this frame and their combined encode time.
+    pub(crate) fn snapshot(&self) -> (u32, Duration) {
+        (
+            self.encoded.load(Ordering::Relaxed),
+            Duration::from_nanos(self.effect_nanos.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// Records one completed effect encode.
+    fn record(&self, elapsed: Duration) {
+        self.encoded.fetch_add(1, Ordering::Relaxed);
+        self.effect_nanos
+            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
     }
 }
 
-pub(crate) struct AppliedFilterRuntime {
-    filter: Option<AppliedFilter>,
-    setup_complete: bool,
-    input_texture: Option<CachedEffectTexture>,
-    output_texture: Option<CachedEffectTexture>,
-    output_image: Option<peniko::ImageData>,
-    frame_clock: EffectFrameClock,
+/// A `filtrate::Effect` that builds itself from an [`AnyEffect`] inside
+/// `setup`, on the engine's render thread.
+///
+/// # `Send` invariant
+///
+/// The value crosses threads exactly once, when [`crate::engine::GpuEngine`]'s
+/// effect registration ships it to the render thread. At that moment `built`
+/// is still `None` — the only fields set are `source` (an `AnyEffect`, which
+/// is `Send`), `redraw` (an `Arc` callback, also `Send`) and `metrics` (atomics).
+/// `built` is populated inside `setup`, which the engine only calls on its
+/// render thread, and the value never crosses back.
+pub(crate) struct EngineEffect {
+    /// The unbuilt declarative effect, taken when `setup` runs.
+    source: Option<AnyEffect>,
+    /// The built render-side effect — populated by `setup`, only ever touched
+    /// on the render thread.
+    built: Option<Box<dyn ErasedEffect>>,
+    /// A redraw callback that arrived before the effect was built, forwarded
+    /// at setup.
+    redraw: Option<EffectRedrawCallback>,
+    /// The frame telemetry every `encode_render` contributes to.
+    metrics: Arc<AppliedFilterMetrics>,
 }
 
-impl AppliedFilterRuntime {
-    pub(super) fn new(filter: AppliedFilter) -> Self {
+// SAFETY: `built` is `None` for the whole window in which the value may move
+// across threads; every field set before that is `Send`.
+unsafe impl Send for EngineEffect {}
+
+impl EngineEffect {
+    /// Wraps a declarative effect source for engine registration, feeding
+    /// `metrics` on every encode.
+    pub(crate) fn new(source: AnyEffect, metrics: Arc<AppliedFilterMetrics>) -> Self {
         Self {
-            filter: Some(filter),
-            setup_complete: false,
-            input_texture: None,
-            output_texture: None,
-            output_image: None,
-            frame_clock: EffectFrameClock::new(),
+            source: Some(source),
+            built: None,
+            redraw: None,
+            metrics,
+        }
+    }
+}
+
+impl Effect for EngineEffect {
+    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
+        match &mut self.built {
+            Some(built) => built.set_redraw_callback(callback),
+            None => self.redraw = Some(callback),
         }
     }
 
-    pub(super) fn ensure_setup(
-        runtime: &Rc<RefCell<Self>>,
-        resources: EffectSetupResources,
-        signals: FrameSignals,
-    ) -> bool {
-        {
-            let runtime = runtime.borrow();
-            if runtime.setup_complete {
-                return true;
-            }
-            if runtime.filter.is_none() {
-                return false;
-            }
+    fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = EffectSetupResult> {
+        let mut built = self
+            .source
+            .take()
+            .expect("hydrolysis filter effect set up without a source")
+            .build();
+        if let Some(callback) = self.redraw.take() {
+            built.set_redraw_callback(callback);
         }
-
-        let runtime = Rc::clone(runtime);
-        spawn_local(async move {
-            Self::setup(runtime, resources.clone()).await;
-            signals.request_refresh();
-            resources.wake_host();
-        })
-        .detach();
-        false
-    }
-
-    async fn setup(runtime: Rc<RefCell<Self>>, resources: EffectSetupResources) {
-        let mut filter = {
-            let mut runtime = runtime.borrow_mut();
-            if runtime.setup_complete {
-                return;
-            }
-            runtime
-                .filter
-                .take()
-                .expect("hydrolysis AppliedFilter setup started concurrently")
-        };
-        resources.connect_redraw(&filter.redraw_handle());
-        let context = EffectContext {
-            device: &resources.device,
-            queue: &resources.queue,
-            shader_cache: resources.shader_cache.as_ref(),
-            input_format: wgpu::TextureFormat::Rgba8Unorm,
-            output_format: wgpu::TextureFormat::Rgba8Unorm,
-        };
-        filter
-            .setup(&context)
-            .await
-            .unwrap_or_else(|error| panic!("hydrolysis filter setup failed: {error}"));
-        let mut runtime = runtime.borrow_mut();
-        runtime.filter = Some(filter);
-        runtime.setup_complete = true;
-    }
-
-    fn filter(&self) -> &AppliedFilter {
-        assert!(self.setup_complete, "hydrolysis filter used before setup");
-        self.filter
-            .as_ref()
-            .expect("hydrolysis filter missing after setup")
-    }
-
-    fn filter_mut(&mut self) -> &mut AppliedFilter {
-        assert!(self.setup_complete, "hydrolysis filter used before setup");
-        self.filter
-            .as_mut()
-            .expect("hydrolysis filter missing after setup")
-    }
-
-    pub(super) fn input_texture(
-        &mut self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> (&wgpu::Texture, &wgpu::TextureView) {
-        CachedEffectTexture::get_or_create(
-            &mut self.input_texture,
-            device,
-            "hydrolysis_applied_filter_input",
-            width,
-            height,
-            // `COPY_DST`: the tree flush captures the child into an atlas page
-            // and copies the slot into this texture.
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::COPY_DST,
-        )
-    }
-
-    /// Allocate the output texture for a `width` × `height` input and return
-    /// the image handle that will show its contents, before the filter has run.
-    /// The atlas capture draws the image into the parent scene at flush time and
-    /// runs the filter when the capture level is flushed; the handle is stable
-    /// across both because the texture is.
-    pub(super) fn prepare_output(
-        &mut self,
-        device: &wgpu::Device,
-        legacy_renderer: &mut crate::engine::LegacyRenderer,
-        width: u32,
-        height: u32,
-    ) -> peniko::ImageData {
-        let (output_width, output_height) = self.filter().output_size(width, height);
-        let output_texture = self
-            .output_texture(device, output_width, output_height)
-            .0
-            .clone();
-        register_or_override_output_image(
-            &mut self.output_image,
-            legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
-        )
-    }
-
-    pub(super) fn output_texture(
-        &mut self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> (&wgpu::Texture, &wgpu::TextureView) {
-        CachedEffectTexture::get_or_create(
-            &mut self.output_texture,
-            device,
-            "hydrolysis_applied_filter_output",
-            width,
-            height,
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::STORAGE_BINDING,
-        )
-    }
-
-    pub(super) fn needs_redraw_refresh(&mut self) -> bool {
-        if !self.setup_complete {
-            return false;
+        self.built = Some(built);
+        async move {
+            self.built
+                .as_mut()
+                .expect("hydrolysis filter effect lost during setup")
+                .setup(ctx)
+                .await
         }
-        self.filter().redraw_hint()
     }
 
-    /// The input dimensions the runtime last allocated its capture texture at.
-    /// `None` before the first render. Used by the node-owned refresh path (the
-    /// redraw-only frame does not re-flush the tree, so the node cannot supply
-    /// the dimensions; the runtime remembers them from its last flush).
-    pub(super) fn input_dimensions(&self) -> Option<(u32, u32)> {
-        self.input_texture
-            .as_ref()
-            .map(|texture| (texture.width, texture.height))
-    }
-
-    pub(super) fn encode_output(
+    fn encode_render(
         &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        legacy_renderer: &mut crate::engine::LegacyRenderer,
-        width: u32,
-        height: u32,
+        input: &EffectInput,
+        output: &EffectOutput,
         encoder: &mut wgpu::CommandEncoder,
-    ) -> (peniko::ImageData, bool) {
-        let (output_width, output_height) = self.filter().output_size(width, height);
-        let (input_texture, input_view) = {
-            let Some(input_texture) = self.input_texture.as_ref() else {
-                panic!("hydrolysis AppliedFilter input texture missing before render");
-            };
-            (input_texture.texture.clone(), input_texture.view.clone())
-        };
-        let (output_texture, output_view) = {
-            let (texture, view) = self.output_texture(device, output_width, output_height);
-            (texture.clone(), view.clone())
-        };
-        let timing = self.frame_clock.tick();
-        let input = EffectInput {
-            device,
-            queue,
-            texture: &input_texture,
-            view: input_view,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width,
-            height,
-            timing,
-        };
-        let output = EffectOutput {
-            device,
-            queue,
-            texture: &output_texture,
-            view: output_view,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            width: output_width,
-            height: output_height,
-        };
-        let needs_redraw = match self.filter_mut().encode_render(&input, &output, encoder) {
-            Ok(needs_redraw) => needs_redraw || self.filter().redraw_hint(),
-            Err(err) => {
-                panic!("hydrolysis filter render failed: {err}");
-            }
-        };
-
-        let image = register_or_override_output_image(
-            &mut self.output_image,
-            legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
-        );
-        (image, needs_redraw)
-    }
-}
-
-/// One cached GPU texture an effect runtime renders through every frame,
-/// reallocated only when the required dimensions change.
-pub(crate) struct CachedEffectTexture {
-    width: u32,
-    height: u32,
-    texture: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-
-impl CachedEffectTexture {
-    fn get_or_create<'a>(
-        slot: &'a mut Option<Self>,
-        device: &wgpu::Device,
-        label: &'static str,
-        width: u32,
-        height: u32,
-        usage: wgpu::TextureUsages,
-    ) -> (&'a wgpu::Texture, &'a wgpu::TextureView) {
-        if slot
-            .as_ref()
-            .is_none_or(|texture| texture.width != width || texture.height != height)
-        {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            *slot = Some(Self {
-                width,
-                height,
-                texture,
-                view,
-            });
-        }
-
-        let Some(texture) = slot.as_ref() else {
-            panic!("hydrolysis effect texture cache missing after allocation");
-        };
-        (&texture.texture, &texture.view)
-    }
-}
-
-/// Points vello's retained image handle at `output_texture`, registering a new
-/// handle only when the output dimensions changed. Re-registering every frame
-/// would grow vello's image table and re-upload state for a texture whose
-/// identity is stable.
-fn register_or_override_output_image(
-    output_image: &mut Option<peniko::ImageData>,
-    legacy_renderer: &mut crate::engine::LegacyRenderer,
-    output_texture: wgpu::Texture,
-    output_width: u32,
-    output_height: u32,
-) -> peniko::ImageData {
-    if let Some(image) = output_image
-        .as_ref()
-        .filter(|image| image.width == output_width && image.height == output_height)
-    {
-        let texture_base = wgpu::TexelCopyTextureInfoBase {
-            texture: output_texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        };
-        legacy_renderer.override_image(image, Some(texture_base));
-        image.clone()
-    } else {
-        let image = legacy_renderer.register_texture(output_texture);
-        *output_image = Some(image.clone());
-        image
-    }
-}
-
-pub(crate) struct ViewEffectRuntime {
-    effect: Option<ViewEffectErased>,
-    setup_complete: bool,
-    input_texture: Option<CachedEffectTexture>,
-    output_texture: Option<CachedEffectTexture>,
-    output_image: Option<peniko::ImageData>,
-}
-
-impl ViewEffectRuntime {
-    pub(super) fn new(effect: ViewEffectErased) -> Self {
-        Self {
-            effect: Some(effect),
-            setup_complete: false,
-            input_texture: None,
-            output_texture: None,
-            output_image: None,
-        }
-    }
-
-    pub(super) fn input_texture(
-        &mut self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> (&wgpu::Texture, &wgpu::TextureView) {
-        CachedEffectTexture::get_or_create(
-            &mut self.input_texture,
-            device,
-            "hydrolysis_view_effect_input",
-            width,
-            height,
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-        )
-    }
-
-    pub(super) fn output_texture(
-        &mut self,
-        device: &wgpu::Device,
-        width: u32,
-        height: u32,
-    ) -> (&wgpu::Texture, &wgpu::TextureView) {
-        CachedEffectTexture::get_or_create(
-            &mut self.output_texture,
-            device,
-            "hydrolysis_view_effect_output",
-            width,
-            height,
-            wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-        )
-    }
-
-    pub(super) fn register_output_image(
-        &mut self,
-        legacy_renderer: &mut crate::engine::LegacyRenderer,
-        output_texture: wgpu::Texture,
-        output_width: u32,
-        output_height: u32,
-    ) -> peniko::ImageData {
-        register_or_override_output_image(
-            &mut self.output_image,
-            legacy_renderer,
-            output_texture,
-            output_width,
-            output_height,
-        )
-    }
-
-    pub(super) fn ensure_setup(
-        runtime: &Rc<RefCell<Self>>,
-        resources: EffectSetupResources,
-        signals: FrameSignals,
-    ) -> bool {
-        {
-            let runtime = runtime.borrow();
-            if runtime.setup_complete {
-                return true;
-            }
-            if runtime.effect.is_none() {
-                return false;
-            }
-        }
-
-        let runtime = Rc::clone(runtime);
-        spawn_local(async move {
-            Self::setup(runtime, resources.clone()).await;
-            signals.request_refresh();
-            resources.wake_host();
-        })
-        .detach();
-        false
-    }
-
-    async fn setup(runtime: Rc<RefCell<Self>>, resources: EffectSetupResources) {
-        let mut effect = {
-            let mut runtime = runtime.borrow_mut();
-            if runtime.setup_complete {
-                return;
-            }
-            runtime
-                .effect
-                .take()
-                .expect("hydrolysis ViewEffect setup started concurrently")
-        };
-        resources.connect_redraw(&effect.redraw_handle());
-        let context = ViewEffectContext {
-            device: &resources.device,
-            queue: &resources.queue,
-            input_format: wgpu::TextureFormat::Rgba8Unorm,
-            output_format: wgpu::TextureFormat::Rgba8Unorm,
-        };
-        effect.setup(&context).await;
-        let mut runtime = runtime.borrow_mut();
-        runtime.effect = Some(effect);
-        runtime.setup_complete = true;
-    }
-
-    pub(super) fn effect(&self) -> &ViewEffectErased {
-        assert!(
-            self.setup_complete,
-            "hydrolysis ViewEffect used before setup"
-        );
-        self.effect
-            .as_ref()
-            .expect("hydrolysis ViewEffect missing after setup")
-    }
-
-    pub(super) fn effect_mut(&mut self) -> &mut ViewEffectErased {
-        assert!(
-            self.setup_complete,
-            "hydrolysis ViewEffect used before setup"
-        );
-        self.effect
+    ) -> EffectRenderResult {
+        let started_at = Instant::now();
+        let result = self
+            .built
             .as_mut()
-            .expect("hydrolysis ViewEffect missing after setup")
+            .expect("hydrolysis filter effect rendered before setup")
+            .encode_render(input, output, encoder);
+        self.metrics.record(started_at.elapsed());
+        result
+    }
+
+    fn redraw_hint(&self) -> bool {
+        self.built.as_ref().is_some_and(|built| built.redraw_hint())
     }
 }
 
-impl SemanticCore {
-    /// Register a retained render-tree GPU surface runtime (owned by a
-    /// `GpuSurfaceNode`) so its off-thread redraw handle is polled. Called once
-    /// at node build time; the node keeps the only other `Rc`, so a dropped node
-    /// is pruned by [`HydrolysisRenderer::poll_gpu_surface_redraw_handles`].
-    pub(crate) fn register_node_gpu_surface(
-        &mut self,
-        runtime: Rc<RefCell<EmbeddedGpuSurfaceRuntime>>,
-    ) {
-        self.node_gpu_surfaces.push(runtime);
+/// UI-side state of one mounted `FilteredView`: owns the effect source until
+/// the engine registers it, then the `Filter` handle for the mount's life.
+///
+/// Holding `guards` here — rather than inside the registered effect — keeps
+/// the nami subscriptions feeding the filter's parameter slots alive for as
+/// long as the layer can draw, and tears them down when the node is dropped.
+pub(crate) struct FilteredRuntime {
+    source: Option<AnyEffect>,
+    filter: Option<Filter>,
+    _guards: ParamGuards,
+}
+
+impl FilteredRuntime {
+    /// A runtime holding `view`'s effect source and parameter guards.
+    pub(crate) fn new(effect: AnyEffect, guards: ParamGuards) -> Self {
+        Self {
+            source: Some(effect),
+            filter: None,
+            _guards: guards,
+        }
     }
 
-    pub(crate) fn register_node_view_effect(&mut self, runtime: Rc<RefCell<ViewEffectRuntime>>) {
-        self.node_view_effects.push(Rc::downgrade(&runtime));
-    }
-
-    /// Register a retained render-tree applied-filter runtime (owned by an
-    /// `AppliedFilterNode`) so animated filters are refreshed on redraw-only
-    /// frames. Called once at node build time; pruned by strong count when the
-    /// owning node is dropped.
-    pub(crate) fn register_node_applied_filter(
+    /// The engine filter this mount installs on its wrapper layer.
+    ///
+    /// Registers the effect on first call; the returned reference borrows the
+    /// stored handle, so the caller installs `tx[layer].filter(&filter)`
+    /// inside the surface edit this call participates in.
+    pub(crate) fn filter(
         &mut self,
-        runtime: Rc<RefCell<AppliedFilterRuntime>>,
-    ) {
-        self.node_applied_filters.push(runtime);
+        engine: &crate::engine::GpuEngine,
+        metrics: &Arc<AppliedFilterMetrics>,
+    ) -> &Filter {
+        if self.filter.is_none() {
+            let source = self
+                .source
+                .take()
+                .expect("hydrolysis filtered mount without an effect source");
+            self.filter = Some(engine.effect(EngineEffect::new(source, Arc::clone(metrics))));
+        }
+        self.filter
+            .as_ref()
+            .expect("hydrolysis filtered mount lost its filter handle")
     }
 }
 
-impl HydrolysisRenderer {
-    pub(crate) fn effect_setup_resources(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> EffectSetupResources {
-        EffectSetupResources {
-            device: device.clone(),
-            queue: queue.clone(),
-            shader_cache: Arc::clone(&self.shader_cache),
-            host_redraw_handle: self.host_redraw_handle.clone(),
-        }
-    }
-
-    /// Await setup for all effects reachable from a statically prepared
-    /// embedded Hydrolysis tree.
-    pub(crate) async fn setup_embedded_effects(&self, context: &GpuContext<'_>) {
-        let resources = self.effect_setup_resources(context.device, context.queue);
-        for runtime in self.node_view_effects.iter().filter_map(Weak::upgrade) {
-            ViewEffectRuntime::setup(runtime, resources.clone()).await;
-        }
-        for runtime in self.node_applied_filters.clone() {
-            AppliedFilterRuntime::setup(runtime, resources.clone()).await;
-        }
-    }
-
-    pub(crate) fn refresh_active_applied_filters(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) {
-        // Prune retained render-tree filters whose node was dropped (only this
-        // registry still holds the `Rc`).
-        self.node_applied_filters
-            .retain(|runtime| Rc::strong_count(runtime) > 1);
-        // Node-owned filters supply their dimensions from the runtime's last
-        // flush (the redraw-only frame does not re-flush the tree). A filter that
-        // has never rendered has no input texture yet and is skipped.
-        let active_filters = self
-            .node_applied_filters
-            .iter()
-            .filter_map(|runtime| {
-                runtime
-                    .borrow()
-                    .input_dimensions()
-                    .map(|(width, height)| (Rc::clone(runtime), width, height))
-            })
-            .collect::<Vec<_>>();
-        if active_filters.is_empty() {
-            return;
-        }
-        let mut encoder = None;
-        for (runtime, width, height) in active_filters {
-            if !runtime.borrow_mut().needs_redraw_refresh() {
-                continue;
-            }
-            let encoder = encoder.get_or_insert_with(|| {
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("hydrolysis active applied filters encoder"),
-                })
-            });
-            let effect_started_at = Instant::now();
-            let needs_redraw = runtime
-                .borrow_mut()
-                .encode_output(
-                    device,
-                    queue,
-                    &mut self.legacy_renderer,
-                    width,
-                    height,
-                    encoder,
-                )
-                .1;
-            self.frame_applied_filter_effect += effect_started_at.elapsed();
-            self.frame_applied_filter_count = self
-                .frame_applied_filter_count
-                .checked_add(1)
-                .expect("hydrolysis applied filter counter overflow");
-            if needs_redraw {
-                self.request_redraw();
-            }
-        }
-        if let Some(encoder) = encoder {
-            self.state.counters.gpu_submissions += 1;
-            queue.submit([encoder.finish()]);
-        }
-    }
-
-    pub(crate) fn push_gpu_surface_layer(
-        &mut self,
-        source: GpuSurfaceSource,
-        transform: kurbo::Affine,
-        bounds: kurbo::Rect,
-        hit_rect: kurbo::Rect,
-    ) {
-        if self
-            .compositor
-            .active_scene_layers
-            .iter()
-            .any(|layer| layer.alpha <= HIT_TEST_ALPHA_THRESHOLD)
-        {
-            return;
-        }
-
-        self.flush_legacy_scene_layer();
-        let GpuSurfaceSource::Owned(runtime) = &source;
-        // Rendering straight into the window's target replaces the whole
-        // composite pass, so everything the composite would have done has to be
-        // unnecessary: nothing may be drawn under or over this surface, no
-        // scene layer may be masking or fading it, the view must fill every
-        // pixel it is handed (the target arrives uncleared, still holding the
-        // previous frame), and its transformed bounds must land exactly on the
-        // window's device-pixel viewport.
-        //
-        // That last test is deliberately *not* `transform == IDENTITY`. The
-        // window root is `Affine::scale(scale_factor)`, so an identity test is
-        // false on every HiDPI display and this path never ran on one.
-        let direct_to_target = self.compositor.render_layers.is_empty()
-            && self.compositor.active_scene_layers.is_empty()
-            && runtime.borrow().is_opaque()
-            && covers_viewport_directly(transform, bounds, self.window_viewport());
-        self.compositor
-            .render_layers
-            .push(RenderLayer::GpuSurface(GpuSurfaceLayer {
-                source,
-                transform,
-                bounds,
-                hit_rect,
-                active_layers: self.compositor.active_scene_layers.clone(),
-                direct_to_target,
-            }));
-    }
-
-    pub fn poll_gpu_surface_redraw_handles(&mut self) -> bool {
-        let mut requested = false;
-        // Retained render-tree GPU surfaces own their runtime; prune any whose
-        // node has been dropped (only this registry still holds the `Rc`), then
-        // poll the live ones for off-thread redraw requests.
-        self.node_gpu_surfaces
-            .retain(|runtime| Rc::strong_count(runtime) > 1);
-        // `self.state` and `self.node_gpu_surfaces` resolve through Deref,
-        // which borrows all of `*self`; take the direct `core` field paths
-        // so the two borrows stay disjoint.
-        let counters = &mut self.core.state.counters;
-        for runtime in &self.core.node_gpu_surfaces {
-            if runtime.borrow_mut().take_external_redraw_request() {
-                counters.host_wakeups += 1;
-                requested = true;
-            }
-        }
-        if requested {
-            self.signals.request_redraw();
-        }
-        requested
-    }
-
-    /// Atlas pages rendered this frame; every filter of a nesting level shares
-    /// one page until it fills.
-    #[cfg(test)]
-    pub(crate) fn applied_filter_capture_pages(&self) -> u32 {
-        self.subtree_captures.frame_pages()
-    }
-
+impl crate::renderer::HydrolysisRenderer {
+    /// Applied filters dispatched in the last rendered frame, as
+    /// `(filters encoded, capture µs, effect encode µs)`.
+    ///
+    /// The capture leg is `0`: the engine captures a filtered subtree inside
+    /// the same render pass as the effect encode and reports no per-phase
+    /// split, so only the encode leg remains measurable.
     pub(crate) fn applied_filter_stats(&self) -> (u32, u64, u64) {
         (
             self.frame_applied_filter_count,
-            duration_micros_u64(self.frame_applied_filter_capture),
-            duration_micros_u64(self.frame_applied_filter_effect),
+            0,
+            crate::renderer::frame::duration_micros_u64(self.frame_applied_filter_effect),
         )
     }
 }

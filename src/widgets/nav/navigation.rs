@@ -1,4 +1,3 @@
-use crate::engine::Brush;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
@@ -10,7 +9,7 @@ use crate::renderer::{
     WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
-    normalize_layout_view, resolved_color_to_peniko, split_compact_threshold, transformed_rect,
+    normalize_layout_view, split_compact_threshold, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -31,7 +30,8 @@ use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::cherenkov::{Paint, WorkingColor};
+use waterui_graphics::color::Color;
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);
@@ -66,7 +66,7 @@ pub(crate) struct NavigationViewRenderState {
     /// binding stays live through the node's own re-flush). `Some` exactly when
     /// `search` is present.
     search_field: Option<RetainedSubview>,
-    color: Computed<ResolvedColor>,
+    color: Computed<WorkingColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
     subtitle_present: bool,
@@ -514,11 +514,11 @@ pub(crate) fn render_navigation_view_parts(
             ctx.bounds.x1,
             (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
         );
-        let bar_color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+        let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = ctx.theme();
             let mut draw = ctx.draw_context();
-            theme.draw_navigation_bar(&mut draw, bar_rect, &Brush::from(bar_color));
+            theme.draw_navigation_bar(&mut draw, bar_rect, &bar_color);
             let separator = kurbo::Rect::new(
                 bar_rect.x0,
                 (bar_rect.y1 - 1.0).max(bar_rect.y0),
@@ -678,11 +678,11 @@ pub(crate) fn render_navigation_view_parts(
             ctx.bounds.x1,
             ctx.bounds.y1,
         );
-        let bar_color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+        let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = ctx.theme();
             let mut draw = ctx.draw_context();
-            theme.draw_navigation_bar(&mut draw, bottom_rect, &Brush::from(bar_color));
+            theme.draw_navigation_bar(&mut draw, bottom_rect, &bar_color);
         }
         flush_toolbar_group(
             ctx,
@@ -1499,7 +1499,7 @@ fn render_split_detail(
 pub(crate) struct NavigationStackRenderState {
     unresolved_root: Option<AnyView>,
     root: Option<RetainedSubview>,
-    background: Option<Computed<ResolvedColor>>,
+    background: Option<Computed<WorkingColor>>,
     transition_style: AnyNavigationTransition,
 }
 
@@ -1539,7 +1539,7 @@ impl NavigationStackRenderState {
             .expect("Hydrolysis navigation root must be resolved before rendering")
     }
 
-    fn background(&self) -> Computed<ResolvedColor> {
+    fn background(&self) -> Computed<WorkingColor> {
         self.background
             .clone()
             .expect("Hydrolysis navigation background must be resolved before rendering")
@@ -1594,11 +1594,10 @@ fn render_navigation_page_scene(
     };
     let mut scene = Recording::new();
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
-    scene.fill(
+    scene.fill_paint(
         peniko::Fill::NonZero,
         kurbo::Affine::IDENTITY,
-        &peniko::Brush::Solid(resolved_color_to_peniko(renderer.read_signal(&background))),
-        None,
+        Paint::Solid(renderer.read_signal(&background)),
         &bounds,
     );
     scene.append(&captured.scene, kurbo::Affine::IDENTITY);
@@ -1804,14 +1803,13 @@ pub(crate) fn render_navigation_stack_parts(
     #[allow(clippy::cast_possible_truncation)]
     let scene_size = LayoutSize::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
     let background = state.borrow().background();
-    let background = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&background));
+    let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
     let transform = ctx.transform;
     let bounds = ctx.bounds;
-    ctx.renderer_mut().scene_mut().fill(
+    ctx.renderer_mut().scene_mut().fill_paint(
         peniko::Fill::NonZero,
         transform,
-        &peniko::Brush::Solid(background),
-        None,
+        background,
         &bounds,
     );
 

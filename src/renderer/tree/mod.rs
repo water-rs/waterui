@@ -78,7 +78,6 @@ mod subview;
 mod window;
 
 pub(crate) use collection::*;
-pub(crate) use flush::ChildTextureTarget;
 pub(crate) use nodes::*;
 use subview::*;
 
@@ -151,15 +150,17 @@ pub(crate) enum RenderNode {
     /// rather than through a frame-ordered effect slot, so a `Dynamic` swap to a
     /// different scene renders the new content instead of the previous scene's.
     SceneView(Box<SceneViewNode>),
-    /// An embedded `GpuSurface` leaf owning its `EmbeddedGpuSurfaceRuntime`
+    /// An embedded `GpuContentView` leaf owning its `GpuContentRuntime`
     /// directly (no cursor-bound slot), composited through an `Rc`-carrying layer.
-    GpuSurface(Box<GpuSurfaceNode>),
-    /// A `ViewEffect` leaf owning its `ViewEffectRuntime` and its captured child
-    /// node directly (no cursor-bound effect slot).
-    ViewEffect(Box<ViewEffectNode>),
-    /// An `AppliedFilter` wrapper owning its `AppliedFilterRuntime` (textures) and
-    /// recursing into its child node (no cursor-bound effect slot).
-    AppliedFilter(Box<AppliedFilterNode>),
+    GpuContent(Box<GpuContentNode>),
+    /// An `ExternalFrameView` leaf owning its `ExternalFrameRuntime`,
+    /// composited through a keyed engine layer that presents the frames its
+    /// source publishes.
+    ExternalFrame(Box<ExternalFrameNode>),
+    /// A `FilteredView` wrapper owning its `FilteredRuntime` (the engine
+    /// `Filter`) and recursing into its child node — the child mounts inside
+    /// the filtered group so the filter covers the whole subtree.
+    Filtered(Box<FilteredNode>),
     /// A reactive `Dynamic` host: holds the live `Dynamic` and rebuilds only its
     /// own child subtree when the content changes (incremental patch + relayout).
     /// This is the structural seam that keeps a content swap from resetting the
@@ -210,9 +211,9 @@ impl RenderNode {
             Self::Collection(node) => node.render_id,
             Self::LazyStack(node) => node.render_id,
             Self::SceneView(node) => node.render_id,
-            Self::GpuSurface(node) => node.render_id,
-            Self::ViewEffect(node) => node.render_id,
-            Self::AppliedFilter(node) => node.render_id,
+            Self::GpuContent(node) => node.render_id,
+            Self::ExternalFrame(node) => node.render_id,
+            Self::Filtered(node) => node.render_id,
             Self::Dynamic(node) => node.render_id,
             Self::Wrapper(node) => node.render_id,
             Self::Widget(node) => node.render_id,
@@ -242,7 +243,8 @@ impl RenderNode {
             | Self::Text(_)
             | Self::Widget(_)
             | Self::SceneView(_)
-            | Self::GpuSurface(_) => {}
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_) => {}
             Self::Container(node) => {
                 for child in &node.children {
                     child.collect_render_ids(out);
@@ -272,8 +274,7 @@ impl RenderNode {
             Self::Retain(node) => node.child.collect_render_ids(out),
             Self::Env(node) => node.child.collect_render_ids(out),
             Self::Scroll(node) => node.child.collect_render_ids(out),
-            Self::AppliedFilter(node) => node.child.collect_render_ids(out),
-            Self::ViewEffect(node) => node.child.borrow().collect_render_ids(out),
+            Self::Filtered(node) => node.child.collect_render_ids(out),
             Self::Dynamic(node) => node.child.borrow().collect_render_ids(out),
             Self::Wrapper(node) => node.child.collect_render_ids(out),
         }
@@ -293,7 +294,8 @@ impl RenderNode {
             Self::Container(node) => Some(node.accessibility_identity.clone()),
             Self::Scroll(node) => Some(node.accessibility_identity.clone()),
             Self::SceneView(node) => Some(node.accessibility_identity.clone()),
-            Self::GpuSurface(node) => Some(node.accessibility_identity.clone()),
+            Self::GpuContent(node) => Some(node.accessibility_identity.clone()),
+            Self::ExternalFrame(node) => Some(node.accessibility_identity.clone()),
             Self::Collection(node) => Some(node.accessibility_identity.clone()),
             Self::LazyStack(node) => Some(node.accessibility_identity.clone()),
             Self::Retain(node) => node.child.accessibility_identity(),
@@ -302,8 +304,7 @@ impl RenderNode {
             Self::Scale(node) => node.child.accessibility_identity(),
             Self::Rotation(node) => node.child.accessibility_identity(),
             Self::Offset(node) => node.child.accessibility_identity(),
-            Self::AppliedFilter(node) => node.child.accessibility_identity(),
-            Self::ViewEffect(node) => node.child.borrow().accessibility_identity(),
+            Self::Filtered(node) => node.child.accessibility_identity(),
             Self::Dynamic(node) => node.child.borrow().accessibility_identity(),
             Self::Color(_) => None,
         }

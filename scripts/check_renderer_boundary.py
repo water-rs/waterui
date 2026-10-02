@@ -345,7 +345,7 @@ def compare(root: Path, baseline: dict) -> list[str]:
     else:
         metadata = subprocess.run(
             ["cargo", "metadata", "--format-version", "1", "--locked"],
-            cwd=root, capture_output=True, text=True,
+            cwd=root, capture_output=True, text=True, encoding="utf-8",
         )
         if metadata.returncode != 0:
             violations.append(

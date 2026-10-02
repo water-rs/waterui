@@ -222,7 +222,7 @@ fn screenshot_and_advance(client: &mut DuplexTransport, node: u64) {
 
 /// water-rs/hydrolysis#324 repro: `screenshot` must return the current
 /// composite — the same image `advance(screenshot: true)` produces — not the
-/// previous deferred composite.
+/// frame from before the state change.
 #[test]
 fn mcp_screenshot_matches_advance_capture() {
     let (mut client, server) = DuplexTransport::pair();

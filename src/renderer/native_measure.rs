@@ -118,12 +118,12 @@ macro_rules! hydro_native_view_types {
         $macro!(Native<PickerConfig>);
         $macro!(Native<Dynamic>);
         $macro!(Native<SystemIcon>);
-        $macro!(Native<GpuSurface>);
+        $macro!(Native<GpuContentView>);
+        $macro!(Native<ExternalFrameView>);
         $macro!(Native<SceneView>);
-        $macro!(Native<ViewEffectErased>);
+        $macro!(Native<FilteredView>);
         $macro!(Native<Color>);
-        $macro!(Native<ResolvedColor>);
-        $macro!(Native<ResolvedGradient>);
+        $macro!(Native<Gradient>);
         $macro!(Native<ResolvedShape>);
         $macro!(Native<ResolvedMorphShape>);
         $macro!(Native<MapConfig>);

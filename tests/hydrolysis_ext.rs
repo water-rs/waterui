@@ -1,18 +1,19 @@
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
-use hydrolysis::HydrolysisExt;
 use waterui::Color;
 use waterui::View;
-use waterui::ViewExt;
 use waterui::env::Environment;
+use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui::graphics::{GpuContent, GpuContentView};
 use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
-use waterui_graphics::{
-    EffectRenderer, FilterViewExt as _, GpuContext, GpuFrame, GpuRuntime, GpuSurface, GpuView,
-    OffscreenRenderConfig, OffscreenSize, ViewEffect, ViewEffectContext, ViewEffectInput,
-    ViewEffectOutput,
+use waterui::{FilterViewExt, ViewExt};
+use waterui_graphics::FilteredView;
+use waterui_graphics::filtrate::{
+    Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
 };
+use waterui_testing::TestHost;
 
 #[derive(Clone)]
 struct CloneableRect;
@@ -28,10 +29,10 @@ struct SolidClearRenderer {
     color: wgpu::Color,
 }
 
-impl GpuView for SolidClearRenderer {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+impl GpuContent for SolidClearRenderer {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, frame: &mut GpuFrame) {
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -41,7 +42,7 @@ impl GpuView for SolidClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_ext_gpu_surface_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
+                    view: frame.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -62,19 +63,14 @@ impl GpuView for SolidClearRenderer {
 #[derive(Debug)]
 struct CountingClearRenderer {
     color: wgpu::Color,
-    calls: Rc<Cell<u32>>,
+    calls: Arc<AtomicU32>,
 }
 
-impl GpuView for CountingClearRenderer {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+impl GpuContent for CountingClearRenderer {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.calls.set(
-            self.calls
-                .get()
-                .checked_add(1)
-                .expect("counting clear renderer call count overflow"),
-        );
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -84,7 +80,7 @@ impl GpuView for CountingClearRenderer {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_ext_counting_gpu_surface_test_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
+                    view: frame.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -102,18 +98,25 @@ impl GpuView for CountingClearRenderer {
     }
 }
 
+/// A pass-through filter: copies its captured input texture to the output
+/// unchanged. The point of the fixture is the capture path, not the filter.
 #[derive(Debug, Clone, Copy)]
 struct CopyTextureEffect;
 
-impl EffectRenderer for CopyTextureEffect {
-    async fn setup(&mut self, _ctx: &ViewEffectContext<'_>) {}
+impl Effect for CopyTextureEffect {
+    fn setup(
+        &mut self,
+        _ctx: &EffectContext<'_>,
+    ) -> impl std::future::Future<Output = EffectSetupResult> {
+        std::future::ready(Ok(()))
+    }
 
-    fn render(&mut self, input: &ViewEffectInput<'_>, output: &ViewEffectOutput<'_>) {
-        let mut encoder = input
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("hydrolysis_ext_copy_view_effect_encoder"),
-            });
+    fn encode_render(
+        &mut self,
+        input: &EffectInput<'_>,
+        output: &EffectOutput<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> EffectRenderResult {
         encoder.copy_texture_to_texture(
             input.texture.as_image_copy(),
             output.texture.as_image_copy(),
@@ -123,7 +126,7 @@ impl EffectRenderer for CopyTextureEffect {
                 depth_or_array_layers: 1,
             },
         );
-        input.queue.submit([encoder.finish()]);
+        Ok(false)
     }
 }
 
@@ -132,7 +135,7 @@ struct GpuSurfaceOpacityView;
 
 impl View for GpuSurfaceOpacityView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuSurface::new(SolidClearRenderer {
+        GpuContentView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.9,
                 g: 0.3,
@@ -145,12 +148,12 @@ impl View for GpuSurfaceOpacityView {
 }
 
 #[derive(Clone)]
-struct GpuSurfaceUnderVelloOverlayView;
+struct GpuSurfaceUnderOverlayView;
 
-impl View for GpuSurfaceUnderVelloOverlayView {
+impl View for GpuSurfaceUnderOverlayView {
     fn body(self, _env: &Environment) -> impl View {
         zstack((
-            GpuSurface::new(SolidClearRenderer {
+            GpuContentView::new(SolidClearRenderer {
                 color: wgpu::Color {
                     r: 0.9,
                     g: 0.3,
@@ -165,12 +168,12 @@ impl View for GpuSurfaceUnderVelloOverlayView {
 
 #[derive(Clone)]
 struct TransparentGpuSurfaceOpacityView {
-    calls: Rc<Cell<u32>>,
+    calls: Arc<AtomicU32>,
 }
 
 impl View for TransparentGpuSurfaceOpacityView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuSurface::new(CountingClearRenderer {
+        GpuContentView::new(CountingClearRenderer {
             color: wgpu::Color {
                 r: 0.9,
                 g: 0.3,
@@ -188,7 +191,7 @@ struct GpuSurfaceClipView;
 
 impl View for GpuSurfaceClipView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuSurface::new(SolidClearRenderer {
+        GpuContentView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.2,
                 g: 0.8,
@@ -201,12 +204,12 @@ impl View for GpuSurfaceClipView {
 }
 
 #[derive(Clone)]
-struct GpuSurfaceViewEffectView;
+struct GpuSurfaceFilteredView;
 
-impl View for GpuSurfaceViewEffectView {
+impl View for GpuSurfaceFilteredView {
     fn body(self, _env: &Environment) -> impl View {
-        ViewEffect::new(
-            GpuSurface::new(SolidClearRenderer {
+        FilteredView::new(
+            GpuContentView::new(SolidClearRenderer {
                 color: wgpu::Color {
                     r: 0.35,
                     g: 0.55,
@@ -224,7 +227,7 @@ struct GpuSurfaceAppliedFilterView;
 
 impl View for GpuSurfaceAppliedFilterView {
     fn body(self, _env: &Environment) -> impl View {
-        GpuSurface::new(SolidClearRenderer {
+        GpuContentView::new(SolidClearRenderer {
             color: wgpu::Color {
                 r: 0.85,
                 g: 0.45,
@@ -255,34 +258,31 @@ fn assert_pixel_close(actual: &[u8], expected: [u8; 4], message: &str) {
     );
 }
 
-fn gpu_runtime() -> GpuRuntime {
-    let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
-    waterui_testing::install_test_executor();
-    pollster::block_on(GpuRuntime::new())
-        .expect("hydrolysis extension tests require a high-performance GPU")
+/// An offscreen host at pixel size `width`x`height` under the Material3 style —
+/// the render harness `render_offscreen` used to drive by hand.
+fn host(width: u32, height: u32) -> TestHost {
+    TestHost::new(
+        Environment::new(),
+        width,
+        height,
+        hydrolysis_m3::Material3::defaults(),
+    )
+}
+
+fn center_pixel(rgba8: &[u8], width: u32, height: u32) -> &[u8] {
+    let center = ((width as usize / 2) + (height as usize / 2) * width as usize) * 4;
+    &rgba8[center..center + 4]
 }
 
 #[test]
 fn hydrolysis_ext_renders_offscreen() {
-    let mut env = Environment::new();
-    let view = CloneableRect.hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
-
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(400, 300).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
+    let host = host(400, 300);
+    let output = host.render(CloneableRect);
 
     assert_eq!(output.width, 400);
     assert_eq!(output.height, 300);
     assert_eq!(output.rgba8.len(), 400 * 300 * 4);
-    let center =
-        ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
-    let pixel = &output.rgba8[center..center + 4];
+    let pixel = center_pixel(&output.rgba8, output.width, output.height);
     assert_eq!(
         pixel,
         [37, 99, 235, 255],
@@ -292,18 +292,8 @@ fn hydrolysis_ext_renders_offscreen() {
 
 #[test]
 fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
-    let mut env = Environment::new();
-    let view = GpuSurfaceOpacityView.hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
-
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
+    let host = host(96, 72);
+    let output = host.render(GpuSurfaceOpacityView);
 
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
@@ -315,51 +305,31 @@ fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
 }
 
 #[test]
-fn hydrolysis_ext_preserves_gpu_surface_under_vello_overlay() {
-    let mut env = Environment::new();
-    let view =
-        GpuSurfaceUnderVelloOverlayView.hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
+fn hydrolysis_ext_preserves_gpu_surface_under_overlay() {
+    let host = host(96, 72);
+    let output = host.render(GpuSurfaceUnderOverlayView);
 
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
-
+    // The probe clears (0.9, 0.3, 0.2) in linear Display P3; presented back to
+    // sRGB that is [255, 143, 117] — the fill survives, gamut-mapped.
     assert_pixel_close(
         &output.rgba8[..4],
-        [243, 149, 124, 255],
-        "a later transparent Vello layer must preserve the underlying GPU surface",
+        [255, 143, 117, 255],
+        "a later transparent overlay layer must preserve the underlying GPU surface",
     );
 }
 
 #[test]
 fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
-    let mut env = Environment::new();
-    let calls = Rc::new(Cell::new(0));
-    let view = TransparentGpuSurfaceOpacityView {
-        calls: Rc::clone(&calls),
-    }
-    .hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
-
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
+    let calls = Arc::new(AtomicU32::new(0));
+    let host = host(96, 72);
+    let output = host.render(TransparentGpuSurfaceOpacityView {
+        calls: Arc::clone(&calls),
+    });
 
     assert_eq!(
-        calls.get(),
+        calls.load(Ordering::Relaxed),
         0,
-        "transparent opacity layer should not render hidden GpuSurface content"
+        "transparent opacity layer should not render hidden GpuContentView content"
     );
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
@@ -369,24 +339,11 @@ fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
 
 #[test]
 fn hydrolysis_ext_renders_gpu_surface_inside_clip_shape() {
-    let mut env = Environment::new();
-    let view = GpuSurfaceClipView.hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
+    let host = host(96, 72);
+    let output = host.render(GpuSurfaceClipView);
 
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
-
-    let center =
-        ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
-    let center_alpha = output.rgba8[center + 3];
-    let corner = 0usize;
-    let corner_alpha = output.rgba8[corner + 3];
+    let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
+    let corner_alpha = output.rgba8[3];
     assert!(
         center_alpha > 200,
         "center should remain visible, got alpha={center_alpha}"
@@ -398,49 +355,26 @@ fn hydrolysis_ext_renders_gpu_surface_inside_clip_shape() {
 }
 
 #[test]
-fn hydrolysis_ext_captures_gpu_surface_inside_view_effect() {
-    let mut env = Environment::new();
-    let view = GpuSurfaceViewEffectView.hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
+fn hydrolysis_ext_captures_gpu_surface_inside_filtered_view() {
+    let host = host(96, 72);
+    let output = host.render(GpuSurfaceFilteredView);
 
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
-
-    let center =
-        ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
+    let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
-        output.rgba8[center + 3] > 200,
-        "ViewEffect must capture its nested GpuSurface"
+        center_alpha > 200,
+        "FilteredView must capture its nested GpuContentView"
     );
 }
 
 #[test]
 fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
-    let mut env = Environment::new();
-    let view =
-        GpuSurfaceAppliedFilterView.hydrolysis(Rc::new(hydrolysis_m3::Material3::defaults()));
+    let host = host(96, 72);
+    let output = host.render(GpuSurfaceAppliedFilterView);
 
-    let runtime = gpu_runtime();
-    let output = pollster::block_on(view.render_offscreen(
-        &runtime,
-        OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(96, 72).expect("static size must be valid"),
-        ),
-        &mut env,
-    ))
-    .expect("hydrolysis extension offscreen render failed");
-
-    let center =
-        ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
+    let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
-        output.rgba8[center + 3] > 200,
-        "AppliedFilter must capture its nested GpuSurface"
+        center_alpha > 200,
+        "AppliedFilter must capture its nested GpuContentView"
     );
 }
 

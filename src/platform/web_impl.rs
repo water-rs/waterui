@@ -24,13 +24,15 @@ struct PendingResize {
 }
 
 pub struct BrowserSurface {
-    _instance: wgpu::Instance,
+    instance: wgpu::Instance,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
     surface: wgpu::Surface<'static>,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     /// Reports this device lost; taken when the device was opened.
-    device_loss: waterui_graphics::DeviceLoss,
+    device_loss: crate::platform::DeviceLoss,
     config: wgpu::SurfaceConfiguration,
 }
 
@@ -53,6 +55,7 @@ impl BrowserSurface {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await
             .expect(
@@ -66,12 +69,20 @@ impl BrowserSurface {
             })
             .await
             .expect("hydrolysis web surface: failed to request WebGPU device");
-        let device_loss = waterui_graphics::DeviceLoss::observe(&device);
+        let context_id = super::next_gpu_context_id();
+        let shared_device = cherenkov_gpu::interop::SharedDevice {
+            instance: instance.clone(),
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
+        };
+        let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
 
         let caps = surface.get_capabilities(&adapter);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: select_hydrolysis_surface_format(&caps),
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: width.max(1),
             height: height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
@@ -82,7 +93,8 @@ impl BrowserSurface {
         surface.configure(&device, &config);
 
         Self {
-            _instance: instance,
+            instance,
+            context_id,
             surface,
             adapter,
             device,
@@ -106,7 +118,7 @@ impl SurfaceProvider for BrowserSurface {
         &self.queue
     }
 
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+    fn device_loss(&self) -> &crate::platform::DeviceLoss {
         &self.device_loss
     }
 
@@ -120,7 +132,7 @@ impl SurfaceProvider for BrowserSurface {
 
     fn present(&mut self, frame: SurfaceFrame) {
         match frame {
-            SurfaceFrame::Browser { output, .. } => output.present(),
+            SurfaceFrame::Browser { output, .. } => self.queue.present(output),
             SurfaceFrame::Offscreen { .. } => {
                 panic!("hydrolysis web surface received an offscreen frame")
             }
@@ -143,6 +155,19 @@ impl SurfaceProvider for BrowserSurface {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         self.surface.configure(&self.device, &self.config);
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        cherenkov_gpu::interop::SharedDevice {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
     }
 }
 

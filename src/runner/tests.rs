@@ -999,7 +999,7 @@ impl SurfaceProvider for RecoveringSurface {
         self.inner.queue()
     }
 
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+    fn device_loss(&self) -> &crate::platform::DeviceLoss {
         self.inner.device_loss()
     }
 
@@ -1025,6 +1025,14 @@ impl SurfaceProvider for RecoveringSurface {
     fn resize(&mut self, width: u32, height: u32) {
         self.resize_count += 1;
         self.inner.resize(width, height);
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.inner.gpu_context_id()
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        self.inner.shared_device()
     }
 }
 

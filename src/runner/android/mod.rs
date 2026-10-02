@@ -3,7 +3,7 @@
 //! Hydrolysis on Android is a Kotlin host (`android/host`, `android/gpu`)
 //! owning a native session built here: one `AndroidHostWindow` of host
 //! services behind a `RuntimeWindow`, one `AndroidSurface` GPU attachment
-//! the Vello painter presents through, one eventfd-woken executor on the
+//! the Cherenkov engine presents through, one eventfd-woken executor on the
 //! main `ALooper`, and one JNI surface (`jni.rs`) every entry point crosses.
 //!
 //! The app's own `cdylib` registers its app factory and installs logging

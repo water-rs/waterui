@@ -3,15 +3,198 @@ use std::path::PathBuf;
 use nami::Signal;
 use waterui::cursor::CursorStyle;
 use waterui::window::{Window as WuiWindow, WindowState};
-use waterui_graphics::RedrawHandle;
+use waterui_graphics::gpu::RedrawHandle;
 
 #[cfg(any(
     hydrolysis_winit,
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
-use waterui_graphics::gpu_surface::preferred_surface_format;
-use waterui_graphics::shared_context::reclaim_device;
+use waterui_graphics::gpu::preferred_surface_format;
+
+/// Releases the resources whose destruction `device` deferred.
+///
+/// `wgpu` retires finished submissions from inside `Queue::submit`, but the
+/// bookkeeping of the objects those submissions dropped is released only
+/// from `Device::poll`. A frame loop that only ever submits and presents
+/// therefore keeps every frame's share of it forever, so every frame owner
+/// calls this once per presented frame.
+///
+/// Non-blocking: `PollType::Poll` processes what has already completed and
+/// returns.
+pub(crate) fn reclaim_device(device: &wgpu::Device) {
+    if let Err(error) = poll_device(device, wgpu::PollType::Poll) {
+        tracing::warn!("GPU device did not reclaim deferred resources: {error}");
+    }
+}
+
+/// Lets `device` release everything dropped since the last call, then returns
+/// once its submitted work has finished.
+///
+/// Every type that owns a device to the end of its life calls this from
+/// `Drop`. A device with nothing outstanding returns immediately.
+pub(crate) fn drain_device_before_teardown(device: &wgpu::Device) {
+    if let Err(error) = poll_device(
+        device,
+        wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        },
+    ) {
+        tracing::warn!("GPU device did not drain before teardown: {error}");
+    }
+}
+
+/// Polls the device, treating a panic from inside `wgpu`'s bookkeeping as one
+/// more failed poll.
+///
+/// Device loss is detected lazily: the driver notices mid-call, purges the
+/// resource storage, and only then reports through the device-lost callback.
+/// A poll that lands in that window can dereference a resource the loss
+/// already removed, and `wgpu-core`'s storage lookup panics rather than
+/// erroring. The device is dead either way, so the poll reports failure and
+/// lets the owner move on instead of taking the process down over bookkeeping
+/// for a device that no longer exists.
+fn poll_device(
+    device: &wgpu::Device,
+    poll_type: wgpu::PollType,
+) -> Result<wgpu::PollStatus, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(poll_type))) {
+        Ok(Ok(status)) => Ok(status),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            Err(format!(
+                "poll panicked inside wgpu after device loss: {message}"
+            ))
+        }
+    }
+}
+
+/// The features a host-provided wgpu device must carry for the Cherenkov
+/// engine and the media the UI draws.
+///
+/// `PASSTHROUGH_SHADERS` loads the engine's precompiled fixed shaders on
+/// Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get the
+/// same hard `Engine::new` failure the engine documents. Normalized 16-bit
+/// textures feed HDR media paths wherever the adapter provides them.
+#[must_use]
+pub(crate) fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
+    if cfg!(target_vendor = "apple") {
+        assert!(
+            adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+            "the Apple GPU backend requires normalized 16-bit textures for HDR media"
+        );
+        assert!(
+            adapter_features.contains(wgpu::Features::PASSTHROUGH_SHADERS),
+            "the Apple GPU backend requires native shader passthrough for the engine's precompiled shaders"
+        );
+    }
+
+    let mut required =
+        adapter_features & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS);
+    if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+        required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+    }
+    required
+}
+
+/// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
+/// chain and its engine-pool identity.
+#[derive(Clone, Debug)]
+pub(crate) struct GpuContextHandle {
+    /// Identity of this device creation chain for the engine pool.
+    pub(crate) context_id: u64,
+    /// The instance/adapter/device/queue of that chain, which the shared
+    /// Cherenkov engine requires of its `SharedDevice`.
+    pub(crate) shared_device: cherenkov_gpu::interop::SharedDevice,
+}
+
+/// A view onto whether one context's device has been lost.
+///
+/// wgpu reports a loss exactly once, through the callback installed at
+/// creation, and every resource call after it fails. Work that runs off the
+/// frame path takes a clone of this handle and asks it before each batch of
+/// wgpu calls; once the answer is `true` the only correct move is to stop.
+///
+/// The handle also carries the context it was created on, so a caller that
+/// only sees surface handles — adapter, device, queue and this handle —
+/// still reaches the device's full creation chain.
+#[derive(Clone, Debug, Default)]
+pub struct DeviceLoss {
+    reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    gpu_context: Option<GpuContextHandle>,
+}
+
+impl DeviceLoss {
+    /// Starts observing a device: installs its device-lost callback so the
+    /// returned handle reports the loss the moment the driver announces it.
+    /// `context_id` identifies the creation chain `shared_device` names for
+    /// the engine pool.
+    ///
+    /// wgpu keeps one lost callback per device, so this belongs to whoever
+    /// owns the device and is called once, right after the device is created.
+    #[must_use]
+    pub(crate) fn observe(
+        shared_device: cherenkov_gpu::interop::SharedDevice,
+        context_id: u64,
+    ) -> Self {
+        let handle = Self {
+            reason: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            gpu_context: Some(GpuContextHandle {
+                context_id,
+                shared_device: shared_device.clone(),
+            }),
+        };
+        // The callback must be `Send` — a `DeviceLoss` clone is not, since it
+        // carries the device's `SharedDevice` — so capture only the reason
+        // cell it writes to.
+        let reason_cell = std::sync::Arc::clone(&handle.reason);
+        shared_device
+            .device
+            .set_device_lost_callback(move |reason, message| {
+                tracing::error!(?reason, message, "GPU device was lost");
+                *reason_cell
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(format!("{reason:?}: {message}"));
+            });
+        handle
+    }
+
+    /// The GPU context this handle was taken on.
+    ///
+    /// # Panics
+    /// When the handle was built without a context (`DeviceLoss::default`) —
+    /// only [`SurfaceProvider`] device-loss handles can drive the engine pool.
+    pub(crate) fn gpu_context(&self) -> GpuContextHandle {
+        self.gpu_context.clone().unwrap_or_else(|| {
+            panic!(
+                "hydrolysis: a DeviceLoss outside a hydrolysis surface carries no GPU context; \
+                 take the handle from the surface's device_loss()"
+            )
+        })
+    }
+
+    /// Whether the driver has reported this device lost.
+    #[must_use]
+    pub(crate) fn is_lost(&self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// The reason the driver gave for the loss, once it reported one.
+    #[must_use]
+    pub(crate) fn reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,7 +527,7 @@ impl SurfaceFrame {
 pub(crate) fn select_hydrolysis_surface_format(
     caps: &wgpu::SurfaceCapabilities,
 ) -> wgpu::TextureFormat {
-    let preferred = preferred_surface_format(caps);
+    let preferred = preferred_surface_format(caps, true);
     if supports_hydrolysis_surface_format(preferred) {
         return normalize_surface_format(caps, preferred);
     }
@@ -422,18 +605,32 @@ pub trait SurfaceProvider {
     fn device(&self) -> &wgpu::Device;
     fn queue(&self) -> &wgpu::Queue;
     /// Reports this surface's device lost; taken when the device was opened.
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss;
+    fn device_loss(&self) -> &DeviceLoss;
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
     fn present(&mut self, frame: SurfaceFrame);
     fn size(&self) -> (u32, u32);
     fn format(&self) -> wgpu::TextureFormat;
     fn resize(&mut self, width: u32, height: u32);
+    /// The identity of the GPU context this surface's device belongs to: the
+    /// key that binds one shared Cherenkov engine to one device creation
+    /// chain.
+    fn gpu_context_id(&self) -> u64;
+    /// The instance/adapter/device/queue this surface's device was created
+    /// from — all four from the same creation chain, which the shared
+    /// Cherenkov engine requires of its [`SharedDevice`].
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
     /// Whether the pixels written into this surface's textures are consumed
     /// as premultiplied-alpha. True only for an OS surface configured
     /// `CompositeAlphaMode::PreMultiplied`; offscreen/readback targets keep
     /// their straight-alpha bytes and stay `false`.
     fn premultiply_alpha(&self) -> bool {
         false
+    }
+    /// The display's HDR headroom — the brightest white the surface
+    /// presents, relative to SDR white. Every current surface is SDR, so
+    /// the default is 1.0; an HDR presentation surface overrides it.
+    fn display_headroom(&self) -> f32 {
+        1.0
     }
 }
 
@@ -616,16 +813,29 @@ pub struct OffscreenGpuContext {
 
 #[derive(Debug)]
 struct OffscreenGpuContextInner {
+    /// The instance this adapter came from — the shared Cherenkov engine
+    /// keeps it alive for as long as the device is in use.
+    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
     /// Reports this device lost; taken when the device was opened.
-    device_loss: waterui_graphics::DeviceLoss,
+    device_loss: DeviceLoss,
+}
+
+/// One id per device creation chain — instances, adapters, devices and
+/// queues are only shared inside one, so it is also the Cherenkov engine key.
+static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn next_gpu_context_id() -> u64 {
+    NEXT_GPU_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Drop for OffscreenGpuContextInner {
     fn drop(&mut self) {
-        waterui_graphics::shared_context::drain_device_before_teardown(&self.device);
+        crate::platform::drain_device_before_teardown(&self.device);
     }
 }
 
@@ -671,7 +881,7 @@ impl OffscreenGpuContext {
         )
     )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
-        let (_instance, adapter) =
+        let (instance, adapter) =
             request_instance_and_adapter("hydrolysis offscreen surface", selection).await;
 
         ensure_compute_capable_adapter(
@@ -683,21 +893,24 @@ impl OffscreenGpuContext {
         // PIPELINE_CACHE is requested wherever the adapter has it: without the
         // feature `create_pipeline_cache` errors, so the persistent store in
         // `pipeline_cache.rs` can only exist when it was requested here.
+        // PASSTHROUGH_SHADERS loads the engine's precompiled fixed shaders on
+        // Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get
+        // the same hard Engine::new failure the engine documents.
         #[cfg(not(feature = "frame-profile"))]
-        let required_features =
-            waterui_graphics::shared_context::required_media_features(adapter.features())
-                | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
+        let required_features = crate::platform::required_media_features(adapter.features())
+            | (adapter.features()
+                & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         // The frame profiler timestamps GPU work through timestamp queries
         // written between submits, which needs both timestamp features;
         // request them where the adapter has them and report absent where it
         // does not — the feature never fails a device request over this.
         #[cfg(feature = "frame-profile")]
-        let required_features =
-            waterui_graphics::shared_context::required_media_features(adapter.features())
-                | (adapter.features()
-                    & (wgpu::Features::TIMESTAMP_QUERY
-                        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
-                        | wgpu::Features::PIPELINE_CACHE));
+        let required_features = crate::platform::required_media_features(adapter.features())
+            | (adapter.features()
+                & (wgpu::Features::TIMESTAMP_QUERY
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                    | wgpu::Features::PIPELINE_CACHE
+                    | wgpu::Features::PASSTHROUGH_SHADERS));
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-offscreen-device"),
@@ -709,13 +922,22 @@ impl OffscreenGpuContext {
             })
             .await
             .expect("hydrolysis offscreen surface: failed to request wgpu device");
-        let device_loss = waterui_graphics::DeviceLoss::observe(&device);
+        let context_id = next_gpu_context_id();
+        let shared_device = cherenkov_gpu::interop::SharedDevice {
+            instance: instance.clone(),
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
+        };
+        let device_loss = DeviceLoss::observe(shared_device, context_id);
 
         Self {
             inner: std::sync::Arc::new(OffscreenGpuContextInner {
+                instance,
                 adapter,
                 device,
                 queue,
+                context_id,
                 device_loss,
             }),
         }
@@ -873,7 +1095,8 @@ mod adapter_selection_tests {
             backend: wgpu::Backend::Vulkan,
             subgroup_min_size: 0,
             subgroup_max_size: 0,
-            transient_saves_memory: false,
+            transient_saves_memory: Some(false),
+            limit_bucket: None,
         }
     }
 
@@ -964,7 +1187,7 @@ async fn probe_adapters(
         // renderer whatever `request_adapter` returns. Asking wgpu for a
         // fallback adapter directly skipped the compute-capability filter and
         // the ranking below, which is how a CPU adapter that cannot run the
-        // compute pipelines reached vello's shader init.
+        // compute pipelines reached the engine's shader init.
         let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
         let mut inspected_adapters: Vec<String> = Vec::new();
 
@@ -1065,6 +1288,7 @@ async fn request_instance_and_adapter(
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
                 force_fallback_adapter: selection.force_fallback_adapter(),
+                apply_limit_buckets: false,
             })
             .await
             .expect("hydrolysis adapter selection: failed to find web adapter");
@@ -1243,7 +1467,7 @@ impl SurfaceProvider for OffscreenSurface {
         &self.gpu.inner.queue
     }
 
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+    fn device_loss(&self) -> &DeviceLoss {
         &self.gpu.inner.device_loss
     }
 
@@ -1310,6 +1534,156 @@ impl SurfaceProvider for OffscreenSurface {
             self.height = height;
             self.last_presented = None;
         }
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.gpu.inner.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        let inner = &*self.gpu.inner;
+        cherenkov_gpu::interop::SharedDevice {
+            instance: inner.instance.clone(),
+            adapter: inner.adapter.clone(),
+            device: inner.device.clone(),
+            queue: inner.queue.clone(),
+        }
+    }
+}
+
+/// An offscreen Cherenkov surface on the shared engine, for scene-level tests
+/// and exports that mount [`cherenkov::Content`] directly instead of driving
+/// the full view pipeline.
+///
+/// One `OffscreenSceneSurface` owns a GPU context, the engine shared on that
+/// context, an engine surface the caller mounts content onto through
+/// [`Self::surface`], and an offscreen presentation target for
+/// [`Self::readback_rgba8`]. Frames are rendered explicitly through
+/// [`Self::engine`]'s `Engine::render`; nothing pumps or pumps-on-wake here.
+pub struct OffscreenSceneSurface {
+    target: OffscreenSurface,
+    cherenkov: crate::engine::CherenkovSurface,
+    engine: std::rc::Rc<crate::engine::GpuEngine>,
+}
+
+impl core::fmt::Debug for OffscreenSceneSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OffscreenSceneSurface")
+            .field("size", &self.target.size())
+            .finish_non_exhaustive()
+    }
+}
+
+impl OffscreenSceneSurface {
+    crate::engine::cfg_async_fn! {
+        /// Creates the host on the adapter WaterUI would render an
+        /// application on, at `width × height` sRGB pixels.
+        ///
+        /// # Panics
+        /// Panics when no compute-capable adapter exists or the engine cannot
+        /// be created — same failure contract as [`OffscreenGpuContext::new`].
+        /// Async on wasm32, where the engine surface creation inside awaits
+        /// the browser's GPU device.
+        #[must_use]
+        pub fn new(width: u32, height: u32) -> Self {
+            crate::engine::engine_await!(Self::on_context(
+                pollster::block_on(OffscreenGpuContext::new()),
+                width,
+                height,
+            ))
+        }
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    crate::engine::cfg_async_fn! {
+        /// Creates the host on a test context, allowing compute-capable
+        /// software adapters so CI can run on llvmpipe.
+        #[must_use]
+        pub fn new_for_tests(width: u32, height: u32) -> Self {
+            crate::engine::engine_await!(Self::on_context(
+                OffscreenGpuContext::new_for_tests_blocking(),
+                width,
+                height
+            ))
+        }
+    }
+
+    crate::engine::cfg_async_fn! {
+        /// Creates the host on an already-requested [`OffscreenGpuContext`],
+        /// so every surface built on one context shares its device and engine.
+        ///
+        /// Async on wasm32, where `shared_engine` and `CherenkovSurface::new`
+        /// await the browser's GPU device.
+        #[must_use]
+        pub fn on_context(gpu: OffscreenGpuContext, width: u32, height: u32) -> Self {
+            let target = OffscreenSurface::on_context(
+                gpu,
+                width,
+                height,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+            );
+            let engine = crate::engine::engine_await!(crate::engine::shared_engine(
+                target.gpu_context_id(),
+                target.adapter(),
+                target.shared_device(),
+                || {},
+            ));
+            let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
+                std::rc::Rc::clone(&engine),
+                target.device(),
+                target.adapter().get_info().backend,
+                (width.max(1), height.max(1)),
+            ));
+            Self {
+                target,
+                cherenkov,
+                engine,
+            }
+        }
+    }
+
+    /// The engine this host renders with — callers drive
+    /// `engine.render(FrameTime)` themselves.
+    #[must_use]
+    pub fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
+        &self.engine
+    }
+
+    /// The engine surface behind this host — `clear_color`, `update`, layer
+    /// mounts and transactions route through it.
+    #[must_use]
+    pub fn surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+        self.cherenkov.engine_surface()
+    }
+
+    /// Presents the last rendered engine frame into the offscreen target and
+    /// reads it back as premultiplied sRGB RGBA8 rows (`width * 4` bytes per
+    /// row).
+    ///
+    /// Call after `engine.render(..)`; a call before the engine produces its
+    /// first texture panics through the surface's presentation contract.
+    #[must_use]
+    pub fn readback_rgba8(&mut self) -> Vec<u8> {
+        let (width, height) = self.target.size();
+        let frame = self
+            .target
+            .acquire()
+            .expect("hydrolysis offscreen scene surface: acquire failed");
+        let texture = frame.texture().clone();
+        self.cherenkov.present_into(
+            self.target.device(),
+            self.target.queue(),
+            &texture,
+            true,
+            1.0,
+        );
+        crate::readback::readback_texture_rgba8(
+            self.target.device(),
+            self.target.queue(),
+            &texture,
+            width,
+            height,
+        )
     }
 }
 
@@ -1532,9 +1906,10 @@ mod winit_impl {
     };
 
     use super::{
-        CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-        PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame, SurfaceProvider,
-        TextInputPurpose, TextInputState, TouchPhase, reclaim_device, validated_window_frame,
+        CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
+        PlatformWindow, PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame,
+        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, reclaim_device,
+        validated_window_frame,
     };
 
     #[derive(Clone)]
@@ -1543,104 +1918,10 @@ mod winit_impl {
         adapter: wgpu::Adapter,
         device: wgpu::Device,
         queue: wgpu::Queue,
+        /// Identity of this device creation chain for the engine pool.
+        context_id: u64,
         /// Reports this device lost; taken when the device was opened.
-        device_loss: waterui_graphics::DeviceLoss,
-        /// One parked `device.poll` thread for this device, spawned on first
-        /// watch — shared by every surface cloned from this context.
-        poll_driver: std::sync::Arc<std::sync::OnceLock<GpuPollDriver>>,
-    }
-
-    impl WinitGpuContext {
-        /// The device's shared poll driver, started on first use.
-        pub(crate) fn poll_driver(&self) -> &GpuPollDriver {
-            self.poll_driver
-                .get_or_init(|| GpuPollDriver::spawn(self.device.clone()))
-        }
-    }
-
-    /// Drives wgpu's asynchronous callback delivery for one device so the
-    /// event loop never polls the GPU itself.
-    ///
-    /// The driver owns a single parked thread: each `watch` registration
-    /// blocks it in `device.poll(PollType::Wait)` for exactly the
-    /// submissions its tickets were issued on — never `None`, which would
-    /// wait on the latest submission at poll time and let later frames'
-    /// submissions (including presents that may depend on the settle
-    /// itself) extend the wait indefinitely. Watches run in registration
-    /// order, so one registration waits out at most its own submissions.
-    #[derive(Clone)]
-    pub(crate) struct GpuPollDriver {
-        tx: std::sync::mpsc::Sender<Watch>,
-    }
-
-    /// One parked watch: the submissions to wait out, then the wake.
-    struct Watch {
-        submissions: Vec<wgpu::SubmissionIndex>,
-        wake: Box<dyn FnOnce() + Send + 'static>,
-    }
-
-    /// Delivers the watch's wake if the driver thread exits its service
-    /// loop early — a poll panic is the only path no log line covers, and
-    /// an undelivered wake strands the armed settle exactly like a lost
-    /// completion would.
-    struct WakeOnDrop(Option<Box<dyn FnOnce() + Send + 'static>>);
-
-    impl Drop for WakeOnDrop {
-        fn drop(&mut self) {
-            if let Some(wake) = self.0.take() {
-                wake();
-            }
-        }
-    }
-
-    impl GpuPollDriver {
-        fn spawn(device: wgpu::Device) -> Self {
-            let (tx, rx) = std::sync::mpsc::channel::<Watch>();
-            std::thread::Builder::new()
-                .name("hydrolysis-gpu-poll".to_owned())
-                .spawn(move || {
-                    while let Ok(watch) = rx.recv() {
-                        let wake = WakeOnDrop(Some(watch.wake));
-                        for submission_index in watch.submissions {
-                            if let Err(error) = device.poll(wgpu::PollType::Wait {
-                                submission_index: Some(submission_index),
-                                timeout: None,
-                            }) {
-                                // The wake still fires: the drain re-checks
-                                // the tickets itself, and a lost device must
-                                // be surfaced there rather than strand the
-                                // last frame off-screen.
-                                tracing::warn!(
-                                    "hydrolysis gpu poll driver: device poll failed: {error:?}"
-                                );
-                                break;
-                            }
-                        }
-                        drop(wake);
-                    }
-                })
-                .expect("hydrolysis: failed to spawn the gpu poll driver thread");
-            Self { tx }
-        }
-
-        /// Park until the GPU retires `submissions` — the queue indexes the
-        /// watch's tickets were issued on — then run `wake`. Returns
-        /// `false` when the driver thread is gone, which callers treat the
-        /// same as a lost device: drain now and let the verify report it.
-        /// An empty list resolves immediately, matching a stash that owes
-        /// no readbacks.
-        pub(crate) fn watch(
-            &self,
-            submissions: Vec<wgpu::SubmissionIndex>,
-            wake: impl FnOnce() + Send + 'static,
-        ) -> bool {
-            self.tx
-                .send(Watch {
-                    submissions,
-                    wake: Box::new(wake),
-                })
-                .is_ok()
-        }
+        device_loss: DeviceLoss,
     }
 
     pub struct WinitSurface {
@@ -1789,6 +2070,7 @@ mod winit_impl {
             let config = wgpu::SurfaceConfiguration {
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
                 format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
                 width: width.max(1),
                 height: height.max(1),
                 present_mode: wgpu::PresentMode::AutoVsync,
@@ -1837,9 +2119,10 @@ mod winit_impl {
                     );
                     let required_limits = super::required_device_limits(&adapter);
                     let required_features =
-                        waterui_graphics::shared_context::required_media_features(
-                            adapter.features(),
-                        ) | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
+                        crate::platform::required_media_features(adapter.features())
+                            | (adapter.features()
+                                & (wgpu::Features::PIPELINE_CACHE
+                                    | wgpu::Features::PASSTHROUGH_SHADERS));
                     let (device, queue) = adapter
                         .request_device(&wgpu::DeviceDescriptor {
                             label: Some("hydrolysis-winit-device"),
@@ -1851,15 +2134,22 @@ mod winit_impl {
                         })
                         .await
                         .expect("hydrolysis winit surface: failed to request device");
-                    let device_loss = waterui_graphics::DeviceLoss::observe(&device);
+                    let context_id = super::next_gpu_context_id();
+                    let shared_device = cherenkov_gpu::interop::SharedDevice {
+                        instance: instance.clone(),
+                        adapter: adapter.clone(),
+                        device: device.clone(),
+                        queue: queue.clone(),
+                    };
+                    let device_loss = DeviceLoss::observe(shared_device, context_id);
                     (
                         WinitGpuContext {
                             instance,
                             adapter,
                             device,
                             queue,
+                            context_id,
                             device_loss,
-                            poll_driver: std::sync::Arc::new(std::sync::OnceLock::new()),
                         },
                         surface,
                     )
@@ -1932,7 +2222,7 @@ mod winit_impl {
             &self.gpu.queue
         }
 
-        fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+        fn device_loss(&self) -> &DeviceLoss {
             &self.gpu.device_loss
         }
 
@@ -1956,7 +2246,7 @@ mod winit_impl {
                     if let Some(window) = &self.window {
                         window.pre_present_notify();
                     }
-                    output.present();
+                    self.gpu.queue.present(output);
                     reclaim_device(&self.gpu.device);
                 }
                 SurfaceFrame::Offscreen { .. } => {
@@ -1981,6 +2271,20 @@ mod winit_impl {
 
         fn premultiply_alpha(&self) -> bool {
             self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+        }
+
+        fn gpu_context_id(&self) -> u64 {
+            self.gpu.context_id
+        }
+
+        fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+            let gpu = &self.gpu;
+            cherenkov_gpu::interop::SharedDevice {
+                instance: gpu.instance.clone(),
+                adapter: gpu.adapter.clone(),
+                device: gpu.device.clone(),
+                queue: gpu.queue.clone(),
+            }
         }
     }
 
@@ -3665,18 +3969,16 @@ mod winit_impl {
         }
 
         fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
-            let handle = RedrawHandle::new();
             let window = Arc::clone(&self.window);
             let occluded = Arc::clone(&self.occlusion_signal);
-            handle.set_waker(Some(Arc::new(move || {
+            Some(RedrawHandle::new(move || {
                 // GPU content cannot see the window's pump state, so the
                 // occlusion report is shared as a flag: a frame produced
                 // while the window is hidden posts no wake.
                 if !occluded.load(Ordering::Relaxed) {
                     window.request_redraw();
                 }
-            })));
-            Some(handle)
+            }))
         }
     }
 
@@ -4218,7 +4520,8 @@ mod winit_impl {
                 backend: wgpu::Backend::Gl,
                 subgroup_min_size: 4,
                 subgroup_max_size: 128,
-                transient_saves_memory: false,
+                transient_saves_memory: Some(false),
+                limit_bucket: None,
             }
         }
 
@@ -4667,7 +4970,5 @@ pub use web_impl::ExportedBrowserWindow as BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub(crate) use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
 #[cfg(hydrolysis_winit)]
-pub(crate) use winit_impl::GpuPollDriver;
-
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;
