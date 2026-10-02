@@ -188,6 +188,7 @@ pub fn __application_resources() -> waterui_core::ResourceContext {
 /// # Safety
 /// The caller must initialize the native runtime once on the platform main thread.
 #[doc(hidden)]
+#[must_use]
 pub unsafe fn __initialize_environment(
     resources: waterui_core::ResourceContext,
 ) -> waterui::Environment {

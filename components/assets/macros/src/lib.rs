@@ -388,7 +388,7 @@ const WEB_MOUNT: &str = "web";
 /// `WebViewOpen` that serves the project's staged build output over the
 /// engine's asset origin.
 ///
-/// The first argument borrows the ResourceContext; the second is the web project root, resolved against
+/// The first argument borrows the `ResourceContext`; the second is the web project root, resolved against
 /// `CARGO_MANIFEST_DIR`; it must contain a `package.json` (the macro points at
 /// the project, not its build output). Named arguments are the complete
 /// configuration surface:
@@ -533,6 +533,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 /// Expands a single asset path into its inferred `WaterUI` asset handle.
+///
 /// Local paths are relative to the packaged asset root. Native handles take
 /// a `ResourceContext` for loading; image/video views obtain it from their environment.
 pub fn asset(input: TokenStream) -> TokenStream {
