@@ -97,7 +97,7 @@
 //!
 //! The theme system uses this pattern to inject platform-specific colors and fonts:
 //!
-//! 1. Native backend creates `Computed<ResolvedColor>` signals from system palette
+//! 1. Native backend creates `Computed<WorkingColor>` signals from system palette
 //! 2. `Theme::install()` stores these signals in the environment keyed by token type
 //! 3. Token types (e.g., `color::Foreground`) implement `Resolvable` to query these signals
 //! 4. When the native signal updates, all views using that token automatically update

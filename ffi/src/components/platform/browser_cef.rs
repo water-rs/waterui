@@ -10,13 +10,12 @@ use waterui_browser_cef::{
 #[cfg(any(feature = "chromium", feature = "cef-header"))]
 use waterui_chromium::{ChromiumView, PageMode};
 use waterui_core::Environment;
-use waterui_graphics::gpu_surface::GpuSurface;
 #[cfg(any(feature = "webview-cef", feature = "cef-header"))]
 use waterui_webview::WebView;
 
 #[cfg(any(feature = "webview-cef", feature = "cef-header"))]
 use crate::WuiAnyView;
-use crate::components::visual::gpu_surface::WuiGpuSurface;
+use crate::components::visual::gpu_content::WuiGpuContent;
 use crate::{IntoFFI, IntoRust};
 
 /// Installs one process-owned CEF runtime and the selected public controllers.
@@ -33,12 +32,12 @@ pub(crate) fn configure_environment(env: &mut Environment) {
     runtime.start_message_pump();
 }
 
-/// GPU surface plus retained CEF input and semantic state.
+/// GPU content plus retained CEF input and semantic state.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiCefSurface {
-    /// GPU presenter consumed by `WaterUI`'s native GPU surface host.
-    pub gpu_surface: WuiGpuSurface,
+    /// GPU presenter consumed by `WaterUI`'s native GPU content host.
+    pub gpu_content: WuiGpuContent,
     /// Opaque input state retained until [`waterui_cef_surface_drop`].
     pub state: *mut WuiCefSurfaceState,
 }
@@ -80,9 +79,9 @@ impl fmt::Debug for WuiCefSurfaceState {
 }
 
 fn surface(page: CefPageHandle, source: impl Any) -> WuiCefSurface {
-    let gpu_surface = GpuSurface::new(gpu_view_with_input(page.clone())).into_ffi();
+    let gpu_content = gpu_view_with_input(page.clone()).into_ffi();
     WuiCefSurface {
-        gpu_surface,
+        gpu_content,
         state: Box::into_raw(Box::new(WuiCefSurfaceState {
             page,
             _source: Box::new(source),

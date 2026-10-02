@@ -11,7 +11,7 @@ use crate::{
 #[cfg(feature = "android-jni")]
 use core::ffi::c_void;
 #[cfg(any(feature = "android-jni", test))]
-use waterui_graphics::color::ResolvedColor;
+use waterui_graphics::WorkingColor;
 
 into_ffi! {
     LastWindowPolicy,
@@ -49,7 +49,7 @@ pub struct WuiApp {
 pub struct WuiAndroidAppHandles {
     pub content: *mut c_void,
     pub env: *mut c_void,
-    /// A `WuiComputed<ResolvedColor>`: the window's resolved background.
+    /// A `WuiComputed<WorkingColor>`: the window's resolved background.
     pub background: *mut c_void,
 }
 
@@ -64,11 +64,7 @@ pub(crate) struct WuiAndroidApp {
 impl WuiAndroidApp {
     pub(crate) fn into_raw_parts(
         self,
-    ) -> (
-        *mut WuiAnyView,
-        *mut WuiEnv,
-        *mut WuiComputed<ResolvedColor>,
-    ) {
+    ) -> (*mut WuiAnyView, *mut WuiEnv, *mut WuiComputed<WorkingColor>) {
         (
             self.window.content.into_raw(),
             self.env.into_raw(),

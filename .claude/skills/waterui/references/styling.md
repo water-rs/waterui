@@ -172,28 +172,33 @@ view.background(Glass::clear().interactive(true))       // over media; reacts to
 view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(0.2)))
 ```
 
-Gradients come in **two families that share names — pick the import deliberately**:
-
-- `waterui::gradient::*` (prelude): background-descriptor types (`LinearGradient`,
-  `RadialGradient`, `AngularGradient`, `MeshGradient` over `MeshVertex`, `ColorStop`,
-  `UnitPoint`) for `.background(..)`.
-- `waterui_graphics::{Gradient, MeshGradient, ResolvedColor}` (the `waterui-graphics`
-  crate, `features = ["gpu"]`): standalone GPU-rendered gradient *views*. Because the
-  prelude already binds `Gradient`, calling `Gradient::linear(..)` after a prelude glob
-  resolves to the wrong type — import the graphics one explicitly.
+Gradients are views in `waterui::gradient` (the prelude carries `Gradient` and
+`MeshGradient`), so they work anywhere a view does — on their own or inside
+`.background(..)`. They are authored in unit space, `(0, 0)` the top-left, and take
+`WorkingColor` (linear Display P3): `Srgb::from_hex(..).resolve()` makes one from a hex
+colour, and `color::working::from_linear_srgb` from linear components, where values
+above `1.0` are HDR.
 
 ```rust
-use waterui_graphics::{AnimatedMeshGradient, AnimatedMeshGradientConfig, MeshGradient, ResolvedColor};
+use waterui::color::working::from_linear_srgb;
+use waterui::gradient::{
+    AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
+};
 
-// Stops take ResolvedColor: a plain struct of five public f32 fields (struct-literal it).
-let stop = ResolvedColor { red: 1.0, green: 0.3, blue: 0.5, opacity: 1.0, headroom: 0.0 };
+let rose = Srgb::from_hex("#FF4D80").resolve();
+let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
 
-MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of ResolvedColors
-AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // animates in-shader, zero CPU
+Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])   // fixed colours
+view.background(Gradient::radial(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, 0.7))
+MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of WorkingColors
+AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // animates in-shader on the engine clock
+FlowingGradient::new()   // drifting noise bands, GPU only
 ```
 
-The graphics-crate gradients take signals directly, so an animated gradient is a signal
-change, not a rebuild.
+`MeshGradient` follows signals for its colours, its control points (`.points(..)`) and
+its interpolation (`.smooths_colors(..)`), and `AnimatedMeshGradient::new` takes a
+signal of its whole configuration, so an animated gradient is a signal change, not a
+rebuild. An animated mesh with `speed` `0.0` holds still and lets the engine idle.
 
 ## Shapes
 

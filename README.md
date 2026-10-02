@@ -10,7 +10,7 @@
   </p>
 </div>
 
-`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Vello, and Dew is a CPU renderer frugal enough for microcontrollers.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Cherenkov, and Dew is a CPU renderer frugal enough for microcontrollers.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
@@ -152,7 +152,7 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | iOS and macOS | Apple | `UIKit` / `AppKit` |
 | Android | Android | Android Views |
 | Linux | GTK4 | GTK4 widgets |
-| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Vello) |
+| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Cherenkov) |
 | ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
 
 ## Status

@@ -14,6 +14,6 @@ This crate provides:
 
 Apple backends realize these semantics through AVPlayer and AVKit. Portable
 self-drawn playback is implemented separately by `waterui-video-gpu`, which
-connects this crate to WaterKit and `GpuSurface`. Keeping the semantic crate
+connects this crate to WaterKit and `GpuContentView`. Keeping the semantic crate
 independent preserves tree shaking for applications that use only the native
 Apple bridge.

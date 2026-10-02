@@ -37,9 +37,7 @@
 use std::str::FromStr as _;
 use std::time::Instant;
 
-use waterui_core::Environment;
-use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
+use waterui_graphics::gpu::GpuContentView;
 use waterui_graphics::input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
@@ -234,14 +232,14 @@ impl WpeSurfaceInput {
 /// The presenter and the input adapter are separate concerns — one composites
 /// the dma-buf stream, the other owns `WPEPlatform`'s event ABI — but a backend
 /// that routes input to GPU views by
-/// [`wants_input_events`](GpuView::wants_input_events) needs them as one
-/// object. See [`gpu_view_with_input`](crate::gpu_view_with_input).
-pub struct WpeInputGpuView<V> {
-    view: V,
+/// [`wants_input_events`](GpuContentView::wants_input_events) needs them as
+/// one object. See [`gpu_view_with_input`](crate::gpu_view_with_input).
+pub struct WpeInputGpuView {
+    view: GpuContentView,
     input: WpeSurfaceInput,
 }
 
-impl<V> core::fmt::Debug for WpeInputGpuView<V> {
+impl core::fmt::Debug for WpeInputGpuView {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("WpeInputGpuView")
@@ -250,59 +248,23 @@ impl<V> core::fmt::Debug for WpeInputGpuView<V> {
     }
 }
 
-impl<V> WpeInputGpuView<V> {
+impl WpeInputGpuView {
     /// Pairs a presenter with the adapter that feeds its page.
-    pub const fn new(view: V, input: WpeSurfaceInput) -> Self {
+    #[must_use]
+    pub const fn new(view: GpuContentView, input: WpeSurfaceInput) -> Self {
         Self { view, input }
     }
-}
 
-impl<V: GpuView> GpuView for WpeInputGpuView<V> {
-    #[expect(
-        clippy::future_not_send,
-        reason = "WPE pages and WaterUI view state are confined to the UI thread"
-    )]
-    async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
-        self.view.setup(ctx, env).await;
-    }
-
-    fn render(&mut self, frame: &mut GpuFrame<'_>) {
-        self.view.render(frame);
-    }
-
-    fn preferred_surface_hdr(&self) -> Option<bool> {
-        self.view.preferred_surface_hdr()
-    }
-
-    fn is_opaque(&self) -> bool {
-        self.view.is_opaque()
-    }
-
-    fn wants_input_events(&self) -> bool {
-        true
-    }
-
-    fn input(&mut self, event: &SurfaceInputEvent) {
-        self.input.handle(event);
-    }
-
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
-        // Wrapping a presenter must not take its caret away, even though no WPE
-        // presenter reports one today: the bridge exposes no input-method
-        // context, so the page's caret never crosses it.
-        self.view.ime_caret()
-    }
-
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        self.view.measure(proposal)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
-    }
-
-    fn priority(&self) -> i32 {
-        self.view.priority()
+    /// The view wired to take its own input.
+    ///
+    /// Wrapping a presenter does not take its caret away, even though no WPE
+    /// presenter reports one today: the bridge exposes no input-method
+    /// context, so the page's caret never crosses it.
+    #[must_use]
+    pub fn into_view(self) -> GpuContentView {
+        let input = std::cell::RefCell::new(self.input);
+        self.view
+            .on_input(move |event| input.borrow_mut().handle(event))
     }
 }
 

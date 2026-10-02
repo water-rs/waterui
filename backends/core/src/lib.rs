@@ -48,7 +48,7 @@ pub mod widget;
 
 pub use dispatcher::ViewDispatcher;
 #[cfg(feature = "widgets")]
-pub use widget::{Brush, DrawContext, WidgetTheme};
+pub use widget::WidgetTheme;
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

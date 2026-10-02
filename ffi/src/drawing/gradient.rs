@@ -1,16 +1,23 @@
-use waterui_graphics::{GradientType, ResolvedGradient, ResolvedGradientStop};
+use waterui_graphics::Gradient;
+use waterui_graphics::cherenkov::Paint;
 
-use crate::{IntoFFI, WuiArray, color::WuiResolvedColor};
+use crate::{IntoFFI, WuiArray, color::WuiWorkingColor};
 
-into_ffi!(
-    ResolvedGradientStop,
-    pub struct WuiResolvedGradientStop {
-        position: f32,
-        color: WuiResolvedColor,
-    }
-);
+/// C ABI mirror of a gradient colour stop.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WuiGradientStop {
+    /// Position along the gradient, from 0 to 1.
+    pub position: f32,
+    /// The colour at this position.
+    pub color: WuiWorkingColor,
+}
 
-/// C ABI mirror of [`GradientType`], the discriminator for a resolved gradient's shape.
+/// C ABI discriminator for the gradient payloads backends may receive.
+///
+/// [`GradientType`](waterui_graphics::GradientType) also has a `Mesh`
+/// variant, but a mesh gradient resolves to engine content rather than to
+/// this payload, so it is deliberately not represented here.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub enum WuiGradientType {
@@ -20,32 +27,21 @@ pub enum WuiGradientType {
     Radial = 1,
     /// Angular (conic) gradient around a center point.
     Angular = 2,
-    /// 2D mesh gradient.
-    Mesh = 3,
 }
 
-impl IntoFFI for GradientType {
-    type FFI = WuiGradientType;
-
-    fn into_ffi(self) -> Self::FFI {
-        match self {
-            Self::Linear => WuiGradientType::Linear,
-            Self::Radial => WuiGradientType::Radial,
-            Self::Angular => WuiGradientType::Angular,
-            Self::Mesh => WuiGradientType::Mesh,
-        }
-    }
-}
-
-/// C ABI mirror of [`ResolvedGradient`], the backend-native gradient payload
-/// produced once a gradient's dynamic inputs have been resolved.
+/// C ABI mirror of [`Gradient`], the backend-native gradient payload in unit
+/// space.
+///
+/// Backends scale it onto the view's bounds. A mesh gradient never reaches
+/// this payload: it resolves to engine content, so only linear, radial and
+/// angular gradients cross.
 #[repr(C)]
 #[derive(Debug)]
-pub struct WuiResolvedGradient {
-    /// Gradient kind (linear, radial, angular, or mesh).
+pub struct WuiGradient {
+    /// Gradient kind (linear, radial or angular).
     pub gradient_type: WuiGradientType,
-    /// The gradient's resolved color stops.
-    pub stops: WuiArray<WuiResolvedGradientStop>,
+    /// The colour stops.
+    pub stops: WuiArray<WuiGradientStop>,
     /// Start point (linear) or center (radial/angular) x-coordinate.
     pub start_x: f32,
     /// Start point (linear) or center (radial/angular) y-coordinate.
@@ -54,34 +50,71 @@ pub struct WuiResolvedGradient {
     pub end_x: f32,
     /// End point (linear) y-coordinate.
     pub end_y: f32,
-    /// Start radius (radial) or start angle (angular).
+    /// Start radius (radial) or start angle in radians (angular).
     pub start_value: f32,
-    /// End radius (radial) or end angle (angular).
+    /// End radius (radial) or end angle in radians (angular).
     pub end_value: f32,
 }
 
-impl IntoFFI for ResolvedGradient {
-    type FFI = WuiResolvedGradient;
+#[allow(clippy::cast_possible_truncation)]
+impl IntoFFI for Gradient {
+    type FFI = WuiGradient;
 
     fn into_ffi(self) -> Self::FFI {
-        let stops = self
-            .stops
-            .into_iter()
-            .map(IntoFFI::into_ffi)
-            .collect::<Vec<WuiResolvedGradientStop>>();
-
-        WuiResolvedGradient {
-            gradient_type: self.gradient_type.into_ffi(),
-            stops: WuiArray::new(stops),
-            start_x: self.start_point[0],
-            start_y: self.start_point[1],
-            end_x: self.end_point[0],
-            end_y: self.end_point[1],
-            start_value: self.start_value,
-            end_value: self.end_value,
+        let f = |v: f64| v as f32;
+        let stops = |stops: &[waterui_graphics::cherenkov::ColorStop]| {
+            WuiArray::new(
+                stops
+                    .iter()
+                    .map(|stop| WuiGradientStop {
+                        position: stop.offset,
+                        color: stop.color.into_ffi(),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        match self.paint() {
+            Paint::Linear(linear) => WuiGradient {
+                gradient_type: WuiGradientType::Linear,
+                stops: stops(&linear.stops),
+                start_x: f(linear.start.x),
+                start_y: f(linear.start.y),
+                end_x: f(linear.end.x),
+                end_y: f(linear.end.y),
+                start_value: 0.0,
+                end_value: 0.0,
+            },
+            Paint::Radial(radial) => WuiGradient {
+                gradient_type: WuiGradientType::Radial,
+                stops: stops(&radial.stops),
+                start_x: f(radial.start_center.x),
+                start_y: f(radial.start_center.y),
+                end_x: f(radial.end_center.x),
+                end_y: f(radial.end_center.y),
+                start_value: f(radial.start_radius),
+                end_value: f(radial.end_radius),
+            },
+            Paint::Sweep(sweep) => WuiGradient {
+                gradient_type: WuiGradientType::Angular,
+                stops: stops(&sweep.stops),
+                start_x: f(sweep.center.x),
+                start_y: f(sweep.center.y),
+                end_x: f(sweep.center.x),
+                end_y: f(sweep.center.y),
+                start_value: f(sweep.start_angle),
+                end_value: f(sweep.end_angle),
+            },
+            Paint::Mesh(_) => {
+                unreachable!(
+                    "a mesh gradient resolves to engine content, not a native gradient view"
+                )
+            }
+            Paint::Solid(_) | Paint::Image(_) | Paint::Shader(_) | Paint::Transformed(_) => {
+                unreachable!("a gradient view only carries gradient paints")
+            }
         }
     }
 }
 
-// `ResolvedGradient` is a raw view rendered natively by platform backends.
-ffi_view!(ResolvedGradient, WuiResolvedGradient, resolved_gradient);
+// `Gradient` is a raw view rendered natively by platform backends.
+ffi_view!(Gradient, WuiGradient, gradient);

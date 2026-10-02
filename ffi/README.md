@@ -249,7 +249,7 @@ The `components/` directory contains FFI bindings for each UI component category
 - **`list`** - List, ForEach, LazyVStack
 - **`table`** - Table with columns and rows
 - **`progress`** - ProgressView, ProgressIndicator
-- **`gpu_surface`** - High-performance wgpu rendering surface
+- **`gpu`** - High-performance wgpu rendering surface for `GpuContentView`
 
 Each module defines:
 1. C-compatible struct representations (e.g., `WuiButton`)
@@ -353,7 +353,7 @@ let text = waterui_text(computed)
 
 ## C Header Generation
 
-The sibling `waterui-ffi-generator` crate (`ffi/generator`) provides the `generate-header`
+The sibling `waterui-ffi-generator` crate (`ffi/generator`) provides the `generate_header`
 binary, which uses `cbindgen` to produce `waterui.h`. It lives outside this crate so that
 building it costs cbindgen alone instead of the whole framework graph, and it needs nightly
 because cbindgen expands the macro-generated exports through `-Zunpretty=expanded`:
@@ -362,12 +362,7 @@ because cbindgen expands the macro-generated exports through `-Zunpretty=expande
 cargo +nightly run --manifest-path ffi/generator/Cargo.toml
 ```
 
-This writes `ffi/waterui.h`. Because the expansion is target-dependent — a
-`cfg(target_os)`-gated export disappears when the generator runs on a host
-where it is disabled — the generator expands `waterui-ffi` once per shipped
-backend target and unions the items before cbindgen emits them, so the result
-is the same on every host. The target list lives in
-`ffi/generator/generate_header.rs`. Each native backend keeps its own copy —
+This writes `ffi/waterui.h`. Each native backend keeps its own copy —
 `Sources/CWaterUI/include/waterui.h` in `water-rs/apple-backend`,
 `runtime/src/main/cpp/waterui.h` in `water-rs/android-backend` — and its CI
 syncs it from `ffi/waterui.h` in this repository.

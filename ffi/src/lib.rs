@@ -1567,7 +1567,9 @@ pub struct WuiShadow {
     pub offset_y: f32,
     /// Blur radius.
     pub radius: f32,
-    /// Shape of the element casting the shadow; the shadow blurs this shape.
+    /// The shape of the element casting the shadow: the caster's own shape —
+    /// the one it is filled or clipped with — so a backend rasterizing the
+    /// shadow itself blurs this silhouette.
     pub silhouette: WuiClipShape,
 }
 
@@ -1925,9 +1927,10 @@ pub unsafe extern "C" fn waterui_drop_retain(retain: WuiRetain) {
 // ========== Metadata<ClipShape> FFI ==========
 // Used to clip views to shapes
 
-use waterui::shape::{ClipShape, PathCommand};
+use waterui::shape::ClipShape;
+use waterui_graphics::cherenkov::kurbo::{BezPath, PathEl, Shape as _};
 
-/// FFI-safe representation of a path command.
+/// FFI-safe representation of a path element.
 /// All coordinates are normalized (0.0-1.0) and scale with view bounds.
 #[repr(C)]
 #[derive(Debug)]
@@ -1972,65 +1975,104 @@ pub enum WuiPathCommand {
         /// End point Y coordinate.
         y: f32,
     },
-    /// Draw an arc.
-    Arc {
-        /// Center X coordinate.
-        cx: f32,
-        /// Center Y coordinate.
-        cy: f32,
-        /// Radius along the X axis.
-        rx: f32,
-        /// Radius along the Y axis.
-        ry: f32,
-        /// Start angle in radians.
-        start: f32,
-        /// Sweep angle in radians.
-        sweep: f32,
-    },
     /// Close the current subpath.
     Close,
 }
 
-impl IntoFFI for PathCommand {
+#[allow(clippy::cast_possible_truncation)]
+impl IntoFFI for PathEl {
     type FFI = WuiPathCommand;
     fn into_ffi(self) -> Self::FFI {
+        let f = |v: f64| v as f32;
         match self {
-            Self::MoveTo { x, y } => WuiPathCommand::MoveTo { x, y },
-            Self::LineTo { x, y } => WuiPathCommand::LineTo { x, y },
-            Self::QuadTo { cx, cy, x, y } => WuiPathCommand::QuadTo { cx, cy, x, y },
-            Self::CubicTo {
-                c1x,
-                c1y,
-                c2x,
-                c2y,
-                x,
-                y,
-            } => WuiPathCommand::CubicTo {
-                c1x,
-                c1y,
-                c2x,
-                c2y,
-                x,
-                y,
+            Self::MoveTo(p) => WuiPathCommand::MoveTo {
+                x: f(p.x),
+                y: f(p.y),
             },
-            Self::Arc {
-                cx,
-                cy,
-                rx,
-                ry,
-                start,
-                sweep,
-            } => WuiPathCommand::Arc {
-                cx,
-                cy,
-                rx,
-                ry,
-                start,
-                sweep,
+            Self::LineTo(p) => WuiPathCommand::LineTo {
+                x: f(p.x),
+                y: f(p.y),
             },
-            Self::Close => WuiPathCommand::Close,
+            Self::QuadTo(c, p) => WuiPathCommand::QuadTo {
+                cx: f(c.x),
+                cy: f(c.y),
+                x: f(p.x),
+                y: f(p.y),
+            },
+            Self::CurveTo(c1, c2, p) => WuiPathCommand::CubicTo {
+                c1x: f(c1.x),
+                c1y: f(c1.y),
+                c2x: f(c2.x),
+                c2y: f(c2.y),
+                x: f(p.x),
+                y: f(p.y),
+            },
+            Self::ClosePath => WuiPathCommand::Close,
         }
     }
+}
+
+/// The C ABI mirror of a normalized path.
+pub(crate) fn path_commands(path: &BezPath) -> WuiArray<WuiPathCommand> {
+    WuiArray::new(
+        path.elements()
+            .iter()
+            .map(|element| element.into_ffi())
+            .collect::<alloc::vec::Vec<_>>(),
+    )
+}
+
+/// The normalized path a `ClipShape`/`ResolvedShape` carries, in `kurbo`
+/// terms: elliptical arcs are flattened to curves so the same `WuiPathCommand`
+/// set covers every command.
+pub(crate) fn shape_path(commands: &[waterui::shape::PathCommand]) -> BezPath {
+    use waterui::shape::PathCommand as C;
+    use waterui_graphics::cherenkov::kurbo::{Arc, Point, Vec2};
+    let mut path = BezPath::new();
+    let point = |x: f32, y: f32| Point::new(f64::from(x), f64::from(y));
+    for command in commands {
+        match *command {
+            C::MoveTo { x, y } => path.push(PathEl::MoveTo(point(x, y))),
+            C::LineTo { x, y } => path.push(PathEl::LineTo(point(x, y))),
+            C::QuadTo { cx, cy, x, y } => {
+                path.push(PathEl::QuadTo(point(cx, cy), point(x, y)));
+            }
+            C::CubicTo {
+                c1x,
+                c1y,
+                c2x,
+                c2y,
+                x,
+                y,
+            } => path.push(PathEl::CurveTo(
+                point(c1x, c1y),
+                point(c2x, c2y),
+                point(x, y),
+            )),
+            C::Arc {
+                cx,
+                cy,
+                rx,
+                ry,
+                start,
+                sweep,
+            } => {
+                let arc = Arc::new(
+                    point(cx, cy),
+                    Vec2::new(f64::from(rx), f64::from(ry)),
+                    f64::from(start),
+                    f64::from(sweep),
+                    0.0,
+                );
+                let flattened = arc.to_path(0.02);
+                for element in flattened.elements() {
+                    path.push(*element);
+                }
+            }
+            C::Close => path.push(PathEl::ClosePath),
+        }
+    }
+    path
 }
 
 /// FFI-safe representation of a clip shape.
@@ -2049,11 +2091,9 @@ pub struct WuiClipShape {
 impl IntoFFI for ClipShape {
     type FFI = WuiClipShape;
     fn into_ffi(self) -> Self::FFI {
-        let commands: alloc::vec::Vec<WuiPathCommand> =
-            self.commands().iter().map(|cmd| cmd.into_ffi()).collect();
         WuiClipShape {
             kind: self.kind().into_ffi(),
-            commands: WuiArray::new(commands),
+            commands: path_commands(&shape_path(self.commands())),
         }
     }
 }

@@ -111,9 +111,10 @@ inspector-signals = ["inspector", "nami/observability"]
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
 snackbar = []
-# GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
-# so every existing consumer is unaffected. Disabling it lets a WaterUI app
-# cross-compile lean for embedded targets without the GPU stack.
+# GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
+# waterui-svg). Default-on so every existing consumer is unaffected.
+# Disabling it lets a WaterUI app cross-compile lean for embedded targets
+# without the GPU stack.
 gpu = [
     "waterui-graphics/gpu",
     "waterui-shape/gpu",

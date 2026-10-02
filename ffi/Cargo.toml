@@ -13,6 +13,7 @@ keywords = ["ffi", "ui", "framework", "gui", "cross-platform"]
 categories = ["gui", "api-bindings"]
 
 [dependencies]
+arc-swap = { workspace = true, optional = true }
 # Not workspace-inherited: the workspace entry carries default features (gpu
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
@@ -36,9 +37,9 @@ nami.workspace = true
 executor-core.workspace = true
 # JNI crate - optional, enabled by android-jni feature for Android builds
 jni = { version = "0.22.4", optional = true }
-waterui-graphics = { workspace = true, features = ["cpu-scene"] }
-# The geometry vocabulary of the `GpuSurface` input contract: surface-local
-# points on the way in, the IME caret rect on the way out.
+waterui-graphics = { workspace = true, features = ["cpu"] }
+# The geometry vocabulary of the `GpuContentView` input contract:
+# surface-local points on the way in, the IME caret rect on the way out.
 kurbo = { workspace = true, optional = true }
 waterui-svg = { workspace = true, optional = true }
 waterui-icon.workspace = true
@@ -48,7 +49,6 @@ waterui-map = { workspace = true, optional = true }
 suiteki.workspace = true
 waterui-locale.workspace = true
 wgpu = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
 async-channel = "2.5"
 base64 = { version = "0.23.1", optional = true }
 pastey.workspace = true
@@ -84,10 +84,6 @@ ndk-context = "0.1.1"
 jni = "0.22.4"
 ndk-sys = "0.6"
 wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
-# The Vulkan side of Android view capture: an `AHardwareBuffer` handed over from
-# Kotlin is imported as a raw `VkImage` on the very `ash::Device` wgpu-hal owns,
-# and copied into the wgpu capture texture from there.
-ash = { workspace = true, optional = true }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 tracing-oslog = "0.3"
@@ -121,23 +117,22 @@ media = ["dep:waterui-video", "dep:waterkit-audio"]
 # Default-on here for the same reason as `video`; the managed crate forwards it
 # only when the app links `waterui-webview`.
 webview = ["dep:waterui-webview", "dep:cookie", "dep:base64"]
-# The GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg) and
-# every GPU-backed FFI surface (GpuSurface, ViewEffect, AppliedFilter, the
-# GPU video pipeline). Default-on so existing consumers are unaffected;
-# disabling it removes the wgpu/vello graph and the corresponding
-# `waterui_*` symbols, so an app that opts out of `waterui/gpu` is not
-# silently re-rooted through the FFI crate.
+# The GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
+# waterui-svg) and every GPU-backed FFI surface (GpuContent, the GPU video
+# pipeline). Default-on so existing consumers are unaffected; disabling it
+# removes the wgpu graph and the corresponding `waterui_*` symbols, so an app
+# that opts out of `waterui/gpu` is not silently re-rooted through the FFI
+# crate.
 gpu = [
+    "dep:arc-swap",
     "waterui/gpu",
     "waterui-graphics/gpu",
     "dep:waterui-svg",
     "dep:wgpu",
     "dep:wgpu-hal",
-    "dep:ash",
     "dep:objc2-metal",
     "dep:pollster",
     "dep:kurbo",
-    "dep:futures",
     # Non-Apple hosts take the refresh rate from xcap; Apple targets read the
     # platform screen objects declared for ios/macos above.
     "dep:waterkit-screen",
@@ -200,4 +195,3 @@ ignored = ["waterui-svg"]
 
 [dev-dependencies]
 kurbo.workspace = true
-peniko.workspace = true

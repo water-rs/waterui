@@ -3,7 +3,7 @@
 //! A view's `.on_key_press` handler sees keys the focused view left
 //! unconsumed. The press crosses the ABI as [`WuiKeyPress`] — the W3C
 //! `KeyboardEvent.key` and `KeyboardEvent.code` names plus the modifier chord,
-//! the same vocabulary `waterui_gpu_surface_send_input_event` already speaks —
+//! the same vocabulary `waterui_gpu_content_send_input_event` already speaks —
 //! and the native side answers [`WuiKeyHandling`], deciding whether the key
 //! keeps bubbling to the next ancestor.
 
@@ -53,7 +53,7 @@ const SUPPORTED_MODIFIERS: u32 = WUI_KEY_MODIFIER_SHIFT
 
 /// Converts the `WUI_KEY_MODIFIER_*` / `WUI_SURFACE_MODIFIER_*` bit set into
 /// `Modifiers`. Both ABIs carry the same bits — `Modifiers`' own bit values —
-/// so `gpu_surface_input` (feature-gated) shares this ungated conversion.
+/// so the `gpu` feature's input path shares this ungated conversion.
 ///
 /// # Panics
 ///

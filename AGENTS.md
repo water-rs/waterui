@@ -33,7 +33,7 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 4. **Bridge native first, then provide the cross-platform self-drawn realization.** For each semantic component, first implement a native bridge on every platform that has a suitable native primitive. Also implement the shared self-drawn realization when the component needs a portable backend. When a platform has no suitable native primitive, go directly to the self-drawn realization; do not introduce a third-party parallel engine and call it native. The self-drawn realization is a deliberate backend, never a runtime fallback for a failed native path. Particle systems and QR codes have no suitable platform primitive and therefore start as self-drawn components. For WaterUI's video-player contract, Apple platforms bridge AVPlayer / AVKit as the only approved native player; every non-Apple platform uses the WaterKit / GPU-surface player, without ExoPlayer / Media3. Native controls, codecs, protected surfaces, media sessions, and output devices may still be used as platform sublayers around that self-drawn player.
    Map follows the same contract: Apple platforms bridge MapKit, while platforms
    without a suitable platform map primitive use WaterUI's MapLibre-style,
-   Vello / wgpu vector realization. A bundled portable map engine is not a
+   Cherenkov / wgpu vector realization. A bundled portable map engine is not a
    native map. Native bridge failure is an error and must not silently switch
    realization at runtime.
 
@@ -216,8 +216,8 @@ Keep the change set strictly scoped to the task.
 - `.claude/skills/waterui/skill_snippets/` is the compile gate for `.claude/skills/waterui`: every rust fence in the skill is transcribed there (verbatim modulo rustfmt, with loudly-marked glue) and CI compiles it. When you change a skill code snippet, regenerate the matching module following the conventions in that crate's README. Its `#[waterui::test]` / `#[waterui::bench]` transcriptions sit behind the non-default `compile-gate-tests` feature: CI compiles them with `cargo check -p skill_snippets --all-targets --features compile-gate-tests`, and they must never be executed — they address elements that do not exist, by design.
 - `waterui-testing` is based on the Hydrolysis accessibility tree, not native platform accessibility. Prefer `waterui-testing` for UI component coverage, and treat it as both an interaction test and an accessibility-correctness test.
 - Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
-- `GpuSurface::new(renderer)` owns one `GpuView` instance for that surface lifetime. `GpuView::setup()` is where persistent GPU resources for that renderer instance belong. Do not move renderer state into hidden shared caches just to survive `GpuSurface` teardown or parent rebuild.
-- `GpuContext::redraw_handle` is how async work or an external event requests another frame for the same surface instance. A `GpuSurface` torn down by a parent rebuild takes its `GpuView` with it; that is the reconstruction contract, not a bug to route around with out-of-band renderer resurrection.
+- `GpuContentView::new(content)` owns one `GpuContent` instance for that view's lifetime. `GpuContent::setup(gpu: &Context)` is where persistent GPU resources for that content instance belong. Do not move content state into hidden shared caches just to survive `GpuContentView` teardown or parent rebuild.
+- `Context::redraw` is the `RedrawHandle` through which async work or an external event requests another frame for the same view instance. A `GpuContentView` torn down by a parent rebuild takes its content with it; that is the reconstruction contract, not a bug to route around with out-of-band renderer resurrection.
 - Prefer `#[waterui::test(view_fn)]` when a test only needs the default `UiTest::new().mount(view_fn)`; construct `UiTest` explicitly only for a custom viewport or environment. Verify layout through semantic children and bounds relationships in the Hydrolysis tree, never by attaching synthetic accessibility metadata to decorative fills.
 - Keep a component body's shape as simple and concrete as its semantics: do not wrap otherwise static content in a `Dynamic` because the body has a branch. `waterui_chart::Tooltip` only mounted cleanly once a `#[view_builder]` body branch was replaced by explicit `AnyView` branching.
 - For text APIs, use `text()` for static text and `text!` for reactive formatting. Do not use `watch()` to build reactive text when `text!` or signal-taking APIs already express the dependency directly.
@@ -276,7 +276,7 @@ Keep the change set strictly scoped to the task.
 - Do not use `git checkout` to back out changes, as it can lead to loss of work
 - Import third-party crates instead of writing your own implementation. Less code is better.
 - Do not create custom Cargo target directories (for example, `CARGO_TARGET_DIR=/tmp/...`) in this monorepo. Always use the repository's default `target/` directory.
-- `GpuSurface` supports offload/offscreen rendering. When developing any `GpuRenderer`-based component, you must use offload/offscreen rendering for visual testing.
+- `OffscreenRenderer` renders `GpuContent` and scenes without a surface. When developing any `GpuContent`-based component, you must use offscreen rendering for visual testing.
 - CI is expensive, please read full error message if CI fails. Do not blindly push commits to trigger CI again before fixing all problems you learnt.
 - For public API design, follow this repository style consistently: `Type::new(...)` is the general constructor, while free function constructors such as `button(...)` are ergonomic convenience entry points. Do not introduce parallel APIs like `Type::custom(...)` when `Type::new(...)` already covers the general case.
 - Keep the constructor split explicit in API design and documentation:
@@ -490,7 +490,7 @@ waterui_ffi::export!();  // Generates FFI entry points
 - Rust edition 2024; the supported toolchain floor lives in `rust-version` in the root manifest, not here
 - Workspace lints enforce strict clippy rules including pedantic/nursery
 - One git worktree per task, as described under Engagement Rules.
-- The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
+- The FFI header `ffi/waterui.h` is checked into version control and generated by `ffi/generator`; **never write C header by hand**. No CI job checks it any more: `waterui-ffi` and the header are removed once the new Apple and Android backends land, so regenerate it locally when you change an FFI export until then.
 - Add FFI exports and native bridges only when a component requires a genuine native primitive. Pure Rust compositions and self-drawn components reuse existing public contracts without inventing new C-ABI types (Principles 2 and 4).
 
 ### Testing Patterns

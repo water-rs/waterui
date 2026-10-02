@@ -1,152 +1,99 @@
-#![doc = "Graphics primitives for `WaterUI`."]
-// Proving `Send` across `wgpu`'s generic type graph is deeper than rustc's
-// default recursion limit of 128 on the workspace's nightly toolchain, which
-// reports `overflow evaluating the requirement ...: Send` — a hard error under
-// `-D warnings`. The bound genuinely holds; the solver just needs room to say
-// so. Harmless on stable, where the limit is never reached.
-#![recursion_limit = "256"]
+#![doc = "Graphics primitives for `WaterUI`, recording Cherenkov `Content`."]
 
 extern crate alloc;
 
 /// Color types and conversion utilities.
 pub mod color;
+/// cbindgen:ignore
 #[cfg(feature = "gpu")]
 mod effects;
 #[cfg(feature = "gpu")]
-mod gpu;
-mod gradients;
+pub mod gpu;
+pub mod gradient;
 #[cfg(feature = "gpu")]
 mod image;
 pub mod input;
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub mod offscreen;
 mod scene;
 #[cfg(feature = "gpu")]
-pub mod shader_types;
+pub mod shader_paint;
 
-pub use color::{Color, Colorspace, ResolvedColor};
+/// The engine this crate records for, re-exported so every consumer names
+/// the same `Content`, `Paint`, `Shape`, `Recorder` and colour types.
+pub use cherenkov;
+
+pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 #[cfg(feature = "gpu")]
-pub use effects::{filter_view, view_effect};
+pub use effects::filter_view;
+#[cfg(feature = "gpu")]
+pub use filter_view::{
+    AnyEffect, BackgroundReplace, BlendWithImage, Bloom, Blur, Brightness, BumpDistortion,
+    ColorMatrix, Contrast, Convolution3x3, Convolution5x5, Crystallize, DepthAwareBlur,
+    DisplacementTransitionToImage, DisplacementWarp, DotHalftone, EdgeWork, Exposure,
+    FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur, Gloom, Grayscale, GuidedSmooth,
+    HighlightsShadows, HueRotation, Invert, Kaleidoscope, LineHalftone, LutColorGrade, MaskedBlur,
+    Median3x3, MirrorTile, MorphologyGradient, MorphologyMax, MorphologyMin, MotionBlur,
+    ParamGuards, PerspectiveCorrection, PerspectiveTransform, PhotoEffectChrome, PhotoEffectFade,
+    PhotoEffectInstant, PhotoEffectMono, PhotoEffectNoir, PhotoEffectProcess, PhotoEffectTonal,
+    PhotoEffectTransfer, PinchDistortion, Pixellate, Prewitt, RadialTransitionToImage, Reactive,
+    Saturation, Sepia, Sharpen, Sobel, SwipeTransitionToImage, TemperatureTint, TemporalDenoise,
+    ToneCurve, TransitionToImage, TwirlDistortion, UnsharpMask, Vibrance, Vignette,
+    VortexDistortion, WhitePoint, ZoomBlur, ZoomTransitionToImage,
+};
 #[cfg(feature = "gpu")]
 pub use gpu::{
-    gpu_surface, pipeline, reactive_color, shader_source, shader_surface, shared_context, texture,
+    CaretQuery, Context, DeviceLoss, ExternalFrameSource, ExternalFrameStream, ExternalFrameView,
+    Frame, FrameHook, FrameOutput, GpuContent, GpuContentHandle, GpuContentView, GpuRuntime,
+    InputHandler, RedrawHandle, SharedGpuContext,
 };
-pub use gradients::gradient::{
-    Gradient, GradientConfig, GradientType, ResolvedGradient, ResolvedGradientStop,
+#[cfg(feature = "gpu")]
+pub use gradient::{
+    ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient,
 };
+pub use gradient::{Gradient, GradientType, MeshGradient};
 #[cfg(feature = "gpu")]
-pub use gradients::{animated_mesh_gradient, flowing_gradient, gradient_renderer};
-#[cfg(feature = "gpu")]
-pub use image::{image_analysis, image_decode, image_generator};
-#[cfg(feature = "cpu-scene")]
-pub use scene::scene2d_cpu;
-pub use scene::{picture, scene_view, scene2d};
-#[cfg(feature = "vello-scene")]
-pub use scene::{scene2d_hybrid, scene2d_vello};
-
-/// Shared shader sources.
-#[cfg(feature = "gpu")]
-pub mod shaders;
-/// Multi-input filters live in the `filtrate` crate; this alias keeps the
-/// historical `waterui_graphics::multi_input_filter::*` import path working.
-#[cfg(feature = "gpu")]
-pub use filtrate::multi_input as multi_input_filter;
-
-// Re-export key types for user convenience.
-#[cfg(feature = "gpu")]
-pub use gpu_surface::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, OffscreenRenderConfig, OffscreenRenderError,
-    OffscreenRenderOutput, OffscreenRenderOutputHdr, OffscreenSession, OffscreenSize, PointerState,
-    RedrawHandle,
-};
+pub use image::image_decode;
 pub use input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
-
-#[cfg(feature = "gpu")]
-pub use pipeline::{single_bind_group_layout, single_bind_group_render_stages};
-#[cfg(feature = "gpu")]
-pub use texture::{TextureRowLayout, upload_texture};
-
-#[cfg(feature = "gpu")]
-pub use shader_surface::ShaderSurface;
-#[cfg(feature = "gpu")]
-pub use shared_context::{
-    DeviceLoss, GpuRuntime, SceneEngine, SharedContextError, SharedGpuContext, SharedSceneRenderer,
-    drain_device_before_teardown,
+#[cfg(any(feature = "gpu", feature = "cpu"))]
+pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
+pub use scene::picture::{Picture, PictureRecording};
+pub use scene::resources::{
+    EngineResource, HeldResources, RecordingResources, Registered, SceneBackend, SceneResources,
+    ShaderBackend,
 };
-
-#[cfg(feature = "gpu")]
-pub use animated_mesh_gradient::{
-    ANIMATED_MESH_PALETTE_LEN, AnimatedMeshGradient, AnimatedMeshGradientConfig,
-};
-#[cfg(feature = "gpu")]
-pub use gradient_renderer::MeshGradient;
-
-#[cfg(feature = "gpu")]
-pub use view_effect::{
-    EffectRenderer, OutputSize, ViewEffect, ViewEffectContext, ViewEffectInput, ViewEffectOutput,
-};
-
-#[cfg(feature = "gpu")]
-pub use filter_view::{
-    AppliedFilter, Bloom, Blur, Brightness, BumpDistortion, ColorMatrix, Contrast, Crystallize,
-    DotHalftone, EdgeWork, Exposure, FilterAdapter, FilterViewExt, Filtered, Gamma, GaussianBlur,
-    Gloom, Grayscale, HdrPolicy, HighlightsShadows, HueRotation, Invert, Kaleidoscope,
-    LineHalftone, MirrorTile, MotionBlur, PerspectiveCorrection, PerspectiveTransform,
-    PinchDistortion, Pixellate, Saturation, Sepia, Sharpen, TemperatureTint, TwirlDistortion,
-    UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
-};
-/// The `Effect` family that `.filter(F)` requires, at the graphics root
-/// alongside the `ViewEffect` family it mirrors.
-#[cfg(feature = "gpu")]
-pub use filter_view::{
-    Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
-    EffectRedrawCallback, EffectRenderResult, EffectSetupResult,
-};
-#[cfg(feature = "gpu")]
-pub use multi_input_filter::{
-    BackgroundReplace, BackgroundReplaceFilter, BlendMode, BlendWithImage, BlendWithImageFilter,
-    DepthAwareBlur, DepthAwareBlurFilter, DisplacementTransitionToImage,
-    DisplacementTransitionToImageFilter, DisplacementWarp, DisplacementWarpFilter, FilterImage,
-    GuidedSmooth, GuidedSmoothFilter, LutColorGrade, LutColorGradeFilter, LutImage, MaskedBlur,
-    MaskedBlurFilter, MultiInputFilter, RadialTransitionToImage, RadialTransitionToImageFilter,
-    SwipeTransitionToImage, SwipeTransitionToImageFilter, TemporalDenoise, TemporalDenoiseFilter,
-    ToneCurve, ToneCurveFilter, TransitionDirection, TransitionToImage, TransitionToImageFilter,
-    ZoomTransitionToImage, ZoomTransitionToImageFilter, background_replace_filter,
-    blend_with_image_filter, depth_aware_blur_filter, displacement_transition_to_image_filter,
-    displacement_warp_filter, guided_smooth_filter, lut_color_grade_filter, masked_blur_filter,
-    radial_transition_to_image_filter, swipe_transition_to_image_filter, temporal_denoise_filter,
-    tone_curve_filter, transition_to_image_filter, zoom_transition_to_image_filter,
-};
-
-#[cfg(feature = "gpu")]
-pub use image_analysis::{DominantColor, Histogram, ImageAnalysis, MinMaxLuma};
-#[cfg(feature = "gpu")]
-pub use image_generator::{
-    CheckerboardGenerator, DotGridGenerator, GeneratedImage, ImageGenerator,
-    LinearGradientGenerator, NoiseGenerator, RadialGradientGenerator, StripeGenerator,
-};
-
-pub use picture::Picture;
-pub use scene_view::{
+pub use scene::scene_view::{
     SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
     resolve_scene_proposal, scene_stretch_axis,
 };
-pub use scene2d::{Glyph, GlyphRun, Scene2D, SceneRecording};
-#[cfg(feature = "vello-scene")]
-pub use scene2d_hybrid::{HybridImageAtlas, HybridRenderer, HybridScene2D, HybridUpload};
-#[cfg(feature = "vello-scene")]
-pub use scene2d_vello::VelloScene2D;
-
-// Re-export dependencies used by macros
+pub use scene::{picture, resources, scene_view};
 #[cfg(feature = "gpu")]
-pub use rayon;
+pub use shader_paint::ShaderPaintView;
 
-/// Re-export bytemuck for safe byte conversions in GPU programming.
+/// The CPU raster backend behind [`OffscreenRenderer::cpu`].
+#[cfg(feature = "cpu")]
+pub use cherenkov_cpu;
+/// The CPU picture rasteriser used by hosts whose image views take bitmaps.
+#[cfg(feature = "cpu")]
+pub use scene::raster;
+
+/// The GPU backend for hosts that own a retained engine.
 #[cfg(feature = "gpu")]
-pub use bytemuck;
+pub use cherenkov_gpu;
+
+/// The filter library `.filter(F)` and `.effect(E)` take, re-exported so a
+/// filter written against it is the one the engine runs.
+#[cfg(feature = "gpu")]
+pub use filtrate;
 
 /// The exact `wgpu` this build links, re-exported so applications implementing
-/// `GpuView` or [`Effect`] cannot end up with a version-mismatched `wgpu` and
-/// the confusing type-identity errors that follow.
+/// [`GpuContent`] cannot end up with a version-mismatched `wgpu`.
 #[cfg(feature = "gpu")]
 pub use wgpu;
+
+/// Plain-bytes casts for the uniform/vertex data [`GpuContent`] writes to GPU
+/// buffers, re-exported so a content author uses one version of it.
+#[cfg(feature = "gpu")]
+pub use bytemuck;
