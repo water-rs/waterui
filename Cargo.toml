@@ -69,7 +69,7 @@ android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
 # revision rather than a branch. `subdirectory` names the Gradle composite
 # root inside the checkout.
 hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
-hydrolysis-android-host-revision = "a833de993561aa1a10682baed4b13fd83d0c687e"
+hydrolysis-android-host-revision = "1701e3a3ab4f1ae8aab6fe499eedaead94e59ad0"
 hydrolysis-android-host-subdirectory = "android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
@@ -550,12 +550,12 @@ nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45
 # filter library `.filter(F)`/`.effect(E)` and the engine itself agree on:
 # every filtrate in the graph must come from this same revision or a filter
 # type built on one side is a different type on the other.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "522365616cff08d5d2e39bdae4690610593895e6" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "522365616cff08d5d2e39bdae4690610593895e6" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "522365616cff08d5d2e39bdae4690610593895e6" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "522365616cff08d5d2e39bdae4690610593895e6" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "522365616cff08d5d2e39bdae4690610593895e6" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "522365616cff08d5d2e39bdae4690610593895e6" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
@@ -586,7 +586,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "fa38cabe5a49
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "fadcb404b749b70907d535a2449a6a9fcad798a7" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "49486aedd4b5a0b38ae27d7a4021b7efb217ca89" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "039e0b9e7a15ea4a2b7651bbdce3d9dee0ba1752" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "a833de993561aa1a10682baed4b13fd83d0c687e" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "1701e3a3ab4f1ae8aab6fe499eedaead94e59ad0" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "149fcea688d90ffa8edd1b66e64796dc1b7c3f38" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "bdc07b2488cef4823ed7995dd56384b2383d7348" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
