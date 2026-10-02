@@ -63,7 +63,8 @@ impl fmt::Debug for PictureRecording {
         f.debug_struct("PictureRecording")
             .field("picture", &self.picture)
             .field("held", &self.held)
-            .field("replayable", &self.source.is_some())
+            .field("source", &self.source.as_ref().map(|_| "..."))
+            .field("source_identity", &Rc::as_ptr(&self.source_identity))
             .finish()
     }
 }
@@ -88,6 +89,7 @@ impl PictureRecording {
     /// semantic source. Resource-free pictures retain their exact immutable
     /// snapshot; resource-bearing pictures replay their source-owned
     /// [`PictureSource`].
+    #[must_use]
     pub fn rebuild_for_engine(&self, resources: &SceneResources) -> Self {
         let Some(source) = &self.source else {
             return Self {
