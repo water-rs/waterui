@@ -5,7 +5,7 @@ extern crate alloc;
 /// Color types and conversion utilities.
 pub mod color;
 /// cbindgen:ignore
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 mod effects;
 #[cfg(feature = "gpu")]
 pub mod gpu;
@@ -24,22 +24,23 @@ pub mod shader_paint;
 pub use cherenkov;
 
 pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 pub use effects::filter_view;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 pub use filter_view::{
     AnyEffect, BackgroundReplace, BlendWithImage, Bloom, Blur, Brightness, BumpDistortion,
     ColorMatrix, Contrast, Convolution3x3, Convolution5x5, Crystallize, DepthAwareBlur,
     DisplacementTransitionToImage, DisplacementWarp, DotHalftone, EdgeWork, Exposure,
-    FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur, Gloom, Grayscale, GuidedSmooth,
-    HighlightsShadows, HueRotation, Invert, Kaleidoscope, LineHalftone, LutColorGrade, MaskedBlur,
-    Median3x3, MirrorTile, MorphologyGradient, MorphologyMax, MorphologyMin, MotionBlur,
-    OutputSize, ParamGuards, PerspectiveCorrection, PerspectiveTransform, PhotoEffectChrome,
-    PhotoEffectFade, PhotoEffectInstant, PhotoEffectMono, PhotoEffectNoir, PhotoEffectProcess,
-    PhotoEffectTonal, PhotoEffectTransfer, PinchDistortion, Pixellate, Prewitt,
-    RadialTransitionToImage, Reactive, Saturation, Sepia, Sharpen, Sobel, SwipeTransitionToImage,
-    TemperatureTint, TemporalDenoise, ToneCurve, TransitionToImage, TwirlDistortion, UnsharpMask,
-    Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur, ZoomTransitionToImage,
+    FilterDescription, FilterSignal, FilterViewExt, Filtered, FilteredView, Gamma, GaussianBlur,
+    Gloom, Grayscale, GuidedSmooth, HighlightsShadows, HueRotation, Invert, Kaleidoscope,
+    LineHalftone, LutColorGrade, MaskedBlur, Median3x3, MirrorTile, MorphologyGradient,
+    MorphologyMax, MorphologyMin, MotionBlur, OutputSize, ParamGuards, PerspectiveCorrection,
+    PerspectiveTransform, PhotoEffectChrome, PhotoEffectFade, PhotoEffectInstant, PhotoEffectMono,
+    PhotoEffectNoir, PhotoEffectProcess, PhotoEffectTonal, PhotoEffectTransfer, PinchDistortion,
+    Pixellate, Prewitt, RadialTransitionToImage, Reactive, Saturation, Sepia, Sharpen, Sobel,
+    SwipeTransitionToImage, TemperatureTint, TemporalDenoise, ToneCurve, TransitionToImage,
+    TwirlDistortion, UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
+    ZoomTransitionToImage,
 };
 #[cfg(feature = "gpu")]
 pub use gpu::{
@@ -85,7 +86,7 @@ pub use cherenkov_gpu;
 
 /// The filter library `.filter(F)` and `.effect(E)` take, re-exported so a
 /// filter written against it is the one the engine runs.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 pub use filtrate;
 
 /// The exact `wgpu` this build links, re-exported so applications implementing

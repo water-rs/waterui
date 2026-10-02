@@ -362,7 +362,10 @@ locale-list = ["waterui-internal/locale-list", "waterui-dylib?/locale-list"]
 # waterui-svg). Default-on so every existing consumer is unaffected. Disable
 # it to cross-compile a lean WaterUI app for embedded targets without the GPU
 # stack.
-gpu = ["waterui-internal/gpu", "waterui-dylib?/gpu"]
+gpu = ["effects", "waterui-internal/gpu", "waterui-dylib?/gpu"]
+# Filters on views and their portable description, without the GPU stack.
+# Implied by `gpu`.
+effects = ["waterui-internal/effects", "waterui-dylib?/effects"]
 # The `Code` widget and the bundled syntect highlighter behind it. Default-on
 # because `code(…)` is a plain authoring API; opting out drops syntect, two-face
 # and the syntax and theme tables they carry.

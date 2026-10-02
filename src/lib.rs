@@ -40,7 +40,7 @@ pub mod prelude {
     //! }
     //! ```
     // Re-export core modules from super, excluding `background` to avoid conflict with layout::background
-    #[cfg(feature = "gpu")]
+    #[cfg(feature = "effects")]
     pub use super::FilterViewExt;
     pub use super::env::Environment;
     #[cfg(feature = "media")]
@@ -130,7 +130,7 @@ pub mod prelude {
 }
 pub use color::Color;
 pub use form::FormBuilder;
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 #[doc(inline)]
 pub use view::FilterViewExt;
 #[doc(inline)]

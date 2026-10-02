@@ -12,15 +12,21 @@ categories = ["gui"]
 
 [features]
 default = ["gpu"]
-# GPU-only surfaces: user GPU content, filters and effects on views, offscreen
-# rendering through `Engine<Gpu>`, and image decoding. Everything else —
-# colours, gradients, scenes, pictures and shader paints — records Cherenkov
-# `Content` and needs no device here.
+# Filters on views (`.filter(F)`, `.blur(..)`, …) and the portable description
+# a backend reads from them: the filter's stages with their WGSL snippets, its
+# parameters and their reactive bindings, and its auxiliary images. It needs no
+# device, so a render target that lowers filters into its own primitives builds
+# it without the GPU stack.
+effects = ["dep:filtrate", "dep:arc-swap"]
+# GPU-only surfaces: user GPU content, running filters through `filtrate`'s
+# executor, arbitrary GPU effects on views, offscreen rendering through
+# `Engine<Gpu>`, and image decoding. Everything else — colours, gradients,
+# scenes, pictures and shader paints — records Cherenkov `Content` and needs no
+# device here.
 gpu = [
+    "effects",
     "dep:cherenkov-gpu",
-    "dep:arc-swap",
     "dep:thiserror",
-    "dep:filtrate",
     "dep:wgpu",
     "dep:bytemuck",
     "dep:image",

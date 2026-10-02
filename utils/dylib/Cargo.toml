@@ -30,7 +30,8 @@ default = [
     "locale-datetime",
     "locale-list",
 ]
-gpu = ["waterui-internal/gpu"]
+gpu = ["effects", "waterui-internal/gpu"]
+effects = ["waterui-internal/effects"]
 highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]
 locale-list = ["waterui-internal/locale-list"]
