@@ -165,7 +165,9 @@ pub struct SharedGpuContext {
 }
 
 impl SharedGpuContext {
-    /// Requests a high-performance adapter and a device with default limits.
+    /// Requests a high-performance adapter and a device with the adapter's
+    /// own limits — wgpu's default limit set exceeds what constrained
+    /// adapters (the iOS simulator's is one) can grant.
     ///
     /// Device loss otherwise surfaces only as a bare `Validation` status on the
     /// next swapchain acquire, with the reason discarded; the `DeviceLoss`
@@ -213,6 +215,10 @@ impl SharedGpuContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("waterui GpuRuntime"),
                 required_features,
+                // The adapter's own limits, not wgpu's defaults: a default
+                // that exceeds the adapter's ceiling fails the request
+                // outright (iOS simulator: default 16 > adapter 15).
+                required_limits: adapter.limits(),
                 ..Default::default()
             })
             .await?;
