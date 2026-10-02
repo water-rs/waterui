@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn a_picture_holds_the_resources_it_names_after_its_recorder_lets_go() {
-        use crate::scene::resources::tests::{Mount, one_pixel, removed_images};
+        use crate::scene::resources::tests::{Mount, removed_images};
 
         let mount = Mount::new();
         let recording = Picture::record_with(
@@ -672,7 +672,7 @@ mod tests {
         let mut resources = mount_b.resources.recording();
         let mut recorder = Recorder::new();
         content.build_scene(&mut recorder, &mut resources, 10.0, 10.0);
-        let recorded = recorder.finish();
+        let mut recorded = recorder.finish();
         let commands = recorded.snapshot().commands();
         assert!(matches!(
             commands.first(),

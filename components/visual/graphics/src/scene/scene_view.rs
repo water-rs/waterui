@@ -399,6 +399,8 @@ impl View for SceneView {
 
 #[cfg(test)]
 mod tests {
+    use cherenkov::{Draw, kurbo::Shape};
+
     use super::{
         NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
         StretchAxis, resolve_scene_proposal, scene_stretch_axis,
