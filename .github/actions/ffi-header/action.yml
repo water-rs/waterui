@@ -51,11 +51,14 @@ runs:
     # system libraries: the script stages the header sets and compiler shims
     # they read (nothing links — this is a check build), and `kotlinc` is what
     # the WaterKit build-script shims invoke for the Android expansion.
+    # spirv-tools provides `spirv-opt`, which cherenkov-gpu's build script
+    # invokes for every non-Apple native target — including
+    # aarch64-linux-android here.
     - name: Provision cross-target expansion dependencies
       shell: bash
       run: |
         set -euo pipefail
-        brew install kotlin pkgconf
+        brew install kotlin pkgconf spirv-tools
         "$GITHUB_ACTION_PATH/provision-cross-target-deps.sh"
     - name: Regenerate the header
       shell: bash
