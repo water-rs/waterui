@@ -108,7 +108,7 @@ impl GpuFrameProfiler {
     /// The drain is the ordering guarantee: submissions that share no memory
     /// hazard may execute concurrently on the GPU, and a bare timestamp write
     /// is exactly that, so on Mali both markers resolved back-to-back while
-    /// the Vello submits they bracket were still running. Waiting for the
+    /// the content submits they bracket were still running. Waiting for the
     /// queue to go idle first means the timestamp only writes once every
     /// earlier submission has completed, pinning it to the boundary it marks.
     fn mark(&self, device: &wgpu::Device, queue: &wgpu::Queue, slot: u32) -> Duration {

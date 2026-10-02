@@ -298,7 +298,7 @@ def main() -> int:
     run.add_argument("--run-skipped", action="store_true",
                      help="also attempt the two documented skip entries")
     run.add_argument("--backend", default="hydrolysis")
-    run.add_argument("--painter", default="vello")
+    run.add_argument("--painter", default="cherenkov")
     run.add_argument("--revision", default="unknown",
                      help="source revision of the backend under test")
     run.add_argument("--round", type=int, default=0)

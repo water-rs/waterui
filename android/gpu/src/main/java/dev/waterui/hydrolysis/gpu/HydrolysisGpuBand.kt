@@ -11,7 +11,7 @@ import dev.waterui.hydrolysis.NativeBridge
 import java.util.concurrent.TimeUnit
 
 /**
- * The Vello GPU attachment: a [SurfaceView] band whose `SurfaceHolder`
+ * The GPU attachment: a [SurfaceView] band whose `SurfaceHolder`
  * lifecycle owns the native presentation attachment.
  *
  * The band sits as child 0 of the [dev.waterui.hydrolysis.HydrolysisHostView]

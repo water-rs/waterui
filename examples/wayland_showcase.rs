@@ -44,7 +44,7 @@ fn main_view() -> impl View {
     let render_mode = binding(RenderMode::Balanced);
     let diagnostics_rows = vec![
         SelfId::new(("Renderer", "Hydrolysis", "#166534")),
-        SelfId::new(("Scene backend", "Vello Scene2D", "#0F766E")),
+        SelfId::new(("Scene backend", "Cherenkov", "#0F766E")),
         SelfId::new(("Event routing", "Pointer/Key/IME", "#7C3AED")),
     ];
 

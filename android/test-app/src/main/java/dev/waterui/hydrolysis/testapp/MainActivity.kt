@@ -9,7 +9,7 @@ import dev.waterui.hydrolysis.gpu.HydrolysisGpuBand
 /**
  * The debug app exercising the Hydrolysis host end to end: the WaterUI tree
  * from `libhydrolysis_test_app.so` mounts on a [HydrolysisHostView] with the
- * Vello GPU band as its bottom child.
+ * GPU band as its bottom child.
  */
 class MainActivity : HydrolysisActivity() {
 
