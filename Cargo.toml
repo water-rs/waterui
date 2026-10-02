@@ -255,7 +255,8 @@ hydrolysis = { version = "0.3.1", default-features = false }
 waterui-dew = "0.3.0"
 waterui = { version = "0.5.2", path = "." }
 waterui-icons-codegen = { version = "0.5.1", path = "components/icon/codegen" }
-shaderloom = "0.1.2"
+# Members opt into `runtime` (links wgpu) and/or `build` (naga, for build scripts).
+shaderloom = { version = "0.1.2", default-features = false }
 hydrolysis-m3 = "0.3.1"
 native-executor = { version = "0.8.0" }
 waterui-macros = { version = "0.5.1", path = "macros" }

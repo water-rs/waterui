@@ -57,7 +57,7 @@ pollster = { workspace = true, optional = true }
 # Only the runtime half: `build` pulls naga, which a device consumer never
 # needs — the shared device asks shaderloom which features its native shader
 # artifacts require (`shaderloom::required_features`).
-shaderloom = { workspace = true, optional = true, default-features = false, features = ["runtime"] }
+shaderloom = { workspace = true, optional = true, features = ["runtime"] }
 
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.
