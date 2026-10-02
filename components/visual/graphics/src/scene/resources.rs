@@ -1057,13 +1057,8 @@ pub(crate) mod tests {
             false
         }
 
-        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-            let Self { frame, last, .. } = *self;
-            Box::new(Self {
-                frame,
-                last,
-                image: None,
-            })
+        fn rebuild_for_engine(&mut self) {
+            self.image = None;
         }
     }
 

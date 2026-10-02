@@ -995,6 +995,8 @@ impl SceneContent for TestSceneContent {
         recorder.fill(rect, WorkingColor::from(red));
         false
     }
+
+    fn rebuild_for_engine(&mut self) {}
 }
 
 #[test]

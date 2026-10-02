@@ -103,19 +103,19 @@ pub trait SceneContent: 'static {
     /// A `SceneContent` may own registrations, a Cherenkov recording, or
     /// another object whose identity belongs to the engine that created it.
     /// Those values cannot be carried into a replacement engine. Recovery
-    /// consumes the old content and returns a new content object containing
-    /// the same semantic/source state with all engine-bound state rebuilt or
-    /// cleared for the next [`build_scene`](Self::build_scene) call. The host
-    /// invokes this before it records the first scene on the replacement
-    /// engine, and then supplies that call's `RecordingResources` as usual.
+    /// clears or rebuilds this content's engine-bound state while retaining
+    /// its semantic/source state for the next [`build_scene`](Self::build_scene)
+    /// call. The host invokes this before it records the first scene on the
+    /// replacement engine, and then supplies that call's `RecordingResources`
+    /// as usual.
     ///
-    /// Content that owns no engine-bound state must return itself explicitly.
+    /// Content that owns no engine-bound state must implement this explicitly
+    /// as an empty reset.
     /// Content that caches a [`Registered`](crate::scene::resources::Registered),
     /// a [`PictureRecording`](crate::picture::PictureRecording), or another
     /// generation-bound value must preserve its semantic inputs while
     /// rebuilding that value.
-    #[must_use]
-    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent>;
+    fn rebuild_for_engine(&mut self);
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     ///
@@ -372,10 +372,9 @@ impl SceneView {
     /// only engine-bound scene state is reconstructed. The host must call this
     /// before the first recording made with the replacement engine.
     #[must_use]
-    pub fn rebuild_for_engine(self) -> Self {
-        Self {
-            content: self.content.rebuild_for_engine(),
-        }
+    pub fn rebuild_for_engine(mut self) -> Self {
+        self.content.rebuild_for_engine();
+        self
     }
 }
 
@@ -432,9 +431,7 @@ mod tests {
             Some(Size::new(self.value as f32, 1.0))
         }
 
-        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-            self
-        }
+        fn rebuild_for_engine(&mut self) {}
     }
 
     impl SceneContent for Tall {
@@ -452,9 +449,7 @@ mod tests {
             Some(Size::new(100.0, 200.0))
         }
 
-        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-            self
-        }
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content with no size of its own, which is the trait's default.
@@ -471,9 +466,7 @@ mod tests {
             false
         }
 
-        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-            self
-        }
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content that says what it draws, the way a formula or a chart does.
@@ -494,9 +487,7 @@ mod tests {
             Some("x squared plus one".into())
         }
 
-        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-            self
-        }
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// The view must forward exactly what its content offers a screen reader:
