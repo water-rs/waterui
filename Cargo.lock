@@ -1183,9 +1183,9 @@ dependencies = [
 
 [[package]]
 name = "cfg-expr"
-version = "0.20.9"
+version = "0.20.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4ece8474b5f766c63426647e7b4b316b67431ade1036a8313cee24a03ae917"
+checksum = "9ba9e9ec16c447027685b1f897b720e18e9a8afd00bd7332c483537e38086c9f"
 dependencies = [
  "smallvec",
  "target-lexicon",
@@ -3471,7 +3471,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=01172c0513a5e83c5fa472d4917f4caf259ac097#01172c0513a5e83c5fa472d4917f4caf259ac097"
+source = "git+https://github.com/water-rs/hydrolysis?rev=2b288a4433e0d5abab16658a2cc3aca02932e1d2#2b288a4433e0d5abab16658a2cc3aca02932e1d2"
 dependencies = [
  "accesskit",
  "android_logger",
@@ -3527,7 +3527,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=c16c410866c4694ada6cf110b83f946e0f30a079#c16c410866c4694ada6cf110b83f946e0f30a079"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=169c42a810c4662abda184c89c114846877b13ec#169c42a810c4662abda184c89c114846877b13ec"
 dependencies = [
  "cherenkov",
  "hydrolysis",
@@ -4542,9 +4542,9 @@ checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
-version = "0.2.189"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -6628,7 +6628,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9688,7 +9688,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?rev=8fce880bc3d053e5c49dcf9e695f0308ccfa38a0#8fce880bc3d053e5c49dcf9e695f0308ccfa38a0"
+source = "git+https://github.com/water-rs/barcode?rev=491ada1c7db31bdab657135338a5bd670adbe61f#491ada1c7db31bdab657135338a5bd670adbe61f"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -9770,7 +9770,7 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?rev=86bbeb637c2792e69f4f6ddd2d453c3d32d06bc6#86bbeb637c2792e69f4f6ddd2d453c3d32d06bc6"
+source = "git+https://github.com/water-rs/canvas?rev=83f004bb1745708cbe9a72395756677c706f1020#83f004bb1745708cbe9a72395756677c706f1020"
 dependencies = [
  "cherenkov",
  "image",
@@ -9785,7 +9785,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?rev=fa38cabe5a49a3bcb1d809018115c8fb66e6ce7d#fa38cabe5a49a3bcb1d809018115c8fb66e6ce7d"
+source = "git+https://github.com/water-rs/chart?rev=bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e#bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e"
 dependencies = [
  "bytemuck",
  "nami",
@@ -10057,7 +10057,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?rev=149fcea688d90ffa8edd1b66e64796dc1b7c3f38#149fcea688d90ffa8edd1b66e64796dc1b7c3f38"
+source = "git+https://github.com/water-rs/image?rev=87080fc2e06628eb990af9fdbfbc3b8a28af5acc#87080fc2e06628eb990af9fdbfbc3b8a28af5acc"
 dependencies = [
  "half",
  "image",
@@ -10216,7 +10216,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=fadcb404b749b70907d535a2449a6a9fcad798a7#fadcb404b749b70907d535a2449a6a9fcad798a7"
+source = "git+https://github.com/water-rs/map-gpu?rev=add3782ece2c48db44f28873dd6e2ce63e50cf9f#add3782ece2c48db44f28873dd6e2ce63e50cf9f"
 dependencies = [
  "blocking",
  "cherenkov",
@@ -10251,7 +10251,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?rev=d263e493d39e93ca822e621b0b951e377cbf496d#d263e493d39e93ca822e621b0b951e377cbf496d"
+source = "git+https://github.com/water-rs/math?rev=878bfc0284b32ee18c1a50860adf9ba489a4d5ab#878bfc0284b32ee18c1a50860adf9ba489a4d5ab"
 dependencies = [
  "cherenkov",
  "kurbo",
@@ -10350,7 +10350,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=039e0b9e7a15ea4a2b7651bbdce3d9dee0ba1752#039e0b9e7a15ea4a2b7651bbdce3d9dee0ba1752"
+source = "git+https://github.com/water-rs/particle?rev=4266f453bde34be2fb159694a41cb926cc65e9da#4266f453bde34be2fb159694a41cb926cc65e9da"
 dependencies = [
  "bytemuck",
  "encase",
@@ -10417,7 +10417,7 @@ dependencies = [
 [[package]]
 name = "waterui-svg"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/svg?rev=bdc07b2488cef4823ed7995dd56384b2383d7348#bdc07b2488cef4823ed7995dd56384b2383d7348"
+source = "git+https://github.com/water-rs/svg?rev=50a87217658e9cf40024bf50619c4d7555a6415b#50a87217658e9cf40024bf50619c4d7555a6415b"
 dependencies = [
  "cherenkov",
  "suiteki",
@@ -10508,7 +10508,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?rev=49486aedd4b5a0b38ae27d7a4021b7efb217ca89#49486aedd4b5a0b38ae27d7a4021b7efb217ca89"
+source = "git+https://github.com/water-rs/video-gpu?rev=4f95775bcef3022e6d5a52c2aa09aee02afb628f#4f95775bcef3022e6d5a52c2aa09aee02afb628f"
 dependencies = [
  "async-channel",
  "executor-core",
@@ -12045,7 +12045,7 @@ dependencies = [
 [[patch.unused]]
 name = "waterui-dew"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/dew?rev=1b683d0daab9a119396fb3b31d31bc2445f39bc9#1b683d0daab9a119396fb3b31d31bc2445f39bc9"
+source = "git+https://github.com/water-rs/dew?rev=db709fc0c29fd1b4493c014409406de710f8b915#db709fc0c29fd1b4493c014409406de710f8b915"
 
 [[patch.unused]]
 name = "waterui-gtk"
