@@ -18,10 +18,10 @@ arc-swap = { workspace = true, optional = true }
 # included), and Cargo forbids a member from turning them off. The FFI crate
 # must not re-root the GPU stack when the app opted out, so it declares the
 # dependency itself and forwards `gpu` explicitly.
-# `assets` is intentionally not enabled here: it implies `media` -> `video`,
-# which would root the codec/media stack into every managed build regardless
-# of what the application resolved. The facade's own features are selected
-# through this crate's `default`/`inspector`/`gpu` features instead.
+# `assets` is intentionally not enabled here: the application selects the
+# media and video capabilities explicitly, so enabling assets here would root
+# unrelated asset code into every managed build. The facade's own features are
+# selected through this crate's `default`/`inspector`/`gpu` features instead.
 waterui = { version = "0.5.2", path = "..", default-features = false }
 waterui-core.workspace = true
 # The shared anchored-overlay placement contract the metadata and
