@@ -1,22 +1,22 @@
-//! water-rs/hydrolysis#205 — the Cherenkov migration acceptance fixtures.
+//! Frame-work fixtures for the fine-grained frame model
+//! (water-rs/hydrolysis#205).
 //!
 //! Every fixture drives the real headless runner at a fixed clock and asserts
 //! on two things at once: that the frame still renders (the snapshot) and
-//! that the work the frame did is recorded by the migration counters on
-//! [`crate::runner::FrameCounters::migration`]. The counters are the
-//! acceptance instrument for the port — a fixture's Vello-era values
-//! (`semantic builds`, `recorded view contents`, `font and image
-//! registrations`, `gpu submissions`, `host wakeups`) are what the retained
-//! rewrite must drive to zero on steady frames, while the engine-era
-//! counters (`live operand updates`, `layer creations`, `layer removals`)
-//! become the nonzero signal.
+//! that the work the frame did is recorded by the frame-work counters on
+//! [`crate::runner::FrameCounters::frame_work`]. The counters are the
+//! instrument the frame model is measured against — a fixture's whole-frame
+//! values (`semantic builds`, `recorded view contents`, `font and image
+//! registrations`, `gpu submissions`, `host wakeups`) are what a steady
+//! frame drives to zero, while the fine-grained counters (`live operand
+//! updates`, `layer creations`, `layer removals`) carry the nonzero signal.
 //!
 //! The fixtures deliberately assert *which* counter families moved rather
-//! than exact counts: exact numbers are baseline data (recorded in
-//! `docs/cherenkov-migration.md`), and an exact assertion would break on
-//! unrelated dev churn the migration never touched.
+//! than exact counts: exact numbers are baseline data, and an exact
+//! assertion would break on unrelated dev churn the frame model never
+//! touched.
 //!
-//! Fixture inventory (the plan's fixture families):
+//! Fixture inventory:
 //! * nested clip/blend/opacity → `nested_clip_blend_opacity_counts`
 //! * transformed image brushes → `transformed_image_brushes_count`
 //! * glyph-only scenes → `glyph_only_scene_counts`
@@ -29,8 +29,7 @@
 //! * native-view interleaving → documented only: `record_native_view_layer`
 //!   exists solely under `hydrolysis_macos_system_webview` (winit + macOS +
 //!   webview-system) and the WKWebView bridge requires a real window — no
-//!   headless harness can mount it. The boundary checker quarantines the
-//!   call site instead.
+//!   headless harness can mount it.
 //! * capture determinism → `repeated_fixed_clock_captures_are_identical`
 
 use core::time::Duration;
@@ -131,22 +130,22 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
     )
 }
 
-/// The migration counter values a fixture reads back. Transient
-/// presentations (popup windows, drawn context menus) install no retained
-/// engine layers: every engine-era field stays zero on their frames.
-fn assert_engine_era_counters_zero(counters: &FrameCounters) {
-    let m = counters.migration;
-    assert_eq!(m.live_operand_updates, 0, "no live operands exist yet");
-    assert_eq!(m.layer_creations, 0, "no retained engine layers exist yet");
-    assert_eq!(m.layer_removals, 0, "no retained engine layers exist yet");
+/// The frame-work values a fixture reads back. Transient presentations
+/// (popup windows, drawn context menus) install no retained engine layers:
+/// every retained-engine field stays zero on their frames.
+fn assert_engine_counters_zero(counters: &FrameCounters) {
+    let m = counters.frame_work;
+    assert_eq!(m.live_operand_updates, 0, "no live operands update");
+    assert_eq!(m.layer_creations, 0, "no retained engine layers mount");
+    assert_eq!(m.layer_removals, 0, "no retained engine layers unmount");
 }
 
-/// The engine-era counters a fixture whose content mounts as retained scene
-/// layers reads back: the engine mounts its layers on the presented frame
-/// (`layer_creations >= 1`), while a fixture with no reactive input and no
-/// unmount sees no live-operand updates and no removals.
+/// The retained-engine counters a fixture whose content mounts as retained
+/// scene layers reads back: the engine mounts its layers on the presented
+/// frame (`layer_creations >= 1`), while a fixture with no reactive input
+/// and no unmount sees no live-operand updates and no removals.
 fn assert_retained_engine_counters(counters: &FrameCounters) {
-    let m = counters.migration;
+    let m = counters.frame_work;
     assert_eq!(
         m.live_operand_updates, 0,
         "nothing reactive runs in this fixture"
@@ -174,7 +173,7 @@ fn nested_clip_blend_opacity_counts() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.migration;
+    let m = counters.frame_work;
 
     assert!(m.semantic_builds > 0, "the mount must dispatch view bodies");
     assert!(
@@ -262,7 +261,7 @@ fn transformed_image_brushes_count() {
     let mut runtime = runtime_with(waterui_graphics::SceneView::new(ImagePane { image: None }));
     let mut frames = Frames::new();
     let (counters, snapshot) = frames.render(&mut runtime);
-    let m = counters.migration;
+    let m = counters.frame_work;
 
     let pixel_at = |x: usize, y: usize| -> &[u8] {
         &snapshot.rgba8[(x + y * snapshot.width as usize) * 4..][..4]
@@ -287,7 +286,7 @@ fn glyph_only_scene_counts() {
     )));
     let mut frames = Frames::new();
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.migration;
+    let m = counters.frame_work;
 
     assert!(
         m.font_registrations >= 2,
@@ -334,7 +333,7 @@ fn variable_colr_bitmap_fonts_count() {
     );
     let mut frames = Frames::new();
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.migration;
+    let m = counters.frame_work;
 
     assert!(
         m.font_registrations >= 3,
@@ -370,7 +369,7 @@ fn shadow_silhouettes_count() {
     )));
     let mut frames = Frames::new();
     let (counters, snapshot) = frames.render(&mut runtime);
-    let m = counters.migration;
+    let m = counters.frame_work;
 
     // The engine owns the silhouette: a shadow is recorded as a native op
     // (`blurred_rounded_rect`/`scene.shadow`), never an image upload, so a
@@ -462,12 +461,12 @@ fn context_menu_holes_render() {
         "the mounted context menu must merge into the a11y tree"
     );
 
-    let m = result.profile.counters.migration;
+    let m = result.profile.counters.frame_work;
     assert!(
         m.structural_patches + m.semantic_builds > 0,
         "mounting the menu mutates the retained tree"
     );
-    assert_engine_era_counters_zero(&result.profile.counters);
+    assert_engine_counters_zero(&result.profile.counters);
 }
 
 /// Popup opening: a mounted popup is a second window the pump's merged a11y
@@ -511,12 +510,12 @@ fn popup_opening_counts() {
         "the open popup's commands must merge into the a11y tree"
     );
 
-    let m = result.profile.counters.migration;
+    let m = result.profile.counters.frame_work;
     assert!(
         m.recorded_view_contents > 0,
         "the mount frame still encodes"
     );
-    assert_engine_era_counters_zero(&result.profile.counters);
+    assert_engine_counters_zero(&result.profile.counters);
 }
 
 /// Scrolling a lazy list: input events drive structural patches into the
@@ -530,7 +529,7 @@ fn scrolling_counts() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
     let (first, _) = frames.render(&mut runtime);
-    assert!(first.migration.semantic_builds > 0);
+    assert!(first.frame_work.semantic_builds > 0);
     assert_retained_engine_counters(&first);
 
     let mut saw_scroll_work = false;
@@ -543,7 +542,7 @@ fn scrolling_counts() {
             is_line_delta: false,
         });
         let (counters, _snapshot) = frames.render(&mut runtime);
-        let m = counters.migration;
+        let m = counters.frame_work;
         saw_scroll_work |= m.recorded_view_contents > 0 && m.gpu_submissions > 0;
     }
     assert!(
@@ -568,10 +567,10 @@ impl GpuContent for FillProbe {
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("migration_fixture_gpu_probe"),
+                label: Some("frame_work_fixture_gpu_probe"),
             });
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("migration_fixture_gpu_probe_pass"),
+            label: Some("frame_work_fixture_gpu_probe_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: frame.view,
                 depth_slice: None,
@@ -620,7 +619,7 @@ fn gpu_content_under_clips_and_effects() {
     );
 
     let (counters, _snapshot) = frames.render(&mut runtime);
-    let m = counters.migration;
+    let m = counters.frame_work;
     assert!(
         counters.gpu_content_layers >= 1,
         "a GPU surface under a clip composites as a GPU content layer"
@@ -630,9 +629,8 @@ fn gpu_content_under_clips_and_effects() {
     assert_retained_engine_counters(&counters);
 }
 
-/// The acceptance's determinism clause: two capturing pumps of the same view
-/// at the same fixed instant produce byte-identical snapshots and identical
-/// migration counters.
+/// The determinism clause: two capturing pumps of the same view at the same
+/// fixed instant produce byte-identical snapshots.
 #[test]
 fn repeated_fixed_clock_captures_are_identical() {
     let view = || {

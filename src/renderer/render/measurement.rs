@@ -500,7 +500,7 @@ impl HydrolysisRenderer {
     /// what makes the encoded fragment reusable across frames.
     fn encode_text_layout(
         service: &TextMeasureService,
-        counters: &mut MigrationCounters,
+        counters: &mut FrameWorkCounters,
         scene: &mut Recording,
         layout: &Arc<parley::Layout<[u8; 4]>>,
         input: &ResolvedTextLayoutInput,

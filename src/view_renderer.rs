@@ -122,7 +122,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                         base_color: cherenkov::WorkingColor::TRANSPARENT,
                     }
                 ));
-                renderer.migration_counters_mut().gpu_submissions += 1;
+                renderer.frame_work_counters_mut().gpu_submissions += 1;
                 readback_texture_rgba8(device, queue, frame.texture(), width, height)
             };
 

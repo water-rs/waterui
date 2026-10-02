@@ -568,7 +568,7 @@ impl HeadlessRuntime {
 
     pub fn request_redraw(&mut self) {
         self.runtime.request_redraw();
-        self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        self.runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
 
     /// The adapter and device this runtime renders on — attribution for a
@@ -626,7 +626,7 @@ impl HeadlessRuntime {
         if changed {
             window.request_refresh();
             window.request_redraw();
-            window.renderer.migration_counters_mut().host_wakeups += 1;
+            window.renderer.frame_work_counters_mut().host_wakeups += 1;
         }
         changed
     }
@@ -728,7 +728,7 @@ impl HeadlessRuntime {
         if changed {
             self.runtime.request_refresh();
             self.runtime.request_redraw();
-            self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
+            self.runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
         }
         changed
     }
@@ -905,7 +905,7 @@ impl HeadlessRuntime {
             });
             self.runtime.request_refresh();
             self.runtime.request_redraw();
-            self.runtime.renderer.migration_counters_mut().host_wakeups += 1;
+            self.runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
         }
         let should_render = capture_snapshot
             || self.runtime.mode.is_pending()
@@ -974,10 +974,10 @@ impl HeadlessRuntime {
             .or_else(|| render_result.as_ref().map(|result| result.profile))
             .unwrap_or_default();
         if render_result.is_some() {
-            // The renderer's migration counters are sampled after the frame's
+            // The renderer's frame-work counters are sampled after the frame's
             // render and its readback have both submitted on the same queue,
             // so they cover all the GPU work this pump ran for it.
-            profile.counters.migration = self.runtime.renderer.migration_counters();
+            profile.counters.frame_work = self.runtime.renderer.frame_work_counters();
         }
         profile.phases.executor_before = executor_before;
         profile.phases.input = input;

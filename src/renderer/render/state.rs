@@ -7,9 +7,9 @@ pub struct HydroState {
     /// measurement via `Arc`. See [`TextMeasureService`].
     pub(crate) text: Arc<TextMeasureService>,
     pub(crate) measurement: MeasurementCaches,
-    /// Per-frame Cherenkov-migration counters; see
-    /// [`crate::renderer::MigrationCounters`].
-    pub(crate) counters: MigrationCounters,
+    /// Per-frame work counters for the fine-grained frame model; see
+    /// [`crate::renderer::FrameWorkCounters`].
+    pub(crate) counters: FrameWorkCounters,
 }
 
 impl Default for HydroState {
@@ -17,7 +17,7 @@ impl Default for HydroState {
         Self {
             text: Arc::new(TextMeasureService::new()),
             measurement: MeasurementCaches::default(),
-            counters: MigrationCounters::default(),
+            counters: FrameWorkCounters::default(),
         }
     }
 }

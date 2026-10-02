@@ -162,7 +162,7 @@ impl Mounts {
     }
 
     /// The layer create/remove counts since the last call, consumed by the
-    /// frame's migration counters.
+    /// frame's work counters.
     pub(crate) fn take_frame_stats(&mut self) -> (u64, u64) {
         let stats = (self.frame_created, self.frame_removed);
         self.frame_created = 0;

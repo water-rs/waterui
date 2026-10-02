@@ -378,11 +378,11 @@ pub struct FrameCounters {
     pub rendered: bool,
     /// Whether this frame captured a CPU snapshot.
     pub captured_snapshot: bool,
-    /// Migration-acceptance counters for this frame (water-rs/hydrolysis#205):
+    /// Per-frame work counters for this frame (water-rs/hydrolysis#205):
     /// semantic builds, patches, layout/measure traffic, recorded content and
-    /// GPU submissions, so a fixture can assert the port shrinks them to the
-    /// retained-update floor.
-    pub migration: crate::renderer::MigrationCounters,
+    /// GPU submissions — the numbers the fine-grained frame model is measured
+    /// by.
+    pub frame_work: crate::renderer::FrameWorkCounters,
 }
 
 /// Detailed profile for one Hydrolysis frame.
@@ -418,7 +418,7 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     let _ = runtime.renderer.take_rebuild_request();
     runtime.request_refresh();
     runtime.request_redraw();
-    runtime.renderer.migration_counters_mut().host_wakeups += 1;
+    runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
 }
 
 pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo::Rect {
@@ -663,11 +663,11 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
         // An effect needs another frame.
         runtime.request_refresh();
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     } else if runtime.renderer.animations_active() && !runtime.mode.is_pending() {
         schedule_animation_update(runtime, true);
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     phases.rebuild = pump_started_at.elapsed();
     ScenePumpOutcome { built, phases }
@@ -750,7 +750,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     }
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     rebuilt
 }
@@ -823,7 +823,7 @@ crate::engine::cfg_async_fn! {
         #[cfg(feature = "frame-profile")]
         let readback_started_at = Instant::now();
         let snapshot = capture_snapshot.then(|| {
-            renderer.migration_counters_mut().gpu_submissions += 1;
+            renderer.frame_work_counters_mut().gpu_submissions += 1;
             HeadlessSnapshot {
                 width,
                 height,
@@ -1099,7 +1099,7 @@ crate::engine::cfg_async_fn! {
             ) => {
                 runtime.request_refresh();
                 runtime.request_redraw();
-                runtime.renderer.migration_counters_mut().host_wakeups += 1;
+                runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
                 let layer_stats = runtime.renderer.render_layer_stats();
@@ -1134,7 +1134,7 @@ crate::engine::cfg_async_fn! {
                             applied_filter_effect_us,
                             rendered: false,
                             captured_snapshot: false,
-                            migration: runtime.renderer.migration_counters(),
+                            frame_work: runtime.renderer.frame_work_counters(),
                         },
                         ..FrameProfile::default()
                     },
@@ -1184,7 +1184,7 @@ crate::engine::cfg_async_fn! {
                 applied_filter_effect_us,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
-                migration: runtime.renderer.migration_counters(),
+                frame_work: runtime.renderer.frame_work_counters(),
             },
             ..FrameProfile::default()
         };
@@ -1220,7 +1220,7 @@ crate::engine::cfg_async_fn! {
     }
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     // The engine's own scheduling answer: an in-flight animation asks for its
     // next frame through `Next::At` (its `RedrawCallback` already woke the
@@ -1415,7 +1415,7 @@ where
                 runtime.window.frame.set(frame);
                 runtime.request_refresh();
                 runtime.request_redraw();
-                runtime.renderer.migration_counters_mut().host_wakeups += 1;
+                runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
             }
             InputEvent::PointerDown {
                 id,
@@ -1783,7 +1783,7 @@ where
             // the platform redraw request, the same wake a signal change
             // triggers (platform.rs's signal waker calls `request_redraw`).
             runtime.request_redraw();
-            runtime.renderer.migration_counters_mut().host_wakeups += 1;
+            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
         }
         schedule_redraw_or_refresh(runtime, changed);
     }
@@ -1852,13 +1852,13 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         // Dynamic patch to only the affected subtree and relays out if it changed size.
         runtime.request_refresh();
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     if runtime.renderer.advance_text_caret_animation(now) {
         tracing::debug!("wake cause: text caret animation");
         runtime.renderer.request_redraw();
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     if runtime.renderer.take_rebuild_request() {
         tracing::debug!("wake cause: rebuild request");
@@ -1871,7 +1871,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     if runtime.mode.is_pending() {
         tracing::debug!("wake cause: frame mode still pending");
         runtime.request_redraw();
-        runtime.renderer.migration_counters_mut().host_wakeups += 1;
+        runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     next_deadline
 }

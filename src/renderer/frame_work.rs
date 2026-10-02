@@ -1,26 +1,24 @@
-//! Per-frame counters for the Cherenkov migration acceptance fixtures.
+//! Per-frame counters for the fine-grained frame model.
 //!
-//! The migration (water-rs/hydrolysis#205) changes *where* drawing work is
-//! recorded: the Vello era walked the retained tree and re-encoded every
-//! view into a fresh scene on every awake frame; the target records static
-//! structure once and pushes only live-operand updates. These counters make
-//! both ends of that spectrum measurable from a
-//! [`crate::runner::FrameCounters`] — the Vello-era values are nonzero in
-//! ways the engine-era values must not be
-//! (`semantic builds`, `recorded view contents`, `font and image
-//! registrations`, `host wakeups`), and the engine-era values start at zero
-//! and become the acceptance signal (`live operand updates`, `layer
-//! creations`, `layer removals`).
+//! The frame model (water-rs/hydrolysis#205) records static structure once
+//! and pushes only live-operand updates; these counters make the work a
+//! frame actually did readable from a [`crate::runner::FrameCounters`]. The
+//! whole-frame numbers (`semantic builds`, `recorded view contents`, `font
+//! and image registrations`, `host wakeups`) are what a steady frame drives
+//! to zero, while the fine-grained numbers (`live operand updates`, `layer
+//! creations`, `layer removals`) carry the signal that only the touched
+//! operands moved.
 //!
 //! A counter counts the operation the runner performed this frame, at the
-//! point the work was done — not what a future engine would do. Sites that
-//! cannot reach [`HydroState`](crate::renderer::HydroState) (detached wake
-//! tasks, free functions) are counted where their effect is drained.
+//! point the work was done — not what the engine does with it downstream.
+//! Sites that cannot reach [`HydroState`](crate::renderer::HydroState)
+//! (detached wake tasks, free functions) are counted where their effect is
+//! drained.
 
-/// One frame's migration counters, accumulated during the frame and snapshotted
+/// One frame's work counters, accumulated during the frame and snapshotted
 /// into [`crate::runner::FrameCounters`] at pump end.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MigrationCounters {
+pub struct FrameWorkCounters {
     /// View-body dispatches into retained nodes this frame
     /// ([`RenderNode::build`] calls). A full rebuild counts every mounted
     /// subtree once; a frame that only patches counts zero.
@@ -37,28 +35,24 @@ pub struct MigrationCounters {
     pub(crate) layout_calls: u64,
     /// View drawing contents recorded into the frame this frame: each leaf
     /// draw emission (colour fill, text encode, scene-view build, GPU-surface
-    /// flush, theme widget render). The retained-engine name for this is
-    /// "content recordings", and the R-work must drive it to zero on steady
-    /// frames.
+    /// flush, theme widget render). The engine calls these content
+    /// recordings, and a steady frame drives the count to zero.
     pub(crate) recorded_view_contents: u64,
-    /// Live-operand updates reaching the engine this frame. Always zero until
-    /// a recording engine exists — the signal becomes meaningful with the
-    /// retained-engine activation.
+    /// Live-operand updates reaching the engine this frame — the signal that
+    /// a reactive change moved only its operands.
     pub(crate) live_operand_updates: u64,
-    /// Retained engine layer mounts this frame. Zero until retained engine
-    /// layers exist.
+    /// Retained engine layer mounts this frame.
     pub(crate) layer_creations: u64,
-    /// Retained engine layer removals this frame. Zero until retained engine
-    /// layers exist.
+    /// Retained engine layer removals this frame.
     pub(crate) layer_removals: u64,
     /// Font/glyph payloads registered into the frame's encoding this frame —
-    /// each glyph-run submission registers a font entry. The engine-era
-    /// acceptance is that a font is not re-registered per frame, so a frame
-    /// with unchanged text drives this to zero.
+    /// each glyph-run submission registers a font entry. A font is not
+    /// re-registered per frame, so a frame with unchanged text drives this
+    /// to zero.
     pub(crate) font_registrations: u64,
     /// Image payloads registered into the frame this frame — validated
-    /// image-brush ingests and direct image draws. Same engine-era
-    /// acceptance: an image is not re-registered per frame.
+    /// image-brush ingests and direct image draws. Same acceptance: an image
+    /// is not re-registered per frame.
     pub(crate) image_registrations: u64,
     /// GPU submissions this frame: every `wgpu::Queue::submit` the render
     /// path issues (filter encoders, effect inputs and the like; the
@@ -74,7 +68,7 @@ pub struct MigrationCounters {
     pub(crate) host_wakeups: u64,
 }
 
-impl MigrationCounters {
+impl FrameWorkCounters {
     /// Zero every counter at a frame boundary.
     pub fn reset_frame(&mut self) {
         *self = Self::default();

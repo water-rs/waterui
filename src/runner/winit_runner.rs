@@ -873,7 +873,7 @@ impl WinitRunner {
             if runtime.renderer.take_rebuild_request() {
                 runtime.request_refresh();
                 runtime.request_redraw();
-                runtime.renderer.migration_counters_mut().host_wakeups += 1;
+                runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
             }
         }
     }
@@ -889,7 +889,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             // reports now.
             runtime.sync_occlusion();
             runtime.request_redraw();
-            runtime.renderer.migration_counters_mut().host_wakeups += 1;
+            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
         }
     }
 
@@ -1096,7 +1096,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                             );
                             runtime.request_refresh();
                             runtime.request_redraw();
-                            runtime.renderer.migration_counters_mut().host_wakeups += 1;
+                            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
                         }
                     }
                     AccessKitWindowEvent::ActionRequested(request) => {
@@ -1114,7 +1114,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
                         {
                             runtime.request_refresh();
                             runtime.request_redraw();
-                            runtime.renderer.migration_counters_mut().host_wakeups += 1;
+                            runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
                         }
                         self.flush_cross_window_rebuild_requests();
                     }

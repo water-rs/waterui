@@ -22,6 +22,7 @@ pub mod accessibility;
 mod bindings;
 mod effects;
 mod frame;
+mod frame_work;
 #[cfg(feature = "frame-profile")]
 mod gpu_profile;
 mod identity;
@@ -29,7 +30,6 @@ mod input;
 mod interaction_layers;
 mod lifecycle;
 mod metadata;
-mod migration_counters;
 mod native_measure;
 mod navigation;
 mod recording;
@@ -44,12 +44,12 @@ mod views;
 
 pub(crate) use effects::*;
 pub(crate) use frame::*;
+pub use frame_work::FrameWorkCounters;
 #[cfg(feature = "frame-profile")]
 pub(crate) use gpu_profile::GpuFrameProfiler;
 #[cfg(feature = "frame-profile")]
 pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub(crate) use identity::*;
-pub use migration_counters::MigrationCounters;
 pub(crate) use native_measure::*;
 #[cfg(test)]
 pub(crate) use recording::assert_well_formed_image;
