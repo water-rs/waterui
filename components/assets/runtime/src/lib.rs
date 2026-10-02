@@ -13,16 +13,16 @@
 //!
 //! ```ignore
 //! // Media types (Photo, Video, Audio) - sync, URL-based
-//! let photo: Photo = asset!("logo.png");
-//! let video: Video = asset!("intro.mp4");
+//! let photo: ImageAsset = asset!("logo.png");
+//! let video: VideoAsset = asset!("intro.mp4");
 //!
 //! // Data type - sync for local, async for remote
-//! let config: Data = asset!("config.json");
+//! let config: Data = asset!("config.json").load(resources)?;
 //! let remote: Data =
 //!     asset!("https://raw.githubusercontent.com/water-rs/waterui/dev/Cargo.toml").await;
 //!
 //! // LargeFile - always async (mmap setup required)
-//! let model: LargeFile = asset!("model.onnx").await;
+//! let model: LargeFile = asset!("model.onnx").load(resources).await?;
 //! model.warm().await;  // Pre-warm pages before access
 //! ```
 //!
@@ -65,6 +65,8 @@ pub use waterui_assets_core::{AssetError, AssetKind, WINDOW_ICON_FILE};
 pub use waterui_assets_core::{AtomicWriteOutcome, write_bytes_atomically};
 #[cfg(feature = "std")]
 pub use waterui_assets_core::{ensure_http_allowed, is_loopback_http_url, is_remote_url};
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub use waterui_core::ResourceContext;
 
 /// Prelude for common imports.
 pub mod prelude {
@@ -74,5 +76,7 @@ pub mod prelude {
     pub use crate::VideoAsset;
     pub use crate::{AssetError, AssetKind, Data};
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-    pub use crate::{AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset};
+    pub use crate::{
+        AudioAsset, Bundle, DataAsset, FontAsset, LargeFile, LargeFileAsset, ResourceContext,
+    };
 }

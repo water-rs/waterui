@@ -20,7 +20,7 @@ use crate::download_remote_bytes;
 ///
 /// ```ignore
 /// // From local file (sync)
-/// let config: Data = asset!("config.json");
+/// let config: Data = asset!("config.json").load(resources)?;
 ///
 /// // From remote URL (async)
 /// let remote: Data =
@@ -35,7 +35,7 @@ use crate::download_remote_bytes;
 /// `Data` implements `Deref<Target = [u8]>`, so it can be used directly as `&[u8]`:
 ///
 /// ```ignore
-/// let config: Data = asset!("config.json");
+/// let config: Data = asset!("config.json").load(resources)?;
 /// let parsed: Config = serde_json::from_slice(&config)?;
 /// ```
 #[derive(Debug, Clone)]

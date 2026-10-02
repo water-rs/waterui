@@ -30,7 +30,7 @@ use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 ///
 /// ```ignore
 /// // Local file
-/// let model: LargeFile = asset!("model.onnx").await;
+/// let model: LargeFile = asset!("model.onnx").load(resources).await?;
 ///
 /// // Remote file (downloaded and cached)
 /// let model: LargeFile = asset!("https://huggingface.co/model.onnx").await;
@@ -39,7 +39,7 @@ use crate::{AtomicWriteOutcome, download_remote_bytes, write_bytes_atomically};
 /// # Usage Pattern
 ///
 /// ```ignore
-/// let model: LargeFile = asset!("model.onnx").await;
+/// let model: LargeFile = asset!("model.onnx").load(resources).await?;
 /// model.warm().await;  // Pre-warm pages (recommended)
 ///
 /// // Process on background thread for safety
@@ -138,7 +138,7 @@ impl LargeFile {
     /// # Example
     ///
     /// ```ignore
-    /// let model: LargeFile = asset!("model.onnx").await;
+    /// let model: LargeFile = asset!("model.onnx").load(resources).await?;
     /// model.warm().await;  // Pre-warm
     ///
     /// // Now access is faster (but still may block under memory pressure)

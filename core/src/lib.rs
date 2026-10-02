@@ -104,6 +104,25 @@ pub use anyview::AnyView;
 pub use components::*;
 pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
+#[cfg(feature = "std")]
+pub use foundation::resources::ResourceContext;
+
+/// Capture standalone resource roots once when creating an application environment.
+///
+/// # Panics
+/// Panics if the native executable's location cannot be determined.
+#[doc(hidden)]
+pub fn install_application_resources(env: &mut Environment) {
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    if env.get::<ResourceContext>().is_none() {
+        env.insert(
+            ResourceContext::application()
+                .expect("application resources require an executable path"),
+        );
+    }
+    #[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
+    let _ = env;
+}
 pub use extract::State;
 pub use foundation::main_thread::MainThreadBound;
 pub use foundation::serial::{LatestDispatch, SerialDispatch};

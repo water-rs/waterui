@@ -111,11 +111,10 @@ macro_rules! export {
             /// This function must be called on main thread, once only.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn waterui_init() -> *mut $crate::WuiEnv {
-                let inspector = unsafe { $crate::__init() };
-                let mut env = waterui::configure_environment!(waterui::Environment::new());
-                waterui::inspector::install(&mut env, inspector);
-                $crate::__install_font_collection(&mut env);
-                $crate::__configure_native_realizations(&mut env);
+                let resources = $crate::__application_resources();
+                // SAFETY: the native entry contract requires one main-thread initialization.
+                let env = unsafe { $crate::__initialize_environment(resources) };
+                let env = waterui::configure_environment!(env);
                 $crate::IntoFFI::into_ffi(env)
             }
 
@@ -171,6 +170,36 @@ macro_rules! export {
             }
         };
     };
+}
+
+/// Capture the standalone application's resource roots at initialization.
+///
+/// # Panics
+/// Panics if the native executable's location cannot be determined.
+#[doc(hidden)]
+#[must_use]
+pub fn __application_resources() -> waterui_core::ResourceContext {
+    waterui_core::ResourceContext::application()
+        .expect("application resource directories must resolve")
+}
+
+/// Initialize an instance using resource roots owned by its host.
+///
+/// # Safety
+/// The caller must initialize the native runtime once on the platform main thread.
+#[doc(hidden)]
+#[must_use]
+pub unsafe fn __initialize_environment(
+    resources: waterui_core::ResourceContext,
+) -> waterui::Environment {
+    // SAFETY: the caller guarantees main-thread runtime initialization.
+    let inspector = unsafe { __init() };
+    let mut env = waterui::Environment::new();
+    env.insert(resources);
+    waterui::inspector::install(&mut env, inspector);
+    __install_font_collection(&mut env);
+    __configure_native_realizations(&mut env);
+    env
 }
 
 /// Installs the application's font collection, for the native backends.
