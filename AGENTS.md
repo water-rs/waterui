@@ -20,6 +20,21 @@ Until 1.0, that boundary is the product's major-release step: a new `0.x` minor 
 Make sure no warnings or errors are introduced in the codebase. If you encounter a warning or error, fix it before committing. Do not ignore warnings or errors. Even though clippy warnings.
 </important>
 
+## Supported Platforms
+
+**Retired platforms are unsupported.** Do not add, restore, or retain support for a
+retired platform in implementation code, dependencies, target selection, generated
+projects, packaging, CI, tests, or documentation. Remove obsolete support paths
+instead of maintaining compatibility shims or repairing retired targets. A failure
+on a retired target is a reason to remove that target, not to extend its support.
+
+Intel macOS (`x86_64-apple-darwin`) and Intel iOS simulators (`x86_64-apple-ios`)
+are retired and unsupported. Apple support is ARM64-only: macOS
+(`aarch64-apple-darwin`), iOS devices (`aarch64-apple-ios`), and iOS simulators
+(`aarch64-apple-ios-sim`). Default target selection must exclude Intel Apple
+targets, and explicit requests for them must fail with a clear unsupported-target
+error. This does not remove x86 support from other supported operating systems.
+
 ## Framework Design Principles
 
 These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.
