@@ -489,7 +489,7 @@ impl HydrolysisRenderer {
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
             #[cfg(feature = "frame-profile")]
-            gpu_profiler: GpuFrameProfiler::new(device),
+            gpu_profiler: GpuFrameProfiler::new(_device),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
         }

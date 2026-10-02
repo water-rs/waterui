@@ -450,14 +450,10 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
                     ),
                     ("scene_layers", u64::from(counters.scene_layers)),
                     (
-                        "legacy_scene_layers",
-                        u64::from(counters.legacy_scene_layers),
+                        "scene_segment_layers",
+                        u64::from(counters.scene_segment_layers),
                     ),
-                    ("gpu_surface_layers", u64::from(counters.gpu_surface_layers)),
-                    (
-                        "direct_gpu_surfaces",
-                        u64::from(counters.direct_gpu_surfaces),
-                    ),
+                    ("gpu_content_layers", u64::from(counters.gpu_content_layers)),
                     ("clip_layers", u64::from(counters.clip_layers)),
                     (
                         "applied_filter_count",
