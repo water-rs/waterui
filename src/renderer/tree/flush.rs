@@ -565,7 +565,17 @@ impl RenderNode {
                 // re-reads live signals and re-emits interaction targets + a11y at the
                 // current bounds. A leaf render starts a fresh recursion depth.
                 renderer.render_depth = 0;
-                Rc::clone(&node.behavior).render(renderer, ctx, &node.env);
+                // The node's stored environment keeps precedence for the keys it
+                // scoped at build time; the live flush environment supplies any
+                // keys injected since — a compact split's leading reserve is one.
+                let merged;
+                let env = if node.env.identity() == env.identity() {
+                    &node.env
+                } else {
+                    merged = node.env.layered_on(env);
+                    &merged
+                };
+                Rc::clone(&node.behavior).render(renderer, ctx, env);
                 renderer.pop_render_owner();
             }
         }
@@ -799,7 +809,14 @@ impl RenderNode {
             RenderNode::Collection(node) => node.emit_accessibility(renderer),
             RenderNode::Widget(node) => {
                 renderer.push_accessibility_owner(&node.accessibility_identity);
-                Rc::clone(&node.behavior).emit_accessibility(renderer, &node.env);
+                let merged;
+                let env = if node.env.identity() == env.identity() {
+                    &node.env
+                } else {
+                    merged = node.env.layered_on(env);
+                    &merged
+                };
+                Rc::clone(&node.behavior).emit_accessibility(renderer, env);
                 renderer.pop_accessibility_owner();
             }
         }

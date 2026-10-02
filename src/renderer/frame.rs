@@ -344,6 +344,20 @@ impl HydrolysisRenderer {
         &self.scene
     }
 
+    /// The recordings the last flush committed to the compositor, in painter's
+    /// order — `self.scene` itself is only the scratch tail that has not been
+    /// drained yet. Tests assert on painted geometry through this.
+    #[cfg(test)]
+    pub(crate) fn painted_recordings(&self) -> impl Iterator<Item = &Recording> {
+        self.compositor
+            .render_layers
+            .iter()
+            .filter_map(|layer| match layer {
+                RenderLayer::Vello(scene) => Some(scene),
+                _ => None,
+            })
+    }
+
     pub fn reset_scene(&mut self) {
         for image in self.compositor.active_filter_images.drain(..) {
             self.legacy_renderer.unregister_texture(image);

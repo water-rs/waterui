@@ -20,6 +20,10 @@ pub(crate) struct NavigationCapturedScene {
     pub(crate) scene: Recording,
     pub(crate) sources: BTreeMap<Id, NavigationMatchedElement>,
     pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement>,
+    /// The leading bar reserve the page was recorded under. A scene captured
+    /// before a compact split injected the reserve replays a title painted in
+    /// the chevron's space, so cache lookups reject a reserve mismatch.
+    pub(crate) leading_reserve: f64,
 }
 
 impl NavigationCapturedScene {
@@ -750,6 +754,7 @@ impl HydrolysisRenderer {
             scene,
             sources: capture.sources,
             destinations: capture.destinations,
+            leading_reserve: 0.0,
         }
     }
 

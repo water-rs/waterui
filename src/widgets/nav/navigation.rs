@@ -1620,6 +1620,7 @@ fn render_navigation_page_scene(
         core::mem::swap(renderer.scene_mut(), &mut scene);
     }
     captured.scene = scene;
+    captured.leading_reserve = navigation_leading_reserve(env);
     captured
 }
 
@@ -1781,7 +1782,17 @@ pub(crate) fn render_navigation_stack_parts(
         .controller
         .clone();
     if let Some(retained_env) = controller.retained_environment() {
-        local_env = retained_env;
+        // The retained environment was captured when the stack's subtree was
+        // built; the keys it scoped there (the `State<Navigator>` the path
+        // wiring installs, anything the caller scoped the stack under) must
+        // keep precedence — an enclosing context must not be able to shadow
+        // the stack's own navigator. The live render environment carries
+        // whatever the current flush injects — the compact split's
+        // `NavigationLeadingReserve` is one — so it supplies the keys the
+        // retained scope lacks. Replaying the retained overlays on top of the
+        // live environment gives exactly that precedence, for every depth
+        // and for path-backed and plain stacks alike.
+        local_env = retained_env.layered_on(env);
     }
     local_env.insert(controller);
 
@@ -1830,12 +1841,11 @@ pub(crate) fn render_navigation_stack_parts(
             .get(&slot_key)
             .expect("Hydrolysis navigation slot missing")
             .scene_cache
-            .contains_key(&previous_identity);
+            .get(&previous_identity)
+            .is_some_and(|scene| scene.leading_reserve == navigation_leading_reserve(&local_env));
         if !previous_scene_is_cached {
-            assert_eq!(
-                previous_identity, 0,
-                "Hydrolysis must retain the previously rendered navigation scene"
-            );
+            // Missing or recorded under a different leading reserve: re-record —
+            // `render_navigation_page_scene` panics if the page is not retained.
             let previous_scene = render_navigation_page_scene(
                 ctx.renderer_mut(),
                 state,
@@ -2036,6 +2046,7 @@ pub(crate) fn render_navigation_stack_parts(
         .expect("Hydrolysis navigation slot missing")
         .scene_cache
         .get(&previous_identity)
+        .filter(|scene| scene.leading_reserve == navigation_leading_reserve(&local_env))
         .cloned();
     let previous_scene = previous_scene.unwrap_or_else(|| {
         let scene = render_navigation_page_scene(
@@ -2263,7 +2274,10 @@ pub(crate) fn emit_navigation_stack_accessibility(
         .controller
         .clone();
     if let Some(retained_env) = controller.retained_environment() {
-        local_env = retained_env;
+        // Same merge as the render path: stack-scoped keys keep precedence,
+        // keys injected for this walk (e.g. `NavigationLeadingReserve`) fill
+        // the gaps.
+        local_env = retained_env.layered_on(&local_env);
     }
     local_env.insert(controller);
     if let Some(root_state) = state.borrow_mut().resolve_root(&local_env) {
@@ -2299,8 +2313,19 @@ pub(crate) fn emit_navigation_stack_accessibility(
 }
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::resolved_split_column_width;
-    use waterui::navigation::{ColumnWidth, NativeNavigationSplitStyle};
+    use crate::HeadlessRuntime;
+    use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use kurbo::Point;
+    use nami::Binding;
+    use waterui::component::text;
+    use waterui::navigation::{
+        ColumnWidth, NativeNavigationSplitStyle, NavigationPath, NavigationSplitView,
+        NavigationStack, NavigationView,
+    };
+    use waterui_core::handler::AnyViewBuilder;
 
     /// The sidebar's width is a policy of the split style, not of the column
     /// constraints alone: a detail-first layout squeezes the sidebar to its
@@ -2335,5 +2360,91 @@ mod tests {
         ] {
             assert_eq!(resolved_split_column_width(fixed, style), 240.0);
         }
+    }
+
+    /// `NavigationLeadingReserve` is the leftmost x the bar title may paint at
+    /// while the back chevron is up: `back_button_size + title_leading_inset`.
+    const LEADING_RESERVE: f64 = 40.0 + 16.0;
+
+    /// The minimum painted x of every glyph in the frame — the position the
+    /// renderer actually put the ink at, not the layout the a11y tree reports.
+    fn painted_text_leading_edge(runtime: &HeadlessRuntime) -> f64 {
+        let renderer = runtime.renderer();
+        let mut leftmost = f64::INFINITY;
+        for recording in renderer
+            .painted_recordings()
+            .chain(std::iter::once(renderer.scene()))
+        {
+            let resources = &recording.legacy_scene().encoding().resources;
+            for run in &resources.glyph_runs {
+                let transform = run.transform.to_kurbo();
+                for glyph in &resources.glyphs[run.glyphs.clone()] {
+                    let point = transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));
+                    leftmost = leftmost.min(point.x);
+                }
+            }
+        }
+        leftmost
+    }
+
+    fn pump_until_settled(runtime: &mut HeadlessRuntime) {
+        for _ in 0..64 {
+            let _ = runtime.pump_at(true, Instant::now());
+            if runtime.is_settled() {
+                break;
+            }
+        }
+    }
+
+    /// A compact split draws its own chevron over the pushed pane and injects
+    /// `NavigationLeadingReserve` so the pushed page's title paints after it.
+    /// A path-backed sidebar `NavigationStack` snapshots its environment into
+    /// `retain_environment` before the split injects that key, and
+    /// `render_navigation_stack_parts` then installs the snapshot wholesale —
+    /// dropping the reserve (water-rs/hydrolysis#325). The painted title must
+    /// start at or after the reserve, matching where layout and accessibility
+    /// already put it.
+    #[test]
+    fn compact_split_pushed_title_paints_after_the_leading_reserve() {
+        // The detail pane is built at prepare time under the split's ambient
+        // environment — before the compact style injects the reserve — so a
+        // selection made after the first frame exercises exactly the stale-env
+        // path watergram hits when a chat opens.
+        let selection = Binding::container(Some(1_i64));
+        let path = NavigationPath::<i64>::new();
+        path.push(9);
+        let sel = selection.clone();
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            AnyViewBuilder::new(move || {
+                let path = path.clone();
+                waterui_core::AnyView::new(NavigationSplitView::new(
+                    &sel,
+                    move || {
+                        NavigationStack::with_path(
+                            path.clone(),
+                            NavigationView::new("Chats", text("")),
+                        )
+                        .destination(|route: i64| {
+                            NavigationView::new(format!("Chat {route}"), text(""))
+                        })
+                    },
+                    |id: i64| NavigationView::new(format!("Chat {id}"), text("")),
+                ))
+            }),
+            600,
+            800,
+            MinimalTestTheme::default(),
+        );
+        pump_until_settled(&mut runtime);
+        selection.set(Some(7));
+        pump_until_settled(&mut runtime);
+
+        let leading_edge = painted_text_leading_edge(&runtime);
+        assert!(
+            leading_edge.is_finite() && leading_edge >= LEADING_RESERVE,
+            "pushed title paints under the back chevron at {leading_edge} \
+             (reserve is {LEADING_RESERVE})"
+        );
     }
 }
