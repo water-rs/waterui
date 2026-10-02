@@ -250,6 +250,7 @@ impl core::fmt::Debug for WpeInputGpuView {
 
 impl WpeInputGpuView {
     /// Pairs a presenter with the adapter that feeds its page.
+    #[must_use]
     pub const fn new(view: GpuContentView, input: WpeSurfaceInput) -> Self {
         Self { view, input }
     }

@@ -49,7 +49,7 @@ struct DmaBufShared {
 }
 
 impl DmaBufShared {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             state: Mutex::new(Mailbox {
                 frames: VecDeque::new(),
@@ -136,7 +136,8 @@ impl GpuContent for DmaBufGpuContent {
             .as_mut()
             .expect("WPE GPU content rendered before setup");
         render_browser_frame(gpu, incoming, frame);
-        if let Some(next) = self.shared.lock().frames.pop_front() {
+        let next = self.shared.lock().frames.pop_front();
+        if let Some(next) = next {
             self.pending_frame = Some(next);
             frame.request_redraw();
         }
@@ -163,7 +164,8 @@ impl<S: DmaBufFrameSource> DmaBufUiBridge<S> {
     /// Panics when the logical viewport does not fit a `u32`.
     fn frame(&mut self) {
         if !self.waker_installed {
-            if let Some(redraw) = self.shared.lock().redraw.take() {
+            let redraw = self.shared.lock().redraw.take();
+            if let Some(redraw) = redraw {
                 self.source
                     .set_frame_waker(Rc::new(move || redraw.request_redraw()));
                 self.waker_installed = true;
