@@ -17,6 +17,7 @@ pub mod inspector;
 pub mod navigation;
 pub mod overlay;
 pub mod reactive;
+pub mod transition;
 #[cfg(feature = "webview")]
 pub mod webview_bridge;
 
