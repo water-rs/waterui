@@ -175,7 +175,7 @@ pub(crate) struct SceneResources {
         FxHashMap<ImageKey, waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
     >,
     /// Fresh engine registrations since the last
-    /// [`Self::take_registration_stats`] — the migration counters' evidence
+    /// [`Self::take_registration_stats`] — the frame-work counters' evidence
     /// that fonts and images are not re-registered per frame.
     font_registrations: std::cell::Cell<u64>,
     image_registrations: std::cell::Cell<u64>,
@@ -218,7 +218,7 @@ impl SceneResources {
     }
 
     /// (fonts, images) registered since the last call, drained per frame
-    /// into the migration counters.
+    /// into the frame-work counters.
     pub(crate) fn take_registration_stats(&self) -> (u64, u64) {
         let stats = (
             self.font_registrations.get(),

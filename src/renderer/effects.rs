@@ -36,9 +36,9 @@ use waterui_graphics::{AnyEffect, ParamGuards};
 /// accumulate into them from the render thread, so the cells are atomic.
 ///
 /// The engine runs a filtered layer's subtree capture inside the same render
-/// pass as the effect encode and reports no per-phase split for it, so the
-/// capture leg of the old vello-era triple is no longer measurable: this cell
-/// counts the encodes it can see and their CPU time only.
+/// pass as the effect encode and reports no per-phase split for it, so there
+/// is no separate capture number to measure: this cell counts the encodes it
+/// can see and their CPU time only.
 #[derive(Debug, Default)]
 pub(crate) struct AppliedFilterMetrics {
     /// `encode_render` calls observed this frame.

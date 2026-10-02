@@ -29,4 +29,4 @@ out of the `roboto` filename bucket so `deterministic_test_fonts` leaves it
 unpinned. `BungeeColor-Regular.ttf` (family `Bungee Color Regular`, SIL Open
 Font License 1.1) is a COLRv0 colour face covering the layered-colour-glyph
 case. Both are registered by `TEST_FALLBACK_FONTS` for the font-fixture tests
-in `src/renderer/tests/cherenkov_migration.rs`.
+in `src/renderer/tests/frame_work.rs`.

@@ -6,9 +6,10 @@
 //! records plus p50/p90/p99 per stage. GPU stages come from wgpu timestamp
 //! queries and stay `null` where the adapter lacks `TIMESTAMP_QUERY`.
 //!
-//! The point of the numbers is the Vello-replacement bound: `legacy_gpu` is
-//! what a different vector engine could take over; `encode` is what stays
-//! Hydrolysis's own.
+//! The point of the numbers is the stage split: `encode` is the CPU time
+//! Hydrolysis's own pipeline spends recording the frame, while `content_gpu`
+//! and `compositor_gpu` bracket the engine's layer-content submits and the
+//! presentation pass.
 //!
 //! ```sh
 //! cargo run --example frame_profile --features frame-profile --release -- \
@@ -92,7 +93,7 @@ struct FrameRecord {
     update_ns: u64,
     layout_ns: u64,
     encode_ns: u64,
-    legacy_gpu_ns: Option<u64>,
+    content_gpu_ns: Option<u64>,
     compositor_gpu_ns: Option<u64>,
     gpu_wait_ns: u64,
     readback_ns: u64,
@@ -320,7 +321,7 @@ fn text_heavy(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
 }
 
 /// A live-updating bar chart through waterui-chart — canvas → scene view →
-/// Vello layer — with the dataset shifted every frame.
+/// engine layer — with the dataset shifted every frame.
 fn chart(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
     const BARS: usize = 24;
     let data = Binding::container(
@@ -417,7 +418,7 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
             update_ns: ns(stages.update),
             layout_ns: ns(stages.layout),
             encode_ns: ns(stages.encode),
-            legacy_gpu_ns: stages.legacy_gpu.map(ns),
+            content_gpu_ns: stages.content_gpu.map(ns),
             compositor_gpu_ns: stages.compositor_gpu.map(ns),
             gpu_wait_ns: ns(stages.gpu_wait),
             readback_ns: ns(stages.readback),
@@ -449,14 +450,10 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
                     ),
                     ("scene_layers", u64::from(counters.scene_layers)),
                     (
-                        "legacy_scene_layers",
-                        u64::from(counters.legacy_scene_layers),
+                        "scene_segment_layers",
+                        u64::from(counters.scene_segment_layers),
                     ),
-                    ("gpu_surface_layers", u64::from(counters.gpu_surface_layers)),
-                    (
-                        "direct_gpu_surfaces",
-                        u64::from(counters.direct_gpu_surfaces),
-                    ),
+                    ("gpu_content_layers", u64::from(counters.gpu_content_layers)),
                     ("clip_layers", u64::from(counters.clip_layers)),
                     (
                         "applied_filter_count",
@@ -464,7 +461,7 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
                     ),
                     ("rendered", u64::from(counters.rendered)),
                 ]);
-                counters.migration.record_into(&mut metrics);
+                counters.frame_work.record_into(&mut metrics);
                 metrics
             },
         });
@@ -480,12 +477,12 @@ fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u
     // GPU stages: `None` in the report means "the device cannot timestamp",
     // never "the GPU took zero time".
     stage_summaries.insert(
-        "legacy_gpu",
+        "content_gpu",
         timestamp_queries.then(|| {
             summarize(
                 records
                     .iter()
-                    .filter_map(|f| f.legacy_gpu_ns)
+                    .filter_map(|f| f.content_gpu_ns)
                     .collect::<Vec<u64>>(),
             )
         }),

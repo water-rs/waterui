@@ -18,7 +18,7 @@ fn main_view() -> impl View {
     scroll(
         vstack((
             text("Hydrolysis Wayland Smoke").size(28.0),
-            text("Direct self-drawn window via winit + Vello").size(16.0),
+            text("Direct self-drawn window via winit + Cherenkov").size(16.0),
             RoundedRectangle::new(0.2)
                 .fill(Color::srgb_hex("#2563EB"))
                 .size(560.0, 180.0),

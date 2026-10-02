@@ -108,7 +108,7 @@ impl GpuFrameProfiler {
     /// The drain is the ordering guarantee: submissions that share no memory
     /// hazard may execute concurrently on the GPU, and a bare timestamp write
     /// is exactly that, so on Mali both markers resolved back-to-back while
-    /// the Vello submits they bracket were still running. Waiting for the
+    /// the content submits they bracket were still running. Waiting for the
     /// queue to go idle first means the timestamp only writes once every
     /// earlier submission has completed, pinning it to the boundary it marks.
     fn mark(&self, device: &wgpu::Device, queue: &wgpu::Queue, slot: u32) -> Duration {
@@ -150,7 +150,9 @@ impl GpuFrameProfiler {
             .expect("hydrolysis frame profile map callback dropped")
             .expect("hydrolysis failed to map frame profile buffer");
 
-        let mapped = slice.get_mapped_range();
+        let mapped = slice
+            .get_mapped_range()
+            .expect("hydrolysis failed to read frame profile buffer");
         let mut timestamps = [0u64; QUERY_SLOTS as usize];
         for (slot, bytes) in mapped.as_chunks::<8>().0.iter().enumerate() {
             timestamps[slot] = u64::from_le_bytes(*bytes);
@@ -172,7 +174,7 @@ impl HydrolysisRenderer {
         slot: u32,
     ) {
         if let Some(profiler) = &self.gpu_profiler {
-            self.state.counters.gpu_submissions += 1;
+            self.core.state_mut().counters.gpu_submissions += 1;
             self.frame_stage_times.gpu_wait += profiler.mark(device, queue, slot);
         }
     }
@@ -185,7 +187,7 @@ impl HydrolysisRenderer {
             return;
         };
         let wait_started_at = Instant::now();
-        self.state.counters.gpu_submissions += 1;
+        self.core.state_mut().counters.gpu_submissions += 1;
         let [before_content, before_composite, end] = profiler.resolve(device, queue);
         self.frame_stage_times.gpu_wait += wait_started_at.elapsed();
         // Query results are device-clock ticks; the period turns them into ns
