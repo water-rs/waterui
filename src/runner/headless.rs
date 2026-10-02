@@ -918,13 +918,13 @@ impl HeadlessRuntime {
                 &mut || self.local_executor.drain(),
             )
         });
-        // Every pass below — popup renders, deferred-flush settles — can
-        // rebuild; `rebuilt` reports the OR of all of them, not only the
-        // last pass that replaced `render_result`.
+        // The popup renders below can rebuild too; `rebuilt` reports the OR
+        // of every pass this pump ran, not only the main window's render.
         let mut rebuilt = render_result.as_ref().is_some_and(|result| result.rebuilt);
-        // The pump's profile is the frame it rendered: the settle passes below
-        // only verify and present that frame's stash, and they replace
-        // `render_result` for its snapshot, not for what the frame did.
+        // The pump's profile is the main window's frame: a capture's readback
+        // ran inside that same render — queued after the frame's submissions
+        // on the same queue — and the popup passes below only composite their
+        // snapshots into it.
         let rendered_profile = render_result.as_ref().map(|result| result.profile);
         // A popup window pumps its scene the way the main window does: the
         // scene pump is where its retained tree — and with it the window's
@@ -974,9 +974,9 @@ impl HeadlessRuntime {
             .or_else(|| render_result.as_ref().map(|result| result.profile))
             .unwrap_or_default();
         if render_result.is_some() {
-            // The renderer's migration counters run from the frame's scene
-            // reset through every settle pass, so they include the GPU work
-            // verification and overflow re-renders did after the render.
+            // The renderer's migration counters are sampled after the frame's
+            // render and its readback have both submitted on the same queue,
+            // so they cover all the GPU work this pump ran for it.
             profile.counters.migration = self.runtime.renderer.migration_counters();
         }
         profile.phases.executor_before = executor_before;

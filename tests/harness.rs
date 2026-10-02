@@ -636,6 +636,68 @@ fn headless_capture_waits_for_gpu_setup() {
     );
 }
 
+/// A capture has to photograph the frame the pump just presented, not the
+/// composite from the frame before it: the render encodes into the surface
+/// texture and the readback copies that same texture on the same queue.
+/// `screenshot` and `advance(screenshot: true)` both end in `pump_at(true)`;
+/// after a visible state change the first capture must already show the new
+/// state: the tree update carries it and the image is byte-identical to a
+/// second capture taken once the frame has fully settled.
+///
+/// Origin: water-rs/hydrolysis#324 — `screenshot` returned the previous
+/// composite, so a capture taken right after a state change showed the old
+/// scene.
+#[test]
+fn capture_reads_the_current_frame() {
+    let label = waterui::reactive::binding(waterui::Str::from("before"));
+    let probe = label.clone();
+    let content =
+        AnyViewBuilder::new(move || AnyView::new(waterui::text::Text::computed(label.clone())));
+    let mut runtime = hydrolysis::HeadlessRuntime::new_for_tests(
+        Environment::new(),
+        content,
+        390,
+        200,
+        Material3::defaults(),
+    );
+    // Settle the mount the way a session's initial advance does.
+    for _ in 0..64 {
+        if !runtime.pump_at(false, std::time::Instant::now()).rebuilt {
+            break;
+        }
+    }
+    let before = runtime
+        .pump_at(true, std::time::Instant::now())
+        .snapshot
+        .expect("capture must produce a snapshot");
+
+    probe.set(waterui::Str::from("after"));
+
+    let captured_outcome = runtime.pump_at(true, std::time::Instant::now());
+    assert!(
+        captured_outcome.tree_update.is_some_and(|update| update
+            .nodes
+            .iter()
+            .any(|(_, node)| node.label() == Some("after"))),
+        "the flushed tree must carry the new label"
+    );
+    let captured = captured_outcome
+        .snapshot
+        .expect("capture must produce a snapshot");
+    assert_ne!(
+        captured.rgba8, before.rgba8,
+        "the capture must show the new label, not the previous composite"
+    );
+    let settled = runtime
+        .pump_at(true, std::time::Instant::now())
+        .snapshot
+        .expect("capture must produce a snapshot");
+    assert_eq!(
+        captured.rgba8, settled.rgba8,
+        "a settled capture is deterministic: the first capture must equal it"
+    );
+}
+
 /// An app that never comes to rest still answers queries promptly.
 ///
 /// An indeterminate indicator keeps the runtime unsettled forever, so a read
