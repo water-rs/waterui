@@ -2,6 +2,7 @@
 //! and shapes, plus popup-menu node resolution.
 
 use super::*;
+use crate::renderer::recording::transform_paint;
 
 pub(crate) fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
@@ -142,7 +143,7 @@ pub(crate) fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewD
 
 /// Measures a retained gradient leaf: a gradient fills the proposed bounds.
 pub(crate) fn measure_gradient_node(
-    _gradient: &ResolvedGradient,
+    _gradient: &waterui_graphics::Gradient,
     proposal: ProposalSize,
     _state: &mut HydroState,
     _env: &Environment,
@@ -155,7 +156,7 @@ pub(crate) fn measure_gradient_node(
 /// fills the gradient. The payload is fully resolved data (no signal), so no watch.
 pub(crate) fn render_gradient_node(
     ctx: &mut WidgetRenderContext<'_>,
-    gradient: &Rc<RefCell<ResolvedGradient>>,
+    gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
     env: &Environment,
 ) {
     let hidden = env
@@ -170,15 +171,19 @@ pub(crate) fn render_gradient_node(
 
 pub(crate) fn render_gradient_parts(
     ctx: &mut WidgetRenderContext<'_>,
-    gradient: &Rc<RefCell<ResolvedGradient>>,
+    gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
     _env: &Environment,
 ) {
     let bounds = ctx.bounds;
-    let brush = resolved_gradient_to_brush(&gradient.borrow(), bounds);
+    // The view's `Paint` is authored in unit space; map it onto the placed
+    // box and fill the box with it under the frame's transform.
+    let unit =
+        waterui_graphics::Gradient::transform_to(bounds.width() as f32, bounds.height() as f32);
+    let paint = transform_paint(gradient.borrow().paint().clone(), Some(unit));
     let transform = ctx.transform;
     ctx.renderer_mut()
         .scene
-        .fill(peniko::Fill::NonZero, transform, &brush, None, &bounds);
+        .fill_paint(peniko::Fill::NonZero, transform, paint, &bounds);
 }
 
 /// Measures a retained shape leaf: a shape fills the proposed bounds.
@@ -222,15 +227,11 @@ pub(crate) fn render_shape_parts(
             resolved.fill.clone(),
         )
     };
-    let fill = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&fill_signal));
+    let fill = cherenkov::Paint::Solid(ctx.renderer_mut().read_signal(&fill_signal));
     let transform = ctx.transform;
-    ctx.renderer_mut().scene.fill(
-        peniko::Fill::NonZero,
-        transform,
-        &peniko::Brush::Solid(fill),
-        None,
-        &path,
-    );
+    ctx.renderer_mut()
+        .scene
+        .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
 /// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
@@ -286,16 +287,12 @@ pub(crate) fn render_morph_shape_parts(
         let fill = renderer.read_signal(&resolved.fill);
         (
             resolved_morph_shape_to_path(&resolved, progress, bounds),
-            resolved_color_to_peniko(fill),
+            cherenkov::Paint::Solid(fill),
         )
     };
-    renderer.scene.fill(
-        peniko::Fill::NonZero,
-        transform,
-        &peniko::Brush::Solid(fill),
-        None,
-        &path,
-    );
+    renderer
+        .scene
+        .fill_paint(peniko::Fill::NonZero, transform, fill, &path);
 }
 
 /// Emits a string leaf's accessibility node from its content. Shared by the

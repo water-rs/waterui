@@ -2,10 +2,10 @@
 //!
 //! An embedded surface is a rectangle of the window that draws its own
 //! interactive content and therefore owns the input landing on it: a browser
-//! engine, any [`GpuSurface`](waterui_graphics::GpuSurface) whose view asks
-//! for input with
-//! [`wants_input_events`](waterui_graphics::GpuView::wants_input_events), or
-//! any [`SceneView`](waterui_graphics::SceneView) whose content asks the same
+//! engine, any [`GpuContentView`](waterui_graphics::GpuContentView) whose
+//! view asks for input with
+//! [`wants_input_events`](waterui_graphics::GpuContentView::wants_input_events),
+//! or any [`SceneView`](waterui_graphics::SceneView) whose content asks the same
 //! through
 //! [`SceneContent::wants_input_events`](waterui_graphics::SceneContent::wants_input_events).
 //!
@@ -18,7 +18,7 @@
 //! their own input ABIs — so the renderer knows nothing about any of them.
 
 use super::*;
-use crate::renderer::render::EmbeddedGpuSurfaceRuntime;
+use crate::gpu_view::GpuContentRuntime;
 use waterui_graphics::SceneContent;
 use waterui_graphics::input::{
     Code, Key, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
@@ -137,21 +137,21 @@ pub(crate) struct BubbledKeySink {
 }
 
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
-/// runtime of an embedded [`GpuSurface`](waterui_graphics::GpuSurface), or the
-/// content of a self-drawn [`SceneView`](waterui_graphics::SceneView).
+/// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
+/// or the content of a self-drawn [`SceneView`](waterui_graphics::SceneView).
 pub(crate) trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
     /// The receiver's text caret, in logical surface-local coordinates.
     fn ime_caret(&self) -> Option<kurbo::Rect>;
 }
 
-impl SurfaceInputReceiver for EmbeddedGpuSurfaceRuntime {
+impl SurfaceInputReceiver for GpuContentRuntime {
     fn input(&mut self, event: &SurfaceInputEvent) {
-        Self::input(self, event);
+        self.view.input(event);
     }
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
-        Self::ime_caret(self)
+        self.view.ime_caret()
     }
 }
 
@@ -345,7 +345,7 @@ impl SemanticCore {
     }
 
     /// Registers a surface whose drawing asked for input: an embedded
-    /// [`GpuSurface`](waterui_graphics::GpuSurface) runtime or a
+    /// [`GpuContentView`](waterui_graphics::GpuContentView) runtime or a
     /// [`SceneView`](waterui_graphics::SceneView)'s content.
     ///
     /// `focus_node` is the surface's semantic node, when the semantic tree

@@ -1,31 +1,38 @@
-//! Rendering a full-window GPU surface straight into the window's own target.
+//! A full-window `GpuContentView` presented through the engine layer tree.
 //!
-//! Three things are pinned here, and each of them was broken:
+//! Before the Cherenkov cutover a full-window opaque GPU surface could render
+//! straight into the window's own target, skipping the compositor; whether a
+//! frame took that branch or the composited one was a Hydrolysis decision with
+//! its own counters. In the engine-content model there is exactly one path: a
+//! `GpuContentView`'s producer installs once on a keyed engine layer, draws
+//! into an engine-owned attachment, and presentation is the engine's.
 //!
-//! * the path is taken on a HiDPI window, not only at scale 1 — the window root
-//!   transform is `Affine::scale(scale_factor)`, so a test for the identity
-//!   transform was false on every Retina display and this path was dead code
-//!   there;
-//! * a view sees one texture format for its whole lifetime, so moving between
-//!   this path and the composited one does not rebuild its GPU resources;
-//! * only a view that declares itself opaque is handed the window's target,
-//!   which arrives uncleared and still holding the previous frame.
+//! What stays pinned here:
+//!
+//! * a full-window surface draws at HiDPI scale too — the window root
+//!   transform is `Affine::scale(scale_factor)`, so content sized in logical
+//!   points must still cover the window at scale 2;
+//! * a view sees one attachment format for its whole lifetime, so resizing it
+//!   through the compositor does not rebuild its GPU resources;
+//! * `GpuContent::is_opaque` is advisory metadata for the engine: content
+//!   that declares it and content that does not present the same pixels when
+//!   both write a fully opaque fill.
 //!
 //! Every test drives the real runner path and reads the frame report's own
-//! counters, so "it rendered directly" means the render pass took that branch,
-//! not that the layer looked eligible.
+//! counters, so "the layer mounted" means the render pass installed it, not
+//! that the layer looked eligible.
 
-use core::cell::Cell;
-use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use waterui_testing::TestArtifacts;
 
 use waterui::Binding;
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::{GpuContent, GpuContentView};
 use waterui_layout::frame::Frame;
 
 use super::{MinimalTestTheme, pumped_test_environment};
@@ -34,15 +41,13 @@ use crate::HeadlessRuntime;
 const WINDOW_WIDTH: u32 = 160;
 const WINDOW_HEIGHT: u32 = 120;
 
-/// Written into every pixel of the surface, by both paths, as a literal texel
-/// value: an `Rgba8Unorm` clear takes the colour as given, so the two paths are
-/// comparable byte for byte.
-const FILL: wgpu::Color = wgpu::Color {
-    r: 0.125,
-    g: 0.5,
-    b: 0.75,
-    a: 1.0,
-};
+/// Written into every pixel of the surface, by both declaration choices, as a
+/// literal texel value. The probe clears an engine-owned attachment in
+/// premultiplied linear Display P3; black is gamut-neutral, so it survives
+/// the engine's presentation pass (gamut-mapped to sRGB) unchanged — a
+/// saturated primary would shift — and stays distinguishable from the
+/// window's light theme background.
+const FILL: wgpu::Color = wgpu::Color::BLACK;
 
 /// Where this module's visual evidence is written: `waterui-testing`'s
 /// canonical `<root>/hydrolysis/direct_to_target/<stage>.png` layout, with the
@@ -53,58 +58,51 @@ fn image_dir() -> std::path::PathBuf {
 }
 
 /// What a probe recorded about its own lifetime: how often it was set up, how
-/// often it drew, and which format it was handed each time.
+/// often it drew, and which format it was handed each time. The producer runs
+/// on the engine's render thread, so the log is shareable across threads.
 #[derive(Clone, Default)]
 struct ProbeLog {
-    setups: Rc<Cell<u32>>,
-    renders: Rc<Cell<u32>>,
-    formats: Rc<RefCell<Vec<wgpu::TextureFormat>>>,
+    setups: Arc<AtomicU32>,
+    renders: Arc<AtomicU32>,
+    formats: Arc<Mutex<Vec<wgpu::TextureFormat>>>,
 }
 
 impl ProbeLog {
     fn setups(&self) -> u32 {
-        self.setups.get()
+        self.setups.load(Ordering::Relaxed)
     }
 
     fn renders(&self) -> u32 {
-        self.renders.get()
+        self.renders.load(Ordering::Relaxed)
     }
 
     /// Every distinct format the view was asked to render into, in order.
     fn formats(&self) -> Vec<wgpu::TextureFormat> {
-        let mut formats = self.formats.borrow().clone();
+        let mut formats = self.formats.lock().expect("formats log").clone();
         formats.dedup();
         formats
     }
 }
 
 /// A view that fills whatever it is handed with [`FILL`], and that answers
-/// [`GpuView::is_opaque`] as the test tells it to.
+/// [`GpuContent::is_opaque`] as the test tells it to.
 struct FillProbe {
     log: ProbeLog,
     opaque: bool,
 }
 
-impl GpuView for FillProbe {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {
-        self.log.setups.set(
-            self.log
-                .setups
-                .get()
-                .checked_add(1)
-                .expect("setup overflow"),
-        );
+impl GpuContent for FillProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {
+        self.log.setups.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.log.renders.set(
-            self.log
-                .renders
-                .get()
-                .checked_add(1)
-                .expect("render overflow"),
-        );
-        self.log.formats.borrow_mut().push(frame.format);
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        self.log.renders.fetch_add(1, Ordering::Relaxed);
+        self.log
+            .formats
+            .lock()
+            .expect("formats log")
+            .push(frame.format);
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -113,7 +111,7 @@ impl GpuView for FillProbe {
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hydrolysis_direct_to_target_probe_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &frame.view,
+                view: frame.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -137,8 +135,8 @@ impl GpuView for FillProbe {
 /// A window whose entire content is one GPU surface, sized by the test.
 ///
 /// The size is a `Binding` rather than a rebuild so the surface's node — and
-/// therefore the `GpuView` inside it and everything `setup` gave it — survives
-/// every change the tests make.
+/// therefore the `GpuContentView` inside it and everything `setup` gave it —
+/// survives every change the tests make.
 fn runtime_with(
     log: &ProbeLog,
     opaque: bool,
@@ -146,14 +144,15 @@ fn runtime_with(
     height: &Binding<f32>,
     scale_factor: f64,
 ) -> HeadlessRuntime {
-    let parts = RefCell::new(Some((log.clone(), width.clone(), height.clone())));
+    let parts = Mutex::new(Some((log.clone(), width.clone(), height.clone())));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let (log, width, height) = parts
-            .borrow_mut()
+            .lock()
+            .expect("probe parts")
             .take()
             .expect("the probe window is built once");
         AnyView::new(
-            Frame::new(GpuSurface::new(FillProbe { log, opaque }))
+            Frame::new(GpuContentView::new(FillProbe { log, opaque }))
                 .width(width)
                 .height(height),
         )
@@ -259,7 +258,7 @@ fn write_png(name: &str, snapshot: &crate::runner::HeadlessSnapshot) -> std::pat
 }
 
 #[test]
-fn an_opaque_full_window_surface_renders_directly_at_every_scale() {
+fn a_full_window_gpu_content_view_mounts_as_one_engine_layer_at_every_scale() {
     for scale in [1.0_f64, 2.0] {
         let log = ProbeLog::default();
         let (width, height) = full_window_bindings();
@@ -269,24 +268,25 @@ fn an_opaque_full_window_surface_renders_directly_at_every_scale() {
 
         let counters = frames.render(&mut runtime).counters;
         assert_eq!(
-            counters.direct_gpu_surfaces, 1,
-            "an opaque surface covering the whole window renders straight into the \
-             window target at scale {scale}, where the window root transform is \
-             Affine::scale({scale})"
+            counters.gpu_content_layers, 1,
+            "a surface covering the whole window mounts as one engine content \
+             layer at scale {scale}"
         );
         assert_eq!(
-            counters.gpu_surface_layers, 0,
-            "nothing is left for the compositor to draw at scale {scale}"
+            counters.scene_segment_layers, 0,
+            "and a window holding only that layer draws no scene segments at \
+             scale {scale}"
         );
         assert_eq!(
-            counters.scene_layers, 0,
-            "and there is no composite pass at all at scale {scale}"
+            counters.scene_layers, 1,
+            "the GPU content layer is the window's only composited layer at \
+             scale {scale}"
         );
     }
 }
 
 #[test]
-fn a_non_opaque_full_window_surface_is_composited_at_every_scale() {
+fn a_non_opaque_full_window_surface_mounts_the_same_way_at_every_scale() {
     for scale in [1.0_f64, 2.0] {
         let log = ProbeLog::default();
         let (width, height) = full_window_bindings();
@@ -296,19 +296,15 @@ fn a_non_opaque_full_window_surface_is_composited_at_every_scale() {
 
         let counters = frames.render(&mut runtime).counters;
         assert_eq!(
-            counters.direct_gpu_surfaces, 0,
-            "a view that has not declared itself opaque never gets the window's own \
-             uncleared texture, however exactly it covers the window (scale {scale})"
-        );
-        assert_eq!(
-            counters.gpu_surface_layers, 1,
-            "it is composited over the window's cleared base colour instead (scale {scale})"
+            counters.gpu_content_layers, 1,
+            "`is_opaque` being false mounts the same single content layer — the \
+             declaration is advisory, not a different presentation path (scale {scale})"
         );
     }
 }
 
 #[test]
-fn moving_between_the_two_paths_never_re_runs_setup() {
+fn resizing_a_gpu_content_view_never_re_runs_setup() {
     let log = ProbeLog::default();
     let (width, height) = full_window_bindings();
     let mut runtime = runtime_with(&log, true, &width, &height, 2.0);
@@ -316,57 +312,51 @@ fn moving_between_the_two_paths_never_re_runs_setup() {
     settled(&mut runtime, &mut frames, &log);
 
     assert_eq!(
-        frames.render(&mut runtime).counters.direct_gpu_surfaces,
+        frames.render(&mut runtime).counters.gpu_content_layers,
         1,
         "the surface starts out covering the window"
     );
 
-    // Inset the surface: its transformed bounds no longer match the viewport,
-    // so the window has to composite it. Nothing structural changed — the same
-    // node, the same runtime, the same view.
+    // Inset the surface: the layer's bounds and pixel size change. Nothing
+    // structural changed — the same node, the same runtime, the same view —
+    // so only the layer's size and transform edits apply.
     width.set(WINDOW_WIDTH as f32 - 20.0);
     height.set(WINDOW_HEIGHT as f32 - 20.0);
     frames.pump(&mut runtime, 2);
     let counters = frames.render(&mut runtime).counters;
-    assert_eq!(
-        counters.direct_gpu_surfaces, 0,
-        "an inset surface does not cover the viewport and is composited"
-    );
-    assert_eq!(counters.gpu_surface_layers, 1);
+    assert_eq!(counters.gpu_content_layers, 1);
     assert_eq!(
         log.setups(),
         1,
-        "moving onto the composited path must not rebuild the view's GPU resources"
+        "a resize must not rebuild the view's GPU resources"
     );
 
     width.set(WINDOW_WIDTH as f32);
     height.set(WINDOW_HEIGHT as f32);
     frames.pump(&mut runtime, 2);
     assert_eq!(
-        frames.render(&mut runtime).counters.direct_gpu_surfaces,
+        frames.render(&mut runtime).counters.gpu_content_layers,
         1,
-        "and it goes back to rendering directly once it covers the window again"
+        "and the layer persists once it covers the window again"
     );
     assert_eq!(
         log.setups(),
         1,
-        "setup runs exactly once across both switches"
+        "setup runs exactly once across both resizes"
     );
     assert_eq!(
         log.formats(),
-        vec![wgpu::TextureFormat::Rgba8Unorm],
-        "and the view saw one format the whole way through — the target's own \
-         linear format, on both paths"
+        vec![wgpu::TextureFormat::Rgba16Float],
+        "and the view saw one format the whole way through — the engine-owned \
+         content attachment's format"
     );
 }
 
-/// The two paths must produce the same window. This is what the opacity
-/// contract buys: the direct path skips the clear to the window's base colour,
-/// which is only sound because the view fills every pixel — and a missing clear
-/// would show up here as a difference against the composited render of the very
-/// same scene.
+/// Whether a window shows a declared-opaque surface or one that isn't must not
+/// change the picture when the fill is itself fully opaque: the declaration is
+/// advisory, so identical content presents identical pixels.
 #[test]
-fn the_direct_and_composited_paths_agree_pixel_for_pixel() {
+fn opaque_and_non_opaque_content_present_identically() {
     let scale = 2.0;
 
     let direct_log = ProbeLog::default();
@@ -375,7 +365,7 @@ fn the_direct_and_composited_paths_agree_pixel_for_pixel() {
     let mut direct_frames = Frames::new();
     settled(&mut direct_runtime, &mut direct_frames, &direct_log);
     let direct = direct_frames.render(&mut direct_runtime);
-    assert_eq!(direct.counters.direct_gpu_surfaces, 1);
+    assert_eq!(direct.counters.gpu_content_layers, 1);
     let direct = direct.snapshot;
 
     let composed_log = ProbeLog::default();
@@ -390,7 +380,7 @@ fn the_direct_and_composited_paths_agree_pixel_for_pixel() {
     let mut composed_frames = Frames::new();
     settled(&mut composed_runtime, &mut composed_frames, &composed_log);
     let composed = composed_frames.render(&mut composed_runtime);
-    assert_eq!(composed.counters.direct_gpu_surfaces, 0);
+    assert_eq!(composed.counters.gpu_content_layers, 1);
     let composed = composed.snapshot;
 
     let direct_path = write_png("direct_scale2.png", &direct);
@@ -412,13 +402,13 @@ fn the_direct_and_composited_paths_agree_pixel_for_pixel() {
     );
     assert_eq!(
         direct.rgba8, composed.rgba8,
-        "the direct path draws the same window as the composite it replaces"
+        "declaring `is_opaque` does not change what identical content presents"
     );
 
-    // Agreeing is not enough on its own — both paths agreeing on the wrong
+    // Agreeing is not enough on its own — both renders agreeing on the wrong
     // thing would pass that. What the surface drew has to actually be there,
     // over the whole window, with none of the window's base colour left
-    // anywhere: the direct path skips the clear that would have painted it.
+    // anywhere.
     let (pixels, _) = direct.rgba8.as_chunks::<4>();
     let expected = *pixels.first().expect("the capture must have pixels");
     assert!(
@@ -431,8 +421,8 @@ fn the_direct_and_composited_paths_agree_pixel_for_pixel() {
     );
 }
 
-/// Whether a captured `Rgba8Unorm` texel is [`FILL`], allowing the one step of
-/// slack that rounding a float clear colour onto 8 bits leaves.
+/// Whether a captured `Rgba8Unorm` texel is [`FILL`], allowing the slack the
+/// engine's linear-P3 presentation leaves on the exact gamut corner.
 fn near_fill(pixel: [u8; 4]) -> bool {
     #[expect(
         clippy::cast_possible_truncation,
@@ -443,5 +433,5 @@ fn near_fill(pixel: [u8; 4]) -> bool {
     pixel
         .iter()
         .zip(expected)
-        .all(|(actual, expected)| actual.abs_diff(expected) <= 1)
+        .all(|(actual, expected)| actual.abs_diff(expected) <= 8)
 }

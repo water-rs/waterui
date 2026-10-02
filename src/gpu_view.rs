@@ -1,174 +1,66 @@
-use std::rc::Rc;
+//! The retained state a `GpuContentView` leaf carries through the frame.
+//!
+//! `GpuContentView` owns its producer — a `Send` `GpuContent` the engine runs
+//! on its render thread — plus the UI-side hooks (input, per-frame pump, ime
+//! caret, accessibility label) that stay on this thread. The compositor holds
+//! the view behind this node so input routing and the per-frame
+//! [`waterui_graphics::gpu::GpuContentView::frame`] pump keep working after
+//! the producer moves to the engine.
+//!
+//! The producer installs exactly once: [`GpuContentView::take_engine_content`]
+//! moves it into an engine `GpuContentHandle`, which one layer consumes at
+//! install. A mount that drops its layer cannot be repopulated — the content
+//! is gone — so a keyed mount presenting `GpuContent` is allowed to live for
+//! the frame's whole key set, and transient (capture) windows never install
+//! it at all: a capture cannot consume the one install the producer gets.
 
-use waterui::View;
-use waterui_core::layout::StretchAxis;
-use waterui_core::{AnyView, Environment};
-use waterui_graphics::{
-    DeviceLoss, GpuContext, GpuFrame, GpuSurface, GpuView, SceneViewMergeToParent,
-};
+use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 
-use crate::engine::WidgetTheme;
-use crate::renderer::HydrolysisRenderer;
-use crate::time::Instant;
-
-/// A `GpuView` that renders any cloneable `View` through hydrolysis.
-pub struct HydrolysisGpuView<V>
-where
-    V: View + Clone + 'static,
-{
-    view: V,
-    theme: Rc<dyn WidgetTheme>,
-    adapter: Option<wgpu::Adapter>,
-    /// Reports this device lost; taken when the device was opened.
-    device_loss: Option<DeviceLoss>,
-    renderer: Option<HydrolysisRenderer>,
-    env: Option<Environment>,
-    needs_rebuild: bool,
-    /// Arbitrary epoch the host's animation clock is projected onto.
-    ///
-    /// The embedded renderer samples animations at `Instant`s, but the host
-    /// hands this view a monotonically advancing `GpuFrame::elapsed()`; only
-    /// the differences matter, so any fixed epoch makes the projection exact.
-    animation_epoch: Instant,
+/// The `GpuContentView` a [`crate::renderer::tree::GpuContentNode`] owns, and
+/// whether its producer has been installed on an engine layer yet.
+///
+/// `installed` flips when the first `GpuContentLayer` carrying this runtime
+/// reaches a persistent window's install pass — never on a transient target,
+/// which would spend the view's single install on a surface that dies with
+/// the call.
+pub(crate) struct GpuContentRuntime {
+    pub(crate) view: GpuContentView,
+    /// `true` once `take_engine_content` has run; the producer is on the
+    /// engine from then on and only `gpu_content_size`/transform edits apply.
+    pub(crate) installed: bool,
 }
 
-impl<V> core::fmt::Debug for HydrolysisGpuView<V>
-where
-    V: View + Clone + 'static,
-{
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HydrolysisGpuView").finish_non_exhaustive()
-    }
-}
-
-impl<V> HydrolysisGpuView<V>
-where
-    V: View + Clone + 'static,
-{
-    #[must_use]
-    pub fn new(view: V, theme: Rc<dyn WidgetTheme>) -> Self {
+impl GpuContentRuntime {
+    pub(crate) fn new(view: GpuContentView) -> Self {
         Self {
             view,
-            theme,
-            adapter: None,
-            device_loss: None,
-            renderer: None,
-            env: None,
-            needs_rebuild: true,
-            animation_epoch: Instant::now(),
+            installed: false,
         }
     }
 }
 
-impl<V> GpuView for HydrolysisGpuView<V>
-where
-    V: View + Clone + 'static,
-{
-    async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
-        let scoped_env = env.extending(SceneViewMergeToParent);
-        let mut renderer = HydrolysisRenderer::new(ctx.adapter, ctx.device, Rc::clone(&self.theme));
-        renderer.set_host_redraw_handle(ctx.redraw_handle.clone());
-        renderer.prepare_window_tree(AnyView::new(self.view.clone()), &scoped_env);
-        renderer.setup_embedded_gpu_surfaces(ctx).await;
-        renderer.setup_embedded_effects(ctx).await;
-
-        self.adapter = Some(ctx.adapter.clone());
-        self.device_loss = Some(ctx.device_loss.clone());
-        self.renderer = Some(renderer);
-        self.env = Some(scoped_env);
-    }
-
-    #[allow(clippy::cast_precision_loss)]
-    fn render(&mut self, frame: &mut GpuFrame) {
-        let adapter = self
-            .adapter
-            .as_ref()
-            .expect("HydrolysisGpuView adapter missing");
-        let device_loss = self
-            .device_loss
-            .as_ref()
-            .expect("HydrolysisGpuView device_loss missing");
-        let renderer = self
-            .renderer
-            .as_mut()
-            .expect("HydrolysisGpuView used before setup");
-        let env = self
-            .env
-            .as_ref()
-            .expect("HydrolysisGpuView environment missing");
-
-        renderer.set_frame_resources(adapter, frame.device, frame.queue, device_loss);
-        renderer.poll_gpu_surface_redraw_handles();
-
-        // Advance the embedded frame clock from the host's animation clock.
-        // Without this the renderer samples every animation at its build
-        // instant: progress never completes, `animation_dirty` latches, and
-        // the surface rebuilds itself every frame forever.
-        renderer.set_frame_instant(self.animation_epoch + frame.elapsed());
-
-        let animation_dirty = renderer.advance_animations();
-        let rebuild_requested = renderer.take_rebuild_request();
-        // A pure reactive value change raises the *patch* trigger (the retained
-        // tree's refresh pump), not the rebuild trigger — without consuming it the
-        // embedded surface would keep presenting a stale scene until an animation
-        // or structural change happened to fire.
-        let patch_requested = renderer.take_patch_request();
-        let should_rebuild =
-            self.needs_rebuild || animation_dirty || rebuild_requested || patch_requested;
-
-        if should_rebuild {
-            renderer.reset_scene();
-            renderer.begin_rebuild_frame();
-            let bounds = kurbo::Rect::new(0.0, 0.0, frame.width as f64, frame.height as f64);
-            renderer.capture_window_tree(
-                waterui_core::AnyView::new(self.view.clone()),
-                env,
-                bounds,
-                kurbo::Affine::IDENTITY,
-                kurbo::Affine::IDENTITY,
-            );
-            renderer.finish_rebuild_frame();
-            self.needs_rebuild = false;
-        }
-
-        renderer.render_scene_to_surface(crate::renderer::HydrolysisRenderTarget {
-            adapter,
-            device: frame.device,
-            queue: frame.queue,
-            device_loss: device_loss.clone(),
-            texture: Some(frame.texture),
-            view: &frame.view,
-            format: frame.format,
-            width: frame.width,
-            height: frame.height,
-            base_color: peniko::Color::TRANSPARENT,
-        });
-        // Work raised during this render — a structural request or a reactive
-        // patch — needs another frame. The patch bit is only peeked (not taken)
-        // so the next render's `take_patch_request` still observes it.
-        let next_frame = renderer.take_rebuild_request()
-            || renderer.has_patch_request()
-            || renderer.take_redraw_request();
-        renderer.clear_frame_resources();
-
-        if animation_dirty || next_frame {
-            frame.request_redraw();
-        }
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
-    }
+/// The `ExternalFrameView` a [`crate::renderer::tree::ExternalFrameNode`]
+/// owns, and the stream's frame receiver once a mount has started it.
+///
+/// Unlike `GpuContent`, an external-frame source is restartable: the view
+/// hands out a fresh [`ExternalFrameStream`] handle every call, and a lost
+/// device or a reborn mount starts the source again with the new output.
+/// `receiver` is `Some` once the first `ExternalFrameLayer` carrying this
+/// runtime has started the source on the window's device.
+pub(crate) struct ExternalFrameRuntime {
+    pub(crate) view: ExternalFrameView,
+    /// The mailbox drain end, installed by the compositor's install pass.
+    pub(crate) receiver: Option<FrameReceiver>,
+    /// The plane size of the last presented frame, for the stretch transform.
+    pub(crate) frame_pixels: Option<(u32, u32)>,
 }
 
-/// Extension trait for rendering a view through hydrolysis into a `GpuSurface`.
-pub trait HydrolysisExt: View + Clone + Sized + 'static {
-    /// Wrap this view in a hydrolysis-powered `GpuSurface`. The embedded
-    /// renderer is style-driven like the window runtime: `theme` is the same
-    /// `WidgetTheme` the `Style` the runtime was launched with supplies.
-    fn hydrolysis(self, theme: Rc<dyn WidgetTheme>) -> GpuSurface {
-        GpuSurface::new(HydrolysisGpuView::new(self, theme))
+impl ExternalFrameRuntime {
+    pub(crate) fn new(view: ExternalFrameView) -> Self {
+        Self {
+            view,
+            receiver: None,
+            frame_pixels: None,
+        }
     }
 }
-
-impl<V> HydrolysisExt for V where V: View + Clone + Sized + 'static {}

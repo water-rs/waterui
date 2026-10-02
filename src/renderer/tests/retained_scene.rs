@@ -870,12 +870,11 @@ fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) {
     );
 }
 
-/// Sibling filtered subtrees are captured through one shared atlas page — one
-/// compositor pass and one submit for the whole level — instead of a compositor
-/// pass per filter, and each filter still receives its own subtree's pixels: the
-/// slots must not overlap or swap.
+/// Sibling filtered subtrees mount as separate engine filter layers, and each
+/// filter still receives its own subtree's pixels: the two mounts must not
+/// overlap or swap.
 #[test]
-fn sibling_applied_filters_share_one_atlas_page() {
+fn sibling_applied_filters_each_render_their_own_subtree() {
     fn filtered_boxes() -> AnyView {
         use waterui::prelude::*;
         AnyView::new(hstack((
@@ -894,9 +893,9 @@ fn sibling_applied_filters_share_one_atlas_page() {
         HeadlessRuntime::new_for_tests(env, builder, 96, 48, MinimalTestTheme::default());
     let snapshot = pump_until_filters_render(&mut runtime, 2);
     assert_eq!(
-        runtime.renderer().applied_filter_capture_pages(),
-        1,
-        "two sibling filters must be captured through one atlas page"
+        runtime.renderer().applied_filter_stats().0,
+        2,
+        "both sibling filters must have encoded by the rendered frame"
     );
     assert_red(&snapshot, 24, 24);
     assert_blue(&snapshot, 72, 24);
@@ -925,9 +924,9 @@ fn nested_applied_filters_capture_inner_before_outer() {
         HeadlessRuntime::new_for_tests(env, builder, 96, 96, MinimalTestTheme::default());
     let snapshot = pump_until_filters_render(&mut runtime, 2);
     assert_eq!(
-        runtime.renderer().applied_filter_capture_pages(),
+        runtime.renderer().applied_filter_stats().0,
         2,
-        "a nested filter is captured on its own level's page"
+        "the nested and the outer filter must both have encoded"
     );
     assert_red(&snapshot, 48, 48);
     assert_blue(&snapshot, 48, 12);

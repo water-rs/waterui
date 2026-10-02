@@ -45,7 +45,7 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::nav::tabs::emit_tabs_accessibility
 );
 impl_widget_behavior!(
-    ResolvedGradient,
+    waterui_graphics::Gradient,
     crate::renderer::render_gradient_node,
     crate::renderer::measure_gradient_node
     ; a11y: crate::renderer::views::emit_graphics_leaf_accessibility
@@ -196,11 +196,15 @@ impl RenderNode {
         Self::build_widget(state, stretch, env)
     }
 
-    /// Build a persistent gradient node: retain the fully-resolved gradient payload
-    /// behind an `Rc<RefCell<…>>` and re-fill it every flush at the current bounds.
-    /// The payload carries no signal, so nothing is watched; the gradient stretches
-    /// to fill the proposal (`StretchAxis::Both`, read from the payload).
-    pub(super) fn build_gradient(gradient: ResolvedGradient, env: &Environment) -> RenderNode {
+    /// Build a persistent gradient node: retain the view — its `Paint` is
+    /// already a resolved engine paint in unit space — and re-fill it every
+    /// flush at the current bounds. The payload carries no signal, so nothing
+    /// is watched; the gradient stretches to fill the proposal
+    /// (`StretchAxis::Both`, read from the payload).
+    pub(super) fn build_gradient(
+        gradient: waterui_graphics::Gradient,
+        env: &Environment,
+    ) -> RenderNode {
         let stretch = waterui_core::NativeView::stretch_axis(&gradient);
         let gradient = Rc::new(RefCell::new(gradient));
         Self::build_widget(gradient, stretch, env)

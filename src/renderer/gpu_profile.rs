@@ -3,8 +3,8 @@
 //! CPU stages are measured inside
 //! [`HydrolysisRenderer::flush_window_tree`]; GPU stages use `wgpu`
 //! timestamp queries: three marker submits bracket the frame's layer-content
-//! submits (Vello scene encodes, mask renders, embedded GPU surfaces) and the
-//! compositor pass, and one blocking resolve reports both spans. Each marker
+//! submits (the engine's render and the effect passes around it) and the
+//! presentation pass, and one blocking resolve reports both spans. Each marker
 //! first drains the queue — on a tiled GPU a timestamp submission that shares
 //! no memory hazard with the work it brackets may be scheduled concurrently
 //! with it, so the drain is what pins the write to the boundary — then the
@@ -29,15 +29,15 @@ pub struct FrameStageTimes {
     /// Measure and layout of the retained tree.
     pub layout: Duration,
     /// The retained tree's flush into `Recording` and the scene-layer
-    /// bookkeeping up to `flush_legacy_scene_layer`.
+    /// bookkeeping up to `flush_scene_layer`.
     pub encode: Duration,
-    /// Timestamped span covering the frame's layer-content submits — Vello
-    /// scene encodes, mask renders and embedded GPU surfaces. `None` when the
+    /// Timestamped span covering the frame's layer-content submits — the
+    /// engine's render and the effect passes around it. `None` when the
     /// device lacks `TIMESTAMP_QUERY`.
-    pub legacy_gpu: Option<Duration>,
-    /// Timestamped span covering the final surface pass — the compositor
-    /// submit, or the whole-window render on the direct GPU-surface path.
-    /// `None` like `legacy_gpu`.
+    pub content_gpu: Option<Duration>,
+    /// Timestamped span covering the final surface pass — the presenter's
+    /// conversion submit, or the whole-window render on the direct
+    /// GPU-surface path. `None` like `content_gpu`.
     pub compositor_gpu: Option<Duration>,
     /// CPU time spent waiting for GPU work: the queue drain each marker does
     /// plus the blocking timestamp resolve — the wait for this frame's GPU
@@ -192,7 +192,7 @@ impl HydrolysisRenderer {
         // (1.0 on most adapters, but not guaranteed).
         let period = f64::from(queue.get_timestamp_period());
         let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period).round() as u64);
-        self.frame_stage_times.legacy_gpu =
+        self.frame_stage_times.content_gpu =
             Some(ns(before_composite.saturating_sub(before_content)));
         self.frame_stage_times.compositor_gpu = Some(ns(end.saturating_sub(before_composite)));
     }

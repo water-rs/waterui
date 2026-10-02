@@ -401,7 +401,7 @@ impl HeadlessRuntime {
         let inspector_probe = inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
@@ -950,54 +950,6 @@ impl HeadlessRuntime {
                     crate::platform::validated_window_frame(popup.window.frame.snapshot()),
                     popup_snapshot,
                 ));
-            }
-        }
-        // A pump must observe the frame it rendered — legacy verification that
-        // deferred by an interval is drained now, not by whatever renders
-        // next. The settle passes are drain-only: damage a render left
-        // pending is the next pump's work (one render per pump, as on the
-        // window path's single merge), while an armed animation keeps
-        // `mode`/`redraw` pending across every settle and would otherwise
-        // burn a full scene encode per pass on identical content.
-        // The settle passes below replace `render_result`; the pump's `rebuilt`
-        // must still reflect every pass, not only the last one.
-        while self.runtime.queued_deferred_flush {
-            self.runtime.queued_deferred_flush = false;
-            let settled = flush_deferred_window(&mut self.runtime, &self.env, capture_snapshot);
-            rebuilt |= settled.rebuilt;
-            render_result = Some(settled);
-        }
-        self.runtime.queued_deferred_flush = false;
-        if self.runtime.renderer.has_deferred_legacy_frame() {
-            render_result = Some(flush_deferred_window(
-                &mut self.runtime,
-                &self.env,
-                capture_snapshot,
-            ));
-        }
-        for (popup_index, popup) in self.popup_windows.iter_mut().enumerate() {
-            let mut captured = popup_snapshots
-                .iter_mut()
-                .find(|(index, _, _)| *index == popup_index);
-            let capture = captured.is_some();
-            while popup.queued_deferred_flush {
-                popup.queued_deferred_flush = false;
-                let settled = flush_deferred_window(popup, &self.env, capture);
-                rebuilt |= settled.rebuilt;
-                if let (Some(popup_snapshot), Some(entry)) = (settled.snapshot, captured.as_mut()) {
-                    entry.1 =
-                        crate::platform::validated_window_frame(popup.window.frame.snapshot());
-                    entry.2 = popup_snapshot;
-                }
-            }
-            popup.queued_deferred_flush = false;
-            if popup.renderer.has_deferred_legacy_frame() {
-                let settled = flush_deferred_window(popup, &self.env, capture);
-                if let (Some(popup_snapshot), Some(entry)) = (settled.snapshot, captured.as_mut()) {
-                    entry.1 =
-                        crate::platform::validated_window_frame(popup.window.frame.snapshot());
-                    entry.2 = popup_snapshot;
-                }
             }
         }
         if let Some(snapshot) = render_result

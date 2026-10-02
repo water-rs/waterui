@@ -35,7 +35,6 @@
 
 use core::time::Duration;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Instant;
 
 use waterui::component::text;
@@ -46,7 +45,9 @@ use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent};
+use waterui_graphics::cherenkov::{Draw, Recorder};
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{VStack, vstack};
@@ -130,14 +131,31 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
     )
 }
 
-/// The migration counter values a fixture reads back. The four zero-expected
-/// engine-era fields are asserted on every fixture — a nonzero value before
-/// the retained engine exists is a counter bug, not an early success.
+/// The migration counter values a fixture reads back. Transient
+/// presentations (popup windows, drawn context menus) install no retained
+/// engine layers: every engine-era field stays zero on their frames.
 fn assert_engine_era_counters_zero(counters: &FrameCounters) {
     let m = counters.migration;
     assert_eq!(m.live_operand_updates, 0, "no live operands exist yet");
     assert_eq!(m.layer_creations, 0, "no retained engine layers exist yet");
     assert_eq!(m.layer_removals, 0, "no retained engine layers exist yet");
+}
+
+/// The engine-era counters a fixture whose content mounts as retained scene
+/// layers reads back: the engine mounts its layers on the presented frame
+/// (`layer_creations >= 1`), while a fixture with no reactive input and no
+/// unmount sees no live-operand updates and no removals.
+fn assert_retained_engine_counters(counters: &FrameCounters) {
+    let m = counters.migration;
+    assert_eq!(
+        m.live_operand_updates, 0,
+        "nothing reactive runs in this fixture"
+    );
+    assert!(
+        m.layer_creations >= 1,
+        "the retained engine mounts the fixture's layers"
+    );
+    assert_eq!(m.layer_removals, 0, "nothing unmounts in this fixture");
 }
 
 /// A nested `.clip` → `.opacity` → `.blur` tower: three different layer kinds
@@ -164,65 +182,98 @@ fn nested_clip_blend_opacity_counts() {
         "view contents were re-encoded"
     );
     assert!(m.gpu_submissions > 0, "the render submitted GPU work");
-    assert_engine_era_counters_zero(&counters);
+    assert_retained_engine_counters(&counters);
 }
 
-/// Scene content that draws one rotated image plus one image-brush fill —
-/// the `draw_image` and `fill(Brush::Image)` registrations a `Recording::image`
-/// and a brush-encoded fill must carry.
+/// Scene content that draws one rotated image plus one image-paint fill —
+/// the `image` and `fill(Paint::Image)` ops a `Recording::image` and a
+/// brush-encoded fill carry into the engine. The `Registered` handle stays
+/// alive on the pane: releasing it unregisters the image under a recording
+/// that still names it.
 struct ImagePane {
-    draw: fn(&mut dyn Scene2D),
+    image: Option<waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
 }
 
 impl SceneContent for ImagePane {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
-        (self.draw)(scene);
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
+        use cherenkov::{Extend, ImagePattern, Paint, Sampling};
+        use kurbo::Affine;
+
+        if self.image.is_none() {
+            self.image = Some(
+                resources
+                    .image(solid_image())
+                    .expect("image registration failed"),
+            );
+        }
+        let image = resources.name(self.image.as_ref().expect("registered above"));
+        recorder.transform(
+            Affine::translate((40.0, 40.0)) * Affine::rotate(0.4),
+            |recorder| {
+                recorder.image(
+                    image,
+                    kurbo::Rect::new(0.0, 0.0, 16.0, 16.0),
+                    Sampling::Linear,
+                );
+            },
+        );
+        recorder.transform(
+            Affine::translate((120.0, 60.0)) * Affine::scale(2.0),
+            |recorder| {
+                recorder.fill(
+                    kurbo::BezPath::from_svg("M0,0 L16,0 L16,16 Z").expect("static path parses"),
+                    Paint::Image(ImagePattern {
+                        image,
+                        transform: Affine::IDENTITY,
+                        extend_x: Extend::Pad,
+                        extend_y: Extend::Pad,
+                        sampling: Sampling::Linear,
+                    }),
+                );
+            },
+        );
         false
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<waterui_graphics::SceneInvalidator>) {}
 }
 
-fn solid_image() -> peniko::ImageData {
-    peniko::ImageData {
-        data: peniko::Blob::from(vec![0x80u8; 16 * 16 * 4]),
-        format: peniko::ImageFormat::Rgba8,
-        alpha_type: peniko::ImageAlphaType::AlphaPremultiplied,
-        width: 16,
-        height: 16,
+/// An opaque red image — semitransparent fixtures read back white over the
+/// window's white clear, so the probe must be opaque to be detectable.
+fn solid_image() -> cherenkov::ImageData<cherenkov::Rgba8> {
+    let mut data = vec![0xFFu8; 16 * 16 * 4];
+    for px in data.as_chunks_mut::<4>().0 {
+        px[1] = 0x00;
+        px[2] = 0x00;
     }
+    cherenkov::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
+        .expect("a well-formed Rgba8 image")
+        .premultiplied()
 }
 
 #[test]
 fn transformed_image_brushes_count() {
-    use kurbo::Affine;
-    use peniko::{Brush, ImageBrush};
-
-    let mut runtime = runtime_with(waterui_graphics::SceneView::new(ImagePane {
-        draw: |scene| {
-            scene.draw_image(
-                &ImageBrush::new(solid_image()),
-                Affine::translate((40.0, 40.0)) * Affine::rotate(0.4),
-            );
-            scene.fill(
-                peniko::Fill::NonZero,
-                Affine::translate((120.0, 60.0)) * Affine::scale(2.0),
-                &Brush::Image(ImageBrush::new(solid_image())),
-                None,
-                &kurbo::BezPath::from_svg("M0,0 L16,0 L16,16 Z").expect("static path parses"),
-            );
-        },
-    }));
+    let mut runtime = runtime_with(waterui_graphics::SceneView::new(ImagePane { image: None }));
     let mut frames = Frames::new();
-    let (counters, _snapshot) = frames.render(&mut runtime);
+    let (counters, snapshot) = frames.render(&mut runtime);
     let m = counters.migration;
 
-    assert_eq!(
-        m.image_registrations, 2,
-        "the rotated draw_image and the Brush::Image fill each register an image payload"
+    let pixel_at = |x: usize, y: usize| -> &[u8] {
+        &snapshot.rgba8[(x + y * snapshot.width as usize) * 4..][..4]
+    };
+    assert_ne!(
+        pixel_at(136, 76),
+        pixel_at(10, 10),
+        "the transformed image ops must reach the presented frame"
     );
     assert!(m.recorded_view_contents > 0);
-    assert_engine_era_counters_zero(&counters);
+    assert_retained_engine_counters(&counters);
 }
 
 /// A window that is only text: every encode is a glyph run — no fills, no
@@ -247,7 +298,7 @@ fn glyph_only_scene_counts() {
         "a glyph-only scene registers no images"
     );
     assert!(m.recorded_view_contents > 0);
-    assert_engine_era_counters_zero(&counters);
+    assert_retained_engine_counters(&counters);
 }
 
 /// One text run each on the three colour/vector font technologies the
@@ -291,7 +342,7 @@ fn variable_colr_bitmap_fonts_count() {
         m.font_registrations
     );
     assert!(m.recorded_view_contents > 0);
-    assert_engine_era_counters_zero(&counters);
+    assert_retained_engine_counters(&counters);
 }
 
 /// Every silhouette class `apply_shadow` rasterizes: a rounded-rect caster
@@ -318,16 +369,45 @@ fn shadow_silhouettes_count() {
         caster(Ellipse),
     )));
     let mut frames = Frames::new();
-    let (counters, _snapshot) = frames.render(&mut runtime);
+    let (counters, snapshot) = frames.render(&mut runtime);
     let m = counters.migration;
 
-    assert!(
-        m.image_registrations > 0,
-        "the rasterized silhouette is drawn as an image payload; got {}",
+    // The engine owns the silhouette: a shadow is recorded as a native op
+    // (`blurred_rounded_rect`/`scene.shadow`), never an image upload, so a
+    // shadow-only scene registers no images.
+    assert_eq!(
+        m.image_registrations, 0,
+        "the engine rasterizes silhouettes natively; got {}",
         m.image_registrations
     );
+    // The scene paints nothing but the blue casters and their black
+    // silhouette blurs, so a dark pixel is silhouette evidence — `pixel`-
+    // precise geometry is `tests/shadow.rs`'s beat. One dark pixel per
+    // caster half proves both silhouette classes reached the frame.
+    let mid = (snapshot.height as usize / 2) * snapshot.width as usize * 4;
+    // A blurred black silhouette on the white background paints neutral
+    // greys — channels within a few points of each other and under white.
+    // The caster's blue fill never matches (its blue channel leads by ~140).
+    let grey_shadow =
+        |p: &[u8; 4]| p[0] < 230 && p[0].abs_diff(p[1]) < 12 && p[1].abs_diff(p[2]) < 12;
+    assert!(
+        snapshot.rgba8[..mid]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(grey_shadow),
+        "the rounded-rect caster's blurred silhouette must reach the frame"
+    );
+    assert!(
+        snapshot.rgba8[mid..]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(grey_shadow),
+        "the ellipse caster's blurred silhouette must reach the frame"
+    );
     assert!(m.recorded_view_contents > 0);
-    assert_engine_era_counters_zero(&counters);
+    assert_retained_engine_counters(&counters);
 }
 
 /// A secondary click on a `.context_menu` view: the menu mounts (as a popup
@@ -451,6 +531,7 @@ fn scrolling_counts() {
     let mut frames = Frames::new();
     let (first, _) = frames.render(&mut runtime);
     assert!(first.migration.semantic_builds > 0);
+    assert_retained_engine_counters(&first);
 
     let mut saw_scroll_work = false;
     for _ in 0..6 {
@@ -469,19 +550,21 @@ fn scrolling_counts() {
         saw_scroll_work,
         "scroll frames must still encode view contents and submit GPU work"
     );
-    assert_engine_era_counters_zero(&first);
 }
 
-/// A probe GPU surface — one clear pass into whatever it is handed.
+/// A probe GPU surface — one clear pass into whatever it is handed. The
+/// producer runs on the engine's render thread, so the counter is shareable
+/// across threads.
 struct FillProbe {
-    renders: Rc<core::cell::Cell<u32>>,
+    renders: std::sync::Arc<core::sync::atomic::AtomicU32>,
 }
 
-impl GpuView for FillProbe {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+impl GpuContent for FillProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.renders.set(self.renders.get() + 1);
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        self.renders
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -490,7 +573,7 @@ impl GpuView for FillProbe {
         drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("migration_fixture_gpu_probe_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &frame.view,
+                view: frame.view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -507,16 +590,15 @@ impl GpuView for FillProbe {
     }
 }
 
-/// GPU content sitting under a clip and an opacity layer: the surface cannot
-/// take the direct-to-target path, so it is composited — the frame records a
-/// GPU-surface layer plus the clip layer above it.
+/// GPU content sitting under a clip and an opacity layer: the engine mounts
+/// it as a GPU content layer with the clip/opacity scope above it.
 #[test]
 fn gpu_content_under_clips_and_effects() {
-    let renders = Rc::new(core::cell::Cell::new(0u32));
+    let renders = std::sync::Arc::new(core::sync::atomic::AtomicU32::new(0));
     let probe = FillProbe {
-        renders: Rc::clone(&renders),
+        renders: std::sync::Arc::clone(&renders),
     };
-    let view = Frame::new(GpuSurface::new(probe))
+    let view = Frame::new(GpuContentView::new(probe))
         .width(120.0)
         .height(120.0)
         .clip(RoundedRectangle::new(12.0))
@@ -526,23 +608,26 @@ fn gpu_content_under_clips_and_effects() {
 
     // The surface's async setup needs a few executor drains before it renders.
     for _ in 0..12 {
-        if renders.get() > 0 {
+        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 {
             break;
         }
         let at = frames.at();
         let _ = runtime.pump_at(false, at);
     }
-    assert!(renders.get() > 0, "the GPU surface must have drawn");
+    assert!(
+        renders.load(core::sync::atomic::Ordering::Relaxed) > 0,
+        "the GPU surface must have drawn"
+    );
 
     let (counters, _snapshot) = frames.render(&mut runtime);
     let m = counters.migration;
     assert!(
-        counters.gpu_surface_layers >= 1,
-        "a GPU surface under a clip composites as a GPU-surface layer"
+        counters.gpu_content_layers >= 1,
+        "a GPU surface under a clip composites as a GPU content layer"
     );
     assert!(m.gpu_submissions > 0, "the probe's submit is counted");
     assert!(m.recorded_view_contents > 0);
-    assert_engine_era_counters_zero(&counters);
+    assert_retained_engine_counters(&counters);
 }
 
 /// The acceptance's determinism clause: two capturing pumps of the same view

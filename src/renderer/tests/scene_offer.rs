@@ -19,9 +19,11 @@ use waterui_core::Environment;
 use waterui_core::id::SelfId;
 use waterui_core::layout::{StretchAxis, ViewDimensions};
 use waterui_core::views::ForEach;
+use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneInvalidator, SceneView,
+    GpuContent, GpuContentView, RecordingResources, SceneContent, SceneInvalidator, SceneView,
     SceneViewMergeToParent,
 };
 use waterui_layout::LazyContainer;
@@ -42,16 +44,10 @@ const DIVIDER_WIDTH: f32 = 7.0;
 /// leaf is the same kind a terminal or embedded engine installs.
 struct PaneProbe;
 
-impl GpuView for PaneProbe {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
+impl GpuContent for PaneProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, _frame: &mut GpuFrame) {}
-
-    fn wants_input_events(&self) -> bool {
-        true
-    }
-
-    fn input(&mut self, _event: &SurfaceInputEvent) {}
+    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
 /// The same pane as self-drawn scene content — the merged `SceneView` leaf a
@@ -59,7 +55,13 @@ impl GpuView for PaneProbe {
 struct ScenePane;
 
 impl SceneContent for ScenePane {
-    fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
         false
     }
 
@@ -77,7 +79,13 @@ impl SceneContent for ScenePane {
 struct IntrinsicScenePane;
 
 impl SceneContent for IntrinsicScenePane {
-    fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
         false
     }
 
@@ -166,7 +174,7 @@ impl SubView for OfferProbe<'_> {
 
 fn pane_view(kind: Pane) -> AnyView {
     match kind {
-        Pane::GpuSurface => AnyView::new(GpuSurface::new(PaneProbe)),
+        Pane::GpuSurface => AnyView::new(GpuContentView::new(PaneProbe).on_input(|_| {})),
         Pane::Scene => AnyView::new(SceneView::new(ScenePane)),
     }
 }

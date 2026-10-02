@@ -14,8 +14,9 @@ use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
 use waterui::{AnyView, Color, ViewExt as _};
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_graphics::cherenkov::Recorder;
 use waterui_graphics::input::SurfaceInputEvent;
-use waterui_graphics::{Scene2D, SceneContent, SceneInvalidator, SceneView};
+use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -35,7 +36,13 @@ struct RecorderPane {
 }
 
 impl SceneContent for RecorderPane {
-    fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
         false
     }
 

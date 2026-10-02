@@ -3,19 +3,20 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
-    measure_view_intrinsic, popup_menu_nodes, resolved_color_to_peniko, transformed_rect,
+    measure_view_intrinsic, popup_menu_nodes, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
+use cherenkov::Draw as _;
 use nami::{Signal, SignalExt};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
-use waterui_backend_core::widget::{ButtonMetrics, DrawContext as _, InteractionStyle};
+use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
@@ -623,7 +624,7 @@ pub(crate) fn render_button_parts(
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         if let Some(interaction_style) = interaction_style {
             let color_signal = interaction_style.state_layer_color.resolve(env);
-            let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+            let color = ctx.renderer_mut().read_signal(&color_signal);
             let layer_bounds = interaction_style.state_layer_bounds(bounds);
             let radii = *interaction_style
                 .state_layer_radii
@@ -638,12 +639,16 @@ pub(crate) fn render_button_parts(
             );
             let mut draw = ctx.draw_context();
             theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
-            if let Some((ring_bounds, ring_radii, brush, width)) = ring {
-                draw.stroke_rounded_rect(ring_bounds, ring_radii, &brush, width);
+            if let Some((ring_bounds, ring_radii, color, width)) = ring {
+                draw.stroke(
+                    kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
+                    kurbo::Stroke::new(width),
+                    color,
+                );
             }
         } else if let Some(floating_style) = floating_style {
             let color_signal = floating_style.state_layer_color.resolve(env);
-            let color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+            let color = ctx.renderer_mut().read_signal(&color_signal);
             let corner_radius =
                 bounds.width().min(bounds.height()) * f64::from(floating_style.clip_radius);
             let mut draw = ctx.draw_context();

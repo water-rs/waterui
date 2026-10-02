@@ -188,7 +188,10 @@ impl BrowserRunner {
         Self::drain_runnable_queue(&self.runnable_queue)
     }
 
-    fn frame(&mut self) -> bool {
+    /// Async because the engine render inside awaits the browser's GPU
+    /// device; the caller drives it through `spawn_local` — wasm32 only ever
+    /// runs this path.
+    async fn frame(&mut self) -> bool {
         let _ = self.drain_local_executor_queue();
         // The page's occlusion report drives the pump state each frame — a
         // hidden page still drains events and executor work; only drawing
@@ -217,13 +220,12 @@ impl BrowserRunner {
         // wake that carried no armed work answers without one. Only armed
         // work on a visible window encodes a frame.
         if !self.runtime.is_hidden()
-            && (self.runtime.mode.is_pending()
-                || self.runtime.queued_deferred_flush
-                || self.runtime.renderer.take_redraw_request())
+            && (self.runtime.mode.is_pending() || self.runtime.renderer.take_redraw_request())
         {
             let presented = render_window(&mut self.runtime, &self.env, &mut || {
                 Self::drain_runnable_queue(&self.runnable_queue)
-            });
+            })
+            .await;
             if presented && !self.first_frame_announced {
                 self.first_frame_announced = true;
                 self.runtime.platform.announce_first_frame();
@@ -241,7 +243,6 @@ impl BrowserRunner {
         // into a parked pump.
         !self.runtime.is_hidden()
             && (self.runtime.platform.take_redraw_request()
-                || self.runtime.queued_deferred_flush
                 || !self.runnable_queue.borrow().is_empty())
     }
 }
@@ -257,6 +258,11 @@ type ScheduleFrameSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 struct BrowserRunnerHandle {
     runner: RefCell<BrowserRunner>,
     raf_pending: Cell<bool>,
+    /// A frame suspended inside an engine `await`: another rAF arriving while
+    /// it is pending cannot borrow the runner, so it takes a repeat ticket and
+    /// the suspended frame's continuation schedules again.
+    frame_in_flight: Cell<bool>,
+    frame_again: Cell<bool>,
     raf_callback: RefCell<Option<AnimationFrameCallback>>,
 }
 
@@ -277,16 +283,27 @@ impl BrowserRunnerHandle {
             .expect("hydrolysis web runner: failed to schedule animation frame");
     }
 
+    // The runner borrow spans the engine's await by design: `frame_in_flight`
+    // bars the reentrant borrow a suspended frame would otherwise let a
+    // second rAF take, so the RefMut-across-await is sound.
+    #[allow(clippy::await_holding_refcell_ref)]
     fn frame(self: &Rc<Self>) {
         self.raf_pending.set(false);
-        let should_continue = self.runner.borrow_mut().frame();
-        if !should_continue {
+        if self.frame_in_flight.replace(true) {
+            self.frame_again.set(true);
             return;
         }
-
-        if self.runner.borrow().needs_next_frame() {
-            self.schedule_frame();
-        }
+        let handle = self.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let should_continue = handle.runner.borrow_mut().frame().await;
+            handle.frame_in_flight.set(false);
+            if !should_continue {
+                return;
+            }
+            if handle.frame_again.replace(false) || handle.runner.borrow().needs_next_frame() {
+                handle.schedule_frame();
+            }
+        });
     }
 }
 
@@ -411,6 +428,8 @@ pub fn run(app: App, style: impl crate::Style) {
         let handle = Rc::new(BrowserRunnerHandle {
             runner: RefCell::new(runner),
             raf_pending: Cell::new(false),
+            frame_in_flight: Cell::new(false),
+            frame_again: Cell::new(false),
             raf_callback: RefCell::new(None),
         });
         let callback_handle = handle.clone();

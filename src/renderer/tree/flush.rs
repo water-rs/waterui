@@ -6,14 +6,6 @@ use super::layout::kurbo_rect;
 use super::window::window_safe_area_insets;
 use super::*;
 
-pub(crate) struct ChildTextureTarget<'a> {
-    pub(crate) texture: &'a wgpu::Texture,
-    pub(crate) view: &'a wgpu::TextureView,
-    pub(crate) format: wgpu::TextureFormat,
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-}
-
 impl RenderNode {
     /// Re-encode this subtree into the renderer's scene using the cached
     /// placements. Runs every frame.
@@ -26,12 +18,11 @@ impl RenderNode {
         match self {
             RenderNode::Color(color) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let color = resolved_color_to_peniko(renderer.read_signal(&color.color));
-                renderer.scene_mut().fill(
+                let color = cherenkov::Paint::Solid(renderer.read_signal(&color.color));
+                renderer.scene_mut().fill_paint(
                     peniko::Fill::NonZero,
                     ctx.transform,
-                    &peniko::Brush::Solid(color),
-                    None,
+                    color,
                     &ctx.bounds,
                 );
             }
@@ -388,33 +379,26 @@ impl RenderNode {
                     wants_input,
                 );
                 renderer.pop_render_owner();
-                let mut scene = Recording::new();
-                // Scope `scene2d` so its `&mut scene` borrow ends before `&scene` is
-                // appended below. `CheckedScene2D` validates every image brush at
-                // this ingest boundary — malformed `ImageData` rejected here would
-                // otherwise only fail inside wgpu's `write_texture`.
-                let needs_next = {
-                    let mut scene2d = crate::renderer::CheckedScene2D::new(
-                        &mut scene,
-                        &mut renderer.state.counters,
-                    );
-                    #[allow(clippy::cast_possible_truncation)]
-                    node.content.borrow_mut().build_scene(
-                        &mut scene2d,
-                        ctx.bounds.width() as f32,
-                        ctx.bounds.height() as f32,
-                    )
-                };
-                renderer.scene_mut().append(
-                    &scene,
-                    ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
-                );
-                if needs_next {
-                    renderer.request_refresh();
-                }
+                // The content re-records itself onto its keyed layer at
+                // `surface.update` every frame (#1324): the flush only
+                // presents the layer.
+                renderer.flush_scene_layer();
+                renderer
+                    .compositor
+                    .render_layers
+                    .push(RenderLayer::SceneContent(SceneContentLayer {
+                        key: crate::renderer::retained::RenderKey {
+                            render: node.render_id,
+                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                        },
+                        content: Rc::clone(&node.content),
+                        transform: ctx.transform,
+                        bounds: ctx.bounds,
+                        active_layers: renderer.compositor.active_scene_layers.clone(),
+                    }));
                 // Content that handles its own input receives the pointer,
                 // keyboard, IME and scroll events landing on its bounds, through
-                // the same routing an interactive `GpuSurface` uses.
+                // the same routing an interactive `GpuContentView` uses.
                 if wants_input {
                     renderer.register_surface_input_target(
                         ctx.bounds,
@@ -425,16 +409,16 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::GpuSurface(node) => {
+            RenderNode::GpuContent(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                // The surface view's own name and content, read every flush —
-                // it is re-asked after each frame it draws.
+                // The view's own name and content, read every flush — it is
+                // re-asked after each frame it produces.
                 let (content_label, content_value, wants_input) = {
-                    let runtime = node.runtime.borrow();
+                    let view = &node.runtime.borrow().view;
                     (
-                        runtime.accessibility_label(),
-                        runtime.accessibility_value(),
-                        runtime.wants_input_events(),
+                        view.accessibility_label().map(str::to_owned),
+                        view.accessibility_value().map(str::to_owned),
+                        view.wants_input_events(),
                     )
                 };
                 renderer.push_render_owner(&node.accessibility_identity);
@@ -451,15 +435,101 @@ impl RenderNode {
                     wants_input,
                 );
                 renderer.pop_render_owner();
-                node.flush(
-                    renderer,
-                    ctx,
-                    #[cfg(feature = "accessibility")]
-                    _focus_node,
-                );
+                renderer.flush_scene_layer();
+                renderer
+                    .compositor
+                    .render_layers
+                    .push(RenderLayer::GpuContent(GpuContentLayer {
+                        key: crate::renderer::retained::RenderKey {
+                            render: node.render_id,
+                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                        },
+                        runtime: Rc::clone(&node.runtime),
+                        transform: ctx.transform,
+                        bounds: ctx.bounds,
+                        active_layers: renderer.compositor.active_scene_layers.clone(),
+                    }));
+                if wants_input {
+                    renderer.register_surface_input_target(
+                        ctx.bounds,
+                        ctx.hit_transform,
+                        Rc::clone(&node.runtime),
+                        #[cfg(feature = "accessibility")]
+                        _focus_node,
+                    );
+                }
             }
-            RenderNode::ViewEffect(node) => node.flush(renderer, ctx),
-            RenderNode::AppliedFilter(node) => node.flush(renderer, ctx),
+            RenderNode::ExternalFrame(node) => {
+                renderer.state.counters.recorded_view_contents += 1;
+                let (content_label, content_value) = {
+                    let view = &node.runtime.borrow().view;
+                    (
+                        view.accessibility_label().map(str::to_owned),
+                        view.accessibility_value().map(str::to_owned),
+                    )
+                };
+                renderer.push_render_owner(&node.accessibility_identity);
+                #[allow(
+                    clippy::let_unit_value,
+                    reason = "without the accessibility feature the stub returns ()"
+                )]
+                let _focus_node = emit_graphics_image_accessibility(
+                    renderer,
+                    Some(ctx),
+                    env,
+                    content_label,
+                    content_value,
+                    false,
+                );
+                renderer.pop_render_owner();
+                renderer.flush_scene_layer();
+                renderer
+                    .compositor
+                    .render_layers
+                    .push(RenderLayer::ExternalFrame(ExternalFrameLayer {
+                        key: crate::renderer::retained::RenderKey {
+                            render: node.render_id,
+                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                        },
+                        runtime: Rc::clone(&node.runtime),
+                        transform: ctx.transform,
+                        bounds: ctx.bounds,
+                        active_layers: renderer.compositor.active_scene_layers.clone(),
+                    }));
+            }
+            RenderNode::Filtered(node) => {
+                // Ancestor clips and opacity belong on the filtered mount
+                // itself — the engine's `Filter` covers the mount's whole
+                // subtree — so the children's scene segments must not bake
+                // them in a second time. Drain the ops above the filter, then
+                // unwind the paint stack for the child flush and re-open the
+                // scopes for what flushes after.
+                renderer.flush_scene_layer();
+                let ancestry = core::mem::take(&mut renderer.compositor.active_scene_layers);
+                for _ in 0..ancestry.len() {
+                    renderer.scene_mut().pop_scope();
+                }
+                let children_start = renderer.compositor.render_layers.len();
+                node.child.flush(renderer, ctx, &node.env);
+                renderer.flush_scene_layer();
+                let children = renderer.compositor.render_layers.split_off(children_start);
+                for layer in &ancestry {
+                    layer.push_to_scene(renderer.scene_mut());
+                }
+                renderer.compositor.active_scene_layers = ancestry.clone();
+                renderer
+                    .compositor
+                    .render_layers
+                    .push(RenderLayer::Filtered(FilteredLayer {
+                        key: crate::renderer::retained::RenderKey {
+                            render: node.render_id,
+                            presentation: crate::renderer::retained::PresentationId::ORDINARY,
+                        },
+                        runtime: Rc::clone(&node.runtime),
+                        children,
+                        active_layers: ancestry,
+                    }));
+            }
             RenderNode::Scroll(node) => {
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
@@ -717,13 +787,13 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::GpuSurface(node) => {
+            RenderNode::GpuContent(node) => {
                 let (content_label, content_value, wants_input) = {
-                    let runtime = node.runtime.borrow();
+                    let view = &node.runtime.borrow().view;
                     (
-                        runtime.accessibility_label(),
-                        runtime.accessibility_value(),
-                        runtime.wants_input_events(),
+                        view.accessibility_label().map(str::to_owned),
+                        view.accessibility_value().map(str::to_owned),
+                        view.wants_input_events(),
                     )
                 };
                 renderer.push_accessibility_owner(&node.accessibility_identity);
@@ -745,10 +815,28 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::ViewEffect(node) => {
-                node.child.borrow().emit_accessibility(renderer, &node.env);
+            RenderNode::ExternalFrame(node) => {
+                let (content_label, content_value) = {
+                    let view = &node.runtime.borrow().view;
+                    (
+                        view.accessibility_label().map(str::to_owned),
+                        view.accessibility_value().map(str::to_owned),
+                    )
+                };
+                renderer.push_accessibility_owner(&node.accessibility_identity);
+                emit_graphics_image_accessibility(
+                    renderer,
+                    None,
+                    env,
+                    content_label,
+                    content_value,
+                    false,
+                );
+                renderer.pop_accessibility_owner();
             }
-            RenderNode::AppliedFilter(node) => {
+            // The filter is a paint concern: the semantic tree keeps the
+            // child exactly as it emits on its own.
+            RenderNode::Filtered(node) => {
                 node.child.emit_accessibility(renderer, &node.env);
             }
             RenderNode::Scroll(node) => {
@@ -828,77 +916,4 @@ fn flush_navigation_transition_element(
         transformed_rect(ctx.transform, ctx.bounds),
         scene,
     );
-}
-
-impl HydrolysisRenderer {
-    /// Render an already-laid-out child into an effect input texture in local
-    /// coordinates. The complete painter stream is isolated, including embedded
-    /// GPU surfaces, rather than capturing only the Vello scene.
-    pub(crate) fn render_child_node_to_texture(
-        &mut self,
-        child: &RenderNode,
-        ctx: RenderContext,
-        env: &Environment,
-        target: ChildTextureTarget<'_>,
-    ) {
-        let adapter = self.state().frame_adapter().clone();
-        let (device, queue) = {
-            let (device, queue) = self.state().frame_resources();
-            (device.clone(), queue.clone())
-        };
-        let device_loss = self.state().frame_device_loss().clone();
-        let parent_scene = core::mem::take(&mut self.scene);
-        let parent_render_layers = core::mem::take(&mut self.compositor.render_layers);
-        let parent_active_layers = core::mem::take(&mut self.compositor.active_scene_layers);
-        let parent_transient_scene = self.transient_scene.take();
-        // The captured subtree is flushed under identity transforms into a
-        // pixel-sized texture, so its viewport is that texture and its root
-        // transform is the identity — not the window's.
-        let parent_window_bounds = self.window_bounds;
-        let parent_window_root_transform = self.window_root_transform;
-        self.set_window_viewport(
-            kurbo::Rect::new(0.0, 0.0, f64::from(target.width), f64::from(target.height)),
-            kurbo::Affine::IDENTITY,
-        );
-
-        let local_ctx = ctx.with_identity_transforms(kurbo::Rect::new(
-            0.0,
-            0.0,
-            f64::from(target.width),
-            f64::from(target.height),
-        ));
-        // Filters inside this subtree are captured one level deeper and flushed
-        // here, so their outputs exist before the subtree itself is rendered.
-        let depth = self.subtree_captures.depth;
-        self.subtree_captures.depth = depth + 1;
-        child.flush(self, local_ctx, env);
-        self.subtree_captures.depth = depth;
-        assert!(
-            self.compositor.active_scene_layers.is_empty(),
-            "hydrolysis GPU subtree capture left an unclosed scene layer"
-        );
-        self.flush_subtree_captures(depth + 1);
-        self.render_scene_to_texture(HydrolysisRenderTarget {
-            adapter: &adapter,
-            device: &device,
-            queue: &queue,
-            device_loss,
-            texture: Some(target.texture),
-            view: target.view,
-            format: target.format,
-            width: target.width,
-            height: target.height,
-            base_color: peniko::Color::TRANSPARENT,
-        });
-        assert!(
-            self.compositor.active_scene_layers.is_empty(),
-            "hydrolysis GPU subtree compositor restored an active scene layer"
-        );
-
-        self.scene = parent_scene;
-        self.compositor.render_layers = parent_render_layers;
-        self.compositor.active_scene_layers = parent_active_layers;
-        self.transient_scene = parent_transient_scene;
-        self.set_window_viewport(parent_window_bounds, parent_window_root_transform);
-    }
 }

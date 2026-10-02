@@ -1,14 +1,12 @@
-#[path = "engine/vello_backend.rs"]
-pub(crate) mod legacy;
+#[path = "engine/cherenkov_backend.rs"]
+pub(crate) mod cherenkov;
 
-pub(crate) use legacy::{
-    LegacyBumpReadback, LegacyRenderer, LegacyRendererOptions, legacy_init_threads,
-    rasterize_blurred_silhouette,
+pub(crate) use cherenkov::{
+    CherenkovSurface, GpuEngine, cfg_async_fn, engine_await, shared_engine,
 };
 
 pub use waterui_backend_core::widget::{
-    Brush, DrawContext, RadioIndicatorState, RadioSelectionMotion, TextCaretMotion,
-    TextContextMenuMetrics, WidgetTheme,
+    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics, WidgetTheme,
 };
 
 /// Marks the subtree of a button label that resolved to an icon-only

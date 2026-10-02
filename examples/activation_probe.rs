@@ -133,7 +133,7 @@ fn main() {
                 Window::new("activation-probe", state, move || {
                     main_view(policy, echoed.clone())
                 })
-                .placement(MonitorSelector::clone(&selector), |monitor| {
+                .placement(selector, |monitor| {
                     // Dock at the top of the resolved monitor's visible
                     // frame: full width, 45% of visible height — the
                     // quick-terminal geometry hydroterm computes.

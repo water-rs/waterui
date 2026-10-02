@@ -55,11 +55,6 @@ pub(super) enum RunnerEvent {
     /// `x11_state_watch`).
     #[cfg(hydrolysis_wayland_platform)]
     X11VisibilitySignal,
-    /// A deferred vello stash's GPU-completion watch resolved: sent by the
-    /// poll driver thread once the tickets' submissions have retired. Carries
-    /// the stash generation the watch was registered for, so a stale wake
-    /// landing beside a newer stash cannot resolve it early.
-    DeferredLegacyReady(WindowId, u64),
     /// Sent by the termination handler installed in [`run`].
     ///
     /// No windowing system turns a termination signal into a winit event, on
@@ -700,26 +695,6 @@ impl WinitRunner {
         runtime
             .renderer
             .set_window_id(crate::renderer::WindowId::Winit(runtime.platform.id()));
-        {
-            // The deferred-verification settle wakes through the runner's
-            // own user-event path — the same mechanism the executor and
-            // termination handler use. The shared per-device poll driver
-            // parks on GPU completion and fires this wake; the main thread
-            // never polls the device itself.
-            let event_proxy = self.event_proxy.clone();
-            let window_id = runtime.platform.id();
-            runtime.deferred_legacy_wake = Some(std::sync::Arc::new(move |stash_gen| {
-                // send_event fails only once the event loop has exited — a
-                // dead loop has no settle left to wake, so the error is
-                // ignored.
-                let _ =
-                    event_proxy.send_event(RunnerEvent::DeferredLegacyReady(window_id, stash_gen));
-            }));
-            runtime.deferred_poll_driver = self
-                .gpu_context
-                .as_ref()
-                .map(|gpu| gpu.poll_driver().clone());
-        }
         if !activates {
             self.popup_window_ids.insert(runtime.platform.id());
         }
@@ -1072,21 +1047,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             RunnerEvent::MountPendingWindows => {
                 self.mount_pending_windows(_event_loop);
             }
-            RunnerEvent::DeferredLegacyReady(window_id, stash_gen) => {
-                let Some(runtime) = self.windows.get_mut(&window_id) else {
-                    return;
-                };
-                // The generation records unconditionally: a wake that lands
-                // while damage is pending still retired the stash's
-                // submissions — skipping it parks an armed settle forever.
-                runtime.deferred_wake_gen = runtime.deferred_wake_gen.max(stash_gen);
-                // Only a stash still awaiting its present needs the settle
-                // redraw; a wake for one the frame loop already presented
-                // resolves nothing.
-                if runtime.renderer.has_deferred_legacy_frame() {
-                    runtime.request_redraw();
-                }
-            }
+
             RunnerEvent::AccessKit(event) => {
                 let Some(runtime) = self.windows.get_mut(&event.window_id) else {
                     return;
