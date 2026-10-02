@@ -24,7 +24,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
 use core::any::Any;
 use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -57,8 +57,11 @@ pub struct Reactive(Arc<Slot>);
 
 struct Slot {
     value: AtomicU32,
-    callbacks: ArcSwap<Vec<Arc<AnimatedCallback>>>,
+    watchers: Arc<Watchers<AnimatedFn>>,
 }
+
+/// The callback a [`Reactive`] slot hands every new target value.
+type AnimatedFn = dyn Fn(AnimatedTarget) + Send + Sync;
 
 impl fmt::Debug for Reactive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -66,15 +69,53 @@ impl fmt::Debug for Reactive {
     }
 }
 
-struct Subscription {
-    slot: Weak<Slot>,
-    callback: Arc<AnimatedCallback>,
+/// Callbacks subscribed through [`WatchGuard`]s, each kept until its guard
+/// drops.
+///
+/// Subscribing never displaces another subscriber, and the list is read
+/// lock-free by whichever thread fires the callbacks.
+struct Watchers<C: ?Sized>(ArcSwap<Vec<Arc<C>>>);
+
+impl<C: ?Sized + 'static> Watchers<C> {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(ArcSwap::from_pointee(Vec::new())))
+    }
+
+    /// Adds `callback` until the returned subscription drops.
+    fn subscribe(self: &Arc<Self>, callback: Arc<C>) -> Subscription<C> {
+        self.0.rcu(|callbacks| {
+            let mut next = (**callbacks).clone();
+            next.push(Arc::clone(&callback));
+            next
+        });
+        Subscription {
+            watchers: Arc::downgrade(self),
+            callback,
+        }
+    }
+
+    /// Calls `fire` with every current subscriber.
+    fn for_each(&self, mut fire: impl FnMut(&C)) {
+        for callback in self.0.load().iter() {
+            fire(callback);
+        }
+    }
 }
 
-impl Drop for Subscription {
+/// One entry of a [`Watchers`] list, removed when it drops.
+///
+/// It is `Send + Sync` whenever the callback is, unlike the [`WatchGuard`]
+/// the public API wraps it in, so an effect holding one keeps its own
+/// thread-safety.
+struct Subscription<C: ?Sized> {
+    watchers: Weak<Watchers<C>>,
+    callback: Arc<C>,
+}
+
+impl<C: ?Sized> Drop for Subscription<C> {
     fn drop(&mut self) {
-        if let Some(slot) = self.slot.upgrade() {
-            slot.callbacks.rcu(|callbacks| {
+        if let Some(watchers) = self.watchers.upgrade() {
+            watchers.0.rcu(|callbacks| {
                 callbacks
                     .iter()
                     .filter(|callback| !Arc::ptr_eq(callback, &self.callback))
@@ -91,16 +132,7 @@ impl FilterParam for Reactive {
     }
 
     fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
-        let callback = Arc::new(callback);
-        self.0.callbacks.rcu(|callbacks| {
-            let mut next = (**callbacks).clone();
-            next.push(Arc::clone(&callback));
-            next
-        });
-        WatchGuard::new(Subscription {
-            slot: Arc::downgrade(&self.0),
-            callback,
-        })
+        WatchGuard::new(self.0.watchers.subscribe(Arc::from(callback)))
     }
 }
 
@@ -163,20 +195,22 @@ fn scaled_dimension(value: u32, factor: f32) -> u32 {
 
 type ChangeCallback = dyn Fn() + Send + Sync;
 
-struct OnChange(Arc<ChangeCallback>);
-
 /// Thread-safe output-size policy shared by the UI and render threads.
+///
+/// Its watchers are independent subscriptions: a backend's watcher and the
+/// redraw callback of the built GPU effect each hold their own guard, so
+/// neither replaces the other.
 #[derive(Clone)]
 struct OutputSizeState {
     policy: Arc<ArcSwap<Option<OutputSize>>>,
-    on_change: Arc<ArcSwapOption<OnChange>>,
+    watchers: Arc<Watchers<ChangeCallback>>,
 }
 
 impl OutputSizeState {
     fn new() -> Self {
         Self {
             policy: Arc::new(ArcSwap::from_pointee(None)),
-            on_change: Arc::new(ArcSwapOption::empty()),
+            watchers: Watchers::new(),
         }
     }
 
@@ -185,21 +219,20 @@ impl OutputSizeState {
         **self.policy.load()
     }
 
-    /// Installs the callback fired after the declared policy changes.
-    fn set_change_callback(&self, callback: Arc<ChangeCallback>) {
-        self.on_change.store(Some(Arc::new(OnChange(callback))));
+    /// Subscribes `callback`, fired after the declared policy changes, until
+    /// the returned subscription drops.
+    fn watch(&self, callback: Arc<ChangeCallback>) -> Subscription<ChangeCallback> {
+        self.watchers.subscribe(callback)
     }
 
     fn bind(&self, value: impl IntoComputed<OutputSize>, guards: &mut ParamGuards) {
         let value = value.into_computed();
         self.policy.store(Arc::new(Some(value.snapshot())));
         let policy = Arc::clone(&self.policy);
-        let on_change = Arc::clone(&self.on_change);
+        let watchers = Arc::clone(&self.watchers);
         let guard = value.watch(move |context| {
             policy.store(Arc::new(Some(context.into_value())));
-            if let Some(callback) = on_change.load_full() {
-                (callback.0)();
-            }
+            watchers.for_each(|callback| callback());
         });
         guards.0.push(Box::new(guard));
     }
@@ -211,21 +244,21 @@ impl ParamGuards {
         let signal = value.into_signal_f32();
         let slot = Arc::new(Slot {
             value: AtomicU32::new(signal.snapshot().to_bits()),
-            callbacks: ArcSwap::from_pointee(Vec::new()),
+            watchers: Watchers::new(),
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
             let animation = context.metadata().try_get::<Animation>();
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
-            for callback in target.callbacks.load().iter() {
+            target.watchers.for_each(|callback| {
                 callback(AnimatedTarget {
                     value,
                     interpolator: animation.map(|animation| {
                         Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
                     }),
                 });
-            }
+            });
         });
         self.0.push(Box::new(guard));
         Reactive(slot)
@@ -441,8 +474,13 @@ impl fmt::Debug for FilterSignal<'_> {
 
 impl FilterSignal<'_> {
     /// The parameter's index in the flattened parameters
-    /// ([`FilterDescription::params`]), the index a stage's
-    /// [`ParamSource::Param`](filtrate::ParamSource::Param) refers to.
+    /// ([`FilterDescription::params`]).
+    ///
+    /// A stage addresses this index as its [`Placed::param_base`] plus the
+    /// index of a [`ParamSource::Param`](filtrate::ParamSource::Param) it
+    /// declares, not by the declared index alone: in
+    /// `brightness(..).blur(..)`, the blur stage declares `Param(0)` with
+    /// `param_base == 1`, which is index 1.
     #[must_use]
     pub const fn index(&self) -> usize {
         self.index
@@ -488,9 +526,13 @@ impl fmt::Debug for FilterDescription<'_> {
 }
 
 impl FilterDescription<'_> {
-    /// The current parameter values, flattened in the order the stages'
-    /// [`ParamSource::Param`](filtrate::ParamSource::Param) indices address
-    /// them.
+    /// The current parameter values, flattened across every stage.
+    ///
+    /// A stage's <code>[ParamSource::Param](filtrate::ParamSource::Param)(i)</code>
+    /// reads the value at `param_base + i`, where `param_base` is the
+    /// [`Placed::param_base`] that [`collect_stages`](Self::collect_stages)
+    /// reports with the stage. A `vecN<f32>` member reads `N` consecutive
+    /// values from there.
     #[must_use]
     pub fn params(&self) -> Vec<f32> {
         self.0.dyn_params()
@@ -510,8 +552,14 @@ impl FilterDescription<'_> {
         self.0.dyn_visit_signals(&mut visit);
     }
 
-    /// Visits the auxiliary images, in image-index order — the indices a
-    /// spatial stage's [`AuxSource`](filtrate::AuxSource) refers to.
+    /// Visits the auxiliary images, by index in the flattened images of the
+    /// whole filter.
+    ///
+    /// A spatial stage's <code>[AuxSource::Image](filtrate::AuxSource::Image)(i)</code>
+    /// or <code>[AuxSource::Texture](filtrate::AuxSource::Texture)(i)</code> binds the
+    /// image at `image_base + i`, where `image_base` is the
+    /// [`Placed::image_base`] that [`collect_stages`](Self::collect_stages)
+    /// reports with the stage.
     pub fn visit_images(&self, visitor: &mut impl ImageVisitor) {
         self.0
             .dyn_visit_images(&mut |index, image: &dyn AuxImage| visitor.visit(index, image));
@@ -580,11 +628,17 @@ impl AnyEffect {
         self.output_size.declared()
     }
 
-    /// Installs `callback`, fired after the declared
-    /// [`output_size`](Self::output_size) changes, replacing any previous
-    /// one.
-    pub fn watch_output_size(&self, callback: impl Fn() + Send + Sync + 'static) {
-        self.output_size.set_change_callback(Arc::new(callback));
+    /// Subscribes `callback`, fired after the declared
+    /// [`output_size`](Self::output_size) changes, until the returned guard
+    /// drops.
+    ///
+    /// Any number of watchers may subscribe. None replaces another, and none
+    /// is replaced by the redraw callback the engine installs on the effect
+    /// that the GPU `build` produces: a subscription made before `build`
+    /// keeps firing afterwards.
+    #[must_use = "dropping the guard cancels the subscription"]
+    pub fn watch_output_size(&self, callback: impl Fn() + Send + Sync + 'static) -> WatchGuard {
+        WatchGuard::new(self.output_size.watch(Arc::new(callback)))
     }
 
     fn bind_output_size(&self, size: impl IntoComputed<OutputSize>, guards: &mut ParamGuards) {
@@ -1953,6 +2007,42 @@ mod tests {
         });
         assert_eq!(effect.output_size(10, 20), (30, 40));
         assert_eq!(redraws.load(Ordering::Relaxed), 1);
+        drop(guards);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn output_size_watchers_survive_the_gpu_redraw_callback() {
+        let size = nami::binding(OutputSize::Scale(2.0));
+        let FilteredView { effect, guards, .. } = FilteredView {
+            content: AnyView::new(()),
+            effect: AnyEffect::filter(filtrate::filters::Invert),
+            guards: ParamGuards::default(),
+        }
+        .output_size(size.clone());
+        let watched = Arc::new(AtomicUsize::new(0));
+        let watcher_count = Arc::clone(&watched);
+        let subscription = effect.watch_output_size(move || {
+            watcher_count.fetch_add(1, Ordering::Relaxed);
+        });
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let redraw_count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            redraw_count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        size.set(OutputSize::Fixed {
+            width: 30,
+            height: 40,
+        });
+        assert_eq!(watched.load(Ordering::Relaxed), 1);
+        assert_eq!(redraws.load(Ordering::Relaxed), 1);
+
+        drop(subscription);
+        size.set(OutputSize::Scale(3.0));
+        assert_eq!(watched.load(Ordering::Relaxed), 1);
+        assert_eq!(redraws.load(Ordering::Relaxed), 2);
         drop(guards);
     }
 

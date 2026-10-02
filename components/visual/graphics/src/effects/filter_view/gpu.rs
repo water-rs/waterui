@@ -12,7 +12,10 @@ use filtrate::{
 };
 use waterui_core::{AnyView, View};
 
-use super::{AnyEffect, EffectSource, FilteredView, OutputSizeState, ParamGuards};
+use super::{
+    AnyEffect, ChangeCallback, EffectSource, FilteredView, OutputSizeState, ParamGuards,
+    Subscription,
+};
 
 type BoxedSetup<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
 
@@ -76,10 +79,7 @@ pub(super) trait GpuEffect: RenderTransfer {
 
 impl<E: Effect + RenderTransfer> GpuEffect for E {
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
-        Box::new(OutputSizedEffect {
-            effect: *self,
-            output_size,
-        })
+        Box::new(OutputSizedEffect::new(*self, output_size))
     }
 }
 
@@ -91,19 +91,16 @@ pub(super) fn lower_filter<F: Filter>(
 ) -> Box<dyn ErasedEffect> {
     if output_size.declared().is_some() {
         let policy = output_size.clone();
-        Box::new(OutputSizedEffect {
-            effect: Executor::new(filter).with_output_size(move |width, height| {
+        Box::new(OutputSizedEffect::new(
+            Executor::new(filter).with_output_size(move |width, height| {
                 policy
                     .declared()
                     .map_or((width, height), |size| size.compute(width, height))
             }),
             output_size,
-        })
+        ))
     } else {
-        Box::new(OutputSizedEffect {
-            effect: Executor::new(filter),
-            output_size,
-        })
+        Box::new(OutputSizedEffect::new(Executor::new(filter), output_size))
     }
 }
 
@@ -111,6 +108,20 @@ pub(super) fn lower_filter<F: Filter>(
 struct OutputSizedEffect<E> {
     effect: E,
     output_size: OutputSizeState,
+    /// The engine's redraw callback, subscribed to output-size changes
+    /// alongside any watcher a backend holds; replaced by the next
+    /// [`Effect::set_redraw_callback`].
+    redraw: Option<Subscription<ChangeCallback>>,
+}
+
+impl<E> OutputSizedEffect<E> {
+    const fn new(effect: E, output_size: OutputSizeState) -> Self {
+        Self {
+            effect,
+            output_size,
+            redraw: None,
+        }
+    }
 }
 
 impl<E: Effect> Effect for OutputSizedEffect<E> {
@@ -122,7 +133,7 @@ impl<E: Effect> Effect for OutputSizedEffect<E> {
     }
 
     fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
-        self.output_size.set_change_callback(callback.clone());
+        self.redraw = Some(self.output_size.watch(callback.clone()));
         self.effect.set_redraw_callback(callback);
     }
 
