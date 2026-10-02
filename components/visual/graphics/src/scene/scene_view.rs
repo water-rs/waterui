@@ -109,15 +109,13 @@ pub trait SceneContent: 'static {
     /// invokes this before it records the first scene on the replacement
     /// engine, and then supplies that call's `RecordingResources` as usual.
     ///
-    /// Content that owns no engine-bound state may return itself. Content that
-    /// caches a [`Registered`](crate::scene::resources::Registered), a
-    /// [`PictureRecording`](crate::picture::PictureRecording), or another
-    /// generation-bound value must override this method and preserve its
-    /// semantic inputs while rebuilding that value.
+    /// Content that owns no engine-bound state must return itself explicitly.
+    /// Content that caches a [`Registered`](crate::scene::resources::Registered),
+    /// a [`PictureRecording`](crate::picture::PictureRecording), or another
+    /// generation-bound value must preserve its semantic inputs while
+    /// rebuilding that value.
     #[must_use]
-    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-        self
-    }
+    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent>;
 
     /// Installs an invalidation callback that content can trigger from signal watchers.
     ///
@@ -435,7 +433,7 @@ mod tests {
         }
 
         fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-            Box::new(Self { value: self.value })
+            self
         }
     }
 
@@ -453,6 +451,10 @@ mod tests {
         fn intrinsic_size(&self) -> Option<Size> {
             Some(Size::new(100.0, 200.0))
         }
+
+        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+            self
+        }
     }
 
     /// Content with no size of its own, which is the trait's default.
@@ -467,6 +469,10 @@ mod tests {
             _height: f32,
         ) -> bool {
             false
+        }
+
+        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+            self
         }
     }
 
@@ -486,6 +492,10 @@ mod tests {
 
         fn accessibility_value(&self) -> Option<alloc::string::String> {
             Some("x squared plus one".into())
+        }
+
+        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+            self
         }
     }
 

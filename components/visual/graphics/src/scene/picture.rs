@@ -1,5 +1,6 @@
 //! A recorded drawing shown as a static image.
 
+use alloc::rc::Rc;
 use core::fmt;
 
 use cherenkov::kurbo::Affine;
@@ -30,10 +31,23 @@ use crate::scene_view::{
 /// `Rasterizer`, an `OffscreenRenderer` — and holds its
 /// registrations for as long as it may draw them, so the ids in the list
 /// cannot outlive what they name.
-#[derive(Clone, Debug)]
+type ResourcePictureRecipe = dyn for<'a> Fn(&mut StaticRecorder, &mut RecordingResources<'a>);
+
+#[derive(Clone)]
 pub struct PictureRecording {
     picture: cherenkov::Picture,
     held: HeldResources,
+    recipe: Option<Rc<ResourcePictureRecipe>>,
+}
+
+impl fmt::Debug for PictureRecording {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PictureRecording")
+            .field("picture", &self.picture)
+            .field("held", &self.held)
+            .field("replayable", &self.recipe.is_some())
+            .finish()
+    }
 }
 
 impl PictureRecording {
@@ -46,6 +60,27 @@ impl PictureRecording {
     /// this one holds them through [`RecordingResources::hold`].
     pub(crate) const fn held(&self) -> &HeldResources {
         &self.held
+    }
+
+    /// Re-records this picture against `resources` while preserving its
+    /// semantic source. Resource-free pictures retain their exact immutable
+    /// snapshot; resource-bearing pictures must have been created with the
+    /// replayable [`Picture::record_with`] factory.
+    pub(crate) fn rebuild_for_engine(&self, resources: &SceneResources) -> Self {
+        let Some(recipe) = &self.recipe else {
+            return Self {
+                picture: self.picture.clone(),
+                held: HeldResources::empty(),
+                recipe: None,
+            };
+        };
+        let mut names = resources.recording();
+        let picture = cherenkov::Picture::record(|recorder| recipe(recorder, &mut names));
+        Self {
+            picture,
+            held: names.finish(),
+            recipe: Some(Rc::clone(recipe)),
+        }
     }
 }
 
@@ -153,6 +188,7 @@ impl Picture {
         PictureRecording {
             picture: cherenkov::Picture::record(draw),
             held: HeldResources::empty(),
+            recipe: None,
         }
     }
 
@@ -161,20 +197,23 @@ impl Picture {
     ///
     /// The closure names each resource it draws through the
     /// [`RecordingResources`] it is handed, and the recording holds every
-    /// registration it names; see [`PictureRecording`]. The picture can be
-    /// drawn only on the engine behind `resources`: a recording on another
-    /// engine that draws it panics rather than naming ids that engine never
-    /// issued.
+    /// registration it names; see [`PictureRecording`]. The closure owns the
+    /// semantic source it needs to register, so the recording can replay it
+    /// when a host replaces its engine generation. Capturing a
+    /// [`Registered`](crate::scene::resources::Registered) from `resources`
+    /// would retain an old-engine handle and is rejected when replayed.
     #[must_use]
     pub fn record_with(
         resources: &SceneResources,
-        draw: impl FnOnce(&mut StaticRecorder, &mut RecordingResources<'_>),
+        draw: impl for<'a> Fn(&mut StaticRecorder, &mut RecordingResources<'a>) + 'static,
     ) -> PictureRecording {
+        let recipe: Rc<ResourcePictureRecipe> = Rc::new(draw);
         let mut names = resources.recording();
-        let picture = cherenkov::Picture::record(|recorder| draw(recorder, &mut names));
+        let picture = cherenkov::Picture::record(|recorder| recipe(recorder, &mut names));
         PictureRecording {
             picture,
             held: names.finish(),
+            recipe: Some(recipe),
         }
     }
 
@@ -239,6 +278,8 @@ impl View for Picture {
             return AnyView::new(SceneView::new(RecordedScene {
                 picture: self,
                 watcher: None,
+                current: None,
+                rebuild_recording: false,
             }));
         }
         AnyView::new(Native::new(self))
@@ -250,6 +291,8 @@ impl View for Picture {
 struct RecordedScene {
     picture: Picture,
     watcher: Option<BoxWatcherGuard>,
+    current: Option<PictureRecording>,
+    rebuild_recording: bool,
 }
 
 impl SceneContent for RecordedScene {
@@ -260,7 +303,22 @@ impl SceneContent for RecordedScene {
         width: f32,
         height: f32,
     ) -> bool {
-        let recording = self.picture.recording.snapshot();
+        let snapshot = self.picture.recording.snapshot();
+        let changed = self
+            .current
+            .as_ref()
+            .is_none_or(|current| current.picture() != snapshot.picture());
+        if changed {
+            self.current = Some(if self.rebuild_recording {
+                snapshot.rebuild_for_engine(resources.scene_resources())
+            } else {
+                snapshot
+            });
+        }
+        let recording = self
+            .current
+            .as_ref()
+            .expect("a picture recording is selected before drawing");
         resources.hold(recording.held());
         recorder.picture(
             recording.picture(),
@@ -272,6 +330,21 @@ impl SceneContent for RecordedScene {
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.watcher = invalidator
             .map(|invalidator| invalidate_on_change(&invalidator, &self.picture.recording));
+    }
+
+    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+        let Self {
+            picture,
+            watcher: _,
+            current: _,
+            rebuild_recording: _,
+        } = *self;
+        Box::new(Self {
+            picture,
+            watcher: None,
+            current: None,
+            rebuild_recording: true,
+        })
     }
 
     fn intrinsic_size(&self) -> Option<Size> {
@@ -297,6 +370,7 @@ impl SceneContent for RecordedScene {
 mod tests {
     use super::*;
     use cherenkov::kurbo::{Rect, Shape};
+    use cherenkov::testing::Event;
     use cherenkov::{ImageId, Sampling, WorkingColor};
     use nami::{SignalExt, binding, constant};
     use waterui_core::layout::StretchAxis;
@@ -333,6 +407,8 @@ mod tests {
         let quiet = RecordedScene {
             picture,
             watcher: None,
+            current: None,
+            rebuild_recording: false,
         };
         assert_eq!(quiet.accessibility_label(), None);
         assert_eq!(quiet.accessibility_value(), None);
@@ -343,6 +419,8 @@ mod tests {
         let named = RecordedScene {
             picture,
             watcher: None,
+            current: None,
+            rebuild_recording: false,
         };
         assert_eq!(named.accessibility_label().as_deref(), Some("Warning"));
     }
@@ -359,6 +437,8 @@ mod tests {
         let described = RecordedScene {
             picture,
             watcher: None,
+            current: None,
+            rebuild_recording: false,
         };
         assert_eq!(described.accessibility_label().as_deref(), Some("Warning"));
         assert_eq!(
@@ -385,6 +465,10 @@ mod tests {
             );
             false
         }
+
+        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+            self
+        }
     }
 
     #[test]
@@ -392,24 +476,56 @@ mod tests {
         use crate::scene::resources::tests::{Mount, one_pixel, removed_images};
 
         let mount = Mount::new();
-        let image = mount
-            .resources
-            .image(one_pixel())
-            .expect("image registration");
-        let mut named = None;
-        let recording = Picture::record_with(&mount.resources, |recorder, resources| {
+        let source = alloc::sync::Arc::<[u8]>::from([255, 0, 0, 255]);
+        let named = Rc::new(core::cell::RefCell::new(None));
+        let named_for_recipe = Rc::clone(&named);
+        let recording = Picture::record_with(&mount.resources, move |recorder, resources| {
+            let image = resources
+                .image(
+                    cherenkov::ImageData::<cherenkov::Rgba8>::new(
+                        1,
+                        1,
+                        alloc::sync::Arc::clone(&source),
+                    )
+                    .expect("image source"),
+                )
+                .expect("image registration");
             let id = resources.name(&image);
-            named = Some(id);
+            *named_for_recipe.borrow_mut() = Some(id);
             recorder.image(id, Rect::new(0.0, 0.0, 10.0, 10.0), Sampling::Nearest);
         });
-        let id = named.expect("the picture named its image");
-        // The code that recorded the picture keeps no handle of its own.
-        drop(image);
+        let id = named.borrow().expect("the picture named its image");
         assert_eq!(removed_images(&mount.render()), Vec::<ImageId>::new());
+
+        let replacement = Mount::new();
+        let rebuilt = recording.rebuild_for_engine(&replacement.resources);
+        let mut replacement_content = RecordedScene {
+            picture: Picture::new(Size::new(10.0, 10.0), constant(rebuilt)),
+            watcher: None,
+            current: None,
+            rebuild_recording: false,
+        };
+        let replacement_frame = replacement.frame(&mut replacement_content);
+        assert!(
+            replacement_frame
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::AddImage(_))),
+            "rebuilding a picture must register its source on the replacement engine"
+        );
+        assert!(
+            replacement_frame
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::SetContent(..))),
+            "the replacement recording must be installed before rendering"
+        );
 
         let mut content = RecordedScene {
             picture: Picture::new(Size::new(10.0, 10.0), constant(recording)),
             watcher: None,
+            current: None,
+            rebuild_recording: false,
         };
         let shown = mount.frame(&mut content);
         assert_eq!(
@@ -435,6 +551,8 @@ mod tests {
         let mut content = RecordedScene {
             picture,
             watcher: None,
+            current: None,
+            rebuild_recording: false,
         };
         let mut recorder = Recorder::new();
         content.build_scene(&mut recorder, &mut resources.recording(), 20.0, 20.0);

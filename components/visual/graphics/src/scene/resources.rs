@@ -474,6 +474,10 @@ pub struct RecordingResources<'a> {
 }
 
 impl RecordingResources<'_> {
+    /// The engine-scoped table this recording borrows.
+    pub(crate) const fn scene_resources(&self) -> &SceneResources {
+        self.resources
+    }
     /// The id to record `resource` by, holding the registration for as long
     /// as this recording may be drawn.
     ///
@@ -968,6 +972,23 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn a_registration_from_an_old_engine_cannot_be_named_in_a_new_recording() {
+        let (old_resources, _old_events) = null_resources();
+        let (new_resources, _new_events) = null_resources();
+        let old_image = old_resources.image(one_pixel()).expect("old image");
+        let mut new_recording = new_resources.recording();
+        let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            new_recording.name(&old_image);
+        }));
+        assert!(
+            rejected.is_err(),
+            "a recording on a replacement engine must reject an old resource handle"
+        );
+        let new_image = new_resources.image(one_pixel()).expect("new image");
+        let _new_id = new_recording.name(&new_image);
+    }
+
     fn added_images(events: &[Event]) -> Vec<ImageId> {
         events
             .iter()
@@ -1034,6 +1055,15 @@ pub(crate) mod tests {
                 self.image = None;
             }
             false
+        }
+
+        fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+            let Self { frame, last, .. } = *self;
+            Box::new(Self {
+                frame,
+                last,
+                image: None,
+            })
         }
     }
 
