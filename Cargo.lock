@@ -3471,7 +3471,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=ecf84009952be5ed630f05115e12096d78416490#ecf84009952be5ed630f05115e12096d78416490"
+source = "git+https://github.com/water-rs/hydrolysis?rev=01172c0513a5e83c5fa472d4917f4caf259ac097#01172c0513a5e83c5fa472d4917f4caf259ac097"
 dependencies = [
  "accesskit",
  "android_logger",
