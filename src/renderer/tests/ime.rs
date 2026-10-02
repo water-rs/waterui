@@ -30,10 +30,10 @@ use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Str};
 use waterui_form::secure::{Secure, secure};
+use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::{Code, Key, NamedKey, SurfaceInputEvent};
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneView,
-};
+use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
 use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -545,26 +545,12 @@ fn probe_caret() -> Option<kurbo::Rect> {
     Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))
 }
 
-struct InputProbe {
-    log: ProbeLog,
-}
+struct InputProbe;
 
-impl GpuView for InputProbe {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+impl GpuContent for InputProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, _frame: &mut GpuFrame) {}
-
-    fn wants_input_events(&self) -> bool {
-        true
-    }
-
-    fn input(&mut self, event: &SurfaceInputEvent) {
-        self.log.0.borrow_mut().push(event.clone());
-    }
-
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
-        probe_caret()
-    }
+    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
 struct SceneProbe {
@@ -572,7 +558,13 @@ struct SceneProbe {
 }
 
 impl SceneContent for SceneProbe {
-    fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
         false
     }
 
@@ -593,7 +585,11 @@ fn surface_view(scene: bool, log: ProbeLog) -> AnyView {
     let surface = if scene {
         AnyView::new(SceneView::new(SceneProbe { log }))
     } else {
-        AnyView::new(GpuSurface::new(InputProbe { log }))
+        AnyView::new(
+            GpuContentView::new(InputProbe)
+                .on_input(move |event| log.0.borrow_mut().push(event.clone()))
+                .on_ime_caret(probe_caret),
+        )
     };
     AnyView::new(vstack((
         vstack((text("header"),)).size(WINDOW_WIDTH as f32, HEADER_HEIGHT),

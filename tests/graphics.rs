@@ -6,18 +6,16 @@
 //! it asserted there, mounted under `Material3::defaults()` on the rendered
 //! runtime.
 
-use kurbo::{Affine, Rect, Shape as _};
-use peniko::{Brush, Color, Fill};
+use kurbo::{Rect, Shape as _};
 use waterui::ViewExt as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::component::text;
+use waterui::graphics::cherenkov::{Draw, Paint, WorkingColor};
 use waterui::graphics::color::Srgb;
 use waterui::layout::Size;
 use waterui::reactive::constant;
 use waterui::shape::{Circle, ShapeExt as _};
-use waterui_graphics::{
-    AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, Picture, ShaderSurface,
-};
+use waterui_graphics::{FlowingGradient, Gradient, Picture, ShaderPaintView};
 use waterui_testing::{OffscreenApp, Role};
 
 fn linear_gradient_view() -> impl waterui::View {
@@ -35,14 +33,14 @@ fn linear_gradient_view() -> impl waterui::View {
 }
 
 fn animated_mesh_gradient_view() -> impl waterui::View {
-    AnimatedMeshGradient::new(AnimatedMeshGradientConfig::soft_blush())
+    FlowingGradient::new()
         .size(180.0, 120.0)
         .a11y_role(AccessibilityRole::Image)
         .a11y_label("Animated mesh gradient")
 }
 
 fn shader_surface_view() -> impl waterui::View {
-    ShaderSurface::new(include_str!("fixtures/two_tone.wgsl"))
+    ShaderPaintView::new(include_str!("fixtures/two_tone.wgsl"))
         .size(180.0, 120.0)
         .a11y_role(AccessibilityRole::Image)
         .a11y_label("Shader surface")
@@ -50,13 +48,10 @@ fn shader_surface_view() -> impl waterui::View {
 
 /// A drawing that names itself, the way an SVG with a `<title>` does.
 fn labeled_picture_view() -> impl waterui::View {
-    let recording = Picture::record(|scene| {
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            &Brush::Solid(Color::BLACK),
-            None,
-            &Rect::new(0.0, 0.0, 24.0, 24.0).to_path(0.1),
+    let recording = Picture::record(|recorder| {
+        recorder.fill(
+            Rect::new(0.0, 0.0, 24.0, 24.0).to_path(0.1),
+            Paint::Solid(WorkingColor::new([0.0, 0.0, 0.0, 1.0])),
         );
     });
     Picture::new(Size::new(24.0, 24.0), constant(recording)).labeled("Warning sign")

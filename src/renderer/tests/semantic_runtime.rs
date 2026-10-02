@@ -33,9 +33,9 @@ use waterui_form::picker::date::DatePicker;
 use waterui_form::picker::{PickerStyle, picker};
 use waterui_form::secure::secure;
 use waterui_graphics::Color;
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneView,
-};
+use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::{VStackLayout, hstack, vstack};
 use waterui_layout::{Divider, LazyContainer, scroll};
@@ -654,10 +654,10 @@ fn color_picker_emits_and_popup_swatches_select() {
     let picked = tint.snapshot().resolve(&env).snapshot();
     let expected = Color::srgb(0xba, 0x1a, 0x1a).resolve(&env).snapshot();
     for (picked, expected, channel) in [
-        (picked.red, expected.red, "red"),
-        (picked.green, expected.green, "green"),
-        (picked.blue, expected.blue, "blue"),
-        (picked.opacity, expected.opacity, "opacity"),
+        (picked.components[0], expected.components[0], "red"),
+        (picked.components[1], expected.components[1], "green"),
+        (picked.components[2], expected.components[2], "blue"),
+        (picked.components[3], expected.components[3], "opacity"),
     ] {
         assert_eq!(picked, expected, "the swatch wrote a different {channel}");
     }
@@ -1658,7 +1658,13 @@ fn segmented_picker_hidden_label_still_names_the_group() {
 struct Chart;
 
 impl SceneContent for Chart {
-    fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
         false
     }
 
@@ -1684,24 +1690,20 @@ fn scene_view_emits_an_image_leaf_with_its_content_label() {
 /// the tree as bare pixels.
 struct GpuChart;
 
-impl GpuView for GpuChart {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {}
+impl GpuContent for GpuChart {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, _frame: &mut GpuFrame) {}
-
-    fn accessibility_label(&self) -> Option<String> {
-        Some("weekly chart".to_string())
-    }
-
-    fn accessibility_value(&self) -> Option<String> {
-        Some("up 12% week over week".to_string())
-    }
+    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
 #[test]
 fn gpu_surface_emits_an_image_leaf_with_its_label_and_value() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(GpuSurface::new(GpuChart))
+        AnyView::new(
+            GpuContentView::new(GpuChart)
+                .labeled("weekly chart")
+                .described("up 12% week over week"),
+        )
     }));
 
     let update = pumped(&mut runtime);

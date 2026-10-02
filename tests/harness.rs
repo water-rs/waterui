@@ -7,8 +7,8 @@
 //! it asserted there, mounted under `Material3::defaults()` on the rendered
 //! runtime.
 
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hydrolysis_m3::Material3;
@@ -17,7 +17,7 @@ use waterui::Signal as _;
 use waterui::SignalExt as _;
 use waterui::ViewExt as _;
 use waterui::app::App;
-use waterui::color::ResolvedColor;
+use waterui::color::WorkingColor;
 use waterui::component::{text, vstack};
 use waterui::graphics::color::Srgb;
 use waterui::layout::scroll::ScrollView;
@@ -33,7 +33,7 @@ use waterui_testing::{PerfConfig, Role, TestHost, ui};
 /// the override is a view-scoped plugin — applied after the style's tokens,
 /// on the mounted view's environment scope, which is where the origin's
 /// builder closure wrote it.
-struct ForegroundSlot(ResolvedColor);
+struct ForegroundSlot(WorkingColor);
 
 impl waterui::Plugin for ForegroundSlot {
     fn install(self, env: &mut Environment) {
@@ -42,13 +42,7 @@ impl waterui::Plugin for ForegroundSlot {
 }
 
 fn white_foreground() -> ForegroundSlot {
-    ForegroundSlot(ResolvedColor {
-        red: 1.0,
-        green: 1.0,
-        blue: 1.0,
-        opacity: 1.0,
-        headroom: 1.0,
-    })
+    ForegroundSlot(WorkingColor::new([1.0, 1.0, 1.0, 1.0]))
 }
 
 // Origin: waterui `testing/src/tests.rs`.
@@ -535,26 +529,25 @@ fn ui_test_drains_local_tasks_through_headless_runtime() {
 // Rendered-runtime behavior the semantic pipeline cannot express
 // ============================================================================
 
-use waterui::graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
+use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui::graphics::{GpuContent, GpuContentView};
 
-/// A `GpuView` whose `setup` yields before it is ready, the way a real one does
-/// while it builds pipelines. It draws nothing until setup has completed, so a
-/// capture taken before the executor has driven that future sees only the
-/// window background.
+/// A `GpuContent` that draws nothing until its `setup` has run — the
+/// readiness flag distinguishes "the engine ran setup" from "a render slipped
+/// in first", the property the async-setup regression exercised.
 #[derive(Debug)]
 struct DeferredClearRenderer {
     color: waterui_graphics::wgpu::Color,
-    ready: Rc<Cell<bool>>,
+    ready: Arc<AtomicBool>,
 }
 
-impl GpuView for DeferredClearRenderer {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut Environment) {
-        YieldOnce::default().await;
-        self.ready.set(true);
+impl GpuContent for DeferredClearRenderer {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {
+        self.ready.store(true, Ordering::Relaxed);
     }
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        if !self.ready.get() {
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        if !self.ready.load(Ordering::Relaxed) {
             return;
         }
         let mut encoder = frame.device.create_command_encoder(
@@ -566,7 +559,7 @@ impl GpuView for DeferredClearRenderer {
             let _pass = encoder.begin_render_pass(&waterui_graphics::wgpu::RenderPassDescriptor {
                 label: Some("hydrolysis_deferred_gpu_surface_pass"),
                 color_attachments: &[Some(waterui_graphics::wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
+                    view: frame.view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: waterui_graphics::wgpu::Operations {
@@ -584,30 +577,8 @@ impl GpuView for DeferredClearRenderer {
     }
 }
 
-/// Returns `Pending` exactly once, so a future awaiting it needs a second poll.
-#[derive(Default)]
-struct YieldOnce {
-    polled: bool,
-}
-
-impl std::future::Future for YieldOnce {
-    type Output = ();
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
-        if self.polled {
-            return std::task::Poll::Ready(());
-        }
-        self.polled = true;
-        cx.waker().wake_by_ref();
-        std::task::Poll::Pending
-    }
-}
-
-/// A `GpuSurface` must reach the captured frame even though its `setup` is
-/// async. Capturing the very first pumped frame photographs the surface before
+/// A `GpuContentView` must reach the captured frame only after its `setup`
+/// ran. Capturing the very first pumped frame photographs the surface before
 /// any GPU content exists — the regression that made every GPU preview in the
 /// book render as a flat background.
 ///
@@ -615,18 +586,21 @@ impl std::future::Future for YieldOnce {
 /// origin's `install_theme`/`install_m3` environment writes, which is where
 /// the same install now happens.
 #[test]
-fn headless_capture_waits_for_async_gpu_setup() {
-    let ready = Rc::new(Cell::new(false));
-    let ready_for_view = Rc::clone(&ready);
+fn headless_capture_waits_for_gpu_setup() {
+    let ready = Arc::new(AtomicBool::new(false));
+    let ready_for_view = Arc::clone(&ready);
     let content = AnyViewBuilder::new(move || {
-        AnyView::new(GpuSurface::new(DeferredClearRenderer {
+        AnyView::new(GpuContentView::new(DeferredClearRenderer {
+            // Black is gamut-neutral: it survives the engine's linear-P3
+            // presentation unchanged, where a saturated primary would
+            // shift under the P3 → sRGB gamut map.
             color: waterui_graphics::wgpu::Color {
-                r: 1.0,
+                r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 1.0,
             },
-            ready: Rc::clone(&ready_for_view),
+            ready: Arc::clone(&ready_for_view),
         }))
     });
 
@@ -644,8 +618,8 @@ fn headless_capture_waits_for_async_gpu_setup() {
     }
     assert!(settled, "frame never settled");
     assert!(
-        ready.get(),
-        "the async GpuView::setup must have been driven to completion"
+        ready.load(Ordering::Relaxed),
+        "GpuContent::setup must have run before the frame was presented"
     );
 
     let snapshot = runtime
@@ -657,8 +631,8 @@ fn headless_capture_waits_for_async_gpu_setup() {
         * 4;
     assert_eq!(
         &snapshot.rgba8[center..center + 3],
-        &[255, 0, 0],
-        "the GpuSurface content must be present in the captured frame"
+        &[0, 0, 0],
+        "the GpuContentView content must be present in the captured frame"
     );
 }
 

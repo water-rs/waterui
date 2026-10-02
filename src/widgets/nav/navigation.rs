@@ -1,4 +1,3 @@
-use crate::engine::Brush;
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
 #[cfg(feature = "accessibility")]
@@ -10,7 +9,7 @@ use crate::renderer::{
     WidgetRenderContext, measure_navigation_view_intrinsic,
     measure_owned_navigation_view_with_proposal, measure_transient_view_with_proposal,
     navigation_back_button_rect, navigation_base_bar_height_for_display_mode,
-    normalize_layout_view, resolved_color_to_peniko, split_compact_threshold, transformed_rect,
+    normalize_layout_view, split_compact_threshold, transformed_rect,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -31,7 +30,8 @@ use waterui_controls::text_field::TextField;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Metadata, Native};
-use waterui_graphics::color::{Color, ResolvedColor};
+use waterui_graphics::cherenkov::{Paint, WorkingColor};
+use waterui_graphics::color::Color;
 
 #[derive(Clone, Copy)]
 struct NavigationLeadingReserve(f64);
@@ -44,6 +44,24 @@ fn navigation_leading_reserve(env: &Environment) -> f64 {
 fn back_button_title_reserve(theme: &Rc<dyn crate::engine::WidgetTheme>) -> f64 {
     let metrics = theme.navigation_metrics();
     metrics.back_button_size + metrics.title_leading_inset
+}
+
+/// The environment a page is presented under: `base`, plus the stack's
+/// back-button reserve for any pushed destination. The reserve is a
+/// property of the page, not of the stack's current depth — a pushed page
+/// always shows the back chrome, the root never does — so a departing or
+/// landing page's cached scene is validated and re-recorded against *its*
+/// env, not the current top's (water-rs/hydrolysis#325).
+fn presented_page_env(
+    base: &Environment,
+    identity: u64,
+    theme: &Rc<dyn crate::engine::WidgetTheme>,
+) -> Environment {
+    let mut env = base.clone();
+    if identity != 0 {
+        env.insert(NavigationLeadingReserve(back_button_title_reserve(theme)));
+    }
+    env
 }
 
 /// The retained render state of a `NavigationView`. The bar's semantic title,
@@ -66,7 +84,7 @@ pub(crate) struct NavigationViewRenderState {
     /// binding stays live through the node's own re-flush). `Some` exactly when
     /// `search` is present.
     search_field: Option<RetainedSubview>,
-    color: Computed<ResolvedColor>,
+    color: Computed<WorkingColor>,
     hidden: Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
     subtitle_present: bool,
@@ -514,11 +532,11 @@ pub(crate) fn render_navigation_view_parts(
             ctx.bounds.x1,
             (ctx.bounds.y0 + top_bar_height).min(ctx.bounds.y1),
         );
-        let bar_color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+        let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = ctx.theme();
             let mut draw = ctx.draw_context();
-            theme.draw_navigation_bar(&mut draw, bar_rect, &Brush::from(bar_color));
+            theme.draw_navigation_bar(&mut draw, bar_rect, &bar_color);
             let separator = kurbo::Rect::new(
                 bar_rect.x0,
                 (bar_rect.y1 - 1.0).max(bar_rect.y0),
@@ -678,11 +696,11 @@ pub(crate) fn render_navigation_view_parts(
             ctx.bounds.x1,
             ctx.bounds.y1,
         );
-        let bar_color = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&color_signal));
+        let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = ctx.theme();
             let mut draw = ctx.draw_context();
-            theme.draw_navigation_bar(&mut draw, bottom_rect, &Brush::from(bar_color));
+            theme.draw_navigation_bar(&mut draw, bottom_rect, &bar_color);
         }
         flush_toolbar_group(
             ctx,
@@ -1499,7 +1517,7 @@ fn render_split_detail(
 pub(crate) struct NavigationStackRenderState {
     unresolved_root: Option<AnyView>,
     root: Option<RetainedSubview>,
-    background: Option<Computed<ResolvedColor>>,
+    background: Option<Computed<WorkingColor>>,
     transition_style: AnyNavigationTransition,
 }
 
@@ -1539,7 +1557,7 @@ impl NavigationStackRenderState {
             .expect("Hydrolysis navigation root must be resolved before rendering")
     }
 
-    fn background(&self) -> Computed<ResolvedColor> {
+    fn background(&self) -> Computed<WorkingColor> {
         self.background
             .clone()
             .expect("Hydrolysis navigation background must be resolved before rendering")
@@ -1560,7 +1578,7 @@ fn navigation_entry_identity(
 fn render_navigation_page_scene(
     renderer: &mut HydrolysisRenderer,
     state: &Rc<RefCell<NavigationStackRenderState>>,
-    entries: &crate::renderer::navigation_state::NavigationEntries,
+    slot_key: &crate::renderer::NavigationKey,
     identity: u64,
     env: &Environment,
     size: LayoutSize,
@@ -1577,9 +1595,22 @@ fn render_navigation_page_scene(
             state.root_mut().render_built_scene(renderer, env, size)
         }
     } else {
+        let (entries, pending_removed) = {
+            let slot = renderer
+                .navigation
+                .slots
+                .get(slot_key)
+                .expect("Hydrolysis navigation slot missing during page scene render");
+            (Rc::clone(&slot.entries), Rc::clone(&slot.pending_removed))
+        };
         let mut entries = entries.borrow_mut();
+        let mut pending_removed = pending_removed.borrow_mut();
+        // A pop's departing entry has already moved to `pending_removed`; it
+        // stays retained there until the transaction completes, so it is
+        // still a valid render source.
         let entry = entries
             .iter_mut()
+            .chain(pending_removed.iter_mut())
             .find(|entry| entry.identity == identity)
             .unwrap_or_else(|| {
                 panic!("Hydrolysis navigation entry identity {identity} is not retained")
@@ -1594,11 +1625,10 @@ fn render_navigation_page_scene(
     };
     let mut scene = Recording::new();
     let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
-    scene.fill(
+    scene.fill_paint(
         peniko::Fill::NonZero,
         kurbo::Affine::IDENTITY,
-        &peniko::Brush::Solid(resolved_color_to_peniko(renderer.read_signal(&background))),
-        None,
+        Paint::Solid(renderer.read_signal(&background)),
         &bounds,
     );
     scene.append(&captured.scene, kurbo::Affine::IDENTITY);
@@ -1772,7 +1802,7 @@ pub(crate) fn render_navigation_stack_parts(
     let slot_key = crate::renderer::NavigationKey::for_rc(state);
     let entries = ctx.renderer_mut().bind_navigation_entries(&slot_key);
 
-    let mut local_env = env.clone();
+    let mut stack_env = env.clone();
     let controller = ctx
         .renderer_mut()
         .navigation
@@ -1792,11 +1822,11 @@ pub(crate) fn render_navigation_stack_parts(
         // retained scope lacks. Replaying the retained overlays on top of the
         // live environment gives exactly that precedence, for every depth
         // and for path-backed and plain stacks alike.
-        local_env = retained_env.layered_on(env);
+        stack_env = retained_env.layered_on(env);
     }
-    local_env.insert(controller);
+    stack_env.insert(controller);
 
-    if let Some(root_state) = state.borrow_mut().resolve_root(&local_env) {
+    if let Some(root_state) = state.borrow_mut().resolve_root(&stack_env) {
         ctx.renderer_mut()
             .install_navigation_root_state(&slot_key, root_state);
     }
@@ -1807,22 +1837,18 @@ pub(crate) fn render_navigation_stack_parts(
     } else {
         navigation_entry_identity(&entries, depth - 1)
     };
-    if depth > 0 {
-        let theme = ctx.theme();
-        local_env.insert(NavigationLeadingReserve(back_button_title_reserve(&theme)));
-    }
+    let local_env = presented_page_env(&stack_env, active_identity, &ctx.theme());
 
     #[allow(clippy::cast_possible_truncation)]
     let scene_size = LayoutSize::new(ctx.bounds.width() as f32, ctx.bounds.height() as f32);
     let background = state.borrow().background();
-    let background = resolved_color_to_peniko(ctx.renderer_mut().read_signal(&background));
+    let background = Paint::Solid(ctx.renderer_mut().read_signal(&background));
     let transform = ctx.transform;
     let bounds = ctx.bounds;
-    ctx.renderer_mut().scene_mut().fill(
+    ctx.renderer_mut().scene_mut().fill_paint(
         peniko::Fill::NonZero,
         transform,
-        &peniko::Brush::Solid(background),
-        None,
+        background,
         &bounds,
     );
 
@@ -1834,6 +1860,13 @@ pub(crate) fn render_navigation_stack_parts(
         .activate_navigation_root_if_needed(&slot_key, &local_env);
 
     if let Some((previous_identity, _)) = navigation_change {
+        // The departing page is validated — and re-recorded when stale —
+        // against the env *it* is presented under, not the new top's: a pop
+        // to root keeps the departing page's reserve, a push leaves the root
+        // reserve-less. A pop has already moved the departing entry to
+        // `pending_removed`, where it stays renderable until the transaction
+        // completes.
+        let departing_env = presented_page_env(&stack_env, previous_identity, &ctx.theme());
         let previous_scene_is_cached = ctx
             .renderer_mut()
             .navigation
@@ -1842,16 +1875,18 @@ pub(crate) fn render_navigation_stack_parts(
             .expect("Hydrolysis navigation slot missing")
             .scene_cache
             .get(&previous_identity)
-            .is_some_and(|scene| scene.leading_reserve == navigation_leading_reserve(&local_env));
+            .is_some_and(|scene| {
+                scene.leading_reserve == navigation_leading_reserve(&departing_env)
+            });
         if !previous_scene_is_cached {
             // Missing or recorded under a different leading reserve: re-record —
             // `render_navigation_page_scene` panics if the page is not retained.
             let previous_scene = render_navigation_page_scene(
                 ctx.renderer_mut(),
                 state,
-                &entries,
+                &slot_key,
                 previous_identity,
-                &local_env,
+                &departing_env,
                 scene_size,
                 true,
             );
@@ -1868,7 +1903,7 @@ pub(crate) fn render_navigation_stack_parts(
     let active_scene = render_navigation_page_scene(
         ctx.renderer_mut(),
         state,
-        &entries,
+        &slot_key,
         active_identity,
         &local_env,
         scene_size,
@@ -1922,6 +1957,7 @@ pub(crate) fn render_navigation_stack_parts(
                         // `entries`; it is held here until its teardown runs,
                         // which is the only place its declaration survives.
                         slot.pending_removed
+                            .borrow()
                             .iter()
                             .find(|entry| entry.identity == moving_identity)
                             .and_then(|entry| entry.transition.clone())
@@ -2038,6 +2074,10 @@ pub(crate) fn render_navigation_stack_parts(
     } else {
         navigation_entry_identity(&entries, depth - 2)
     };
+    // The page an interactive pop would reveal is validated against the env
+    // *it* is presented under — a gesture that pops to root reveals the
+    // reserve-less root.
+    let landing_env = presented_page_env(&stack_env, previous_identity, &ctx.theme());
     let previous_scene = ctx
         .renderer_mut()
         .navigation
@@ -2046,15 +2086,15 @@ pub(crate) fn render_navigation_stack_parts(
         .expect("Hydrolysis navigation slot missing")
         .scene_cache
         .get(&previous_identity)
-        .filter(|scene| scene.leading_reserve == navigation_leading_reserve(&local_env))
+        .filter(|scene| scene.leading_reserve == navigation_leading_reserve(&landing_env))
         .cloned();
     let previous_scene = previous_scene.unwrap_or_else(|| {
         let scene = render_navigation_page_scene(
             ctx.renderer_mut(),
             state,
-            &entries,
+            &slot_key,
             previous_identity,
-            &local_env,
+            &landing_env,
             scene_size,
             true,
         );
@@ -2313,7 +2353,7 @@ pub(crate) fn emit_navigation_stack_accessibility(
 }
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use super::resolved_split_column_width;
     use crate::HeadlessRuntime;
@@ -2375,10 +2415,8 @@ mod tests {
             .painted_recordings()
             .chain(std::iter::once(renderer.scene()))
         {
-            let resources = &recording.legacy_scene().encoding().resources;
-            for run in &resources.glyph_runs {
-                let transform = run.transform.to_kurbo();
-                for glyph in &resources.glyphs[run.glyphs.clone()] {
+            for (transform, glyphs) in recording.glyph_runs() {
+                for glyph in glyphs {
                     let point = transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));
                     leftmost = leftmost.min(point.x);
                 }
@@ -2446,5 +2484,65 @@ mod tests {
             "pushed title paints under the back chevron at {leading_edge} \
              (reserve is {LEADING_RESERVE})"
         );
+    }
+
+    /// A pop's departing entry has already moved to `pending_removed` when
+    /// its cached scene is validated, and that scene was recorded under the
+    /// departing page's own env — a pushed page's reserve — not the new
+    /// top's. Popping to root must replay it, not invalidate the cache and
+    /// panic re-recording a page `entries` no longer lists
+    /// (water-rs/hydrolysis#325).
+    #[test]
+    fn pop_to_root_replays_the_departing_scene() {
+        let path = NavigationPath::<i64>::new();
+        let builder_path = path.clone();
+        let mut runtime = HeadlessRuntime::new_for_tests(
+            test_environment(),
+            AnyViewBuilder::new(move || {
+                let path = builder_path.clone();
+                waterui_core::AnyView::new(
+                    NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("")))
+                        .destination(|route: i64| {
+                            NavigationView::new(format!("Page {route}"), text(""))
+                        }),
+                )
+            }),
+            600,
+            800,
+            MinimalTestTheme::default(),
+        );
+        pump_until_settled(&mut runtime);
+        path.push(7);
+        pump_until_settled(&mut runtime);
+        path.push(8);
+        pump_until_settled(&mut runtime);
+
+        // Pop through depth 1, then to root. The first pop proves the
+        // transition replays the departing scene; the second exercises the
+        // reserve gate under the root's reserve-less env.
+        let _ = path.pop();
+        let _ = runtime.pump_at(true, Instant::now());
+        assert!(
+            runtime
+                .renderer()
+                .navigation
+                .slots
+                .values()
+                .any(|slot| slot.transition.is_some()),
+            "pop must install a transition replaying the departing scene"
+        );
+        pump_until_settled(&mut runtime);
+        let _ = path.pop();
+        // Drive the frame clock forward past the transition duration instead
+        // of waiting on real time.
+        let mut instant = Instant::now();
+        for _ in 0..64 {
+            instant += Duration::from_millis(500);
+            let _ = runtime.pump_at(true, instant);
+            if runtime.is_settled() {
+                break;
+            }
+        }
+        assert!(runtime.is_settled());
     }
 }

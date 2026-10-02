@@ -13,15 +13,18 @@
 //! makes "the probe did not render" mean something — the frames really
 //! happened, and the probe sat them out.
 
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::time::Duration;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use waterui::{Binding, ViewExt as _};
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::{GpuContext, GpuFrame, GpuSurface, GpuView};
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
+use waterui_graphics::input::SurfaceInputEvent;
+use waterui_graphics::{GpuContent, GpuContentView, RedrawHandle};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
 
@@ -45,10 +48,14 @@ const POINTER_ID: u64 = 3;
 
 /// A view that counts the frames it is actually asked to render, and that can
 /// be switched between idle and continuously animating from the test body.
+/// The `redraw` slot captures the [`Context`] redraw handle the engine hands
+/// the view at setup, so the test can drive an out-of-band redraw request —
+/// the path a decoder or compositor callback takes.
 #[derive(Clone, Default)]
 struct RenderCounter {
-    renders: Rc<Cell<u32>>,
-    animating: Rc<Cell<bool>>,
+    renders: Arc<AtomicU32>,
+    animating: Arc<AtomicBool>,
+    redraw: Arc<Mutex<Option<RedrawHandle>>>,
 }
 
 impl RenderCounter {
@@ -61,22 +68,36 @@ impl RenderCounter {
     }
 
     fn count(&self) -> u32 {
-        self.renders.get()
+        self.renders.load(Ordering::Relaxed)
     }
 
     fn set_animating(&self, animating: bool) {
-        self.animating.set(animating);
+        self.animating.store(animating, Ordering::Relaxed);
+    }
+
+    /// Requests another frame through the `Context` redraw handle — the same
+    /// call an asynchronously producing content (a video decoder, a
+    /// compositor callback) makes from off the render path.
+    fn request_redraw(&self) {
+        self.redraw
+            .lock()
+            .expect("redraw slot")
+            .as_ref()
+            .expect("setup stored the redraw handle")
+            .request_redraw();
     }
 }
 
 struct CountingView(RenderCounter);
 
-impl GpuView for CountingView {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+impl GpuContent for CountingView {
+    fn setup(&mut self, gpu: &GpuContext<'_>) {
+        *self.0.redraw.lock().expect("redraw slot") = Some(gpu.redraw.clone());
+    }
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.0.renders.set(self.0.renders.get() + 1);
-        if self.0.animating.get() {
+    fn render(&mut self, frame: &mut GpuFrame<'_>) {
+        self.0.renders.fetch_add(1, Ordering::Relaxed);
+        if self.0.animating.load(Ordering::Relaxed) {
             frame.request_redraw();
         }
     }
@@ -89,15 +110,29 @@ fn runtime_with(
     probe: &RenderCounter,
     probe_width: &Binding<f32>,
 ) -> HeadlessRuntime {
-    let views = RefCell::new(Some((driver.clone(), probe.clone(), probe_width.clone())));
+    runtime_with_probe_view(
+        driver,
+        GpuContentView::new(CountingView(probe.clone())),
+        probe_width,
+    )
+}
+
+/// The same window, with the probe surface's view supplied by the test so it
+/// can carry `on_input` / `on_ime_caret` handlers.
+fn runtime_with_probe_view(
+    driver: &RenderCounter,
+    probe_view: GpuContentView,
+    probe_width: &Binding<f32>,
+) -> HeadlessRuntime {
+    let views = RefCell::new(Some((driver.clone(), probe_view, probe_width.clone())));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
-        let (driver, probe, probe_width) = views
+        let (driver, probe_view, probe_width) = views
             .borrow_mut()
             .take()
             .expect("the probe window is built once");
         AnyView::new(vstack((
-            GpuSurface::new(CountingView(driver)).size(WINDOW_WIDTH as f32, DRIVER_HEIGHT),
-            Frame::new(GpuSurface::new(CountingView(probe)))
+            GpuContentView::new(CountingView(driver)).size(WINDOW_WIDTH as f32, DRIVER_HEIGHT),
+            Frame::new(probe_view)
                 .width(probe_width)
                 .height(PROBE_HEIGHT),
         )))
@@ -196,19 +231,28 @@ fn a_pointer_moving_over_an_idle_surface_re_renders_it() {
     let driver = RenderCounter::animating();
     let probe = RenderCounter::default();
     let width = Binding::f32(PROBE_WIDTH);
-    let mut runtime = runtime_with(&driver, &probe, &width);
+    let handler_probe = probe.clone();
+    let mut runtime = runtime_with_probe_view(
+        &driver,
+        GpuContentView::new(CountingView(probe.clone())).on_input(move |event| {
+            if let SurfaceInputEvent::PointerMove { .. } = event {
+                handler_probe.request_redraw();
+            }
+        }),
+        &width,
+    );
     let mut frames = Frames::new();
     let rendered = settled(&mut runtime, &mut frames, &driver, &probe);
 
-    // Pointer-reactive views sample `GpuFrame::pointer` per frame and never
-    // request a redraw for it, so the pointer moving is the renderer's business
-    // to notice.
+    // Pointer input reaches the surface through `on_input`; the surface
+    // re-renders because the handler asks for it — the move alone renders
+    // nothing.
     move_pointer(&mut runtime, PROBE_ORIGIN_X + 30.0, PROBE_ORIGIN_Y + 20.0);
     frames.pump(&mut runtime, 1);
     assert_eq!(
         probe.count(),
         rendered + 1,
-        "a pointer arriving over the surface changes what its next frame would draw"
+        "a pointer move the handler acts on re-renders the surface once"
     );
 
     frames.pump(&mut runtime, 3);
@@ -218,16 +262,17 @@ fn a_pointer_moving_over_an_idle_surface_re_renders_it() {
         "a pointer that then holds still changes nothing"
     );
 
-    // Leaving the surface projects to no pointer at all, which is a change.
-    move_pointer(&mut runtime, 12.0, 12.0);
+    // The pointer leaving is itself an event the handler sees over this
+    // surface's last-known position.
+    move_pointer(&mut runtime, PROBE_ORIGIN_X + 40.0, PROBE_ORIGIN_Y + 10.0);
     frames.pump(&mut runtime, 1);
     assert_eq!(
         probe.count(),
         rendered + 2,
-        "the pointer leaving is as much a change as it arriving"
+        "the pointer moving elsewhere over the surface reaches its handler"
     );
 
-    // Moving further away outside the surface projects to no pointer again.
+    // Moves outside the surface's hitbox never reach its handler.
     move_pointer(&mut runtime, 40.0, 30.0);
     frames.pump(&mut runtime, 3);
     assert_eq!(
@@ -274,10 +319,11 @@ fn a_surface_asking_for_redraws_renders_every_frame_and_then_settles() {
     let mut frames = Frames::new();
     let rendered = settled(&mut runtime, &mut frames, &driver, &probe);
 
-    // The flag only takes effect once the view runs; the pointer arriving over
-    // it buys that one frame.
+    // The flag only takes effect once the view runs; a redraw request
+    // through the setup-time handle buys that one frame — the same kick a
+    // decoder pushing a new frame off-thread uses.
     probe.set_animating(true);
-    move_pointer(&mut runtime, PROBE_ORIGIN_X + 10.0, PROBE_ORIGIN_Y + 10.0);
+    probe.request_redraw();
     frames.pump(&mut runtime, 1);
     assert_eq!(probe.count(), rendered + 1);
 

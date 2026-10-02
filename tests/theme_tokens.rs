@@ -11,7 +11,7 @@ use std::rc::Rc;
 use hydrolysis::{HeadlessRuntime, SemanticRuntime};
 use hydrolysis_m3::{Material3, MaterialColorScheme};
 use waterui::app::App;
-use waterui::color::ResolvedColor;
+use waterui::color::WorkingColor;
 use waterui::graphics::color::Srgb;
 use waterui::reactive::binding;
 use waterui::theme::color::{Background, Foreground};
@@ -24,8 +24,8 @@ use waterui_core::{AnyView, Environment, View};
 #[derive(Default)]
 struct CapturedTokens {
     scheme: Option<Computed<ColorScheme>>,
-    background: Option<Computed<ResolvedColor>>,
-    foreground: Option<Computed<ResolvedColor>>,
+    background: Option<Computed<WorkingColor>>,
+    foreground: Option<Computed<WorkingColor>>,
 }
 
 /// Records the token signals its environment resolves at build time — a
@@ -79,16 +79,9 @@ fn semantic_probe(env: Environment) -> Rc<RefCell<CapturedTokens>> {
     captured
 }
 
-/// `ResolvedColor` does not compare for equality; compare channel bits.
-fn assert_resolved_eq(actual: ResolvedColor, expected: ResolvedColor, message: &str) {
-    let bits = |color: ResolvedColor| {
-        (
-            color.red.to_bits(),
-            color.green.to_bits(),
-            color.blue.to_bits(),
-            color.opacity.to_bits(),
-        )
-    };
+/// `WorkingColor` does not compare for equality; compare channel bits.
+fn assert_resolved_eq(actual: WorkingColor, expected: WorkingColor, message: &str) {
+    let bits = |color: WorkingColor| color.components.map(f32::to_bits);
     assert_eq!(bits(actual), bits(expected), "{message}");
 }
 
@@ -113,7 +106,7 @@ fn application_theme_wins_over_framework_defaults() {
             .as_ref()
             .expect("a `Background` token must be installed")
             .snapshot(),
-        MaterialColorScheme::baseline_dark().background.resolved(),
+        MaterialColorScheme::baseline_dark().background.working(),
         "`Background` must resolve to the dark Material colour",
     );
 }
@@ -136,7 +129,7 @@ fn bare_application_resolves_framework_defaults() {
             .as_ref()
             .expect("a `Background` token must be installed")
             .snapshot(),
-        ResolvedColor::from_srgb(Srgb::from_u32(0xFF_FF_FF)),
+        Srgb::from_u32(0xFF_FF_FF).resolve(),
         "`Background` must be the framework default",
     );
     assert_resolved_eq(
@@ -145,7 +138,7 @@ fn bare_application_resolves_framework_defaults() {
             .as_ref()
             .expect("a `Foreground` token must be installed")
             .snapshot(),
-        ResolvedColor::from_srgb(Srgb::from_u32(0x11_18_27)),
+        Srgb::from_u32(0x11_18_27).resolve(),
         "`Foreground` must be the framework default",
     );
 }
@@ -172,7 +165,7 @@ fn reactive_color_scheme_rethemes_resolved_tokens() {
                 .as_ref()
                 .expect("a `Background` token must be installed")
                 .snapshot(),
-            MaterialColorScheme::baseline_light().background.resolved(),
+            MaterialColorScheme::baseline_light().background.working(),
             "`Background` must start at the light Material colour",
         );
     }
@@ -192,7 +185,7 @@ fn reactive_color_scheme_rethemes_resolved_tokens() {
             .as_ref()
             .expect("a `Background` token must be installed")
             .snapshot(),
-        MaterialColorScheme::baseline_dark().background.resolved(),
+        MaterialColorScheme::baseline_dark().background.working(),
         "`Background` must follow the binding to the dark Material colour",
     );
 }

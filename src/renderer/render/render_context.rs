@@ -1,4 +1,4 @@
-use super::{HydrolysisRenderer, Recording, TailMark, VelloDrawContext};
+use super::{HydrolysisRenderer, Recording, SceneDrawContext, TailMark};
 
 use crate::renderer::HydroState;
 use crate::renderer::frame::LayerTransforms;
@@ -68,15 +68,6 @@ impl RenderContext {
             bounds,
         }
     }
-
-    #[must_use]
-    pub(crate) fn with_identity_transforms(&self, bounds: kurbo::Rect) -> Self {
-        Self {
-            transform: kurbo::Affine::IDENTITY,
-            hit_transform: kurbo::Affine::IDENTITY,
-            bounds,
-        }
-    }
 }
 
 impl<'a> WidgetRenderContext<'a> {
@@ -107,7 +98,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer
     }
 
-    pub(crate) fn draw_context(&mut self) -> VelloDrawContext<'_> {
+    pub(crate) fn draw_context(&mut self) -> SceneDrawContext<'_> {
         self.renderer.draw_context(self.render_context())
     }
 

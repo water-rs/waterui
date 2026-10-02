@@ -1,4 +1,4 @@
-//! The Vello GPU attachment for the Android host.
+//! The Cherenkov GPU attachment for the Android host.
 //!
 //! One [`AndroidGpuContext`] per process owns the wgpu instance, adapter,
 //! device and queue; every presentation attachment ([`AndroidSurface`]) is a
@@ -71,6 +71,7 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
             compatible_surface: None,
+            apply_limit_buckets: false,
         })
         .await
         .map_err(|error| {
@@ -82,21 +83,23 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 
 struct AndroidGpuContextInner {
     instance: wgpu::Instance,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    device_loss: waterui_graphics::DeviceLoss,
+    device_loss: crate::platform::DeviceLoss,
 }
 
 impl Drop for AndroidGpuContextInner {
     fn drop(&mut self) {
-        waterui_graphics::shared_context::drain_device_before_teardown(&self.device);
+        crate::platform::drain_device_before_teardown(&self.device);
     }
 }
 
 /// The process-wide wgpu context the Android host renders through.
 ///
-/// Vulkan only — the plan of record is Vello over Vulkan, so there is no
+/// Vulkan only — the plan of record is Cherenkov over Vulkan, so there is no
 /// runtime fallback to another GPU API: a Vulkan adapter that cannot paint
 /// is an explicit [`GpuError`] naming the adapter and the missing flags,
 /// never a switch to GLES or another painter.
@@ -112,8 +115,8 @@ impl AndroidGpuContext {
     }
 
     async fn request_async() -> Result<Self, GpuError> {
-        // The painter's shaders require these capabilities — vello's stroke
-        // flatten uses f16-in-f32 builtins unconditionally, and the pipeline is
+        // The engine's shaders require these capabilities — its compute
+        // pipeline uses f16-in-f32 builtins unconditionally, and the pipeline is
         // compute. The default pick may lack them (software Vulkan drivers
         // like llvmpipe drop shaderFloat16), so walk every Vulkan adapter and
         // choose the first that can paint; a device with none is an explicit
@@ -155,9 +158,9 @@ impl AndroidGpuContext {
             "failed to find compute-capable wgpu adapter",
         );
         let required_limits = crate::platform::required_device_limits(&adapter);
-        let required_features =
-            waterui_graphics::shared_context::required_media_features(adapter.features())
-                | (adapter.features() & wgpu::Features::PIPELINE_CACHE);
+        let required_features = crate::platform::required_media_features(adapter.features())
+            | (adapter.features()
+                & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
@@ -173,10 +176,18 @@ impl AndroidGpuContext {
                     "hydrolysis android: failed to request wgpu device: {error}"
                 ))
             })?;
-        let device_loss = waterui_graphics::DeviceLoss::observe(&device);
+        let context_id = crate::platform::next_gpu_context_id();
+        let shared_device = cherenkov_gpu::interop::SharedDevice {
+            instance: instance.clone(),
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
+        };
+        let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
         Ok(Self {
             inner: Arc::new(AndroidGpuContextInner {
                 instance,
+                context_id,
                 adapter,
                 device,
                 queue,
@@ -297,6 +308,7 @@ impl AndroidSurface {
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
             width: width.max(1),
             height: height.max(1),
             // FIFO vsync-paced presentation with the plan's swapchain depth.
@@ -406,7 +418,7 @@ impl SurfaceProvider for AndroidSurface {
         &self.gpu.inner.queue
     }
 
-    fn device_loss(&self) -> &waterui_graphics::DeviceLoss {
+    fn device_loss(&self) -> &crate::platform::DeviceLoss {
         &self.gpu.inner.device_loss
     }
 
@@ -434,7 +446,7 @@ impl SurfaceProvider for AndroidSurface {
         let SurfaceFrame::Android { output, .. } = frame else {
             panic!("hydrolysis android: surface frame mismatched attachment");
         };
-        output.present();
+        self.queue().present(output);
     }
 
     fn size(&self) -> (u32, u32) {
@@ -446,6 +458,20 @@ impl SurfaceProvider for AndroidSurface {
             .as_ref()
             .map(|config| config.format)
             .unwrap_or(wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.gpu.inner.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        let inner = &*self.gpu.inner;
+        cherenkov_gpu::interop::SharedDevice {
+            instance: inner.instance.clone(),
+            adapter: inner.adapter.clone(),
+            device: inner.device.clone(),
+            queue: inner.queue.clone(),
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {

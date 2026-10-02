@@ -554,11 +554,11 @@ fn resolve_text_style(style: &TextStyle, env: &Environment) -> ResolvedTextStyle
         foreground: style
             .foreground
             .clone()
-            .map(|color| resolved_color_to_rgba8(color.resolve(env).snapshot())),
+            .map(|color| working_color_to_rgba8(color.resolve(env).snapshot())),
         background: style
             .background
             .clone()
-            .map(|color| resolved_color_to_rgba8(color.resolve(env).snapshot())),
+            .map(|color| working_color_to_rgba8(color.resolve(env).snapshot())),
         italic: style.italic,
         underline: style.underline,
         strikethrough: style.strikethrough,
@@ -570,7 +570,7 @@ fn default_text_brush(env: &Environment) -> [u8; 4] {
         || Color::srgb(0, 0, 0).resolve(env).snapshot(),
         |signal| signal.snapshot(),
     );
-    resolved_color_to_rgba8(color)
+    working_color_to_rgba8(color)
 }
 
 fn build_parley_layout(

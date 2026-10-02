@@ -23,12 +23,14 @@ use waterui_core::AnyView;
 use waterui_core::Binding;
 use waterui_core::View;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::{
     Code, Key, Modifiers as W3cModifiers, NamedKey, ScrollUnit, SurfaceInputEvent,
     SurfacePointerButton,
 };
 use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, Scene2D, SceneContent, SceneInvalidator, SceneView,
+    GpuContent, GpuContentView, RecordingResources, SceneContent, SceneInvalidator, SceneView,
 };
 use waterui_layout::scroll::scroll;
 use waterui_layout::stack::{vstack, zstack};
@@ -65,43 +67,30 @@ impl ProbeLog {
     }
 }
 
-struct InputProbe {
-    log: ProbeLog,
-    caret: Option<kurbo::Rect>,
-}
+struct InputProbe;
 
-impl GpuView for InputProbe {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
+impl GpuContent for InputProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
 
-    fn render(&mut self, _frame: &mut GpuFrame) {}
-
-    fn wants_input_events(&self) -> bool {
-        true
-    }
-
-    fn input(&mut self, event: &SurfaceInputEvent) {
-        self.log.0.borrow_mut().push(event.clone());
-    }
-
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
-        self.caret
-    }
+    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
 /// A GPU view that draws only: it must never be handed an input event, and
 /// must never take focus away from the widgets around it.
-struct SilentProbe {
-    log: ProbeLog,
+struct SilentProbe;
+
+impl GpuContent for SilentProbe {
+    fn setup(&mut self, _gpu: &GpuContext<'_>) {}
+
+    fn render(&mut self, _frame: &mut GpuFrame<'_>) {}
 }
 
-impl GpuView for SilentProbe {
-    async fn setup(&mut self, _ctx: &GpuContext<'_>, _env: &mut waterui_core::Environment) {}
-
-    fn render(&mut self, _frame: &mut GpuFrame) {}
-
-    fn input(&mut self, event: &SurfaceInputEvent) {
-        self.log.0.borrow_mut().push(event.clone());
-    }
+/// The input-receiving probe as a view: the `on_input` handler is what makes
+/// the surface take focus and see events; the caret query places IME panels.
+fn probe_view(log: ProbeLog, caret: Option<kurbo::Rect>) -> GpuContentView {
+    GpuContentView::new(InputProbe)
+        .on_input(move |event| log.0.borrow_mut().push(event.clone()))
+        .on_ime_caret(move || caret)
 }
 
 fn runtime_with(surface: impl View) -> HeadlessRuntime {
@@ -211,10 +200,7 @@ enum Pane {
 #[test]
 fn pointer_events_arrive_in_logical_surface_local_coordinates() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    }));
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();
@@ -255,10 +241,7 @@ fn pointer_events_arrive_in_logical_surface_local_coordinates() {
 #[test]
 fn a_press_focuses_the_surface_and_later_frames_keep_that_focus() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    }));
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();
@@ -345,10 +328,7 @@ fn a_press_focuses_the_surface_and_later_frames_keep_that_focus() {
 #[test]
 fn modifiers_reach_the_focused_surface_with_its_keys() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    }));
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
     let start = Instant::now();
     settled(&mut runtime, start);
     press_at(&mut runtime, 5.0, 5.0);
@@ -390,10 +370,7 @@ fn modifiers_reach_the_focused_surface_with_its_keys() {
 #[test]
 fn scrolls_carry_their_unit_and_the_end_of_the_gesture() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    }));
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();
@@ -455,10 +432,7 @@ fn scrolls_carry_their_unit_and_the_end_of_the_gesture() {
 #[test]
 fn composition_reaches_the_surface_as_a_session() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    }));
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
     let start = Instant::now();
     settled(&mut runtime, start);
     press_at(&mut runtime, 5.0, 5.0);
@@ -520,10 +494,10 @@ fn composition_reaches_the_surface_as_a_session() {
 #[test]
 fn the_focused_surface_places_the_input_method_panel() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
-    }));
+    let mut runtime = runtime_with(probe_view(
+        log.clone(),
+        Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
+    ));
     let start = Instant::now();
     settled(&mut runtime, start);
 
@@ -552,7 +526,7 @@ fn the_focused_surface_places_the_input_method_panel() {
 #[test]
 fn a_view_that_does_not_want_input_receives_none() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(SilentProbe { log: log.clone() }));
+    let mut runtime = runtime_with(GpuContentView::new(SilentProbe));
     let start = Instant::now();
     settled(&mut runtime, start);
     let _ = log.drain();
@@ -595,7 +569,13 @@ struct SceneProbe {
 }
 
 impl SceneContent for SceneProbe {
-    fn build_scene(&mut self, _scene: &mut dyn Scene2D, _width: f32, _height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
         *self.builds.borrow_mut() += 1;
         false
     }
@@ -702,10 +682,7 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
 fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
     let log = ProbeLog::default();
     let view = vstack((
-        GpuSurface::new(InputProbe {
-            log: log.clone(),
-            caret: Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
-        }),
+        probe_view(log.clone(), Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))),
         button("next").action(|| {}),
         button("last").action(|| {}),
     ));
@@ -850,11 +827,7 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
 fn the_focused_binding_focuses_the_surface_without_a_pointer() {
     let log = ProbeLog::default();
     let focus = Binding::container(None::<Pane>);
-    let view = GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    })
-    .focused(&focus, Pane::Document);
+    let view = probe_view(log.clone(), None).focused(&focus, Pane::Document);
     let mut runtime = runtime_with(view);
     let start = Instant::now();
     settled(&mut runtime, start);
@@ -911,17 +884,10 @@ fn a_structural_rebuild_re_focuses_the_surface_programmatically() {
     let focus = Binding::container(None::<Pane>);
     let show_canvas = Binding::container(false);
     let view = vstack((
-        GpuSurface::new(InputProbe {
-            log: log_document.clone(),
-            caret: None,
-        })
-        .focused(&focus, Pane::Document),
-        GpuSurface::new(InputProbe {
-            log: log_canvas.clone(),
-            caret: None,
-        })
-        .focused(&focus, Pane::Canvas)
-        .visible(show_canvas.clone()),
+        probe_view(log_document.clone(), None).focused(&focus, Pane::Document),
+        probe_view(log_canvas.clone(), None)
+            .focused(&focus, Pane::Canvas)
+            .visible(show_canvas.clone()),
     ));
     let mut runtime = runtime_with(view);
     let start = Instant::now();
@@ -988,16 +954,8 @@ fn hiding_the_focused_tab_moves_focus_to_the_shown_tab() {
     let log_two = ProbeLog::default();
     let selected = Binding::container(Tab::One);
     let view = vstack((
-        GpuSurface::new(InputProbe {
-            log: log_one.clone(),
-            caret: None,
-        })
-        .visible(selected.equal_to(Tab::One)),
-        GpuSurface::new(InputProbe {
-            log: log_two.clone(),
-            caret: None,
-        })
-        .visible(selected.equal_to(Tab::Two)),
+        probe_view(log_one.clone(), None).visible(selected.equal_to(Tab::One)),
+        probe_view(log_two.clone(), None).visible(selected.equal_to(Tab::Two)),
     ));
     let mut runtime = runtime_with(view);
     let start = Instant::now();
@@ -1096,10 +1054,7 @@ fn hiding_the_focused_tab_moves_focus_to_the_shown_tab() {
 #[test]
 fn window_focus_changes_reach_the_focused_surface() {
     let log = ProbeLog::default();
-    let mut runtime = runtime_with(GpuSurface::new(InputProbe {
-        log: log.clone(),
-        caret: None,
-    }));
+    let mut runtime = runtime_with(probe_view(log.clone(), None));
     let start = Instant::now();
     settled(&mut runtime, start);
     press_at(&mut runtime, 10.0, 10.0);
@@ -1321,10 +1276,7 @@ fn secondary_button_reaches_an_input_surface_without_a_context_menu() {
 fn a_scroll_view_stacked_above_a_surface_receives_the_wheel_and_pan() {
     let log = ProbeLog::default();
     let mut runtime = runtime_with(zstack((
-        GpuSurface::new(InputProbe {
-            log: log.clone(),
-            caret: None,
-        }),
+        probe_view(log.clone(), None),
         scroll(().size(SURFACE_WIDTH, 1_500.0)),
     )));
     let start = Instant::now();

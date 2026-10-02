@@ -237,7 +237,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            native_resource_fonts,
+            |env| native_resource_fonts(waterui_core::ResourceContext::from_environment(env)),
         )
     }
 
@@ -266,7 +266,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            native_resource_fonts,
+            |env| native_resource_fonts(waterui_core::ResourceContext::from_environment(env)),
         )
     }
 
@@ -303,7 +303,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::deterministic_test_fonts,
+            |_| super::fonts::deterministic_test_fonts(),
         )
     }
 
@@ -326,13 +326,14 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::deterministic_test_fonts,
+            |_| super::fonts::deterministic_test_fonts(),
         )
     }
 
     /// Same as [`Self::new_for_tests`] but loads the fonts the windowed
-    /// runners use — the system font collection plus `resources/fonts` — via
-    /// [`native_resource_fonts`] instead of the bundled deterministic set.
+    /// runners use — the system font collection plus the staged fonts
+    /// directory — via [`native_resource_fonts`] instead of the bundled
+    /// deterministic set.
     ///
     /// Text-measurement fidelity tests belong here: the deterministic fonts
     /// shape snugly, so a measure-versus-paint divergence that only appears on
@@ -354,7 +355,11 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::native_test_fonts,
+            |env| {
+                super::fonts::native_test_fonts(waterui_core::ResourceContext::from_environment(
+                    env,
+                ))
+            },
         )
     }
 
@@ -384,7 +389,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            super::fonts::deterministic_test_fonts,
+            |_| super::fonts::deterministic_test_fonts(),
         )
     }
 
@@ -395,13 +400,14 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
         style: impl crate::Style,
-        build_fonts: fn() -> parley::FontContext,
+        build_fonts: fn(&Environment) -> parley::FontContext,
     ) -> Self {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
             .as_ref()
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
-        let mut env = env.extending(waterui_graphics::SceneViewMergeToParent);
+        let mut env = env.extending(waterui_graphics::scene_view::SceneViewMergeToParent);
+        waterui_core::install_application_resources(&mut env);
         waterui::inspector::install(&mut env, inspector);
         let pending_window_queue = Rc::new(RefCell::new(Vec::new()));
         install_native_component_hooks(&mut env);
@@ -416,7 +422,7 @@ impl HeadlessRuntime {
         // seeded from this collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of enumerating
         // the system's fonts for itself.
-        let fonts = FontCollection::new(build_fonts());
+        let fonts = FontCollection::new(build_fonts(&env));
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
@@ -473,7 +479,7 @@ impl HeadlessRuntime {
             popup_windows: Vec::new(),
             theme,
             fonts,
-            _executor_teardown: DrainExecutorOnDrop(local_executor.clone()),
+            _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             _gpu_reclaim: ReclaimGpuOnDrop(gpu.clone()),
             gpu,
             local_executor,
@@ -950,54 +956,6 @@ impl HeadlessRuntime {
                     crate::platform::validated_window_frame(popup.window.frame.snapshot()),
                     popup_snapshot,
                 ));
-            }
-        }
-        // A pump must observe the frame it rendered — legacy verification that
-        // deferred by an interval is drained now, not by whatever renders
-        // next. The settle passes are drain-only: damage a render left
-        // pending is the next pump's work (one render per pump, as on the
-        // window path's single merge), while an armed animation keeps
-        // `mode`/`redraw` pending across every settle and would otherwise
-        // burn a full scene encode per pass on identical content.
-        // The settle passes below replace `render_result`; the pump's `rebuilt`
-        // must still reflect every pass, not only the last one.
-        while self.runtime.queued_deferred_flush {
-            self.runtime.queued_deferred_flush = false;
-            let settled = flush_deferred_window(&mut self.runtime, &self.env, capture_snapshot);
-            rebuilt |= settled.rebuilt;
-            render_result = Some(settled);
-        }
-        self.runtime.queued_deferred_flush = false;
-        if self.runtime.renderer.has_deferred_legacy_frame() {
-            render_result = Some(flush_deferred_window(
-                &mut self.runtime,
-                &self.env,
-                capture_snapshot,
-            ));
-        }
-        for (popup_index, popup) in self.popup_windows.iter_mut().enumerate() {
-            let mut captured = popup_snapshots
-                .iter_mut()
-                .find(|(index, _, _)| *index == popup_index);
-            let capture = captured.is_some();
-            while popup.queued_deferred_flush {
-                popup.queued_deferred_flush = false;
-                let settled = flush_deferred_window(popup, &self.env, capture);
-                rebuilt |= settled.rebuilt;
-                if let (Some(popup_snapshot), Some(entry)) = (settled.snapshot, captured.as_mut()) {
-                    entry.1 =
-                        crate::platform::validated_window_frame(popup.window.frame.snapshot());
-                    entry.2 = popup_snapshot;
-                }
-            }
-            popup.queued_deferred_flush = false;
-            if popup.renderer.has_deferred_legacy_frame() {
-                let settled = flush_deferred_window(popup, &self.env, capture);
-                if let (Some(popup_snapshot), Some(entry)) = (settled.snapshot, captured.as_mut()) {
-                    entry.1 =
-                        crate::platform::validated_window_frame(popup.window.frame.snapshot());
-                    entry.2 = popup_snapshot;
-                }
             }
         }
         if let Some(snapshot) = render_result

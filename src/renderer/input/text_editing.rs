@@ -1,6 +1,6 @@
 use super::*;
-use crate::engine::DrawContext;
 use unicode_segmentation::UnicodeSegmentation;
+use waterui_graphics::cherenkov::Draw as _;
 
 /// What became of a key press once the framework finished with it.
 ///
@@ -962,7 +962,7 @@ impl HydrolysisRenderer {
         let mut scene = Recording::new();
         let theme = self.theme();
         {
-            let mut draw = VelloDrawContext::with_root_transform(&mut scene, transform);
+            let mut draw = SceneDrawContext::with_root_transform(&mut scene, transform);
             for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
                 if target.content_alpha <= 0.0 {
                     continue;
@@ -972,30 +972,34 @@ impl HydrolysisRenderer {
                     continue;
                 }
                 let selection = refreshed_target_selection(target);
-                draw.push_layer(target.content_alpha, Some(&target.text_clip_bounds));
-                if selection.is_collapsed() {
-                    if focused == Some(index) {
-                        let caret_opacity = self.text_caret_opacity(self.frame_instant());
-                        if caret_opacity > 0.0 {
-                            draw.fill_rect(
-                                target.cursor_area,
-                                &theme.input_caret_brush(caret_opacity),
-                            );
-                        }
-                    }
-                } else {
-                    let selection_brush = theme.input_selection_brush();
-                    for (rect, _) in selection.geometry(&target.layout) {
-                        let highlight = kurbo::Rect::new(
-                            target.text_bounds.x0 + rect.x0,
-                            target.text_bounds.y0 + rect.y0,
-                            target.text_bounds.x0 + rect.x1,
-                            target.text_bounds.y0 + rect.y1,
-                        );
-                        draw.fill_rect(highlight, &selection_brush);
-                    }
-                }
-                draw.pop_layer();
+                let selection_paint = theme.input_selection_paint();
+                let caret_opacity = (selection.is_collapsed() && focused == Some(index))
+                    .then(|| self.text_caret_opacity(self.frame_instant()));
+                let caret_paint = caret_opacity
+                    .filter(|opacity| *opacity > 0.0)
+                    .map(|opacity| theme.input_caret_paint(opacity));
+                draw.clip(target.text_clip_bounds, |draw| {
+                    draw.group(
+                        cherenkov::Group::new().opacity(target.content_alpha),
+                        |draw| {
+                            if selection.is_collapsed() {
+                                if let Some(paint) = &caret_paint {
+                                    draw.fill(target.cursor_area, paint.clone());
+                                }
+                            } else {
+                                for (rect, _) in selection.geometry(&target.layout) {
+                                    let highlight = kurbo::Rect::new(
+                                        target.text_bounds.x0 + rect.x0,
+                                        target.text_bounds.y0 + rect.y0,
+                                        target.text_bounds.x0 + rect.x1,
+                                        target.text_bounds.y0 + rect.y1,
+                                    );
+                                    draw.fill(highlight, selection_paint.clone());
+                                }
+                            }
+                        },
+                    );
+                });
             }
         }
         self.transient_scene = Some(scene);
@@ -1285,7 +1289,7 @@ impl HydrolysisRenderer {
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
         {
-            let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+            let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
             theme.draw_text_context_menu_panel(&mut draw, overlay.bounds);
         }
         for (index, row) in overlay.rows.iter().enumerate() {
@@ -1304,7 +1308,7 @@ impl HydrolysisRenderer {
                     row.bounds.x1 - metrics.separator_horizontal_inset,
                     row.bounds.y1,
                 );
-                let mut draw = VelloDrawContext::with_root_transform(&mut self.scene, transform);
+                let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
                 theme.draw_text_context_menu_separator(&mut draw, separator);
             }
 
@@ -1346,7 +1350,7 @@ impl HydrolysisRenderer {
                             + metrics.separator_thickness * 0.5,
                     );
                     let mut draw =
-                        VelloDrawContext::with_root_transform(&mut self.scene, transform);
+                        SceneDrawContext::with_root_transform(&mut self.scene, transform);
                     theme.draw_text_context_menu_separator(&mut draw, separator);
                 }
             }

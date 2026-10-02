@@ -142,7 +142,11 @@ pub(crate) struct NavigationSlot {
     pub(crate) last_scene: Option<NavigationCapturedScene>,
     pub(crate) scene_cache: BTreeMap<u64, NavigationCapturedScene>,
     pub(crate) transition: Option<NavigationTransitionState>,
-    pub(crate) pending_removed: Vec<HydroNavigationEntry>,
+    /// Entries that left the stack this transaction. Held behind the same
+    /// `Rc<RefCell>` lease as `entries` because a departing page stays
+    /// renderable until its transition completes — a stale cached scene is
+    /// re-recorded from it even though it is no longer in `entries`.
+    pub(crate) pending_removed: NavigationEntries,
     pub(crate) pending_appearance: bool,
     pub(crate) pending_transaction_id: Option<NavigationTransactionId>,
     pub(crate) skip_next_pop_transition: bool,
@@ -228,7 +232,7 @@ impl NavigationSlot {
             last_scene: None,
             scene_cache: BTreeMap::new(),
             transition: None,
-            pending_removed: Vec::new(),
+            pending_removed: Rc::new(RefCell::new(Vec::new())),
             pending_appearance: false,
             pending_transaction_id: None,
             skip_next_pop_transition: false,
@@ -414,6 +418,7 @@ fn take_destination_state(
     }
     if let Some(entry) = slot
         .pending_removed
+        .borrow_mut()
         .iter_mut()
         .find(|entry| entry.identity == identity)
     {
@@ -455,6 +460,7 @@ fn put_destination_state(
     }
     if let Some(entry) = slot
         .pending_removed
+        .borrow_mut()
         .iter_mut()
         .find(|entry| entry.identity == identity)
     {
@@ -645,7 +651,7 @@ impl SemanticCore {
             let previous_identity = slot.active_identity;
             let previous_depth = slot.last_depth;
             for event in events {
-                slot.pending_removed.extend(event.removed);
+                slot.pending_removed.borrow_mut().extend(event.removed);
             }
             slot.transition = None;
             slot.interactive_pop = None;
@@ -696,11 +702,11 @@ impl SemanticCore {
                 .expect("Hydrolysis navigation slot missing during transaction completion");
             let appearance_identity = slot.pending_appearance.then_some(slot.active_identity);
             slot.pending_appearance = false;
-            for entry in &slot.pending_removed {
+            for entry in slot.pending_removed.borrow().iter() {
                 slot.scene_cache.remove(&entry.identity);
             }
             (
-                core::mem::take(&mut slot.pending_removed),
+                core::mem::take(&mut *slot.pending_removed.borrow_mut()),
                 appearance_identity,
                 slot.pending_transaction_id.take(),
                 slot.controller.clone(),
