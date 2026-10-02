@@ -41,8 +41,8 @@ waterkit-clipboard = "0.1.1"
 waterui-locale = "0.5.0"
 # `std` for `Url::from_file_path`, the OS file-drop path.
 waterui-url = { version = "0.5.1", features = ["std"] }
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
 kurbo = "0.13"
 peniko = "0.6"
 # `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
@@ -358,12 +358,12 @@ xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e7
 # `.filter(F)`/`.effect(E)` builders and the engine agree on, so every
 # filtrate in the graph must come from this same revision or a filter type
 # built on one side is a different type on the other.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "0ab1a3b100219b84bf76ffc3e1596fe1522fd90f" }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "85a6ab81bc2c73da791f7e1f8295c75690913b2b" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
@@ -405,7 +405,7 @@ hydrolysis = { path = "." }
 # The Material 3 theme must implement the five-argument
 # `WidgetTheme::draw_button_chrome` contract added for
 # water-rs/hydrolysis#115.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "f750cdfb4cb81d52a7daf2921a7d53acc772a565" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "ff710492d5f8adf335fe534453c6a39713bf4d10" }
 
 
 # Framework crates pinned to the waterui revision that makes the window
