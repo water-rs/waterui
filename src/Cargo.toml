@@ -110,11 +110,16 @@ inspector-signals = ["inspector", "nami/observability"]
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
 snackbar = []
+# Filters on views (`FilterViewExt`) and their portable description, without
+# the GPU stack: a backend that lowers filters into its own primitives reads
+# the description. Implied by `gpu`.
+effects = ["waterui-graphics/effects"]
 # GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
 # waterui-svg). Default-on so every existing consumer is unaffected.
 # Disabling it lets a WaterUI app cross-compile lean for embedded targets
 # without the GPU stack.
 gpu = [
+    "effects",
     "waterui-graphics/gpu",
     "waterui-shape/gpu",
     "dep:waterui-svg",

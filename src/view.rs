@@ -24,11 +24,11 @@ use waterui_core::{
 };
 use waterui_graphics::color::Color;
 
-/// All view-level GPU filter modifiers (`.blur()`, `.brightness()`, ...) come
+/// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
 /// makes them part of the `WaterUI` prelude alongside [`ViewExt`], so a single
 /// `use waterui::prelude::*;` is enough.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;

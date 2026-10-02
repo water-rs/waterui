@@ -1,38 +1,52 @@
 //! Filters on views: a `filtrate` filter applied to a view's rendered subtree.
 //!
 //! [`Filtered`] pairs a view with a [`Filter`]. Its body erases the filter
-//! into a [`FilteredView`] carrying an [`AnyEffect`]: a `Send` source the
-//! backend builds on its render thread into the filter behind `filtrate`'s
-//! [`Executor`], attached to the layer rendering the view.
+//! into a [`FilteredView`] carrying an [`AnyEffect`], the form a backend
+//! receives.
+//!
+//! An [`AnyEffect`] made from a filter is portable: its
+//! [`description`](AnyEffect::description) is the filter as `filtrate-core`
+//! describes it — the stages that apply it in order, each with the WGSL
+//! snippet that is its shader-source contract, the flattened parameters the
+//! stages index, the reactive parameters behind them, and the auxiliary
+//! images the stages bind. A render target that lowers filters into its own
+//! primitives reads that description and needs no GPU. With the `gpu`
+//! feature, `AnyEffect::build` lowers the same description into
+//! `filtrate`'s executor on the render thread, and `AnyEffect::new` erases
+//! an arbitrary GPU effect, which has no portable description.
 //!
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
-//! feeds a `Send` value slot the executor samples on the render side, and a
-//! change carrying an [`Animation`] in its metadata interpolates on the
-//! render clock.
+//! feeds a `Send` value slot the render side samples, and a change carrying
+//! an [`Animation`] in its metadata hands an interpolator to every watcher.
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwap;
+use core::any::Any;
 use core::fmt;
-use core::future::Future;
-use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
 use cherenkov::{Animation, RenderTransfer, curve_value, settled, spring_step};
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
-    AnimatedCallback, AnimatedTarget, Chain, Effect, EffectContext, EffectInput, EffectOutput,
-    EffectRedrawCallback, EffectRenderResult, EffectSetupResult, Executor, Filter, FilterExt as _,
-    FilterParam, Interpolator, WatchGuard,
+    AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
+    FilterParam, ImageVisitor, Interpolator, ParamArray, Placed, SignalVisitor, SpatialStage,
+    StageCollector, WatchGuard,
 };
 pub use filtrate::{FilterImage, LutImage};
 use nami::{Signal, signal::IntoComputed};
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
+
+#[cfg(feature = "gpu")]
+mod gpu;
+
+#[cfg(feature = "gpu")]
+pub use gpu::ErasedEffect;
 
 /// A filter parameter fed by a nami signal.
 ///
@@ -43,8 +57,11 @@ pub struct Reactive(Arc<Slot>);
 
 struct Slot {
     value: AtomicU32,
-    callbacks: ArcSwap<Vec<Arc<AnimatedCallback>>>,
+    watchers: Arc<Watchers<AnimatedFn>>,
 }
+
+/// The callback a [`Reactive`] slot hands every new target value.
+type AnimatedFn = dyn Fn(AnimatedTarget) + Send + Sync;
 
 impl fmt::Debug for Reactive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -52,15 +69,53 @@ impl fmt::Debug for Reactive {
     }
 }
 
-struct Subscription {
-    slot: Weak<Slot>,
-    callback: Arc<AnimatedCallback>,
+/// Callbacks subscribed through [`WatchGuard`]s, each kept until its guard
+/// drops.
+///
+/// Subscribing never displaces another subscriber, and the list is read
+/// lock-free by whichever thread fires the callbacks.
+struct Watchers<C: ?Sized>(ArcSwap<Vec<Arc<C>>>);
+
+impl<C: ?Sized + 'static> Watchers<C> {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(ArcSwap::from_pointee(Vec::new())))
+    }
+
+    /// Adds `callback` until the returned subscription drops.
+    fn subscribe(self: &Arc<Self>, callback: Arc<C>) -> Subscription<C> {
+        self.0.rcu(|callbacks| {
+            let mut next = (**callbacks).clone();
+            next.push(Arc::clone(&callback));
+            next
+        });
+        Subscription {
+            watchers: Arc::downgrade(self),
+            callback,
+        }
+    }
+
+    /// Calls `fire` with every current subscriber.
+    fn for_each(&self, mut fire: impl FnMut(&C)) {
+        for callback in self.0.load().iter() {
+            fire(callback);
+        }
+    }
 }
 
-impl Drop for Subscription {
+/// One entry of a [`Watchers`] list, removed when it drops.
+///
+/// It is `Send + Sync` whenever the callback is, unlike the [`WatchGuard`]
+/// the public API wraps it in, so an effect holding one keeps its own
+/// thread-safety.
+struct Subscription<C: ?Sized> {
+    watchers: Weak<Watchers<C>>,
+    callback: Arc<C>,
+}
+
+impl<C: ?Sized> Drop for Subscription<C> {
     fn drop(&mut self) {
-        if let Some(slot) = self.slot.upgrade() {
-            slot.callbacks.rcu(|callbacks| {
+        if let Some(watchers) = self.watchers.upgrade() {
+            watchers.0.rcu(|callbacks| {
                 callbacks
                     .iter()
                     .filter(|callback| !Arc::ptr_eq(callback, &self.callback))
@@ -77,16 +132,7 @@ impl FilterParam for Reactive {
     }
 
     fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
-        let callback = Arc::new(callback);
-        self.0.callbacks.rcu(|callbacks| {
-            let mut next = (**callbacks).clone();
-            next.push(Arc::clone(&callback));
-            next
-        });
-        WatchGuard::new(Subscription {
-            slot: Arc::downgrade(&self.0),
-            callback,
-        })
+        WatchGuard::new(self.0.watchers.subscribe(Arc::from(callback)))
     }
 }
 
@@ -94,7 +140,7 @@ impl FilterParam for Reactive {
 ///
 /// Dropping the guards freezes the parameters at their last value.
 #[derive(Default)]
-pub struct ParamGuards(Vec<Box<dyn core::any::Any>>);
+pub struct ParamGuards(Vec<Box<dyn Any>>);
 
 impl fmt::Debug for ParamGuards {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -147,50 +193,46 @@ fn scaled_dimension(value: u32, factor: f32) -> u32 {
         .clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-type RedrawCallback = dyn Fn() + Send + Sync;
-
-struct Redraw(Arc<RedrawCallback>);
+type ChangeCallback = dyn Fn() + Send + Sync;
 
 /// Thread-safe output-size policy shared by the UI and render threads.
+///
+/// Its watchers are independent subscriptions: a backend's watcher and the
+/// redraw callback of the built GPU effect each hold their own guard, so
+/// neither replaces the other.
 #[derive(Clone)]
 struct OutputSizeState {
     policy: Arc<ArcSwap<Option<OutputSize>>>,
-    redraw: Arc<ArcSwapOption<Redraw>>,
+    watchers: Arc<Watchers<ChangeCallback>>,
 }
 
 impl OutputSizeState {
     fn new() -> Self {
         Self {
             policy: Arc::new(ArcSwap::from_pointee(None)),
-            redraw: Arc::new(ArcSwapOption::empty()),
+            watchers: Watchers::new(),
         }
     }
 
-    fn is_declared(&self) -> bool {
-        self.policy.load().is_some()
+    /// The declared policy; `None` until a view declares one.
+    fn declared(&self) -> Option<OutputSize> {
+        **self.policy.load()
     }
 
-    fn output_size(&self, input_width: u32, input_height: u32) -> Option<(u32, u32)> {
-        self.policy
-            .load()
-            .as_ref()
-            .map(|policy| policy.compute(input_width, input_height))
-    }
-
-    fn set_redraw_callback(&self, callback: EffectRedrawCallback) {
-        self.redraw.store(Some(Arc::new(Redraw(callback))));
+    /// Subscribes `callback`, fired after the declared policy changes, until
+    /// the returned subscription drops.
+    fn watch(&self, callback: Arc<ChangeCallback>) -> Subscription<ChangeCallback> {
+        self.watchers.subscribe(callback)
     }
 
     fn bind(&self, value: impl IntoComputed<OutputSize>, guards: &mut ParamGuards) {
         let value = value.into_computed();
         self.policy.store(Arc::new(Some(value.snapshot())));
         let policy = Arc::clone(&self.policy);
-        let redraw = Arc::clone(&self.redraw);
+        let watchers = Arc::clone(&self.watchers);
         let guard = value.watch(move |context| {
             policy.store(Arc::new(Some(context.into_value())));
-            if let Some(callback) = redraw.load_full() {
-                (callback.0)();
-            }
+            watchers.for_each(|callback| callback());
         });
         guards.0.push(Box::new(guard));
     }
@@ -202,21 +244,21 @@ impl ParamGuards {
         let signal = value.into_signal_f32();
         let slot = Arc::new(Slot {
             value: AtomicU32::new(signal.snapshot().to_bits()),
-            callbacks: ArcSwap::from_pointee(Vec::new()),
+            watchers: Watchers::new(),
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
             let animation = context.metadata().try_get::<Animation>();
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
-            for callback in target.callbacks.load().iter() {
+            target.watchers.for_each(|callback| {
                 callback(AnimatedTarget {
                     value,
                     interpolator: animation.map(|animation| {
                         Box::new(AnimationInterpolator(animation)) as Box<dyn Interpolator>
                     }),
                 });
-            }
+            });
         });
         self.0.push(Box::new(guard));
         Reactive(slot)
@@ -286,173 +328,321 @@ impl Interpolator for AnimationInterpolator {
     }
 }
 
-type BoxedSetup<'a> = Pin<Box<dyn Future<Output = EffectSetupResult> + 'a>>;
-
-/// Object-safe [`Effect`], built on the render thread by [`AnyEffect::build`].
+/// Object-safe form of a [`Filter`], behind [`FilterDescription`].
 ///
-/// `Effect::setup` returns an `impl Future`, so the trait itself cannot be
-/// boxed; this form boxes the future. It is not `Send`: `filtrate`'s
-/// [`Executor`] lives on the thread that built it.
-pub trait ErasedEffect {
-    /// Installs the callback the effect fires when it needs another frame.
-    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback);
-    /// Creates pipelines and resources; once, before the first render.
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> BoxedSetup<'a>;
-    /// Encodes one frame of effect work.
-    ///
-    /// # Errors
-    /// The effect's own render error, surfaced by the host as a frame failure.
-    fn encode_render(
-        &mut self,
-        input: &EffectInput<'_>,
-        output: &EffectOutput<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult;
-    /// Resolves the output texture dimensions for an input texture.
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
-    /// Whether the effect wants another frame (an animating parameter).
-    fn redraw_hint(&self) -> bool;
-}
-
-impl<E: Effect> ErasedEffect for E {
-    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
-        Effect::set_redraw_callback(self, callback);
-    }
-
-    fn setup<'a>(&'a mut self, ctx: &'a EffectContext<'a>) -> BoxedSetup<'a> {
-        Box::pin(Effect::setup(self, ctx))
-    }
-
-    fn encode_render(
-        &mut self,
-        input: &EffectInput<'_>,
-        output: &EffectOutput<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult {
-        Effect::encode_render(self, input, output, encoder)
-    }
-
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        Effect::output_size(self, input_width, input_height)
-    }
-
-    fn redraw_hint(&self) -> bool {
-        Effect::redraw_hint(self)
-    }
-}
-
-trait EffectSource: RenderTransfer {
+/// `Filter`'s visitor methods are generic, so the trait itself cannot be
+/// boxed; this form takes `dyn` sinks and adapts them back to `filtrate`'s
+/// visitor traits inside the blanket implementation, where the concrete
+/// filter type is known.
+trait FilterSource: RenderTransfer {
+    /// The flattened parameter values, in the order the stages index them.
+    fn dyn_params(&self) -> Vec<f32>;
+    fn dyn_collect_stages(&self, collector: &mut dyn StageCollector);
+    fn dyn_visit_signals(&self, visit: &mut dyn FnMut(FilterSignal<'_>));
+    fn dyn_visit_images(&self, visit: &mut dyn FnMut(usize, &dyn AuxImage));
+    /// Lowers the filter into `filtrate`'s executor on the render thread.
+    #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect>;
 }
 
-struct FromFilter<F>(F);
+impl<F: Filter + RenderTransfer> FilterSource for F {
+    fn dyn_params(&self) -> Vec<f32> {
+        let mut values = alloc::vec![0.0; <F::Params as ParamArray>::LEN];
+        self.params().write_to(&mut values);
+        values
+    }
 
-impl<F: Filter + RenderTransfer> EffectSource for FromFilter<F> {
+    fn dyn_collect_stages(&self, collector: &mut dyn StageCollector) {
+        self.collect_stages(&mut DynStages(collector));
+    }
+
+    fn dyn_visit_signals(&self, visit: &mut dyn FnMut(FilterSignal<'_>)) {
+        self.visit_signals(&mut DynSignals(visit));
+    }
+
+    fn dyn_visit_images(&self, visit: &mut dyn FnMut(usize, &dyn AuxImage)) {
+        self.visit_images(&mut DynImages(visit));
+    }
+
+    #[cfg(feature = "gpu")]
     fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
-        if output_size.is_declared() {
-            let policy = output_size.clone();
-            Box::new(OutputSizedEffect {
-                effect: Executor::new(self.0).with_output_size(move |width, height| {
-                    policy.output_size(width, height).unwrap_or((width, height))
-                }),
-                output_size,
-            })
-        } else {
-            Box::new(OutputSizedEffect {
-                effect: Executor::new(self.0),
-                output_size,
-            })
-        }
+        gpu::lower_filter(*self, output_size)
     }
 }
 
-struct FromEffect<E>(E);
+/// A sized [`StageCollector`] forwarding to a `dyn` one, since
+/// [`Filter::collect_stages`] takes its collector by type parameter.
+struct DynStages<'a>(&'a mut dyn StageCollector);
 
-impl<E: Effect + RenderTransfer> EffectSource for FromEffect<E> {
-    fn build(self: Box<Self>, output_size: OutputSizeState) -> Box<dyn ErasedEffect> {
-        Box::new(OutputSizedEffect {
-            effect: self.0,
-            output_size,
-        })
+impl StageCollector for DynStages<'_> {
+    fn color(&mut self, stage: Placed<ColorStage>) {
+        self.0.color(stage);
+    }
+
+    fn spatial(&mut self, stage: Placed<SpatialStage>) {
+        self.0.spatial(stage);
     }
 }
 
-/// Applies an optional output-size declaration while preserving the wrapped effect.
-struct OutputSizedEffect<E> {
-    effect: E,
-    output_size: OutputSizeState,
+/// A [`SignalVisitor`] handing each parameter to a `dyn` sink as a
+/// [`FilterSignal`].
+struct DynSignals<'a>(&'a mut dyn FnMut(FilterSignal<'_>));
+
+impl SignalVisitor for DynSignals<'_> {
+    fn visit<P: FilterParam + ?Sized>(&mut self, index: usize, param: &P) {
+        (self.0)(FilterSignal {
+            index,
+            param: &ParamRef(param),
+        });
+    }
 }
 
-impl<E: Effect> Effect for OutputSizedEffect<E> {
-    fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32) {
-        self.output_size
-            .output_size(input_width, input_height)
-            .unwrap_or_else(|| self.effect.output_size(input_width, input_height))
+/// An [`ImageVisitor`] handing each image to a `dyn` sink.
+struct DynImages<'a>(&'a mut dyn FnMut(usize, &dyn AuxImage));
+
+impl ImageVisitor for DynImages<'_> {
+    fn visit<I: AuxImage + ?Sized>(&mut self, index: usize, image: &I) {
+        (self.0)(index, &ImageRef(image));
+    }
+}
+
+/// A borrowed parameter of any (possibly unsized) [`FilterParam`] type, as a
+/// sized value that erases to `dyn SignalSource`.
+///
+/// It cannot implement [`FilterParam`] itself, whose `'static` bound a borrow
+/// does not meet; that bound is also why [`FilterDescription::visit_signals`]
+/// cannot accept a `filtrate` [`SignalVisitor`].
+struct ParamRef<'a, P: ?Sized>(&'a P);
+
+/// Object-safe access to one parameter, behind [`FilterSignal`].
+trait SignalSource {
+    fn snapshot(&self) -> f32;
+    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard;
+}
+
+impl<P: FilterParam + ?Sized> SignalSource for ParamRef<'_, P> {
+    fn snapshot(&self) -> f32 {
+        self.0.snapshot()
     }
 
-    fn set_redraw_callback(&mut self, callback: EffectRedrawCallback) {
-        self.output_size.set_redraw_callback(callback.clone());
-        self.effect.set_redraw_callback(callback);
+    fn watch_animated(&self, callback: AnimatedCallback) -> WatchGuard {
+        self.0.watch_animated(callback)
+    }
+}
+
+/// A borrowed image of any (possibly unsized) [`AuxImage`] type, as a sized
+/// value that erases to `dyn AuxImage`.
+struct ImageRef<'a, I: ?Sized>(&'a I);
+
+impl<I: AuxImage + ?Sized> AuxImage for ImageRef<'_, I> {
+    fn width(&self) -> u32 {
+        self.0.width()
     }
 
-    async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
-        self.effect.setup(ctx).await
+    fn height(&self) -> u32 {
+        self.0.height()
     }
 
-    fn encode_render(
-        &mut self,
-        input: &EffectInput,
-        output: &EffectOutput,
-        encoder: &mut wgpu::CommandEncoder,
-    ) -> EffectRenderResult {
-        self.effect.encode_render(input, output, encoder)
+    fn data(&self) -> Option<AuxData<'_>> {
+        self.0.data()
     }
 
-    fn redraw_hint(&self) -> bool {
-        self.effect.redraw_hint()
+    fn as_any(&self) -> Option<&dyn Any> {
+        self.0.as_any()
     }
+}
+
+/// One reactive parameter of a filter, visited by
+/// [`FilterDescription::visit_signals`].
+///
+/// It borrows the parameter for the duration of the visit: read its current
+/// value with [`snapshot`](Self::snapshot) and subscribe to its changes with
+/// [`watch_animated`](Self::watch_animated), keeping the returned guard.
+pub struct FilterSignal<'a> {
+    index: usize,
+    param: &'a dyn SignalSource,
+}
+
+impl fmt::Debug for FilterSignal<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilterSignal")
+            .field("index", &self.index)
+            .field("value", &self.snapshot())
+            .finish()
+    }
+}
+
+impl FilterSignal<'_> {
+    /// The parameter's index in the flattened parameters
+    /// ([`FilterDescription::params`]).
+    ///
+    /// A stage addresses this index as its [`Placed::param_base`] plus the
+    /// index of a [`ParamSource::Param`](filtrate::ParamSource::Param) it
+    /// declares, not by the declared index alone: in
+    /// `brightness(..).blur(..)`, the blur stage declares `Param(0)` with
+    /// `param_base == 1`, which is index 1.
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The parameter's current value.
+    #[must_use]
+    pub fn snapshot(&self) -> f32 {
+        self.param.snapshot()
+    }
+
+    /// Subscribes to the parameter's changes.
+    ///
+    /// `callback` receives every new target value, with the interpolator of
+    /// the animation the change carries, if any. Dropping the returned guard
+    /// cancels the subscription.
+    #[must_use = "dropping the guard cancels the subscription"]
+    pub fn watch_animated(
+        &self,
+        callback: impl Fn(AnimatedTarget) + Send + Sync + 'static,
+    ) -> WatchGuard {
+        self.param.watch_animated(Box::new(callback))
+    }
+}
+
+/// The portable description of a filter, read without a GPU.
+///
+/// It mirrors `filtrate-core`'s [`Filter`]: the stages in application order,
+/// the flattened parameter values they index, the reactive parameters behind
+/// those values, and the auxiliary images the stages bind. Each stage's
+/// [`ColorStage::source`] / [`SpatialStage::source`] is the WGSL snippet
+/// that is its shader-source contract. The description holds no GPU context
+/// and records no GPU work.
+#[derive(Clone, Copy)]
+pub struct FilterDescription<'a>(&'a dyn FilterSource);
+
+impl fmt::Debug for FilterDescription<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilterDescription")
+            .field("params", &self.params())
+            .finish_non_exhaustive()
+    }
+}
+
+impl FilterDescription<'_> {
+    /// The current parameter values, flattened across every stage.
+    ///
+    /// A stage's <code>[ParamSource::Param](filtrate::ParamSource::Param)(i)</code>
+    /// reads the value at `param_base + i`, where `param_base` is the
+    /// [`Placed::param_base`] that [`collect_stages`](Self::collect_stages)
+    /// reports with the stage. A `vecN<f32>` member reads `N` consecutive
+    /// values from there.
+    #[must_use]
+    pub fn params(&self) -> Vec<f32> {
+        self.0.dyn_params()
+    }
+
+    /// Reports every stage, in application order, with the offsets that
+    /// place its parameter and image indices.
+    pub fn collect_stages(&self, collector: &mut impl StageCollector) {
+        self.0.dyn_collect_stages(collector);
+    }
+
+    /// Visits every reactive parameter, by index in [`params`](Self::params).
+    ///
+    /// A parameter that is not visited is constant at its value in
+    /// [`params`](Self::params).
+    pub fn visit_signals(&self, mut visit: impl FnMut(FilterSignal<'_>)) {
+        self.0.dyn_visit_signals(&mut visit);
+    }
+
+    /// Visits the auxiliary images, by index in the flattened images of the
+    /// whole filter.
+    ///
+    /// A spatial stage's <code>[AuxSource::Image](filtrate::AuxSource::Image)(i)</code>
+    /// or <code>[AuxSource::Texture](filtrate::AuxSource::Texture)(i)</code> binds the
+    /// image at `image_base + i`, where `image_base` is the
+    /// [`Placed::image_base`] that [`collect_stages`](Self::collect_stages)
+    /// reports with the stage.
+    pub fn visit_images(&self, visitor: &mut impl ImageVisitor) {
+        self.0
+            .dyn_visit_images(&mut |index, image: &dyn AuxImage| visitor.visit(index, image));
+    }
+}
+
+/// What an [`AnyEffect`] carries: a closed choice between a portable filter
+/// and an effect that only a GPU can run.
+enum EffectSource {
+    /// A filter, described by its stages, parameters and images.
+    Filter(Box<dyn FilterSource>),
+    /// An arbitrary GPU effect, which has no portable description.
+    #[cfg(feature = "gpu")]
+    Gpu(Box<dyn gpu::GpuEffect>),
 }
 
 /// A filter or effect, erased for the render thread, as a backend receives it.
 ///
-/// The backend moves it to its render thread and calls [`build`](Self::build)
-/// there; the result runs against the engine's device.
+/// A backend that lowers filters into its own primitives reads the
+/// [`description`](Self::description). With the `gpu` feature, a backend
+/// that runs `filtrate`'s executor moves the effect to its render thread and
+/// calls `build` there; the result runs against the engine's
+/// device.
 pub struct AnyEffect {
-    source: Box<dyn EffectSource>,
+    source: EffectSource,
     output_size: OutputSizeState,
 }
 
 impl fmt::Debug for AnyEffect {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AnyEffect").finish_non_exhaustive()
+        f.debug_struct("AnyEffect")
+            .field("description", &self.description())
+            .field("output_size", &self.output_size())
+            .finish()
     }
 }
 
 impl AnyEffect {
-    /// Erases a custom effect.
-    pub fn new(effect: impl Effect + RenderTransfer) -> Self {
+    fn from_source(source: EffectSource) -> Self {
         Self {
-            source: Box::new(FromEffect(effect)),
+            source,
             output_size: OutputSizeState::new(),
         }
     }
 
-    /// Erases a filter, to run through `filtrate`'s [`Executor`].
+    /// Erases a filter, keeping its portable description.
     pub fn filter(filter: impl Filter + RenderTransfer) -> Self {
-        Self {
-            source: Box::new(FromFilter(filter)),
-            output_size: OutputSizeState::new(),
+        Self::from_source(EffectSource::Filter(Box::new(filter)))
+    }
+
+    /// The portable description of the filter this effect applies, or `None`
+    /// for an arbitrary GPU effect, which only a GPU can run.
+    #[must_use]
+    pub fn description(&self) -> Option<FilterDescription<'_>> {
+        match &self.source {
+            EffectSource::Filter(filter) => Some(FilterDescription(&**filter)),
+            #[cfg(feature = "gpu")]
+            EffectSource::Gpu(_) => None,
         }
+    }
+
+    /// The output-size policy the view declared, or `None` when the output
+    /// matches the effect's own size for its input.
+    #[must_use]
+    pub fn output_size(&self) -> Option<OutputSize> {
+        self.output_size.declared()
+    }
+
+    /// Subscribes `callback`, fired after the declared
+    /// [`output_size`](Self::output_size) changes, until the returned guard
+    /// drops.
+    ///
+    /// Any number of watchers may subscribe. None replaces another, and none
+    /// is replaced by the redraw callback the engine installs on the effect
+    /// that the GPU `build` produces: a subscription made before `build`
+    /// keeps firing afterwards.
+    #[must_use = "dropping the guard cancels the subscription"]
+    pub fn watch_output_size(&self, callback: impl Fn() + Send + Sync + 'static) -> WatchGuard {
+        WatchGuard::new(self.output_size.watch(Arc::new(callback)))
     }
 
     fn bind_output_size(&self, size: impl IntoComputed<OutputSize>, guards: &mut ParamGuards) {
         self.output_size.bind(size, guards);
-    }
-
-    /// Builds the effect on the render thread.
-    #[must_use]
-    pub fn build(self) -> Box<dyn ErasedEffect> {
-        self.source.build(self.output_size)
     }
 }
 
@@ -496,15 +686,20 @@ impl<V: View, F: Filter + RenderTransfer> Filtered<V, F> {
             guards: self.guards,
         }
     }
-}
 
-impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
-    fn body(self, _env: &Environment) -> impl View {
+    /// Erases the view and the filter into the form a backend receives.
+    fn erase(self) -> FilteredView {
         FilteredView {
             content: AnyView::new(self.view),
             effect: AnyEffect::filter(self.filter),
             guards: self.guards,
         }
+    }
+}
+
+impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.erase()
     }
 
     fn stretch_axis(&self) -> StretchAxis {
@@ -514,29 +709,21 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 
 /// A view with an effect on its rendered subtree, as a backend receives it.
 ///
-/// The backend registers `effect` with its engine (`Engine::effect`), sets
-/// the returned `Filter` on the layer rendering `content`, and keeps
-/// `guards` alive as long as the filter.
+/// The backend realizes `effect` on the layer rendering `content` — from its
+/// [`description`](AnyEffect::description), or, with the `gpu` feature, by
+/// registering it with its engine (`Engine::effect`) — and keeps `guards`
+/// alive as long as the realization.
 #[derive(Debug)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,
-    /// The effect to register.
+    /// The effect to realize.
     pub effect: AnyEffect,
     /// The subscriptions feeding the effect's reactive parameters.
     pub guards: ParamGuards,
 }
 
 impl FilteredView {
-    /// Applies a custom effect to `view`.
-    pub fn new(view: impl View, effect: impl Effect + RenderTransfer) -> Self {
-        Self {
-            content: AnyView::new(view),
-            effect: AnyEffect::new(effect),
-            guards: ParamGuards::default(),
-        }
-    }
-
     /// Sets the output texture dimensions without changing layout.
     #[must_use]
     pub fn output_size(mut self, size: impl IntoComputed<OutputSize>) -> Self {
@@ -727,7 +914,11 @@ pub trait FilterViewExt: View + Sized {
     }
 
     /// Apply a custom `filtrate` effect to this view.
-    fn effect(self, effect: impl Effect + RenderTransfer) -> FilteredView {
+    ///
+    /// An arbitrary effect has no portable description, so only a backend
+    /// that runs effects on a GPU can realize it.
+    #[cfg(feature = "gpu")]
+    fn effect(self, effect: impl filtrate::Effect + RenderTransfer) -> FilteredView {
         FilteredView::new(self, effect)
     }
 
@@ -1629,10 +1820,116 @@ impl<V: View> FilterViewExt for V {}
 
 #[cfg(test)]
 mod tests {
-    use super::{AnyEffect, FilterParam as _, FilteredView, OutputSize, ParamGuards};
+    #[cfg(feature = "gpu")]
+    use super::AnyEffect;
+    use super::{
+        ColorStage, FilterParam as _, FilterSignal, FilterViewExt as _, FilteredView, OutputSize,
+        ParamGuards, Placed, SpatialStage, StageCollector,
+    };
+    #[cfg(feature = "gpu")]
+    use std::sync::Arc;
+    #[cfg(feature = "gpu")]
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, mpsc};
+    use std::sync::mpsc;
+    #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
+
+    /// Records each stage's kind, name and parameter offset, and checks that
+    /// it carries its shader source.
+    #[derive(Default)]
+    struct Stages(Vec<(&'static str, &'static str, usize)>);
+
+    impl StageCollector for Stages {
+        fn color(&mut self, stage: Placed<ColorStage>) {
+            assert_ne!(stage.stage.source, "");
+            self.0.push(("color", stage.stage.name, stage.param_base));
+        }
+
+        fn spatial(&mut self, stage: Placed<SpatialStage>) {
+            assert_ne!(stage.stage.source, "");
+            self.0.push(("spatial", stage.stage.name, stage.param_base));
+        }
+    }
+
+    #[test]
+    fn filter_chain_describes_its_stages_in_order() {
+        let FilteredView { effect, guards, .. } = ().brightness(0.25_f32).blur(4.0_f32).erase();
+        let description = effect.description().expect("a filter is portable");
+        let mut stages = Stages::default();
+        description.collect_stages(&mut stages);
+        assert_eq!(
+            stages.0,
+            [
+                ("color", "Brightness", 0),
+                ("spatial", "box_blur_horizontal", 1),
+                ("spatial", "box_blur_vertical", 1),
+            ]
+        );
+        assert_eq!(description.params(), [0.25, 4.0]);
+        drop(guards);
+    }
+
+    #[test]
+    fn described_filter_signals_follow_their_bindings() {
+        let amount = nami::binding(0.25_f32);
+        let FilteredView { effect, guards, .. } =
+            ().brightness(amount.clone()).blur(4.0_f32).erase();
+        let description = effect.description().expect("a filter is portable");
+
+        let (send, receive) = mpsc::channel();
+        let mut subscriptions = Vec::new();
+        let mut visited = Vec::new();
+        description.visit_signals(|signal: FilterSignal<'_>| {
+            visited.push((signal.index(), signal.snapshot()));
+            let send = send.clone();
+            let index = signal.index();
+            subscriptions.push(signal.watch_animated(move |target| {
+                send.send((index, target.value)).expect("receiver exists");
+            }));
+        });
+        assert_eq!(visited, [(0, 0.25), (1, 4.0)]);
+
+        amount.set(0.5);
+        assert_eq!(receive.try_recv().expect("brightness update"), (0, 0.5));
+        assert!(receive.try_recv().is_err());
+        assert_eq!(description.params(), [0.5, 4.0]);
+        drop(subscriptions);
+        drop(guards);
+    }
+
+    /// A GPU effect that renders nothing.
+    #[cfg(feature = "gpu")]
+    struct NoopEffect;
+
+    #[cfg(feature = "gpu")]
+    impl filtrate::Effect for NoopEffect {
+        fn setup(
+            &mut self,
+            _ctx: &filtrate::EffectContext<'_>,
+        ) -> impl Future<Output = filtrate::EffectSetupResult> {
+            core::future::ready(Ok(()))
+        }
+
+        fn encode_render(
+            &mut self,
+            _input: &filtrate::EffectInput,
+            _output: &filtrate::EffectOutput,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) -> filtrate::EffectRenderResult {
+            Ok(false)
+        }
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn gpu_effect_has_no_portable_description() {
+        assert!(AnyEffect::new(NoopEffect).description().is_none());
+        assert!(
+            AnyEffect::filter(filtrate::filters::Invert)
+                .description()
+                .is_some()
+        );
+    }
 
     #[test]
     fn output_size_computes_declared_dimensions() {
@@ -1648,6 +1945,7 @@ mod tests {
         assert_eq!(OutputSize::Scale(1.5).compute(10, 20), (15, 30));
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn filtered_view_output_size_reaches_the_effect() {
         let executor = filtrate::Executor::new(filtrate::filters::Invert)
@@ -1670,6 +1968,7 @@ mod tests {
         drop(guards);
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn filter_without_declared_size_matches_input() {
         let filtered = FilteredView {
@@ -1683,6 +1982,7 @@ mod tests {
         drop(guards);
     }
 
+    #[cfg(feature = "gpu")]
     #[test]
     fn output_size_signal_updates_without_rebuilding_the_effect() {
         let size = nami::binding(OutputSize::Scale(2.0));
@@ -1707,6 +2007,42 @@ mod tests {
         });
         assert_eq!(effect.output_size(10, 20), (30, 40));
         assert_eq!(redraws.load(Ordering::Relaxed), 1);
+        drop(guards);
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn output_size_watchers_survive_the_gpu_redraw_callback() {
+        let size = nami::binding(OutputSize::Scale(2.0));
+        let FilteredView { effect, guards, .. } = FilteredView {
+            content: AnyView::new(()),
+            effect: AnyEffect::filter(filtrate::filters::Invert),
+            guards: ParamGuards::default(),
+        }
+        .output_size(size.clone());
+        let watched = Arc::new(AtomicUsize::new(0));
+        let watcher_count = Arc::clone(&watched);
+        let subscription = effect.watch_output_size(move || {
+            watcher_count.fetch_add(1, Ordering::Relaxed);
+        });
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let redraw_count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            redraw_count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        size.set(OutputSize::Fixed {
+            width: 30,
+            height: 40,
+        });
+        assert_eq!(watched.load(Ordering::Relaxed), 1);
+        assert_eq!(redraws.load(Ordering::Relaxed), 1);
+
+        drop(subscription);
+        size.set(OutputSize::Scale(3.0));
+        assert_eq!(watched.load(Ordering::Relaxed), 1);
+        assert_eq!(redraws.load(Ordering::Relaxed), 2);
         drop(guards);
     }
 
