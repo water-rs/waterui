@@ -103,12 +103,16 @@ fn image_data_rejects_zero_size_and_byte_length_mismatch() {
 #[test]
 fn an_image_draws_where_the_recording_put_it() {
     let mut rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
-    let image = rasterizer
-        .resources()
-        .image(tiny_image())
-        .expect("image registration failed");
-
-    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
+    let source = Arc::<[u8]>::from([255, 0, 0, 255, 0, 0, 255, 255]);
+    let recording = Picture::record_with(rasterizer.resources(), move |recorder, names| {
+        let image = names
+            .image(
+                ImageData::<Rgba8>::new(2, 1, Arc::clone(&source))
+                    .expect("image source")
+                    .color_space(ImageColorSpace::Srgb)
+                    .premultiplied(),
+            )
+            .expect("image registration failed");
         // The image's own rect fills its destination: left half red, right
         // blue.
         recorder.image(
@@ -117,8 +121,6 @@ fn an_image_draws_where_the_recording_put_it() {
             Sampling::Nearest,
         );
     });
-    // The recording holds the image; the code that registered it need not.
-    drop(image);
     let bitmap = rasterizer
         .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
@@ -136,12 +138,11 @@ fn a_glyph_run_draws_its_glyphs() {
     let glyph = face.glyph_index('A').expect("the test font has no 'A'").0;
 
     let mut rasterizer = Rasterizer::new(32, 32).expect("engine failed to start");
-    let font = rasterizer
-        .resources()
-        .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
-        .expect("font registration failed");
-
-    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
+    let source = Arc::<[u8]>::from(FONT);
+    let recording = Picture::record_with(rasterizer.resources(), move |recorder, names| {
+        let font = names
+            .font(FontSource::bytes(Arc::clone(&source)))
+            .expect("font registration failed");
         recorder.glyphs(
             GlyphRun {
                 font: names.name(&font),
@@ -246,6 +247,11 @@ impl SceneContent for LateImage {
             );
         }
         false
+    }
+
+    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+        let Self { frame, .. } = *self;
+        Box::new(Self { frame, image: None })
     }
 }
 

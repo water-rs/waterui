@@ -141,6 +141,23 @@ impl SceneContent for ShaderContent {
         false
     }
 
+    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
+        let Self {
+            fragment,
+            animated,
+            uniforms,
+            shader: _,
+            animation_watch: _,
+        } = *self;
+        Box::new(Self {
+            fragment,
+            animated,
+            uniforms,
+            shader: None,
+            animation_watch: None,
+        })
+    }
+
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.animation_watch =
             invalidator.map(|invalidator| invalidate_on_change(&invalidator, &self.animated));
