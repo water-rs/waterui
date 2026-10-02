@@ -1066,7 +1066,7 @@ mod tests {
         assert_eq!(view_id, waterui_spacer_id());
         // SAFETY: the handle contains a `Native<Spacer>` and is consumed once.
         let spacer = unsafe { waterui_force_as_spacer(view) };
-        assert_eq!(spacer.min_length, 40.0);
+        assert_eq!(spacer.min_length.to_bits(), 40.0_f32.to_bits());
     }
 
     #[test]
@@ -1111,7 +1111,10 @@ mod tests {
                     waterui_layout_lazy_stack_axis(layout),
                     WuiLazyStackAxis::Vertical
                 );
-                assert_eq!(waterui_layout_lazy_stack_spacing(layout), 12.0);
+                assert_eq!(
+                    waterui_layout_lazy_stack_spacing(layout).to_bits(),
+                    12.0_f32.to_bits()
+                );
                 assert_eq!(
                     waterui_layout_lazy_stack_horizontal_alignment(layout),
                     WuiHorizontalAlignment::Trailing
@@ -1134,7 +1137,10 @@ mod tests {
                     waterui_layout_lazy_stack_axis(layout),
                     WuiLazyStackAxis::Horizontal
                 );
-                assert_eq!(waterui_layout_lazy_stack_spacing(layout), 7.0);
+                assert_eq!(
+                    waterui_layout_lazy_stack_spacing(layout).to_bits(),
+                    7.0_f32.to_bits()
+                );
                 assert_eq!(
                     waterui_layout_lazy_stack_vertical_alignment(layout),
                     WuiVerticalAlignment::Bottom
@@ -1177,8 +1183,8 @@ mod tests {
         assert_eq!(invalidations.get(), 1);
         assert_eq!(
             // SAFETY: `layout` is a live local for the duration of the call.
-            unsafe { waterui_layout_lazy_stack_spacing(&raw mut layout) },
-            12.0
+            unsafe { waterui_layout_lazy_stack_spacing(&raw mut layout) }.to_bits(),
+            12.0_f32.to_bits()
         );
 
         // SAFETY: `watcher` is the owning handle returned above, dropped once here.
