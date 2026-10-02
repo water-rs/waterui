@@ -55,6 +55,7 @@ jobs:
           cache-targets: false
           save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
           cache-on-failure: true
+      - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       - uses: ./.github/actions/install-tool
@@ -131,6 +132,7 @@ jobs:
           cache-targets: false
           save-if: false
           cache-on-failure: true
+      - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       - uses: ./.github/actions/install-tool
@@ -183,6 +185,7 @@ jobs:
           cache-on-failure: true
       # Build scripts run under `cargo check` too, so the shader compiler has
       # to be present here as well as in the test job.
+      - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
       # Compile the CEF backend without its binary distribution (see the test

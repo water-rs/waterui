@@ -25,7 +25,7 @@ use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::Int
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
 use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View, flatten_signal};
-use waterui_graphics::{Color, color::ResolvedColor};
+use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
 use crate::app::{application_identifier, application_name};
@@ -368,7 +368,7 @@ impl From<WindowBackground> for Binding<WindowBackground> {
 /// — and a change of the colour it currently resolves to, such as a theme
 /// switch. A colour whose opacity is below one asks for a translucent window.
 #[must_use]
-pub fn resolve_background<S>(background: &S, env: &Environment) -> Computed<ResolvedColor>
+pub fn resolve_background<S>(background: &S, env: &Environment) -> Computed<WorkingColor>
 where
     S: Signal<Output = WindowBackground>,
 {
@@ -667,7 +667,7 @@ impl Window {
     /// The colour a backend paints behind the window's content, following the
     /// reactive [`Self::background`]. See [`resolve_background`].
     #[must_use]
-    pub fn resolved_background(&self, env: &Environment) -> Computed<ResolvedColor> {
+    pub fn resolved_background(&self, env: &Environment) -> Computed<WorkingColor> {
         resolve_background(&self.background, env)
     }
 
@@ -914,7 +914,9 @@ mod tests {
         let env = Environment::new();
         let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
         let resolved = resolve_background(&background, &env);
-        assert!(resolved.snapshot().red > 0.99);
+        // Components are linear Display P3 red, green, blue, alpha: sRGB red
+        // lands near 0.82 in the wider P3 gamut.
+        assert!(resolved.snapshot().components[0] > 0.8);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
         let _guard = resolved.watch({
@@ -927,8 +929,8 @@ mod tests {
 
         let seen = seen.borrow();
         let last = seen.last().expect("the replaced background was delivered");
-        assert!(last.blue > 0.99 && last.red < 0.01);
-        assert!((last.opacity - 0.5).abs() < 1e-6);
-        assert!((resolved.snapshot().opacity - 0.5).abs() < 1e-6);
+        assert!(last.components[2] > 0.9 && last.components[0] < 0.05);
+        assert!((last.components[3] - 0.5).abs() < 1e-6);
+        assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
     }
 }

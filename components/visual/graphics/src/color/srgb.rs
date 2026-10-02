@@ -3,10 +3,12 @@ use core::str::FromStr;
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
+use cherenkov::WorkingColor;
+
 use super::{
-    HexColorError, P3, ResolvedColor, WithOpacity, linear_srgb_to_p3, linear_to_srgb,
+    HexColorError, P3, WithOpacity, linear_srgb_to_p3, linear_to_srgb,
     parse::{parse_hex_color, parse_hex_color_runtime},
-    srgb_to_linear,
+    srgb_to_linear, working,
 };
 
 /// Represents a color in the sRGB color space.
@@ -137,29 +139,30 @@ impl Srgb {
         WithOpacity::new(self, opacity)
     }
 
-    /// Resolves this sRGB color to a `ResolvedColor` in linear RGB color space.
+    /// Resolves this sRGB color to a working colour.
     #[must_use]
-    pub fn resolve(&self) -> ResolvedColor {
-        ResolvedColor {
-            red: srgb_to_linear(self.red),
-            green: srgb_to_linear(self.green),
-            blue: srgb_to_linear(self.blue),
-            headroom: 0.0,
-            opacity: 1.0,
-        }
+    pub fn resolve(&self) -> WorkingColor {
+        working::from_linear_srgb(
+            [
+                srgb_to_linear(self.red),
+                srgb_to_linear(self.green),
+                srgb_to_linear(self.blue),
+            ],
+            1.0,
+        )
     }
 }
 
 impl Resolvable for Srgb {
-    type Resolved = ResolvedColor;
+    type Resolved = WorkingColor;
     fn resolve(&self, _env: &Environment) -> impl Signal<Output = Self::Resolved> {
-        ResolvedColor {
-            red: srgb_to_linear(self.red),
-            green: srgb_to_linear(self.green),
-            blue: srgb_to_linear(self.blue),
-            headroom: 0.0,
-            opacity: 1.0,
-        }
+        Self::resolve(self)
+    }
+}
+
+impl From<Srgb> for WorkingColor {
+    fn from(value: Srgb) -> Self {
+        value.resolve()
     }
 }
 

@@ -82,13 +82,13 @@ pub struct PerfStats {
     pub measurement_cache_misses: u64,
     /// Maximum compositor layers submitted by one sampled frame.
     pub scene_layers: u64,
-    /// Maximum Vello scene layers submitted by one sampled frame.
-    pub vello_scene_layers: u64,
-    /// Maximum embedded GPU surface layers submitted by one sampled frame.
-    pub gpu_surface_layers: u64,
-    /// Maximum Vello clip layers pushed by one sampled frame.
+    /// Maximum recorded scene-segment layers submitted by one sampled frame.
+    pub scene_segment_layers: u64,
+    /// Maximum embedded GPU content mounts submitted by one sampled frame.
+    pub gpu_content_layers: u64,
+    /// Maximum clip layers pushed by one sampled frame.
     pub clip_layers: u64,
-    /// Maximum nested Vello clip depth observed across sampled frames.
+    /// Maximum nested clip depth observed across sampled frames.
     pub max_clip_depth: u64,
     /// `AppliedFilter` nodes dispatched across sampled frames.
     pub applied_filter_count: u64,
@@ -117,7 +117,7 @@ pub struct PerfPhaseStats {
     pub scene_finish: PerfDurationStats,
     /// Time spent acquiring an offscreen frame.
     pub acquire: PerfDurationStats,
-    /// Time spent submitting Hydrolysis/Vello rendering work.
+    /// Time spent submitting Hydrolysis/Cherenkov rendering work.
     pub render: PerfDurationStats,
     /// Time spent presenting the offscreen frame.
     pub present: PerfDurationStats,
@@ -199,14 +199,14 @@ impl PerfStats {
                 .map(|frame| u64::from(frame.profile.counters.scene_layers))
                 .max()
                 .unwrap_or_default(),
-            vello_scene_layers: frames
+            scene_segment_layers: frames
                 .iter()
-                .map(|frame| u64::from(frame.profile.counters.vello_scene_layers))
+                .map(|frame| u64::from(frame.profile.counters.scene_segment_layers))
                 .max()
                 .unwrap_or_default(),
-            gpu_surface_layers: frames
+            gpu_content_layers: frames
                 .iter()
-                .map(|frame| u64::from(frame.profile.counters.gpu_surface_layers))
+                .map(|frame| u64::from(frame.profile.counters.gpu_content_layers))
                 .max()
                 .unwrap_or_default(),
             clip_layers: frames

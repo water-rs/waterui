@@ -234,7 +234,7 @@ struct AndroidGpuRuntimeCompletion {
 
 #[cfg(feature = "gpu")]
 impl AndroidGpuRuntimeCompletion {
-    fn complete(self, runtime: waterui_graphics::shared_context::GpuRuntime) {
+    fn complete(self, runtime: waterui_graphics::gpu::GpuRuntime) {
         let runtime = crate::IntoFFI::into_ffi(runtime);
         super::with_attached_env(&self.jvm, |env| {
             env.call_method(

@@ -66,7 +66,7 @@ pub struct ZStackLayout {
 
 impl Layout for ZStackLayout {
     /// A `ZStack` is content-sized only while every child is — a child that
-    /// stretches (a `Color`, a `GpuSurface`) makes the stack stretch on the
+    /// stretches (a `Color`, a `GpuContentView`) makes the stack stretch on the
     /// same axes, since `place` hands such children the full bounds.
     ///
     /// Axis-relative answers have no direction to resolve against here:
