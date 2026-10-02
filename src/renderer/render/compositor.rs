@@ -916,11 +916,12 @@ fn gpu_frame_transform(
 /// — the size the engine emits the frame's quad at in layer space.
 fn external_frame_plane_size(frame: &cherenkov_gpu::interop::ExternalFrame) -> (u32, u32) {
     use cherenkov_gpu::interop::FramePlanes;
-    let plane = match &frame.planes {
-        FramePlanes::Yuv { y, .. } => y,
-        FramePlanes::Rgb { plane, .. } => plane,
-    };
-    (plane.width(), plane.height())
+    match &frame.planes {
+        FramePlanes::Yuv { y, .. } => (y.width(), y.height()),
+        FramePlanes::Rgb { plane, .. } => (plane.width(), plane.height()),
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        FramePlanes::Native(frame) => frame.size(),
+    }
 }
 
 /// The clip/opacity ancestry a surface layer is drawn under, as mount
