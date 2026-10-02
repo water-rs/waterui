@@ -19,7 +19,7 @@
 //!     .background(Material::Regular);
 //! ```
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, rc::Rc, sync::Arc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
@@ -183,6 +183,138 @@ pub struct Window {
     /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
     /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
     pub resize_increments: Option<Computed<Size>>,
+    /// The window's own icon, or `None` for the application icon.
+    ///
+    /// Reactive: backends observe the binding and re-apply the icon to a
+    /// shown window, so an app can switch icons at runtime — following a
+    /// theme change, say — through [`WindowHandle::set_icon`] or its own
+    /// binding. `None`, the default, keeps the application icon the `water`
+    /// CLI stages next to the asset bundle, and setting the binding back to
+    /// `None` restores it.
+    ///
+    /// Platform support: hydrolysis/winit's `set_window_icon` (X11, Windows,
+    /// and Wayland through the xdg-toplevel icon protocol where winit
+    /// supports it), GTK through the toplevel's icon list, and `WinUI`
+    /// through `AppWindow.SetIcon`. `AppKit`, `UIKit` and Android identify an
+    /// application by one icon and have no per-window icon: the attribute is
+    /// unsupported there, not faked through the dock or app icon, and it
+    /// does not cross the C ABI.
+    pub icon: Binding<Option<WindowIcon>>,
+}
+
+/// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
+///
+/// Cloning shares the pixels, so a [`Binding`] snapshot is cheap. Platforms
+/// pick or scale the size they show; a square image of 32 or 64 pixels suits
+/// title bars and taskbars.
+#[derive(Clone)]
+pub struct WindowIcon {
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
+}
+
+impl WindowIcon {
+    /// An icon of `width × height` pixels, `rgba` holding them row by row,
+    /// top to bottom, four bytes each — red, green, blue and straight
+    /// (non-premultiplied) alpha.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the icon has no pixels, or when `rgba` is not exactly
+    /// `width * height * 4` bytes long.
+    #[must_use]
+    pub fn new(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Self {
+        let rgba = rgba.into();
+        assert!(
+            width > 0 && height > 0,
+            "WindowIcon::new: a window icon needs at least one pixel, got {width}x{height}"
+        );
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .unwrap_or_else(|| {
+                panic!("WindowIcon::new: a {width}x{height} icon does not fit in memory")
+            });
+        assert_eq!(
+            rgba.len(),
+            expected,
+            "WindowIcon::new: a {width}x{height} icon takes {expected} RGBA8 bytes, got {}",
+            rgba.len()
+        );
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The pixels, `width * height * 4` bytes of straight-alpha RGBA, row by
+    /// row from the top.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl PartialEq for WindowIcon {
+    fn eq(&self, other: &Self) -> bool {
+        // Snapshots of one binding share their pixels, so the common
+        // comparison — has the icon changed since the last sync? — never
+        // reads them.
+        self.width == other.width
+            && self.height == other.height
+            && (Arc::ptr_eq(&self.rgba, &other.rgba) || self.rgba == other.rgba)
+    }
+}
+
+impl Eq for WindowIcon {}
+
+impl Debug for WindowIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowIcon")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Converts a fixed icon or an application-owned icon binding into the
+/// reactive value carried by a [`Window`].
+pub trait IntoWindowIcon {
+    /// Converts this value into a window-icon binding.
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>>;
+}
+
+impl IntoWindowIcon for WindowIcon {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(Some(self))
+    }
+}
+
+impl IntoWindowIcon for Option<WindowIcon> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(self)
+    }
+}
+
+impl IntoWindowIcon for Binding<Option<WindowIcon>> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        self
+    }
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -503,6 +635,7 @@ impl Window {
             level: Computed::constant(WindowLevel::Normal),
             attention: Binding::container(None),
             resize_increments: None,
+            icon: Binding::container(None),
         }
     }
 
@@ -562,6 +695,18 @@ impl Window {
     #[must_use]
     pub fn resize_increments(mut self, increments: impl IntoComputed<Size>) -> Self {
         self.resize_increments = Some(increments.into_computed());
+        self
+    }
+
+    /// Set the window's own icon.
+    ///
+    /// Takes a [`WindowIcon`] for a fixed icon, an `Option<WindowIcon>`, or a
+    /// `Binding<Option<WindowIcon>>` the app keeps to change the icon after
+    /// the window is shown. See [`Self::icon`] for the default and platform
+    /// support notes.
+    #[must_use]
+    pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
+        self.icon = icon.into_window_icon();
         self
     }
 
@@ -740,6 +885,7 @@ impl Window {
             attention: self.attention.clone(),
             style: self.style.clone(),
             background: self.background.clone(),
+            icon: self.icon.clone(),
         }
     }
 
@@ -840,6 +986,7 @@ pub struct WindowHandle {
     attention: Binding<Option<UserAttention>>,
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
+    icon: Binding<Option<WindowIcon>>,
 }
 
 impl WindowHandle {
@@ -895,6 +1042,13 @@ impl WindowHandle {
     pub fn set_background(&self, background: impl Into<WindowBackground>) {
         self.background.set(background.into());
     }
+
+    /// Set the window's own icon, or `None` for the application icon; the
+    /// backend re-applies it to the shown window. See [`Window::icon`] for
+    /// platform support.
+    pub fn set_icon(&self, icon: impl Into<Option<WindowIcon>>) {
+        self.icon.set(icon.into());
+    }
 }
 
 #[cfg(test)]
@@ -905,7 +1059,7 @@ mod tests {
     use waterui_core::Environment;
     use waterui_graphics::Color;
 
-    use super::{WindowBackground, resolve_background};
+    use super::{WindowBackground, WindowIcon, resolve_background};
 
     /// The resolved background follows a replacement of the background
     /// itself, not only a change of the colour it started with.
@@ -932,5 +1086,28 @@ mod tests {
         assert!(last.components[2] > 0.9 && last.components[0] < 0.05);
         assert!((last.components[3] - 0.5).abs() < 1e-6);
         assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
+    }
+
+    /// The icon validates its pixel buffer against its size.
+    #[test]
+    #[should_panic(expected = "a 2x1 icon takes 8 RGBA8 bytes, got 4")]
+    fn window_icon_rejects_a_short_buffer() {
+        let _ = WindowIcon::new(2, 1, vec![0_u8; 4]);
+    }
+
+    /// An icon without pixels is rejected rather than handed to a platform.
+    #[test]
+    #[should_panic(expected = "at least one pixel")]
+    fn window_icon_rejects_an_empty_icon() {
+        let _ = WindowIcon::new(0, 4, Vec::<u8>::new());
+    }
+
+    /// Icons compare by their pixels, whether or not they share them.
+    #[test]
+    fn window_icons_compare_by_pixels() {
+        let icon = WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]);
+        assert_eq!(icon, icon.clone());
+        assert_eq!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]));
+        assert_ne!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]));
     }
 }
