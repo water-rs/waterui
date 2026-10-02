@@ -219,6 +219,35 @@ jobs:
         run: |
           cargo machete --with-metadata
 
+  # gpu-allocator's `windows >=0.53, <=0.62` requirement admits every windows
+  # line the lockfile already carries, so a partial lock re-resolution can
+  # slide it onto a different version than wgpu-hal's — and the windows
+  # crates' COM types do not unify across versions, which is how the Windows
+  # nightly's dx12 backend broke (#1338, the edge #1379 re-pinned by hand).
+  # Compiling that backend against the committed lockfile catches it:
+  # `wgpu-hal` is not a workspace member, so `dx12` is enabled through
+  # `wgpu/dx12`, which forwards to it. The check blocks an invalid lockfile;
+  # it does not alter Cargo's resolution.
+  windows-dx12:
+    name: Windows DX12 deps
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
+      # cache budget note at the top of this file).
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - name: Compile the DX12 backend against the committed lockfile
+        run: cargo check --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
+
   # `rust-version` is a promise that the whole workspace compiles on that
   # toolchain, and nothing else in this gate keeps it true: every other leg
   # installs `stable` or a newer pin. `clippy::incompatible_msrv` only knows
@@ -406,7 +435,7 @@ jobs:
   # on anything else, including a failed `changes` job.
   test-result:
     name: Test result
-    needs: [changes, test]
+    needs: [changes, test, windows-dx12]
     if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -415,6 +444,7 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TEST: ${{ needs.test.result }}
+          DX12: ${{ needs.windows-dx12.result }}
         run: |
           if [ "$CHANGES" != success ]; then
             echo "::error::Changes finished as $CHANGES, so the Test selection is unknown"
@@ -424,6 +454,13 @@ jobs:
             success | skipped) ;;
             *)
               echo "::error::Test finished as $TEST"
+              exit 1
+              ;;
+          esac
+          case "$DX12" in
+            success | skipped) ;;
+            *)
+              echo "::error::Windows DX12 deps finished as $DX12"
               exit 1
               ;;
           esac
