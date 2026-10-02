@@ -1157,7 +1157,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "cherenkov"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 dependencies = [
  "color",
  "filtrate-core",
@@ -1175,11 +1175,13 @@ dependencies = [
 [[package]]
 name = "cherenkov-gpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 dependencies = [
  "ash",
+ "block2 0.6.2",
  "bytemuck",
  "cherenkov",
+ "dispatch2",
  "filtrate",
  "filtrate-core",
  "futures-channel",
@@ -1194,8 +1196,16 @@ dependencies = [
  "ndk",
  "ndk-sys",
  "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
  "objc2-io-surface",
  "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "objc2-ui-kit 0.3.2",
  "png",
  "pollster 0.4.0",
  "rustc-hash 2.1.3",
@@ -1209,7 +1219,7 @@ dependencies = [
 [[package]]
 name = "cherenkov-shader"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 dependencies = [
  "naga",
  "thiserror 2.0.21",
@@ -2255,7 +2265,7 @@ dependencies = [
 [[package]]
 name = "filtrate"
 version = "0.2.1"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 dependencies = [
  "bytemuck",
  "cherenkov-shader",
@@ -2273,12 +2283,12 @@ dependencies = [
 [[package]]
 name = "filtrate-core"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 
 [[package]]
 name = "filtrate-derive"
 version = "0.1.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2971,7 +2981,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=87b257dbefbc554698440a9f64118ac72d4c8331#87b257dbefbc554698440a9f64118ac72d4c8331"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=355c69066d2dd10c0f5153953f4316eb3ede45ee#355c69066d2dd10c0f5153953f4316eb3ede45ee"
 dependencies = [
  "cherenkov",
  "hydrolysis",
@@ -4627,6 +4637,18 @@ dependencies = [
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "objc2-av-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "478ae33fcac9df0a18db8302387c666b8ef08a3e2d62b510ca4fc278a384b6c0"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-core-media",
+ "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
 ]
 
 [[package]]
@@ -10182,7 +10204,7 @@ dependencies = [
 [[patch.unused]]
 name = "cherenkov-cpu"
 version = "0.0.0"
-source = "git+https://github.com/water-rs/cherenkov?rev=e9ac2400aa8291a0aa2575282d1f11e82baf2ed8#e9ac2400aa8291a0aa2575282d1f11e82baf2ed8"
+source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab9796a016037e8076#2cae05177f4ae0252ae225ab9796a016037e8076"
 
 [[patch.unused]]
 name = "waterkit-camera"
