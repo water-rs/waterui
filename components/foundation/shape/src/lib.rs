@@ -1323,26 +1323,11 @@ impl SceneContent for MorphContent {
         false
     }
 
-    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-        let Self {
-            from,
-            to,
-            color,
-            progress,
-            mut driver,
-            shader: _,
-        } = *self;
-        if let Some(driver) = &mut driver {
+    fn rebuild_for_engine(&mut self) {
+        if let Some(driver) = &mut self.driver {
             driver.task = None;
         }
-        Box::new(Self {
-            from,
-            to,
-            color,
-            progress,
-            driver,
-            shader: None,
-        })
+        self.shader = None;
     }
 
     /// The morph clock runs while the content is mounted: from the host

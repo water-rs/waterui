@@ -189,9 +189,7 @@ impl SceneContent for MeshContent {
         false
     }
 
-    fn rebuild_for_engine(self: Box<Self>) -> Box<dyn SceneContent> {
-        self
-    }
+    fn rebuild_for_engine(&mut self) {}
 }
 
 #[cfg(test)]

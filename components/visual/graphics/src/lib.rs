@@ -60,7 +60,7 @@ pub use input::{
 };
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
-pub use scene::picture::{Picture, PictureRecording};
+pub use scene::picture::{Picture, PictureRecording, PictureSource};
 pub use scene::resources::{
     EngineResource, HeldResources, RecordingResources, Registered, SceneBackend, SceneResources,
     ShaderBackend,
