@@ -563,6 +563,25 @@ pub fn primary_content(view: &PlatformView) -> Option<Retained<PlatformView>> {
     }
 }
 
+/// The scroll-surface candidates `view` declares through
+/// `cocoaUiScrollSurfaceCandidates`.
+///
+/// The children a kit host view reports for the scroll-surface search, in
+/// stacking order; empty when `view` does not answer the selector.
+#[must_use]
+pub fn scroll_surface_candidates(view: &PlatformView) -> Vec<Retained<PlatformView>> {
+    if view.respondsToSelector(objc2::sel!(cocoaUiScrollSurfaceCandidates)) {
+        // SAFETY: every kit class implementing
+        // `cocoaUiScrollSurfaceCandidates` declares it
+        // `-> Retained<NSArray<PlatformView>>`.
+        let candidates: Retained<objc2_foundation::NSArray<PlatformView>> =
+            unsafe { objc2::msg_send![view, cocoaUiScrollSurfaceCandidates] };
+        candidates.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Whether `view` sizes itself by its frame rather than by Auto Layout
 /// constraints — `true` for views a layout container positions manually.
 pub fn set_translates_autoresizing(view: &PlatformView, enabled: bool) {

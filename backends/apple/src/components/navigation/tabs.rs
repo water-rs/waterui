@@ -103,16 +103,65 @@ mod platform {
     use super::{Fill, Mounted, mount_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
+    use core::cell::RefCell;
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::geometry::Rect;
-    use cocoa_ui::uikit::{HostView, TabSpec, TabsController};
+    use cocoa_ui::objc2_ui_kit::{
+        NSDirectionalRectEdge, UINavigationController, UIScrollView, UITabAccessory,
+        UITabBarMinimizeBehavior,
+    };
+    use cocoa_ui::uikit::{HostView, TabSpec, TabsController, view_controller};
     use cocoa_ui::{Retained, view};
-    use waterui::navigation::TabsLayout;
+    use waterui::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
     use waterui::reactive::Signal;
     use waterui_core::layout::ProposalSize;
 
     use crate::contract::KeepAlive;
+
+    /// Uninstalls the capsule and unmounts its subtree on drop: `UIKit`
+    /// retains the accessory's `contentView` inside the controller's view
+    /// hierarchy, so the mounted child must detach explicitly — the leaf
+    /// owns the mount, and its watchers die with it.
+    struct BottomAccessory {
+        tabs: Retained<TabsController>,
+        mounted: Rc<RefCell<Option<crate::contract::Mounted>>>,
+    }
+
+    impl Drop for BottomAccessory {
+        fn drop(&mut self) {
+            self.tabs.setBottomAccessory(None);
+            if let Some(mounted) = self.mounted.borrow_mut().take() {
+                drop(mounted.unmount());
+            }
+        }
+    }
+
+    /// The pane's declared scrolling surface: the view itself when it is
+    /// a `UIScrollView`, else the host's declared scroll-surface
+    /// candidates in stacking order, else a transparent wrapper's
+    /// primary content, else — at a view whose owning controller is a
+    /// `UINavigationController` — the pushed page controller's root view,
+    /// where the declared chain resumes. Undeclared subviews —
+    /// decorations, internal `UIKit` chrome — are never considered.
+    fn declared_scroll_view(view: &cocoa_ui::PlatformView) -> Option<Retained<UIScrollView>> {
+        if let Some(scroll) = view.downcast_ref::<UIScrollView>() {
+            return Some(scroll.into());
+        }
+        for candidate in view::scroll_surface_candidates(view) {
+            if let Some(found) = declared_scroll_view(&candidate) {
+                return Some(found);
+            }
+        }
+        if let Some(primary) = view::primary_content(view)
+            && let Some(found) = declared_scroll_view(&primary)
+        {
+            return Some(found);
+        }
+        let controller = view_controller::owning_controller(view)
+            .and_then(|controller| controller.downcast::<UINavigationController>().ok())?;
+        declared_scroll_view(controller.topViewController()?.view()?.as_ref())
+    }
 
     /// `UITabBarController` with one `UIViewController` per pane.
     #[allow(clippy::too_many_lines)]
@@ -151,6 +200,115 @@ mod platform {
             if let Some(image) = cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 25.0) {
                 tabs.tab_item(index).setImage(Some(&image));
             }
+        }
+
+        // `UITabBarMinimizeBehavior` collapses bottom chrome on the
+        // pane's scroll: `UIKit` only auto-associates a scroll view that
+        // is the controller's root view itself, and each pane mounts
+        // inside a wrapper — associate the pane's own scroll view for
+        // the bottom edge explicitly.
+        if let Some(controllers) = tabs.viewControllers() {
+            for controller in &controllers {
+                if let Some(root) = controller.view()
+                    && let Some(scroll) = declared_scroll_view(&root)
+                {
+                    controller
+                        .setContentScrollView_forEdge(Some(&scroll), NSDirectionalRectEdge::Bottom);
+                }
+            }
+        }
+
+        tabs.setTabBarMinimizeBehavior(match layout.minimize_behavior {
+            TabBarMinimizeBehavior::Automatic => UITabBarMinimizeBehavior::Automatic,
+            TabBarMinimizeBehavior::Never => UITabBarMinimizeBehavior::Never,
+            TabBarMinimizeBehavior::OnScrollDown => UITabBarMinimizeBehavior::OnScrollDown,
+            TabBarMinimizeBehavior::OnScrollUp => UITabBarMinimizeBehavior::OnScrollUp,
+            other => unimplemented!("unsupported TabBarMinimizeBehavior variant: {other:?}"),
+        });
+
+        // The bottom accessory is a controller-level capsule: the shared
+        // view renders once into a host whose intrinsic measure forwards
+        // the child's answer, then UIKit owns the capsule's placement,
+        // sizing and collapse.
+        if let Some(accessory) = layout.bottom_accessory.take() {
+            let accessory_host = HostView::new(mtm, Rect::ZERO);
+            let mounted = Rc::new(RefCell::new(Some(
+                ctx.render(accessory).mount(&accessory_host),
+            )));
+            accessory_host.set_measure_handler({
+                let mounted = Rc::clone(&mounted);
+                move |_host, proposal| {
+                    let Some(measured) = mounted.borrow().as_ref().map(|mounted| {
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            reason = "the layout contract is f32; measured points always fit"
+                        )]
+                        mounted.layout().measure(ProposalSize::new(
+                            proposal.width.map(|width| width as f32),
+                            proposal.height.map(|height| height as f32),
+                        ))
+                    }) else {
+                        // The leaf unmounted the child — the host can still
+                        // be asked while `UIKit` keeps it in the hierarchy.
+                        return cocoa_ui::geometry::Size::new(0.0, 0.0);
+                    };
+                    cocoa_ui::geometry::Size::new(
+                        f64::from(measured.size.width),
+                        f64::from(measured.size.height),
+                    )
+                }
+            });
+            // `UIKit` sizes the accessory's content view by capsule
+            // geometry, wider than a non-stretch child's intrinsic width:
+            // measure the child under the bounds proposal and center its
+            // measured frame, as `MaterialBackground` does. A stretching
+            // child measures back to bounds, so this covers both.
+            accessory_host.set_layout_handler({
+                let mounted = Rc::clone(&mounted);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "UIKit geometry is `CGFloat`; proposals are `f32`"
+                )]
+                move |host| {
+                    let bounds = view::bounds(host);
+                    let subviews = view::subviews(host);
+                    let Some(sub) = subviews.first() else {
+                        return;
+                    };
+                    let (frame, proposal) = {
+                        let slot = mounted.borrow();
+                        let Some(mounted) = slot.as_ref() else {
+                            return;
+                        };
+                        let proposal = ProposalSize::new(
+                            Some(bounds.size.width as f32),
+                            Some(bounds.size.height as f32),
+                        );
+                        let measured = mounted.layout().measure(proposal).size;
+                        let width = f64::from(measured.width);
+                        let height = f64::from(measured.height);
+                        (
+                            Rect::new(
+                                (bounds.size.width - width) / 2.0,
+                                (bounds.size.height - height) / 2.0,
+                                width,
+                                height,
+                            ),
+                            proposal,
+                        )
+                    };
+                    crate::proposal::deliver(sub, proposal);
+                    view::set_frame(sub, frame);
+                }
+            });
+            let accessory = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
+            tabs.setBottomAccessory(Some(&accessory));
+            keep.keep(accessory);
+            keep.keep(accessory_host);
+            keep.keep(BottomAccessory {
+                tabs: tabs.clone(),
+                mounted,
+            });
         }
 
         // Reactive chrome mutates each `UITabBarItem` in place — rebuilding

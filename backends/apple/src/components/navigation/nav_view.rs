@@ -66,6 +66,13 @@ mod platform {
         let content = ctx.render(mem::take(&mut view.content));
         let host = cocoa_ui::uikit::HostView::new(mtm, Rect::ZERO);
         view::add_subview(&host, content.view());
+        // The page's own chrome (the bar and search field that may follow)
+        // is not a scrolling surface; the scroll-surface search descends
+        // the content only.
+        host.set_scroll_surface_handler({
+            let content = view::retain_base(content.view());
+            move |_host| vec![content.clone()]
+        });
         let state = Rc::new(RefCell::new(view.state));
         let mut keep = KeepAlive::default();
         keep.keep(content);

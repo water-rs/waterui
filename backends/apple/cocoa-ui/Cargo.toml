@@ -482,6 +482,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UITabBarController",
     "UITabBarItem",
     "UITab",
+    "UITabAccessory",
     "UISearchTab",
         "UITabBarAppearance",
     "UISplitViewController",
