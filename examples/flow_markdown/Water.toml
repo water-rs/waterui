@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Flow Markdown"
-bundle_identifier = "dev.waterui.examples.flow_markdown"
+bundle_identifier = "dev.waterui.examples.flowmarkdown"

@@ -84,7 +84,7 @@
         "sha": "8cf506ce4ecce482878983e74eb2723a46f1b9bb",
         "path": "examples/form"
       },
-      "bundle_id": "com.waterui.form_example",
+      "bundle_id": "com.waterui.formexample",
       "crate_name": "form_example",
       "scheme": "form_example",
       "preview_target": "demo",

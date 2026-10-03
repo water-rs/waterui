@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Edge Text"
-bundle_identifier = "dev.waterui.edge_text"
+bundle_identifier = "dev.waterui.edgetext"
