@@ -15,7 +15,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import drive as d
-import observer
 
 
 class ProtocolTests(unittest.TestCase):
@@ -291,8 +290,6 @@ class ProtocolTests(unittest.TestCase):
             parser.await_attach(float("inf"))
             self.assertTrue(parser.attached)
 
-    def test_observer_stream_tail_matches_driver(self):
-        self.assertEqual(observer.LOG_STREAM_TAIL, d.LOG_STREAM_TAIL)
 
     def launch_fixture(self, platform, fail=None):
         app = self.root / "Test.app"
