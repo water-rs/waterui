@@ -969,6 +969,7 @@ fn handle_redraw(state: &Rc<FilteredState>) {
 fn handle_window_change(state: &Rc<FilteredState>) {
     if cocoa_ui::view::window(&state.view).is_none() {
         state.clock.stop();
+        state.timeline_parked.set(true);
         state.needs_render.set(false);
         state.pending_dynamic_range.borrow_mut().take();
         complete_ready(state, false);
