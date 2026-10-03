@@ -25,7 +25,7 @@ use accesskit::{
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{Views, ViewSnapshot};
+use waterui_core::views::{ViewSnapshot, Views};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
@@ -336,7 +336,7 @@ pub fn table_accessibility(
                 let cell_rect = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
                     table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index, m)
                 });
-                if let Some(cell) = rows.get_view(row_index) {
+                if let Some(cell) = rows.snapshot().get_view(row_index) {
                     let cell_view = AnyView::new(cell);
                     let mut cell_node = AccessibilityNode::new(
                         crate::renderer::SemanticCore::resolve_accessibility_role(

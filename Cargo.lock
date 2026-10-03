@@ -4009,8 +4009,6 @@ dependencies = [
  "hydrolysis-m3",
  "jni 0.21.1",
  "waterui",
- "waterui-controls",
- "waterui-core",
 ]
 
 [[package]]

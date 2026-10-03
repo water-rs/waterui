@@ -86,7 +86,8 @@ fn lazy_stack_sample_size(
         LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(None, cross),
     };
     let sample = children
-        .snapshot().get_view(0)
+        .snapshot()
+        .get_view(0)
         .map(|view| normalize_layout_view(view, env))
         .map_or_else(
             || panic!("LazyContainer failed to materialize child at index 0"),
@@ -105,7 +106,8 @@ fn lazy_stack_sample_size(
             LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(Some(0.0), cross),
         };
         children
-            .snapshot().get_view(0)
+            .snapshot()
+            .get_view(0)
             .map(|view| normalize_layout_view(view, env))
             .map_or_else(
                 || panic!("LazyContainer failed to materialize child at index 0"),

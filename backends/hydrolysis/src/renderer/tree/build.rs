@@ -860,10 +860,12 @@ impl RenderNode {
         let entries = (0..len)
             .map(|index| {
                 let id = views
-                    .snapshot().get_id(index)
+                    .snapshot()
+                    .get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"));
                 let view = views
-                    .snapshot().get_view(index)
+                    .snapshot()
+                    .get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                 CollectionEntry::stable(
                     id,

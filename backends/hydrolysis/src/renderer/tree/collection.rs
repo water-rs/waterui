@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use nami::collection::CollectionChange;
 use waterui_core::animation::Animation;
-use waterui_core::views::ViewSnapshot;
 use waterui_core::layout::Point;
+use waterui_core::views::ViewSnapshot;
 use waterui_layout::collection_transition::CollectionTransition;
 
 /// Collect into `out` the ids occupying the positions a [`CollectionChange`]
@@ -632,7 +632,8 @@ impl CollectionNode {
         let ids: Vec<CollectionItemId> = (0..len)
             .map(|index| {
                 self.views
-                    .snapshot().get_id(index)
+                    .snapshot()
+                    .get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"))
             })
             .collect();
@@ -673,36 +674,36 @@ impl CollectionNode {
         next.extend(head_dead.into_iter().map(begin_exit));
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
         for (index, id) in ids.into_iter().enumerate() {
-            let entry = if let Some(mut previous) = reuse_by_id.remove(&id) {
-                previous.phase = next_live_phase(self.transition.as_ref(), previous.phase, now);
-                if replaced.contains(&id) {
-                    // Same id, changed content: re-materialize this row's
-                    // node from the current item. The entry keeps its
-                    // identity and phase; only the node is rebuilt.
-                    let view = self
-                        .views
-                        .snapshot().get_view(index)
-                        .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
-                    previous.node =
-                        RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
-                }
-                previous
-            } else {
-                let view = self
-                    .views
-                    .snapshot().get_view(index)
-                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
-                CollectionEntry {
-                    id,
-                    node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
-                    phase: if animated {
-                        EntryPhase::Entering(now)
-                    } else {
-                        EntryPhase::Stable
-                    },
-                    factor: if animated { 0.0 } else { 1.0 },
-                }
-            };
+            let entry =
+                if let Some(mut previous) = reuse_by_id.remove(&id) {
+                    previous.phase = next_live_phase(self.transition.as_ref(), previous.phase, now);
+                    if replaced.contains(&id) {
+                        // Same id, changed content: re-materialize this row's
+                        // node from the current item. The entry keeps its
+                        // identity and phase; only the node is rebuilt.
+                        let view = self.views.snapshot().get_view(index).unwrap_or_else(|| {
+                            panic!("hydrolysis collection: item {index} missing")
+                        });
+                        previous.node =
+                            RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                    }
+                    previous
+                } else {
+                    let view =
+                        self.views.snapshot().get_view(index).unwrap_or_else(|| {
+                            panic!("hydrolysis collection: item {index} missing")
+                        });
+                    CollectionEntry {
+                        id,
+                        node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
+                        phase: if animated {
+                            EntryPhase::Entering(now)
+                        } else {
+                            EntryPhase::Stable
+                        },
+                        factor: if animated { 0.0 } else { 1.0 },
+                    }
+                };
             next.push(entry);
             if let Some(dead) = dead_after.remove(&id) {
                 next.extend(dead.into_iter().map(begin_exit));
@@ -801,7 +802,8 @@ impl LazyStackNode {
             let mut cache = self.item_cache.borrow_mut();
             for index in window.start..window.end.min(count) {
                 let id = views
-                    .snapshot().get_id(index)
+                    .snapshot()
+                    .get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
                 if cache.get(&id).is_none() {
                     let view = views.snapshot().get_view(index).unwrap_or_else(|| {
@@ -860,7 +862,8 @@ impl LazyStackNode {
     ) -> (Size, StretchAxis) {
         let id = self
             .views
-            .snapshot().get_id(index)
+            .snapshot()
+            .get_id(index)
             .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
         if let Some(item) = self.item_cache.borrow().get(&id)
             && item.is_built()
@@ -871,10 +874,10 @@ impl LazyStackNode {
             );
         }
 
-        let view = self
-            .views
-            .snapshot().get_view(index)
-            .unwrap_or_else(|| panic!("hydrolysis LazyStack failed to materialize item {index}"));
+        let view =
+            self.views.snapshot().get_view(index).unwrap_or_else(|| {
+                panic!("hydrolysis LazyStack failed to materialize item {index}")
+            });
         let view = normalize_layout_view(view, &self.env);
         state.measurement.begin_transient_measurement();
         let result = {
@@ -967,7 +970,8 @@ impl LazyStackNode {
         for index in visible.start.min(count)..visible.end.min(count) {
             let id = self
                 .views
-                .snapshot().get_id(index)
+                .snapshot()
+                .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let Some(item) = cache.get(&id) else {
                 continue;
@@ -1097,7 +1101,8 @@ impl LazyStackNode {
         for index in window.start..window.end {
             let id = self
                 .views
-                .snapshot().get_id(index)
+                .snapshot()
+                .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let proposal = self.item_proposal(cross);
             let (size, stretch) = {
@@ -1174,13 +1179,14 @@ impl LazyStackNode {
         for index in 0..count {
             let id = self
                 .views
-                .snapshot().get_id(index)
+                .snapshot()
+                .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let env = &self.env;
             let views = &self.views;
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, || {
-                let view = views.get_view(index).unwrap_or_else(|| {
+                let view = views.snapshot().get_view(index).unwrap_or_else(|| {
                     panic!("hydrolysis LazyStack failed to materialize item {index}")
                 });
                 normalize_layout_view(view, env)

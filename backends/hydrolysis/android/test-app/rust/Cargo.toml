@@ -13,8 +13,6 @@ name = "hydrolysis_test_app"
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility"] }
 waterui = { workspace = true, default-features = false, features = ["gpu"] }
-waterui-controls.workspace = true
-waterui-core.workspace = true
 hydrolysis-m3.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
