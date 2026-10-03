@@ -216,6 +216,12 @@ all = [
 # alongside `all` so `tests/` can derive `TsProps` through the
 # `waterui::ts::schema` facade path the macro emits for a facade consumer.
 waterui = { path = "..", features = ["all", "ts"] }
+# The bundle-metadata test walks the artifact's metadata directory records the
+# way the CLI does — matching the `waterui_meta_bundle_` name, cutting the
+# payload — from the linked test binary.
+waterui-assets-planner.workspace = true
+waterui-meta.workspace = true
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
 
 [lints]
 workspace = true

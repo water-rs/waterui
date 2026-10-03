@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use walkdir::WalkDir;
 use waterui_assets_core::AssetKind;
+use waterui_meta::{DirRecord, dir_record};
 
 mod color;
 mod launch;
@@ -70,17 +71,18 @@ pub struct BundleMount {
     pub root: PathBuf,
 }
 
-/// Symbol prefix for `include_bundle!` mount metadata statics.
+/// Name prefix for `include_bundle!` mount metadata records.
 ///
-/// `include_bundle!` emits one static per mounted directory whose mangled
-/// name ends in `{BUNDLE_META_PREFIX}<mount>`; the CLI enumerates the
-/// compiled artifact's symbol table and decodes the matching
-/// [`BundleMountMeta`] payload.
+/// `include_bundle!` emits one record per mounted directory into the
+/// artifact's metadata directory section whose name is
+/// `{BUNDLE_META_PREFIX}<mount>`; the CLI walks the section's records,
+/// matches the prefix, and decodes the matching [`BundleMountMeta`]
+/// payload.
 pub const BUNDLE_META_PREFIX: &str = "waterui_meta_bundle_";
 
 /// One bundle mount declared by `include_bundle!`, carried to the CLI as the
-/// NUL-terminated payload of a `waterui_meta_bundle_*` static in the app
-/// crate's rlib.
+/// NUL-terminated payload of a `waterui_meta_bundle_*` record in the app
+/// crate's metadata directory section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleMountMeta {
     /// Logical mount name; `"assets"` is the main application asset root.
@@ -95,13 +97,27 @@ pub struct BundleMountMeta {
 }
 
 impl BundleMountMeta {
-    /// Leaf of the metadata symbol's demangled name.
+    /// The record's name — also the emitted static's item name, since a
+    /// record names itself.
     #[must_use]
-    pub fn symbol_leaf(&self) -> String {
+    pub fn record_name(&self) -> String {
         format!("{BUNDLE_META_PREFIX}{}", rust_identifier(&self.mount))
     }
 
-    /// Serialize as the symbol payload: JSON followed by a NUL terminator.
+    /// The directory record the emitter bakes: [`record_name`](Self::record_name),
+    /// NUL, the payload, NUL — one [`dir_entry`](waterui_meta::dir_entry)-shaped
+    /// record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if serialization fails, which cannot happen for this type.
+    #[must_use]
+    pub fn to_record(&self) -> Vec<u8> {
+        dir_record(self.record_name().as_bytes(), &self.to_payload())
+    }
+
+    /// Serialize as the record's payload field: JSON followed by a NUL
+    /// terminator.
     ///
     /// # Panics
     ///
@@ -114,7 +130,27 @@ impl BundleMountMeta {
         payload
     }
 
-    /// Decode a symbol payload read from an artifact.
+    /// Decode one metadata-directory record into the mount it describes.
+    ///
+    /// The record's name must carry the [`BUNDLE_META_PREFIX`]; its payload
+    /// decodes like [`from_payload`](Self::from_payload).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlannerError::NotABundleRecord`] when `record.name` does not
+    /// start with [`BUNDLE_META_PREFIX`], and
+    /// [`PlannerError::InvalidMountMeta`] when the payload is not a
+    /// serialized [`BundleMountMeta`].
+    pub fn from_record(record: DirRecord<'_>) -> Result<Self, PlannerError> {
+        if !record.name.starts_with(BUNDLE_META_PREFIX.as_bytes()) {
+            return Err(PlannerError::NotABundleRecord {
+                name: String::from_utf8_lossy(record.name).into_owned(),
+            });
+        }
+        Self::from_payload(record.payload)
+    }
+
+    /// Decode a record's payload field read from an artifact.
     ///
     /// A trailing NUL terminator is tolerated; anything else malformed is an
     /// error.
@@ -276,7 +312,14 @@ pub enum PlannerError {
         /// Underlying TOML parse error.
         source: toml::de::Error,
     },
-    /// A `waterui_meta_bundle_*` symbol payload is malformed.
+    /// A metadata-directory record's name does not mark it as bundle mount
+    /// metadata.
+    #[error("Record '{name}' is not a `{BUNDLE_META_PREFIX}*` metadata record")]
+    NotABundleRecord {
+        /// The record's name.
+        name: String,
+    },
+    /// A `waterui_meta_bundle_*` record payload is malformed.
     #[error("Invalid bundle mount metadata payload: {source}")]
     InvalidMountMeta {
         /// Underlying JSON decode error.
@@ -584,6 +627,7 @@ mod tests {
     use std::fs;
 
     use tempfile::tempdir;
+    use waterui_meta::dir_records;
 
     #[test]
     fn rust_identifier_normalizes_segments() {
@@ -666,19 +710,28 @@ mod tests {
     }
 
     #[test]
-    fn bundle_mount_meta_payload_round_trips() {
+    fn bundle_mount_meta_record_round_trips() {
         let meta = BundleMountMeta {
             mount: "web".to_string(),
             path: PathBuf::from("/abs/path/dist"),
             project: Some(PathBuf::from("/abs/path")),
         };
-        assert_eq!(meta.symbol_leaf(), "waterui_meta_bundle_web");
-        let payload = meta.to_payload();
-        assert_eq!(payload.last(), Some(&0));
-        let decoded = BundleMountMeta::from_payload(&payload).expect("decode payload");
+        assert_eq!(meta.record_name(), "waterui_meta_bundle_web");
+        let record = meta.to_record();
+        let parsed: Vec<_> = dir_records(&record).collect();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, b"waterui_meta_bundle_web");
+        let decoded = BundleMountMeta::from_record(parsed[0]).expect("decode record");
         assert_eq!(decoded, meta);
-        // The artifact reader already cuts at the first NUL; decoding without
-        // the terminator must still work.
+        // A record from another channel must not decode as a bundle mount.
+        let foreign_bytes = dir_record(b"waterui_meta_tsprops_X", b"\x02\x0c");
+        let foreign = dir_records(&foreign_bytes).next().expect("one record");
+        assert!(matches!(
+            BundleMountMeta::from_record(foreign),
+            Err(PlannerError::NotABundleRecord { .. })
+        ));
+        // Decoding the payload without its terminator must still work.
+        let payload = meta.to_payload();
         let decoded = BundleMountMeta::from_payload(&payload[..payload.len() - 1])
             .expect("decode without terminator");
         assert_eq!(decoded, meta);

@@ -10053,6 +10053,7 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "walkdir",
  "waterui-assets-core",
+ "waterui-meta",
 ]
 
 [[package]]
@@ -10497,6 +10498,7 @@ dependencies = [
  "futures",
  "nami",
  "native-executor",
+ "object",
  "pastey 0.2.3",
  "pulldown-cmark",
  "robius-open",
@@ -10510,6 +10512,7 @@ dependencies = [
  "waterui",
  "waterui-assets",
  "waterui-assets-macros",
+ "waterui-assets-planner",
  "waterui-barcode",
  "waterui-canvas",
  "waterui-chart",
@@ -10524,6 +10527,7 @@ dependencies = [
  "waterui-macros",
  "waterui-math",
  "waterui-media",
+ "waterui-meta",
  "waterui-navigation",
  "waterui-particle",
  "waterui-shape",
@@ -10719,6 +10723,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-meta"
+version = "0.5.1"
+
+[[package]]
 name = "waterui-navigation"
 version = "0.5.1"
 dependencies = [
@@ -10903,12 +10911,12 @@ version = "0.1.0"
 dependencies = [
  "const-fnv1a-hash",
  "object",
- "rustc-demangle",
  "serde",
  "suiteki",
  "thiserror 2.0.21",
  "waterui-core",
  "waterui-macros",
+ "waterui-meta",
 ]
 
 [[package]]
