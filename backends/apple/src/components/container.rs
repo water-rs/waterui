@@ -785,7 +785,6 @@ fn perform_fixed_layout(state: &ContainerState) {
         placements.len(),
         state.order.len()
     );
-    let scale = state.host.display_scale().unwrap_or(1.0);
     for (index, (id, placement)) in state.order.iter().zip(placements.iter()).enumerate() {
         let child = &state.rendered[id];
         let frame = Rect::new(
@@ -800,7 +799,7 @@ fn perform_fixed_layout(state: &ContainerState) {
         );
         // The negotiated proposal lands before the frame.
         proposal::deliver(child.view(), placement.proposal);
-        view::set_frame(child.view(), frame.pixel_snapped(scale));
+        view::set_frame(child.view(), frame);
     }
 }
 

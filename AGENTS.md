@@ -123,6 +123,15 @@ between the document and the code is a bug in the code; a pull request that
 has to weaken a contract test or amend the document is rejected. The only path
 to a semantic change is a major-version decision recorded by the maintainer.
 
+Backend conformance fixes are permitted implementation work: repair a native
+bridge so it implements the existing layout specification without changing
+shared layout algorithms or leaf contracts. Such fixes do not require a
+layout-decision label or separate foundation approval merely because they
+affect placement. The label gate below applies to its listed shared-layout
+paths, not to backend implementation files. A proposal to change the shared
+algorithm, normative semantics, or contract still requires the maintainer's
+decision.
+
 `.github/workflows/layout-decision.yml` enforces this mechanically: a pull
 request fails until it carries the `layout-decision` label whenever it can
 change layout semantics — any edit to `docs/layout-spec.md`, a non-test Rust
