@@ -96,30 +96,19 @@ async def acquire(coro, role, owned, remaining, errors):
     return proc
 
 
-async def bounded_wait(proc, seconds):
-    """Await proc bounded by `seconds`; absorbed cancellations never abort
-    the wait — at most one cancel per handled signal can arrive, so a
-    bounded retry count is sufficient. Returns True if the process exited."""
-    task = asyncio.ensure_future(proc.wait())
-    for _ in range(3):
-        try:
-            await asyncio.wait_for(asyncio.shield(task), seconds)
-            return True
-        except asyncio.TimeoutError:
-            return False
-        except asyncio.CancelledError:
-            continue  # absorbed: signal landed during cleanup — keep waiting
-    return task.done()
-
-
 async def run(argv, ent, bench_root, logs_dir, timeout):
     loop = asyncio.get_running_loop()
     interrupted = {"sig": None}
     main_task = asyncio.current_task()
+    phase = ["operate"]
 
     def interrupt(sig):
+        # The first signal is always recorded for the honest exit status;
+        # it cancels the task only while acquisition/operation is live —
+        # during cleanup a signal must not abort the in-flight teardown.
         if interrupted["sig"] is None:
             interrupted["sig"] = sig
+        if phase[0] == "operate":
             main_task.cancel()
 
     # Installed before any acquisition: a signal arriving while processes
@@ -131,7 +120,7 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
         logs_dir, f"observer-{os.getpid()}-{time.monotonic_ns()}.log")
     owned = []          # (role, proc) for every acquisition, in order
     read_f = write_f = diag = None
-    timed_out = abnormal = interrupted_hit = False
+    timed_out = abnormal = False
     cleanup_errors = []
     notes = []
     deadline = loop.time() + timeout
@@ -217,12 +206,20 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
     except asyncio.TimeoutError:
         timed_out = True
     except asyncio.CancelledError:
-        interrupted_hit = True
+        pass  # the interrupting signal is already recorded
     finally:
         # Teardown for every exit path: signal each exact owned group — the
         # group is signalled even when its leader already exited, since
         # descendants outlive the leader — then reap each leader through a
-        # bounded native wait with KILL escalation.
+        # bounded native wait with KILL escalation. A signal arriving here
+        # is only recorded; nothing cancels the cleanup itself, and every
+        # wait is bounded against one shared cleanup deadline.
+        phase[0] = "cleanup"
+        cleanup_deadline = loop.time() + 30
+
+        def cleanup_remaining():
+            return max(0.001, cleanup_deadline - loop.time())
+
         alive_at_term = {}
         for role, proc in owned:
             if proc is None:
@@ -240,7 +237,13 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
             if proc is None:
                 continue
             if proc.returncode is None:
-                if not await bounded_wait(proc, 5):
+                try:
+                    await asyncio.wait_for(
+                        proc.wait(), min(5, cleanup_remaining()))
+                    exited = True
+                except asyncio.TimeoutError:
+                    exited = False
+                if not exited:
                     if isinstance(alive_at_term.get(role), PermissionError):
                         cleanup_errors.append(
                             f"SIGTERM killpg({role} {proc.pid}): "
@@ -252,7 +255,10 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
                     except PermissionError as exc:
                         cleanup_errors.append(
                             f"SIGKILL killpg({role} {proc.pid}): {exc}")
-                    if not await bounded_wait(proc, 10):
+                    try:
+                        await asyncio.wait_for(
+                            proc.wait(), min(10, cleanup_remaining()))
+                    except asyncio.TimeoutError:
                         cleanup_errors.append(
                             f"wait({role} {proc.pid}): still running")
             elif isinstance(alive_at_term.get(role), PermissionError):
@@ -296,18 +302,19 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
         observer_rc in (0, -signal.SIGPIPE)
         or (observer_rc == -signal.SIGTERM
             and alive_at_term.get("observer") is True))
+    sig = interrupted["sig"]
     failure = (abnormal or not observer_normal or cleanup_errors
-               or (not interrupted_hit
+               or (sig is None
                    and (child_rc is None or observer_rc is None)))
     if failure:
         print(f"observer: {status} — failed", file=sys.stderr)
         for line in cleanup_errors + notes:
             print(f"observer: cleanup: {line}", file=sys.stderr)
         sys.exit(3)
-    if interrupted_hit:
-        print(f"observer: interrupted by signal {interrupted['sig']}: "
-              f"{status}", file=sys.stderr)
-        sys.exit(128 + interrupted["sig"])
+    if sig is not None:
+        print(f"observer: interrupted by signal {sig}: {status}",
+              file=sys.stderr)
+        sys.exit(128 + sig)
     if timed_out:
         print(f"observer: timed out after {timeout}s: {status}",
               file=sys.stderr)
