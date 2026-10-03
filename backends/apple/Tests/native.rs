@@ -108,6 +108,39 @@ fn trials() -> Vec<Trial> {
         ]);
         tests
     };
+    #[cfg(target_os = "ios")]
+    let tests = {
+        let mut tests = tests;
+        tests.extend([
+            Trial::test("tabs::bottom_accessory_mounts_into_the_controller", || {
+                tabs::bottom_accessory_mounts_into_the_controller();
+                Ok(())
+            }),
+            Trial::test("tabs::binding_updates_preserve_the_accessory_mount", || {
+                tabs::binding_updates_preserve_the_accessory_mount();
+                Ok(())
+            }),
+            Trial::test("tabs::tab_selection_does_not_rebuild_the_accessory", || {
+                tabs::tab_selection_does_not_rebuild_the_accessory();
+                Ok(())
+            }),
+            Trial::test(
+                "tabs::dropping_the_leaf_releases_accessory_watchers",
+                || {
+                    tabs::dropping_the_leaf_releases_accessory_watchers();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "tabs::each_minimize_behavior_maps_to_the_uikit_property",
+                || {
+                    tabs::each_minimize_behavior_maps_to_the_uikit_property();
+                    Ok(())
+                },
+            ),
+        ]);
+        tests
+    };
     let mut tests = tests;
     tests.extend(migration::trials());
     tests
@@ -448,6 +481,196 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+}
+
+/// `TabsLayout` chrome the iOS backend owns — the `UITabAccessory` bottom
+/// slot and `tabBarMinimizeBehavior` — against a real `UITabBarController`.
+/// All cases run on the true main thread under the harness and reach the
+/// controller the way a host does: through the view hierarchy's responder
+/// chain.
+#[cfg(target_os = "ios")]
+mod tabs {
+    use cocoa_ui::objc2_ui_kit::{UITabBarController, UITabBarMinimizeBehavior};
+    use cocoa_ui::uikit::Label;
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::navigation::{Tab, TabBarMinimizeBehavior, Tabs};
+    use waterui::prelude::{label, text};
+    use waterui::reactive::binding;
+    use waterui_apple::contract::NativeLeaf;
+
+    use super::resolve;
+
+    /// Tab identity for the fixtures.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Pane {
+        One,
+        Two,
+    }
+
+    /// The rendered leaf's first subview is the controller's root view; a
+    /// `UIViewController` sits on the responder chain right after its own
+    /// view — the same reach `adopt_controllers` relies on.
+    fn tab_bar_controller(leaf: &NativeLeaf) -> Retained<UITabBarController> {
+        let controller_view = view::subviews(leaf.view())
+            .into_iter()
+            .next()
+            .expect("the tabs host carries the controller's view");
+        owning_controller(&controller_view)
+            .and_then(|responder| responder.downcast::<UITabBarController>().ok())
+            .expect("the tabs leaf mounts a UITabBarController")
+    }
+
+    /// First `Label`'s text in the subtree, depth-first.
+    fn label_text(view: &PlatformView) -> Option<String> {
+        for sub in view::subviews(view) {
+            if let Some(label) = sub.downcast_ref::<Label>()
+                && let Some(attributed) = label.source_text()
+            {
+                return Some(attributed.string().to_string());
+            }
+            if let Some(found) = label_text(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// First `Label` in the subtree, retained for reads after the leaf
+    /// that mounted it is gone.
+    fn first_label(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<Label>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = first_label(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Two plain tabs with `accessory` in the bottom slot.
+    fn tabs(
+        accessory: impl waterui_backend_core::View,
+    ) -> (waterui::reactive::Binding<Pane>, NativeLeaf) {
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(
+            Tabs::new(
+                &pane,
+                vec![
+                    Tab::container(Pane::One, label("One"), || text("pane one")),
+                    Tab::container(Pane::Two, label("Two"), || text("pane two")),
+                ],
+            )
+            .bottom_accessory(accessory),
+        );
+        (pane, leaf)
+    }
+
+    /// The shared `bottom_accessory` view lands in the controller's own
+    /// accessory slot: `UIKit` reports a `UITabAccessory` whose content
+    /// view carries the rendered text at a natural height.
+    pub fn bottom_accessory_mounts_into_the_controller() {
+        let (_pane, leaf) = tabs(text("Now Playing"));
+        let accessory = tab_bar_controller(&leaf)
+            .bottomAccessory()
+            .expect("the shared accessory view installs a UITabAccessory");
+        let content = accessory.contentView();
+        assert_eq!(label_text(&content).as_deref(), Some("Now Playing"));
+        assert!(view::fitting_size(&content).height > 0.0);
+    }
+
+    /// A `Binding` inside the accessory updates the mounted text in place
+    /// — the same `UITabAccessory` keeps serving the capsule.
+    pub fn binding_updates_preserve_the_accessory_mount() {
+        let track = binding(String::from("first"));
+        let (_pane, leaf) = tabs(text!("{track}"));
+        let controller = tab_bar_controller(&leaf);
+        let accessory = controller.bottomAccessory().expect("installed");
+        let content = accessory.contentView();
+        // `text!` wraps interpolations in bidi isolates — match the payload.
+        assert!(label_text(&content).is_some_and(|text| text.contains("first")));
+        track.set(String::from("second"));
+        assert!(label_text(&content).is_some_and(|text| text.contains("second")));
+        let after = controller.bottomAccessory().expect("still installed");
+        assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
+    }
+
+    /// Selecting the other tab switches panes through the existing
+    /// controller — the accessory mount is untouched.
+    pub fn tab_selection_does_not_rebuild_the_accessory() {
+        let (pane, leaf) = tabs(text("Now Playing"));
+        let controller = tab_bar_controller(&leaf);
+        let accessory = controller.bottomAccessory().expect("installed");
+        pane.set(Pane::Two);
+        assert_eq!(controller.selectedIndex(), 1);
+        let after = controller.bottomAccessory().expect("still installed");
+        assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
+    }
+
+    /// Dropping the leaf uninstalls the capsule and releases the mounted
+    /// subtree's watchers — the controller itself is owned by containment,
+    /// not by the leaf, so a retained handle stays valid but must report
+    /// no accessory, and no later write may reach the old label.
+    pub fn dropping_the_leaf_releases_accessory_watchers() {
+        let track = binding(String::from("first"));
+        let (label, controller) = {
+            let (_pane, leaf) = tabs(text!("{track}"));
+            let controller = tab_bar_controller(&leaf);
+            let label = {
+                let content = controller
+                    .bottomAccessory()
+                    .expect("installed")
+                    .contentView();
+                track.set(String::from("second"));
+                first_label(&content).expect("the accessory mounts a label")
+            };
+            drop(leaf);
+            (label, controller)
+        };
+        assert!(controller.bottomAccessory().is_none());
+        track.set(String::from("third"));
+        let text = label
+            .downcast_ref::<Label>()
+            .and_then(|label| label.source_text())
+            .expect("the retained label");
+        let text = text.string().to_string();
+        assert!(text.contains("second") && !text.contains("third"));
+    }
+
+    /// Every shared minimize-behavior variant maps onto the `UIKit`
+    /// property one-to-one — no translation layer of our own.
+    pub fn each_minimize_behavior_maps_to_the_uikit_property() {
+        for (shared, native) in [
+            (
+                TabBarMinimizeBehavior::Automatic,
+                UITabBarMinimizeBehavior::Automatic,
+            ),
+            (
+                TabBarMinimizeBehavior::Never,
+                UITabBarMinimizeBehavior::Never,
+            ),
+            (
+                TabBarMinimizeBehavior::OnScrollDown,
+                UITabBarMinimizeBehavior::OnScrollDown,
+            ),
+            (
+                TabBarMinimizeBehavior::OnScrollUp,
+                UITabBarMinimizeBehavior::OnScrollUp,
+            ),
+        ] {
+            let pane = binding(Pane::One);
+            let leaf = resolve::render(
+                Tabs::new(
+                    &pane,
+                    vec![Tab::container(Pane::One, label("One"), || text("one"))],
+                )
+                .minimize_behavior(shared),
+            );
+            assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
+        }
     }
 }
 
