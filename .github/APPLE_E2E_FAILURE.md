@@ -5,7 +5,7 @@ labels: ci
 
 The Apple e2e suite failed: {{ env.RUN_URL }}
 
-Certified inputs: framework + `backends/apple` `{{ env.WATERUI_SHA }}` ({{ env.WATERUI_REF }}), water CLI `{{ env.CLI_SHA }}` ({{ env.CLI_REF }}).
+Resolved inputs: framework + `backends/apple` `{{ env.WATERUI_SHA }}` ({{ env.WATERUI_REF }}), water CLI `{{ env.CLI_SHA }}` ({{ env.CLI_REF }}).
 
 Each shard packages every runnable example in release mode and launches the
 `.app` on an iOS simulator and on macOS, captures the first settled screen,

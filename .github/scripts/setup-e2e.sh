@@ -86,7 +86,7 @@ fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
-    echo "### Certified inputs"
+    echo "### Resolved inputs"
     echo "- waterui + backends/apple: \`${framework_sha}\` (${GITHUB_REF_NAME:-this checkout})"
     echo "- water CLI: \`${cli_sha}\` (${cli_ref})"
   } >> "${GITHUB_STEP_SUMMARY}"
