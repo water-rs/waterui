@@ -235,6 +235,7 @@ objc2-quartz-core = { version = "0.3", default-features = false, features = [
 
 [dev-dependencies]
 criterion = "0.8.2"
+pollster = { workspace = true }
 libtest-mimic = "0.8"
 serde_json = { workspace = true }
 # The native tests create real `AppKit`/`UIKit` objects, which are only
