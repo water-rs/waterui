@@ -111,6 +111,11 @@ pub struct FilteredState {
     runtime: GpuRuntime,
     /// The host-owned effect clock — `frame_clock` on the ffi state.
     frame_clock: RefCell<EffectFrameClock>,
+    /// Whether the host produced no frame since the effect timeline last
+    /// went idle. A parked timeline's next `tick` measures the idle
+    /// wall-clock gap rather than frame cadence, so the encode path primes
+    /// the clock once before sampling the resumed frame.
+    timeline_parked: Cell<bool>,
     /// The context generation the installed effects finished setup on —
     /// `setup_ready` keyed to the resources' generation. A frame may only
     /// encode through an effect bundle when this equals `gpu_generation`.
@@ -452,6 +457,11 @@ fn schedule_frame_if_needed(state: &Rc<FilteredState>) {
         state.clock.start(&state.view);
     } else {
         state.clock.stop();
+        // In-flight work still produces frames; only a chain with nothing
+        // armed and nothing in flight leaves the effect timeline idle.
+        if !state.render_in_flight.get() && !state.frame_presentation_in_flight.get() {
+            state.timeline_parked.set(true);
+        }
     }
 }
 
@@ -654,7 +664,16 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, frame: CaptureFrame) {
             "FilteredView Host Presentation Texture",
         )
     };
-    let timing = state.frame_clock.borrow_mut().tick();
+    let timing = {
+        let mut frame_clock = state.frame_clock.borrow_mut();
+        if state.timeline_parked.replace(false) {
+            // Discard the stale-gap sample: the resumed frame's delta then
+            // measures the restart latency instead of the park duration, while
+            // the clock's origin and monotonic sequence carry on untouched.
+            let _ = frame_clock.tick();
+        }
+        frame_clock.tick()
+    };
     let (needs_redraw, encoder) = {
         let device = context.device();
         let queue = context.queue();
@@ -950,6 +969,7 @@ fn handle_redraw(state: &Rc<FilteredState>) {
 fn handle_window_change(state: &Rc<FilteredState>) {
     if cocoa_ui::view::window(&state.view).is_none() {
         state.clock.stop();
+        state.timeline_parked.set(true);
         state.needs_render.set(false);
         state.pending_dynamic_range.borrow_mut().take();
         complete_ready(state, false);
@@ -1276,6 +1296,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 effects: Rc::new(RefCell::new(None)),
                 runtime,
                 frame_clock: RefCell::new(EffectFrameClock::new()),
+                timeline_parked: Cell::new(true),
                 setup_generation: Rc::new(Cell::new(None)),
                 imported_texture: RefCell::new(None),
                 input_size: Cell::new((0, 0)),
