@@ -155,8 +155,9 @@ env = []
 
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
-# never part of a production build.
-native-test = []
+# never part of a production build. Forwards cocoa-ui's gate so one
+# invocation selects both crates' `native` suites.
+native-test = ["cocoa-ui/native-test"]
 
 
 [dependencies]

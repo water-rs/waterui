@@ -44,11 +44,10 @@ struct ContextMenuState {
     env: Environment,
     /// The resolved items, snapshotted per menu presentation.
     items: Computed<Vec<ResolvedMenuItem>>,
-    /// The rendered `preview` leaf (`UIKit` only — `AppKit` has no
-    /// preview slot and drops it unresolved). `Rc` so the overlay's
-    /// re-measure closure can reach it without borrowing this state.
+    /// The rendered `preview` and its one view controller (`UIKit` only —
+    /// `AppKit` has no preview slot and drops it unresolved).
     #[cfg(target_os = "ios")]
-    preview: Option<Rc<NativeLeaf>>,
+    preview: Option<IosPreview>,
     /// The rendered `accessory` leaf; the platform overlays mount its
     /// view while the menu is open.
     accessory: Option<Rc<NativeLeaf>>,
@@ -111,13 +110,6 @@ fn ideal_size(leaf: &NativeLeaf) -> cocoa_ui::Size {
     }
 }
 
-/// Whether the view's bounds are empty — `bounds.isEmpty`.
-#[cfg(target_os = "ios")]
-fn bounds_is_empty(view: &cocoa_ui::PlatformView) -> bool {
-    let bounds = view::bounds(view);
-    bounds.size.width <= 0.0 || bounds.size.height <= 0.0
-}
-
 /// `dismissPresentedMenu`: close whatever is tracking and drop the
 /// accessory; the platform teardown paths do the same, so teardown is
 /// idempotent.
@@ -143,6 +135,15 @@ fn dismiss_presented(state: &Rc<RefCell<ContextMenuState>>) {
     }
 }
 
+/// A mounted custom preview: the leaf and the one view controller that
+/// owns its view for every presentation. A view may be associated with a
+/// single view controller at a time, so the pair is built once at mount.
+#[cfg(target_os = "ios")]
+struct IosPreview {
+    leaf: Rc<NativeLeaf>,
+    controller: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIViewController>,
+}
+
 /// `targetedPreviewFrame`: the source view's frame in window coordinates,
 /// or the frame a custom preview declares — centred on the source at the
 /// preview's ideal size.
@@ -152,7 +153,7 @@ fn targeted_preview_frame(state: &ContextMenuState, host: &cocoa_ui::PlatformVie
     let Some(preview) = &state.preview else {
         return source;
     };
-    let size = ideal_size(preview);
+    let size = ideal_size(&preview.leaf);
     Rect::new(
         source.origin.x + source.size.width / 2.0 - size.width / 2.0,
         source.origin.y + source.size.height / 2.0 - size.height / 2.0,
@@ -223,7 +224,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `preview` is a `UIKit` primitive; on `AppKit` the `AnyView`
         // drops unresolved.
         #[cfg(target_os = "ios")]
-        let preview = metadata.value.preview.map(|view| Rc::new(ctx.render(view)));
+        let preview = metadata.value.preview.map(|view| {
+            let leaf = Rc::new(ctx.render(view));
+            let controller =
+                uikit::preview_controller(mtm, view::retain_base(leaf.view()), ideal_size(&leaf));
+            IosPreview { leaf, controller }
+        });
         #[cfg(target_os = "macos")]
         drop(metadata.value.preview);
         let accessory = metadata
@@ -242,6 +248,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             open_menu: RefCell::new(None),
             #[cfg(target_os = "macos")]
             panel: RefCell::new(None),
+            #[cfg(target_os = "ios")]
             #[cfg(target_os = "ios")]
             overlay: RefCell::new(None),
             #[cfg(target_os = "ios")]
@@ -283,47 +290,23 @@ pub fn install(dispatcher: &mut Dispatcher) {
                             }
                             let menu =
                                 uikit::menu(state.mtm, &cocoa_ui::menu::Command::default(), &nodes);
-                            let preview = state.preview.as_ref().map(|leaf| {
-                                uikit::preview_controller(
-                                    state.mtm,
-                                    view::retain_base(leaf.view()),
-                                    ideal_size(leaf),
-                                )
+                            let preview = state.preview.as_ref().map(|preview| {
+                                preview
+                                    .controller
+                                    .setPreferredContentSize(ideal_size(&preview.leaf).into());
+                                preview.controller.clone()
                             });
                             Some(uikit::ContextMenuConfiguration { menu, preview })
                         }
                     }),
                     preview: Rc::new({
-                        let state = Rc::clone(&state);
                         let host = host.clone();
                         move |_| {
-                            let state = state.borrow();
-                            let host: &cocoa_ui::PlatformView = &host;
-                            state.preview.as_ref().map_or_else(
-                                || Some(uikit::targeted_preview(host)),
-                                |leaf| {
-                                    let bounds = view::bounds(host);
-                                    // The highlight preview runs before
-                                    // the provider lays the view out;
-                                    // give it its ideal bounds so the
-                                    // lift has something to snapshot.
-                                    if bounds_is_empty(leaf.view()) {
-                                        let size = ideal_size(leaf);
-                                        view::set_frame(
-                                            leaf.view(),
-                                            Rect::new(0.0, 0.0, size.width, size.height),
-                                        );
-                                    }
-                                    Some(uikit::targeted_preview_at(
-                                        leaf.view(),
-                                        host,
-                                        cocoa_ui::Point::new(
-                                            bounds.size.width / 2.0,
-                                            bounds.size.height / 2.0,
-                                        ),
-                                    ))
-                                },
-                            )
+                            // `UITargetedPreview` requires its view to be
+                            // in a window, so the highlight always lifts
+                            // the source; a custom preview's card is the
+                            // preview controller's content, not this view.
+                            Some(uikit::targeted_preview(&host))
                         }
                     }),
                     will_display: Rc::new({

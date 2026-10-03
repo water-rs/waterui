@@ -627,8 +627,8 @@ jobs:
           path: ~/.cargo/bin/cargo-nextest*
       # cocoa-ui joins this same invocation: standalone Cocoa host
       # nextest/doc coverage transfers 1:1 onto the backend's graph.
-      # `native-test` is waterui-apple's feature; the cocoa-ui `native`
-      # harness=false test is not feature-gated.
+      # `native-test` is waterui-apple's feature and forwards to
+      # cocoa-ui's, so one flag selects both `native` suites.
       - name: Test
         run: cargo nextest run -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test
       - name: Doc tests

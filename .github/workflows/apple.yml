@@ -300,14 +300,15 @@ jobs:
         run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios-sim -- -D warnings
       # `cocoa-ui` compiles inside the backend's graph, but a dependency is
       # never linted — its own `-D warnings` legs kept their standalone
-      # coverage shape: `--all-targets` on the same three ARM64 targets
-      # (the `native` harness=false test target needs no feature gate).
+      # coverage shape: `--all-targets` on the same three ARM64 targets.
+      # `native-test` selects the `native` harness=false test target so
+      # `--all-targets` keeps linting it.
       - name: Clippy (cocoa-ui, macOS)
-        run: cargo clippy -p cocoa-ui --all-targets --locked -- -D warnings
+        run: cargo clippy -p cocoa-ui --all-targets --locked --features native-test -- -D warnings
       - name: Clippy (cocoa-ui, iOS)
-        run: cargo clippy -p cocoa-ui --all-targets --locked --target aarch64-apple-ios -- -D warnings
+        run: cargo clippy -p cocoa-ui --all-targets --locked --features native-test --target aarch64-apple-ios -- -D warnings
       - name: Clippy (cocoa-ui, iOS simulator)
-        run: cargo clippy -p cocoa-ui --all-targets --locked --target aarch64-apple-ios-sim -- -D warnings
+        run: cargo clippy -p cocoa-ui --all-targets --locked --features native-test --target aarch64-apple-ios-sim -- -D warnings
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —
