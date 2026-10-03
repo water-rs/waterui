@@ -19,7 +19,8 @@ stream diagnostics.
 
 Ownership: the `--timeout` deadline is armed before the first spawn, so
 acquisition itself is bounded. Signal handlers install before any
-acquisition and cancel the run — a SIGTERM during a spawn still unwinds
+acquisition; they cancel operation and record signals during cleanup.
+A SIGTERM during a spawn still unwinds
 through teardown (each factory is shielded long enough to register the
 process it produced, or record the acquisition as unknown). `owned`
 (role, proc) pairs are the single source of truth; one finally tears down
