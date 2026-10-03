@@ -20,7 +20,7 @@
 use core::cell::Cell;
 use core::marker::PhantomData;
 
-use jni::objects::{Global, JClass, JObject, JString, JValueOwned};
+use jni::objects::{Global, JClass, JIntArray, JObject, JString, JValueOwned};
 use jni::objects::{JFieldID, JMethodID, JStaticFieldID, JStaticMethodID};
 use jni::signature::{JavaType, Primitive, ReturnType};
 use jni::strings::{JNIStr, JNIString};
@@ -103,6 +103,35 @@ pub struct Bindings {
     view_group_index_of_child: JMethodID,
     view_group_add_view_at: JMethodID,
 
+    // android/view/View — the chrome transfer: the resolved button style's
+    // background and stateListAnimator move onto the shell, and the shell
+    // takes keyboard focus as the one interactive element.
+    view_set_background: JMethodID,
+    view_set_state_list_animator: JMethodID,
+    view_set_focusable: JMethodID,
+
+    // android/content/res/TypedArray — a style's resolved attributes.
+    typed_array: Global<JClass<'static>>,
+    typed_array_get_drawable: JMethodID,
+    typed_array_get_resource_id: JMethodID,
+    typed_array_recycle: JMethodID,
+
+    // android/animation/AnimatorInflater — a style-held animator xml
+    // resource becomes the `StateListAnimator`.
+    animator_inflater: Global<JClass<'static>>,
+    animator_inflater_load_state_list_animator: JStaticMethodID,
+
+    // android/graphics/drawable/Drawable + android/graphics/Rect — the
+    // background's own content padding.
+    drawable: Global<JClass<'static>>,
+    drawable_get_padding: JMethodID,
+    rect: Global<JClass<'static>>,
+    rect_ctor: JMethodID,
+    rect_left: JFieldID,
+    rect_top: JFieldID,
+    rect_right: JFieldID,
+    rect_bottom: JFieldID,
+
     // android/widget/TextView.
     text_view: Global<JClass<'static>>,
     text_view_ctor: JMethodID,
@@ -124,12 +153,7 @@ pub struct Bindings {
     frame_layout_ctor: JMethodID,
     frame_layout_params: Global<JClass<'static>>,
     frame_layout_params_ctor: JMethodID,
-    layout_params_set_margins: JMethodID,
     view_set_layout_params: JMethodID,
-
-    // android/widget/Button — the chrome behind the label view.
-    button: Global<JClass<'static>>,
-    button_ctor: JMethodID,
 
     // android/graphics/Typeface.
     typeface: Global<JClass<'static>>,
@@ -141,6 +165,7 @@ pub struct Bindings {
     context_get_resources: JMethodID,
     context_get_theme: JMethodID,
     context_get_system_service: JMethodID,
+    context_obtain_styled_attributes: JMethodID,
 
     // android/view/WindowManager + android/view/Display — the refresh rate
     // the executor's frame budget is scaled by.
@@ -407,7 +432,6 @@ impl Bindings {
         let space = class(jni_str!("android/widget/Space"))?;
         let frame_layout = class(jni_str!("android/widget/FrameLayout"))?;
         let frame_layout_params = class(jni_str!("android/widget/FrameLayout$LayoutParams"))?;
-        let button = class(jni_str!("android/widget/Button"))?;
         let typeface = class(jni_str!("android/graphics/Typeface"))?;
         let context = class(jni_str!("android/content/Context"))?;
         let resources = class(jni_str!("android/content/res/Resources"))?;
@@ -416,6 +440,10 @@ impl Bindings {
         let display_metrics = class(jni_str!("android/util/DisplayMetrics"))?;
         let typed_value = class(jni_str!("android/util/TypedValue"))?;
         let r_attr = class(jni_str!("android/R$attr"))?;
+        let typed_array = class(jni_str!("android/content/res/TypedArray"))?;
+        let animator_inflater = class(jni_str!("android/animation/AnimatorInflater"))?;
+        let drawable = class(jni_str!("android/graphics/drawable/Drawable"))?;
+        let rect = class(jni_str!("android/graphics/Rect"))?;
         let looper = class(jni_str!("android/os/Looper"))?;
         let locale = class(jni_str!("java/util/Locale"))?;
         let window_manager = class(jni_str!("android/view/WindowManager"))?;
@@ -544,6 +572,59 @@ impl Bindings {
                 jni_sig!("(Landroid/view/View;I)V"),
             )?,
 
+            view_set_background: env.get_method_id(
+                &view,
+                jni_str!("setBackground"),
+                jni_sig!("(Landroid/graphics/drawable/Drawable;)V"),
+            )?,
+            view_set_state_list_animator: env.get_method_id(
+                &view,
+                jni_str!("setStateListAnimator"),
+                jni_sig!("(Landroid/animation/StateListAnimator;)V"),
+            )?,
+            view_set_focusable: env.get_method_id(
+                &view,
+                jni_str!("setFocusable"),
+                jni_sig!("(Z)V"),
+            )?,
+
+            typed_array_get_drawable: env.get_method_id(
+                &typed_array,
+                jni_str!("getDrawable"),
+                jni_sig!("(I)Landroid/graphics/drawable/Drawable;"),
+            )?,
+            typed_array_get_resource_id: env.get_method_id(
+                &typed_array,
+                jni_str!("getResourceId"),
+                jni_sig!("(II)I"),
+            )?,
+            typed_array_recycle: env.get_method_id(
+                &typed_array,
+                jni_str!("recycle"),
+                jni_sig!("()V"),
+            )?,
+            typed_array,
+
+            animator_inflater_load_state_list_animator: env.get_static_method_id(
+                &animator_inflater,
+                jni_str!("loadStateListAnimator"),
+                jni_sig!("(Landroid/content/Context;I)Landroid/animation/StateListAnimator;"),
+            )?,
+            animator_inflater,
+
+            drawable_get_padding: env.get_method_id(
+                &drawable,
+                jni_str!("getPadding"),
+                jni_sig!("(Landroid/graphics/Rect;)Z"),
+            )?,
+            drawable,
+            rect_ctor: env.get_method_id(&rect, jni_str!("<init>"), jni_sig!("()V"))?,
+            rect_left: env.get_field_id(&rect, jni_str!("left"), jni_sig!("I"))?,
+            rect_top: env.get_field_id(&rect, jni_str!("top"), jni_sig!("I"))?,
+            rect_right: env.get_field_id(&rect, jni_str!("right"), jni_sig!("I"))?,
+            rect_bottom: env.get_field_id(&rect, jni_str!("bottom"), jni_sig!("I"))?,
+            rect,
+
             text_view_ctor: env.get_method_id(
                 &text_view,
                 jni_str!("<init>"),
@@ -600,19 +681,7 @@ impl Bindings {
                 jni_str!("<init>"),
                 jni_sig!("(II)V"),
             )?,
-            layout_params_set_margins: env.get_method_id(
-                &frame_layout_params,
-                jni_str!("setMargins"),
-                jni_sig!("(IIII)V"),
-            )?,
             frame_layout_params,
-
-            button_ctor: env.get_method_id(
-                &button,
-                jni_str!("<init>"),
-                jni_sig!("(Landroid/content/Context;)V"),
-            )?,
-            button,
 
             typeface_default: env.get_static_field_id(
                 &typeface,
@@ -645,6 +714,11 @@ impl Bindings {
                 &context,
                 jni_str!("getSystemService"),
                 jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
+            )?,
+            context_obtain_styled_attributes: env.get_method_id(
+                &context,
+                jni_str!("obtainStyledAttributes"),
+                jni_sig!("(I[I)Landroid/content/res/TypedArray;"),
             )?,
             window_manager_get_default_display: env.get_method_id(
                 &window_manager,
@@ -873,14 +947,207 @@ impl Platform {
             self.bindings.frame_layout_ctor,
         )
     }
-
-    /// `new Button(context)` — the chrome a button leaf fills.
-    pub fn new_button(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
-        self.construct(env, &self.bindings.button, self.bindings.button_ctor)
-    }
 }
 
 impl Bindings {
+    /// `view.setBackground(drawable)` — the resolved button chrome's
+    /// background on the shell.
+    pub fn set_background(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+        drawable: &JObject,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `view` is a View, `drawable` a Drawable.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_set_background,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue {
+                    l: drawable.as_raw(),
+                }],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `view.setStateListAnimator(animator)` — the resolved button
+    /// chrome's press lift on the shell.
+    pub fn set_state_list_animator(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+        animator: &JObject,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `view` is a View, `animator` a
+        // StateListAnimator.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_set_state_list_animator,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue {
+                    l: animator.as_raw(),
+                }],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `view.setFocusable(focusable)` — the button shell's keyboard
+    /// focus as the one interactive element.
+    pub fn set_focusable(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+        focusable: bool,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `view` is a View.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_set_focusable,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { z: focusable }],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `array.getDrawable(index)` — `None` on a null answer.
+    pub fn typed_array_drawable(
+        &self,
+        env: &mut Env,
+        array: &JObject,
+        index: jint,
+    ) -> jni::errors::Result<Option<Global<JObject<'static>>>> {
+        // SAFETY: resolved id; `array` is a TypedArray, `index` in range.
+        let drawable = unsafe {
+            env.call_method_unchecked(
+                array,
+                self.typed_array_get_drawable,
+                ReturnType::Object,
+                &[jvalue { i: index }],
+            )?
+            .l()?
+        };
+        if drawable.is_null() {
+            return Ok(None);
+        }
+        env.new_global_ref(drawable).map(Some)
+    }
+
+    /// `array.getResourceId(index, def)`.
+    pub fn typed_array_resource_id(
+        &self,
+        env: &mut Env,
+        array: &JObject,
+        index: jint,
+        def: jint,
+    ) -> jni::errors::Result<jint> {
+        // SAFETY: resolved id; `array` is a TypedArray, `index` in range.
+        unsafe {
+            env.call_method_unchecked(
+                array,
+                self.typed_array_get_resource_id,
+                ReturnType::Primitive(Primitive::Int),
+                &[jvalue { i: index }, jvalue { i: def }],
+            )?
+            .i()
+        }
+    }
+
+    /// `array.recycle()` — the typed array's pool return.
+    pub fn recycle_typed_array(&self, env: &mut Env, array: &JObject) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `array` is a TypedArray read to completion.
+        unsafe {
+            env.call_method_unchecked(
+                array,
+                self.typed_array_recycle,
+                ReturnType::Primitive(Primitive::Void),
+                &[],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `AnimatorInflater.loadStateListAnimator(context, resId)` — the
+    /// animator xml a style names becomes the `StateListAnimator`.
+    pub fn load_state_list_animator(
+        &self,
+        env: &mut Env,
+        context: &JObject,
+        res_id: jint,
+    ) -> jni::errors::Result<Global<JObject<'static>>> {
+        // SAFETY: resolved class and static method; `context` a Context.
+        let animator = unsafe {
+            env.call_static_method_unchecked(
+                &self.animator_inflater,
+                self.animator_inflater_load_state_list_animator,
+                ReturnType::Object,
+                &[
+                    jvalue {
+                        l: context.as_raw(),
+                    },
+                    jvalue { i: res_id },
+                ],
+            )?
+            .l()?
+        };
+        env.new_global_ref(animator)
+    }
+
+    /// `drawable.getPadding(rect)` — the drawable's own content padding
+    /// `(left, top, right, bottom)` in px; zeros when it reports none.
+    pub fn drawable_padding(
+        &self,
+        env: &mut Env,
+        drawable: &JObject,
+    ) -> jni::errors::Result<[jint; 4]> {
+        // SAFETY: resolved constructor; `rect` is a fresh Rect the
+        // getPadding call fills by contract.
+        let rect = unsafe { env.new_object_unchecked(&self.rect, self.rect_ctor, &[])? };
+        // SAFETY: resolved id; `drawable` is a Drawable, `rect` a Rect.
+        let filled = unsafe {
+            env.call_method_unchecked(
+                drawable,
+                self.drawable_get_padding,
+                ReturnType::Primitive(Primitive::Boolean),
+                &[jvalue { l: rect.as_raw() }],
+            )?
+            .z()?
+        };
+        if !filled {
+            return Ok([0; 4]);
+        }
+        // SAFETY: resolved int fields on the Rect `getPadding` filled.
+        unsafe {
+            Ok([
+                env.get_field_unchecked(
+                    &rect,
+                    self.rect_left,
+                    JavaType::Primitive(Primitive::Int),
+                )?
+                .i()?,
+                env.get_field_unchecked(&rect, self.rect_top, JavaType::Primitive(Primitive::Int))?
+                    .i()?,
+                env.get_field_unchecked(
+                    &rect,
+                    self.rect_right,
+                    JavaType::Primitive(Primitive::Int),
+                )?
+                .i()?,
+                env.get_field_unchecked(
+                    &rect,
+                    self.rect_bottom,
+                    JavaType::Primitive(Primitive::Int),
+                )?
+                .i()?,
+            ])
+        }
+    }
+
     /// `new RustOnClickListener(handle)`.
     pub fn new_click_listener(
         &self,
@@ -1190,33 +1457,6 @@ impl Bindings {
             )?
         };
         env.new_global_ref(params)
-    }
-
-    /// `params.setMargins(l, t, r, b)` in px.
-    pub fn set_margins(
-        &self,
-        env: &mut Env,
-        params: &JObject,
-        left: jint,
-        top: jint,
-        right: jint,
-        bottom: jint,
-    ) -> jni::errors::Result<()> {
-        // SAFETY: resolved id; `params` is a MarginLayoutParams.
-        unsafe {
-            env.call_method_unchecked(
-                params,
-                self.layout_params_set_margins,
-                ReturnType::Primitive(Primitive::Void),
-                &[
-                    jvalue { i: left },
-                    jvalue { i: top },
-                    jvalue { i: right },
-                    jvalue { i: bottom },
-                ],
-            )?;
-        }
-        Ok(())
     }
 
     /// `view.setLayoutParams(params)`.
@@ -1922,6 +2162,153 @@ impl Platform {
             },
             JValueOwned::i,
         )
+    }
+
+    /// `theme.resolveAttribute(attr, tv, true)` answered as a resource
+    /// reference: a `TYPE_ATTRIBUTE` hop resolves one level deeper the
+    /// way the color reader does, and a `TYPE_REFERENCE` names its
+    /// resource in `data` — `resourceId` is the declaring resource, not
+    /// the resolved one.
+    ///
+    /// # Errors
+    ///
+    /// A pending `Resources.NotFoundException` naming `android.R.attr`
+    /// `<attr_name>` when the attribute does not resolve to a resource.
+    fn theme_reference(
+        &self,
+        env: &mut Env,
+        attr: jint,
+        attr_name: &'static JNIStr,
+    ) -> jni::errors::Result<jint> {
+        let theme = self.theme(env)?;
+        // SAFETY: resolved constructor; `value` is a fresh TypedValue the
+        // resolve call fills by contract.
+        let value = unsafe {
+            env.new_object_unchecked(
+                &self.bindings.typed_value,
+                self.bindings.typed_value_ctor,
+                &[],
+            )?
+        };
+        // SAFETY: resolved method; `value` is a TypedValue.
+        let resolved = unsafe {
+            env.call_method_unchecked(
+                &theme,
+                self.bindings.theme_resolve_attribute,
+                ReturnType::Primitive(Primitive::Boolean),
+                &[
+                    jvalue { i: attr },
+                    jvalue { l: value.as_raw() },
+                    jvalue { z: true },
+                ],
+            )?
+        };
+        if !resolved.z()? {
+            return Err(attr_not_found(
+                env,
+                attr_name,
+                "the activity theme does not resolve it",
+            ));
+        }
+        // SAFETY: resolved fields on the TypedValue `resolveAttribute` filled.
+        let (kind, data) = unsafe {
+            (
+                env.get_field_unchecked(
+                    &value,
+                    self.bindings.typed_value_type,
+                    JavaType::Primitive(Primitive::Int),
+                )?
+                .i()?,
+                env.get_field_unchecked(
+                    &value,
+                    self.bindings.typed_value_data,
+                    JavaType::Primitive(Primitive::Int),
+                )?
+                .i()?,
+            )
+        };
+        if kind == self.bindings.typed_value_type_attribute() {
+            return self.theme_reference(env, data, attr_name);
+        }
+        if kind != self.bindings.typed_value_type_reference() {
+            return Err(attr_not_found(
+                env,
+                attr_name,
+                &alloc::format!(
+                    "the theme resolves it to a TypedValue of type {kind}, \
+                     not a resource reference",
+                ),
+            ));
+        }
+        Ok(data)
+    }
+
+    /// The theme's button chrome, moved onto `shell`: `?attr/buttonStyle`
+    /// resolves at runtime like every other framework value, and its
+    /// `background` (the press ripple and shape) and `stateListAnimator`
+    /// (the pressed z-lift) apply to the shell directly, so a label child
+    /// draws above its background by construction. Answers the
+    /// background drawable's own content padding
+    /// `(left, top, right, bottom)` in px — the inset a `Button`'s
+    /// content would have gotten.
+    ///
+    /// # Errors
+    ///
+    /// A pending `Resources.NotFoundException` naming `buttonStyle` (or
+    /// an attribute it references) when the theme does not resolve it
+    /// to a style.
+    pub fn install_button_chrome(
+        &self,
+        env: &mut Env,
+        shell: &JObject,
+    ) -> jni::errors::Result<[jint; 4]> {
+        let button_style = self.framework_attr(env, jni_str!("buttonStyle"))?;
+        let style_res = self.theme_reference(env, button_style, jni_str!("buttonStyle"))?;
+        let attrs = [
+            self.framework_attr(env, jni_str!("background"))?,
+            self.framework_attr(env, jni_str!("stateListAnimator"))?,
+        ];
+        let attr_array = JIntArray::new(env, 2)?;
+        attr_array.set_region(env, 0, &attrs)?;
+        // SAFETY: resolved method; `context` is a Context, `attr_array`
+        // an int[] of attribute ids, `style_res` a style resource.
+        let styled = unsafe {
+            env.call_method_unchecked(
+                self.context(),
+                self.bindings.context_obtain_styled_attributes,
+                ReturnType::Object,
+                &[
+                    jvalue { i: style_res },
+                    jvalue {
+                        l: attr_array.as_raw(),
+                    },
+                ],
+            )?
+            .l()?
+        };
+        let styled = env.new_global_ref(&styled)?;
+        let padding = if let Some(background) =
+            self.bindings
+                .typed_array_drawable(env, styled.as_ref(), 0)?
+        {
+            self.bindings
+                .set_background(env, shell, background.as_ref())?;
+            self.bindings.drawable_padding(env, background.as_ref())?
+        } else {
+            [0; 4]
+        };
+        let animator_res = self
+            .bindings
+            .typed_array_resource_id(env, styled.as_ref(), 1, 0)?;
+        if animator_res != 0 {
+            let animator =
+                self.bindings
+                    .load_state_list_animator(env, self.context(), animator_res)?;
+            self.bindings
+                .set_state_list_animator(env, shell, animator.as_ref())?;
+        }
+        self.bindings.recycle_typed_array(env, styled.as_ref())?;
+        Ok(padding)
     }
 
     /// `context.getSystemService("window").getDefaultDisplay()

@@ -1,17 +1,20 @@
-//! `Native<ButtonConfig>` — a platform `android.widget.Button` carrying a
-//! `WaterUI` label laid out by Rust.
+//! `Native<ButtonConfig>` — a `FrameLayout` shell that carries the
+//! theme's button chrome directly and hosts the `WaterUI` label as its
+//! child.
 //!
-//! The shell is a `FrameLayout` holding two siblings: the `Button` (the
-//! platform chrome — ripple, pressed feedback, enabled state) filling it,
-//! and a second `FrameLayout` hosting the rendered `Label` subtree on top,
-//! inset by the chrome's padding. The label view is marked not-clickable so
-//! touches land on the chrome.
+//! `?attr/buttonStyle` resolves at runtime to the style a platform
+//! `Button` would use; its `background` (shape and press ripple) and
+//! `stateListAnimator` (the pressed lift) apply to the shell, so the
+//! rendered `Label` subtree — a child of the raised view — draws above
+//! the chrome by construction, no elevation arithmetic against an
+//! animated `translationZ`. The inset is the background drawable's own
+//! `getPadding`, read through the same `TypedArray`.
 //!
 //! `ButtonStyle` shares the `UIKit` color table: prominent styles draw
 //! `AccentForeground` on the accent chrome; `plain`/glass draw plain
 //! `Foreground`; the rest draw `Accent` text. Borderless chrome itself
 //! (`?attr/borderlessButtonStyle`) is a platform style the follow-up port
-//! applies — the skeleton keeps the one `Button` and notes the split.
+//! applies — the skeleton keeps the one chrome and notes the split.
 
 use alloc::boxed::Box;
 use core::cell::RefCell;
@@ -30,15 +33,6 @@ use waterui_core::resolve::Resolvable;
 use crate::contract::{Mounted, NativeLeaf, PlatformView};
 use crate::dispatch::Dispatcher;
 use crate::jvm::{self, Platform};
-
-/// Material-button inset: the room the chrome leaves its label — 8dp sides,
-/// 4dp vertical, the compact face a default `Button` draws.
-const CHROME_PADDING: (f32, f32) = (8.0, 4.0);
-
-/// Elevation (dp) of the label container — above the chrome's highest
-/// animated `translationZ` (a raised platform `Button` peaks around 6dp
-/// when pressed) so the label always draws over it.
-const LABEL_ELEVATION_DP: f32 = 8.0;
 
 /// The state behind `RustOnClickListener.nativeOnClick`: the action and the
 /// environment it runs against, owned by the leaf through [`ClickHandle`].
@@ -92,25 +86,22 @@ fn label_foreground(style: ButtonStyle, env: &Environment) -> Computed<WorkingCo
 /// chrome padding, then add the padding back.
 struct ButtonSubView {
     child: Mounted,
-    /// `(horizontal, vertical)` chrome padding in dp.
-    padding: (f32, f32),
+    /// `(horizontal, vertical)` total chrome inset in dp — the
+    /// background drawable's own padding the style declares.
+    inset: (f32, f32),
 }
 
 impl SubView for ButtonSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        let (horizontal, vertical) = self.padding;
+        let (horizontal, vertical) = self.inset;
         let offer = ProposalSize::new(
-            proposal
-                .width
-                .map(|w| f32::mul_add(horizontal, -2.0, w).max(0.0)),
-            proposal
-                .height
-                .map(|h| f32::mul_add(vertical, -2.0, h).max(0.0)),
+            proposal.width.map(|w| (w - horizontal).max(0.0)),
+            proposal.height.map(|h| (h - vertical).max(0.0)),
         );
         let measured = self.child.layout().measure(offer);
         ViewDimensions::new(Size::new(
-            horizontal.mul_add(2.0, measured.size.width),
-            vertical.mul_add(2.0, measured.size.height),
+            horizontal + measured.size.width,
+            vertical + measured.size.height,
         ))
     }
 
@@ -135,79 +126,35 @@ fn fill_parent(env: &mut jni::Env, view: &PlatformView, platform: &Platform) {
         .expect("setLayoutParams must not throw");
 }
 
-/// `setLayoutParams(MATCH_PARENT, MATCH_PARENT)` with per-axis margins —
-/// the label container's place inside the chrome's padding, in px.
-fn fill_parent_inset(
-    env: &mut jni::Env,
-    view: &PlatformView,
-    platform: &Platform,
-    horizontal_margin: jint,
-    vertical_margin: jint,
-) {
-    let bindings = platform.bindings();
-    let params = bindings
-        .new_match_parent_params(env)
-        .expect("LayoutParams construct");
-    bindings
-        .set_margins(
-            env,
-            params.as_ref(),
-            horizontal_margin,
-            vertical_margin,
-            horizontal_margin,
-            vertical_margin,
-        )
-        .and_then(|()| bindings.set_layout_params(env, view.as_ref(), params.as_ref()))
-        .expect("LayoutParams writes must not throw");
-}
-
-/// Builds the chrome stack: a `FrameLayout` shell holding the platform
-/// `Button` (the raised chrome) and the `FrameLayout` that hosts the
-/// rendered label, in that z order.
-fn assemble_shell(platform: &Platform) -> (PlatformView, PlatformView, PlatformView) {
+/// Builds the button: a `FrameLayout` shell that carries the theme's
+/// `?attr/buttonStyle` background and `stateListAnimator` itself, holding
+/// the `FrameLayout` that hosts the rendered label. Answers
+/// `(shell, label_container, chrome padding px)`.
+fn assemble_shell(platform: &Platform) -> (PlatformView, PlatformView, [jint; 4]) {
     jvm::with_env(|env| {
         let bindings = platform.bindings();
         let shell = platform
             .new_frame_layout(env)
             .expect("a FrameLayout constructs against the host context");
-        let button = platform
-            .new_button(env)
-            .expect("a Button constructs against the host context");
         let label_container = platform
             .new_frame_layout(env)
             .expect("a FrameLayout constructs against the host context");
+        // The raised chrome is the shell's own background and animator —
+        // what a `Button` built in this theme would have drawn — so the
+        // label child draws above it by construction.
+        let padding: [jint; 4] = platform
+            .install_button_chrome(env, shell.as_ref())
+            .expect("the theme must resolve ?attr/buttonStyle to a style");
         let shell = jvm::retain(&shell);
-        let button = jvm::retain(&button);
         let label_container = jvm::retain(&label_container);
-        // The chrome fills the shell; the label container fills it minus
-        // the chrome's padding — `FrameLayout` honors margins on
-        // match-parent children.
-        fill_parent(env, &button, platform);
-        fill_parent_inset(
-            env,
-            &label_container,
-            platform,
-            platform.dp_to_px(CHROME_PADDING.0),
-            platform.dp_to_px(CHROME_PADDING.1),
-        );
-        // The chrome is a raised `Button`: its `stateListAnimator` holds a
-        // `translationZ` of a few dp, and a `ViewGroup` draws children in z
-        // order, not index order. The label container must sit above the
-        // chrome's highest z (pressed peaks around 6dp) or the chrome covers
-        // the label entirely.
-        bindings
-            .set_elevation(
-                env,
-                label_container.as_ref(),
-                LABEL_ELEVATION_DP * platform.density(),
-            )
-            .expect("View.setElevation must not throw");
+        // `View.setBackground` applies the drawable's own `getPadding` as
+        // the shell's view padding, which `FrameLayout` already subtracts
+        // for a match-parent child — a plain fill puts the label exactly
+        // inside the chrome's content area. Setting the same padding as
+        // margins on top would double the inset and collapse the label.
+        fill_parent(env, &label_container, platform);
         bindings
             .set_clickable(env, label_container.as_ref(), false)
-            // The chrome speaks its own content description, so the label
-            // subtree must not also talk; the chrome itself is the
-            // accessible element regardless of what its text implies.
-            // Constants are the platform's own, resolved in `Bindings`.
             .and_then(|()| {
                 bindings.set_important_for_accessibility(
                     env,
@@ -218,14 +165,16 @@ fn assemble_shell(platform: &Platform) -> (PlatformView, PlatformView, PlatformV
             .and_then(|()| {
                 bindings.set_important_for_accessibility(
                     env,
-                    button.as_ref(),
+                    shell.as_ref(),
                     bindings.important_for_accessibility_yes(),
                 )
             })
-            .and_then(|()| bindings.add_view(env, shell.as_ref(), button.as_ref()))
+            // The shell is the one interactive element: keyboard focus
+            // and the click target are its, the label subtree neither.
+            .and_then(|()| bindings.set_focusable(env, shell.as_ref(), true))
             .and_then(|()| bindings.add_view(env, shell.as_ref(), label_container.as_ref()))
             .expect("button shell assembly must not throw");
-        (shell, button, label_container)
+        (shell, label_container, padding)
     })
 }
 
@@ -240,7 +189,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mut label_env = ctx.env().clone();
         install_color_signal::<Foreground>(&mut label_env, label_foreground(style, ctx.env()));
 
-        let (shell, button, label_container) = assemble_shell(platform);
+        let (shell, label_container, chrome_padding_px) = assemble_shell(platform);
 
         // The spoken label: `Label`'s own accessibility text or its
         // content's plain string, tracked reactively — resolved before the
@@ -255,18 +204,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
             jvm::retain(&shell),
             ButtonSubView {
                 child: mounted,
-                padding: CHROME_PADDING,
+                inset: (
+                    platform.px_to_dp(chrome_padding_px[0] + chrome_padding_px[2]),
+                    platform.px_to_dp(chrome_padding_px[1] + chrome_padding_px[3]),
+                ),
             },
             platform,
         );
         leaf.keep(label_env);
-        leaf.keep(ButtonChrome {
-            _shell: shell,
-            _button: jvm::retain(&button),
-            _label_container: label_container,
-        });
+        leaf.keep(label_container);
 
-        let target = jvm::retain(&button);
+        let target = jvm::retain(&shell);
         let accessibility_platform = platform.clone();
         leaf.bind(&accessibility, move |styled| {
             let text = styled.to_plain();
@@ -293,7 +241,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 .new_click_listener(env, crate::handle::pointer_to_jlong(handler_ptr))
                 .expect("a RustOnClickListener constructs");
             bindings
-                .set_on_click_listener(env, button.as_ref(), Some(listener.as_ref()))
+                .set_on_click_listener(env, shell.as_ref(), Some(listener.as_ref()))
                 .expect("setOnClickListener must not throw");
             listener
         });
@@ -303,14 +251,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         leaf
     });
-}
-
-/// The shell and its pieces — kept so the assembly drops in leaf order and
-/// `Global`s release evenly.
-struct ButtonChrome {
-    _shell: PlatformView,
-    _button: PlatformView,
-    _label_container: PlatformView,
 }
 
 /// The click path: the platform listener plus the raw handler behind it.
