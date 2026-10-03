@@ -196,13 +196,33 @@ fn the_text_input_selectors_register_under_uikits_names() {
 /// pre-fix shape (a plain root `UIView` containing the platter) which
 /// re-claims those points.
 fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
+    use cocoa_ui::objc2::rc::Allocated;
+    use cocoa_ui::objc2::runtime::AnyClass;
     use cocoa_ui::objc2_ui_kit::{UIEvent, UIViewController};
-    use cocoa_ui::uikit::{AccessoryOverlayWindow, HitTest};
+    use cocoa_ui::uikit::{AccessoryOverlay, HitTest};
 
     let mtm = marker();
-    let window: Retained<AccessoryOverlayWindow> = unsafe {
+    // The subclass registers lazily on the first `present` call; this
+    // detached source has no window, so `present` registers the class and
+    // returns `None`.
+    let detached = HostView::new(mtm, Rect::ZERO);
+    assert!(
+        AccessoryOverlay::present(&detached, &detached, Rect::ZERO, || {
+            cocoa_ui::Size::new(0.0, 0.0)
+        })
+        .is_none()
+    );
+    // The registered class the overlay presents: private to
+    // `cocoa_ui::uikit::context_menu`, reached here through the
+    // Objective-C runtime rather than a construction API.
+    let overlay_class = AnyClass::get(c"CocoaUiAccessoryOverlayWindow")
+        .expect("overlay window class is registered");
+    // SAFETY: `alloc`/`initWithFrame:` are `UIWindow`'s plain
+    // initializers on the real main thread.
+    let allocated: Allocated<UIWindow> = unsafe { msg_send![overlay_class, alloc] };
+    let window: Retained<UIWindow> = unsafe {
         msg_send![
-            AccessoryOverlayWindow::alloc(mtm),
+            allocated,
             initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(390.0, 844.0))
         ]
     };
@@ -220,6 +240,7 @@ fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
     // is unhidden — `AccessoryOverlay::present` does the same.
     window.setHidden(false);
 
+    // SAFETY: `hitTest:` takes a nil event on the main thread.
     let outside: Option<Retained<UIView>> = unsafe {
         msg_send![&*window, hitTest: CGPoint::new(20.0, 20.0), withEvent: std::ptr::null::<UIEvent>()]
     };
@@ -229,19 +250,22 @@ fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
         outside.is_none(),
         "a hit outside the accessory must not be claimed: {outside:?}"
     );
+    // SAFETY: `hitTest:` takes a nil event on the main thread.
     let inside: Option<Retained<UIView>> = unsafe {
         msg_send![&*window, hitTest: CGPoint::new(110.0, 110.0), withEvent: std::ptr::null::<UIEvent>()]
     };
     assert!(
         inside
             .as_deref()
-            .is_some_and(|hit| std::ptr::eq(hit, &**child)),
+            .is_some_and(|hit| std::ptr::eq(hit, &raw const **child)),
         "a hit inside the accessory must resolve to its real descendant"
     );
 
     // The pre-fix shape — a plain `UIWindow` whose root view is a plain
     // `UIView` containing the platter — claims the same point: the old
     // overlay swallowed every touch outside the accessory.
+    // SAFETY: `alloc`/`initWithFrame:` are `UIWindow`'s plain
+    // initializers on the real main thread.
     let old_window: Retained<UIWindow> = unsafe {
         msg_send![
             UIWindow::alloc(mtm),
@@ -250,6 +274,7 @@ fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
     };
     let old_controller = UIViewController::new(mtm);
     old_window.setRootViewController(Some(&old_controller));
+    // SAFETY: `alloc`/`initWithFrame:` are `UIView`'s plain initializers.
     let plain_root: Retained<UIView> =
         unsafe { msg_send![UIView::alloc(mtm), initWithFrame: old_window.bounds()] };
     let plain_platter = HostView::new(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
@@ -257,6 +282,7 @@ fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
     plain_root.addSubview(&plain_platter);
     old_controller.setView(Some(&plain_root));
     old_window.setHidden(false);
+    // SAFETY: `hitTest:` takes a nil event on the main thread.
     let swallowed: Option<Retained<UIView>> = unsafe {
         msg_send![&*old_window, hitTest: CGPoint::new(20.0, 20.0), withEvent: std::ptr::null::<UIEvent>()]
     };

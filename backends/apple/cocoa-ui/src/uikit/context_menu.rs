@@ -20,7 +20,7 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     UIContextMenuConfiguration, UIContextMenuInteraction, UIContextMenuInteractionAnimating,
@@ -380,9 +380,9 @@ pub fn bounds_in_window(view: &UIView) -> Rect {
 }
 
 define_class!(
-    // SAFETY: `UIWindow` asks a subclass to initialize through
-    // `initWithWindowScene:`, which `AccessoryOverlay::present` does, and
-    // the class does not implement `Drop`.
+    // SAFETY: `UIWindow` asks a subclass to support its designated
+    // initializers — `AccessoryOverlay::present` goes through
+    // `initWithWindowScene:` — and the class does not implement `Drop`.
     #[unsafe(super(UIWindow))]
     #[name = "CocoaUiAccessoryOverlayWindow"]
     #[thread_kind = MainThreadOnly]
@@ -391,7 +391,7 @@ define_class!(
     /// mapped to `nil`, so unclaimed points fall through to the host
     /// window — the menu container reads them as item taps or dismiss
     /// taps — while real accessory descendants keep their hits.
-    pub struct AccessoryOverlayWindow;
+    struct AccessoryOverlayWindow;
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UIWindow` subclass.
     unsafe impl NSObjectProtocol for AccessoryOverlayWindow {}
@@ -436,9 +436,13 @@ impl AccessoryOverlay {
         preview_frame: Rect,
         ideal_size: impl Fn() -> Size + 'static,
     ) -> Option<Self> {
+        let mtm = MainThreadMarker::from(source);
+        // The subclass registers itself lazily on the first `class()`
+        // call; make sure the runtime type exists before the early
+        // returns so observers can rely on it once this entry point ran.
+        let _class = AccessoryOverlayWindow::class();
         let host_window = source.window()?;
         let scene = host_window.windowScene()?;
-        let mtm = MainThreadMarker::from(source);
         // SAFETY: `initWithWindowScene:` is `UIWindow`'s designated
         // initializer for a scene it presents in.
         let window: Retained<AccessoryOverlayWindow> =

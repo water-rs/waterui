@@ -43,9 +43,8 @@ pub mod drag_drop;
 pub mod gesture;
 pub use color_well::ColorWell;
 pub use context_menu::{
-    AccessoryOverlay, AccessoryOverlayWindow, ContextMenu, ContextMenuConfiguration,
-    ContextMenuHandlers, bounds_in_window, preview_controller, targeted_preview,
-    targeted_preview_at,
+    AccessoryOverlay, ContextMenu, ContextMenuConfiguration, ContextMenuHandlers, bounds_in_window,
+    preview_controller, targeted_preview, targeted_preview_at,
 };
 pub mod colors;
 mod host_view;
