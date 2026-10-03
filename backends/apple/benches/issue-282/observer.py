@@ -17,19 +17,22 @@ privileged caches/PATH/TMPDIR are not inherited. Observer stderr and its
 exit status go to BENCH282_LOG_STREAM_DIAG, so the driver reports true
 stream diagnostics.
 
-Ownership: signal handlers are installed before any acquisition; every
-spawned process is registered in `owned` the moment its factory returns —
-including factories cancelled mid-spawn — so the single finally teardown
-runs on every return, exception, or cancellation. Teardown signals each
-exact owned process group with SIGTERM and then SIGKILL (signalling the
-group even when its leader already exited, since descendants outlive the
-leader), reaps each leader through bounded asyncio waits, preserves and
-reports signalling errors, and records statuses in the diagnostic file.
-An observer that exits on its own — anything other than the SIGPIPE of
-the driver's reader closing or a SIGTERM this parent delivered while it
-was alive — fails this parent even when the child exited zero. Pipe ends
-and the diagnostic file are owned as file objects closed once. No sudoers,
-daemon, or account/security changes.
+Ownership: the `--timeout` deadline is armed before the first spawn, so
+acquisition itself is bounded. Signal handlers install before any
+acquisition and cancel the run — a SIGTERM during a spawn still unwinds
+through teardown (each factory is shielded long enough to register the
+process it produced, or record the acquisition as unknown). `owned`
+(role, proc) pairs are the single source of truth; one finally tears down
+every acquired process on every exit path: each exact group is signalled
+SIGTERM then SIGKILL (the group is signalled even when its leader already
+exited — descendants outlive leaders), leaders are reaped through bounded
+asyncio waits, signalling errors are preserved and reported, and a status
+that could not be established is a reported failure rather than an
+assumed one. An observer that exits on its own — anything other than the
+SIGPIPE of the driver's reader closing or a SIGTERM this parent delivered
+while it was alive — fails this parent even when the child exited zero.
+Pipe ends and the diagnostic file are owned as file objects closed once.
+No sudoers, daemon, or account/security changes.
 """
 
 import asyncio
@@ -59,17 +62,27 @@ def describe(rc):
     return f"rc={rc}" if rc >= 0 else f"signal {-rc}"
 
 
-async def acquire(coro, owned):
-    """Await a subprocess factory; on cancellation, still register the
-    process it managed to spawn before propagating so teardown owns it."""
+async def acquire(coro, role, owned, remaining, errors):
+    """Await a subprocess factory under the shared deadline. On cancel or
+    timeout, give the spawn a short bounded window to finish so the process
+    it produced is registered in `owned` before propagating — a factory
+    that still has not returned is cancelled and recorded as an unknown
+    acquisition (reported as failure), never silently left."""
     task = asyncio.ensure_future(coro)
     try:
-        proc = await asyncio.shield(task)
-    except asyncio.CancelledError:
-        proc = await asyncio.shield(task)  # let the spawn finish
-        owned.append(proc)
+        proc = await asyncio.wait_for(asyncio.shield(task), remaining())
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        try:
+            proc = await asyncio.wait_for(asyncio.shield(task), 2)
+        except BaseException:
+            task.cancel()
+            owned.append((role, None))
+            errors.append(f"{role}: spawn interrupted/timed out before "
+                          f"the factory returned — outcome unknown")
+            raise
+        owned.append((role, proc))
         raise
-    owned.append(proc)
+    owned.append((role, proc))
     return proc
 
 
@@ -90,12 +103,16 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
 
     diag_path = os.path.join(
         logs_dir, f"observer-{os.getpid()}-{time.monotonic_ns()}.log")
-    owned = []          # every process acquired, in order
+    owned = []          # (role, proc) for every acquisition, in order
     read_f = write_f = diag = None
-    observer = child = None
     timed_out = abnormal = interrupted_hit = False
     cleanup_errors = []
     notes = []
+    deadline = loop.time() + timeout
+
+    def remaining():
+        return max(0.001, deadline - loop.time())
+
     try:
         diag = open(diag_path, "ab", buffering=0)
         # New per-command diagnostic artifact we own: keep it bench-owned so
@@ -105,10 +122,11 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
         read_f = os.fdopen(rfd, "rb", buffering=0)
         write_f = os.fdopen(wfd, "wb", buffering=0)
 
-        observer = await acquire(
+        await acquire(
             asyncio.create_subprocess_exec(
                 *HOST_LOG_STREAM, stdout=write_f, stderr=diag,
-                start_new_session=True), owned)
+                start_new_session=True), "observer", owned, remaining,
+            cleanup_errors)
         write_f.close()  # write end transferred to the observer process
 
         env = {
@@ -138,107 +156,115 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
             os.setuid(ent.pw_uid)
 
         try:
-            child = await acquire(
+            await acquire(
                 asyncio.create_subprocess_exec(
                     *argv, env=env, pass_fds=(read_f.fileno(),),
                     start_new_session=True,
-                    preexec_fn=drop_credentials), owned)
+                    preexec_fn=drop_credentials), "child", owned, remaining,
+                cleanup_errors)
         except OSError as exc:
             die(f"failed to spawn command: {exc}")
         read_f.close()  # read end transferred to the child process
 
+        observer = owned[0][1]
+        child = owned[1][1]
         observer_task = asyncio.ensure_future(observer.wait())
         child_task = asyncio.ensure_future(child.wait())
-        deadline = loop.time() + timeout
         pending = {observer_task, child_task}
-        try:
-            while pending:
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    timed_out = True
-                    break
-                done, pending = await asyncio.wait(
-                    pending, timeout=remaining,
-                    return_when=asyncio.FIRST_COMPLETED)
-                if not done:
-                    timed_out = True
-                    break
-                if observer_task in done and not child_task.done():
-                    rc = observer_task.result()
-                    if rc == -signal.SIGPIPE:
-                        # The driver's reader closed early: normal stream
-                        # teardown, keep waiting on the child alone.
-                        continue
-                    abnormal = True  # observer exited on its own — fail
-                    break
-                if child_task in done:
-                    break
-        except asyncio.CancelledError:
-            interrupted_hit = True
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, timeout=remaining(),
+                return_when=asyncio.FIRST_COMPLETED)
+            if not done:
+                timed_out = True
+                break
+            if observer_task in done and not child_task.done():
+                rc = observer_task.result()
+                if rc == -signal.SIGPIPE:
+                    # The driver's reader closed early: normal stream
+                    # teardown, keep waiting on the child alone.
+                    continue
+                abnormal = True  # observer exited on its own — fail
+                break
+            if child_task in done:
+                break
+    except asyncio.TimeoutError:
+        timed_out = True
+    except asyncio.CancelledError:
+        interrupted_hit = True
     finally:
-        # Teardown for every exit path: signal each exact owned group (the
-        # group is signalled even when its leader already exited — group
-        # descendants outlive the leader), then reap each leader through
-        # bounded native waits with escalation.
+        # Teardown for every exit path: signal each exact owned group — the
+        # group is signalled even when its leader already exited, since
+        # descendants outlive the leader — then reap each leader through a
+        # bounded native wait with KILL escalation.
         alive_at_term = {}
-        for proc in owned:
-            alive_at_term[proc.pid] = proc.returncode is None
+        for role, proc in owned:
+            if proc is None:
+                continue
+            alive_at_term[role] = proc.returncode is None
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             except PermissionError as exc:
-                # Deliverable only to no member — all already exiting
-                # (Darwin EPERM on P_LEXIT) or unsignalable; judged below.
-                alive_at_term[proc.pid] = exc
-        for proc in owned:
+                # Deliverable to no member — all already exiting (Darwin
+                # EPERM on P_LEXIT) or unsignalable; judged after the wait.
+                alive_at_term[role] = exc
+        for role, proc in owned:
+            if proc is None:
+                continue
             if proc.returncode is None:
                 try:
                     await asyncio.wait_for(proc.wait(), 5)
                 except asyncio.TimeoutError:
-                    if isinstance(alive_at_term.get(proc.pid),
-                                  PermissionError):
+                    if isinstance(alive_at_term.get(role), PermissionError):
                         cleanup_errors.append(
-                            f"SIGTERM killpg({proc.pid}): "
-                            f"{alive_at_term[proc.pid]}")
+                            f"SIGTERM killpg({role} {proc.pid}): "
+                            f"{alive_at_term[role]}")
                     try:
                         os.killpg(proc.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
                     except PermissionError as exc:
                         cleanup_errors.append(
-                            f"SIGKILL killpg({proc.pid}): {exc}")
+                            f"SIGKILL killpg({role} {proc.pid}): {exc}")
                     try:
                         await asyncio.wait_for(proc.wait(), 10)
                     except asyncio.TimeoutError:
                         cleanup_errors.append(
-                            f"wait({proc.pid}): still running")
-            elif isinstance(alive_at_term.get(proc.pid), PermissionError):
+                            f"wait({role} {proc.pid}): still running")
+            elif isinstance(alive_at_term.get(role), PermissionError):
                 notes.append(
-                    f"SIGTERM undeliverable to group {proc.pid} "
-                    f"(leader exited, members already exiting): "
-                    f"{alive_at_term[proc.pid]}")
-            # Descendant sweep: the group may outlive its leader.
+                    f"SIGTERM undeliverable to group {proc.pid}: leader "
+                    f"already exited; members already exiting "
+                    f"({alive_at_term[role]})")
+            # Descendant sweep: signal the group even after the leader is
+            # reaped — descendants outlive it. An EPERM here means the
+            # remaining members could not be signalled: recorded as a
+            # failure unless they provably exited, which the sweep's ESRCH
+            # case already covers.
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
-                pass
+                pass  # group empty — natively verified gone
             except PermissionError as exc:
-                notes.append(
-                    f"SIGKILL undeliverable to group {proc.pid} "
-                    f"(remaining members already exiting): {exc}")
+                cleanup_errors.append(
+                    f"SIGKILL killpg({role} {proc.pid}): {exc}")
         if diag is not None:
-            diag.write(
-                f"observer_exit_status="
-                f"{observer.returncode if observer else None}\n"
-                f"child_exit_status="
-                f"{child.returncode if child else None}\n".encode())
+            for role, proc in owned:
+                diag.write(f"{role}_exit_status="
+                           f"{proc.returncode if proc else None}\n".encode())
             for line in cleanup_errors + notes:
                 diag.write(f"cleanup: {line}\n".encode())
         for owned_file in (read_f, write_f, diag):
             if owned_file is not None:
                 owned_file.close()
 
+    def proc_of(role):
+        return next((p for r, p in owned if r == role), None)
+
+    child = proc_of("child")
+    observer = proc_of("observer")
     child_rc = child.returncode if child else None
     observer_rc = observer.returncode if observer else None
     status = f"child {describe(child_rc)}, observer {describe(observer_rc)}"
@@ -247,9 +273,10 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
     observer_normal = (
         observer_rc in (0, -signal.SIGPIPE)
         or (observer_rc == -signal.SIGTERM
-            and alive_at_term.get(observer.pid if observer else 0) is True))
+            and alive_at_term.get("observer") is True))
     failure = (abnormal or not observer_normal or cleanup_errors
-               or child_rc is None or observer_rc is None)
+               or (not interrupted_hit
+                   and (child_rc is None or observer_rc is None)))
     if failure:
         print(f"observer: {status} — failed", file=sys.stderr)
         for line in cleanup_errors + notes:
