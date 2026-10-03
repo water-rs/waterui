@@ -20,7 +20,7 @@ use std::rc::Rc;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     UIContextMenuConfiguration, UIContextMenuInteraction, UIContextMenuInteractionAnimating,
@@ -31,6 +31,8 @@ use objc2_ui_kit::{
 use std::ptr;
 
 use objc2_core_foundation::CGPoint;
+#[cfg(feature = "native-test")]
+use objc2_core_foundation::CGRect;
 use objc2_ui_kit::UIEvent;
 
 use crate::callback::guarded;
@@ -415,6 +417,22 @@ define_class!(
     }
 );
 
+/// Builds the overlay's window for the `native` test suite, which has no
+/// `UIWindowScene` to present into. Exists only under `native-test` —
+/// the private class keeps no construction API.
+#[cfg(feature = "native-test")]
+#[must_use]
+pub fn accessory_overlay_window_for_test(
+    frame: CGRect,
+    mtm: MainThreadMarker,
+) -> Retained<UIWindow> {
+    // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer for a
+    // window that is not attached to a scene; `mtm` is the main thread.
+    let window: Retained<AccessoryOverlayWindow> =
+        unsafe { msg_send![AccessoryOverlayWindow::alloc(mtm), initWithFrame: frame] };
+    window.into_super()
+}
+
 /// A window above the context menu's that only the accessory hit-tests:
 /// hits on the platter's own surface fall through to the host window, where
 /// the menu container reads them as dismiss taps.
@@ -437,10 +455,6 @@ impl AccessoryOverlay {
         ideal_size: impl Fn() -> Size + 'static,
     ) -> Option<Self> {
         let mtm = MainThreadMarker::from(source);
-        // The subclass registers itself lazily on the first `class()`
-        // call; make sure the runtime type exists before the early
-        // returns so observers can rely on it once this entry point ran.
-        let _class = AccessoryOverlayWindow::class();
         let host_window = source.window()?;
         let scene = host_window.windowScene()?;
         // SAFETY: `initWithWindowScene:` is `UIWindow`'s designated

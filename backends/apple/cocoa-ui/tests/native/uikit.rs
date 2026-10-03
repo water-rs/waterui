@@ -190,42 +190,23 @@ fn the_text_input_selectors_register_under_uikits_names() {
 /// accessory: `hitTest` returns nil outside it (letting the host window's
 /// menu and backdrop see the touch) and the real accessory descendant
 /// inside it. `AccessoryOverlay::present` needs a `UIWindowScene` this
-/// standalone suite lacks, so the case builds the window tree `present`
-/// builds — an `AccessoryOverlayWindow` whose root view is the
-/// `PassIfSelf` platter — and asserts the real window hit test, plus the
+/// standalone suite lacks, so the case builds the real overlay window
+/// through the `native-test` factory — the private
+/// `AccessoryOverlayWindow` keeps no public construction API — and
+/// asserts the window hit test on the tree `present` builds, plus the
 /// pre-fix shape (a plain root `UIView` containing the platter) which
 /// re-claims those points.
 fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
-    use cocoa_ui::objc2::rc::Allocated;
-    use cocoa_ui::objc2::runtime::AnyClass;
     use cocoa_ui::objc2_ui_kit::{UIEvent, UIViewController};
-    use cocoa_ui::uikit::{AccessoryOverlay, HitTest};
+    use cocoa_ui::uikit::{HitTest, accessory_overlay_window_for_test};
 
     let mtm = marker();
-    // The subclass registers lazily on the first `present` call; this
-    // detached source has no window, so `present` registers the class and
-    // returns `None`.
-    let detached = HostView::new(mtm, Rect::ZERO);
-    assert!(
-        AccessoryOverlay::present(&detached, &detached, Rect::ZERO, || {
-            cocoa_ui::Size::new(0.0, 0.0)
-        })
-        .is_none()
+    // The actual overlay window class, through the harness-only entry
+    // point rather than a construction API or runtime name lookup.
+    let window = accessory_overlay_window_for_test(
+        CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(390.0, 844.0)),
+        mtm,
     );
-    // The registered class the overlay presents: private to
-    // `cocoa_ui::uikit::context_menu`, reached here through the
-    // Objective-C runtime rather than a construction API.
-    let overlay_class = AnyClass::get(c"CocoaUiAccessoryOverlayWindow")
-        .expect("overlay window class is registered");
-    // SAFETY: `alloc`/`initWithFrame:` are `UIWindow`'s plain
-    // initializers on the real main thread.
-    let allocated: Allocated<UIWindow> = unsafe { msg_send![overlay_class, alloc] };
-    let window: Retained<UIWindow> = unsafe {
-        msg_send![
-            allocated,
-            initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(390.0, 844.0))
-        ]
-    };
     let controller = UIViewController::new(mtm);
     window.setRootViewController(Some(&controller));
 
