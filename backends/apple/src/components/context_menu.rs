@@ -249,7 +249,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
             #[cfg(target_os = "macos")]
             panel: RefCell::new(None),
             #[cfg(target_os = "ios")]
-            #[cfg(target_os = "ios")]
             overlay: RefCell::new(None),
             #[cfg(target_os = "ios")]
             interaction: RefCell::new(None),
