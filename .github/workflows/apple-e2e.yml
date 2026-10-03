@@ -25,11 +25,14 @@ name: Apple E2E Suite
 # (a single ~105-minute macOS job) is a weekly signal, not a nightly one:
 # it runs on the Sunday schedule and on dispatch.
 #
-# The e2e jobs pin a dated nightly rather than floating `nightly` so one
+# The e2e jobs pin a dated stable rather than floating `stable` so one
 # run certifies one (framework, lockfile, CLI, rustc) tuple — a floating
 # toolchain would make a night impossible to compare with the last. Bump
-# the pin deliberately; the trade is that the suite no longer exercises
-# each night's newest rustc.
+# the pin deliberately. The pin is the repository's declared channel: the
+# suite's Rust surface is plain stable — no `-Z` flag, build-std or
+# cbindgen expansion is reached from these legs — and stable ships both
+# Apple ARM64 targets the shards install explicitly. The native backend
+# no longer needs the old packaging path's nightly override.
 
 on:
   # Invoked by the repository's Nightly workflow through workflow_call so a
@@ -198,10 +201,10 @@ jobs:
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
       # water CLI builds every crate under the toolchain the project selects.
-      # This job builds under the dated nightly pinned below (the header
+      # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      RUSTUP_TOOLCHAIN: "1.98.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -214,7 +217,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-09-17
+          toolchain: "1.98.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 
@@ -298,10 +301,10 @@ jobs:
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
       # water CLI builds every crate under the toolchain the project selects.
-      # This job builds under the dated nightly pinned below (the header
+      # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      RUSTUP_TOOLCHAIN: "1.98.1"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -314,7 +317,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-09-17
+          toolchain: "1.98.1"
           cache: "false"
 
       - name: Install the Metal toolchain
@@ -658,10 +661,10 @@ jobs:
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
       # water CLI builds every crate under the toolchain the project selects.
-      # This job builds under the dated nightly pinned below (the header
+      # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      RUSTUP_TOOLCHAIN: "1.98.1"
       # Packages the repository's own ios_test_host fixture in dev profile —
       # not one of the release examples build-ios packages — so it keeps its
       # own toolchain and target dir.
@@ -677,7 +680,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-09-17
+          toolchain: "1.98.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -850,10 +853,10 @@ jobs:
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
       # water CLI builds every crate under the toolchain the project selects.
-      # This job builds under the dated nightly pinned below (the header
+      # This job builds under the dated stable pinned below (the header
       # explains why), and rustup ranks this variable above the project's
       # file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      RUSTUP_TOOLCHAIN: "1.98.1"
       # Packages a generated hello-world playground rather than a discovered
       # example, so it keeps its own toolchain and target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -868,7 +871,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-09-17
+          toolchain: "1.98.1"
           targets: aarch64-apple-ios-sim
           cache: "false"
 

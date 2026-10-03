@@ -145,10 +145,10 @@ jobs:
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
       # water CLI builds every crate under the toolchain the project selects.
-      # This job builds under the dated nightly pinned below (nightly.yml's
+      # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      RUSTUP_TOOLCHAIN: "1.98.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -160,7 +160,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-09-17
+          toolchain: "1.98.1"
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
@@ -274,10 +274,10 @@ jobs:
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
       # water CLI builds every crate under the toolchain the project selects.
-      # This job builds under the dated nightly pinned below (nightly.yml's
+      # This job builds under the dated stable pinned below (apple-e2e.yml's
       # header explains why), and rustup ranks this variable above the
       # project's file, so the pin reaches cargo through the CLI.
-      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      RUSTUP_TOOLCHAIN: "1.98.1"
     steps:
       - uses: actions/checkout@v4
 
@@ -289,7 +289,7 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2026-09-17
+          toolchain: "1.98.1"
           cache: "false"
 
       - name: Install the Metal toolchain
