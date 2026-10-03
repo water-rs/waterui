@@ -4,8 +4,16 @@
 The harness lives in hydrolysis so archiving android-backend cannot remove
 the acceptance machinery. It consumes suite.toml (the frozen inventory) and
 the pinned toolchain, launches each fixture's built APK, waits for a settled
-non-blank frame, verifies against the frozen golden where one exists, and
-emits one result record per (fixture, script, round) in the shared schema.
+non-blank frame, verifies against the golden where one exists, and emits one
+result record per (fixture, script, round) in the shared schema.
+
+The goldens are no longer stored (the repository carries no binary assets):
+a missing `reference/goldens/<fixture>.png` is generated during the run by
+rendering the fixture's registered Compose twin in the reference app and
+capturing its settled frame (water-rs/hydrolysis#343), which needs
+`--reference-apk`. A fixture whose twin is still unregistered — the
+`[unfinished.compose_twins]` list — reports `verify: unavailable` and names
+the gap.
 
 Device plumbing (settle detection, ANR dismissal, golden comparison,
 gfxinfo/meminfo capture, perfetto) is the imported android-backend
@@ -103,6 +111,22 @@ def launch_and_capture(
     golden_name = fixture.get("golden", "none")
     if mode == "verify" and golden_name != "none":
         golden_path = BENCH_DIR / golden_name
+        if not golden_path.exists():
+            # water-rs/hydrolysis#343: the golden is the reference app's
+            # settled twin frame, generated at run time rather than stored.
+            foreign_twin: list[str] = []
+            twin = e2e.capture_twin(serial, name, settle_s, poll_s, foreign_twin)
+            if twin is None:
+                detail = (
+                    f"foreign window '{foreign_twin[-1]}' held focus"
+                    if foreign_twin
+                    else "no registered twin — see [unfinished.compose_twins]"
+                )
+                result["golden_generation"] = detail
+            else:
+                golden_path.parent.mkdir(parents=True, exist_ok=True)
+                golden_path.write_bytes(twin)
+                result["golden_generation"] = "generated"
         if frame is None or not golden_path.exists():
             result["verify"] = "unavailable"
         else:
@@ -155,6 +179,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             k: v["revision"] for k, v in lock["sources"].items()
         },
     }
+    if args.reference_apk:
+        e2e.adb(serial, "install", "-r", args.reference_apk)
     apk_dir = Path(args.apk_dir) if args.apk_dir else None
     selected = args.fixture or sorted(suite["fixtures"].keys())
     failures = []
@@ -294,6 +320,9 @@ def main() -> int:
     run.add_argument("--serial", default=None)
     run.add_argument("--apk-dir", default=None,
                      help="directory holding one <fixture>.apk per entry")
+    run.add_argument("--reference-apk", default=None,
+                     help="built APK of bench/android/reference — required to "
+                          "generate goldens for fixtures with registered twins")
     run.add_argument("--fixture", action="append", default=None)
     run.add_argument("--run-skipped", action="store_true",
                      help="also attempt the two documented skip entries")

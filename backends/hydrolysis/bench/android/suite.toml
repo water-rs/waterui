@@ -178,10 +178,13 @@ compose_twin = "missing"
 
 # ---------------------------------------------------------------------------
 # verify — default-policy entries: settle, then pixel-compare against the
-# baseline golden under reference/goldens/. Every fixture below was run by CI
-# in verify mode; golden = none marks the verified fixture whose golden the
-# frozen inventory does not carry (anchored_overlay — CI runs it in verify
-# mode but e2e/goldens holds no baseline for it).
+# baseline golden under reference/goldens/. The goldens are not stored (no
+# binary assets): run.py generates a missing one during the run by capturing
+# the fixture's registered Compose twin in the reference app
+# (water-rs/hydrolysis#343). Every fixture below was run by CI in verify
+# mode; golden = none marks the verified fixture whose golden the frozen
+# inventory does not carry (anchored_overlay — CI runs it in verify mode but
+# e2e/goldens holds no baseline for it).
 # ---------------------------------------------------------------------------
 
 [fixtures.anchored_overlay]
