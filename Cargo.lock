@@ -9985,6 +9985,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-metal",
  "objc2-quartz-core",
+ "pollster 1.0.1",
  "serde_json",
  "tracing",
  "tracing-panic",

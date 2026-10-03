@@ -1,4 +1,4 @@
-// Twin of examples/multi_window: five window-style cards with Open/Close
+// Twin of examples/multi_window: six window-style cards with Open/Close
 // buttons. All window states start Closed, so no secondary windows render.
 
 import SwiftUI
@@ -36,6 +36,11 @@ struct MultiWindowTwin: View {
           windowSection(
             "Ultra-Thin Material Window",
             "Subtle frosted effect with UltraThin material"
+          )
+          Spacer(minLength: 0).frame(height: 16)
+          windowSection(
+            "Window Controls",
+            "Maximize, always-on-top, attention requests, resize increments"
           )
         }
         .padding(12)
