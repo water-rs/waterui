@@ -1,0 +1,21 @@
+[package]
+name = "waterui-android-test-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The test application for the native Android backend: text, a stack container, and a button driving a reactive label"
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+waterui.workspace = true
+# `export_app!` emits `::jni::` paths in this crate.
+jni.workspace = true
+waterui-android = { path = "..", features = ["text", "container", "button"] }

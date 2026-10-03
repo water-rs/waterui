@@ -21,10 +21,13 @@ container = []
 text = []
 
 [dependencies]
-waterui.workspace = true
+# `inspector` gates `waterui::inspector`'s runtime probe + layer plumbing —
+# the same surface `waterui-apple` enables.
+waterui = { workspace = true, features = ["inspector"] }
 waterui-backend-core.workspace = true
 waterui-core.workspace = true
 waterui-locale.workspace = true
+waterui-layout.workspace = true
 executor-core.workspace = true
 nami.workspace = true
 native-executor.workspace = true

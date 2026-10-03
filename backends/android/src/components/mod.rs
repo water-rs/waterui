@@ -3,9 +3,9 @@
 //! `install(&mut Dispatcher)` — the only symbol [`crate::registry`] reaches.
 
 #[cfg(feature = "button")]
-pub(crate) mod button;
+pub mod button;
 #[cfg(feature = "container")]
-pub(crate) mod container;
-pub(crate) mod empty;
+pub mod container;
+pub mod empty;
 #[cfg(feature = "text")]
-pub(crate) mod text;
+pub mod text;

@@ -7,12 +7,15 @@
 //! arrives, so localized text follows the Settings change without a
 //! relaunch.
 
+use alloc::rc::Rc;
 use alloc::string::String;
 use core::str::FromStr;
 
 use waterui::reactive::{Binding, Container};
 use waterui_backend_core::Environment;
 use waterui_locale::{Locale, regional};
+
+use crate::jvm::Platform;
 
 /// The locale `Locale.getDefault()` names, or English when the tag does not
 /// parse.
@@ -24,14 +27,11 @@ fn system_locale(tag: &str) -> Locale {
 }
 
 /// Reads `Locale.getDefault()` — the platform's preferred language.
-fn platform_tag(env: &mut jni::Env) -> String {
-    crate::jvm::globals()
-        .bindings()
-        .locale_tag(env)
-        .unwrap_or_else(|error| {
-            tracing::warn!("Locale.getDefault() failed: {error}; falling back to en");
-            String::from("en")
-        })
+fn platform_tag(env: &mut jni::Env, platform: &Platform) -> String {
+    platform.bindings().locale_tag(env).unwrap_or_else(|error| {
+        tracing::warn!("Locale.getDefault() failed: {error}; falling back to en");
+        String::from("en")
+    })
 }
 
 /// Installs `locale` into `env`: the regional runtime's tag, the
@@ -55,8 +55,10 @@ fn install_locale_value(env: &mut Environment, locale: Locale) {
 /// [`refresh`] republishes through on configuration changes — the observer
 /// the Apple backend hangs off `NSLocale.currentLocaleDidChange` is here
 /// just a republish, driven by `onConfigurationChanged`.
-pub(crate) fn install(env: &mut Environment) -> Binding<Locale> {
-    crate::jvm::with_env(|jenv| install_locale_value(env, system_locale(&platform_tag(jenv))));
+pub fn install(env: &mut Environment, platform: &Rc<Platform>) -> Binding<Locale> {
+    crate::jvm::with_env(|jenv| {
+        install_locale_value(env, system_locale(&platform_tag(jenv, platform)));
+    });
     env.get::<Binding<Locale>>()
         .cloned()
         .expect("install_locale_value installs the locale binding")
@@ -64,9 +66,9 @@ pub(crate) fn install(env: &mut Environment) -> Binding<Locale> {
 
 /// Re-reads `Locale.getDefault()` and republishes the binding — what an
 /// `onConfigurationChanged` with a locale diff forwards.
-pub(crate) fn refresh(binding: &Binding<Locale>) {
+pub fn refresh(binding: &Binding<Locale>, platform: &Rc<Platform>) {
     crate::jvm::with_env(|env| {
-        let locale = system_locale(&platform_tag(env));
+        let locale = system_locale(&platform_tag(env, platform));
         regional::set_locale_tag(locale.canonical_tag())
             .expect("a parsed locale tag must remain valid when published");
         binding.set(locale);

@@ -1,0 +1,12 @@
+# Every version Gradle touches, in one place: the plugins (AGP, Kotlin) and
+# the SDK levels the host library and test app build against.
+[versions]
+agp = "8.13.2"
+kotlin = "2.2.21"
+compileSdk = "36"
+minSdk = "26"
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

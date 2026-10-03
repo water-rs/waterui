@@ -26,6 +26,7 @@ members = [
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
     "backends/android",
+    "backends/android/tests",
     "components/icon/*",
 ]
 exclude = [

@@ -20,9 +20,9 @@ unsafe extern "C" {
 
 /// The `tracing` writer factory `FmtSubscriber` asks for a writer per event.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AndroidLog;
+pub struct AndroidLog;
 
-impl<'a> MakeWriter<'a> for AndroidLog {
+impl MakeWriter<'_> for AndroidLog {
     type Writer = RecordWriter;
 
     fn make_writer(&self) -> Self::Writer {
@@ -32,7 +32,7 @@ impl<'a> MakeWriter<'a> for AndroidLog {
 
 /// Buffers one record's bytes and emits them on drop: tracing may write a
 /// record in several calls, but logcat must see exactly one line per record.
-pub(crate) struct RecordWriter {
+pub struct RecordWriter {
     buffer: Vec<u8>,
 }
 

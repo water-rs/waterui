@@ -12,7 +12,7 @@ use alloc::rc::Rc;
 use waterui_backend_core::{AnyView, Environment, View};
 
 use crate::contract::{NativeLeaf, RenderContext};
-use crate::jvm::MainThread;
+use crate::jvm::{MainThread, Platform};
 
 /// The handler signature every port implements: the erased view downcast to
 /// the claimed type, the render context, the leaf it becomes.
@@ -21,7 +21,6 @@ pub(crate) type Handler = Box<dyn Fn(AnyView, &RenderContext<'_>) -> NativeLeaf>
 /// The dispatch table. Built once at startup by [`crate::registry`], then
 /// immutable: children register through it, it is never written after
 /// handlers could run.
-#[derive(Debug)]
 pub(crate) struct Dispatcher {
     handlers: BTreeMap<TypeId, Handler>,
     /// The claimed type's name per registered type, kept for the `Debug`
@@ -125,7 +124,7 @@ impl Dispatcher {
         mtm: MainThread,
     ) -> Option<NativeLeaf> {
         let mut view = view;
-        let ctx = RenderContext::new(env, self.clone(), mtm);
+        let ctx = RenderContext::new(env, self.clone(), mtm, platform(env));
         loop {
             let type_id = view.type_id();
             if let Some(handler) = self.handler(type_id) {
@@ -149,13 +148,21 @@ pub(crate) fn dispatcher(env: &Environment) -> Rc<Dispatcher> {
         .clone()
 }
 
+/// The runtime's JNI surface, published through the environment — the same
+/// channel the dispatcher reaches handlers through.
+pub(crate) fn platform(env: &Environment) -> Rc<Platform> {
+    env.get::<Rc<Platform>>()
+        .expect("Android platform must be installed before rendering")
+        .clone()
+}
+
 /// Renders native content using the owning environment's dispatcher.
 ///
 /// # Panics
 /// Panics on an unhandled native component or off the main looper.
 #[must_use]
 pub fn render(view: AnyView, env: &Environment) -> NativeLeaf {
-    let mtm = MainThread::new().expect("rendering runs on the main thread");
+    let mtm = MainThread::new(&platform(env)).expect("rendering runs on the main thread");
     dispatcher(env)
         .render(view, env, mtm)
         .expect("native view must render")

@@ -4,22 +4,20 @@
 //! to be a zero-size, never-drawn gap — exactly the role `()` plays in the
 //! tree.
 
-use waterui_backend_core::Native;
-
-use crate::contract::{NativeLeaf, RenderContext};
+use crate::contract::NativeLeaf;
 use crate::dispatch::Dispatcher;
 use crate::jvm;
 use crate::native_layout::EmptySubView;
 
 /// Claims `Native<()>`.
-pub(crate) fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_native::<()>(|(), _ctx| {
+pub fn install(dispatcher: &mut Dispatcher) {
+    dispatcher.register_native::<()>(|(), ctx| {
+        let platform = ctx.platform();
         let space = jvm::with_env(|env| {
-            jvm::globals()
-                .bindings()
+            platform
                 .new_space(env)
                 .expect("a Space constructs against the host context")
         });
-        NativeLeaf::new(space, EmptySubView)
+        NativeLeaf::new(space, EmptySubView, platform)
     });
 }

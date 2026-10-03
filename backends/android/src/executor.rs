@@ -24,7 +24,7 @@ use ndk::looper::{FdEvent, ThreadLooper};
 /// clones are `Send`, but the executor itself stays on the thread that
 /// created it — the main thread — because `spawn_local`'s first poll runs
 /// inline, and that contract only holds there.
-pub(crate) struct LooperExecutor {
+pub struct LooperExecutor {
     /// Schedules a `Runnable` for the looper's next drain.
     schedule: Sender<Runnable>,
     /// One byte wakes the looper; the bytes themselves carry nothing.
@@ -69,7 +69,7 @@ impl LocalExecutor for LooperExecutor {
 /// # Panics
 ///
 /// When the thread has no `ALooper`, or the looper rejects the fd.
-pub(crate) fn install() -> LooperExecutor {
+pub fn install() -> LooperExecutor {
     let (schedule, runnables) = channel::<Runnable>();
     let (mut read, wake) = UnixStream::pair().expect("a Unix socket pair is available");
     read.set_nonblocking(true).expect("O_NONBLOCK set");

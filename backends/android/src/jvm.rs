@@ -1,39 +1,49 @@
 //! The resolved JNI surface: every class, method, and field identifier the
-//! backend calls, looked up once when the runtime is created and held for the
-//! process's life.
+//! backend calls, looked up once when the runtime is created and owned by it
+//! for its life.
 //!
 //! Two objects live here. [`Bindings`] is the `findClass`/`GetMethodID`
 //! resolution table — built inside the runtime's own JNI frame, where the
 //! application classloader can see `dev.waterui.android.*`, then frozen.
-//! [`Globals`] adds the host `Context` the views are constructed against.
-//! Neither is queried per call afterwards: the `*_unchecked` call sites take
-//! the cached identifiers directly, so no string crosses JNI on the draw,
-//! measure, or watcher paths.
+//! [`Platform`] adds what the table needs to run: the host `Context` the
+//! views are constructed against, the display density cache, the measure
+//! epoch, and the proposal channel map. Neither is queried per call
+//! afterwards: the `*_unchecked` call sites take the cached identifiers
+//! directly, so no string crosses JNI on the draw, measure, or watcher
+//! paths.
+//!
+//! Nothing here is process state. The `Platform` is built inside
+//! [`crate::entry::mount`], published through the `Environment`, and
+//! threaded by `Rc` into every leaf, context and callback that reaches JNI.
+//! The single exception is the `JavaVM` — see [`with_env`].
 
+use core::cell::Cell;
 use core::marker::PhantomData;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use jni::objects::{Global, JClass, JObject, JString};
+use jni::objects::{JFieldID, JMethodID, JStaticFieldID, JStaticMethodID};
 use jni::signature::{JavaType, Primitive, ReturnType};
+use jni::strings::JNIStr;
 use jni::sys::{jint, jlong, jvalue};
 use jni::{Env, JavaVM, jni_sig, jni_str};
-use jni::objects::{JFieldID, JMethodID, JStaticFieldID, JStaticMethodID};
+
+use crate::measure_memo::MeasureEpoch;
+use crate::proposal::Proposals;
 
 /// `getMainLooper().isCurrentThread()` — the `MainThreadMarker` proof
 /// `RenderContext` carries. `!Send` and `!Sync` by construction: created
 /// once per render and passed by borrow, never moved across threads.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct MainThread {
+pub struct MainThread {
     _sealed: PhantomData<*const ()>,
 }
 
 impl MainThread {
     /// Answers the proof, or `None` off the main looper — the same contract
     /// `MainThreadMarker::new` states as an `Option`.
-    pub(crate) fn new() -> Option<Self> {
+    pub fn new(platform: &Platform) -> Option<Self> {
         with_env(|env| {
-            globals()
+            platform
                 .bindings()
                 .is_current_thread(env)
                 .expect("Looper.isCurrentThread is always callable")
@@ -46,7 +56,14 @@ impl MainThread {
 
 /// `env` for a spot JNI call on an already-attached thread. View operations
 /// are main-thread work, where the attach is a TLS check, not a handshake.
-pub(crate) fn with_env<T>(body: impl FnOnce(&mut Env) -> T) -> T {
+///
+/// The `JavaVM` behind this is the crate's only process-global state, and it
+/// has no alternative: `JNI_OnLoad` hands the machine to a C entry point
+/// with no context object to thread, so `jni` itself keeps it behind
+/// `JavaVM::singleton`. Everything else the backend owns — the identifier
+/// table, the density, the measure epoch, the proposal channels — is
+/// threaded explicitly through [`Platform`].
+pub fn with_env<T>(body: impl FnOnce(&mut Env) -> T) -> T {
     JavaVM::singleton()
         .expect("JavaVM singleton is initialized by the first native call")
         .attach_current_thread(|env| -> jni::errors::Result<T> { Ok(body(env)) })
@@ -56,7 +73,7 @@ pub(crate) fn with_env<T>(body: impl FnOnce(&mut Env) -> T) -> T {
 /// The frozen identifier table.
 #[derive(Debug)]
 #[allow(dead_code, reason = "some class refs only matter at resolve time")]
-pub(crate) struct Bindings {
+pub struct Bindings {
     // dev/waterui/android — the host library's bridge classes.
     rust_view_group: Global<JClass<'static>>,
     rust_view_group_ctor: JMethodID,
@@ -97,9 +114,15 @@ pub(crate) struct Bindings {
     space: Global<JClass<'static>>,
     space_ctor: JMethodID,
 
-    // android/widget/FrameLayout — the button chrome's wrapper.
+    // android/widget/FrameLayout — the button chrome's wrapper — and its
+    // `LayoutParams`, for match-parent + margin placement without a
+    // measure pass of our own.
     frame_layout: Global<JClass<'static>>,
     frame_layout_ctor: JMethodID,
+    frame_layout_params: Global<JClass<'static>>,
+    frame_layout_params_ctor: JMethodID,
+    layout_params_set_margins: JMethodID,
+    view_set_layout_params: JMethodID,
 
     // android/widget/Button — the chrome behind the label view.
     button: Global<JClass<'static>>,
@@ -135,7 +158,6 @@ pub(crate) struct Bindings {
 
     // android/util/DisplayMetrics.
     display_metrics_density: JFieldID,
-    display_metrics_scaled_density: JFieldID,
 
     // android/util/TypedValue.
     typed_value: Global<JClass<'static>>,
@@ -161,82 +183,93 @@ pub(crate) struct Bindings {
     measure_spec_get_size: JStaticMethodID,
 }
 
-/// The resolved ids plus the host `Context`, installed once per process.
-#[derive(Debug)]
-pub(crate) struct Globals {
-    bindings: Bindings,
-    /// The host activity the backend constructs views against.
-    context: Global<JObject<'static>>,
-}
-
-static GLOBALS: OnceLock<Globals> = OnceLock::new();
-
-/// The density cache — `DisplayMetrics.density` and `scaledDensity` as f32
-/// bits, refreshed on startup and on every configuration change, so the
-/// measure path never crosses JNI to convert units.
-static DENSITY: AtomicU32 = AtomicU32::new(0);
-static SCALED_DENSITY: AtomicU32 = AtomicU32::new(0);
-
 /// Another global reference to `view` — the way a leaf shares its platform
 /// object with the watcher closures and layout face that outlive it.
-pub(crate) fn retain(view: &Global<JObject<'static>>) -> Global<JObject<'static>> {
+pub fn retain(view: &Global<JObject<'static>>) -> Global<JObject<'static>> {
     with_env(|env| {
         env.new_global_ref(view.as_ref())
             .expect("a global reference to a live object always allocates")
     })
 }
 
-/// Refreshes the unit cache from `DisplayMetrics`.
-pub(crate) fn refresh_metrics(env: &mut Env) -> jni::errors::Result<()> {
-    let (density, scaled) = globals().bindings().display_metrics(env)?;
-    DENSITY.store(density.to_bits(), Ordering::Relaxed);
-    SCALED_DENSITY.store(scaled.to_bits(), Ordering::Relaxed);
-    Ok(())
-}
-
-/// `DisplayMetrics.density` — px per dp.
-pub(crate) fn density() -> f32 {
-    f32::from_bits(DENSITY.load(Ordering::Relaxed))
-}
-
-/// `DisplayMetrics.scaledDensity` — px per sp.
-pub(crate) fn scaled_density() -> f32 {
-    f32::from_bits(SCALED_DENSITY.load(Ordering::Relaxed))
-}
-
-/// dp → px, rounding to whole pixels the way `View` frames expect.
-pub(crate) fn dp_to_px(dp: f32) -> i32 {
-    (dp * density()).round() as i32
-}
-
-/// px → dp.
-pub(crate) fn px_to_dp(px: i32) -> f32 {
-    px as f32 / density()
-}
-
-/// The installed globals.
+/// The backend's platform-facing state, owned by the runtime and threaded
+/// through every call that reaches JNI: the frozen [`Bindings`], the host
+/// `Context` views are constructed against, the display density the unit
+/// conversion reads, the measure epoch the memos stamp against, and the
+/// proposal channel map a parent delivers selected proposals through.
 ///
-/// # Panics
-///
-/// Before `nativeCreate` runs — every call site is inside the runtime's
-/// lifetime, so an uninstalled table is unreachable.
-pub(crate) fn globals() -> &'static Globals {
-    GLOBALS.get().expect("JNI bindings are installed at nativeCreate")
+/// The `Environment` carries one `Rc<Platform>` (installed beside the
+/// dispatcher at mount) — the same channel the Apple backend uses for the
+/// objects its render context and leaves share.
+pub struct Platform {
+    bindings: Bindings,
+    /// The host activity the backend constructs views against.
+    context: Global<JObject<'static>>,
+    /// `DisplayMetrics.density` — px per dp; refreshed at mount and on every
+    /// configuration change, so the measure path never crosses JNI to
+    /// convert units. Main-thread state, so a `Cell` suffices.
+    density: Cell<f32>,
+    /// The measure epoch every leaf's memo stamps against — a shared cell,
+    /// so `MemoizingSubView` and the invalidation callers read the same
+    /// counter without a static.
+    measure_epoch: MeasureEpoch,
+    /// view key → the leaf's selected-proposal sink — the L-2 channel.
+    /// Registration, delivery and teardown all run on the main looper.
+    proposals: Proposals,
 }
 
-impl Globals {
+impl core::fmt::Debug for Platform {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Platform")
+            .field("density", &self.density.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Platform {
+    /// Resolves every identifier once and builds the [`Platform`]. Called
+    /// from `nativeCreate`'s frame — the only place the app classloader is
+    /// guaranteed to resolve `dev.waterui.android.*`.
+    pub fn new(env: &mut Env, activity: &JObject) -> jni::errors::Result<Self> {
+        Ok(Self {
+            bindings: Bindings::resolve(env)?,
+            context: env.new_global_ref(activity)?,
+            density: Cell::new(1.0),
+            measure_epoch: MeasureEpoch::new(),
+            proposals: Proposals::new(),
+        })
+    }
+
     /// The identifier table.
-    pub(crate) const fn bindings(&self) -> &Bindings {
+    pub const fn bindings(&self) -> &Bindings {
         &self.bindings
     }
 
     /// The host activity — the `Context` every view constructor takes.
-    pub(crate) fn context(&self) -> &Global<JObject<'static>> {
+    pub const fn context(&self) -> &Global<JObject<'static>> {
         &self.context
     }
 
+    /// The measure epoch the leaf memos share.
+    pub fn measure_epoch(&self) -> MeasureEpoch {
+        self.measure_epoch.clone()
+    }
+
+    /// Marks every memoized measure stale tree-wide — the counterpart of
+    /// Apple's `MeasureMemo.invalidate`, sent through the runtime's own
+    /// epoch instead of a static.
+    pub fn invalidate_measures(&self) {
+        self.measure_epoch.bump();
+    }
+
+    /// The proposal channel map — registers leaf sinks and delivers the
+    /// proposals a parent selected, per `docs/layout-spec.md` rule L-2.
+    pub const fn proposals(&self) -> &Proposals {
+        &self.proposals
+    }
+
     /// `context.getResources()`.
-    pub(crate) fn resources(&self, env: &mut Env) -> jni::errors::Result<JObject<'static>> {
+    fn resources(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
         // SAFETY: resolved id; `context` is an Activity (a Context).
         let resources = unsafe {
             env.call_method_unchecked(
@@ -246,11 +279,11 @@ impl Globals {
                 &[],
             )?
         };
-        resources.l()
+        env.new_global_ref(resources.l()?)
     }
 
     /// `context.getTheme()`.
-    pub(crate) fn theme(&self, env: &mut Env) -> jni::errors::Result<JObject<'static>> {
+    fn theme(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
         // SAFETY: resolved id; `context` is an Activity (a Context).
         let theme = unsafe {
             env.call_method_unchecked(
@@ -260,365 +293,431 @@ impl Globals {
                 &[],
             )?
         };
-        theme.l()
+        env.new_global_ref(theme.l()?)
     }
-}
 
-/// Resolves every identifier once and installs the [`Globals`]. Called from
-/// `nativeCreate`'s frame — the only place the app classloader is guaranteed
-/// to resolve `dev.waterui.android.*`.
-///
-/// # Panics
-///
-/// A second `nativeCreate` — the skeleton owns one host activity per process.
-pub(crate) fn install(env: &mut Env, activity: &JObject) -> jni::errors::Result<()> {
-    let globals = Globals {
-        bindings: Bindings::resolve(env)?,
-        context: env.new_global_ref(activity)?,
-    };
-    if GLOBALS.set(globals).is_err() {
-        panic!("waterui-android hosts a single activity per process");
+    /// Refreshes the unit cache from `DisplayMetrics` — at mount and on
+    /// every `onConfigurationChanged`.
+    pub fn refresh_metrics(&self, env: &mut Env) -> jni::errors::Result<()> {
+        self.density.set(self.display_metrics(env)?);
+        Ok(())
     }
-    Ok(())
+
+    /// `DisplayMetrics.density` — px per dp.
+    pub const fn density(&self) -> f32 {
+        self.density.get()
+    }
+
+    /// dp → px, rounding to whole pixels the way `View` frames expect.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a View frame in whole pixels always fits an i32"
+    )]
+    pub fn dp_to_px(&self, dp: f32) -> i32 {
+        (dp * self.density()).round() as i32
+    }
+
+    /// px → dp.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a measured pixel size is well inside f32's exact range"
+    )]
+    pub fn px_to_dp(&self, px: i32) -> f32 {
+        px as f32 / self.density()
+    }
 }
 
 impl Bindings {
     /// The one-shot resolution — `findClass` for every class the backend
     /// touches, `GetMethodID`/`GetFieldID` for every member it calls.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a flat id table is meant to be long"
-    )]
+    #[allow(clippy::too_many_lines, reason = "a flat id table is meant to be long")]
     fn resolve(env: &mut Env) -> jni::errors::Result<Self> {
-        let class = |name: &str| env.new_global_ref(env.find_class(name)?);
+        let mut class = |name: &JNIStr| {
+            let class = env.find_class(name)?;
+            env.new_global_ref(class)
+        };
 
-        let rust_view_group = class("dev/waterui/android/RustViewGroup")?;
-        let rust_click_listener = class("dev/waterui/android/RustOnClickListener")?;
-        let view = class("android/view/View")?;
-        let view_group = class("android/view/ViewGroup")?;
-        let text_view = class("android/widget/TextView")?;
-        let space = class("android/widget/Space")?;
-        let frame_layout = class("android/widget/FrameLayout")?;
-        let button = class("android/widget/Button")?;
-        let typeface = class("android/graphics/Typeface")?;
-        let context = class("android/content/Context")?;
-        let resources = class("android/content/res/Resources")?;
-        let theme = class("android/content/res/Resources$Theme")?;
-        let configuration = class("android/content/res/Configuration")?;
-        let display_metrics = class("android/util/DisplayMetrics")?;
-        let typed_value = class("android/util/TypedValue")?;
-        let looper = class("android/os/Looper")?;
-        let locale = class("java/util/Locale")?;
-        let window_manager = class("android/view/WindowManager")?;
-        let display = class("android/view/Display")?;
-        let measure_spec = class("android/view/View$MeasureSpec")?;
+        let rust_view_group = class(jni_str!("dev/waterui/android/RustViewGroup"))?;
+        let rust_click_listener = class(jni_str!("dev/waterui/android/RustOnClickListener"))?;
+        let view = class(jni_str!("android/view/View"))?;
+        let view_group = class(jni_str!("android/view/ViewGroup"))?;
+        let text_view = class(jni_str!("android/widget/TextView"))?;
+        let space = class(jni_str!("android/widget/Space"))?;
+        let frame_layout = class(jni_str!("android/widget/FrameLayout"))?;
+        let frame_layout_params = class(jni_str!("android/widget/FrameLayout$LayoutParams"))?;
+        let button = class(jni_str!("android/widget/Button"))?;
+        let typeface = class(jni_str!("android/graphics/Typeface"))?;
+        let context = class(jni_str!("android/content/Context"))?;
+        let resources = class(jni_str!("android/content/res/Resources"))?;
+        let theme = class(jni_str!("android/content/res/Resources$Theme"))?;
+        let configuration = class(jni_str!("android/content/res/Configuration"))?;
+        let display_metrics = class(jni_str!("android/util/DisplayMetrics"))?;
+        let typed_value = class(jni_str!("android/util/TypedValue"))?;
+        let looper = class(jni_str!("android/os/Looper"))?;
+        let locale = class(jni_str!("java/util/Locale"))?;
+        let window_manager = class(jni_str!("android/view/WindowManager"))?;
+        let display = class(jni_str!("android/view/Display"))?;
+        let measure_spec = class(jni_str!("android/view/View$MeasureSpec"))?;
 
         Ok(Self {
             rust_view_group_ctor: env.get_method_id(
                 &rust_view_group,
                 jni_str!("<init>"),
-                jni_sig!((Landroid/content/Context;)V),
+                jni_sig!("(Landroid/content/Context;)V"),
             )?,
             rust_view_group_set_handle: env.get_method_id(
                 &rust_view_group,
                 jni_str!("setHandle"),
-                jni_sig!((J)V),
+                jni_sig!("(J)V"),
             )?,
             rust_view_group,
             rust_click_listener_ctor: env.get_method_id(
                 &rust_click_listener,
                 jni_str!("<init>"),
-                jni_sig!((J)V),
+                jni_sig!("(J)V"),
             )?,
             rust_click_listener,
 
-            view_measure: env.get_method_id(&view, jni_str!("measure"), jni_sig!((II)V))?,
+            view_measure: env.get_method_id(&view, jni_str!("measure"), jni_sig!("(II)V"))?,
             view_get_measured_width: env.get_method_id(
                 &view,
                 jni_str!("getMeasuredWidth"),
-                jni_sig!(()I),
+                jni_sig!("()I"),
             )?,
             view_get_measured_height: env.get_method_id(
                 &view,
                 jni_str!("getMeasuredHeight"),
-                jni_sig!(()I),
+                jni_sig!("()I"),
             )?,
-            view_layout: env.get_method_id(&view, jni_str!("layout"), jni_sig!((IIII)V))?,
-            view_request_layout: env
-                .get_method_id(&view, jni_str!("requestLayout"), jni_sig!(()V))?,
+            view_layout: env.get_method_id(&view, jni_str!("layout"), jni_sig!("(IIII)V"))?,
+            view_request_layout: env.get_method_id(
+                &view,
+                jni_str!("requestLayout"),
+                jni_sig!("()V"),
+            )?,
             view_set_on_click_listener: env.get_method_id(
                 &view,
                 jni_str!("setOnClickListener"),
-                jni_sig!((Landroid/view/View$OnClickListener;)V),
+                jni_sig!("(Landroid/view/View$OnClickListener;)V"),
             )?,
             view_set_content_description: env.get_method_id(
                 &view,
                 jni_str!("setContentDescription"),
-                jni_sig!((Ljava/lang/CharSequence;)V),
+                jni_sig!("(Ljava/lang/CharSequence;)V"),
             )?,
             view_set_text_alignment: env.get_method_id(
                 &view,
                 jni_str!("setTextAlignment"),
-                jni_sig!((I)V),
+                jni_sig!("(I)V"),
             )?,
-            view_set_clickable: env
-                .get_method_id(&view, jni_str!("setClickable"), jni_sig!((Z)V))?,
+            view_set_clickable: env.get_method_id(
+                &view,
+                jni_str!("setClickable"),
+                jni_sig!("(Z)V"),
+            )?,
             view_set_important_for_accessibility: env.get_method_id(
                 &view,
                 jni_str!("setImportantForAccessibility"),
-                jni_sig!((I)V),
+                jni_sig!("(I)V"),
             )?,
             view_set_background_color: env.get_method_id(
                 &view,
                 jni_str!("setBackgroundColor"),
-                jni_sig!((I)V),
+                jni_sig!("(I)V"),
             )?,
             view_set_clip_children: env.get_method_id(
                 &view_group,
                 jni_str!("setClipChildren"),
-                jni_sig!((Z)V),
+                jni_sig!("(Z)V"),
+            )?,
+            view_set_layout_params: env.get_method_id(
+                &view,
+                jni_str!("setLayoutParams"),
+                jni_sig!("(Landroid/view/ViewGroup$LayoutParams;)V"),
             )?,
 
             view_group_add_view: env.get_method_id(
                 &view_group,
                 jni_str!("addView"),
-                jni_sig!((Landroid/view/View;)V),
+                jni_sig!("(Landroid/view/View;)V"),
             )?,
             view_group_remove_view: env.get_method_id(
                 &view_group,
                 jni_str!("removeView"),
-                jni_sig!((Landroid/view/View;)V),
+                jni_sig!("(Landroid/view/View;)V"),
             )?,
 
             text_view_ctor: env.get_method_id(
                 &text_view,
                 jni_str!("<init>"),
-                jni_sig!((Landroid/content/Context;)V),
+                jni_sig!("(Landroid/content/Context;)V"),
             )?,
             text_view_set_text: env.get_method_id(
                 &text_view,
                 jni_str!("setText"),
-                jni_sig!((Ljava/lang/CharSequence;)V),
+                jni_sig!("(Ljava/lang/CharSequence;)V"),
             )?,
             text_view_set_text_size: env.get_method_id(
                 &text_view,
                 jni_str!("setTextSize"),
-                jni_sig!((F)V),
+                jni_sig!("(F)V"),
             )?,
             text_view_set_text_color: env.get_method_id(
                 &text_view,
                 jni_str!("setTextColor"),
-                jni_sig!((I)V),
+                jni_sig!("(I)V"),
             )?,
             text_view_set_max_lines: env.get_method_id(
                 &text_view,
                 jni_str!("setMaxLines"),
-                jni_sig!((I)V),
+                jni_sig!("(I)V"),
             )?,
             text_view_set_gravity: env.get_method_id(
                 &text_view,
                 jni_str!("setGravity"),
-                jni_sig!((I)V),
+                jni_sig!("(I)V"),
             )?,
             text_view_set_typeface: env.get_method_id(
                 &text_view,
                 jni_str!("setTypeface"),
-                jni_sig!((Landroid/graphics/Typeface;)V),
+                jni_sig!("(Landroid/graphics/Typeface;)V"),
             )?,
             text_view,
 
             space_ctor: env.get_method_id(
                 &space,
                 jni_str!("<init>"),
-                jni_sig!((Landroid/content/Context;)V),
+                jni_sig!("(Landroid/content/Context;)V"),
             )?,
             space,
 
             frame_layout_ctor: env.get_method_id(
                 &frame_layout,
                 jni_str!("<init>"),
-                jni_sig!((Landroid/content/Context;)V),
+                jni_sig!("(Landroid/content/Context;)V"),
             )?,
             frame_layout,
+
+            frame_layout_params_ctor: env.get_method_id(
+                &frame_layout_params,
+                jni_str!("<init>"),
+                jni_sig!("(II)V"),
+            )?,
+            layout_params_set_margins: env.get_method_id(
+                &frame_layout_params,
+                jni_str!("setMargins"),
+                jni_sig!("(IIII)V"),
+            )?,
+            frame_layout_params,
 
             button_ctor: env.get_method_id(
                 &button,
                 jni_str!("<init>"),
-                jni_sig!((Landroid/content/Context;)V),
+                jni_sig!("(Landroid/content/Context;)V"),
             )?,
             button,
 
             typeface_default: env.get_static_field_id(
                 &typeface,
                 jni_str!("DEFAULT"),
-                jni_sig!(Landroid/graphics/Typeface;),
+                jni_sig!("Landroid/graphics/Typeface;"),
             )?,
             typeface_default_bold: env.get_static_field_id(
                 &typeface,
                 jni_str!("DEFAULT_BOLD"),
-                jni_sig!(Landroid/graphics/Typeface;),
+                jni_sig!("Landroid/graphics/Typeface;"),
             )?,
             typeface_monospace: env.get_static_field_id(
                 &typeface,
                 jni_str!("MONOSPACE"),
-                jni_sig!(Landroid/graphics/Typeface;),
+                jni_sig!("Landroid/graphics/Typeface;"),
             )?,
             typeface,
 
             context_get_resources: env.get_method_id(
                 &context,
                 jni_str!("getResources"),
-                jni_sig!(()Landroid/content/res/Resources;),
+                jni_sig!("()Landroid/content/res/Resources;"),
             )?,
             context_get_theme: env.get_method_id(
                 &context,
                 jni_str!("getTheme"),
-                jni_sig!(()Landroid/content/res/Resources$Theme;),
+                jni_sig!("()Landroid/content/res/Resources$Theme;"),
             )?,
             context_get_system_service: env.get_method_id(
                 &context,
                 jni_str!("getSystemService"),
-                jni_sig!((Ljava/lang/String;)Ljava/lang/Object;),
+                jni_sig!("(Ljava/lang/String;)Ljava/lang/Object;"),
             )?,
             window_manager_get_default_display: env.get_method_id(
                 &window_manager,
                 jni_str!("getDefaultDisplay"),
-                jni_sig!(()Landroid/view/Display;),
+                jni_sig!("()Landroid/view/Display;"),
             )?,
             display_get_refresh_rate: env.get_method_id(
                 &display,
                 jni_str!("getRefreshRate"),
-                jni_sig!(()F),
+                jni_sig!("()F"),
             )?,
 
             resources_get_display_metrics: env.get_method_id(
                 &resources,
                 jni_str!("getDisplayMetrics"),
-                jni_sig!(()Landroid/util/DisplayMetrics;),
+                jni_sig!("()Landroid/util/DisplayMetrics;"),
             )?,
             resources_get_configuration: env.get_method_id(
                 &resources,
                 jni_str!("getConfiguration"),
-                jni_sig!(()Landroid/content/res/Configuration;),
+                jni_sig!("()Landroid/content/res/Configuration;"),
             )?,
             resources_get_color: env.get_method_id(
                 &resources,
                 jni_str!("getColor"),
-                jni_sig!((ILandroid/content/res/Resources$Theme;)I),
+                jni_sig!("(ILandroid/content/res/Resources$Theme;)I"),
             )?,
 
             theme_resolve_attribute: env.get_method_id(
                 &theme,
                 jni_str!("resolveAttribute"),
-                jni_sig!((ILandroid/util/TypedValue;Z)Z),
+                jni_sig!("(ILandroid/util/TypedValue;Z)Z"),
             )?,
             theme,
 
             configuration_ui_mode: env.get_field_id(
                 &configuration,
                 jni_str!("uiMode"),
-                jni_sig!(I),
+                jni_sig!("I"),
             )?,
 
             display_metrics_density: env.get_field_id(
                 &display_metrics,
                 jni_str!("density"),
-                jni_sig!(F),
-            )?,
-            display_metrics_scaled_density: env.get_field_id(
-                &display_metrics,
-                jni_str!("scaledDensity"),
-                jni_sig!(F),
+                jni_sig!("F"),
             )?,
 
             typed_value_ctor: env.get_method_id(
                 &typed_value,
                 jni_str!("<init>"),
-                jni_sig!(()V),
+                jni_sig!("()V"),
             )?,
-            typed_value_type: env.get_field_id(&typed_value, jni_str!("type"), jni_sig!(I))?,
-            typed_value_data: env.get_field_id(&typed_value, jni_str!("data"), jni_sig!(I))?,
+            typed_value_type: env.get_field_id(&typed_value, jni_str!("type"), jni_sig!("I"))?,
+            typed_value_data: env.get_field_id(&typed_value, jni_str!("data"), jni_sig!("I"))?,
             typed_value_resource_id: env.get_field_id(
                 &typed_value,
                 jni_str!("resourceId"),
-                jni_sig!(I),
+                jni_sig!("I"),
             )?,
             typed_value,
 
             looper_get_main_looper: env.get_static_method_id(
                 &looper,
                 jni_str!("getMainLooper"),
-                jni_sig!(()Landroid/os/Looper;),
+                jni_sig!("()Landroid/os/Looper;"),
             )?,
             looper_is_current_thread: env.get_method_id(
                 &looper,
                 jni_str!("isCurrentThread"),
-                jni_sig!(()Z),
+                jni_sig!("()Z"),
             )?,
             looper,
 
             locale_get_default: env.get_static_method_id(
                 &locale,
                 jni_str!("getDefault"),
-                jni_sig!(()Ljava/util/Locale;),
+                jni_sig!("()Ljava/util/Locale;"),
             )?,
             locale_to_language_tag: env.get_method_id(
                 &locale,
                 jni_str!("toLanguageTag"),
-                jni_sig!(()Ljava/lang/String;),
+                jni_sig!("()Ljava/lang/String;"),
             )?,
             locale,
 
             measure_spec_make: env.get_static_method_id(
                 &measure_spec,
                 jni_str!("makeMeasureSpec"),
-                jni_sig!((II)I),
+                jni_sig!("(II)I"),
             )?,
             measure_spec_get_mode: env.get_static_method_id(
                 &measure_spec,
                 jni_str!("getMode"),
-                jni_sig!((I)I),
+                jni_sig!("(I)I"),
             )?,
             measure_spec_get_size: env.get_static_method_id(
                 &measure_spec,
                 jni_str!("getSize"),
-                jni_sig!((I)I),
+                jni_sig!("(I)I"),
             )?,
             measure_spec,
         })
     }
 }
 
-/// A `View` subclass' platform object, constructed against the host context
-/// and returned as a [`Global`]: the leaf owns it, exactly like the retained
-/// object an Apple leaf holds.
-fn construct(
-    env: &mut Env,
-    class: &Global<JClass<'static>>,
-    ctor: JMethodID,
-) -> jni::errors::Result<Global<JObject<'static>>> {
-    // SAFETY: `class`/`ctor` come from the resolved table, and the
-    // constructor signature is the shared `(Context)` shape every `View`
-    // subclass declares — the only argument is the host context.
-    let object = unsafe {
-        env.new_object_unchecked(class, ctor, &[jvalue {
-            l: globals().context().as_raw(),
-        }])?
-    };
-    env.new_global_ref(&object)
-}
+impl Platform {
+    /// A `View` subclass' platform object, constructed against the host
+    /// context and returned as a [`Global`]: the leaf owns it, exactly like
+    /// the retained object an Apple leaf holds.
+    fn construct(
+        &self,
+        env: &mut Env,
+        class: &Global<JClass<'static>>,
+        ctor: JMethodID,
+    ) -> jni::errors::Result<Global<JObject<'static>>> {
+        // SAFETY: `class`/`ctor` come from the resolved table, and the
+        // constructor signature is the shared `(Context)` shape every `View`
+        // subclass declares — the only argument is the host context.
+        let object = unsafe {
+            env.new_object_unchecked(
+                class,
+                ctor,
+                &[jvalue {
+                    l: self.context().as_raw(),
+                }],
+            )?
+        };
+        env.new_global_ref(&object)
+    }
 
-impl Bindings {
     /// `new RustViewGroup(context)`.
-    pub(crate) fn new_rust_view_group(
+    pub fn new_rust_view_group(
         &self,
         env: &mut Env,
     ) -> jni::errors::Result<Global<JObject<'static>>> {
-        construct(env, &self.rust_view_group, self.rust_view_group_ctor)
+        self.construct(
+            env,
+            &self.bindings.rust_view_group,
+            self.bindings.rust_view_group_ctor,
+        )
     }
 
+    /// `new Space(context)` — the empty leaf.
+    pub fn new_space(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
+        self.construct(env, &self.bindings.space, self.bindings.space_ctor)
+    }
+
+    /// `new TextView(context)`.
+    pub fn new_text_view(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
+        self.construct(env, &self.bindings.text_view, self.bindings.text_view_ctor)
+    }
+
+    /// `new FrameLayout(context)`.
+    pub fn new_frame_layout(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
+        self.construct(
+            env,
+            &self.bindings.frame_layout,
+            self.bindings.frame_layout_ctor,
+        )
+    }
+
+    /// `new Button(context)` — the chrome a button leaf fills.
+    pub fn new_button(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
+        self.construct(env, &self.bindings.button, self.bindings.button_ctor)
+    }
+}
+
+impl Bindings {
     /// `new RustOnClickListener(handle)`.
-    pub(crate) fn new_click_listener(
+    pub fn new_click_listener(
         &self,
         env: &mut Env,
         handle: jlong,
@@ -634,35 +733,9 @@ impl Bindings {
         env.new_global_ref(&object)
     }
 
-    /// `new Space(context)` — the empty leaf.
-    pub(crate) fn new_space(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
-        construct(env, &self.space, self.space_ctor)
-    }
-
-    /// `new TextView(context)`.
-    pub(crate) fn new_text_view(
-        &self,
-        env: &mut Env,
-    ) -> jni::errors::Result<Global<JObject<'static>>> {
-        construct(env, &self.text_view, self.text_view_ctor)
-    }
-
-    /// `new FrameLayout(context)`.
-    pub(crate) fn new_frame_layout(
-        &self,
-        env: &mut Env,
-    ) -> jni::errors::Result<Global<JObject<'static>>> {
-        construct(env, &self.frame_layout, self.frame_layout_ctor)
-    }
-
-    /// `new Button(context)` — the chrome a button leaf fills.
-    pub(crate) fn new_button(&self, env: &mut Env) -> jni::errors::Result<Global<JObject<'static>>> {
-        construct(env, &self.button, self.button_ctor)
-    }
-
     /// `group.setHandle(handle)` — the `ContainerState` the Kotlin bridge
     /// forwards `onMeasure`/`onLayout` to.
-    pub(crate) fn set_handle(
+    pub fn set_handle(
         &self,
         env: &mut Env,
         group: &JObject,
@@ -674,7 +747,7 @@ impl Bindings {
             env.call_method_unchecked(
                 group,
                 self.rust_view_group_set_handle,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { j: handle }],
             )?;
         }
@@ -683,7 +756,7 @@ impl Bindings {
 
     /// `view.measure(widthSpec, heightSpec)` — a platform measure against
     /// explicit specs, the probe every `ViewSubView` runs.
-    pub(crate) fn measure(
+    pub fn measure(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -695,7 +768,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_measure,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: width_spec }, jvalue { i: height_spec }],
             )?;
         }
@@ -703,7 +776,7 @@ impl Bindings {
     }
 
     /// `(view.getMeasuredWidth(), view.getMeasuredHeight())` in pixels.
-    pub(crate) fn measured_size(
+    pub fn measured_size(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -729,7 +802,7 @@ impl Bindings {
     }
 
     /// `view.layout(l, t, r, b)` — the placement a container writes.
-    pub(crate) fn layout(
+    pub fn layout(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -743,7 +816,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_layout,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[
                     jvalue { i: left },
                     jvalue { i: top },
@@ -756,16 +829,21 @@ impl Bindings {
     }
 
     /// `view.requestLayout()` — the dirty mark reactive changes set.
-    pub(crate) fn request_layout(&self, env: &mut Env, view: &JObject) -> jni::errors::Result<()> {
+    pub fn request_layout(&self, env: &mut Env, view: &JObject) -> jni::errors::Result<()> {
         // SAFETY: resolved id; `view` is a View.
         unsafe {
-            env.call_method_unchecked(view, self.view_request_layout, ReturnType::Void, &[])?;
+            env.call_method_unchecked(
+                view,
+                self.view_request_layout,
+                ReturnType::Primitive(Primitive::Void),
+                &[],
+            )?;
         }
         Ok(())
     }
 
     /// `parent.addView(child)` — `NativeLeaf::mount`.
-    pub(crate) fn add_view(
+    pub fn add_view(
         &self,
         env: &mut Env,
         parent: &JObject,
@@ -776,7 +854,7 @@ impl Bindings {
             env.call_method_unchecked(
                 parent,
                 self.view_group_add_view,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { l: child.as_raw() }],
             )?;
         }
@@ -784,7 +862,7 @@ impl Bindings {
     }
 
     /// `parent.removeView(child)` — `Mounted`'s detach.
-    pub(crate) fn remove_view(
+    pub fn remove_view(
         &self,
         env: &mut Env,
         parent: &JObject,
@@ -795,7 +873,7 @@ impl Bindings {
             env.call_method_unchecked(
                 parent,
                 self.view_group_remove_view,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { l: child.as_raw() }],
             )?;
         }
@@ -803,7 +881,7 @@ impl Bindings {
     }
 
     /// `view.setOnClickListener(listener)` — `listener` may be null to clear.
-    pub(crate) fn set_on_click_listener(
+    pub fn set_on_click_listener(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -815,7 +893,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_set_on_click_listener,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { l: raw }],
             )?;
         }
@@ -823,7 +901,7 @@ impl Bindings {
     }
 
     /// `view.setContentDescription(text)` — the spoken label.
-    pub(crate) fn set_content_description(
+    pub fn set_content_description(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -834,7 +912,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_set_content_description,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { l: text.as_raw() }],
             )?;
         }
@@ -843,7 +921,7 @@ impl Bindings {
 
     /// `view.setBackgroundColor(argb)` — packed ARGB, for the window's
     /// resolved background behind the mounted content.
-    pub(crate) fn set_background_color(
+    pub fn set_background_color(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -854,7 +932,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_set_background_color,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: argb }],
             )?;
         }
@@ -863,7 +941,7 @@ impl Bindings {
 
     /// `viewGroup.setClipChildren(clip)` — off by default so a child may
     /// draw past its bounds the way Flutter lets it.
-    pub(crate) fn set_clip_children(
+    pub fn set_clip_children(
         &self,
         env: &mut Env,
         group: &JObject,
@@ -874,15 +952,78 @@ impl Bindings {
             env.call_method_unchecked(
                 group,
                 self.view_set_clip_children,
-                ReturnType::Void,
-                &[jvalue { z: i8::from(clip) }],
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { z: clip }],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `new FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)` — a
+    /// `FrameLayout` child that fills its parent.
+    pub fn new_match_parent_params(
+        &self,
+        env: &mut Env,
+    ) -> jni::errors::Result<Global<JObject<'static>>> {
+        // SAFETY: resolved `(II)V` ctor on FrameLayout.LayoutParams.
+        let params = unsafe {
+            env.new_object_unchecked(
+                &self.frame_layout_params,
+                self.frame_layout_params_ctor,
+                &[jvalue { i: -1 }, jvalue { i: -1 }],
+            )?
+        };
+        env.new_global_ref(params)
+    }
+
+    /// `params.setMargins(l, t, r, b)` in px.
+    pub fn set_margins(
+        &self,
+        env: &mut Env,
+        params: &JObject,
+        left: jint,
+        top: jint,
+        right: jint,
+        bottom: jint,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `params` is a MarginLayoutParams.
+        unsafe {
+            env.call_method_unchecked(
+                params,
+                self.layout_params_set_margins,
+                ReturnType::Primitive(Primitive::Void),
+                &[
+                    jvalue { i: left },
+                    jvalue { i: top },
+                    jvalue { i: right },
+                    jvalue { i: bottom },
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `view.setLayoutParams(params)`.
+    pub fn set_layout_params(
+        &self,
+        env: &mut Env,
+        view: &JObject,
+        params: &JObject,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `params` is a ViewGroup.LayoutParams.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_set_layout_params,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { l: params.as_raw() }],
             )?;
         }
         Ok(())
     }
 
     /// `textView.setText(text)`.
-    pub(crate) fn set_text(
+    pub fn set_text(
         &self,
         env: &mut Env,
         text_view: &JObject,
@@ -893,7 +1034,7 @@ impl Bindings {
             env.call_method_unchecked(
                 text_view,
                 self.text_view_set_text,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { l: text.as_raw() }],
             )?;
         }
@@ -902,7 +1043,7 @@ impl Bindings {
 
     /// `textView.setTextSize(size)` — the single-float overload, which
     /// already reads the argument as scale-independent pixels.
-    pub(crate) fn set_text_size(
+    pub fn set_text_size(
         &self,
         env: &mut Env,
         text_view: &JObject,
@@ -913,7 +1054,7 @@ impl Bindings {
             env.call_method_unchecked(
                 text_view,
                 self.text_view_set_text_size,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { f: size_sp }],
             )?;
         }
@@ -921,7 +1062,7 @@ impl Bindings {
     }
 
     /// `textView.setTextColor(argb)` — packed ARGB.
-    pub(crate) fn set_text_color(
+    pub fn set_text_color(
         &self,
         env: &mut Env,
         text_view: &JObject,
@@ -932,7 +1073,7 @@ impl Bindings {
             env.call_method_unchecked(
                 text_view,
                 self.text_view_set_text_color,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: argb }],
             )?;
         }
@@ -940,7 +1081,7 @@ impl Bindings {
     }
 
     /// `textView.setMaxLines(lines)`.
-    pub(crate) fn set_max_lines(
+    pub fn set_max_lines(
         &self,
         env: &mut Env,
         text_view: &JObject,
@@ -951,7 +1092,7 @@ impl Bindings {
             env.call_method_unchecked(
                 text_view,
                 self.text_view_set_max_lines,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: lines }],
             )?;
         }
@@ -959,7 +1100,7 @@ impl Bindings {
     }
 
     /// `textView.setGravity(gravity)` — `android.view.Gravity` flags.
-    pub(crate) fn set_gravity(
+    pub fn set_gravity(
         &self,
         env: &mut Env,
         text_view: &JObject,
@@ -970,7 +1111,7 @@ impl Bindings {
             env.call_method_unchecked(
                 text_view,
                 self.text_view_set_gravity,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: gravity }],
             )?;
         }
@@ -978,7 +1119,7 @@ impl Bindings {
     }
 
     /// `textView.setTypeface(typeface)`.
-    pub(crate) fn set_typeface(
+    pub fn set_typeface(
         &self,
         env: &mut Env,
         text_view: &JObject,
@@ -989,15 +1130,17 @@ impl Bindings {
             env.call_method_unchecked(
                 text_view,
                 self.text_view_set_typeface,
-                ReturnType::Void,
-                &[jvalue { l: typeface.as_raw() }],
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue {
+                    l: typeface.as_raw(),
+                }],
             )?;
         }
         Ok(())
     }
 
     /// `view.setTextAlignment(alignment)` — `View.TEXT_ALIGNMENT_*`.
-    pub(crate) fn set_text_alignment(
+    pub fn set_text_alignment(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -1008,7 +1151,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_set_text_alignment,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: alignment }],
             )?;
         }
@@ -1017,7 +1160,7 @@ impl Bindings {
 
     /// `view.setClickable(clickable)` — a label drawn above chrome must not
     /// swallow the press it decorates.
-    pub(crate) fn set_clickable(
+    pub fn set_clickable(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -1028,8 +1171,8 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_set_clickable,
-                ReturnType::Void,
-                &[jvalue { z: i8::from(clickable) }],
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { z: clickable }],
             )?;
         }
         Ok(())
@@ -1037,7 +1180,7 @@ impl Bindings {
 
     /// `view.setImportantForAccessibility(mode)` —
     /// `View.IMPORTANT_FOR_ACCESSIBILITY_*`.
-    pub(crate) fn set_important_for_accessibility(
+    pub fn set_important_for_accessibility(
         &self,
         env: &mut Env,
         view: &JObject,
@@ -1048,7 +1191,7 @@ impl Bindings {
             env.call_method_unchecked(
                 view,
                 self.view_set_important_for_accessibility,
-                ReturnType::Void,
+                ReturnType::Primitive(Primitive::Void),
                 &[jvalue { i: mode }],
             )?;
         }
@@ -1056,11 +1199,11 @@ impl Bindings {
     }
 
     /// `Typeface` static field read (`DEFAULT`, `DEFAULT_BOLD`, `MONOSPACE`).
-    pub(crate) fn typeface(
+    pub fn typeface(
         &self,
         env: &mut Env,
         face: Face,
-    ) -> jni::errors::Result<JObject<'static>> {
+    ) -> jni::errors::Result<Global<JObject<'static>>> {
         let field = match face {
             Face::Default => self.typeface_default,
             Face::DefaultBold => self.typeface_default_bold,
@@ -1069,11 +1212,11 @@ impl Bindings {
         // SAFETY: resolved static field on the resolved class.
         let value =
             unsafe { env.get_static_field_unchecked(&self.typeface, field, JavaType::Object)? };
-        value.l()
+        env.new_global_ref(value.l()?)
     }
 
     /// `Looper.getMainLooper().isCurrentThread()` — the `MainThread` proof.
-    pub(crate) fn is_current_thread(&self, env: &mut Env) -> jni::errors::Result<bool> {
+    pub fn is_current_thread(&self, env: &mut Env) -> jni::errors::Result<bool> {
         // SAFETY: resolved static method on Looper.
         let main = unsafe {
             env.call_static_method_unchecked(
@@ -1096,183 +1239,9 @@ impl Bindings {
         current.z()
     }
 
-    /// `resources.getDisplayMetrics()` → `(density, scaledDensity)`.
-    pub(crate) fn display_metrics(&self, env: &mut Env) -> jni::errors::Result<(f32, f32)> {
-        let resources = globals().resources(env)?;
-        // SAFETY: resolved id; `resources` is a Resources.
-        let metrics = unsafe {
-            env.call_method_unchecked(
-                &resources,
-                self.resources_get_display_metrics,
-                ReturnType::Object,
-                &[],
-            )?
-        };
-        let metrics = metrics.l()?;
-        // SAFETY: resolved fields on DisplayMetrics.
-        let (density, scaled) = unsafe {
-            (
-                env.get_field_unchecked(
-                    &metrics,
-                    self.display_metrics_density,
-                    JavaType::Primitive(Primitive::Float),
-                )?,
-                env.get_field_unchecked(
-                    &metrics,
-                    self.display_metrics_scaled_density,
-                    JavaType::Primitive(Primitive::Float),
-                )?,
-            )
-        };
-        Ok((density.f()?, scaled.f()?))
-    }
-
-    /// `resources.getConfiguration().uiMode` — raw `Configuration.uiMode`.
-    pub(crate) fn ui_mode(&self, env: &mut Env) -> jni::errors::Result<jint> {
-        let resources = globals().resources(env)?;
-        // SAFETY: resolved id; `resources` is a Resources.
-        let configuration = unsafe {
-            env.call_method_unchecked(
-                &resources,
-                self.resources_get_configuration,
-                ReturnType::Object,
-                &[],
-            )?
-        };
-        let configuration = configuration.l()?;
-        // SAFETY: resolved field on Configuration.
-        let ui_mode = unsafe {
-            env.get_field_unchecked(
-                &configuration,
-                self.configuration_ui_mode,
-                JavaType::Primitive(Primitive::Int),
-            )?
-        };
-        ui_mode.i()
-    }
-
-    /// `theme.resolveAttribute(attr, typedValue, true)` +
-    /// `resources.getColor(resourceId, theme)` — a themed color as ARGB.
-    ///
-    /// Answers `None` when the theme does not resolve the attribute to a
-    /// color; a missing token is the caller's to fill.
-    pub(crate) fn theme_color(
-        &self,
-        env: &mut Env,
-        attr: jint,
-    ) -> jni::errors::Result<Option<jint>> {
-        let theme = globals().theme(env)?;
-        let resources = globals().resources(env)?;
-        // SAFETY: resolved constructor; `value` is a fresh TypedValue the
-        // resolve call fills by contract.
-        let value =
-            unsafe { env.new_object_unchecked(&self.typed_value, self.typed_value_ctor, &[])? };
-        // SAFETY: resolved method; `value` is a TypedValue.
-        let resolved = unsafe {
-            env.call_method_unchecked(
-                &theme,
-                self.theme_resolve_attribute,
-                ReturnType::Primitive(Primitive::Boolean),
-                &[
-                    jvalue { i: attr },
-                    jvalue { l: value.as_raw() },
-                    jvalue { z: 1 },
-                ],
-            )?
-        };
-        if !resolved.z()? {
-            return Ok(None);
-        }
-        // SAFETY: resolved fields on the TypedValue `resolveAttribute` filled.
-        let (kind, data, resource_id) = unsafe {
-            (
-                env.get_field_unchecked(
-                    &value,
-                    self.typed_value_type,
-                    JavaType::Primitive(Primitive::Int),
-                )?,
-                env.get_field_unchecked(
-                    &value,
-                    self.typed_value_data,
-                    JavaType::Primitive(Primitive::Int),
-                )?,
-                env.get_field_unchecked(
-                    &value,
-                    self.typed_value_resource_id,
-                    JavaType::Primitive(Primitive::Int),
-                )?,
-            )
-        };
-        let kind = kind.i()?;
-        // `TYPE_INT_COLOR_*` (16..=31) carries the ARGB in `data`; a
-        // `TYPE_REFERENCE` (1) names a color resource to resolve.
-        if (16..32).contains(&kind) {
-            return Ok(Some(data.i()?));
-        }
-        if kind != 1 {
-            return Ok(None);
-        }
-        // SAFETY: resolved method; `resource_id` names a color resource.
-        let color = unsafe {
-            env.call_method_unchecked(
-                &resources,
-                self.resources_get_color,
-                ReturnType::Primitive(Primitive::Int),
-                &[jvalue { i: resource_id.i()? }, jvalue { l: theme.as_raw() }],
-            )?
-        };
-        Ok(Some(color.i()?))
-    }
-
-    /// `context.getSystemService("window").getDefaultDisplay()
-    /// .getRefreshRate()` — the display's nominal refresh in Hz, for the
-    /// executor's frame budget; `None` when the platform reports none.
-    pub(crate) fn refresh_rate_hz(&self, env: &mut Env) -> jni::errors::Result<Option<f32>> {
-        let name = env.new_string("window")?;
-        // SAFETY: resolved method; `context` is an Activity.
-        let service = unsafe {
-            env.call_method_unchecked(
-                globals().context(),
-                self.context_get_system_service,
-                ReturnType::Object,
-                &[jvalue { l: name.as_raw() }],
-            )?
-        };
-        let service = service.l()?;
-        if service.is_null() {
-            return Ok(None);
-        }
-        // SAFETY: resolved method; `service` is the WindowManager.
-        let display = unsafe {
-            env.call_method_unchecked(
-                &service,
-                self.window_manager_get_default_display,
-                ReturnType::Object,
-                &[],
-            )?
-        };
-        let display = display.l()?;
-        if display.is_null() {
-            return Ok(None);
-        }
-        // SAFETY: resolved method; `display` is a Display.
-        let rate = unsafe {
-            env.call_method_unchecked(
-                &display,
-                self.display_get_refresh_rate,
-                ReturnType::Primitive(Primitive::Float),
-                &[],
-            )?
-        };
-        let hz = rate.f()?;
-        // `getRefreshRate` reports 0 when no rate is known; a non-positive
-        // answer is "unavailable", not a budget.
-        Ok((hz > 0.0).then_some(hz))
-    }
-
     /// `Locale.getDefault().toLanguageTag()` — the platform's preferred
     /// locale as a BCP 47 tag.
-    pub(crate) fn locale_tag(&self, env: &mut Env) -> jni::errors::Result<String> {
+    pub fn locale_tag(&self, env: &mut Env) -> jni::errors::Result<String> {
         // SAFETY: resolved static method on Locale.
         let locale = unsafe {
             env.call_static_method_unchecked(
@@ -1292,12 +1261,12 @@ impl Bindings {
                 &[],
             )?
         };
-        let tag = JString::from(tag.l()?);
+        let tag: JString = env.cast_local::<JString>(tag.l()?)?;
         tag.try_to_string(env)
     }
 
     /// `View.MeasureSpec.makeMeasureSpec(size, mode)` — the packed spec.
-    pub(crate) fn make_measure_spec(
+    pub fn make_measure_spec(
         &self,
         env: &mut Env,
         size: jint,
@@ -1316,7 +1285,7 @@ impl Bindings {
     }
 
     /// `View.MeasureSpec.getMode(spec)`.
-    pub(crate) fn measure_spec_mode(&self, env: &mut Env, spec: jint) -> jni::errors::Result<jint> {
+    pub fn measure_spec_mode(&self, env: &mut Env, spec: jint) -> jni::errors::Result<jint> {
         // SAFETY: resolved static method on View$MeasureSpec.
         let mode = unsafe {
             env.call_static_method_unchecked(
@@ -1330,7 +1299,7 @@ impl Bindings {
     }
 
     /// `View.MeasureSpec.getSize(spec)`.
-    pub(crate) fn measure_spec_size(&self, env: &mut Env, spec: jint) -> jni::errors::Result<jint> {
+    pub fn measure_spec_size(&self, env: &mut Env, spec: jint) -> jni::errors::Result<jint> {
         // SAFETY: resolved static method on View$MeasureSpec.
         let size = unsafe {
             env.call_static_method_unchecked(
@@ -1344,10 +1313,185 @@ impl Bindings {
     }
 }
 
+impl Platform {
+    /// `resources.getDisplayMetrics().density` — px per dp.
+    pub fn display_metrics(&self, env: &mut Env) -> jni::errors::Result<f32> {
+        let resources = self.resources(env)?;
+        // SAFETY: resolved id; `resources` is a Resources.
+        let metrics = unsafe {
+            env.call_method_unchecked(
+                &resources,
+                self.bindings.resources_get_display_metrics,
+                ReturnType::Object,
+                &[],
+            )?
+        };
+        let metrics = metrics.l()?;
+        // SAFETY: resolved fields on DisplayMetrics.
+        let density = unsafe {
+            env.get_field_unchecked(
+                &metrics,
+                self.bindings.display_metrics_density,
+                JavaType::Primitive(Primitive::Float),
+            )?
+        };
+        density.f()
+    }
+
+    /// `resources.getConfiguration().uiMode` — raw `Configuration.uiMode`.
+    pub fn ui_mode(&self, env: &mut Env) -> jni::errors::Result<jint> {
+        let resources = self.resources(env)?;
+        // SAFETY: resolved id; `resources` is a Resources.
+        let configuration = unsafe {
+            env.call_method_unchecked(
+                &resources,
+                self.bindings.resources_get_configuration,
+                ReturnType::Object,
+                &[],
+            )?
+        };
+        let configuration = configuration.l()?;
+        // SAFETY: resolved field on Configuration.
+        let ui_mode = unsafe {
+            env.get_field_unchecked(
+                &configuration,
+                self.bindings.configuration_ui_mode,
+                JavaType::Primitive(Primitive::Int),
+            )?
+        };
+        ui_mode.i()
+    }
+
+    /// `theme.resolveAttribute(attr, typedValue, true)` +
+    /// `resources.getColor(resourceId, theme)` — a themed color as ARGB.
+    ///
+    /// Answers `None` when the theme does not resolve the attribute to a
+    /// color; a missing token is the caller's to fill.
+    pub fn theme_color(&self, env: &mut Env, attr: jint) -> jni::errors::Result<Option<jint>> {
+        let theme = self.theme(env)?;
+        let resources = self.resources(env)?;
+        // SAFETY: resolved constructor; `value` is a fresh TypedValue the
+        // resolve call fills by contract.
+        let value = unsafe {
+            env.new_object_unchecked(
+                &self.bindings.typed_value,
+                self.bindings.typed_value_ctor,
+                &[],
+            )?
+        };
+        // SAFETY: resolved method; `value` is a TypedValue.
+        let resolved = unsafe {
+            env.call_method_unchecked(
+                &theme,
+                self.bindings.theme_resolve_attribute,
+                ReturnType::Primitive(Primitive::Boolean),
+                &[
+                    jvalue { i: attr },
+                    jvalue { l: value.as_raw() },
+                    jvalue { z: true },
+                ],
+            )?
+        };
+        if !resolved.z()? {
+            return Ok(None);
+        }
+        // SAFETY: resolved fields on the TypedValue `resolveAttribute` filled.
+        let (kind, data, resource_id) = unsafe {
+            (
+                env.get_field_unchecked(
+                    &value,
+                    self.bindings.typed_value_type,
+                    JavaType::Primitive(Primitive::Int),
+                )?,
+                env.get_field_unchecked(
+                    &value,
+                    self.bindings.typed_value_data,
+                    JavaType::Primitive(Primitive::Int),
+                )?,
+                env.get_field_unchecked(
+                    &value,
+                    self.bindings.typed_value_resource_id,
+                    JavaType::Primitive(Primitive::Int),
+                )?,
+            )
+        };
+        let kind = kind.i()?;
+        // `TYPE_INT_COLOR_*` (16..=31) carries the ARGB in `data`; a
+        // `TYPE_REFERENCE` (1) names a color resource to resolve.
+        if (16..32).contains(&kind) {
+            return Ok(Some(data.i()?));
+        }
+        if kind != 1 {
+            return Ok(None);
+        }
+        // SAFETY: resolved method; `resource_id` names a color resource.
+        let color = unsafe {
+            env.call_method_unchecked(
+                &resources,
+                self.bindings.resources_get_color,
+                ReturnType::Primitive(Primitive::Int),
+                &[
+                    jvalue {
+                        i: resource_id.i()?,
+                    },
+                    jvalue { l: theme.as_raw() },
+                ],
+            )?
+        };
+        Ok(Some(color.i()?))
+    }
+
+    /// `context.getSystemService("window").getDefaultDisplay()
+    /// .getRefreshRate()` — the display's nominal refresh in Hz, for the
+    /// executor's frame budget; `None` when the platform reports none.
+    pub fn refresh_rate_hz(&self, env: &mut Env) -> jni::errors::Result<Option<f32>> {
+        let name = env.new_string("window")?;
+        // SAFETY: resolved method; `context` is an Activity.
+        let service = unsafe {
+            env.call_method_unchecked(
+                self.context(),
+                self.bindings.context_get_system_service,
+                ReturnType::Object,
+                &[jvalue { l: name.as_raw() }],
+            )?
+        };
+        let service = service.l()?;
+        if service.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: resolved method; `service` is the WindowManager.
+        let display = unsafe {
+            env.call_method_unchecked(
+                &service,
+                self.bindings.window_manager_get_default_display,
+                ReturnType::Object,
+                &[],
+            )?
+        };
+        let display = display.l()?;
+        if display.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: resolved method; `display` is a Display.
+        let rate = unsafe {
+            env.call_method_unchecked(
+                &display,
+                self.bindings.display_get_refresh_rate,
+                ReturnType::Primitive(Primitive::Float),
+                &[],
+            )?
+        };
+        let hz = rate.f()?;
+        // `getRefreshRate` reports 0 when no rate is known; a non-positive
+        // answer is "unavailable", not a budget.
+        Ok((hz > 0.0).then_some(hz))
+    }
+}
+
 /// The `Typeface` faces the text port picks between — a semantic request,
 /// not a family name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Face {
+pub enum Face {
     /// The platform's default proportional face.
     Default,
     /// The platform's bold face for `FontWeight::SemiBold` and up.

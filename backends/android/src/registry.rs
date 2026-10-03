@@ -1,7 +1,7 @@
 //! The registration table: every claim the backend makes, in one place.
 //!
 //! A component port adds a `components/<name>.rs` module exposing
-//! `pub(crate) fn install(&mut Dispatcher)`, a `#[cfg(feature = "<name>")]`
+//! `pub fn install(&mut Dispatcher)`, a `#[cfg(feature = "<name>")]`
 //! line here, and the matching Cargo feature. This file is the shared merge
 //! point the coordinator integrates.
 

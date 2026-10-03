@@ -4,11 +4,19 @@
 //! panics and records through `tracing`, install the global executor and the
 //! looper-bound local executor, then start the system-locale listener (its
 //! mailbox pump needs the executor that was just installed).
+//!
+//! Nothing here is guarded by a `Once`: mount owns this call, the way the
+//! Apple backend's `initialize` runs unconditionally at mount. The process
+//! hosts one runtime per activity, so a second `nativeCreate` reaching here
+//! is already off contract — the `try_init_*` installs only keep that
+//! contract's breach a warning instead of a panic.
 
+#[cfg(target_os = "android")]
 use alloc::boxed::Box;
-use std::sync::Mutex;
 
 use waterui::inspector::InspectorRuntime;
+
+use crate::jvm::Platform;
 
 /// The environment variable a launcher sets to name the level the application
 /// logs at — `water run --logs <level>` writes it.
@@ -17,67 +25,57 @@ const LOG_LEVEL_ENV: &str = "WATERUI_LOG";
 /// One-time process startup. Returns the inspector runtime when the
 /// environment asked for one, for [`crate::entry`] to install.
 #[cfg(target_os = "android")]
-pub(crate) fn initialize(env: &mut jni::Env) -> Option<InspectorRuntime> {
-    // The inspector runtime is a process-global endpoint: the first mount
-    // takes it, later mounts find `None` and install nothing.
-    static INSPECTOR: Mutex<Option<InspectorRuntime>> = Mutex::new(None);
-    static INIT: std::sync::Once = std::sync::Once::new();
+pub fn initialize(env: &mut jni::Env, platform: &Platform) -> Option<InspectorRuntime> {
+    let inspector = waterui::inspector::maybe_init_from_env("android");
 
-    INIT.call_once(|| {
-        let inspector = waterui::inspector::maybe_init_from_env("android");
+    std::panic::set_hook(Box::new(|info| {
+        tracing_panic::panic_hook(info);
+    }));
+    init_tracing(
+        inspector
+            .as_ref()
+            .map(waterui::inspector::InspectorRuntime::tracing_layer),
+    );
 
-        std::panic::set_hook(Box::new(|info| {
-            tracing_panic::panic_hook(info);
-        }));
-        init_tracing(
-            inspector
-                .as_ref()
-                .map(waterui::inspector::InspectorRuntime::tracing_layer),
+    // `try_init` because a runtime may follow an already-initialized one:
+    // the second `nativeCreate` must not panic for wanting what exists.
+    if let Err(_already_installed) =
+        executor_core::try_init_global_executor(native_executor::NativeExecutor::new())
+    {
+        tracing::warn!(
+            target: "waterui::executor",
+            "a global executor is already installed"
         );
-
-        executor_core::init_global_executor(native_executor::NativeExecutor::new());
-        // The local executor is the main `Looper`'s own pump — never
-        // `native_executor::NativeExecutor`, whose tasks would run on a
-        // worker thread that must never touch views.
-        let main_executor = crate::executor::install();
-        let monitored = waterui::task::monitored_local_executor_with_probes(
-            main_executor,
-            display_refresh_rate(env),
-            inspector
-                .as_ref()
-                .map(waterui::inspector::InspectorRuntime::runtime_probe),
+    }
+    // The local executor is the main `Looper`'s own pump — never
+    // `native_executor::NativeExecutor`, whose tasks would run on a
+    // worker thread that must never touch views.
+    let main_executor = crate::executor::install();
+    let monitored = waterui::task::monitored_local_executor_with_probes(
+        main_executor,
+        display_refresh_rate(env, platform),
+        inspector
+            .as_ref()
+            .map(waterui::inspector::InspectorRuntime::runtime_probe),
+    );
+    if let Err(_already_installed) = executor_core::try_init_local_executor(monitored) {
+        tracing::warn!(
+            target: "waterui::executor",
+            "a local executor is already installed on the main thread"
         );
-        // `try_init` because a runtime may follow an already-initialized one:
-        // the second `nativeCreate` must not panic for wanting what exists.
-        if let Err(_already_installed) = executor_core::try_init_local_executor(monitored) {
-            tracing::warn!(
-                target: "waterui::executor",
-                "a local executor is already installed on the main thread"
-            );
-        }
+    }
 
-        // The listener's mailbox pump needs the executor installed above.
-        waterui_locale::start_system_locale_listener();
+    // The listener's mailbox pump needs the executor installed above.
+    waterui_locale::start_system_locale_listener();
 
-        if let Some(inspector) = inspector {
-            INSPECTOR
-                .lock()
-                .expect("the inspector slot is not poisoned")
-                .replace(inspector);
-        }
-    });
-
-    INSPECTOR
-        .lock()
-        .expect("the inspector slot is not poisoned")
-        .take()
+    inspector
 }
 
 /// A host-compilation stand-in: startup is a device path, but the crate must
 /// still type-check off target.
 #[cfg(not(target_os = "android"))]
 #[allow(clippy::missing_const_for_fn, reason = "parallel to the android fn")]
-pub(crate) fn initialize(_env: &mut jni::Env) -> Option<InspectorRuntime> {
+pub fn initialize(_env: &mut jni::Env, _platform: &Platform) -> Option<InspectorRuntime> {
     None
 }
 
@@ -86,36 +84,32 @@ pub(crate) fn initialize(_env: &mut jni::Env) -> Option<InspectorRuntime> {
 /// the nominal rate when the platform reports nothing; the budget only
 /// scales stall diagnostics, so an absent rate is not a fault of the app.
 #[cfg(target_os = "android")]
-fn display_refresh_rate(env: &mut jni::Env) -> waterui::task::RefreshRate {
+fn display_refresh_rate(env: &mut jni::Env, platform: &Platform) -> waterui::task::RefreshRate {
     use waterui::task::RefreshRate;
 
-    crate::jvm::globals()
-        .bindings()
-        .refresh_rate_hz(env)
-        .ok()
-        .flatten()
-        .map_or_else(
-            || {
-                tracing::info!(
-                    target: "waterui::runtime_guard",
-                    "display refresh rate is unavailable; budgeting frames at the nominal rate"
-                );
-                RefreshRate::HEADLESS
-            },
-            |hz| {
-                RefreshRate::from_millihertz(
-                    core::num::NonZeroU32::new(
-                        // `getRefreshRate` answers whole Hz for every
-                        // shipping display; the float's fractional tail is
-                        // reporting noise.
-                        u32::try_from(hz.max(1.0) as u32)
-                            .expect("the positive rate fits a `u32`")
-                            .saturating_mul(1000),
-                    )
+    platform.refresh_rate_hz(env).ok().flatten().map_or_else(
+        || {
+            tracing::info!(
+                target: "waterui::runtime_guard",
+                "display refresh rate is unavailable; budgeting frames at the nominal rate"
+            );
+            RefreshRate::HEADLESS
+        },
+        |hz| {
+            // `getRefreshRate` answers whole Hz for every shipping
+            // display; the float's fractional tail is reporting noise.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the rate is clamped to a positive whole Hz"
+            )]
+            let whole_hz = hz.max(1.0) as u32;
+            RefreshRate::from_millihertz(
+                core::num::NonZeroU32::new(whole_hz.saturating_mul(1000))
                     .expect("a refresh rate of at least 1 Hz"),
-                )
-            },
-        )
+            )
+        },
+    )
 }
 
 /// The `tracing` filter this process runs with: `RUST_LOG` wins outright,
@@ -133,7 +127,8 @@ fn env_filter() -> tracing_subscriber::EnvFilter {
         .unwrap_or_else(|error| panic!("{LOG_LEVEL_ENV}={level:?} is not a tracing level: {error}"))
 }
 
-/// Sends `tracing` records to `__android_log_write`.
+/// Sends `tracing` records to `__android_log_write`. A second install — a
+/// repeated `nativeCreate` — keeps the first subscriber and warns.
 #[cfg(target_os = "android")]
 fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -142,9 +137,13 @@ fn init_tracing(inspector: Option<waterui::inspector::InspectorLayer>) {
         .with_writer(crate::android_log::AndroidLog)
         .without_time()
         .with_ansi(false);
-    tracing_subscriber::registry()
+    if tracing_subscriber::registry()
         .with(env_filter())
         .with(native_layer)
         .with(inspector)
-        .init();
+        .try_init()
+        .is_err()
+    {
+        tracing::warn!(target: "waterui::runtime", "a tracing subscriber is already installed");
+    }
 }

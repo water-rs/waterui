@@ -25,7 +25,7 @@ use waterui::reactive::watcher::Context;
 use waterui_backend_core::{AnyView, Environment};
 use waterui_core::layout::SubView;
 
-use crate::jvm::{self, MainThread};
+use crate::jvm::{self, MainThread, Platform};
 
 /// A leaf's platform object: a JNI global reference the leaf owns for its
 /// life — the Android mirror of the `Retained` object an Apple leaf holds.
@@ -66,11 +66,7 @@ impl KeepAlive {
     /// The imperative view call inside `watcher` is the whole reactivity
     /// story: signals never cross JNI, so each change arrives here and is
     /// pushed to the platform object imperatively.
-    pub fn watch<S: Signal>(
-        &mut self,
-        signal: &S,
-        watcher: impl Fn(Context<S::Output>) + 'static,
-    ) {
+    pub fn watch<S: Signal>(&mut self, signal: &S, watcher: impl Fn(Context<S::Output>) + 'static) {
         self.keep(signal.watch(watcher));
     }
 
@@ -93,6 +89,10 @@ pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
     view: PlatformView,
+    /// The runtime's JNI surface — `mount`/`detach` reach `addView` and
+    /// `removeView` through its identifier table, and the layout face reads
+    /// its measure epoch.
+    platform: Rc<Platform>,
 }
 
 impl fmt::Debug for NativeLeaf {
@@ -105,18 +105,28 @@ impl fmt::Debug for NativeLeaf {
 
 impl NativeLeaf {
     /// A leaf whose platform view is `view` — any `android.view.View`
-    /// subclass — held by a global reference for the leaf's life.
-    pub fn new(view: PlatformView, layout: impl SubView + 'static) -> Self {
+    /// subclass — held by a global reference for the leaf's life. `platform`
+    /// is the runtime's JNI surface, shared by `Rc` from the render
+    /// context: `ctx.platform()`.
+    pub fn new(
+        view: PlatformView,
+        layout: impl SubView + 'static,
+        platform: &Rc<Platform>,
+    ) -> Self {
         Self {
             keepalive: KeepAlive::default(),
-            layout: Rc::new(crate::measure_memo::MemoizingSubView::new(Box::new(layout))),
+            layout: Rc::new(crate::measure_memo::MemoizingSubView::new(
+                Box::new(layout),
+                platform.measure_epoch(),
+            )),
             view,
+            platform: Rc::clone(platform),
         }
     }
 
     /// The platform view. Borrowed: the leaf owns it.
     #[must_use]
-    pub fn view(&self) -> &PlatformView {
+    pub const fn view(&self) -> &PlatformView {
         &self.view
     }
 
@@ -126,6 +136,13 @@ impl NativeLeaf {
         &*self.layout
     }
 
+    /// The platform the leaf shares — clone the `Rc` into watcher closures
+    /// that outlive the handler.
+    #[must_use]
+    pub const fn platform(&self) -> &Rc<Platform> {
+        &self.platform
+    }
+
     /// Keeps `value` — a watcher guard, a rendered child leaf, an
     /// environment clone — alive for this leaf's life.
     pub fn keep(&mut self, value: impl Any) {
@@ -133,11 +150,7 @@ impl NativeLeaf {
     }
 
     /// Subscribes `watcher` to `signal` for this leaf's life.
-    pub fn watch<S: Signal>(
-        &mut self,
-        signal: &S,
-        watcher: impl Fn(Context<S::Output>) + 'static,
-    ) {
+    pub fn watch<S: Signal>(&mut self, signal: &S, watcher: impl Fn(Context<S::Output>) + 'static) {
         self.keepalive.watch(signal, watcher);
     }
 
@@ -148,10 +161,15 @@ impl NativeLeaf {
 
     /// Adds this leaf's view to `parent` and returns the handle that owns
     /// both; dropping the handle removes the view and releases the leaf.
+    ///
+    /// # Panics
+    ///
+    /// When the platform refuses `addView` on a mounted leaf, which never
+    /// happens for a live view — same contract as the Apple backend.
     #[must_use]
     pub fn mount(self, parent: &PlatformView) -> Mounted {
         let parent = jvm::with_env(|env| {
-            jvm::globals()
+            self.platform
                 .bindings()
                 .add_view(env, parent.as_ref(), self.view.as_ref())
                 .expect("addView on a mounted leaf must succeed");
@@ -166,13 +184,13 @@ impl NativeLeaf {
 
     /// Detaches the view from its parent and hands the leaf back, for moving
     /// it elsewhere.
-    fn detach(&mut self, parent: Option<PlatformView>) {
+    fn detach(&self, parent: Option<PlatformView>) {
         if let Some(parent) = parent {
             jvm::with_env(|env| {
-                jvm::globals()
+                self.platform
                     .bindings()
                     .remove_view(env, parent.as_ref(), self.view.as_ref())
-                    .expect("removeView on a mounted leaf must succeed")
+                    .expect("removeView on a mounted leaf must succeed");
             });
         }
     }
@@ -196,7 +214,7 @@ impl Mounted {
     /// When called on a `Mounted` that is already unmounting — impossible
     /// outside `Drop`.
     #[must_use]
-    pub fn view(&self) -> &PlatformView {
+    pub const fn view(&self) -> &PlatformView {
         self.leaf.as_ref().expect("a live Mounted").view()
     }
 
@@ -217,7 +235,7 @@ impl Mounted {
     /// When called on a `Mounted` that is already unmounting.
     #[must_use]
     pub fn unmount(mut self) -> NativeLeaf {
-        let mut leaf = self.leaf.take().expect("a live Mounted");
+        let leaf = self.leaf.take().expect("a live Mounted");
         leaf.detach(self.parent.take());
         leaf
     }
@@ -225,7 +243,7 @@ impl Mounted {
 
 impl Drop for Mounted {
     fn drop(&mut self) {
-        if let Some(mut leaf) = self.leaf.take() {
+        if let Some(leaf) = self.leaf.take() {
             leaf.detach(self.parent.take());
             drop(leaf);
         }
@@ -237,6 +255,7 @@ pub struct RenderContext<'a> {
     env: &'a Environment,
     dispatcher: Rc<crate::dispatch::Dispatcher>,
     mtm: MainThread,
+    platform: Rc<Platform>,
 }
 
 impl fmt::Debug for RenderContext<'_> {
@@ -250,11 +269,13 @@ impl<'a> RenderContext<'a> {
         env: &'a Environment,
         dispatcher: Rc<crate::dispatch::Dispatcher>,
         mtm: MainThread,
+        platform: Rc<Platform>,
     ) -> Self {
         Self {
             env,
             dispatcher,
             mtm,
+            platform,
         }
     }
 
@@ -264,9 +285,26 @@ impl<'a> RenderContext<'a> {
         self.env
     }
 
-    /// Proof of the main thread — the `MainThreadMarker` counterpart.
+    /// The runtime's JNI surface — the identifier table, host context,
+    /// density, measure epoch and proposal channels the platform calls go
+    /// through. Share it by `Rc` clone into watcher closures and `SubView`
+    /// faces that outlive the handler.
     #[must_use]
-    pub const fn mtm(&self) -> MainThread {
+    pub const fn platform(&self) -> &Rc<Platform> {
+        &self.platform
+    }
+
+    /// Proof of the main thread — the `MainThreadMarker` counterpart.
+    ///
+    /// Kept as contract surface: leaves that can only run platform calls on
+    /// the main thread re-derive the token from their context instead of
+    /// re-checking `Looper.isCurrentThread` across JNI.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the skeleton's leaves dispatch main-thread work by construction; the proof token is for ports that must re-derive it"
+    )]
+    pub(crate) const fn mtm(&self) -> MainThread {
         self.mtm
     }
 
@@ -297,7 +335,12 @@ impl<'a> RenderContext<'a> {
     /// signals may resolve through it after the handler returns.
     #[must_use]
     pub fn with_env<'b>(&self, env: &'b Environment) -> RenderContext<'b> {
-        RenderContext::new(env, self.dispatcher.clone(), self.mtm)
+        RenderContext::new(
+            env,
+            self.dispatcher.clone(),
+            self.mtm,
+            self.platform.clone(),
+        )
     }
 
     /// An owned handle that can render after the handler returns — from a
@@ -309,6 +352,7 @@ impl<'a> RenderContext<'a> {
             env: self.env.clone(),
             dispatcher: self.dispatcher.clone(),
             mtm: self.mtm,
+            platform: self.platform.clone(),
         }
     }
 }
@@ -321,6 +365,7 @@ pub struct Renderer {
     env: Environment,
     dispatcher: Rc<crate::dispatch::Dispatcher>,
     mtm: MainThread,
+    platform: Rc<Platform>,
 }
 
 impl Renderer {
@@ -345,6 +390,11 @@ impl Renderer {
     /// The captured environment and dispatcher as a context.
     #[must_use]
     pub fn context(&self) -> RenderContext<'_> {
-        RenderContext::new(&self.env, self.dispatcher.clone(), self.mtm)
+        RenderContext::new(
+            &self.env,
+            self.dispatcher.clone(),
+            self.mtm,
+            self.platform.clone(),
+        )
     }
 }

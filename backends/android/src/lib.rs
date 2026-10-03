@@ -6,6 +6,25 @@
 //! only owns the activity, the root `ViewGroup`, and the lifecycle and
 //! configuration callbacks it forwards.
 
+// The runtime path — `entry`, `embedding`, `startup`, `theme`, `locale`,
+// and the host-side `jvm` glue — is reached only through `export_app!`'s
+// exported `nativeCreate`, which the *application's* crate emits. Inside
+// `waterui-android` itself nothing references it, so a host build reports
+// the whole device path as dead code while still type-checking it. The
+// leaf-facing surface (`native_layout`, `proposal`, the `jvm` unit and
+// reference helpers) exists for component ports and is likewise unclaimed
+// when every component feature is off.
+#![cfg_attr(
+    any(
+        not(target_os = "android"),
+        not(any(feature = "text", feature = "container", feature = "button"))
+    ),
+    allow(
+        dead_code,
+        reason = "the JNI runtime path is only reachable through the app's exported entry, and the leaf API only through component ports"
+    )
+)]
+
 extern crate alloc;
 
 pub mod contract;
@@ -46,15 +65,14 @@ macro_rules! export_app {
         /// `dev.waterui.android.WaterActivity`.
         #[unsafe(no_mangle)]
         pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeCreate<'caller>(
-            unowned_env: ::jni::EnvUnowned<'caller>,
+            mut unowned_env: ::jni::EnvUnowned<'caller>,
             _this: ::jni::objects::JObject<'caller>,
             activity: ::jni::objects::JObject<'caller>,
             root: ::jni::objects::JObject<'caller>,
         ) -> ::jni::sys::jlong {
             let outcome = unowned_env.with_env(|env| -> ::jni::errors::Result<_> {
-                let app = |env: ::waterui::Environment| {
-                    $app(::waterui::configure_environment!(env))
-                };
+                let app =
+                    |env: ::waterui::Environment| $app(::waterui::configure_environment!(env));
                 $crate::entry::mount(env, activity, root, app)
             });
             outcome.resolve::<::jni::errors::ThrowRuntimeExAndDefault>()

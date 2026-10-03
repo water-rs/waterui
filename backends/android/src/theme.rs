@@ -8,6 +8,7 @@
 //! exactly the way the Apple backend's `ThemeSignals` fed its signals.
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use jni::Env;
@@ -17,7 +18,7 @@ use waterui::text::font::{self, FontSlot};
 use waterui::theme::{self, color};
 use waterui_backend_core::Environment;
 
-use crate::jvm::globals;
+use crate::jvm::Platform;
 
 /// `android.R.attr.colorBackground` — the window's themed background.
 const ATTR_COLOR_BACKGROUND: i32 = 0x0101_0031;
@@ -46,24 +47,39 @@ const ATTR_COLOR_ERROR: i32 = 0x0101_0543;
 const UI_MODE_NIGHT_MASK: i32 = 0x30;
 const UI_MODE_NIGHT_YES: i32 = 0x20;
 
+/// A color slot's platform push: reads the theme attribute and writes the
+/// binding it was installed on.
+type SlotPush = Box<dyn Fn(&mut Env)>;
+
 /// The signals the platform theme is fed through. Keep the returned value
 /// alive; every slot's `Computed` also holds its `Binding`, so nothing but
-/// [`refresh`] needs to reach it.
-pub(crate) struct ThemeSignals {
+/// [`refresh`] needs to reach it. `platform` is the runtime's JNI surface,
+/// held by `Rc` — [`refresh`] and every slot push read the theme through it.
+pub struct ThemeSignals {
     scheme: Binding<colors::ColorScheme>,
-    colors: Vec<Box<dyn Fn(&mut Env)>>,
+    colors: Vec<SlotPush>,
+    platform: Rc<Platform>,
+}
+
+impl core::fmt::Debug for ThemeSignals {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ThemeSignals")
+            .field("slots", &self.colors.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Installs the color-scheme signal and every color and font slot, reading
 /// the platform's current appearance. The runtime feeds [`refresh`] each
 /// time `onConfigurationChanged` fires.
-pub(crate) fn install(env: &mut Environment) -> ThemeSignals {
+pub fn install(env: &mut Environment, platform: &Rc<Platform>) -> ThemeSignals {
     let scheme = waterui::reactive::binding(colors::ColorScheme::Light);
     theme::install_color_scheme(env, scheme.computed());
 
     let mut signals = ThemeSignals {
         scheme,
         colors: Vec::new(),
+        platform: platform.clone(),
     };
 
     // The slot table the framework attrs answer: each semantic slot reads a
@@ -114,13 +130,12 @@ pub(crate) fn install(env: &mut Environment) -> ThemeSignals {
 
 /// Re-reads the platform and pushes every changed slot value. Called from
 /// `nativeOnConfigurationChanged`.
-pub(crate) fn refresh(signals: &ThemeSignals) {
+pub fn refresh(signals: &ThemeSignals) {
     crate::jvm::with_env(|env| {
-        let night = globals()
-            .bindings()
+        let night = signals
+            .platform
             .ui_mode(env)
-            .map(|ui_mode| ui_mode & UI_MODE_NIGHT_MASK == UI_MODE_NIGHT_YES)
-            .unwrap_or(false);
+            .is_ok_and(|ui_mode| ui_mode & UI_MODE_NIGHT_MASK == UI_MODE_NIGHT_YES);
         signals.scheme.set(if night {
             colors::ColorScheme::Dark
         } else {
@@ -129,20 +144,20 @@ pub(crate) fn refresh(signals: &ThemeSignals) {
         for set in &signals.colors {
             set(env);
         }
-        crate::jvm::refresh_metrics(env).expect("DisplayMetrics are always readable");
+        signals
+            .platform
+            .refresh_metrics(env)
+            .expect("DisplayMetrics are always readable");
     });
 }
 
 impl ThemeSignals {
-    fn install_color<S: 'static>(
-        &mut self,
-        env: &mut Environment,
-        attr: i32,
-    ) {
+    fn install_color<S: 'static>(&mut self, env: &mut Environment, attr: i32) {
         let binding = waterui::reactive::binding(WorkingColor::BLACK);
         theme::install_color_signal::<S>(env, binding.computed());
+        let platform = self.platform.clone();
         self.colors.push(Box::new(move |env| {
-            if let Ok(Some(argb)) = globals().bindings().theme_color(env, attr) {
+            if let Ok(Some(argb)) = platform.theme_color(env, attr) {
                 binding.set(argb_to_working(argb));
             }
         }));
@@ -156,7 +171,6 @@ impl ThemeSignals {
 fn argb_to_working(argb: i32) -> WorkingColor {
     let channel = |shift| {
         #[expect(
-            clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "the channel is masked to its low byte"
         )]
@@ -165,7 +179,6 @@ fn argb_to_working(argb: i32) -> WorkingColor {
     };
     let alpha = {
         #[expect(
-            clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "the alpha byte is masked to its low byte"
         )]
@@ -178,7 +191,7 @@ fn argb_to_working(argb: i32) -> WorkingColor {
 /// A `WorkingColor` back to a packed ARGB `jint`, the direction
 /// `setBackgroundColor`-style setters take: working space → sRGB bytes →
 /// the platform's `0xAARRGGBB` word.
-pub(crate) fn working_to_argb(color: WorkingColor) -> i32 {
+pub fn working_to_argb(color: WorkingColor) -> i32 {
     let [red, green, blue] = working::to_linear_srgb(color);
     let byte = |c: f32| {
         #[expect(

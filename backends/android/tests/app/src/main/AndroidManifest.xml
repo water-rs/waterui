@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="WaterUI Android Test">
+
+        <!-- The Rust cdylib the runtime loads. -->
+        <meta-data
+            android:name="dev.waterui.LIBRARY"
+            android:value="waterui_android_test_app" />
+
+        <activity
+            android:name="dev.waterui.android.WaterActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|locale|density|fontScale"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
