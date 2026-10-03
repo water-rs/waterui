@@ -122,10 +122,6 @@ jobs:
       cli_ref: ${{ steps.setup.outputs.cli_ref }}
       cli_sha: ${{ steps.setup.outputs.cli_sha }}
       package_groups: ${{ steps.groups.outputs.package_groups }}
-    env:
-      # The CLI's own target directory, cached under its own key: it shares
-      # nothing with the framework builds the shards perform.
-      CARGO_TARGET_DIR: ${{ github.workspace }}/water-cli/target
     steps:
       - uses: actions/checkout@v4
 
@@ -169,7 +165,12 @@ jobs:
             cargo-sources-${{ runner.os }}-
 
       - name: Build the water CLI
-        run: cargo install --path "${WATER_CLI_DIR:-water-cli}" --locked --root "${{ github.workspace }}/cli-bin"
+        env:
+          # The CLI's own target directory lives with its checkout in the
+          # job-owned temp area, outside the framework workspace; it shares
+          # nothing with the framework builds the shards perform.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
 
       - name: Upload the water CLI
         uses: actions/upload-artifact@v4

@@ -2,8 +2,9 @@
 # Prepares the e2e workspace for driving the examples. The framework and the
 # Apple backend are this repository — the checked-out commit is what the
 # suite tests — so the only checkout this script makes is the `water` CLI
-# (water-rs/cli), placed alongside so the `cargo install --path` legs have a
-# directory to build.
+# (water-rs/cli). It lands OUTSIDE the framework checkout: cloned inside the
+# workspace, cargo resolves the framework's root Cargo.toml as the CLI
+# manifest's workspace and `cargo install --path` fails before it builds.
 #
 # Inputs: WATER_CLI_REF names a branch or tag (a full 40-hex commit is
 # accepted verbatim); WATER_CLI_SHA names the resolved commit directly and
@@ -15,7 +16,11 @@
 set -euo pipefail
 
 repo_root="${GITHUB_WORKSPACE:-$(pwd)}"
-cli_dir="${repo_root}/water-cli"
+# RUNNER_TEMP is the job-owned area on a hosted runner and is cleaned for
+# us; outside Actions (a local run of this script) mktemp hands over an
+# owned directory with the same lifetime semantics.
+cli_parent="${RUNNER_TEMP:-$(mktemp -d)}"
+cli_dir="${cli_parent}/water-cli"
 
 cli_ref="${WATER_CLI_REF:-dev}"
 
