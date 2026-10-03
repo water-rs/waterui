@@ -49,6 +49,12 @@ struct ContextMenuState {
     /// re-measure closure can reach it without borrowing this state.
     #[cfg(target_os = "ios")]
     preview: Option<Rc<NativeLeaf>>,
+    /// The preview's view controller, built once: a view may be
+    /// associated with only one view controller at a time, so every
+    /// presentation reuses it.
+    #[cfg(target_os = "ios")]
+    preview_controller:
+        RefCell<Option<cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIViewController>>>,
     /// The rendered `accessory` leaf; the platform overlays mount its
     /// view while the menu is open.
     accessory: Option<Rc<NativeLeaf>>,
@@ -243,6 +249,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
             #[cfg(target_os = "macos")]
             panel: RefCell::new(None),
             #[cfg(target_os = "ios")]
+            preview_controller: RefCell::new(None),
+            #[cfg(target_os = "ios")]
             overlay: RefCell::new(None),
             #[cfg(target_os = "ios")]
             interaction: RefCell::new(None),
@@ -284,11 +292,23 @@ pub fn install(dispatcher: &mut Dispatcher) {
                             let menu =
                                 uikit::menu(state.mtm, &cocoa_ui::menu::Command::default(), &nodes);
                             let preview = state.preview.as_ref().map(|leaf| {
-                                uikit::preview_controller(
-                                    state.mtm,
-                                    view::retain_base(leaf.view()),
-                                    ideal_size(leaf),
-                                )
+                                // The leaf's view may be associated with
+                                // only one view controller at a time, so
+                                // the same controller is reused across
+                                // presentations.
+                                let controller = state
+                                    .preview_controller
+                                    .borrow_mut()
+                                    .get_or_insert_with(|| {
+                                        uikit::preview_controller(
+                                            state.mtm,
+                                            view::retain_base(leaf.view()),
+                                            ideal_size(leaf),
+                                        )
+                                    })
+                                    .clone();
+                                controller.setPreferredContentSize(ideal_size(leaf).into());
+                                controller
                             });
                             Some(uikit::ContextMenuConfiguration { menu, preview })
                         }
