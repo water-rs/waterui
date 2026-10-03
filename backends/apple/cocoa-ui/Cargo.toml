@@ -46,6 +46,10 @@ avkit = ["dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-av-kit"]
 # The `WebKit` surface (`web_kit` module) carries the `WebKit` and `Security`
 # framework links; opt-in so apps without a web view link neither.
 webview = ["dep:objc2-web-kit", "dep:objc2-security"]
+# Harness-only reach for `tests/native`: compiles the doc(hidden)
+# test-support entry points that touch implementation-private surfaces
+# (`accessory_overlay_window_for_test`), never part of a production build.
+native-test = []
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 block2 = "0.6"
@@ -258,6 +262,9 @@ libtest-mimic = "0.8"
 name = "native"
 path = "tests/native/main.rs"
 harness = false
+# The suite links `native_test_support` surfaces, which only exist
+# behind the opt-in `native-test` feature — never in production code.
+required-features = ["native-test"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 bitflags = "2"
