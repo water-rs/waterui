@@ -3,7 +3,7 @@
 [versions]
 agp = "8.13.2"
 kotlin = "2.2.21"
-compileSdk = "36"
+compileSdk = "35"
 minSdk = "26"
 
 [plugins]

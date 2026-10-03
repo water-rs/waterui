@@ -44,3 +44,9 @@ node_modules/
 
 # Python bytecode from the release-script tests
 __pycache__/
+
+# Android backend build outputs (Gradle) and the local SDK pointer Android
+# Studio writes.
+backends/android/.gradle/
+backends/android/**/build/
+backends/android/local.properties

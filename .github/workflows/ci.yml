@@ -92,6 +92,7 @@ jobs:
       ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android-backend: ${{ steps.filter.outputs.android-backend == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -105,6 +106,22 @@ jobs:
             ffi:
               - "ffi/**"
               - "Cargo.toml"
+            # The backend crate and every path that can reach its compile:
+            # itself, the in-repo crates it and the `waterui` facade depend
+            # on (`src/`, `core/`, `backends/core/`, `components/`, `utils/`,
+            # `macros/`), and the manifests + lockfile its git dependencies
+            # (jni, nami, native-executor, waterkit, cherenkov) resolve
+            # through.
+            android-backend:
+              - "backends/android/**"
+              - "src/**"
+              - "core/**"
+              - "backends/core/**"
+              - "components/**"
+              - "utils/**"
+              - "macros/**"
+              - "**/Cargo.toml"
+              - "Cargo.lock"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
@@ -338,61 +355,50 @@ jobs:
       # script fails on the missing `libva-dev`, long before anything Android
       # is compiled.
       - uses: ./.github/actions/setup-linux-deps
-      - uses: nttld/setup-ndk@v1
-        id: ndk
-        with:
-          # The version the CLI's toolchain check installs and `water build`
-          # uses; keeping CI on it means CI compiles against the same sysroot a
-          # developer's Android build does.
-          ndk-version: r29
-          # Downloaded fresh every run, on purpose. The repository cache sits at
-          # the 10 GiB eviction limit, so a 708 MiB NDK entry is evicted and
-          # re-created continuously, and a restore that races an eviction hands
-          # the probe below a tree with the clang wrappers but no clang (#284).
-          # A miss costs ~79 s against ~53 s for a hit, on a 9-12 minute job.
-          local-cache: false
-      # The Android API floor lives in the root manifest's
-      # `[package.metadata.waterui]` table — the channel `cargo metadata`
-      # reads without scraping source, and the same table every published
-      # `framework.json` carries verbatim.
-      - name: Read the framework's Android API floor
-        run: |
-          set -euo pipefail
-          api="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["android-min-api-level"] | numbers')"
-          if ! [[ "$api" =~ ^[0-9]+$ ]]; then
-            echo "::error file=Cargo.toml::package.metadata.waterui.android-min-api-level must be an integer API level (got '$api')"
-            exit 1
-          fi
-          echo "WATERUI_ANDROID_MIN_API_LEVEL=$api" >> "$GITHUB_ENV"
-      # `ring` compiles C for the target, so the NDK's clang wrapper is
-      # required even though clippy itself never links. The wrapper is named
-      # after the API level the framework declares.
-      - name: Point cargo at the NDK toolchain
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
-        run: |
-          set -euo pipefail
-          api="$WATERUI_ANDROID_MIN_API_LEVEL"
-          bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          # The wrapper is a shell script that execs `clang` beside it, so a
-          # half-restored NDK fails inside a `cc` build script six minutes
-          # later with nothing but "exit status 127". Prove the toolchain runs
-          # here instead, where the evidence is still on screen.
-          if ! "$bin/aarch64-linux-android$api-clang" --version; then
-            echo "::error::the NDK toolchain at $bin cannot compile for API $api"
-            find "$bin" -maxdepth 1 | head -60
-            exit 1
-          fi
-          {
-            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
-            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android$api-clang"
-            echo "CC_aarch64_linux_android=$bin/aarch64-linux-android$api-clang"
-            echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
-            echo "AR_aarch64_linux_android=$bin/llvm-ar"
-          } >> "$GITHUB_ENV"
+      # The version the action installs is the one the CLI's toolchain check
+      # installs and `water build` uses; keeping CI on it means CI compiles
+      # against the same sysroot a developer's Android build does.
+      - uses: ./.github/actions/setup-android-ndk
       - name: Clippy (aarch64-linux-android)
         run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
+
+  # The native Android backend crate (#1429). `waterui-android` lives on the
+  # Android target the same way `waterui-ffi` does — nothing else in the
+  # gate type-checks it for real, so a compile error there would only
+  # surface on a device. It runs under the two feature sets the crate
+  # ships, when the diff can reach it: the crate itself or any crate it
+  # builds on (see the `android-backend` filter above).
+  android-backend:
+    name: Android backend
+    needs: changes
+    if: needs.changes.outputs.android-backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Its own key, like Android FFI: another leg that compiles the
+      # dependency graph for an Android target shares no artifacts with the
+      # host legs, and storing under theirs would evict a tarball nothing
+      # else can use.
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-linux-deps
+      # Same NDK prologue the Android FFI leg runs — this leg's graph also
+      # reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
+      - uses: ./.github/actions/setup-android-ndk
+        with:
+          spirv-tools: "true"
+          kotlin: "true"
+      - name: Clippy (aarch64-linux-android, all features)
+        run: cargo clippy --profile ci-check -p waterui-android --target aarch64-linux-android --all-features --locked -- -D warnings
+      - name: Clippy (aarch64-linux-android, no default features)
+        run: cargo clippy --profile ci-check -p waterui-android --target aarch64-linux-android --no-default-features --locked -- -D warnings
 
   test:
     name: Test

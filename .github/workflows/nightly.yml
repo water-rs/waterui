@@ -155,6 +155,58 @@ jobs:
       # to cargo verbatim, and only `flag=value` survives its parser.
       - run: cargo hack check --locked --each-feature --profile=ci-check
 
+  # The Gradle half of the Android backend (#1429): the host library and the
+  # test application, built once a day. It stays out of the per-change gate
+  # — an AGP + Kotlin + NDK + cargo build costs several minutes and the only
+  # way a diff reaches it is the same path filter the fast clippy leg in
+  # ci.yml already pays for. The arm64-v8a debug APK uploads as a run
+  # artifact so a device check needs no local build.
+  android-backend:
+    name: Android backend (Gradle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-linux-deps
+      # Same NDK prologue the ci.yml Android legs run — this job's graph
+      # also reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
+      - uses: ./.github/actions/setup-android-ndk
+        with:
+          spirv-tools: "true"
+          kotlin: "true"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Read the pinned Gradle version
+        run: |
+          set -euo pipefail
+          props="backends/android/gradle/wrapper/gradle-wrapper.properties"
+          version="$(sed -n 's|^distributionUrl=.*gradle-\([0-9.]*\)-bin\.zip|\1|p' "$props")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9.]+$ ]]; then
+            echo "::error file=$props::cannot read the pinned Gradle version (got '$version')"
+            exit 1
+          fi
+          echo "GRADLE_VERSION=$version" >> "$GITHUB_ENV"
+      # No gradle-wrapper.jar is committed; CI provisions the pinned release.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+      - name: Build the host library and the test application
+        working-directory: backends/android
+        run: gradle :host:assemble :tests:app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waterui-android-test-app-debug-apk
+          path: backends/android/tests/app/build/outputs/apk/debug/app-debug.apk
+
   test-report:
     name: Test Report
     needs: [test, windows, webview-js, ts-js]
@@ -174,7 +226,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report, android-backend]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -218,7 +270,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, promote]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, android-backend, promote]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

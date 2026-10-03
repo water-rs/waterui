@@ -1,4 +1,5 @@
 import org.gradle.api.tasks.Exec
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
@@ -15,11 +16,17 @@ val rustProfile = "debug"
 val buildRustLibrary = tasks.register<Exec>("buildRustLibrary") {
     workingDir = rootDir.parentFile.parentFile // the waterui checkout
     commandLine(
-        "cargo", "build",
-        "--package", "waterui-android-test-app",
-        "--target", rustTarget,
-        if (rustProfile == "release") "--release" else null,
-    ).filterNotNull()
+        buildList {
+            add("cargo")
+            add("build")
+            add("--locked")
+            add("--package")
+            add("waterui-android-test-app")
+            add("--target")
+            add(rustTarget)
+            if (rustProfile == "release") add("--release")
+        },
+    )
 }
 
 val stageRustLibrary = tasks.register<Copy>("stageRustLibrary") {
@@ -41,6 +48,11 @@ android {
         targetSdk = libs.versions.compileSdk.get().toInt()
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // The Rust library builds for arm64 alone for now.
+            abiFilters += abi
+        }
     }
 
     buildTypes {
@@ -49,10 +61,21 @@ android {
         }
     }
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
     sourceSets {
         named("main") {
             jniLibs.srcDir("${layout.buildDirectory.get()}/rustJniLibs")
         }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
