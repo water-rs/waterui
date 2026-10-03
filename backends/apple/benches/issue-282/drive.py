@@ -78,6 +78,14 @@ LOGS = ROOT / "logs"
 STATE_PATH = ROOT / "state.json"
 MAX_STEP_S = 1800  # the <=30-minute bound applies to every step
 
+# Tail of every launch-leg stream argv. The observer (observer.py, macOS) and
+# `xcrun simctl spawn` (iOS) run this same tail; NDJSON is unfiltered on the
+# wire — PID/subsystem filtering is owned once by StructuredLogStream below,
+# because an idle stream emits no events under the production predicate and
+# would deadlock attach-before-spawn. observer.py duplicates this literal; keep
+# them identical (asserted in test_protocol.py).
+LOG_STREAM_TAIL = ["log", "stream", "--level", "info", "--style", "ndjson"]
+
 
 class BenchError(RuntimeError):
     pass
@@ -1255,10 +1263,14 @@ def stop_process(proc):
 
 
 class StructuredLogStream:
-    """A live NDJSON stream: attach first, buffer events, select PID later."""
+    """A live NDJSON stream: attach first, buffer events, select PID later.
 
-    def __init__(self, proc):
-        self.proc = proc
+    Consumes an explicit binary reader. Process/FD ownership belongs to the
+    acquisition owner at the call site, not to this class.
+    """
+
+    def __init__(self, reader):
+        self.reader = reader
         self.buffer = bytearray()
         self.events = []
         self.attached = False
@@ -1267,10 +1279,10 @@ class StructuredLogStream:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise BenchError("log stream deadline expired")
-        ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
+        ready, _, _ = select.select([self.reader], [], [], remaining)
         if not ready:
             raise BenchError("log stream deadline expired")
-        chunk = os.read(self.proc.stdout.fileno(), 65536)
+        chunk = os.read(self.reader.fileno(), 65536)
         if not chunk:
             raise BenchError("log stream closed before required event")
         self.buffer.extend(chunk)
@@ -1288,6 +1300,10 @@ class StructuredLogStream:
                 raise BenchError(f"unexpected log stream output: {line!r}") from exc
             if not isinstance(event, dict):
                 raise BenchError("log stream event is not a JSON object")
+            # Ready = preamble or first valid event. Streams spawned inside a
+            # simulator emit no "Filtering the log data" preamble, so the first
+            # successfully parsed event is the only honest attach evidence there.
+            self.attached = True
             self.events.append(event)
 
     def await_attach(self, deadline):
@@ -1375,16 +1391,55 @@ def leg_launch(manifest, ctx, side, subject_name, platform, sample):
                 raise BenchError(f"simulator install failed: {inst['stdout']}")
             prefix = ["xcrun", "simctl", "spawn", udid]
 
-        stream_argv = [*prefix, "log", "stream", "--level", "info",
-                       "--predicate", f'subsystem == "{cfg["log_subsystem"]}"',
-                       "--style", "ndjson"]
-        stream = subprocess.Popen(stream_argv, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, bufsize=0,
-                                  start_new_session=True)
-        owned.callback(stream.stdout.close)
-        owned.callback(stop_process, stream)
-        events = StructuredLogStream(stream)
-        events.await_attach(min(deadline, time.monotonic() + cfg["stream_attach_timeout_s"]))
+        stream_argv = [*prefix, *LOG_STREAM_TAIL]
+        stream = None
+        if platform == "macos":
+            # `log stream` needs an admin account; the privileged observer
+            # (observer.py) already attached it and hands us a read-only pipe
+            # FD. The observer owns the process; we own only the reader.
+            fd_env = os.environ.get("BENCH282_LOG_STREAM_FD")
+            diag_env = os.environ.get("BENCH282_LOG_STREAM_DIAG")
+            if fd_env is None or diag_env is None:
+                raise BenchError(
+                    "macOS launch requires the privileged launch observer: "
+                    "run this command under `sudo python3 observer.py -- ...` "
+                    "so BENCH282_LOG_STREAM_FD and BENCH282_LOG_STREAM_DIAG "
+                    "are inherited")
+            diag_path = Path(diag_env)
+            reader = os.fdopen(int(fd_env), "rb", buffering=0)
+            owned.callback(reader.close)
+        else:
+            diag_path = LOGS / (f"launch-stream-{side}-{subject_name}-"
+                                f"{platform}-s{sample}.log")
+            LOGS.mkdir(parents=True, exist_ok=True)
+            diag_handle = open(diag_path, "wb")
+            owned.callback(diag_handle.close)
+            stream = subprocess.Popen(stream_argv, stdout=subprocess.PIPE,
+                                      stderr=diag_handle, bufsize=0,
+                                      start_new_session=True)
+            owned.callback(stream.stdout.close)
+            owned.callback(stop_process, stream)
+            reader = stream.stdout
+        events = StructuredLogStream(reader)
+
+        def stream_diag(exc):
+            """Attach the stream's true exit status + diagnostics to a failure."""
+            detail = ""
+            if stream is not None:
+                detail += f"; stream_exit={stream.poll()}"
+            try:
+                tail = diag_path.read_bytes()[-2000:]
+            except OSError:
+                tail = b""
+            if tail.strip():
+                detail += ("; diagnostics="
+                           f"{tail.decode('utf-8', 'replace').strip()!r}")
+            raise BenchError(f"{exc}{detail}") from exc
+
+        try:
+            events.await_attach(min(deadline, time.monotonic() + cfg["stream_attach_timeout_s"]))
+        except BenchError as exc:
+            stream_diag(exc)
 
         # The pipe is attached before spawn; even a marker emitted before
         # simctl returns its PID is retained and subsequently PID-filtered.
@@ -1406,7 +1461,10 @@ def leg_launch(manifest, ctx, side, subject_name, platform, sample):
             pid = int(match.group(1))
         record["pid"] = pid
         record["argv"] = stream_argv
-        marker_ms = events.first_paint(pid, cfg, deadline)
+        try:
+            marker_ms = events.first_paint(pid, cfg, deadline)
+        except BenchError as exc:
+            stream_diag(exc)
         observed_ms = (time.monotonic_ns() - t0) // 1_000_000
         rss = rss_sample(pid, cfg["rss_samples"], cfg["rss_interval_s"], deadline)
         record["metrics"] = {
