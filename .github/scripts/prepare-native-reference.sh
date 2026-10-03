@@ -9,7 +9,9 @@ mkdir -p "$output/NativeReference.app"
 output="$(cd "$output" && pwd)"
 app="$output/NativeReference.app"
 sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-xcrun swiftc -parse-as-library -swift-version 6 -sdk "$sdk" \
+# Keep --sdk on xcrun: without it xcrun exports the default macOS SDKROOT,
+# which clang reads ahead of -sdk and warns -Wincompatible-sysroot.
+xcrun --sdk iphonesimulator swiftc -parse-as-library -swift-version 6 -sdk "$sdk" \
   -target arm64-apple-ios26.0-simulator \
   "$repo_root/backends/apple/Tests/ReferenceHost/ReferenceHost.swift" -o "$app/NativeReference" >&2
 cp "$repo_root/backends/apple/Tests/ReferenceHost/Info.plist" "$app/Info.plist"
