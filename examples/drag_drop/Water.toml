@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Drag Drop Example"
-bundle_identifier = "com.waterui.example.drop_and_drop"
+bundle_identifier = "com.waterui.example.dropanddrop"

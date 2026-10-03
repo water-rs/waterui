@@ -2,7 +2,7 @@ waterui_path = "../.."
 
 [package]
 name = "Video Player Example"
-bundle_identifier = "com.waterui.video_player_example"
+bundle_identifier = "com.waterui.videoplayerexample"
 
 [permissions.internet]
 enable = true
