@@ -6,36 +6,49 @@ plugins {
     alias(libs.plugins.kotlin.android)
 }
 
-// The test crate builds to a cdylib per ABI the app packages; the Gradle
-// task drives cargo itself, and the artifact lands in jniLibs where AGP
-// picks it up.
-val rustTarget = "aarch64-linux-android"
-val abi = "arm64-v8a"
+// The test crate builds to a cdylib per ABI the app packages; a Gradle
+// task per ABI drives cargo itself, and the artifacts land in jniLibs
+// where AGP picks them up. The device artifact is arm64 alone; extra
+// ABIs — an x86_64 emulator build — come in through
+// `-Pwaterui.test.abis=arm64-v8a,x86_64`.
+val abiToRustTarget = mapOf(
+    "arm64-v8a" to "aarch64-linux-android",
+    "x86_64" to "x86_64-linux-android",
+    "armeabi-v7a" to "armv7-linux-androideabi",
+)
+val abis = (findProperty("waterui.test.abis") as String?)
+    ?.split(",")
+    ?.map(String::trim)
+    ?.filter(String::isNotEmpty)
+    ?: listOf("arm64-v8a")
 val rustProfile = "debug"
 
-val buildRustLibrary = tasks.register<Exec>("buildRustLibrary") {
-    workingDir = rootDir.parentFile.parentFile // the waterui checkout
-    commandLine(
-        buildList {
-            add("cargo")
-            add("build")
-            add("--locked")
-            add("--package")
-            add("waterui-android-test-app")
-            add("--target")
-            add(rustTarget)
-            if (rustProfile == "release") add("--release")
-        },
-    )
-}
-
-val stageRustLibrary = tasks.register<Copy>("stageRustLibrary") {
-    dependsOn(buildRustLibrary)
-    from("${rootDir.parentFile.parentFile}/target/$rustTarget/$rustProfile") {
-        include("libwaterui_android_test_app.so")
+val stageTasks = abis.map { abi ->
+    val rustTarget = abiToRustTarget[abi]
+        ?: error("no Rust target is wired for ABI '$abi'")
+    val buildRustLibrary = tasks.register<Exec>("buildRustLibrary${abi.replace("-", "_")}") {
+        workingDir = rootDir.parentFile.parentFile // the waterui checkout
+        commandLine(
+            buildList {
+                add("cargo")
+                add("build")
+                add("--locked")
+                add("--package")
+                add("waterui-android-test-app")
+                add("--target")
+                add(rustTarget)
+                if (rustProfile == "release") add("--release")
+            },
+        )
     }
-    into("${layout.buildDirectory.get()}/rustJniLibs/$abi")
-    rename { "libwaterui_android_test_app.so" }
+    tasks.register<Copy>("stageRustLibrary${abi.replace("-", "_")}") {
+        dependsOn(buildRustLibrary)
+        from("${rootDir.parentFile.parentFile}/target/$rustTarget/$rustProfile") {
+            include("libwaterui_android_test_app.so")
+        }
+        into("${layout.buildDirectory.get()}/rustJniLibs/$abi")
+        rename { "libwaterui_android_test_app.so" }
+    }
 }
 
 android {
@@ -50,8 +63,9 @@ android {
         versionName = "0.1.0"
 
         ndk {
-            // The Rust library builds for arm64 alone for now.
-            abiFilters += abi
+            // arm64 is the shipping ABI; extra ABIs ride the
+            // `waterui.test.abis` property for emulator runs.
+            abiFilters += abis
         }
     }
 
@@ -84,5 +98,5 @@ dependencies {
 }
 
 tasks.named("preBuild").configure {
-    dependsOn(stageRustLibrary)
+    dependsOn(stageTasks)
 }
