@@ -5,8 +5,6 @@
 # the same cold release build):
 #
 #   apps/<example>/<App>.app        the packaged bundle
-#   apps/<example>/libwaterui_app.a the Rust archive `water package` leaves
-#                                   beside the bundle
 #   logs/<platform>-<example>.log   the example's package log, named exactly
 #                                   as the shard's run log is — the shard
 #                                   copies it into its logs dir so the
@@ -132,8 +130,6 @@ for example in ${selected_examples[@]+"${selected_examples[@]}"}; do
     # signature on the way into the staging dir; the tar the workflow builds
     # from it preserves them across the artifact round trip.
     ditto "${app_path}" "${dest}/$(basename "${app_path}")"
-    archive="$(dirname "${app_path}")/libwaterui_app.a"
-    [[ -f "${archive}" ]] && cp "${archive}" "${dest}/"
 
     app_bytes="$(find "${app_path}" -type f -exec stat -f%z {} + | awk '{s+=$1} END {print s}')"
     if [[ "${platform}" == "macos" ]]; then
