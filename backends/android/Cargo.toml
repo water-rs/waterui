@@ -1,0 +1,39 @@
+[package]
+name = "waterui-android"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The native WaterUI backend for Android, with Android Views driven from Rust through JNI"
+keywords = ["gui", "android", "jni"]
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+# Component ports are feature-gated so unused ones leave no code or
+# dependency in the artifact; the default is everything ported so far.
+default = ["button", "container", "text"]
+button = []
+container = []
+text = []
+
+[dependencies]
+waterui.workspace = true
+waterui-backend-core.workspace = true
+waterui-core.workspace = true
+waterui-locale.workspace = true
+executor-core.workspace = true
+nami.workspace = true
+native-executor.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-panic.workspace = true
+jni.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = "0.9"
+libc = "0.2"
