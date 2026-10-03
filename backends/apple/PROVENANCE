@@ -1,0 +1,52 @@
+WaterUI Apple backend source provenance
+
+This directory is the tracked source tree of the former
+water-rs/apple-backend repository, imported without git ancestry
+because that history contains commits a signed-ancestry repository
+cannot accept. The original repository's full history is RETAINED by
+water-rs/apple-backend; its archival is PENDING until this in-tree
+import completes native acceptance — the old repository is not yet
+archived.
+
+Imported source — byte-identical to upstream merge `1c95fe2`:
+
+  base tree:   34114ffc0e42caa99c4fee4814f840370402b424 (dev, PR #316)
+  + delta:     cf47523188fa5b599d7c593f204f1f8a9e9e3cfe —
+               "compile helpers only for their owning features",
+               landed upstream as merge ef03d14 (PR #318)
+  + delta:     b46de1d — "replay idle captured frames after context
+               publication" (native-v7-followup), landed upstream as
+               merge 1c95fe2 (PR #320)
+
+The verified equivalence was established by diffing this tree against
+`git archive 1c95fe2` — every tracked source file matches; the only
+deliberate divergence is the two `waterui_path` values in
+Examples/liquid_glass/Water.toml and Tests/IOSTestHost/Water.toml
+(`../../..` → `../../../..`), corrected for the deeper in-tree
+location.
+
+Post-import integration: the typed Views-snapshot port for
+List/Container/Table (water-rs/waterui#1418 adoption, apple side PR
+#319, final v3) was applied in-tree by the primary worker at commit
+`80978497` — `src/components/{list,container,table}.rs` and
+`Tests/migration.rs` carry its source; the 308 single-invalidate
+Container change is preserved verbatim within it.
+
+Excluded from the import: Cargo.lock (the workspace lock owns
+resolution), .github/ (CI migrated separately), .cargo/ and .config/
+(member-level cargo/nextest config is inert under a root workspace —
+the iOS-simulator runner and the bindgen triple fix moved into the root
+.cargo/config.toml / .config/nextest.toml), Package.swift (moved to the repository root — the root Package.swift
+is the single SwiftPM manifest) and the obsolete .swiftpm/ test scheme
+(its WaterUITests target no longer exists; native tests live in Rust), and every generated or build output.
+
+Imported text files without a terminal newline were normalized during
+signed integration. No other source changes beyond those noted above.
+
+Workspace integration also declares the Apple Foundation feature selection
+without invalid inheritance, removes an unused direct Shape dependency,
+renames the Cargo features to native-test and env, and fixes imported
+fixture formatting and prose. Native rendering and layout semantics are
+unchanged by these hygiene changes.
+
+The paired measurement driver also incorporates a2c25d92f9c1b2fba4417b852674b52ab72891ce, adapting only its new-side source identity to the tracked Apple workspace member and the CLI packaging receipt.

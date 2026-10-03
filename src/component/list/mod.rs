@@ -375,9 +375,10 @@ impl core::fmt::Debug for BuiltViews {
     }
 }
 
-/// The immutable snapshot a [`BuiltViews`] captures: shared clones of the
-/// builder entries and their section markers — not finished items, so a
-/// `get_view` still produces a fresh [`ListItem`] on every call.
+/// The immutable snapshot captured by [`BuiltViews`].
+///
+/// Shares the builder entries and their section markers. Each `get_view`
+/// produces a fresh [`ListItem`].
 pub struct BuiltViewsSnapshot {
     entries: Rc<[(AnyViewBuilder<ListItem>, Option<ListSection>)]>,
 }

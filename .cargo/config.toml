@@ -2,3 +2,18 @@
 linker = "rust-lld"
 rustflags = ["-Clinker-flavor=lld-link"]
 
+
+# `aarch64-apple-ios-sim` reaches clang as `arm64-apple-ios-sim`, whose
+# 'sim' ABI spelling clang rejects; bindgen (tracing-oslog) needs the
+# canonical '-simulator' triple instead. Later -target wins over the one
+# bindgen synthesizes.
+[env]
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim = "-target arm64-apple-ios-simulator"
+
+# `cargo test --target aarch64-apple-ios-sim` and `cargo nextest run
+# --target aarch64-apple-ios-sim` hand each built test binary to this
+# runner, which executes it inside a booted iOS Simulator — a
+# cross-compiled artifact is never the test. The runner requires
+# WATERUI_IOS_SIM_UDID to name the simulator the caller owns.
+[target.aarch64-apple-ios-sim]
+runner = [".github/scripts/nextest-ios-sim.sh"]
