@@ -673,15 +673,20 @@ mod tests {
         let mut recorder = Recorder::new();
         content.build_scene(&mut recorder, &mut resources, 10.0, 10.0);
         let mut recording = recorder.finish();
-        let commands = recording.snapshot().commands();
+        // A scene drawing a picture emits one `Command::Picture`; the
+        // source's own commands live on that picture's shared display list.
+        let [Command::Picture { picture, .. }] = recording.snapshot().commands() else {
+            panic!("the scene must draw the picture, not inline it");
+        };
+        let drawn = picture.display_list().commands();
         assert!(matches!(
-            commands.first(),
+            drawn.first(),
             Some(Command::Fill {
                 paint: Paint::Solid(color),
                 ..
             }) if *color == WorkingColor::new([0.0, 0.0, 1.0, 1.0])
         ));
-        assert!(matches!(commands.get(1), Some(Command::Image { .. })));
+        assert!(matches!(drawn.get(1), Some(Command::Image { .. })));
     }
 
     #[test]

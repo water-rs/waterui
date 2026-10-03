@@ -1070,6 +1070,22 @@ pub(crate) mod tests {
         drawn: Vec<ImageId>,
     }
 
+    /// Every image id `commands` draws, counting the ones inside recorded
+    /// pictures: drawing a `PictureRecording` emits one `Command::Picture`
+    /// whose shared list carries the images, so a flat scan reports nothing
+    /// for exactly the content these tests mount.
+    fn drawn_images(commands: &[Command], drawn: &mut Vec<ImageId>) {
+        for command in commands {
+            match command {
+                Command::Image { image, .. } => drawn.push(*image),
+                Command::Picture { picture, .. } => {
+                    drawn_images(picture.display_list().commands(), drawn);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// What one frame did: the image ids the installed recording draws, and
     /// the render-thread events from recording it through rendering it.
     pub struct FrameReport {
@@ -1109,15 +1125,8 @@ pub(crate) mod tests {
             let mut recorded = self.surface.record(|recorder| {
                 content.build_scene(recorder, &mut resources, 8.0, 8.0);
             });
-            let drawn = recorded
-                .snapshot()
-                .commands()
-                .iter()
-                .filter_map(|command| match command {
-                    Command::Image { image, .. } => Some(*image),
-                    _ => None,
-                })
-                .collect();
+            let mut drawn = Vec::new();
+            drawn_images(recorded.snapshot().commands(), &mut drawn);
             Recorded {
                 content: recorded,
                 held: resources.finish(),
