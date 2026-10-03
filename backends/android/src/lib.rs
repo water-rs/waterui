@@ -31,7 +31,9 @@ pub mod contract;
 pub mod dispatch;
 pub mod embedding;
 pub mod entry;
+pub(crate) mod handle;
 pub(crate) mod jvm;
+pub mod policy;
 pub(crate) mod proposal;
 
 pub(crate) mod components;
@@ -75,7 +77,7 @@ macro_rules! export_app {
                     |env: ::waterui::Environment| $app(::waterui::configure_environment!(env));
                 $crate::entry::mount(env, activity, root, app)
             });
-            outcome.resolve::<::jni::errors::ThrowRuntimeExAndDefault>()
+            outcome.resolve::<$crate::policy::ThrowRuntimeExAndDefault>()
         }
     };
 }

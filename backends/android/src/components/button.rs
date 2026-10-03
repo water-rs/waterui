@@ -63,14 +63,12 @@ pub extern "system" fn Java_dev_waterui_android_RustOnClickListener_nativeOnClic
     let outcome = unowned_env.with_env(|_env| -> jni::errors::Result<()> {
         // SAFETY: the handler is freed only when the leaf that mounted the
         // button drops; a detached button cannot be clicked.
-        let handler = unsafe {
-            &*(usize::try_from(handle).expect("a click handle is a `Box::into_raw` pointer")
-                as *const ClickHandler)
-        };
+        let handler =
+            unsafe { &*crate::handle::jlong_to_pointer::<ClickHandler>(handle).cast_const() };
         handler.action.borrow_mut()(&handler.env);
         Ok(())
     });
-    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
 }
 
 /// The `UIKit` color table, minus liquid glass: prominent styles read
@@ -292,7 +290,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let listener = jvm::with_env(|env| {
             let bindings = platform.bindings();
             let listener = bindings
-                .new_click_listener(env, handler_ptr as jlong)
+                .new_click_listener(env, crate::handle::pointer_to_jlong(handler_ptr))
                 .expect("a RustOnClickListener constructs");
             bindings
                 .set_on_click_listener(env, button.as_ref(), Some(listener.as_ref()))

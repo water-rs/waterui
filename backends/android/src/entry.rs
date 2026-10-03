@@ -106,8 +106,7 @@ pub fn mount(
         platform,
         _keepalive: keepalive,
     });
-    Ok(jlong::try_from(Box::into_raw(runtime) as usize)
-        .expect("a heap pointer always fits a `jlong`"))
+    Ok(crate::handle::pointer_to_jlong(Box::into_raw(runtime)))
 }
 
 /// The `Runtime` behind `handle` — the JNI border the lifecycle calls cross.
@@ -118,10 +117,7 @@ pub fn mount(
 unsafe fn runtime<'a>(handle: jlong) -> &'a mut Runtime {
     // SAFETY: the caller's contract — a handle `mount` minted and
     // `nativeDestroy` has not consumed.
-    unsafe {
-        &mut *(usize::try_from(handle).expect("a runtime handle is a `Box::into_raw` pointer")
-            as *mut Runtime)
-    }
+    unsafe { &mut *crate::handle::jlong_to_pointer::<Runtime>(handle) }
 }
 
 /// `WaterRuntime.nativeDestroy` — tears the runtime down and frees its
@@ -144,15 +140,10 @@ pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeDestroy<'call
     let outcome = unowned_env.with_env(|_env| -> jni::errors::Result<()> {
         // SAFETY: per the host's contract, `handle` is a live runtime and is
         // never used after this call.
-        drop(unsafe {
-            Box::from_raw(
-                usize::try_from(handle).expect("a runtime handle is a `Box::into_raw` pointer")
-                    as *mut Runtime,
-            )
-        });
+        drop(unsafe { Box::from_raw(crate::handle::jlong_to_pointer::<Runtime>(handle)) });
         Ok(())
     });
-    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
 }
 
 /// `WaterRuntime.nativeOnConfigurationChanged` — pushes the platform's new
@@ -172,7 +163,7 @@ pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeOnConfigurati
         crate::locale::refresh(&runtime.locale, &runtime.platform);
         Ok(())
     });
-    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
 }
 
 /// `WaterRuntime.nativeOnTrimMemory` — memory pressure forwarded for the
@@ -191,5 +182,5 @@ pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeOnTrimMemory<
         tracing::debug!(target: "waterui::runtime", level, "onTrimMemory");
         Ok(())
     });
-    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
 }

@@ -84,8 +84,7 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeMeasure<'cal
         // until the leaf that owns the view is dropped — a detached view is
         // never measured.
         let state = unsafe {
-            &*(usize::try_from(handle).expect("a container handle is an `Rc::into_raw` pointer")
-                as *const RefCell<ContainerState>)
+            &*crate::handle::jlong_to_pointer::<RefCell<ContainerState>>(handle).cast_const()
         };
         let platform = state.borrow().platform.clone();
         let proposal =
@@ -97,7 +96,7 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeMeasure<'cal
             platform.dp_to_px(measured.size.height),
         ))
     });
-    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>()
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>()
 }
 
 /// `RustViewGroup.onLayout`: place the children inside the frame and write
@@ -119,8 +118,7 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeLayout<'call
     let outcome = unowned_env.with_env(|env| -> jni::errors::Result<()> {
         // SAFETY: same handle contract as `nativeMeasure`.
         let state = unsafe {
-            &*(usize::try_from(handle).expect("a container handle is an `Rc::into_raw` pointer")
-                as *const RefCell<ContainerState>)
+            &*crate::handle::jlong_to_pointer::<RefCell<ContainerState>>(handle).cast_const()
         };
         let platform = state.borrow().platform.clone();
         let state = state.borrow();
@@ -171,7 +169,7 @@ pub extern "system" fn Java_dev_waterui_android_RustViewGroup_nativeLayout<'call
         }
         Ok(())
     });
-    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>();
+    outcome.resolve::<crate::policy::ThrowRuntimeExAndDefault>();
 }
 
 /// The container's `SubView` — what the parent measures and stretches.
@@ -314,7 +312,11 @@ fn render_container(
         jvm::with_env(|env| {
             platform
                 .bindings()
-                .set_handle(env, group.as_ref(), state_ptr as jlong)
+                .set_handle(
+                    env,
+                    group.as_ref(),
+                    crate::handle::pointer_to_jlong(state_ptr),
+                )
                 .expect("setHandle must not throw");
         });
 
