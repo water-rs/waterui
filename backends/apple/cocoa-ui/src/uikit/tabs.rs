@@ -23,8 +23,11 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIImage, UITabBarController, UITabBarControllerDelegate, UITabBarItem, UIView, UIViewController,
+    NSDirectionalRectEdge, UIImage, UIScrollView, UITabBarController, UITabBarControllerDelegate,
+    UITabBarItem, UIView, UIViewController,
 };
+
+use crate::callback::guarded;
 
 /// One tab's content.
 #[derive(Clone, Debug, Default)]
@@ -41,8 +44,15 @@ pub struct TabSpec {
     pub enabled: bool,
 }
 
+/// The scroll view that controls bottom-edge chrome, answered through
+/// `contentScrollViewForEdge:`.
+type ScrollSurfaceHandler = Rc<dyn Fn(&TabContentController) -> Option<Retained<UIScrollView>>>;
+
 /// A plain content view controller hosting one tab's content.
-pub struct TabContentControllerIvars {}
+pub struct TabContentControllerIvars {
+    /// Answers `contentScrollViewForEdge:` for the bottom edge.
+    scroll_surface: RefCell<Option<ScrollSurfaceHandler>>,
+}
 
 impl fmt::Debug for TabContentControllerIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -64,13 +74,37 @@ define_class!(
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UIViewController`.
     unsafe impl NSObjectProtocol for TabContentController {}
+
+    impl TabContentController {
+        // SAFETY: `contentScrollViewForEdge:` is `UIViewController`'s
+        // query for the scroll view that controls edge chrome — `UIKit`
+        // asks it when tracking scroll for a minimized tab bar.
+        // Answering it through the stored handler keeps the response
+        // current while the pane's content or navigation stack changes
+        // underneath.
+        #[unsafe(method_id(contentScrollViewForEdge:))]
+        fn content_scroll_view_for_edge(
+            &self,
+            edge: NSDirectionalRectEdge,
+        ) -> Option<Retained<UIScrollView>> {
+            guarded("TabContentController contentScrollViewForEdge:", || {
+                if !edge.contains(NSDirectionalRectEdge::Bottom) {
+                    return None;
+                }
+                let handler = self.ivars().scroll_surface.borrow().clone();
+                handler.and_then(|handler| handler(self))
+            })
+        }
+    }
 );
 
 impl TabContentController {
     /// A controller hosting `view`.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, view: &UIView) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(TabContentControllerIvars {});
+        let this = Self::alloc(mtm).set_ivars(TabContentControllerIvars {
+            scroll_surface: RefCell::new(None),
+        });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s
         // designated initializer; nil names and bundles load nothing.
         let this: Retained<Self> = unsafe {
@@ -96,6 +130,18 @@ impl TabContentController {
             crate::uikit::view_controller::did_move_to_parent(&child);
         }
         this
+    }
+
+    /// The scroll view controlling bottom-edge chrome — the minimized
+    /// tab bar's tracking surface — answered whenever `UIKit` asks this
+    /// controller's `contentScrollViewForEdge:`. The handler re-resolves
+    /// the surface on each query so navigation pushes, pops and pane
+    /// replacements keep the association current.
+    pub fn set_bottom_scroll_surface(
+        &self,
+        handler: impl Fn(&Self) -> Option<Retained<UIScrollView>> + 'static,
+    ) {
+        self.ivars().scroll_surface.replace(Some(Rc::new(handler)));
     }
 }
 

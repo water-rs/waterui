@@ -467,10 +467,10 @@ mod tabs {
     use cocoa_ui::objc2_ui_kit::{
         NSDirectionalRectEdge, UIScrollView, UITabBarController, UITabBarMinimizeBehavior,
     };
-    use cocoa_ui::uikit::Label;
     use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{Label, NavContentController};
     use cocoa_ui::{PlatformView, Retained, view};
-    use waterui::navigation::{Tab, TabBarMinimizeBehavior, Tabs};
+    use waterui::navigation::{NavigationStack, NavigationView, Tab, TabBarMinimizeBehavior, Tabs};
     use waterui::prelude::{label, scroll, text, vstack};
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
@@ -483,6 +483,18 @@ mod tabs {
         vec![
             libtest_mimic::Trial::test("tabs::pane_scroll_view_associates_for_collapse", || {
                 pane_scroll_view_associates_for_collapse();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::panes_without_surfaces_answer_none", || {
+                panes_without_surfaces_answer_none();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::pane_scroll_view_tracks_nav_pushes", || {
+                pane_scroll_view_tracks_nav_pushes();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::pane_scroll_view_tracks_dynamic_replacement", || {
+                pane_scroll_view_tracks_dynamic_replacement();
                 Ok(())
             }),
             libtest_mimic::Trial::test("tabs::bottom_accessory_mounts_into_the_controller", || {
@@ -745,6 +757,210 @@ mod tabs {
                 .expect("the pane's scroll view associates for the bottom edge");
             assert_eq!(Retained::as_ptr(&associated), Retained::as_ptr(&scrolls[0]));
         }
+    }
+
+    /// A scroll-free pane answers exactly `None`, and a scrolled pane
+    /// associates nothing for any edge but the bottom one — the tab bar
+    /// only tracks a surface it actually gets.
+    pub fn panes_without_surfaces_answer_none() {
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            vec![
+                Tab::container(Pane::One, label("One"), || scroll(text("scrollable"))),
+                Tab::container(Pane::Two, label("Two"), || text("static")),
+            ],
+        ));
+        let controllers = tab_bar_controller(&leaf)
+            .viewControllers()
+            .expect("tabs installed");
+        let scrolled = controllers.objectAtIndex(0);
+        assert!(
+            scrolled
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_some(),
+            "the scrolled pane associates for the bottom edge"
+        );
+        for edge in [
+            NSDirectionalRectEdge::Top,
+            NSDirectionalRectEdge::Leading,
+            NSDirectionalRectEdge::Trailing,
+        ] {
+            assert!(
+                scrolled.contentScrollViewForEdge(edge).is_none(),
+                "edge {edge:?} associates nothing"
+            );
+        }
+        assert!(
+            controllers
+                .objectAtIndex(1)
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none(),
+            "a scroll-free pane associates nothing"
+        );
+    }
+
+    /// A `Dynamic` pane replacement re-answers through the same declared
+    /// chain: swap in fresh scroll content and the next query reports
+    /// the new surface; swap to scroll-free content and the answer is
+    /// `None` exactly. The replaced scroll deallocates once the pools
+    /// drain — nothing in the tab controller retains it.
+    pub fn pane_scroll_view_tracks_dynamic_replacement() {
+        use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
+        use waterui::component::Dynamic;
+        use waterui_backend_core::AnyView;
+
+        let scrolled = binding(true);
+        let content = scrolled.clone();
+        let pane = binding(Pane::One);
+        // Render inside a bounded pool: the leaf's own `Retained`/`Rc`
+        // ownership survives, while every autoreleased temporary the
+        // mount produced drains now — the weak read later must not meet
+        // a render-time retainer in the harness's outer pool.
+        let leaf = autoreleasepool(|_| {
+            resolve::render(Tabs::new(
+                &pane,
+                vec![Tab::container(Pane::One, label("One"), move || {
+                    Dynamic::watch(content.clone(), |scrolled| {
+                        if scrolled {
+                            AnyView::new(scroll(text("surface")))
+                        } else {
+                            AnyView::new(text("plain"))
+                        }
+                    })
+                })],
+            ))
+        });
+        let controller = autoreleasepool(|_| {
+            tab_bar_controller(&leaf)
+                .viewControllers()
+                .expect("tabs installed")
+                .objectAtIndex(0)
+        });
+        // Every association/query temporary drains before the swap: the
+        // weak read afterwards must not meet an autoreleased retainer.
+        let weak_old = autoreleasepool(|_| {
+            let old_scrolls = scroll_views_in(&controller.view().expect("the pane's root view"));
+            assert_eq!(old_scrolls.len(), 1, "the fixture mounts one scroll");
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the scroll associates for the bottom edge");
+            assert_eq!(
+                Retained::as_ptr(&associated),
+                Retained::as_ptr(&old_scrolls[0])
+            );
+            Weak::from_retained(&old_scrolls[0])
+        });
+
+        // Replacing the pane's content inside a bounded pool keeps UIKit
+        // autorelease temporaries from holding the old surface past the
+        // swap — the weak read happens after the drain.
+        autoreleasepool(|_| {
+            scrolled.set(false);
+        });
+        assert!(
+            autoreleasepool(|_| controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none()),
+            "a scroll-free replacement answers None"
+        );
+        assert!(
+            weak_old.load().is_none(),
+            "the replaced scroll is deallocated — nothing retained it"
+        );
+
+        // Swapping scroll content back in mounts a fresh surface the next
+        // query reports — not the released one.
+        autoreleasepool(|_| {
+            scrolled.set(true);
+            let new_scrolls = scroll_views_in(&controller.view().expect("the pane's root view"));
+            assert_eq!(new_scrolls.len(), 1, "the replacement mounts one scroll");
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the new scroll associates for the bottom edge");
+            assert_eq!(
+                Retained::as_ptr(&associated),
+                Retained::as_ptr(&new_scrolls[0])
+            );
+        });
+    }
+
+    /// The association answers the *current* surface on every `UIKit`
+    /// query, not a pointer captured at install: a native push reports
+    /// the pushed page's scroll and a pop reports the root's again.
+    /// Each known scroll reference comes straight off the page
+    /// controller's root — the fixture never re-walks the declared
+    /// chain.
+    pub fn pane_scroll_view_tracks_nav_pushes() {
+        /// The `UINavigationController` owning a view in the subtree,
+        /// depth-first — either the view's own controller is the nav
+        /// controller, or the page controller answers one.
+        fn nav_controller_in(
+            view: &PlatformView,
+        ) -> Option<Retained<cocoa_ui::objc2_ui_kit::UINavigationController>> {
+            if let Some(controller) = owning_controller(view) {
+                if let Ok(nav) = controller.clone().downcast() {
+                    return Some(nav);
+                }
+                if let Some(nav) = controller.navigationController() {
+                    return Some(nav);
+                }
+            }
+            for sub in view::subviews(view) {
+                if let Some(found) = nav_controller_in(&sub) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let mtm = super::mtm();
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            vec![Tab::container(Pane::One, label("One"), || {
+                NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
+            })],
+        ));
+        let controller = tab_bar_controller(&leaf)
+            .viewControllers()
+            .expect("tabs installed")
+            .objectAtIndex(0);
+        let root = controller.view().expect("the pane's root view");
+        let nav = nav_controller_in(&root).expect("the pane mounts a stack");
+        let root_scrolls = scroll_views_in(
+            &nav.topViewController()
+                .expect("the root page")
+                .view()
+                .expect("the root page's view"),
+        );
+        assert_eq!(root_scrolls.len(), 1, "the root page mounts one scroll");
+        let root_scroll = &root_scrolls[0];
+        let associated = controller
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+            .expect("the root scroll associates for the bottom edge");
+        assert_eq!(Retained::as_ptr(&associated), Retained::as_ptr(root_scroll));
+
+        // A native push installs a page whose root view *is* its scroll
+        // surface — the same shape `UITableView` pages take — and the
+        // next query must answer it rather than the root's.
+        let pushed_scroll = UIScrollView::new(mtm);
+        let pushed = NavContentController::new(mtm, &pushed_scroll);
+        nav.pushViewController_animated(&pushed, false);
+        let associated = controller
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+            .expect("the pushed scroll associates for the bottom edge");
+        assert_eq!(
+            Retained::as_ptr(&associated),
+            Retained::as_ptr(&pushed_scroll)
+        );
+
+        // A native pop returns the association to the root's surface.
+        nav.popViewControllerAnimated(false);
+        let associated = controller
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+            .expect("the root scroll associates again");
+        assert_eq!(Retained::as_ptr(&associated), Retained::as_ptr(root_scroll));
     }
 
     /// The accessory's child answers the measure itself — the host
