@@ -28,6 +28,11 @@ use objc2_ui_kit::{
     UITargetedPreview, UIView, UIViewController, UIWindow,
 };
 
+use std::ptr;
+
+use objc2_core_foundation::CGPoint;
+use objc2_ui_kit::UIEvent;
+
 use crate::callback::guarded;
 use crate::geometry::{Point, Rect, Size, anchored_frame};
 use crate::uikit::host_view::{HitTest, HostView};
@@ -374,6 +379,42 @@ pub fn bounds_in_window(view: &UIView) -> Rect {
     view.convertRect_toView(view.bounds(), None).into()
 }
 
+define_class!(
+    // SAFETY: `UIWindow` asks a subclass to initialize through
+    // `initWithWindowScene:`, which `AccessoryOverlay::present` does, and
+    // the class does not implement `Drop`.
+    #[unsafe(super(UIWindow))]
+    #[name = "CocoaUiAccessoryOverlayWindow"]
+    #[thread_kind = MainThreadOnly]
+    #[derive(Debug)]
+    /// The overlay's window: a hit that resolves to the window itself is
+    /// mapped to `nil`, so unclaimed points fall through to the host
+    /// window — the menu container reads them as item taps or dismiss
+    /// taps — while real accessory descendants keep their hits.
+    pub struct AccessoryOverlayWindow;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `UIWindow` subclass.
+    unsafe impl NSObjectProtocol for AccessoryOverlayWindow {}
+
+    impl AccessoryOverlayWindow {
+        // SAFETY: see the module safety note.
+        #[unsafe(method_id(hitTest:withEvent:))]
+        fn hit_test_override(
+            &self,
+            point: CGPoint,
+            event: Option<&UIEvent>,
+        ) -> Option<Retained<UIView>> {
+            guarded("AccessoryOverlayWindow hitTest:withEvent:", || {
+                // SAFETY: see the module safety note.
+                let hit: Option<Retained<UIView>> =
+                    unsafe { msg_send![super(self), hitTest: point, withEvent: event] };
+                let this: &UIView = self;
+                hit.filter(|view| !ptr::eq(&raw const **view, this))
+            })
+        }
+    }
+);
+
 /// A window above the context menu's that only the accessory hit-tests:
 /// hits on the platter's own surface fall through to the host window, where
 /// the menu container reads them as dismiss taps.
@@ -398,7 +439,10 @@ impl AccessoryOverlay {
         let host_window = source.window()?;
         let scene = host_window.windowScene()?;
         let mtm = MainThreadMarker::from(source);
-        let window = UIWindow::initWithWindowScene(UIWindow::alloc(mtm), &scene);
+        // SAFETY: `initWithWindowScene:` is `UIWindow`'s designated
+        // initializer for a scene it presents in.
+        let window: Retained<AccessoryOverlayWindow> =
+            unsafe { msg_send![AccessoryOverlayWindow::alloc(mtm), initWithWindowScene: &*scene] };
         window.setFrame(host_window.frame());
         window.setWindowLevel(host_window.windowLevel() + 1.0);
         window.setBackgroundColor(Some(&objc2_ui_kit::UIColor::clearColor()));
@@ -427,12 +471,15 @@ impl AccessoryOverlay {
             }
         });
         crate::view::add_subview(&platter, accessory);
-        if let Some(root) = controller.view() {
-            root.addSubview(&platter);
-        }
+        // The platter is the window's root view: its PassIfSelf hit test makes
+        // the whole window transparent except where an accessory descendant
+        // claims the touch, so the host window below still receives menu-item
+        // taps and backdrop dismissal.
+        controller.setView(Some(&platter));
         window.setHidden(false);
         Some(Self {
-            window,
+            // An `AccessoryOverlayWindow` is a `UIWindow`.
+            window: window.into_super(),
             _platter: platter,
         })
     }
