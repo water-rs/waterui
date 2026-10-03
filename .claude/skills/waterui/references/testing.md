@@ -112,6 +112,12 @@ The macro expands to a plain `#[test]`, so do not also write `#[test]`, and the
 function must take exactly one parameter and return `()`. A styled manual mount names
 the style in its parameter type: `ui: UiBuilder<Styled<hydrolysis_m3::Material3>>`.
 
+Use the mounting form whenever the test needs only a view function. Take the
+manual-mount form when the test must own the bindings the view closes over. Check
+layout on a rendered session, through the elements' `bounds()` and how they relate
+to each other. Never attach accessibility metadata to a decorative fill only so that a
+test can find it.
+
 ## Querying the accessibility tree
 
 ```rust
