@@ -1,16 +1,41 @@
-#!/bin/sh
-# Smoke-check the iOS half of cocoa-ui on the booted simulator:
+#!/usr/bin/env bash
+# Smoke-check the iOS half of cocoa-ui on a caller-owned simulator:
 # build the smoke_ios example, wrap it in a minimal app bundle whose
 # Info.plist names the kit's SceneDelegate class, install and launch it,
 # streaming its output. The app exits itself after one layout pass.
-set -eu
+set -euo pipefail
 
-cd "$(dirname "$0")/.."
-cargo build --example smoke_ios --target aarch64-apple-ios-sim
+member_root="$(cd "$(dirname "$0")/.." && pwd)"
 
-APP="$(mktemp -d)/Smoke.app"
+# The caller owns the booted simulator this script installs into — a bare
+# `booted` or a discovered device could belong to someone else's run.
+: "${WATERUI_IOS_SIM_UDID:?Set WATERUI_IOS_SIM_UDID to the UDID of a booted simulator owned by the caller (xcrun simctl list devices)}"
+
+# The compiler-artifact receipt names the exact produced executable, so no
+# target-dir layout is assumed: workspace-root, per-member and overridden
+# CARGO_TARGET_DIR layouts all resolve through cargo's own record. `jq -s`
+# consumes the complete stream and requires exactly one matching example
+# artifact inside JSON — zero or several is a jq error, which pipefail
+# turns into a failed build receipt.
+executable="$(cargo build \
+  --manifest-path "${member_root}/Cargo.toml" \
+  --example smoke_ios \
+  --target aarch64-apple-ios-sim \
+  --message-format=json-render-diagnostics \
+  | jq -s -e -r '
+      [.[] | select(.reason == "compiler-artifact"
+                    and (.target.kind | index("example") != null)
+                    and .target.name == "smoke_ios"
+                    and .executable != null)]
+      | if length == 1 then .[0].executable
+        else error("expected exactly one smoke_ios example executable, got \(length)")
+        end')"
+
+app_parent="$(mktemp -d)"
+trap 'rm -rf "${app_parent}"' EXIT
+APP="${app_parent}/Smoke.app"
 mkdir -p "$APP"
-cp ../target/aarch64-apple-ios-sim/debug/examples/smoke_ios "$APP/Smoke"
+cp "${executable}" "$APP/Smoke"
 cat > "$APP/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -65,5 +90,5 @@ cat > "$APP/Info.plist" <<'EOF'
 </plist>
 EOF
 codesign --force --sign - --timestamp=none "$APP"
-xcrun simctl install booted "$APP"
-xcrun simctl launch --console-pty booted dev.cocoa-ui.smoke
+xcrun simctl install "${WATERUI_IOS_SIM_UDID}" "$APP"
+xcrun simctl launch --console-pty "${WATERUI_IOS_SIM_UDID}" dev.cocoa-ui.smoke
