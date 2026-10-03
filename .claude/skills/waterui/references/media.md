@@ -14,6 +14,12 @@ conventions in [components.md](components.md): lowercase ergonomic constructors,
 
 ## Media
 
+`waterui::media` (`Photo`, `Video`, `VideoPlayer`, and the image and video kinds of
+`asset!`) is behind the `media` feature, which is not on by default: add
+`features = ["media"]` to the `waterui` dependency. The `video` feature is separate;
+enable `features = ["media", "video"]` when an application uses both photo and video
+surfaces.
+
 ```rust
 use waterui::media::photo::Event as PhotoEvent;   // the event type needs this alias import
 use waterui::media::{Image, Photo, Url};
@@ -34,7 +40,7 @@ runtime string is not a `Url` — parse it, and report the failure rather than l
 bad address reach the loader as a local path:
 
 ```rust
-let Some(parsed) = Url::parse(entered.get().as_str()) else { return };   // parse returns Option
+let Some(parsed) = Url::parse(entered.snapshot().as_str()) else { return };   // parse returns Option
 photo_slot.set(Photo::new(parsed));
 ```
 
@@ -54,7 +60,7 @@ let media = selected.load();             // Media::Image(Url) | Video(Url) | Liv
 
 `LivePhoto::new(source)` displays the live-photo variant.
 
-Video — `video_player(url)` is the one-item shorthand; the general form is a playlist
+Video (feature `video`) — `video_player(url)` is the one-item shorthand; the general form is a playlist
 session whose controller you grab *before* the session moves into the player:
 
 ```rust
@@ -113,7 +119,7 @@ open.with_proxy(move || hstack((
     button("Back").action(|proxy: WebViewProxy| proxy.go_back()),
     button("Go").action(|proxy: WebViewProxy, State(addr): State<Binding<Str>>| {
         // parse_user_input tolerates human input (missing scheme); returns Option.
-        if let Some(url) = Url::parse_user_input(addr.get().as_str()) {
+        if let Some(url) = Url::parse_user_input(addr.snapshot().as_str()) {
             proxy.go_to(url);
         }
     }).state(&address),
@@ -188,13 +194,22 @@ shader!("starfield.wgsl").size(400.0, 500.0)   // fragment shader from src/, no 
 ```
 
 `shader!` resolves the path against the calling crate's `src/` and expands to a view. For
-full control, implement `GpuView` (async `setup(&mut self, ctx, env)` owns persistent GPU
-resources; sync `render(&mut self, frame)` draws — call `frame.request_redraw()` at the
-end to keep animating) and wrap it: `GpuSurface::new(renderer).size(w, h)`. One renderer
-instance lives for the surface's lifetime. Inside `render` you are outside the reactive
-graph: holding cloned `Binding`s on the renderer struct and `.get()`ing them per frame is
-correct there. `waterui::graphics` re-exports `bytemuck`. Verify GPU components with
-offscreen rendering, never by reasoning about the code.
+full control, implement `GpuContent` (sync `setup(&mut self, gpu: &Context<'_>)` owns persistent GPU
+resources; `render(&mut self, frame: &mut Frame<'_>)` draws — call `frame.request_redraw()` at the
+end to keep animating) and wrap it: `GpuContentView::new(content).size(w, h)`. The content is `Send`
+and lives on the render thread once installed — it must NOT hold `Binding`s or other UI-thread
+state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
+plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
+`bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
+
+Frames that already live in GPU memory (a decoder's `CVPixelBuffer`, an `AHardwareBuffer`, a
+dmabuf) are not drawn with `GpuContent`: implement `ExternalFrameSource` and wrap it in
+`ExternalFrameView::new(source)`. `start(&mut self, output: FrameOutput)` runs on the UI thread
+whenever the host builds the view's layer (again after a device loss); hand the `FrameOutput` to
+the decoder thread, import each plane onto `output.device()`, and `output.present(frame)` a
+`cherenkov_gpu::interop::ExternalFrame` carrying its `FrameColor`. The engine samples the planes
+in place — no copy, no shader of your own — and the newest frame wins. Stop producing once
+`present` returns `RetiredOutput`.
 
 Particles (`waterui-particle`, imported as `use waterui_particle::ParticleSystem;`):
 

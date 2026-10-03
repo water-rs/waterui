@@ -756,7 +756,7 @@ mod tests {
             HeadingLevel::H6,
         ]
         .iter()
-        .map(|&level| heading_style(level).font.resolve(&env).get().size)
+        .map(|&level| heading_style(level).font.resolve(&env).snapshot().size)
         .collect();
 
         assert_eq!(sizes.as_slice(), &[28.0, 17.0, 17.0, 15.0, 13.0, 12.0]);

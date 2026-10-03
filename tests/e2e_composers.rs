@@ -6,6 +6,7 @@
 //! contract is exactly what the accessibility tree exposes.
 
 use waterui::Binding;
+use waterui::Signal;
 use waterui::component::badge::Badge;
 use waterui::widget::accordion::Accordion;
 use waterui::widget::card::Card;
@@ -77,7 +78,7 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     let header = app.query().role(Role::BUTTON).label("Details").single();
     header.tap(&mut app);
     assert!(
-        expanded.get(),
+        expanded.snapshot(),
         "tapping the header must expand the accordion"
     );
     app.query()
@@ -88,7 +89,7 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     let header = app.query().role(Role::BUTTON).label("Details").single();
     header.tap(&mut app);
     assert!(
-        !expanded.get(),
+        !expanded.snapshot(),
         "tapping the header again must collapse the accordion"
     );
     app.query()
@@ -128,14 +129,14 @@ fn derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
 
     app.query().role(Role::TEXT_INPUT).set_text("Ada");
     assert_eq!(
-        profile.get().name,
+        profile.snapshot().name,
         "Ada",
         "text input edits must reach the derived struct binding"
     );
 
     app.query().role(Role::SWITCH).tap();
     assert!(
-        profile.get().active,
+        profile.snapshot().active,
         "toggle flips must reach the derived struct binding"
     );
 }
@@ -158,7 +159,7 @@ fn single_field_derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuild
 
     app.query().role(Role::TEXT_INPUT).set_text("Ada");
     assert_eq!(
-        nickname.get().nickname,
+        nickname.snapshot().nickname,
         "Ada",
         "a one-field derived form must still wire its only control to the binding"
     );

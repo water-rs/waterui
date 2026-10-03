@@ -13,9 +13,9 @@ use waterui_testing::{
 };
 
 use waterui_mcp_protocol::{
-    ActAction, ActArgs, AdvanceArgs, FindArgs, KeyArgs, PointerArgs, PointerKind, RestartArgs,
-    ScreenshotArgs, ScrollUnit, SelectorArgs, SnapshotArgs, SnapshotFormat, ToolDispatch,
-    TypeTextArgs, WaitArgs,
+    ActAction, ActArgs, AdvanceArgs, DropFilesArgs, FindArgs, KeyArgs, PointerArgs, PointerKind,
+    RestartArgs, ScreenshotArgs, ScrollUnit, SelectorArgs, SnapshotArgs, SnapshotFormat,
+    ToolDispatch, TypeTextArgs, WaitArgs,
 };
 
 use crate::tree;
@@ -58,6 +58,13 @@ pub enum Command {
     Key {
         /// Key name or character plus modifiers.
         args: KeyArgs,
+        /// Reply channel.
+        reply: Reply,
+    },
+    /// Dispatch an OS file drop.
+    DropFiles {
+        /// Paths, point, optional node anchor.
+        args: DropFilesArgs,
         /// Reply channel.
         reply: Reply,
     },
@@ -179,6 +186,16 @@ impl ToolDispatch for SessionHandle {
         async move {
             handle
                 .request(|reply| Command::Key { args, reply })
+                .await
+                .unwrap_or_else(|error| ToolResult::error(error.to_string()))
+        }
+    }
+
+    fn drop_files(&self, args: DropFilesArgs) -> impl Future<Output = ToolResult> + Send {
+        let handle = self.clone();
+        async move {
+            handle
+                .request(|reply| Command::DropFiles { args, reply })
                 .await
                 .unwrap_or_else(|error| ToolResult::error(error.to_string()))
         }
@@ -418,6 +435,9 @@ impl<'a> Session<'a> {
             Command::Key { args, reply } => {
                 let _ = reply.try_send(self.key(&args));
             }
+            Command::DropFiles { args, reply } => {
+                let _ = reply.try_send(self.drop_files(&args));
+            }
             Command::TypeText {
                 text,
                 settle,
@@ -514,10 +534,15 @@ impl<'a> Session<'a> {
         self.finish_input(args.settle)
     }
 
-    /// Maps `x`/`y` to viewport coordinates: absolute logical pixels, or
-    /// fractions of the anchor node's bounds when `node` is set.
-    fn anchor_point(
+    /// Resolves the point an input tool dispatches at: viewport `x`/`y`
+    /// verbatim, or a point inside the anchor node's interaction owner
+    /// projected through its clip chain and the window when `node` is
+    /// set — the point a pointer can actually reach, never a spot inside
+    /// the clipped region where the event would land on whatever lies
+    /// beneath the clip. `tool` names the caller in errors.
+    fn pointer_point(
         &mut self,
+        tool: &str,
         node: Option<u64>,
         x: f32,
         y: f32,
@@ -525,24 +550,21 @@ impl<'a> Session<'a> {
         let Some(id) = node else {
             return Ok((x, y));
         };
-        let Some(element) = self.app.element(NodeId::from(AccessibilityNodeId(id))) else {
+        let node_id = NodeId::from(AccessibilityNodeId(id));
+        let Some(element) = self.app.element(node_id) else {
             return Err(ToolResult::error(format!(
                 "anchor node #{id} is not in the current tree"
             )));
         };
-        let Some(bounds) = element.node().bounds() else {
-            return Err(ToolResult::error(format!(
-                "anchor node #{id} reports no bounds"
-            )));
-        };
-        Ok((
-            bounds.width().mul_add(x, bounds.x()),
-            bounds.height().mul_add(y, bounds.y()),
-        ))
+        let line = tree::node_line(element.node(), self.app.tree().focus() == node_id);
+        self.app
+            .activation_point(node_id, x, y)
+            .map_err(|error| ToolResult::error(format!("{tool} cannot reach {line}: {error}")))
     }
 
     fn pointer(&mut self, args: &PointerArgs) -> ToolResult {
-        let (x, y) = match self.anchor_point(args.node, args.x, args.y) {
+        let tool = format!("pointer {}", tree::snake_case(&format!("{:?}", args.kind)));
+        let (x, y) = match self.pointer_point(&tool, args.node, args.x, args.y) {
             Ok(point) => point,
             Err(result) => return result,
         };
@@ -561,7 +583,7 @@ impl<'a> Session<'a> {
                     return ToolResult::error("`drag` requires `to_x` and `to_y`");
                 };
                 let anchor = args.to_node.or(args.node);
-                let (to_x, to_y) = match self.anchor_point(anchor, to_x, to_y) {
+                let (to_x, to_y) = match self.pointer_point(&tool, anchor, to_x, to_y) {
                     Ok(point) => point,
                     Err(result) => return result,
                 };
@@ -592,6 +614,18 @@ impl<'a> Session<'a> {
         self.finish_input(args.settle)
     }
 
+    fn drop_files(&mut self, args: &DropFilesArgs) -> ToolResult {
+        if args.paths.is_empty() {
+            return ToolResult::error("`drop_files` requires at least one path");
+        }
+        let (x, y) = match self.pointer_point("drop_files", args.node, args.x, args.y) {
+            Ok(point) => point,
+            Err(result) => return result,
+        };
+        self.app.queue_drop_files_at(x, y, &args.paths);
+        self.finish_input(args.settle)
+    }
+
     fn key(&mut self, args: &KeyArgs) -> ToolResult {
         let mut modifiers = waterui_testing::Modifiers::default();
         for name in &args.modifiers {
@@ -613,7 +647,8 @@ impl<'a> Session<'a> {
         } else {
             KeyCode::Named(args.key.clone())
         };
-        self.app.queue_key_press(key, modifiers);
+        self.app.queue_key_press(key.clone(), modifiers);
+        self.app.queue_key_release(key, modifiers);
         self.finish_input(args.settle)
     }
 
@@ -781,5 +816,142 @@ fn act_request(
             };
             Ok((Action::SetValue, Some(data)))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use async_channel::Receiver;
+    use waterui::Binding;
+    use waterui::Signal as _;
+    use waterui::Url;
+    use waterui::ViewExt as _;
+    use waterui::component::text;
+    use waterui::drag_drop::Files;
+
+    use super::*;
+
+    fn dropped_paths() -> Vec<PathBuf> {
+        vec![
+            PathBuf::from("/tmp/report.pdf"),
+            PathBuf::from("/tmp/photo.png"),
+        ]
+    }
+
+    /// A session whose app is one viewport-sized drop destination recording
+    /// the paths each delivered `Files` payload carries — the evidence a
+    /// `drop_files` command reached the view.
+    fn drop_files_session() -> (Session<'static>, Binding<Vec<PathBuf>>) {
+        let received = Binding::container(Vec::<PathBuf>::new());
+        let recordings = received.clone();
+        let session = Session::new(move || {
+            let recordings = recordings.clone();
+            let mut app = waterui_testing::ui()
+                .theme(hydrolysis_m3::Material3::defaults())
+                .viewport(360, 240)
+                .mount_offscreen(move || {
+                    let recordings = recordings.clone();
+                    text("Drop files here")
+                        .width(360.0)
+                        .height(240.0)
+                        .drop_destination(move |files: Files| {
+                            recordings.with_mut(|paths| {
+                                paths.extend(files.urls().iter().filter_map(Url::to_file_path));
+                            });
+                        })
+                });
+            app.settle();
+            app
+        });
+        (session, received)
+    }
+
+    fn run_command(
+        session: &mut Session<'_>,
+        command: impl FnOnce(Reply) -> Command,
+    ) -> ToolResult {
+        let (reply, rx): (Reply, Receiver<ToolResult>) = async_channel::bounded(1);
+        session.execute(Box::new(command(reply)));
+        rx.try_recv().expect("the command replies")
+    }
+
+    fn snapshot_text(session: &mut Session<'_>) -> String {
+        let result = run_command(session, |reply| Command::Snapshot {
+            format: SnapshotFormat::Text,
+            reply,
+        });
+        assert!(!result.is_error(), "{:?}", result.error_message());
+        result.as_text().expect("a text snapshot").to_owned()
+    }
+
+    /// The node id the `#<id> ...` tree line carrying `label` reports.
+    fn node_id_of(tree: &str, label: &str) -> u64 {
+        let line = tree
+            .lines()
+            .find(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("no `{label}` in tree:\n{tree}"));
+        line.split_whitespace()
+            .find_map(|token| token.strip_prefix('#'))
+            .unwrap_or_else(|| panic!("no node id in `{line}`"))
+            .parse()
+            .expect("a numeric node id")
+    }
+
+    #[test]
+    fn drop_files_at_a_point_delivers_every_path() {
+        let (mut session, received) = drop_files_session();
+        let result = run_command(&mut session, |reply| Command::DropFiles {
+            args: DropFilesArgs {
+                paths: dropped_paths(),
+                x: 180.0,
+                y: 120.0,
+                node: None,
+                settle: None,
+            },
+            reply,
+        });
+        assert!(!result.is_error(), "{:?}", result.error_message());
+        assert_eq!(received.snapshot(), dropped_paths());
+    }
+
+    #[test]
+    fn drop_files_anchored_to_a_node_delivers() {
+        let (mut session, received) = drop_files_session();
+        let node = node_id_of(&snapshot_text(&mut session), "Drop files here");
+        let result = run_command(&mut session, |reply| Command::DropFiles {
+            args: DropFilesArgs {
+                paths: dropped_paths(),
+                x: 0.5,
+                y: 0.5,
+                node: Some(node),
+                settle: Some(true),
+            },
+            reply,
+        });
+        assert!(!result.is_error(), "{:?}", result.error_message());
+        assert_eq!(received.snapshot(), dropped_paths());
+    }
+
+    #[test]
+    fn drop_files_rejects_an_empty_path_list() {
+        let (mut session, _) = drop_files_session();
+        let result = run_command(&mut session, |reply| Command::DropFiles {
+            args: DropFilesArgs {
+                paths: Vec::new(),
+                x: 10.0,
+                y: 10.0,
+                node: None,
+                settle: None,
+            },
+            reply,
+        });
+        assert!(result.is_error());
+        assert!(
+            result
+                .error_message()
+                .is_some_and(|message| message.contains("at least one path"))
+        );
     }
 }

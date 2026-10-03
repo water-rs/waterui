@@ -2,7 +2,11 @@
 
 use alloc::{rc::Rc, vec, vec::Vec};
 
-use nami::{Computed, SignalExt, impl_constant, signal::IntoComputed};
+use nami::{
+    Computed, Signal, SignalExt, SignalIdentity, impl_constant,
+    signal::IntoComputed,
+    watcher::{BoxWatcherGuard, Context, WatcherGuard},
+};
 use waterui_core::Str;
 use waterui_core::{
     AnyView, Environment, View,
@@ -166,6 +170,20 @@ impl View for Menu {
     }
 }
 
+/// What a command does to the thing it acts on, which decides how every
+/// menu presents it.
+///
+/// A destructive command is drawn in the platform's destructive style: red
+/// text on iOS, macOS and Android, and the error colour in drawn menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommandRole {
+    /// An ordinary command.
+    #[default]
+    Standard,
+    /// A command that deletes or irreversibly changes data.
+    Destructive,
+}
+
 /// A semantic command that can be reused across menu-like surfaces.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -180,6 +198,10 @@ pub struct Command {
     pub selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
+    /// What the command does, which decides its presentation.
+    pub role: CommandRole,
+    /// An optional secondary line shown under the label.
+    pub subtitle: Option<Str>,
     /// Local state layered onto the environment when the action runs.
     pub captured_env: Environment,
     identity: Rc<()>,
@@ -214,6 +236,8 @@ impl Command {
             disabled: Disabled::resolve(env, self.disabled),
             selected: self.selected,
             shortcut: self.shortcut,
+            role: self.role,
+            subtitle: self.subtitle,
             identity: self.identity,
         }
     }
@@ -236,6 +260,26 @@ impl Command {
     #[must_use]
     pub fn shortcut(mut self, shortcut: Shortcut) -> Self {
         self.shortcut = Some(shortcut);
+        self
+    }
+
+    /// Sets what the command does, which decides its presentation.
+    #[must_use]
+    pub const fn role(mut self, role: CommandRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Marks the command as destructive.
+    #[must_use]
+    pub const fn destructive(self) -> Self {
+        self.role(CommandRole::Destructive)
+    }
+
+    /// Shows a secondary line under the command's label.
+    #[must_use]
+    pub fn subtitle(mut self, subtitle: impl Into<Str>) -> Self {
+        self.subtitle = Some(subtitle.into());
         self
     }
 
@@ -280,6 +324,8 @@ impl CommandBuilder {
             disabled: Computed::constant(false),
             selected: Computed::constant(false),
             shortcut: None,
+            role: CommandRole::Standard,
+            subtitle: None,
             captured_env: Environment::new(),
             identity: Rc::new(()),
         }
@@ -431,40 +477,81 @@ impl<const N: usize> MenuBarView for [Menu; N] {
     }
 }
 
-fn extend_menus(mut left: Vec<Menu>, right: Vec<Menu>) -> Vec<Menu> {
-    left.extend(right);
-    left
+/// A `Signal` that concatenates the `Vec` outputs of its children.
+///
+/// One evaluation reads every child once and concatenates the results in
+/// order, so an update costs linear work in the total item count instead of
+/// propagating through an intermediate `zip` layer per element.
+struct ConcatVecs<T> {
+    children: Rc<Vec<Computed<Vec<T>>>>,
+}
+
+impl<T> Clone for ConcatVecs<T> {
+    fn clone(&self) -> Self {
+        Self {
+            children: self.children.clone(),
+        }
+    }
+}
+
+impl<T: 'static> Signal for ConcatVecs<T> {
+    type Output = Vec<T>;
+    type Guard = ConcatVecsGuard;
+
+    fn snapshot(&self) -> Vec<T> {
+        self.children.iter().flat_map(Computed::snapshot).collect()
+    }
+
+    fn identity(&self) -> Option<SignalIdentity> {
+        let mut children = self.children.iter();
+        let mut identity = children.next()?.identity()?;
+        for child in children {
+            identity = identity.combine(child.identity()?);
+        }
+        Some(identity)
+    }
+
+    fn watch(&self, watcher: impl Fn(Context<Vec<T>>) + 'static) -> Self::Guard {
+        let watcher = Rc::new(watcher);
+        let guards = self
+            .children
+            .iter()
+            .map(|child| {
+                let watcher = Rc::clone(&watcher);
+                let children = Rc::clone(&self.children);
+                child.watch(move |ctx| {
+                    let items = children.iter().flat_map(Computed::snapshot).collect();
+                    watcher(ctx.map(|_| items));
+                })
+            })
+            .collect();
+        ConcatVecsGuard { _guards: guards }
+    }
+}
+
+/// Owns the per-child subscriptions opened for one `ConcatVecs` watcher.
+struct ConcatVecsGuard {
+    _guards: Vec<BoxWatcherGuard>,
+}
+
+impl WatcherGuard for ConcatVecsGuard {}
+
+fn concat_vec_children<T: 'static>(children: Vec<Computed<Vec<T>>>) -> Computed<Vec<T>> {
+    Computed::new(ConcatVecs {
+        children: Rc::new(children),
+    })
 }
 
 impl<T: MenuView> MenuView for Vec<T> {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        self.into_iter()
-            .fold(Computed::constant(Vec::new()), |items, item| {
-                let right = item.into_menu_items();
-                items
-                    .zip(&right)
-                    .map(|(left, right)| extend_menu_items(left, right))
-                    .computed()
-            })
+        concat_vec_children(self.into_iter().map(MenuView::into_menu_items).collect())
     }
 }
 
 impl<T: MenuView, const N: usize> MenuView for [T; N] {
     fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
-        self.into_iter()
-            .fold(Computed::constant(Vec::new()), |items, item| {
-                let right = item.into_menu_items();
-                items
-                    .zip(&right)
-                    .map(|(left, right)| extend_menu_items(left, right))
-                    .computed()
-            })
+        concat_vec_children(self.into_iter().map(MenuView::into_menu_items).collect())
     }
-}
-
-fn extend_menu_items(mut left: Vec<MenuItem>, right: Vec<MenuItem>) -> Vec<MenuItem> {
-    left.extend(right);
-    left
 }
 
 macro_rules! menu_tuples {
@@ -502,15 +589,7 @@ macro_rules! impl_tuple_menu_view {
         impl<$T0: MenuView, $($T: MenuView),+> MenuView for ($T0, $($T,)+) {
             fn into_menu_items(self) -> Computed<Vec<MenuItem>> {
                 let ($T0, $($T),+) = self;
-                let items = $T0.into_menu_items();
-                $(
-                    let $T = $T.into_menu_items();
-                    let items = items
-                        .zip(&$T)
-                        .map(|(left, right)| extend_menu_items(left, right))
-                        .computed();
-                )+
-                items
+                concat_vec_children(vec![$T0.into_menu_items(), $($T.into_menu_items()),+])
             }
         }
     };
@@ -531,15 +610,7 @@ macro_rules! impl_tuple_menu_bar_view {
         impl<$T0: MenuBarView, $($T: MenuBarView),+> MenuBarView for ($T0, $($T,)+) {
             fn into_menus(self) -> Computed<Vec<Menu>> {
                 let ($T0, $($T),+) = self;
-                let items = $T0.into_menus();
-                $(
-                    let $T = $T.into_menus();
-                    let items = items
-                        .zip(&$T)
-                        .map(|(left, right)| extend_menus(left, right))
-                        .computed();
-                )+
-                items
+                concat_vec_children(vec![$T0.into_menus(), $($T.into_menus()),+])
             }
         }
     };
@@ -602,6 +673,10 @@ pub struct ResolvedCommand {
     pub selected: Computed<bool>,
     /// Optional keyboard shortcut metadata.
     pub shortcut: Option<Shortcut>,
+    /// What the command does, which decides its presentation.
+    pub role: CommandRole,
+    /// An optional secondary line shown under the label.
+    pub subtitle: Option<Str>,
     identity: Rc<()>,
 }
 
@@ -685,7 +760,7 @@ mod tests {
         let items = button(crate::label::label("Search").system_icon(system_icon::search()))
             .action(|| {})
             .into_menu_items()
-            .get();
+            .snapshot();
         assert_eq!(items.len(), 1);
         let MenuItem::Command(command) = &items[0] else {
             panic!("button menu content should resolve to a command");
@@ -696,7 +771,7 @@ mod tests {
                 .semantic_text()
                 .resolve(&Environment::default())
                 .content
-                .get()
+                .snapshot()
                 .to_plain()
                 .as_str(),
             "Search"
@@ -710,11 +785,38 @@ mod tests {
             Divider.into(),
             Menu::new("More", (button("Duplicate").action(|| {}),)).into(),
         ];
-        let items = items.into_menu_items().get();
+        let items = items.into_menu_items().snapshot();
         assert_eq!(items.len(), 3);
         assert!(matches!(items[0], MenuItem::Command(_)));
         assert!(matches!(items[1], MenuItem::Divider));
         assert!(matches!(items[2], MenuItem::Menu(_)));
+    }
+
+    #[test]
+    fn resolve_menu_items_carries_role_and_subtitle() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let items = vec![
+            Command::builder("Reply").action(|| {}).into(),
+            Command::builder("Delete")
+                .action(|| {})
+                .destructive()
+                .subtitle("For everyone")
+                .into(),
+        ];
+
+        let resolved = resolve_menu_items_now(items, &env);
+        let ResolvedMenuItem::Command(reply) = &resolved[0] else {
+            panic!("first resolved item should be a command");
+        };
+        assert_eq!(reply.role, CommandRole::Standard);
+        assert!(reply.subtitle.is_none());
+
+        let ResolvedMenuItem::Command(delete) = &resolved[1] else {
+            panic!("second resolved item should be a command");
+        };
+        assert_eq!(delete.role, CommandRole::Destructive);
+        assert_eq!(delete.subtitle.as_deref(), Some("For everyone"));
     }
 
     #[test]
@@ -736,25 +838,96 @@ mod tests {
         let ResolvedMenuItem::Command(refresh) = &resolved[0] else {
             panic!("first resolved item should be a command");
         };
-        assert_eq!(refresh.label.content.get().to_plain(), "Refresh");
-        assert!(!refresh.selected.get());
+        assert_eq!(refresh.label.content.snapshot().to_plain(), "Refresh");
+        assert!(!refresh.selected.snapshot());
 
         let ResolvedMenuItem::Command(pinned) = &resolved[1] else {
             panic!("second resolved item should be a command");
         };
-        assert_eq!(pinned.label.content.get().to_plain(), "Pinned");
-        assert!(pinned.selected.get());
+        assert_eq!(pinned.label.content.snapshot().to_plain(), "Pinned");
+        assert!(pinned.selected.snapshot());
 
         let ResolvedMenuItem::Menu(advanced) = &resolved[2] else {
             panic!("third resolved item should be a nested menu");
         };
-        assert_eq!(advanced.label.content.get().to_plain(), "Advanced");
-        assert_eq!(advanced.items.get().len(), 1);
+        assert_eq!(advanced.label.content.snapshot().to_plain(), "Advanced");
+        assert_eq!(advanced.items.snapshot().len(), 1);
 
-        let ResolvedMenuItem::Command(archive) = &advanced.items.get()[0] else {
+        let ResolvedMenuItem::Command(archive) = &advanced.items.snapshot()[0] else {
             panic!("nested menu should resolve its child command");
         };
-        assert_eq!(archive.label.content.get().to_plain(), "Archive");
+        assert_eq!(archive.label.content.snapshot().to_plain(), "Archive");
+    }
+
+    /// A leaf `Computed<Vec<MenuItem>>` that counts how often it is evaluated.
+    #[derive(Clone)]
+    struct CountedItems {
+        source: nami::Binding<Vec<MenuItem>>,
+        evaluations: Rc<Cell<usize>>,
+    }
+
+    impl Signal for CountedItems {
+        type Output = Vec<MenuItem>;
+        type Guard = nami::watcher::BoxWatcherGuard;
+
+        fn snapshot(&self) -> Vec<MenuItem> {
+            self.evaluations.set(self.evaluations.get() + 1);
+            self.source.snapshot()
+        }
+
+        fn watch(
+            &self,
+            watcher: impl Fn(nami::watcher::Context<Vec<MenuItem>>) + 'static,
+        ) -> Self::Guard {
+            self.source.watch(watcher)
+        }
+    }
+
+    #[test]
+    fn tuple_menu_reads_each_child_once_per_change() {
+        const N: usize = 14;
+        crate::init_test_executor();
+        let evaluations = Rc::new(Cell::new(0usize));
+        let sources: [nami::Binding<Vec<MenuItem>>; N] =
+            core::array::from_fn(|_| nami::binding(vec![MenuItem::Divider]));
+        let leaf = |source: &nami::Binding<Vec<MenuItem>>| {
+            Computed::new(CountedItems {
+                source: source.clone(),
+                evaluations: evaluations.clone(),
+            })
+        };
+        let items = (
+            leaf(&sources[0]),
+            leaf(&sources[1]),
+            leaf(&sources[2]),
+            leaf(&sources[3]),
+            leaf(&sources[4]),
+            leaf(&sources[5]),
+            leaf(&sources[6]),
+            leaf(&sources[7]),
+            leaf(&sources[8]),
+            leaf(&sources[9]),
+            leaf(&sources[10]),
+            leaf(&sources[11]),
+            leaf(&sources[12]),
+            leaf(&sources[13]),
+        )
+            .into_menu_items();
+
+        let _guard = items.watch(|_| {});
+        assert!(
+            evaluations.get() <= N,
+            "subscribing evaluated the leaves {} times; evaluation must be linear in tuple arity",
+            evaluations.get()
+        );
+
+        evaluations.set(0);
+        sources[0].set(vec![MenuItem::Divider, MenuItem::Divider]);
+        assert_eq!(
+            evaluations.get(),
+            N,
+            "one leaf change must evaluate each of the {N} children exactly once"
+        );
     }
 
     #[test]

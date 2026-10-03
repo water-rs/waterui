@@ -37,7 +37,7 @@ pub unsafe extern "C" fn waterui_anyviews_get_view(
 pub unsafe extern "C" fn waterui_anyviews_len(anyviews: *const WuiAnyViews) -> usize {
     // SAFETY: the caller contract requires `anyviews` to be a valid handle alive for
     // this call; it is only borrowed.
-    unsafe { (&*anyviews).len().get() }
+    unsafe { (&*anyviews).len().snapshot() }
 }
 
 fn collect_ids_in_range(anyviews: &WuiAnyViews, start: usize, end: usize) -> Vec<WuiId> {
@@ -115,7 +115,7 @@ pub unsafe extern "C" fn waterui_anyviews_watch_range(
         let anyviews = &*anyviews;
         let watcher = alloc::rc::Rc::new(ForeignWatcher { data, call, drop });
         let callback_watcher = alloc::rc::Rc::clone(&watcher);
-        let guard = anyviews.watch(start..end, move |ctx| {
+        let guard = anyviews.watch(start..end, move |ctx, _change| {
             let watcher = alloc::rc::Rc::clone(&callback_watcher);
             let metadata = ctx.metadata().clone();
             let ids: Vec<WuiId> = ctx
@@ -157,7 +157,7 @@ where
     type View = AnyView;
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        let items = self.source.get();
+        let items = self.source.snapshot();
         (index < items.len()).then(|| (self.id_at)(&items, index))
     }
 
@@ -168,7 +168,10 @@ where
     fn watch(
         &self,
         range: impl core::ops::RangeBounds<usize>,
-        watcher: impl for<'a> Fn(nami::watcher::Context<&'a [Self::Id]>) + 'static,
+        watcher: impl for<'a> Fn(
+            nami::watcher::Context<&'a [Self::Id]>,
+            nami::collection::CollectionChange,
+        ) + 'static,
     ) -> Self::Guard {
         let start = match range.start_bound() {
             core::ops::Bound::Included(index) => *index,
@@ -188,13 +191,17 @@ where
                     .map(|index| id_at(&items, index))
                     .collect::<Vec<_>>()
             });
-            watcher(ctx.as_deref());
+            let len = ctx.value().len();
+            watcher(
+                ctx.as_deref(),
+                nami::collection::CollectionChange::everything(len),
+            );
         })
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
         self.source
-            .get()
+            .snapshot()
             .into_iter()
             .nth(index)
             .map(&self.build_view)

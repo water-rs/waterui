@@ -10,9 +10,9 @@ mod linux {
     use waterui_browser_wpe::{
         DmaBufFrameSource, DmaBufGpuView, WPE_WEBKIT_VERSION, WpePage, WpeRuntime, WpeRuntimePaths,
     };
-    use waterui_core::Environment;
-    use waterui_graphics::gpu_surface::{GpuSurface, OffscreenRenderConfig, OffscreenSize};
-    use waterui_graphics::shared_context::GpuRuntime;
+    use waterui_graphics::cherenkov::Display;
+    use waterui_graphics::gpu::{GpuContentRenderer, GpuRuntime};
+    use waterui_graphics::{OffscreenImage, OffscreenSize};
     use waterui_webview::{BackendEvent, WebViewEvent};
     use wgpu_external_frame::dma_buf::DmaBufFrame;
 
@@ -113,18 +113,74 @@ mod linux {
         let source = SmokeFrameSource {
             frame: RefCell::new(Some(frame)),
         };
-        let surface = GpuSurface::new(DmaBufGpuView::new(source));
-        let config = OffscreenRenderConfig::new(
-            OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
-                .expect("WPE smoke viewport must be non-zero"),
-        )
-        .format(wgpu::TextureFormat::Rgba8Unorm);
-        let rendered = pollster::block_on(surface.render_offscreen(
-            &gpu_runtime,
-            config,
-            &mut Environment::new(),
-        ))
-        .unwrap_or_else(|error| panic!("WPE smoke offscreen render failed: {error}"));
+        let size = OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
+            .expect("WPE smoke viewport must be non-zero");
+        let mut view = DmaBufGpuView::new(source).into_view();
+        let content = view.take_engine_content(|| {});
+        let mut renderer = GpuContentRenderer::new(&gpu_runtime, content, size);
+        // The UI hook feeds the content's mailbox; run it before presenting so
+        // the smoke frame is queued for the render.
+        view.frame();
+        let device = gpu_runtime.device();
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wpe_smoke_target"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        renderer.present(
+            &target,
+            Display {
+                scale: 1.0,
+                headroom: 1.0,
+            },
+        );
+        let bytes_per_row = WIDTH * 4;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wpe_smoke_readback"),
+            size: u64::from(bytes_per_row) * u64::from(HEIGHT),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wpe_smoke_readback"),
+        });
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu_runtime.queue().submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("WPE smoke readback wait failed");
+        let rgba8 = buffer.slice(..).get_mapped_range().to_vec();
+        buffer.unmap();
+        let rendered = OffscreenImage {
+            width: WIDTH,
+            height: HEIGHT,
+            rgba8,
+        };
         rendered
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));

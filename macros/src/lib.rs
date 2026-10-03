@@ -244,8 +244,8 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
     view_builder::expand_attribute(args, &input)
 }
 
-/// Marks an owned `Clone` type as an [`Extractor`](waterui::extract::Extractor)
-/// over the `.state(&value)` injection channel.
+/// Marks an owned `Clone` type as a `waterui::extract::Extractor` over the
+/// `.state(&value)` injection channel.
 ///
 /// `State<T>` is the wrapper for a type the app cannot implement traits for —
 /// `Binding<Str>`, a third-party value. Naming it for a type the app *does*
@@ -272,7 +272,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// The generated `Extractor` implementation delegates to
-/// [`State<Self>`](waterui::extract::State), so `.state(&value)` remains the
+/// `waterui::extract::State<Self>`, so `.state(&value)` remains the
 /// injection mechanism and a bare `T` parameter shares extraction positions
 /// with `State<T>` parameters of the same type — the first `.state()` call
 /// feeds the first parameter of that type.
@@ -281,7 +281,7 @@ pub fn view_builder(args: TokenStream, input: TokenStream) -> TokenStream {
 /// attribute so a missing `Clone` reports here rather than inside the
 /// expansion. For an owned type that should read a value installed directly in
 /// the environment instead of through `.state()`, use
-/// [`impl_extractor!`](waterui::impl_extractor).
+/// `waterui::impl_extractor!`.
 #[proc_macro_attribute]
 pub fn state(args: TokenStream, input: TokenStream) -> TokenStream {
     state::expand(args, input)
@@ -577,6 +577,7 @@ use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// # Examples
 ///
 /// ```rust
+/// use waterui::Signal;
 /// use waterui::reactive::{Binding, binding, project::Project};
 /// use waterui_macros::Project;
 ///
@@ -595,7 +596,7 @@ use syn::{Expr, Token, Type, parse::Parse, punctuated::Punctuated};
 /// projected.name.set("Bob".to_string());
 /// projected.age.set(25u32);
 ///
-/// let person = person_binding.get();
+/// let person = person_binding.snapshot();
 /// assert_eq!(person.name, "Bob");
 /// assert_eq!(person.age, 25);
 /// ```
@@ -938,7 +939,12 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
-        #[cfg_attr(not(debug_assertions), allow(dead_code))]
+        // `dev` is the scaffold's development-linkage feature (the generated
+        // backend enables `<app>/dev` on `water run`/`preview`/`build`); a
+        // crate without it has no preview host, so without the export the
+        // function is dead code there.
+        #[allow(unexpected_cfgs)]
+        #[cfg_attr(not(feature = "dev"), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview
@@ -1286,7 +1292,7 @@ fn validate_test_fn(input_fn: &ItemFn, mounts_view: bool) -> Result<&syn::PatTyp
 ///     let value_for_view = value.clone();
 ///     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
 ///     app.query().label("Limited").increment();
-///     assert_eq!(value.get(), 3);
+///     assert_eq!(value.snapshot(), 3);
 /// }
 /// # fn main() {}
 /// ```

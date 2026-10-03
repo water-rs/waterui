@@ -4,7 +4,7 @@ Signatures verified against the WaterUI source and compiled. Everything here is 
 from `use waterui::prelude::*;` unless an explicit import is shown.
 
 **Feature gates.** `waterui`'s default features are `gpu`, `assets`, `media`, `inspector`,
-and `snackbar`. `webview`, `flow-markdown`, and `navigation-restoration` are opt-in — a
+and `snackbar`. `webview`, `video`, `flow-markdown`, and `navigation-restoration` are opt-in — a
 missing module here is usually a missing feature in `Cargo.toml`, not a wrong path:
 
 ```toml
@@ -170,6 +170,37 @@ is simpler — sizing follows the base:
 overlay(player, buffering_indicator).height(360.0)
 ```
 
+## Anchored overlays (popovers, tooltips)
+
+`.anchored_overlay(...)` presents content next to the view it modifies — above all other
+content in the window — while its `Binding<bool>` is true. The backend places it against
+the anchor's declared edge, flips to the opposite edge when the preferred side has no
+room, and clamps it inside the window; a tap outside writes `false` back to the binding:
+
+```rust
+use waterui::metadata::anchored_overlay::{
+    AnchoredOverlay, AnchorEdge, EdgeAlignment, Clamp, Dismissal,
+};
+
+let open = binding(false);
+button("Options")
+    .action({ let open = open.clone(); move || open.toggle() })
+    .anchored_overlay(
+        AnchoredOverlay::new(&open, popover_body())   // AnyView content, measured at ideal size
+            .edge(AnchorEdge::Top)                     // Top / Bottom / Leading / Trailing
+            .alignment(EdgeAlignment::Center)          // Start / Center / End along the edge
+            .gap(4.0)                                  // points away from the anchor
+            .flip(true)                                // flip to the opposite edge on overflow
+            .clamp(Clamp::Window { margin: 2.0 })      // stay inside the window
+            .dismissal(Dismissal::OutsideInteraction), // or Manual — only the binding closes it
+    )
+```
+
+Leading/trailing follow the layout direction; `Start`/`End` are leading/trailing along
+the top and bottom edges and top/bottom along the leading and trailing edges. Unlike
+`.context_menu`, the overlay takes arbitrary `impl View` content — this is the popover
+primitive (the M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
+
 ## Scrolling
 
 ```rust
@@ -222,9 +253,12 @@ button(text!("{edit_label}"))               // a text! satisfies IntoLabel: reac
 toggle("Wi-Fi", &enabled)                   // &Binding<bool>
 Toggle::new("Wi-Fi", &enabled).style(ToggleStyle::Switch)     // Automatic | Switch | Checkbox
 slider("Volume", &level).range(0.0..=1.0)   // &Binding<f64>; range is RangeInclusive<f64>
+slider("Volume", &level).size(ControlSize::Large)      // ExtraSmall..=ExtraLarge; sliders default ExtraSmall
+    .value_indicator(|v| Str::from(format!("{v:.0}"))) // shown above the thumb while dragging
 stepper("Quantity", &count)                 // &Binding<i32>
 stepper("Items", &count).range(0..=100).step(5)   // range: impl RangeBounds<i32>; step takes a signal
 field("Email", &address)                    // &Binding<Str>
+field("Search", &query).on_submit(handler)  // Return in a line-limited field runs it
 TextField::new("Username", &name).prompt("Enter your username")   // placeholder ≠ label
 progress(fraction)                          // impl IntoComputed<f64>
 progress(fraction).label("Downloading")     // its label is a modifier — the one exception
@@ -314,6 +348,20 @@ Both carry the full font API:
 `.size(..)` is the *font* size, is reactive (`impl IntoSignal<f64>`), and **shadows** the
 two-argument frame `.size(w, h)` — to give a text a frame, use `.width(..)`/`.height(..)`
 or size its container.
+
+A `font::Font` built from a slot carries the same overrides, and every one of them —
+`.family(..)`, `.size(..)`, `.weight(..)`, `.design(..)`, `.line_height(..)`,
+`.letter_spacing(..)` — takes a plain value or a signal of one. A family that follows a
+setting is a signal, never a `watch(..)`:
+
+```rust
+let family: Binding<Option<Str>> = Binding::container(None); // e.g. a user setting
+text("~/src").font(font::Font::from(font::Body).family(family.clone()))
+```
+
+`.family(..)` takes a name (`"Menlo"`, a `Str`, a `String`), a signal of one, or a signal
+of `Option<Str>` whose `None` (`font::FontFamily::Inherited`) keeps the family the slot
+resolves to. Changing the signal re-resolves the font in place; the text is not rebuilt.
 
 Richer text:
 
@@ -408,7 +456,11 @@ List::content((
 ))
 ```
 
-`ListItem` modifiers: `.deletable(signal)`, `.selected(signal)`, `.section(section)`.
+`ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
+list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
+`.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
+`List::content` rows `V::Id` is `SelfId<usize>`, for `List::for_each` it is
+`Identifiable::Id`. At most one mode per list: a later call replaces an earlier one.
 `List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
 tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.

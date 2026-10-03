@@ -1,49 +1,31 @@
 //! Gradient Example - Demonstrates WaterUI's gradient system
 //!
-//! This example showcases GPU-rendered gradients:
-//! - Animated fluid mesh gradient background (time-based, automatic)
-//! - GPU flowing shader gradient (fully GPU-animated)
+//! This example showcases the gradient views:
+//! - A mesh gradient whose colours follow a signal
+//! - A GPU-animated mesh gradient driven by the engine's frame clock
+//! - A GPU flowing shader gradient
 //! - Linear, radial, angular gradients
 //! - Mesh gradients with per-vertex colors
 //! - Shape fills with gradients
 
 use waterui::app::App;
+use waterui::color::working::from_linear_srgb;
 use waterui::prelude::*;
 use waterui::preview;
 use waterui::shape::{Circle, RoundedRectangle};
 use waterui::task::sleep;
-use waterui_graphics::{
-    AnimatedMeshGradient, AnimatedMeshGradientConfig, Gradient, MeshGradient, ResolvedColor,
-};
 
 use core::time::Duration;
 
-/// Helper to create a resolved color (SDR)
-fn color(r: f32, g: f32, b: f32) -> ResolvedColor {
-    ResolvedColor {
-        red: r,
-        green: g,
-        blue: b,
-        opacity: 1.0,
-        headroom: 0.0,
-    }
-}
-
-/// Helper to create an HDR color with extended brightness
-/// Values can exceed 1.0 for bright highlights on HDR displays
-fn hdr_color(r: f32, g: f32, b: f32, headroom: f32) -> ResolvedColor {
-    ResolvedColor {
-        red: r,
-        green: g,
-        blue: b,
-        opacity: 1.0,
-        headroom,
-    }
+/// A colour from linear sRGB components. Components above 1.0 are brighter
+/// than SDR white and need an HDR display to show.
+fn color(r: f32, g: f32, b: f32) -> WorkingColor {
+    from_linear_srgb([r, g, b], 1.0)
 }
 
 /// Computes animated mesh colors based on elapsed time.
 /// Uses sine waves with different phases and frequencies for a dreamy fluid effect.
-fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
+fn compute_animated_colors(time: f32) -> [WorkingColor; 9] {
     // Base palette - deep blues, purples, teals
     let base_colors: [[f32; 3]; 9] = [
         [0.1, 0.1, 0.3],   // Top-left: dark blue
@@ -57,7 +39,7 @@ fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
         [0.15, 0.1, 0.25], // Bottom-right: dark purple
     ];
 
-    let mut colors = [ResolvedColor::default(); 9];
+    let mut colors = [WorkingColor::BLACK; 9];
 
     for (i, base) in base_colors.iter().enumerate() {
         // Each vertex has unique phase offsets for organic movement
@@ -71,19 +53,17 @@ fn compute_animated_colors(time: f32) -> [ResolvedColor; 9] {
         let wave3 = (time * 0.7 + y * 0.8).cos() * 0.08;
 
         // Apply waves to each color channel with different phases
-        colors[i] = ResolvedColor {
-            red: (base[0] + wave1 + wave2 * 0.5).clamp(0.0, 1.0),
-            green: (base[1] + wave2 + wave3 * 0.5).clamp(0.0, 1.0),
-            blue: (base[2] + wave3 + wave1 * 0.5).clamp(0.0, 1.0),
-            opacity: 1.0,
-            headroom: 0.0,
-        };
+        colors[i] = color(
+            (base[0] + wave1 + wave2 * 0.5).clamp(0.0, 1.0),
+            (base[1] + wave2 + wave3 * 0.5).clamp(0.0, 1.0),
+            (base[2] + wave3 + wave1 * 0.5).clamp(0.0, 1.0),
+        );
     }
 
     colors
 }
 
-async fn animate_mesh_colors(colors: Binding<[ResolvedColor; 9]>) {
+async fn animate_mesh_colors(colors: Binding<[WorkingColor; 9]>) {
     let start = std::time::Instant::now();
     loop {
         let elapsed = start.elapsed().as_secs_f32();
@@ -92,14 +72,14 @@ async fn animate_mesh_colors(colors: Binding<[ResolvedColor; 9]>) {
     }
 }
 
-/// Demo: Animated fluid mesh gradient background (automatic time-based animation)
+/// Demo: mesh gradient whose colours follow a signal
 fn animated_background_section() -> impl View {
     // Create binding for animated colors
-    let colors: Binding<[ResolvedColor; 9]> = Binding::container(compute_animated_colors(0.0));
+    let colors: Binding<[WorkingColor; 9]> = Binding::container(compute_animated_colors(0.0));
 
     vstack((
         text("Animated Mesh Gradient").size(20.0),
-        "Automatic time-based fluid animation",
+        "Colours follow a signal; each change updates the paint in place",
         // The animated mesh gradient
         zstack((
             // Background: MeshGradient accepts Signal directly!
@@ -120,15 +100,21 @@ fn animated_background_section() -> impl View {
     .task(animate_mesh_colors(colors.clone()))
 }
 
-/// Demo: GPU flowing gradient (fully shader animated, no CPU updates)
+/// Demo: GPU-animated mesh gradient (shader animated, no per-frame CPU updates)
 fn gpu_animated_mesh_gradient_section() -> impl View {
-    let gradient = AnimatedMeshGradient::new(animated_mesh_config());
+    let animating = Binding::container(true);
+    // The configuration is a signal: pausing sets the speed to zero, which
+    // holds the gradient still and lets the engine idle.
+    let config = animating.map(|animating| {
+        let config = animated_mesh_config();
+        if animating { config } else { config.speed(0.0) }
+    });
 
     vstack((
         text("GPU Animated Mesh Gradient").size(20.0),
-        "Speed + palette configured at creation time",
+        "Speed, warp and palette follow a signal",
         zstack((
-            gradient.size(300.0, 200.0),
+            AnimatedMeshGradient::new(config).size(300.0, 200.0),
             vstack((
                 text("Mesh Gradient")
                     .size(24.0)
@@ -138,6 +124,7 @@ fn gpu_animated_mesh_gradient_section() -> impl View {
             .padding(),
         ))
         .size(300.0, 200.0),
+        toggle("Animate", &animating),
     ))
     .spacing(12.0)
     .padding()
@@ -150,6 +137,17 @@ fn animated_mesh_config() -> AnimatedMeshGradientConfig {
 #[preview]
 fn animated_mesh_gradient_preview() -> impl View {
     AnimatedMeshGradient::new(animated_mesh_config()).size(640.0, 360.0)
+}
+
+/// Demo: GPU flowing shader gradient
+fn flowing_gradient_section() -> impl View {
+    vstack((
+        text("Flowing Gradient").size(20.0),
+        "Noise-driven colour bands drifting on the GPU",
+        FlowingGradient::new().size(300.0, 200.0),
+    ))
+    .spacing(12.0)
+    .padding()
 }
 
 /// Demo: Shape filled with gradient
@@ -374,8 +372,8 @@ fn hdr_gradient_section() -> impl View {
             vstack((
                 Gradient::radial(
                     vec![
-                        (0.0, hdr_color(1.5, 1.5, 1.5, 0.5)), // HDR bright
-                        (1.0, color(0.1, 0.1, 0.2)),          // Dark edge
+                        (0.0, color(1.5, 1.5, 1.5)), // HDR bright
+                        (1.0, color(0.1, 0.1, 0.2)), // Dark edge
                     ],
                     [0.5, 0.5],
                     0.0,
@@ -388,8 +386,8 @@ fn hdr_gradient_section() -> impl View {
             vstack((
                 Gradient::radial(
                     vec![
-                        (0.0, hdr_color(2.0, 2.0, 2.0, 1.0)), // Very bright HDR
-                        (1.0, color(0.1, 0.1, 0.2)),          // Dark edge
+                        (0.0, color(2.0, 2.0, 2.0)), // Very bright HDR
+                        (1.0, color(0.1, 0.1, 0.2)), // Dark edge
                     ],
                     [0.5, 0.5],
                     0.0,
@@ -406,8 +404,8 @@ fn hdr_gradient_section() -> impl View {
             vstack((
                 Gradient::linear(
                     vec![
-                        (0.0, hdr_color(2.0, 0.3, 0.3, 1.0)), // Bright HDR red
-                        (1.0, color(0.3, 0.0, 0.0)),          // Dark red
+                        (0.0, color(2.0, 0.3, 0.3)), // Bright HDR red
+                        (1.0, color(0.3, 0.0, 0.0)), // Dark red
                     ],
                     [0.0, 0.0],
                     [1.0, 1.0],
@@ -419,8 +417,8 @@ fn hdr_gradient_section() -> impl View {
             vstack((
                 Gradient::linear(
                     vec![
-                        (0.0, hdr_color(0.3, 2.0, 0.3, 1.0)), // Bright HDR green
-                        (1.0, color(0.0, 0.3, 0.0)),          // Dark green
+                        (0.0, color(0.3, 2.0, 0.3)), // Bright HDR green
+                        (1.0, color(0.0, 0.3, 0.0)), // Dark green
                     ],
                     [0.0, 0.0],
                     [1.0, 1.0],
@@ -432,8 +430,8 @@ fn hdr_gradient_section() -> impl View {
             vstack((
                 Gradient::linear(
                     vec![
-                        (0.0, hdr_color(0.3, 0.3, 2.0, 1.0)), // Bright HDR blue
-                        (1.0, color(0.0, 0.0, 0.3)),          // Dark blue
+                        (0.0, color(0.3, 0.3, 2.0)), // Bright HDR blue
+                        (1.0, color(0.0, 0.0, 0.3)), // Dark blue
                     ],
                     [0.0, 0.0],
                     [1.0, 1.0],
@@ -456,11 +454,16 @@ pub fn demo() -> impl View {
             text("WaterUI Gradient Examples").size(28.0),
             "GPU-rendered gradients with animation support",
             Divider,
-            // Animated mesh gradient background
-            animated_background_section(),
-            Divider,
-            // GPU flowing shader gradient
-            gpu_animated_mesh_gradient_section(),
+            vstack((
+                // Animated mesh gradient background
+                animated_background_section(),
+                Divider,
+                // GPU animated mesh gradient
+                gpu_animated_mesh_gradient_section(),
+                Divider,
+                // GPU flowing shader gradient
+                flowing_gradient_section(),
+            )),
             Divider,
             // Shape + gradient fill
             shape_fill_section(),

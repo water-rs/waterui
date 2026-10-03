@@ -2,17 +2,24 @@
 use core::ptr::NonNull;
 #[cfg(not(target_vendor = "apple"))]
 use core::ptr::null_mut;
+use std::rc::Rc;
 
-use waterui::window::{Window, WindowBackground, WindowManager, WindowState, WindowStyle};
+use nami::SignalExt as _;
+use waterui::window::{
+    Activation, Monitor, MonitorSelector, UserAttention, Window, WindowBackground, WindowLevel,
+    WindowManager, WindowPlacement, WindowState, WindowStyle, resolve_background,
+};
 use waterui::{AnyView, Str};
+use waterui_graphics::WorkingColor;
 use waterui_layout::{Rect, Size};
+
+use crate::components::layout::WuiRect;
 
 #[cfg(feature = "c-api")]
 use crate::ffi_binding;
 use crate::{
     IntoFFI, IntoRust, WuiAnyView, WuiEnv,
     closure::ForeignCallbackContext,
-    color::WuiColor,
     reactive::{WuiBinding, WuiComputed},
 };
 
@@ -28,6 +35,192 @@ pub enum WuiWindowStyle {
     FullSizeContentView = 2,
 }
 
+/// FFI mirror of [`MonitorSelector`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiMonitorSelector {
+    /// The platform's primary display.
+    Primary = 0,
+    /// The display under the pointer when the window is shown.
+    Pointer = 1,
+    /// The display holding this application's focused window (`Primary` when none).
+    Focused = 2,
+}
+
+impl From<WuiMonitorSelector> for MonitorSelector {
+    fn from(selector: WuiMonitorSelector) -> Self {
+        match selector {
+            WuiMonitorSelector::Primary => Self::Primary,
+            WuiMonitorSelector::Pointer => Self::Pointer,
+            WuiMonitorSelector::Focused => Self::Focused,
+        }
+    }
+}
+
+impl From<MonitorSelector> for WuiMonitorSelector {
+    fn from(selector: MonitorSelector) -> Self {
+        match selector {
+            MonitorSelector::Primary => Self::Primary,
+            MonitorSelector::Pointer => Self::Pointer,
+            MonitorSelector::Focused => Self::Focused,
+        }
+    }
+}
+
+/// FFI mirror of [`Activation`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiActivation {
+    /// Showing the window activates the app and focuses the window.
+    OnShow = 0,
+    /// Showing does not take focus; a click on the window does.
+    OnClick = 1,
+    /// The window never takes keyboard focus or activates the app.
+    Never = 2,
+}
+
+impl From<WuiActivation> for Activation {
+    fn from(activation: WuiActivation) -> Self {
+        match activation {
+            WuiActivation::OnShow => Self::OnShow,
+            WuiActivation::OnClick => Self::OnClick,
+            WuiActivation::Never => Self::Never,
+        }
+    }
+}
+
+impl From<Activation> for WuiActivation {
+    fn from(activation: Activation) -> Self {
+        match activation {
+            Activation::OnShow => Self::OnShow,
+            Activation::OnClick => Self::OnClick,
+            Activation::Never => Self::Never,
+        }
+    }
+}
+
+/// FFI mirror of [`Monitor`], built by the native backend that resolved the
+/// placement's selector.
+///
+/// `name` is a borrowed NUL-terminated UTF-8 string (null when the platform
+/// reports no name): the native caller keeps it alive for the duration of the
+/// `place` call only — the Rust side copies what it needs before returning.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiMonitor {
+    /// Bounds in the global logical coordinate space.
+    pub frame: WuiRect,
+    /// `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+    pub visible_frame: WuiRect,
+    /// Physical pixels per logical point.
+    pub scale_factor: f64,
+    /// The platform's name for the display, or null.
+    pub name: *const core::ffi::c_char,
+}
+
+impl WuiMonitor {
+    /// Converts the borrowed monitor the native backend built into the
+    /// [`Monitor`] the `place` closure expects. Only called while the backend's
+    /// `name` pointer is still valid.
+    fn as_rust(&self) -> Monitor {
+        let rect = |r: &WuiRect| {
+            Rect::new(
+                waterui_layout::Point::new(r.origin.x, r.origin.y),
+                Size::new(r.size.width, r.size.height),
+            )
+        };
+        Monitor {
+            frame: rect(&self.frame),
+            visible_frame: rect(&self.visible_frame),
+            scale_factor: self.scale_factor,
+            name: if self.name.is_null() {
+                None
+            } else {
+                // SAFETY: the caller contract gives `name` a NUL-terminated
+                // UTF-8 string valid for this call.
+                let bytes = unsafe { core::ffi::CStr::from_ptr(self.name) }.to_bytes();
+                Some(Str::from(String::from_utf8_lossy(bytes).into_owned()))
+            },
+        }
+    }
+}
+
+/// Native invocation of [`WindowPlacement::place`]: the backend fills a
+/// [`WuiMonitor`] for the resolved selector and receives the frame to write.
+pub type WuiPlaceFn =
+    unsafe extern "C" fn(context: *const (), monitor: *const WuiMonitor) -> WuiRect;
+
+/// FFI mirror of [`WindowPlacement`]: the selector plus the `place` closure as
+/// the usual context/call/drop triple.
+#[repr(C)]
+#[derive(Debug)]
+pub struct WuiWindowPlacement {
+    /// Which monitor the backend resolves before calling `call`.
+    pub monitor: WuiMonitorSelector,
+    /// The `place` closure's context, registered with `call` and `drop`.
+    pub context: *mut (),
+    /// Resolved monitor in, window frame out.
+    pub call: WuiPlaceFn,
+    /// Releases `context` exactly once when the window record is disposed.
+    pub drop: unsafe extern "C" fn(*mut ()),
+}
+
+/// Calls a `place` closure held in a `WuiWindowPlacement`'s context.
+///
+/// # Safety
+/// `data` is the `Box::into_raw` of the `Rc<dyn Fn(&Monitor) -> Rect>` the
+/// conversion stored, and `monitor` points at a valid `WuiMonitor` whose `name`
+/// lives for the call.
+unsafe extern "C" fn placement_call(data: *const (), monitor: *const WuiMonitor) -> WuiRect {
+    // SAFETY: upheld by the caller contract on `placement_into_ffi`.
+    let place = unsafe { &*(data.cast::<Rc<dyn Fn(&Monitor) -> Rect>>()) };
+    // SAFETY: `monitor` points at the valid `WuiMonitor` the caller passed.
+    let monitor = unsafe { (*monitor).as_rust() };
+    place(&monitor).into_ffi()
+}
+
+/// Releases a `place` closure boxed by `placement_into_ffi`.
+///
+/// # Safety
+/// `data` is the pointer `placement_into_ffi` produced, released exactly once.
+unsafe extern "C" fn placement_drop(data: *mut ()) {
+    // SAFETY: `data` is the `Box::into_raw` of the `place` closure.
+    unsafe { drop(Box::from_raw(data.cast::<Rc<dyn Fn(&Monitor) -> Rect>>())) };
+}
+
+/// Moves a [`WindowPlacement`] into its FFI triple, or null for `None`.
+fn placement_into_ffi(placement: Option<WindowPlacement>) -> *mut WuiWindowPlacement {
+    let Some(placement) = placement else {
+        return core::ptr::null_mut();
+    };
+    let context = Box::into_raw(Box::new(placement.place)).cast::<()>();
+    Box::into_raw(Box::new(WuiWindowPlacement {
+        monitor: placement.monitor.into(),
+        context,
+        call: placement_call,
+        drop: placement_drop,
+    }))
+}
+
+/// Disposes an FFI placement: releases the context through its `drop`, then
+/// the record itself.
+///
+/// # Safety
+/// `placement` is a pointer produced by `placement_into_ffi` (or null), not
+/// already released.
+#[cfg(any(feature = "android-jni", test))]
+unsafe fn dispose_placement(placement: *mut WuiWindowPlacement) {
+    if placement.is_null() {
+        return;
+    }
+    // SAFETY: the record and its context are the ones `placement_into_ffi`
+    // registered; each is released exactly once.
+    unsafe {
+        ((*placement).drop)((*placement).context);
+        drop(Box::from_raw(placement));
+    }
+}
+
 impl From<WindowStyle> for WuiWindowStyle {
     fn from(style: WindowStyle) -> Self {
         match style {
@@ -37,6 +230,17 @@ impl From<WindowStyle> for WuiWindowStyle {
         }
     }
 }
+
+impl IntoFFI for WindowStyle {
+    type FFI = WuiWindowStyle;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.into()
+    }
+}
+
+// Native backends read and observe the style; only Rust writes it.
+crate::ffi_computed!(WindowStyle, WuiWindowStyle, window_style);
 
 /// FFI-compatible representation of [`WindowState`].
 #[repr(C)]
@@ -50,6 +254,9 @@ pub enum WuiWindowState {
     Minimized = 2,
     /// The window is maximized to fullscreen.
     Fullscreen = 3,
+    /// The window fills the screen's work area, keeping its chrome and
+    /// the system's panels.
+    Maximized = 4,
 }
 
 impl From<WindowState> for WuiWindowState {
@@ -58,6 +265,7 @@ impl From<WindowState> for WuiWindowState {
             WindowState::Normal => Self::Normal,
             WindowState::Closed => Self::Closed,
             WindowState::Minimized => Self::Minimized,
+            WindowState::Maximized => Self::Maximized,
             WindowState::Fullscreen => Self::Fullscreen,
         }
     }
@@ -79,6 +287,7 @@ impl IntoRust for WuiWindowState {
             Self::Normal => WindowState::Normal,
             Self::Closed => WindowState::Closed,
             Self::Minimized => WindowState::Minimized,
+            Self::Maximized => WindowState::Maximized,
             Self::Fullscreen => WindowState::Fullscreen,
         }
     }
@@ -89,31 +298,122 @@ impl IntoRust for WuiWindowState {
 ffi_binding!(WindowState, WuiWindowState, window_state);
 crate::ffi_watcher!(WindowState, WuiWindowState, window_state);
 
-/// FFI-compatible representation of [`WindowBackground`].
-///
-/// Only supports Opaque and Color. Material blur effects are handled
-/// via `MaterialBackground` metadata on the window content.
+/// FFI-compatible representation of [`WindowLevel`].
 #[repr(C)]
-#[derive(Debug)]
-pub enum WuiWindowBackground {
-    /// Opaque system default background.
-    Opaque,
-    /// Solid color background (can be semi-transparent via alpha).
-    /// Native must resolve the color using the environment.
-    Color {
-        /// Pointer to the reactive color to resolve and apply as the window background.
-        color: *mut WuiColor,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiWindowLevel {
+    /// The window stacks with other windows as focus moves between them.
+    Normal = 0,
+    /// The window stays above other applications' normal windows.
+    AlwaysOnTop = 1,
 }
 
-impl From<WindowBackground> for WuiWindowBackground {
-    fn from(bg: WindowBackground) -> Self {
-        match bg {
-            WindowBackground::Opaque => Self::Opaque,
-            WindowBackground::Color(color) => Self::Color {
-                color: color.into_ffi(),
-            },
+impl From<WindowLevel> for WuiWindowLevel {
+    fn from(level: WindowLevel) -> Self {
+        match level {
+            WindowLevel::Normal => Self::Normal,
+            WindowLevel::AlwaysOnTop => Self::AlwaysOnTop,
         }
+    }
+}
+
+impl IntoFFI for WindowLevel {
+    type FFI = WuiWindowLevel;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.into()
+    }
+}
+
+impl IntoRust for WuiWindowLevel {
+    type Rust = WindowLevel;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::Normal => WindowLevel::Normal,
+            Self::AlwaysOnTop => WindowLevel::AlwaysOnTop,
+        }
+    }
+}
+
+// Generate C FFI computed functions and the native watcher for WindowLevel.
+#[cfg(feature = "c-api")]
+crate::ffi_computed!(WindowLevel, WuiWindowLevel, window_level);
+
+/// FFI-compatible representation of `Option<UserAttention>` (see
+/// [`UserAttention`]).
+///
+/// `None` is a variant of the enum itself so that watching the attention
+/// binding reports a withdrawn request without a second out-of-band channel.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WuiUserAttention {
+    /// No attention request is pending.
+    None = 0,
+    /// Something the user may want to look at: a finished task, a mention.
+    Informational = 1,
+    /// Something the user must act on.
+    Critical = 2,
+}
+
+impl From<UserAttention> for WuiUserAttention {
+    fn from(attention: UserAttention) -> Self {
+        match attention {
+            UserAttention::Informational => Self::Informational,
+            UserAttention::Critical => Self::Critical,
+        }
+    }
+}
+
+impl IntoFFI for Option<UserAttention> {
+    type FFI = WuiUserAttention;
+
+    fn into_ffi(self) -> Self::FFI {
+        self.map_or(WuiUserAttention::None, Into::into)
+    }
+}
+
+impl IntoRust for WuiUserAttention {
+    type Rust = Option<UserAttention>;
+
+    unsafe fn into_rust(self) -> Self::Rust {
+        match self {
+            Self::None => None,
+            Self::Informational => Some(UserAttention::Informational),
+            Self::Critical => Some(UserAttention::Critical),
+        }
+    }
+}
+
+// Generate C FFI binding functions and the native watcher for the attention
+// binding.
+#[cfg(feature = "c-api")]
+ffi_binding!(Option<UserAttention>, WuiUserAttention, user_attention);
+crate::ffi_watcher!(Option<UserAttention>, WuiUserAttention, user_attention);
+
+/// Resolves a window's reactive background to the colour the native backend
+/// paints behind the window's content, consuming `background`.
+///
+/// The returned signal follows both a change of the background — including a
+/// switch between opaque and a translucent colour — and a change of the colour
+/// it resolves to. A colour whose opacity is below one asks for a translucent
+/// window.
+///
+/// # Safety
+///
+/// `background` must be the owning `WuiWindow.background` handle, consumed by
+/// this call and not used afterwards; `env` must be a valid `WuiEnv` borrowed
+/// for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_resolve_window_background(
+    background: *mut WuiComputed<WindowBackground>,
+    env: *const WuiEnv,
+) -> *mut WuiComputed<WorkingColor> {
+    // SAFETY: the caller contract makes `background` an owning handle reclaimed
+    // exactly once here, and `env` a valid borrow for the call.
+    unsafe {
+        let background = Box::from_raw(background).0;
+        resolve_background(&background, &*env).into_ffi()
     }
 }
 
@@ -135,15 +435,30 @@ pub struct WuiWindow {
     pub state: *mut WuiBinding<WindowState>,
     /// Optional toolbar content (null if none).
     pub toolbar: *mut WuiAnyView,
-    /// The visual style of the window.
-    pub style: WuiWindowStyle,
-    /// The background style of the window.
-    pub background: WuiWindowBackground,
+    /// The visual style of the window, observed so a change after the window
+    /// is shown is re-applied.
+    pub style: *mut WuiComputed<WindowStyle>,
+    /// The window's reactive background. Resolve it with
+    /// `waterui_resolve_window_background`, which consumes it.
+    pub background: *mut WuiComputed<WindowBackground>,
     /// Explicit minimum content size, or null to derive the minimum from the
     /// content's layout (the root view measured at a zero proposal).
     pub min_size: *mut WuiComputed<Size>,
     /// Explicit maximum content size, or null for an unconstrained window.
     pub max_size: *mut WuiComputed<Size>,
+    /// Monitor selection plus the `place` callback, or null for the
+    /// platform's default placement.
+    pub placement: *mut WuiWindowPlacement,
+    /// How showing and clicking the window affects focus and app activation.
+    pub activation: WuiActivation,
+    /// Where the window stacks relative to other applications' windows.
+    pub level: *mut WuiComputed<WindowLevel>,
+    /// The window's request for the user's attention. The backend sets it back
+    /// to `None` when the window gains focus.
+    pub attention: *mut WuiBinding<Option<UserAttention>>,
+    /// The steps the window's content size moves in while the user resizes it,
+    /// or null for continuous resizing.
+    pub resize_increments: *mut WuiComputed<Size>,
 }
 
 /// A uniquely owned pointer produced by [`IntoFFI`].
@@ -188,24 +503,21 @@ impl<T> Drop for OwnedFfiHandle<T> {
     }
 }
 
+/// The window properties Android's root activity realizes.
 #[cfg(any(feature = "android-jni", test))]
-impl WuiWindowBackground {
-    fn into_android_owned_color(self) -> Option<OwnedFfiHandle<WuiColor>> {
-        match self {
-            Self::Opaque => None,
-            Self::Color { color } => Some(OwnedFfiHandle::required(
-                color,
-                "WuiWindow.background.color",
-            )),
-        }
-    }
+pub(crate) struct WuiAndroidWindow {
+    /// The root content view.
+    pub(crate) content: OwnedFfiHandle<WuiAnyView>,
+    /// The resolved background colour, applied with `setBackgroundDrawable`.
+    pub(crate) background: OwnedFfiHandle<WuiComputed<WorkingColor>>,
 }
 
 #[cfg(any(feature = "android-jni", test))]
 impl WuiWindow {
-    /// Retains the only window property consumed by Android's root activity and
-    /// releases every other Rust-owned FFI handle.
-    pub(crate) fn into_android_content(self) -> OwnedFfiHandle<WuiAnyView> {
+    /// Retains the window properties Android's root activity consumes —
+    /// resolving the background in `env` — and releases every other
+    /// Rust-owned FFI handle.
+    pub(crate) fn into_android_window(self, env: &waterui::Environment) -> WuiAndroidWindow {
         let Self {
             title,
             closable: _,
@@ -214,29 +526,56 @@ impl WuiWindow {
             content,
             state,
             toolbar,
-            style: _,
+            style,
             background,
             min_size,
             max_size,
+            placement,
+            activation: _,
+            level,
+            attention,
+            resize_increments,
         } = self;
+        // SAFETY: `placement` is the pointer `placement_into_ffi` produced for
+        // this window, not yet released.
+        unsafe { dispose_placement(placement) };
 
+        // Android's single-Activity model has no window states: the `state`
+        // binding is dropped, so a `Maximized` write maps to Normal — the
+        // window is the activity, always filling the screen. `level`,
+        // `attention` and `resize_increments` are dropped the same way; they
+        // have no Android meaning.
         let unused_handles = (
             OwnedFfiHandle::required(title, "WuiWindow.title"),
             OwnedFfiHandle::optional(frame),
             OwnedFfiHandle::required(state, "WuiWindow.state"),
             OwnedFfiHandle::optional(toolbar),
-            background.into_android_owned_color(),
+            OwnedFfiHandle::required(style, "WuiWindow.style"),
             OwnedFfiHandle::optional(min_size),
             OwnedFfiHandle::optional(max_size),
+            OwnedFfiHandle::required(level, "WuiWindow.level"),
+            OwnedFfiHandle::required(attention, "WuiWindow.attention"),
+            OwnedFfiHandle::optional(resize_increments),
+        );
+        let background = OwnedFfiHandle::required(background, "WuiWindow.background");
+        // SAFETY: `background` is this window's owning handle; taking it out
+        // of the wrapper hands the one release to the resolved signal.
+        let background = unsafe { Box::from_raw(background.into_raw()) }.0;
+        let background = OwnedFfiHandle::required(
+            resolve_background(&background, env).into_ffi(),
+            "resolved window background",
         );
         let content = OwnedFfiHandle::required(content, "WuiWindow.content");
         drop(unused_handles);
-        content
+        WuiAndroidWindow {
+            content,
+            background,
+        }
     }
 
     /// Releases a window which Android cannot represent.
-    pub(crate) fn dispose_android(self) {
-        drop(self.into_android_content());
+    pub(crate) fn dispose_android(self, env: &waterui::Environment) {
+        drop(self.into_android_window(env));
     }
 }
 
@@ -272,10 +611,15 @@ impl IntoFFI for Window {
             content: content.into_ffi(),
             state: self.state.into_ffi(),
             toolbar,
-            style: self.style.into(),
-            background: self.background.into(),
+            style: self.style.computed().into_ffi(),
+            background: self.background.computed().into_ffi(),
             min_size: self.min_size.into_ffi(),
             max_size: self.max_size.into_ffi(),
+            placement: placement_into_ffi(self.placement),
+            activation: self.activation.into(),
+            level: self.level.into_ffi(),
+            attention: self.attention.into_ffi(),
+            resize_increments: self.resize_increments.into_ffi(),
         }
     }
 }

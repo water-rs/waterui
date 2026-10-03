@@ -88,7 +88,7 @@ fn handle_webview_event(
             progress_value.set(1.0);
         }
         WebViewEvent::Redirect { from, to } => {
-            if allow_redirects.get() {
+            if allow_redirects.snapshot() {
                 address.set(Str::from(to.to_string()));
                 status.set(Str::from(format!("Redirect: {from} -> {to}")));
             } else {
@@ -128,7 +128,7 @@ fn toolbar(
             button("Go")
                 .style(ButtonStyle::Bordered)
                 .action(|proxy: WebViewProxy, nav: NavigateState| {
-                    if let Some(url) = Url::parse_user_input(nav.address.get().as_str()) {
+                    if let Some(url) = Url::parse_user_input(nav.address.snapshot().as_str()) {
                         nav.address.set(Str::from(url.as_str().to_owned()));
                         proxy.go_to(url);
                     } else {

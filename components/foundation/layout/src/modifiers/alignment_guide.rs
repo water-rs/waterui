@@ -15,9 +15,9 @@ use crate::{
 };
 
 #[derive(Clone)]
-struct HorizontalAlignmentGuideLayout<F> {
-    alignment: HorizontalAlignment,
-    compute: F,
+pub(crate) struct HorizontalAlignmentGuideLayout<F> {
+    pub(crate) alignment: HorizontalAlignment,
+    pub(crate) compute: F,
 }
 
 impl<F> fmt::Debug for HorizontalAlignmentGuideLayout<F> {
@@ -43,14 +43,19 @@ where
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         assert!(
             children.len() == 1,
             "HorizontalAlignmentGuideLayout expects exactly one child"
         );
-        vec![SubviewPlacement::new(bounds, proposal)]
+        // Placement negotiates on both axes against the bounds: the child is
+        // proposed the region it is actually placed in.
+        vec![SubviewPlacement::new(
+            bounds,
+            ProposalSize::new(Some(bounds.width()), Some(bounds.height())),
+        )]
     }
 
     fn explicit_horizontal(
@@ -60,7 +65,11 @@ where
         children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
         if alignment != self.alignment {
-            return None;
+            // The modifier owns one key; every other explicit key the child
+            // declares passes through unchanged.
+            return children
+                .first()
+                .and_then(|child| child.explicit_horizontal(alignment));
         }
 
         assert!(
@@ -70,6 +79,17 @@ where
 
         let child = children[0];
         Some(child.frame.x() + (self.compute)(&child.dimensions()))
+    }
+
+    fn explicit_vertical(
+        &self,
+        alignment: VerticalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_vertical(alignment))
     }
 
     fn explicit_horizontal_alignments(&self) -> Vec<HorizontalAlignment> {
@@ -131,9 +151,9 @@ where
 }
 
 #[derive(Clone)]
-struct VerticalAlignmentGuideLayout<F> {
-    alignment: VerticalAlignment,
-    compute: F,
+pub(crate) struct VerticalAlignmentGuideLayout<F> {
+    pub(crate) alignment: VerticalAlignment,
+    pub(crate) compute: F,
 }
 
 impl<F> fmt::Debug for VerticalAlignmentGuideLayout<F> {
@@ -159,14 +179,30 @@ where
     fn place(
         &self,
         bounds: Rect,
-        proposal: ProposalSize,
+        _proposal: ProposalSize,
         children: &[&dyn SubView],
     ) -> Vec<SubviewPlacement> {
         assert!(
             children.len() == 1,
             "VerticalAlignmentGuideLayout expects exactly one child"
         );
-        vec![SubviewPlacement::new(bounds, proposal)]
+        // Placement negotiates on both axes against the bounds: the child is
+        // proposed the region it is actually placed in.
+        vec![SubviewPlacement::new(
+            bounds,
+            ProposalSize::new(Some(bounds.width()), Some(bounds.height())),
+        )]
+    }
+
+    fn explicit_horizontal(
+        &self,
+        alignment: HorizontalAlignment,
+        _bounds: Rect,
+        children: &[PlacedSubview<'_>],
+    ) -> Option<f32> {
+        children
+            .first()
+            .and_then(|child| child.explicit_horizontal(alignment))
     }
 
     fn explicit_vertical(
@@ -176,7 +212,9 @@ where
         children: &[PlacedSubview<'_>],
     ) -> Option<f32> {
         if alignment != self.alignment {
-            return None;
+            return children
+                .first()
+                .and_then(|child| child.explicit_vertical(alignment));
         }
 
         assert!(
@@ -334,6 +372,53 @@ mod tests {
             .expect("horizontal guide override should be present");
 
         assert_eq!(guide, 20.0);
+    }
+
+    #[test]
+    fn alignment_guide_wrapper_reproposes_bounds() {
+        // Placement is a fresh negotiation: the wrapper's child is proposed
+        // the bounds it is actually placed in — never the probe the wrapper
+        // was measured under. Measured at 60x20 and placed into 100x40, the
+        // child must hear 100x40.
+        let child = GuidedSubview {
+            size: Size::new(20.0, 10.0),
+        };
+        let bounds = Rect::new(Point::zero(), Size::new(100.0, 40.0));
+        let probe = ProposalSize::new(Some(60.0), Some(20.0));
+
+        let horizontal = HorizontalAlignmentGuideLayout {
+            alignment: HorizontalAlignment::Leading,
+            compute: |dimensions: &ViewDimensions| dimensions.size.width,
+        };
+        assert_eq!(
+            horizontal.size_that_fits(probe, &[&child]),
+            Size::new(20.0, 10.0)
+        );
+        assert_eq!(
+            horizontal.place(bounds, probe, &[&child]),
+            vec![SubviewPlacement::new(
+                bounds,
+                ProposalSize::new(Some(100.0), Some(40.0))
+            )],
+            "the horizontal guide wrapper must re-propose the bounds"
+        );
+
+        let vertical = VerticalAlignmentGuideLayout {
+            alignment: VerticalAlignment::Top,
+            compute: |dimensions: &ViewDimensions| dimensions.size.height,
+        };
+        assert_eq!(
+            vertical.size_that_fits(probe, &[&child]),
+            Size::new(20.0, 10.0)
+        );
+        assert_eq!(
+            vertical.place(bounds, probe, &[&child]),
+            vec![SubviewPlacement::new(
+                bounds,
+                ProposalSize::new(Some(100.0), Some(40.0))
+            )],
+            "the vertical guide wrapper must re-propose the bounds"
+        );
     }
 
     #[test]

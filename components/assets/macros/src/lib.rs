@@ -200,11 +200,15 @@ fn emit_module(
 /// - one `const _: &[u8] = include_bytes!(<abs file>);` per planned asset, so
 ///   adding or editing a file retriggers expansion (a proc macro's own reads
 ///   are invisible to Cargo's dependency graph otherwise);
-/// - one `#[used]` metadata static named `waterui_meta_bundle_<mount>` whose
+/// - one metadata static named `waterui_meta_bundle_<mount>` whose
 ///   NUL-terminated [`BundleMountMeta`] payload the CLI reads back from the
-///   compiled artifact's symbol table. Debug builds only: the CLI reads a
-///   dev-profile host rlib, and `#[used]` is linker-retained, so the gate is
-///   what keeps release binaries free of it.
+///   compiled artifact's symbol table, in every profile — a `water build
+///   --release` mounts the same bundle a debug build does. It carries no
+///   `#[used]`: the CLI reads the crate's own rlib
+///   (`waterui-cli::build::app_library_artifact` selects the app crate's rlib
+///   over any linked artifact), and archive members keep their symbols
+///   whether or not downstream code references them, so nothing marks the
+///   static for retention into a shipped binary — the linker dead-strips it.
 fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     if !root.is_dir() {
         return syn::Error::new(
@@ -263,8 +267,6 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
 
             #(#tracking)*
 
-            #[cfg(debug_assertions)]
-            #[used]
             #[allow(non_upper_case_globals)]
             #[doc(hidden)]
             pub static #meta_ident: [u8; #payload_len] = *#payload_lit;
@@ -318,8 +320,10 @@ pub fn include_bundle(input: TokenStream) -> TokenStream {
     expand_mount(&args.mount.to_string(), root, path_span).into()
 }
 
-/// Parsed arguments of an `include_web!("web", out_dir = "…", …)` invocation.
+/// Parsed arguments of an `include_web!(resources, "web", out_dir = "…", …)` invocation.
 struct IncludeWebArgs {
+    /// Resource context borrowed from the application's environment.
+    resources: syn::Expr,
     /// Web project root relative to `CARGO_MANIFEST_DIR`.
     root: LitStr,
     /// Build output directory inside the root (`dist` by default).
@@ -334,8 +338,11 @@ struct IncludeWebArgs {
 
 impl Parse for IncludeWebArgs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let resources = input.parse()?;
+        input.parse::<Token![,]>()?;
         let root: LitStr = input.parse()?;
         let mut args = Self {
+            resources,
             root,
             out_dir: None,
             entry: None,
@@ -377,11 +384,11 @@ impl Parse for IncludeWebArgs {
 const WEB_MOUNT: &str = "web";
 
 #[proc_macro]
-/// Embeds a web frontend into a view: `include_web!("web")` expands to the
+/// Embeds a web frontend into a view: `include_web!(resources, "web")` expands to the
 /// `WebViewOpen` that serves the project's staged build output over the
 /// engine's asset origin.
 ///
-/// The first argument is the web project root, required, resolved against
+/// The first argument borrows the `ResourceContext`; the second is the web project root, resolved against
 /// `CARGO_MANIFEST_DIR`; it must contain a `package.json` (the macro points at
 /// the project, not its build output). Named arguments are the complete
 /// configuration surface:
@@ -395,15 +402,15 @@ const WEB_MOUNT: &str = "web";
 /// Building the frontend and staging `<root>/<out_dir>` into the platform
 /// bundle are the CLI's job (`water package` / `water run`); the macro records
 /// the resolved paths in a `waterui_meta_bundle_web` artifact-channel symbol
-/// the CLI reads back from the compiled artifact's symbol table — debug
-/// builds only, since `#[used]` is linker-retained and the CLI reads a
-/// dev-profile host rlib rather than the target build. The macro never runs a
-/// bundler, never reads `Water.toml`, and embeds no frontend bytes in the
-/// binary. In a debug build the expansion first consults the dev-server
+/// the CLI reads back from the compiled artifact's symbol table, in every
+/// profile. The macro never runs a bundler, never reads `Water.toml`, and
+/// embeds no frontend bytes in the binary. On a development-linkage build
+/// (the crate's `dev` feature, which the generated backend enables for `water
+/// run`/`preview`/`build`) the expansion first consults the dev-server
 /// handoff
 /// (`WATERUI_DEV_URL` or a `--waterui-dev-url=` argument) and serves the
-/// bundler's URL instead when one was handed over; release always serves the
-/// staged bundle.
+/// bundler's URL instead when one was handed over; a packaged build always
+/// serves the staged bundle.
 ///
 /// One `include_web!` per application: a second invocation emits a metadata
 /// symbol with the same leaf and a different payload, which the CLI's artifact
@@ -411,11 +418,12 @@ const WEB_MOUNT: &str = "web";
 ///
 /// The expansion is an ordinary [`WebViewOpen`](waterui_webview::WebViewOpen),
 /// so everything chains as usual:
-/// `include_web!("web").serve(MyApi).inject(..).on_event(..)`.
+/// `include_web!(resources, "web").serve(MyApi).inject(..).on_event(..)`.
 ///
 /// Requires the `webview` and `assets` features of the `waterui` crate.
 pub fn include_web(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeWebArgs);
+    let resources = &args.resources;
     let root_span = args.root.span();
 
     let root = match crate_root().join(args.root.value()).canonicalize() {
@@ -480,23 +488,28 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
     quote! {
         {
-            #[cfg(debug_assertions)]
-            #[used]
             #[allow(non_upper_case_globals)]
             #[doc(hidden)]
             static #meta_ident: [u8; #payload_len] = *#payload_lit;
+            // A block-scoped static is private: it is only emitted into the
+            // object file when the surrounding code refers to it, so this
+            // throwaway reference is what puts the symbol into the rlib the
+            // CLI reads. `#[used]` would do that too, but it also survives
+            // the linker's dead stripping and ships in the binary.
+            let _ = &#meta_ident;
 
             // Cargo does not see a proc macro's filesystem reads, so the
             // package.json the expansion checked is tracked explicitly: the
             // macro re-expands when it appears or changes.
             const _: &[u8] = ::core::include_bytes!(#package_json);
 
+            #[allow(unexpected_cfgs)]
             let dev: ::core::option::Option<#waterui::Url> = {
-                #[cfg(debug_assertions)]
+                #[cfg(feature = "dev")]
                 {
                     #waterui::webview::dev_url()
                 }
-                #[cfg(not(debug_assertions))]
+                #[cfg(not(feature = "dev"))]
                 {
                     ::core::option::Option::None
                 }
@@ -505,7 +518,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
                 ::core::option::Option::Some(url) => #waterui::webview::WebView::open(url),
                 ::core::option::Option::None => #waterui::webview::WebView::open_assets(
                     #waterui::webview::DirectoryServer::new(
-                        #waterui::Bundle::new(#web_root).path("")
+                        #waterui::Bundle::new(#web_root).path(#resources, "")
                     )
                     .spa(#spa)
                     #csp
@@ -520,6 +533,9 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 /// Expands a single asset path into its inferred `WaterUI` asset handle.
+///
+/// Local paths are relative to the packaged asset root. Native handles take
+/// a `ResourceContext` for loading; image/video views obtain it from their environment.
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
     let waterui = match waterui_crate_path() {
@@ -573,14 +589,24 @@ pub fn asset(input: TokenStream) -> TokenStream {
             if is_remote {
                 quote! { #waterui::media::Photo::new(#path_lit) }
             } else {
-                quote! { #waterui::media::Photo::from_path(#path_lit) }
+                quote! {{
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { #waterui::ImageAsset::new(#waterui::Bundle::main(), #path_lit) }
+                    #[cfg(target_arch = "wasm32")]
+                    { #waterui::media::Photo::from_path(#path_lit) }
+                }}
             }
         }
         AssetKind::Video => {
             if is_remote {
                 quote! { #waterui::video::video(#path_lit) }
             } else {
-                quote! { #waterui::video::video(#waterui::Url::from_file_path_str(#path_lit)) }
+                quote! {{
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { #waterui::VideoAsset::new(#waterui::Bundle::main(), #path_lit) }
+                    #[cfg(target_arch = "wasm32")]
+                    { #waterui::video::video(#waterui::Url::from_file_path_str(#path_lit)) }
+                }}
             }
         }
         AssetKind::Audio => {
@@ -598,14 +624,19 @@ pub fn asset(input: TokenStream) -> TokenStream {
             } else if is_remote {
                 quote! { #waterui::Data::from_remote(#path_lit) }
             } else {
-                quote! { #waterui::Data::from_local(#path_lit) }
+                quote! {{
+                    #[cfg(not(target_arch = "wasm32"))]
+                    { #waterui::DataAsset::new(#waterui::Bundle::main(), #path_lit) }
+                    #[cfg(target_arch = "wasm32")]
+                    { #waterui::Data::from_local(#path_lit) }
+                }}
             }
         }
         AssetKind::LargeModel => {
             if is_remote {
                 quote! { #waterui::LargeFile::from_remote(#path_lit) }
             } else {
-                quote! { #waterui::LargeFile::from_local(#path_lit) }
+                quote! { #waterui::LargeFileAsset::new(#waterui::Bundle::main(), #path_lit) }
             }
         }
     };

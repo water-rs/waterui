@@ -29,7 +29,7 @@ fn stepper_updates(ui: UiBuilder) {
     let value_for_view = value.clone();
     let mut app = ui.mount(move || stepper("Limited", &value_for_view));
     app.query().label("Limited").increment();
-    assert_eq!(value.get(), 3);
+    assert_eq!(value.snapshot(), 3);
 }
 ```
 
@@ -58,7 +58,8 @@ fn stepper_updates(ui: UiBuilder) {
   automation in the native backends.
 - **Gesture and keyboard control.** `DragOptions` paces drags (`frame_per_step` gives
   recognizers a real motion timeline); `press_named_key_with` / `press_character_key_with`
-  hold explicit `Modifiers`.
+  dispatch a full key stroke — press, then release — under explicit `Modifiers`, and
+  `key_down` / `key_up` hold a key across calls.
 - **Performance harness.** `ui().perf(view)` / `perf_with` measure steady-state offscreen
   frames (`PerfConfig`, `PerfReport`) with per-phase Hydrolysis timings and process
   resource samples.

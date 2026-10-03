@@ -4,7 +4,7 @@
 
 #[cfg(feature = "std")]
 use alloc::string::ToString;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "video"))]
 use std::path::Path;
 use waterui_controls::{IntoLabel, button};
 #[cfg(feature = "std")]
@@ -17,8 +17,10 @@ use waterui_text::{Text, text};
 use waterkit_dialog::{LoadedMedia, MediaType, PhotoPicker as KitPhotoPicker};
 
 use crate::Media;
+#[cfg(all(feature = "std", feature = "video"))]
+use crate::live::LivePhotoSource;
 #[cfg(feature = "std")]
-use crate::{live::LivePhotoSource, url::Url};
+use crate::url::Url;
 
 /// A media picker view that lets users select photos, videos, or live media.
 ///
@@ -83,7 +85,7 @@ where
             async move {
                 #[cfg(feature = "std")]
                 {
-                    let requested_filter = filter.get();
+                    let requested_filter = filter.snapshot();
                     let picker = KitPhotoPicker::new()
                         .with_media_type(media_type_from_filter(requested_filter));
                     let handle = match picker.pick().await {
@@ -123,7 +125,9 @@ where
 const fn media_type_from_filter(filter: MediaFilter) -> MediaType {
     match filter {
         MediaFilter::Image => MediaType::Image,
+        #[cfg(feature = "video")]
         MediaFilter::Video => MediaType::Video,
+        #[cfg(feature = "video")]
         MediaFilter::LivePhoto => MediaType::LivePhoto,
     }
 }
@@ -134,17 +138,21 @@ fn media_from_loaded_selection(loaded: LoadedMedia) -> Media {
         LoadedMedia::Image(path) => {
             Media::Image(Url::from_file_path_str(path.to_string_lossy().to_string()))
         }
+        #[cfg(feature = "video")]
         LoadedMedia::Video(path) => {
             Media::Video(Url::from_file_path_str(path.to_string_lossy().to_string()))
         }
+        #[cfg(feature = "video")]
         LoadedMedia::LivePhoto(live_photo) => {
             let (image, video) = live_photo.into_parts();
             live_photo_from_paths(&image, &video)
         }
+        #[cfg(not(feature = "video"))]
+        _ => unreachable!("an image-filtered picker cannot load video media"),
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", feature = "video"))]
 fn live_photo_from_paths(image: &Path, video: &Path) -> Media {
     Media::LivePhoto(LivePhotoSource::new(
         Url::from_file_path_str(image.to_string_lossy().to_string()),
@@ -180,8 +188,10 @@ impl Selected {
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MediaFilter {
     /// Filter for live photos.
+    #[cfg(feature = "video")]
     LivePhoto,
     /// Filter for videos.
+    #[cfg(feature = "video")]
     Video,
     /// Filter for images.
     Image,
@@ -189,7 +199,7 @@ pub enum MediaFilter {
 
 impl_constant!(MediaFilter);
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(all(test, feature = "std", feature = "video"))]
 mod tests {
     use std::path::PathBuf;
 

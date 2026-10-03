@@ -28,23 +28,29 @@ use core::time::Duration;
 #[cfg(feature = "gpu")]
 use num_traits::ToPrimitive;
 
-#[cfg(feature = "gpu")]
-use nami::Signal as _;
 use nami::{Computed, SignalExt as _, signal::IntoComputed};
+#[cfg(all(feature = "gpu", not(target_arch = "wasm32")))]
+use std::time::Instant;
 #[cfg(feature = "gpu")]
-use shaderloom::CompiledShader;
-#[cfg(feature = "gpu")]
-use waterui_core::reactive::watcher::BoxWatcherGuard;
+use waterui_core::Binding;
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
+#[cfg(feature = "gpu")]
+use waterui_graphics::cherenkov::kurbo::Rect;
+#[cfg(feature = "gpu")]
+use waterui_graphics::cherenkov::{Draw as _, Recorder, Shader, ShaderPaint, ShaderSource};
 use waterui_graphics::color::Color;
 #[cfg(feature = "gpu")]
-use waterui_graphics::{
-    GpuContext, GpuFrame, GpuSurface, GpuView, reactive_color::ReactiveColor,
-    single_bind_group_render_stages,
-};
-
+use waterui_graphics::scene_view::{SceneContent, SceneInvalidator, SceneView};
 #[cfg(feature = "gpu")]
-const MORPH_SHADER: CompiledShader = include!(concat!(env!("OUT_DIR"), "/morph.rs"));
+use waterui_graphics::{RecordingResources, Registered, WorkingColor};
+#[cfg(all(feature = "gpu", target_arch = "wasm32"))]
+use web_time::Instant;
+
+/// The morph fragment, written against the engine's shader-paint prelude:
+/// `uniforms.resolution` sizes the target, `params` carries the uniform list
+/// the content records.
+#[cfg(feature = "gpu")]
+const MORPH_FRAGMENT: &str = include_str!("shaders/morph.wgsl");
 
 // ============================================================================
 // PathCommand - The primitive operations for drawing paths
@@ -767,7 +773,7 @@ impl MetadataKey for ClipShape {}
 // ============================================================================
 
 /// The kind of shape for backend rendering optimization.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum ShapeKind {
     /// Rectangle with sharp corners.
     #[default]
@@ -830,7 +836,7 @@ pub struct ResolvedShape {
     /// Path commands in unit coordinate space.
     pub commands: Vec<PathCommand>,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
+    pub fill: Computed<waterui_graphics::WorkingColor>,
 }
 
 waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
@@ -843,7 +849,7 @@ pub struct ResolvedMorphShape {
     /// Target shape kind.
     pub to: ShapeKind,
     /// Environment-resolved fill color that remains reactive to theme changes.
-    pub fill: Computed<waterui_graphics::ResolvedColor>,
+    pub fill: Computed<waterui_graphics::WorkingColor>,
     /// Time-based morph animation configuration.
     pub animation: MorphAnimation,
     /// Optional explicit progress signal.
@@ -1062,10 +1068,10 @@ impl View for FilledShape {
 impl View for MorphShape {
     fn body(self, env: &Environment) -> impl View {
         let resolved = self.fill.resolve(env).computed();
-        // The GPU fallback renderer also consumes `progress`, so clone it
-        // only on that path; the lean path moves it into the native node.
+        // The fallback content consumes `fill`/`progress` on its own path, so
+        // clone them only when it is compiled in.
         #[cfg(feature = "gpu")]
-        let progress_for_gpu = self.progress.clone();
+        let (fallback_fill, fallback_progress) = (resolved.clone(), self.progress.clone());
         let native = waterui_core::Native::new(ResolvedMorphShape {
             from: self.from,
             to: self.to,
@@ -1074,19 +1080,19 @@ impl View for MorphShape {
             progress: self.progress,
         });
         #[cfg(feature = "gpu")]
-        let native = native.with_fallback(GpuSurface::new(MorphShapeRenderer::new(
+        let native = native.with_fallback(SceneView::new(MorphContent::new(
             kind_to_morph_shape(self.from)
                 .expect("morph source shape must be a built-in morphable shape"),
             kind_to_morph_shape(self.to)
                 .expect("morph target shape must be a built-in morphable shape"),
-            ReactiveColor::new(&Computed::constant(self.fill), env),
+            fallback_fill,
             self.animation,
-            progress_for_gpu,
+            fallback_progress,
         )));
         native
     }
 
-    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuSurface`
+    /// Resolves to `Native<ResolvedMorphShape>` (or its `GpuContentView`
     /// fallback), both of which fill both axes.
     fn stretch_axis(&self) -> waterui_core::layout::StretchAxis {
         waterui_core::layout::StretchAxis::Both
@@ -1159,36 +1165,126 @@ fn kind_to_morph_shape(kind: ShapeKind) -> Option<MorphSdfShape> {
     }
 }
 
-#[cfg(feature = "gpu")]
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
-struct MorphUniforms {
-    color: [f32; 4],
-    dimensions_and_progress: [f32; 4], // width, height, progress, pad
-    shape_types: [f32; 4],             // from_type, to_type, pad, pad
-    from_radii: [f32; 4],              // tl, tr, br, bl
-    to_radii: [f32; 4],                // tl, tr, br, bl
-}
+// ============================================================================
+// MorphContent - Cherenkov shader-paint fallback for MorphShape
+// ============================================================================
 
+/// The flat `ShaderPaint` uniform list the morph fragment reads: colour in
+/// premultiplied working space, then progress, shape types and both radius
+/// sets, `vec4`-aligned.
 #[cfg(feature = "gpu")]
-struct MorphShapeRenderer {
+fn morph_uniforms(
+    color: WorkingColor,
+    progress: f32,
     from: MorphSdfShape,
     to: MorphSdfShape,
-    fill_color: ReactiveColor,
+) -> Vec<f32> {
+    let [red, green, blue, alpha] = color.components;
+    vec![
+        red,
+        green,
+        blue,
+        alpha,
+        progress,
+        0.0,
+        0.0,
+        0.0,
+        from.shape_type
+            .to_f32()
+            .expect("morph shape type must be representable as f32"),
+        to.shape_type
+            .to_f32()
+            .expect("morph shape type must be representable as f32"),
+        0.0,
+        0.0,
+        from.radii[0],
+        from.radii[1],
+        from.radii[2],
+        from.radii[3],
+        to.radii[0],
+        to.radii[1],
+        to.radii[2],
+        to.radii[3],
+    ]
+}
+
+/// Time-based morph progress, driven by the host's local executor while the
+/// content is mounted.
+#[cfg(feature = "gpu")]
+struct MorphDriver {
     animation: MorphAnimation,
-    progress: Option<Computed<f32>>,
-    progress_guard: Option<BoxWatcherGuard>,
-    start: Option<Duration>,
-    pipeline: Option<wgpu::RenderPipeline>,
-    uniform_buffer: Option<wgpu::Buffer>,
-    bind_group: Option<wgpu::BindGroup>,
-    pipeline_format: Option<wgpu::TextureFormat>,
+    progress: Binding<f32>,
+    task: Option<executor_core::AnyLocalExecutorTask<()>>,
 }
 
 #[cfg(feature = "gpu")]
-impl fmt::Debug for MorphShapeRenderer {
+#[expect(
+    clippy::future_not_send,
+    reason = "the driver runs on the host's local executor, whose futures are not Send"
+)]
+async fn drive_morph(progress: Binding<f32>, animation: MorphAnimation) {
+    let start = Instant::now();
+    loop {
+        let age = start.elapsed();
+        progress.set(animation.sample(age));
+        if !animation.repeat && age >= animation.duration {
+            break;
+        }
+        native_executor::sleep(Duration::from_millis(16)).await;
+    }
+}
+
+/// A self-drawn `MorphShape`: the SDF fragment morphs the built-in shape
+/// kinds, and `params` follow the progress and fill-colour signals without
+/// the recording re-encoding.
+#[cfg(feature = "gpu")]
+struct MorphContent {
+    from: MorphSdfShape,
+    to: MorphSdfShape,
+    color: Computed<WorkingColor>,
+    progress: Computed<f32>,
+    driver: Option<MorphDriver>,
+    shader: Option<Registered<Shader>>,
+}
+
+#[cfg(feature = "gpu")]
+impl MorphContent {
+    fn new(
+        from: MorphSdfShape,
+        to: MorphSdfShape,
+        color: Computed<WorkingColor>,
+        animation: MorphAnimation,
+        progress: Option<Computed<f32>>,
+    ) -> Self {
+        let (progress, driver) = progress.map_or_else(
+            || {
+                let binding = Binding::container(0.0_f32);
+                (
+                    binding.clone().computed(),
+                    Some(MorphDriver {
+                        animation,
+                        progress: binding,
+                        task: None,
+                    }),
+                )
+            },
+            |progress| (progress, None),
+        );
+        Self {
+            from,
+            to,
+            color,
+            progress,
+            driver,
+            shader: None,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl fmt::Debug for MorphContent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MorphShapeRenderer")
+        f.debug_struct("MorphContent")
             .field("from", &self.from)
             .field("to", &self.to)
             .finish_non_exhaustive()
@@ -1196,216 +1292,58 @@ impl fmt::Debug for MorphShapeRenderer {
 }
 
 #[cfg(feature = "gpu")]
-impl MorphShapeRenderer {
-    fn new(
-        from: MorphSdfShape,
-        to: MorphSdfShape,
-        fill_color: ReactiveColor,
-        animation: MorphAnimation,
-        progress: Option<Computed<f32>>,
-    ) -> Self {
-        Self {
-            from,
-            to,
-            fill_color,
-            animation,
-            progress,
-            progress_guard: None,
-            start: None,
-            pipeline: None,
-            uniform_buffer: None,
-            bind_group: None,
-            pipeline_format: None,
-        }
-    }
-}
-
-#[cfg(feature = "gpu")]
-impl GpuView for MorphShapeRenderer {
-    fn setup(
+impl SceneContent for MorphContent {
+    fn build_scene(
         &mut self,
-        ctx: &GpuContext<'_>,
-        _env: &mut waterui_core::Environment,
-    ) -> impl core::future::Future<Output = ()> {
-        self.fill_color.install(&ctx.redraw_handle);
-        if let Some(progress) = &self.progress {
-            let redraw = ctx.redraw_handle.clone();
-            self.progress_guard = Some(progress.watch(move |_| redraw.request_redraw()));
-        }
-
-        let (vertex_shader, fragment_shader, bind_group_layout) = single_bind_group_render_stages(
-            &MORPH_SHADER,
-            ctx.device,
-            "the morph shape shader",
-            "vs_main",
-            "fs_main",
+        recorder: &mut Recorder,
+        resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        let shader = self.shader.get_or_insert_with(|| {
+            resources
+                .shader(ShaderSource::wgsl(MORPH_FRAGMENT))
+                .unwrap_or_else(|error| panic!("morph shape shader: {error}"))
+        });
+        let shader = resources.name(shader);
+        // The progress the driver writes reaches the recording through the
+        // bound paint below, without another call here.
+        let (from, to) = (self.from, self.to);
+        let paint = self
+            .progress
+            .zip(&self.color)
+            .map(move |(progress, color)| ShaderPaint {
+                shader,
+                uniforms: morph_uniforms(color, progress, from, to),
+            });
+        recorder.fill(
+            Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
+            paint,
         );
-
-        let uniform_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Morph Shape Uniforms"),
-            size: core::mem::size_of::<MorphUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Morph Shape Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        let pipeline_layout = ctx
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Morph Shape Pipeline Layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let blend = ctx.alpha_blend_state();
-
-        let pipeline = ctx
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Morph Shape Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: vertex_shader.module(),
-                    entry_point: Some(vertex_shader.entry_point()),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: fragment_shader.module(),
-                    entry_point: Some(fragment_shader.entry_point()),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: ctx.surface_format,
-                        blend,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-
-        self.pipeline = Some(pipeline);
-        self.uniform_buffer = Some(uniform_buffer);
-        self.bind_group = Some(bind_group);
-        self.pipeline_format = Some(ctx.surface_format);
-        self.start = None;
-        core::future::ready(())
+        false
     }
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        assert_eq!(
-            self.pipeline_format,
-            Some(frame.format),
-            "MorphShape target format changed after setup"
-        );
-        let pipeline = self
-            .pipeline
-            .as_ref()
-            .expect("MorphShape render called before setup");
-        let uniform_buffer = self
-            .uniform_buffer
-            .as_ref()
-            .expect("MorphShape render called before setup");
-        let bind_group = self
-            .bind_group
-            .as_ref()
-            .expect("MorphShape render called before setup");
+    fn rebuild_for_engine(&mut self) {
+        if let Some(driver) = &mut self.driver {
+            driver.task = None;
+        }
+        self.shader = None;
+    }
 
-        // The frame clock is supplied by the backend, so it is monotonic on
-        // every target — `std::time::Instant` does not exist on wasm32 — and
-        // deterministic under preview/offscreen pumping.
-        let start = *self.start.get_or_insert_with(|| frame.elapsed());
-        let age = frame.elapsed().saturating_sub(start);
-        let progress = if let Some(signal) = &self.progress {
-            let value = signal.get();
-            assert!(value.is_finite(), "MorphShape progress must be finite");
-            value.clamp(0.0, 1.0)
+    /// The morph clock runs while the content is mounted: from the host
+    /// installing its invalidator at mount to the host clearing it.
+    fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+        let Some(driver) = &mut self.driver else {
+            return;
+        };
+        if invalidator.is_some() {
+            driver.task.get_or_insert_with(|| {
+                executor_core::spawn_local(drive_morph(driver.progress.clone(), driver.animation))
+            });
         } else {
-            self.animation.sample(age)
-        };
-
-        let fill_color = self.fill_color.get();
-        let [r, g, b] = fill_color.linear_with_headroom();
-        let uniforms = MorphUniforms {
-            color: [r, g, b, fill_color.opacity],
-            dimensions_and_progress: [
-                u32_to_f32(frame.width),
-                u32_to_f32(frame.height),
-                progress,
-                0.0,
-            ],
-            shape_types: [
-                u32_to_f32(self.from.shape_type),
-                u32_to_f32(self.to.shape_type),
-                0.0,
-                0.0,
-            ],
-            from_radii: self.from.radii,
-            to_radii: self.to.radii,
-        };
-        frame
-            .queue
-            .write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-
-        let mut encoder = frame
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Morph Shape Encoder"),
-            });
-
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Morph Shape Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame.view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            render_pass.set_pipeline(pipeline);
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.draw(0..6, 0..1);
-        }
-
-        frame.queue.submit(core::iter::once(encoder.finish()));
-
-        // Request continuous redraw while animation is active
-        let animation_active =
-            self.progress.is_none() && (self.animation.repeat || age < self.animation.duration);
-        if animation_active {
-            frame.request_redraw();
+            driver.task = None;
         }
     }
-}
-
-#[cfg(feature = "gpu")]
-fn u32_to_f32(value: u32) -> f32 {
-    value
-        .to_f32()
-        .expect("shape dimensions must be representable as f32")
 }
 
 // ============================================================================
@@ -1449,6 +1387,68 @@ impl ShapeExt for Path {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The morph clock runs while the content is mounted: installing the
+    /// host's invalidator starts the driver, which advances `progress`, and
+    /// clearing it drops the driver's task.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn the_morph_clock_runs_from_mount_to_unmount() {
+        use executor_core::async_executor::AsyncLocalExecutor;
+        use futures_lite::future;
+        use nami::Signal as _;
+        use std::rc::Rc;
+
+        let executor = Rc::new(AsyncLocalExecutor::new());
+        executor_core::try_init_local_executor(Rc::clone(&executor))
+            .unwrap_or_else(|_| panic!("the test thread already had a local executor"));
+
+        let morphable = |kind| kind_to_morph_shape(kind).expect("a built-in morphable shape");
+        let mut content = MorphContent::new(
+            morphable(ShapeKind::Rect),
+            morphable(ShapeKind::Circle),
+            nami::constant(WorkingColor::BLACK).computed(),
+            MorphAnimation::default(),
+            None,
+        );
+        let (reporter, readings) = async_channel::unbounded();
+        let _watch = content.progress.watch(move |context| {
+            let _ = reporter.try_send(context.into_value());
+        });
+        let running = |content: &MorphContent| {
+            content
+                .driver
+                .as_ref()
+                .expect("content without a progress signal owns its driver")
+                .task
+                .is_some()
+        };
+        assert!(!running(&content), "nothing runs before mount");
+
+        content.set_invalidator(Some(Rc::new(|| {})));
+        assert!(running(&content), "mounting starts the morph clock");
+        let progressed = future::block_on(executor.run(future::or(
+            async {
+                loop {
+                    let progress = readings.recv().await.expect("the progress watch ended");
+                    if progress > 0.0 {
+                        break progress;
+                    }
+                }
+            },
+            async {
+                native_executor::sleep(Duration::from_secs(5)).await;
+                panic!("the mounted morph clock never advanced progress");
+            },
+        )));
+        assert!(progressed > 0.0);
+
+        content.set_invalidator(None);
+        assert!(
+            !running(&content),
+            "unmounting drops the morph clock's task"
+        );
+    }
 
     #[test]
     fn rounded_rectangle_radius_is_clamped() {

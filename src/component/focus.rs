@@ -58,6 +58,7 @@
 //! When one element receives focus, any previously focused element will automatically
 //! lose focus due to the shared binding mechanism.
 
+use nami::Signal;
 use waterui_core::metadata::MetadataKey;
 
 use crate::Binding;
@@ -94,7 +95,7 @@ impl Focused {
                 }
 
                 if binding
-                    .get()
+                    .snapshot()
                     .as_ref()
                     .is_some_and(|current| *current == equals)
                 {
@@ -127,7 +128,7 @@ mod tests {
 
         focused.0.set(false);
 
-        assert_eq!(source.get(), None);
+        assert_eq!(source.snapshot(), None);
     }
 
     #[test]
@@ -137,7 +138,7 @@ mod tests {
 
         focused.0.set(false);
 
-        assert_eq!(source.get(), Some(Field::Password));
+        assert_eq!(source.snapshot(), Some(Field::Password));
     }
 
     #[test]
@@ -145,11 +146,11 @@ mod tests {
         let source = Binding::container(Some(Field::Username));
         let focused = Focused::new(&source, Field::Username);
 
-        assert!(focused.0.get());
+        assert!(focused.0.snapshot());
         source.set(Some(Field::Password));
-        assert!(!focused.0.get());
+        assert!(!focused.0.snapshot());
         source.set(None);
-        assert!(!focused.0.get());
+        assert!(!focused.0.snapshot());
     }
 
     #[test]
@@ -159,7 +160,7 @@ mod tests {
 
         focused.0.set(true);
 
-        assert_eq!(source.get(), Some(Field::Password));
+        assert_eq!(source.snapshot(), Some(Field::Password));
     }
 
     #[test]
@@ -170,9 +171,9 @@ mod tests {
 
         password.0.set(true);
 
-        assert_eq!(source.get(), Some(Field::Password));
-        assert!(!username.0.get());
-        assert!(password.0.get());
+        assert_eq!(source.snapshot(), Some(Field::Password));
+        assert!(!username.0.snapshot());
+        assert!(password.0.snapshot());
     }
 
     #[test]
@@ -182,7 +183,7 @@ mod tests {
 
         focused.0.set(false);
 
-        assert_eq!(source.get(), None);
+        assert_eq!(source.snapshot(), None);
     }
 
     #[test]

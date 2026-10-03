@@ -237,7 +237,8 @@ mod tests {
         assert_eq!(listed[0].pid, std::process::id());
 
         mine.withdraw().expect("withdrawing removes the file");
-        assert!(list().expect("still readable").is_empty());
+        let listed = list().expect("still readable");
+        assert!(listed.is_empty(), "expected empty, got {listed:?}");
 
         let _ = fs::remove_dir_all(&directory);
     }

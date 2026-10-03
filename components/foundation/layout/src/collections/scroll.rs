@@ -33,12 +33,11 @@ impl<T: Clone + 'static> ScrollController<T> {
     /// Panics if the request generation exceeds [`i32::MAX`].
     pub fn scroll_to(&self, target: T) {
         self.target.set(target);
-        self.generation.set(
-            self.generation
-                .get()
+        self.generation.with_mut(|generation| {
+            *generation = generation
                 .checked_add(1)
-                .expect("scroll request generation overflow"),
-        );
+                .expect("scroll request generation overflow");
+        });
     }
 
     /// Returns the current requested target as a read-only signal.
@@ -106,6 +105,23 @@ pub struct ScrollView {
     axis: Axis,
     content: AnyView,
     controller: Option<ScrollController<Point>>,
+    offset: Option<Binding<Point>>,
+}
+
+/// The parts a [`ScrollView`] is made of, as [`ScrollView::into_inner`]
+/// hands them to a backend.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ScrollViewParts {
+    /// The axis or axes the view scrolls along.
+    pub axis: Axis,
+    /// The scrolled content.
+    pub content: AnyView,
+    /// The programmatic scroll controller, if one is connected.
+    pub controller: Option<ScrollController<Point>>,
+    /// The binding the backend reports the content offset into, if one is
+    /// connected.
+    pub offset: Option<Binding<Point>>,
 }
 
 /// Defines the scrolling directions supported by `ScrollView`.
@@ -129,24 +145,55 @@ impl ScrollView {
             axis,
             content,
             controller: None,
+            offset: None,
         }
     }
 
-    /// Decomposes the `ScrollView` into its axis, content, and controller.
-    pub fn into_inner(self) -> (Axis, AnyView, Option<ScrollController<Point>>) {
-        (self.axis, self.content, self.controller)
+    /// Decomposes the `ScrollView` into its parts.
+    #[must_use]
+    pub fn into_inner(self) -> ScrollViewParts {
+        ScrollViewParts {
+            axis: self.axis,
+            content: self.content,
+            controller: self.controller,
+            offset: self.offset,
+        }
     }
 
-    /// Returns borrowed access to axis, content, and controller.
-    #[must_use = "this borrows the scroll view's parts without consuming it"]
-    pub const fn as_parts(&self) -> (Axis, &AnyView, Option<&ScrollController<Point>>) {
-        (self.axis, &self.content, self.controller.as_ref())
+    /// The axis or axes the view scrolls along.
+    #[must_use]
+    pub const fn axis(&self) -> Axis {
+        self.axis
+    }
+
+    /// The scrolled content.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "AnyView itself is must-use; the accessor annotation would trigger double_must_use"
+    )]
+    pub const fn content(&self) -> &AnyView {
+        &self.content
     }
 
     /// Connects a programmatic scroll controller.
     #[must_use]
     pub fn scroll_controller(mut self, controller: &ScrollController<Point>) -> Self {
         self.controller = Some(controller.clone());
+        self
+    }
+
+    /// Reports the content offset into `offset` as the view scrolls — the
+    /// distance the content has moved from its origin, in points, whether the
+    /// user or a [`ScrollController`] moved it.
+    ///
+    /// Chrome outside the scroll view follows it through the binding: a top
+    /// app bar that lifts once content passes under it reads
+    /// `offset.map(|offset| offset.y > 0.0)`. The backend writes only when the
+    /// offset changes. The binding is written, never read, so setting it does
+    /// not scroll; use a controller for that.
+    #[must_use]
+    pub fn report_offset(mut self, offset: &Binding<Point>) -> Self {
+        self.offset = Some(offset.clone());
         self
     }
 
@@ -203,11 +250,11 @@ mod tests {
         let controller = ScrollController::new(Point::zero());
 
         controller.scroll_to(Point::new(0.0, 240.0));
-        assert_eq!(controller.target().get(), Point::new(0.0, 240.0));
-        assert_eq!(controller.generation().get(), 1);
+        assert_eq!(controller.target().snapshot(), Point::new(0.0, 240.0));
+        assert_eq!(controller.generation().snapshot(), 1);
 
         controller.scroll_to(Point::new(0.0, 240.0));
-        assert_eq!(controller.target().get(), Point::new(0.0, 240.0));
-        assert_eq!(controller.generation().get(), 2);
+        assert_eq!(controller.target().snapshot(), Point::new(0.0, 240.0));
+        assert_eq!(controller.generation().snapshot(), 2);
     }
 }

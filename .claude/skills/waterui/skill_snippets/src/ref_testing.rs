@@ -85,7 +85,7 @@ pub mod gated {
         let mut app = ui.mount(move || stepper("Limited", &for_view));
 
         app.query().label("Limited").increment();
-        assert_eq!(value.get(), 3);
+        assert_eq!(value.snapshot(), 3);
     }
 
     // -----------------------------------------------------------------------
@@ -206,6 +206,10 @@ pub mod gated {
         app.press_named_key("Tab");
         app.press_named_key_with("Tab", modifiers);
         app.press_character_key_with("a", modifiers);
+
+        let key = waterui_testing::KeyCode::Named("Shift".to_string());
+        app.key_down(key.clone(), modifiers);
+        app.key_up(key, modifiers);
     }
 
     // -----------------------------------------------------------------------

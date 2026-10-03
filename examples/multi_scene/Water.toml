@@ -1,0 +1,5 @@
+waterui_path = "../.."
+
+[package]
+name = "Multi Scene Example"
+bundle_identifier = "com.waterui.multi_scene_example"

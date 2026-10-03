@@ -145,7 +145,7 @@ let viewId = waterui_view_id(view)
 
 if viewId == waterui_text_id() {
     let textConfig = waterui_force_as_text(view)
-    return Text(textConfig.content.get())
+    return Text(textConfig.content.snapshot())
 } else if viewId == waterui_button_id() {
     // ...
 }
@@ -249,7 +249,7 @@ The `components/` directory contains FFI bindings for each UI component category
 - **`list`** - List, ForEach, LazyVStack
 - **`table`** - Table with columns and rows
 - **`progress`** - ProgressView, ProgressIndicator
-- **`gpu_surface`** - High-performance wgpu rendering surface
+- **`gpu`** - High-performance wgpu rendering surface for `GpuContentView`
 
 Each module defines:
 1. C-compatible struct representations (e.g., `WuiButton`)

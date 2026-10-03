@@ -4,7 +4,7 @@ mod support;
 
 use core::num::NonZeroUsize;
 
-use nami::SignalExt as _;
+use nami::{Signal, SignalExt as _};
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
@@ -51,7 +51,7 @@ fn button_tap_triggers_action(ui: UiBuilder) {
     });
 
     app.query().role(Role::BUTTON).label("Increment").tap();
-    assert_eq!(count.get(), 1, "button tap should update binding");
+    assert_eq!(count.snapshot(), 1, "button tap should update binding");
     app.query()
         .role(Role::LABEL)
         .label("count:1")
@@ -129,12 +129,12 @@ fn repeated_state_calls_bind_in_argument_order(ui: UiBuilder) {
     app.query().role(Role::BUTTON).label("Bind").tap();
 
     assert_eq!(
-        first.get(),
+        first.snapshot(),
         1,
         "the first `State` parameter must bind to the first `.state()` call"
     );
     assert_eq!(
-        second.get(),
+        second.snapshot(),
         2,
         "the second `State` parameter must bind to the second `.state()` call"
     );
@@ -183,7 +183,7 @@ fn toggle_tap_toggles_binding(ui: UiBuilder) {
         .checked(false)
         .assert_exists();
     app.query().role(Role::SWITCH).label("Airplane Mode").tap();
-    assert!(enabled.get(), "toggle tap should flip binding");
+    assert!(enabled.snapshot(), "toggle tap should flip binding");
     app.query()
         .role(Role::SWITCH)
         .label("Airplane Mode")
@@ -223,7 +223,7 @@ fn slider_increment_decrement_updates_value(ui: UiBuilder) {
 
     app.query().role(Role::SLIDER).label("Volume").increment();
     assert_close(
-        value.get(),
+        value.snapshot(),
         0.51,
         0.0001,
         "slider increment should update binding",
@@ -235,7 +235,7 @@ fn slider_increment_decrement_updates_value(ui: UiBuilder) {
 
     app.query().role(Role::SLIDER).label("Volume").decrement();
     assert_close(
-        value.get(),
+        value.snapshot(),
         0.50,
         0.0001,
         "slider decrement should update binding",
@@ -281,14 +281,22 @@ fn stepper_increment_decrement_updates_binding(ui: UiBuilder) {
     });
 
     app.query().label("Quantity").value("2").increment();
-    assert_eq!(value.get(), 3, "stepper increment should update binding");
+    assert_eq!(
+        value.snapshot(),
+        3,
+        "stepper increment should update binding"
+    );
     app.query()
         .role(Role::LABEL)
         .label("count:3")
         .assert_exists();
 
     app.query().label("Quantity").value("3").decrement();
-    assert_eq!(value.get(), 2, "stepper decrement should update binding");
+    assert_eq!(
+        value.snapshot(),
+        2,
+        "stepper decrement should update binding"
+    );
     app.query()
         .role(Role::LABEL)
         .label("count:2")
@@ -306,7 +314,11 @@ fn stepper_respects_range_bounds(ui: UiBuilder) {
     // not a rejected action — the runtime reports it and the value stays put
     // (hydrolysis 9bc8a3d).
     app.query().label("Limited").value("2").increment();
-    assert_eq!(value.get(), 2, "stepper value should remain clamped at max");
+    assert_eq!(
+        value.snapshot(),
+        2,
+        "stepper value should remain clamped at max"
+    );
 }
 
 #[waterui::test(viewport = (320, 240))]
@@ -326,7 +338,7 @@ fn text_field_set_text_updates_binding(ui: UiBuilder) {
         .label("Name")
         .set_text("Alice");
     assert_eq!(
-        value.get(),
+        value.snapshot(),
         Str::from("Alice"),
         "text field should update binding"
     );
@@ -374,7 +386,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
     app.press_named_key("Enter");
     app.press_character_key("b");
     assert_eq!(
-        observed.get().as_str(),
+        observed.snapshot().as_str(),
         "a\nb",
         "a multi-line field must accept a newline"
     );
@@ -384,7 +396,7 @@ fn multi_line_text_field_accepts_newlines_up_to_its_limit(ui: UiBuilder) {
     app.press_named_key("Enter");
     app.press_character_key("c");
     assert_eq!(
-        observed.get().as_str(),
+        observed.snapshot().as_str(),
         "a\nbc",
         "input beyond the line limit must not add a line, and must not truncate"
     );
@@ -466,7 +478,7 @@ fn disabled_toggle_ignores_input_and_reports_disabled(ui: UiBuilder) {
         },
     );
     assert!(
-        !enabled.get(),
+        !enabled.snapshot(),
         "disabled-toggle: binding must stay unchanged"
     );
 }
@@ -501,7 +513,7 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
         },
     );
     assert!(
-        !enabled.get(),
+        !enabled.snapshot(),
         "disabled-scope: binding must stay unchanged"
     );
 
@@ -516,7 +528,7 @@ fn disabled_scope_cascades_and_reenables_reactively(ui: UiBuilder) {
     );
     app.query().role(Role::SWITCH).label("Notifications").tap();
     assert!(
-        enabled.get(),
+        enabled.snapshot(),
         "disabled-scope: tap after re-enable must flip the binding"
     );
 }
@@ -537,7 +549,7 @@ fn disabled_slider_ignores_value_actions(ui: UiBuilder) {
         app.query().role(Role::SLIDER).label("Volume").increment();
     });
     assert_close(
-        value.get(),
+        value.snapshot(),
         0.5,
         0.0001,
         "disabled-slider: value must stay unchanged",
@@ -566,5 +578,5 @@ fn disabled_button_ignores_action(ui: UiBuilder) {
             app.query().role(Role::BUTTON).label("Submit").tap();
         },
     );
-    assert_eq!(count.get(), 0, "disabled-button: action must not run");
+    assert_eq!(count.snapshot(), 0, "disabled-button: action must not run");
 }

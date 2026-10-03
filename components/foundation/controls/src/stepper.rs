@@ -81,7 +81,8 @@ configurable!(
     Stepper,
     StepperConfig,
     waterui_core::layout::StretchAxis::Horizontal,
-    resolve |config, env| config.resolve(env)
+    resolve | config,
+    env | config.resolve(env)
 );
 
 impl StepperConfig {

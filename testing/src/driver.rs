@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use accesskit::{
@@ -279,15 +280,41 @@ pub const fn text_input_event(text: String) -> InputEvent {
 }
 
 pub fn key_press_event(key: KeyCode, modifiers: Modifiers) -> InputEvent {
+    key_event(key, modifiers, KeyState::Pressed)
+}
+
+pub fn key_release_event(key: KeyCode, modifiers: Modifiers) -> InputEvent {
+    key_event(key, modifiers, KeyState::Released)
+}
+
+fn key_event(key: KeyCode, modifiers: Modifiers, state: KeyState) -> InputEvent {
     InputEvent::Key {
         logical_key: key.to_w3c_key(),
         // A synthesized keystroke has no physical key behind it.
         physical_code: hydrolysis::keyboard_types::Code::Unidentified,
         repeat: false,
         key,
-        state: KeyState::Pressed,
+        state,
         modifiers,
     }
+}
+
+/// One file of an OS file drag hovering the window — winit `HoveredFile`,
+/// emitted once per path the drag carries.
+pub const fn file_hovered_event(path: PathBuf) -> InputEvent {
+    InputEvent::FileHovered { path }
+}
+
+/// One file of an OS file drag dropped on the window — winit `DroppedFile`,
+/// emitted once per path after the `HoveredFile` batch.
+pub const fn file_dropped_event(path: PathBuf) -> InputEvent {
+    InputEvent::FileDropped { path }
+}
+
+/// An OS file drag left the window or ended without a drop — winit
+/// `HoveredFileCancelled`.
+pub const fn file_hover_cancelled_event() -> InputEvent {
+    InputEvent::FileHoverCancelled
 }
 
 /// The `Started`/`Moved`/`Ended` sequence one magnification (pinch) gesture

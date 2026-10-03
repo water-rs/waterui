@@ -1,6 +1,6 @@
 [package]
 name = "waterui-browser-cef"
-version = "0.2.1"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -42,7 +42,6 @@ futures-lite.workspace = true
 futures-timer.workspace = true
 executor-core.workspace = true
 keycode = { version = "1.0", optional = true }
-kurbo.workspace = true
 num-traits = { version = "0.2", default-features = false }
 serde = { workspace = true, features = ["derive"] }
 serde_json = "1.0"
@@ -59,6 +58,16 @@ waterui-webview = { workspace = true, optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 libloading = "0.9"
 objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", features = [
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+] }
+objc2-security = { version = "0.3", features = [
+    "CSCommon",
+    "SecCode",
+    "SecStaticCode",
+] }
 wgpu.workspace = true
 wgpu-external-frame.workspace = true
 

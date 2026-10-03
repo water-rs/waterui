@@ -35,10 +35,12 @@
 
 use core::fmt::Debug;
 
-use nami::{Computed, Signal, impl_constant};
+use alloc::string::String;
+
+use nami::{Computed, Signal, SignalExt, impl_constant, signal::IntoSignal};
 use waterui_core::{
-    Environment, Str,
-    resolve::{self, AnyResolvable, Resolvable},
+    Environment, IntoSignalF32, Str,
+    resolve::{AnyResolvable, Resolvable},
 };
 
 /// Font configuration for text rendering.
@@ -182,22 +184,117 @@ pub enum FontWeight {
 
 impl_constant!(Font, ResolvedFont, FontWeight, FontDesign);
 
+/// A family override applied by [`Font::family`].
+///
+/// A named family is exact and replaces whatever family the font resolved
+/// to. [`FontFamily::Inherited`] names no family, so the font keeps the one
+/// its slot resolves to — the value for a setting the user left unset.
+///
+/// A family signal converts from the value types a setting holds: a string
+/// literal, a [`Str`], a `String`, or an `Option<Str>` whose `None` is
+/// [`FontFamily::Inherited`]. `Binding<Option<Str>>` therefore passes
+/// straight to [`Font::family`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub enum FontFamily {
+    /// Keep the family the font already resolves to.
+    #[default]
+    Inherited,
+    /// Use this family.
+    Named(Str),
+}
+
+impl_constant!(FontFamily);
+
+impl From<Str> for FontFamily {
+    fn from(family: Str) -> Self {
+        Self::Named(family)
+    }
+}
+
+impl From<&'static str> for FontFamily {
+    fn from(family: &'static str) -> Self {
+        Self::Named(Str::from_static(family))
+    }
+}
+
+impl From<String> for FontFamily {
+    fn from(family: String) -> Self {
+        Self::Named(family.into())
+    }
+}
+
+impl From<Option<Str>> for FontFamily {
+    fn from(family: Option<Str>) -> Self {
+        family.map_or(Self::Inherited, Self::Named)
+    }
+}
+
+/// A font whose resolved value is rewritten by the current value of a signal.
+///
+/// Every [`Font`] modifier is one of these: the modifier's value signal is
+/// zipped with the inner font's resolved signal, so a change to either
+/// re-resolves the font in place and no view is rebuilt.
+#[derive(Clone)]
+struct Modified<T: 'static> {
+    font: Font,
+    value: Computed<T>,
+    apply: fn(&mut ResolvedFont, T),
+}
+
+impl<T: 'static> Debug for Modified<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Modified")
+            .field("font", &self.font)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T: Clone + 'static> Resolvable for Modified<T> {
+    type Resolved = ResolvedFont;
+
+    fn resolve(&self, env: &Environment) -> impl Signal<Output = Self::Resolved> {
+        let apply = self.apply;
+        self.font
+            .resolve(env)
+            .zip(&self.value)
+            .map(move |(mut font, value)| {
+                apply(&mut font, value);
+                font
+            })
+    }
+}
+
 impl Font {
     /// Creates a new font from a resolvable value.
     pub fn new(font: impl Resolvable<Resolved = ResolvedFont> + 'static) -> Self {
         Self(AnyResolvable::new(font))
     }
 
+    fn modified<T: Clone + 'static>(
+        self,
+        value: Computed<T>,
+        apply: fn(&mut ResolvedFont, T),
+    ) -> Self {
+        Self::new(Modified {
+            font: self,
+            value,
+            apply,
+        })
+    }
+
     /// Sets the font weight.
+    ///
+    /// Accepts a static [`FontWeight`] or any signal of one.
     #[must_use]
-    pub fn weight(self, weight: FontWeight) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut font| {
+    pub fn weight(self, weight: impl IntoSignal<FontWeight> + 'static) -> Self {
+        self.modified(weight.into_signal().computed(), |font, weight| {
             font.weight = weight;
-            font
-        }))
+        })
     }
 
     /// Sets the font size in points.
+    ///
+    /// Accepts a number or any numeric signal.
     ///
     /// A size selects a new face, so the typography metrics declared for
     /// the previous size are dropped: the resized font uses the new face's
@@ -208,32 +305,38 @@ impl Font {
     /// or [`Self::letter_spacing`] after `size` to declare metrics for the
     /// new face.
     #[must_use]
-    pub fn size(self, size: f32) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut font| {
+    pub fn size(self, size: impl IntoSignalF32) -> Self {
+        self.modified(size.into_signal_f32().computed(), |font, size| {
             font.size = size;
             font.line_height = None;
             font.letter_spacing = 0.0;
-            font
-        }))
+        })
     }
 
     /// Sets the font family.
+    ///
+    /// Accepts a family name or any signal of a [`FontFamily`], including
+    /// `Binding<Option<Str>>`: while the signal holds
+    /// [`FontFamily::Inherited`] (`None`), the font keeps the family its slot
+    /// resolves to. A change of the signal re-resolves the font in place.
     #[must_use]
-    pub fn family(self, family: impl Into<Str> + Clone + 'static) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut font| {
-            font.family = Some(family.clone().into());
-            font
-        }))
+    pub fn family(self, family: impl IntoSignal<FontFamily> + 'static) -> Self {
+        self.modified(family.into_signal().computed(), |font, family| {
+            if let FontFamily::Named(family) = family {
+                font.family = Some(family);
+            }
+        })
     }
 
     /// Sets the design the face is chosen from, keeping the slot, size and
     /// weight.
+    ///
+    /// Accepts a static [`FontDesign`] or any signal of one.
     #[must_use]
-    pub fn design(self, design: FontDesign) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut font| {
+    pub fn design(self, design: impl IntoSignal<FontDesign> + 'static) -> Self {
+        self.modified(design.into_signal().computed(), |font, design| {
             font.design = design;
-            font
-        }))
+        })
     }
 
     /// Asks for the platform's fixed-pitch face.
@@ -244,21 +347,25 @@ impl Font {
     }
 
     /// Sets an absolute line height in logical points.
+    ///
+    /// Accepts a number or any numeric signal.
     #[must_use]
-    pub fn line_height(self, line_height: f32) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut font| {
-            font.line_height = Some(line_height);
-            font
-        }))
+    pub fn line_height(self, line_height: impl IntoSignalF32) -> Self {
+        self.modified(
+            line_height.into_signal_f32().computed(),
+            |font, line_height| font.line_height = Some(line_height),
+        )
     }
 
     /// Sets additional spacing between adjacent glyphs in logical points.
+    ///
+    /// Accepts a number or any numeric signal.
     #[must_use]
-    pub fn letter_spacing(self, letter_spacing: f32) -> Self {
-        Self::new(resolve::Map::new(self.0, move |mut font| {
-            font.letter_spacing = letter_spacing;
-            font
-        }))
+    pub fn letter_spacing(self, letter_spacing: impl IntoSignalF32) -> Self {
+        self.modified(
+            letter_spacing.into_signal_f32().computed(),
+            |font, letter_spacing| font.letter_spacing = letter_spacing,
+        )
     }
 
     /// Sets the font to bold weight.
@@ -335,6 +442,11 @@ impl_font!(Footnote, "Footnote font style.", 11.0, FontWeight::Medium);
 
 #[cfg(test)]
 mod tests {
+    use alloc::{rc::Rc, vec::Vec};
+    use core::cell::RefCell;
+
+    use nami::Binding;
+
     use super::*;
 
     fn env_with_body(font: ResolvedFont) -> Environment {
@@ -346,7 +458,7 @@ mod tests {
         let slot = ResolvedFont::new(17.0, FontWeight::Normal).with_typography_metrics(22.0, 0.4);
         let env = env_with_body(slot);
 
-        let resized = Font::new(Body).size(14.0).resolve(&env).get();
+        let resized = Font::new(Body).size(14.0).resolve(&env).snapshot();
         assert!((resized.size - 14.0).abs() < f32::EPSILON);
         assert_eq!(resized.line_height, None);
         assert!(resized.letter_spacing.abs() < f32::EPSILON);
@@ -355,7 +467,40 @@ mod tests {
             .size(14.0)
             .line_height(18.0)
             .resolve(&env)
-            .get();
+            .snapshot();
         assert_eq!(declared.line_height, Some(18.0));
+    }
+
+    #[test]
+    fn family_follows_its_signal_and_inherits_the_slot_family_while_unset() {
+        let env = env_with_body(ResolvedFont::with_static_family(
+            16.0,
+            FontWeight::Normal,
+            "Inter",
+        ));
+        let setting: Binding<Option<Str>> = Binding::container(None);
+        let resolved = Font::new(Body).family(setting.clone()).resolve(&env);
+
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let _guard = resolved.watch({
+            let observed = observed.clone();
+            move |context| observed.borrow_mut().push(context.into_value().family)
+        });
+
+        assert_eq!(resolved.snapshot().family.as_deref(), Some("Inter"));
+
+        setting.set(Some(Str::from_static("Menlo")));
+        assert_eq!(resolved.snapshot().family.as_deref(), Some("Menlo"));
+
+        setting.set(None);
+        assert_eq!(resolved.snapshot().family.as_deref(), Some("Inter"));
+
+        assert_eq!(
+            *observed.borrow(),
+            [
+                Some(Str::from_static("Menlo")),
+                Some(Str::from_static("Inter"))
+            ]
+        );
     }
 }

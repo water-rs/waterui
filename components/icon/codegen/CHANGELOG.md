@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/waterui-icons-codegen-v0.1.1...waterui-icons-codegen-v0.5.0) - 2026-09-20
+
+### Other
+
+- move the water CLI to water-rs/cli
+- *(deps)* move the requirements the extraction left behind ([#557](https://github.com/water-rs/waterui/pull/557))
+
 ## [0.1.1](https://github.com/water-rs/waterui/compare/waterui-icons-codegen-v0.1.0...waterui-icons-codegen-v0.1.1) - 2026-09-11
 
 ### Fixed

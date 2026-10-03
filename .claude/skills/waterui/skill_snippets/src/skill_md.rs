@@ -14,7 +14,7 @@ use waterui::Identifiable; // the derive macro
 use waterui::animation::Animation; // animation curves
 use waterui::component::lazy::Lazy; // reactive stacks over a collection
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with; // scope a value to a subtree
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::reactive::binding; // the general Binding constructor
@@ -42,7 +42,7 @@ fn glue_row_view(row: GlueRow) -> ListItem {
 // SKILL.md § "### 1. Pass the signal, never a snapshot of it" — rust block 1/16
 // Listing: four independent one-line examples.
 // ---------------------------------------------------------------------------
-// `fade.get()` is SKILL.md's deliberate broken line — the section teaches that
+// `fade.snapshot()` is SKILL.md's deliberate broken line — the section teaches that
 // passing a snapshot freezes the view while still compiling.
 #[allow(unknown_lints, signal_get_in_view)]
 pub fn skill_block_01() {
@@ -57,7 +57,7 @@ pub fn skill_block_01() {
     };
     let view = Divider;
     let _ = {
-        view.opacity(fade.get()) // frozen forever — a plain f32
+        view.opacity(fade.snapshot()) // frozen forever — a plain f32
     };
     let _ = {
         Photo::new(url).blur(blur.clone()) // reacts
@@ -111,7 +111,7 @@ pub fn skill_block_04() -> impl View {
     button("Search")
         .action(
             |State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-                hist.get_mut().push(q.get());
+                hist.get_mut().push(q.snapshot());
             },
         )
         .state(&query) // -> first parameter
@@ -637,7 +637,8 @@ pub fn skill_block_08_imports_are_live() {
     let _ = LongPressGesture::new(500);
     let _ = TapGesture::new();
     let _ = CursorStyle::Arrow;
-    let _ = DragData::text("payload");
+    let _ = Files::new([waterui::Url::from("file:///tmp/payload")]);
+    let _ = text("tab").draggable(GlueTab);
     let _ = Animation::default();
     let _ = ForEach::new(ReactiveList::<GlueRow>::new(), glue_row_view);
     let _ = binding::<i32>(0);
@@ -645,3 +646,9 @@ pub fn skill_block_08_imports_are_live() {
     let _ = with(text("x"), 1_i32);
     spawn_local(async { sleep(core::time::Duration::from_millis(1)).await }).detach();
 }
+
+/// Glue: an app type made transferable, as the block 8 import implies.
+#[derive(Debug, Clone)]
+struct GlueTab;
+impl Transferable for GlueTab {}
+waterui::reactive::impl_constant!(GlueTab);

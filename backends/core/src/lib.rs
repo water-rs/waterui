@@ -18,8 +18,12 @@
 //! - [`input`]: platform-agnostic input event vocabulary
 //! - [`time`]: monotonic clock abstraction valid across native and web targets
 //!
-//! Backends (GTK, hydrolysis, dew, etc.) build on this foundation while
-//! implementing their own widget trees and rendering strategies.
+//! Backends build on this foundation while implementing their own widget
+//! trees and rendering strategies. They are not workspace members: each one
+//! lives in its own repository and is consumed as a published crate. The
+//! `scaffold-packages` table under `[package.metadata.waterui]` in the root
+//! `Cargo.toml` is the source of truth for which backends a CLI scaffold can
+//! pull in.
 //!
 //! # Re-exports from `waterui-core`
 //!
@@ -35,6 +39,8 @@ pub mod frame_signals;
 #[cfg(feature = "gestures")]
 pub mod gesture;
 pub mod input;
+#[cfg(feature = "overlay")]
+pub mod overlay;
 pub mod scroll;
 pub mod time;
 #[cfg(feature = "widgets")]
@@ -42,7 +48,7 @@ pub mod widget;
 
 pub use dispatcher::ViewDispatcher;
 #[cfg(feature = "widgets")]
-pub use widget::{Brush, DrawContext, WidgetTheme};
+pub use widget::WidgetTheme;
 
 // Re-export common types from waterui-core
 pub use waterui_core::{AnyView, Environment, Native, View};

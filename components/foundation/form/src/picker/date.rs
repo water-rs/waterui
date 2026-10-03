@@ -298,6 +298,7 @@ fn end_of_day_time() -> Time {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nami::Signal;
 
     #[test]
     fn date_range_maps_full_days() {
@@ -318,7 +319,7 @@ mod tests {
 
         mapped.set(anchor_time(Time::new(18, 45, 12, 0).unwrap()));
 
-        assert_eq!(source.get(), Time::new(18, 45, 12, 0).unwrap());
+        assert_eq!(source.snapshot(), Time::new(18, 45, 12, 0).unwrap());
     }
 
     #[test]

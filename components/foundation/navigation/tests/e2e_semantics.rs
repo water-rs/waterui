@@ -387,7 +387,7 @@ fn a_builder_link_in_a_path_stack_pops_without_touching_the_path(ui: UiBuilder) 
         ) == waterui_testing::WaitResult::Completed,
         "the root must return after popping the builder entry"
     );
-    assert!(path.snapshot().is_empty());
+    assert_eq!(path.snapshot(), []);
 }
 
 /// With a builder entry stacked on top of a route, Back must unwind them in
@@ -440,7 +440,7 @@ fn a_builder_link_above_a_route_unwinds_in_order(ui: UiBuilder) {
         ) == waterui_testing::WaitResult::Completed,
         "the second pop must reach the explicit path"
     );
-    assert!(path.snapshot().is_empty());
+    assert_eq!(path.snapshot(), []);
 }
 
 #[waterui::test()]

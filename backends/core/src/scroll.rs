@@ -8,8 +8,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::time::Instant;
+use nami::Binding;
+use waterui_core::layout::Point;
 use waterui_layout::scroll::Axis;
+
+use crate::time::Instant;
 
 const SCROLL_EPSILON: f64 = 0.000_01;
 /// Logical pixels one wheel/accessibility "line" scrolls.
@@ -84,10 +87,24 @@ struct ScrollState {
     /// Time constant of the in-flight approach. A wheel glide and a programmatic
     /// jump ease at different rates, so whoever sets the target sets the pace.
     smooth_tau: f64,
+    /// Binding a `ScrollView::report_offset` connected to this scroll view.
+    /// Written — never read — whenever the content offset changes, every
+    /// frame of a smooth glide included; `reported_offset` keeps the writes
+    /// on-change-only.
+    offset_report: Option<Binding<Point>>,
+    /// Offset last queued for `offset_report`.
+    reported_offset: Option<(f64, f64)>,
+    /// Offset queued by [`ScrollState::report_offset`], written once the
+    /// state borrow is released so a binding watcher may re-enter the state.
+    pending_report: Option<Point>,
 }
 
 impl ScrollHandle {
     /// Creates the state owned by one semantic scroll view.
+    ///
+    /// `offset_report` is the binding a `ScrollView::report_offset` connected
+    /// to this scroll view, or `None` when the view reports nothing — every
+    /// handle must decide at birth, so no caller can forget to attach it.
     #[must_use]
     pub fn new(
         axis: Axis,
@@ -95,8 +112,9 @@ impl ScrollHandle {
         viewport_height: f64,
         content_width: f64,
         content_height: f64,
+        offset_report: Option<Binding<Point>>,
     ) -> Self {
-        Self {
+        let handle = Self {
             state: Rc::new(RefCell::new(ScrollState::new(
                 axis,
                 viewport_width,
@@ -105,7 +123,9 @@ impl ScrollHandle {
                 content_height,
             ))),
             generation: 1,
-        }
+        };
+        handle.set_offset_report(offset_report);
+        handle
     }
 
     /// Rebinds this scroll view to its latest layout and returns the handle
@@ -126,7 +146,36 @@ impl ScrollHandle {
             content_width,
             content_height,
         );
+        self.flush_offset_report();
         self.clone()
+    }
+
+    /// Connects the binding `ScrollView::report_offset` produced for this
+    /// scroll view. The current content offset is written into it at once
+    /// and then on every change — each frame of a smooth glide included.
+    /// `None` disconnects it. The binding is written, never read.
+    pub fn set_offset_report(&self, report: Option<Binding<Point>>) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.offset_report = report;
+            state.reported_offset = None;
+            state.pending_report = None;
+            state.report_offset();
+        }
+        self.flush_offset_report();
+    }
+
+    /// Writes a queued offset into the connected report binding. The write
+    /// happens outside the state borrow so a binding watcher may safely
+    /// re-enter this handle.
+    fn flush_offset_report(&self) {
+        let write = {
+            let mut state = self.state.borrow_mut();
+            state.pending_report.take().zip(state.offset_report.clone())
+        };
+        if let Some((point, report)) = write {
+            report.set(point);
+        }
     }
     /// Returns a key identifying the underlying scroll slot, stable for the
     /// slot's lifetime across rebuilds (the address of the shared state).
@@ -155,11 +204,15 @@ impl ScrollHandle {
     /// generation is stale is dropped and returns `false`.
     #[must_use]
     pub fn apply_scroll_delta(&self, dx: f32, dy: f32, is_line_delta: bool) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.generation != self.generation {
-            return false;
-        }
-        state.apply_scroll_delta(f64::from(dx), f64::from(dy), is_line_delta)
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.generation != self.generation {
+                return false;
+            }
+            state.apply_scroll_delta(f64::from(dx), f64::from(dy), is_line_delta)
+        };
+        self.flush_offset_report();
+        changed
     }
 
     /// Advances any in-flight smoothed wheel scroll toward its target with a
@@ -167,11 +220,15 @@ impl ScrollHandle {
     /// animation frames are needed. Stale handles are inert.
     #[must_use]
     pub fn tick_smooth_scroll(&self, now: Instant) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.generation != self.generation {
-            return false;
-        }
-        state.tick_smooth_scroll(now)
+        let active = {
+            let mut state = self.state.borrow_mut();
+            if state.generation != self.generation {
+                return false;
+            }
+            state.tick_smooth_scroll(now)
+        };
+        self.flush_offset_report();
+        active
     }
 
     /// Whether a smoothed wheel scroll is still gliding toward its target,
@@ -187,11 +244,15 @@ impl ScrollHandle {
     /// scrollable extents. Any in-flight smooth scroll is cancelled.
     #[must_use]
     pub fn scroll_to(&self, x: f64, y: f64) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.generation != self.generation {
-            return false;
-        }
-        state.scroll_to(x, y)
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.generation != self.generation {
+                return false;
+            }
+            state.scroll_to(x, y)
+        };
+        self.flush_offset_report();
+        changed
     }
 
     /// Eases toward an absolute content offset instead of snapping to it, and
@@ -201,11 +262,15 @@ impl ScrollHandle {
     /// are inert.
     #[must_use]
     pub fn scroll_to_animated(&self, x: f64, y: f64) -> bool {
-        let mut state = self.state.borrow_mut();
-        if state.generation != self.generation {
-            return false;
-        }
-        state.scroll_to_animated(x, y)
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.generation != self.generation {
+                return false;
+            }
+            state.scroll_to_animated(x, y)
+        };
+        self.flush_offset_report();
+        changed
     }
 }
 
@@ -230,6 +295,9 @@ impl ScrollState {
             smooth_target_y: None,
             smooth_last_tick: None,
             smooth_tau: SMOOTH_SCROLL_TAU,
+            offset_report: None,
+            reported_offset: None,
+            pending_report: None,
         };
         state.clamp_offsets();
         state
@@ -264,7 +332,28 @@ impl ScrollState {
                 .checked_add(1)
                 .expect("scroll controller generation overflow");
         }
+        self.report_offset();
         self.generation
+    }
+
+    /// Queues the current offset for [`ScrollState::offset_report`] when it
+    /// differs from what was last written. The write itself is deferred into
+    /// `pending_report` because it happens under a `RefCell` borrow the
+    /// caller still holds.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the report binding is in points — the f32 precision of a scroll offset"
+    )]
+    fn report_offset(&mut self) {
+        if self.offset_report.is_none() {
+            return;
+        }
+        let offset = (self.offset_x, self.offset_y);
+        if self.reported_offset == Some(offset) {
+            return;
+        }
+        self.reported_offset = Some(offset);
+        self.pending_report = Some(Point::new(self.offset_x as f32, self.offset_y as f32));
     }
 
     #[allow(
@@ -272,33 +361,36 @@ impl ScrollState {
         reason = "`old_x`/`old_y` and `scaled_dx`/`scaled_dy` are conventional 2D scroll-delta names"
     )]
     fn apply_scroll_delta(&mut self, dx: f64, dy: f64, is_line_delta: bool) -> bool {
-        if is_line_delta {
-            return self.retarget_smooth_scroll(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP);
-        }
-        // Pixel deltas are direct manipulation (trackpads deliver their own
-        // OS momentum stream); they cancel any in-flight smooth-wheel target.
-        self.smooth_target_x = None;
-        self.smooth_target_y = None;
-        let metrics = self.metrics();
-        let old_x = self.offset_x;
-        let old_y = self.offset_y;
+        let changed = if is_line_delta {
+            self.retarget_smooth_scroll(dx * SCROLL_LINE_STEP, dy * SCROLL_LINE_STEP)
+        } else {
+            // Pixel deltas are direct manipulation (trackpads deliver their own
+            // OS momentum stream); they cancel any in-flight smooth-wheel target.
+            self.smooth_target_x = None;
+            self.smooth_target_y = None;
+            let metrics = self.metrics();
+            let old_x = self.offset_x;
+            let old_y = self.offset_y;
 
-        match self.axis {
-            Axis::Horizontal => {
-                self.offset_x = clamp_scroll_offset(old_x - dx, metrics.max_x);
+            match self.axis {
+                Axis::Horizontal => {
+                    self.offset_x = clamp_scroll_offset(old_x - dx, metrics.max_x);
+                }
+                Axis::Vertical => {
+                    self.offset_y = clamp_scroll_offset(old_y - dy, metrics.max_y);
+                }
+                Axis::All => {
+                    self.offset_x = clamp_scroll_offset(old_x - dx, metrics.max_x);
+                    self.offset_y = clamp_scroll_offset(old_y - dy, metrics.max_y);
+                }
+                _ => panic!("scroll axis variant is not supported by hydrolysis"),
             }
-            Axis::Vertical => {
-                self.offset_y = clamp_scroll_offset(old_y - dy, metrics.max_y);
-            }
-            Axis::All => {
-                self.offset_x = clamp_scroll_offset(old_x - dx, metrics.max_x);
-                self.offset_y = clamp_scroll_offset(old_y - dy, metrics.max_y);
-            }
-            _ => panic!("scroll axis variant is not supported by hydrolysis"),
-        }
 
-        (self.offset_x - old_x).abs() > SCROLL_EPSILON
-            || (self.offset_y - old_y).abs() > SCROLL_EPSILON
+            (self.offset_x - old_x).abs() > SCROLL_EPSILON
+                || (self.offset_y - old_y).abs() > SCROLL_EPSILON
+        };
+        self.report_offset();
+        changed
     }
 
     fn scroll_to(&mut self, x: f64, y: f64) -> bool {
@@ -321,7 +413,9 @@ impl ScrollState {
             }
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
-        value_changed(old_x, self.offset_x) || value_changed(old_y, self.offset_y)
+        let changed = value_changed(old_x, self.offset_x) || value_changed(old_y, self.offset_y);
+        self.report_offset();
+        changed
     }
 
     /// Retargets the smooth-scroll animation at an absolute content offset and
@@ -346,6 +440,7 @@ impl ScrollState {
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
         self.settle_reached_smooth_targets();
+        self.report_offset();
         self.smooth_target_x.is_some() || self.smooth_target_y.is_some()
     }
 
@@ -380,6 +475,7 @@ impl ScrollState {
             _ => panic!("scroll axis variant is not supported by hydrolysis"),
         }
         self.settle_reached_smooth_targets();
+        self.report_offset();
         self.smooth_target_x.is_some() || self.smooth_target_y.is_some()
     }
 
@@ -387,6 +483,15 @@ impl ScrollState {
     /// frame-rate-independent exponential approach and returns whether the
     /// animation still needs more frames.
     fn tick_smooth_scroll(&mut self, now: Instant) -> bool {
+        let active = self.advance_smooth_scroll(now);
+        self.report_offset();
+        active
+    }
+
+    /// Advances the smoothed wheel offsets toward their targets with a
+    /// frame-rate-independent exponential approach and returns whether the
+    /// animation still needs more frames.
+    fn advance_smooth_scroll(&mut self, now: Instant) -> bool {
         if self.smooth_target_x.is_none() && self.smooth_target_y.is_none() {
             self.smooth_last_tick = None;
             return false;
@@ -466,10 +571,27 @@ fn value_changed(old: f64, new: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
     use core::time::Duration;
+    use nami::Signal as _;
 
     fn vertical_handle() -> ScrollHandle {
-        ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0)
+        ScrollHandle::new(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, None)
+    }
+
+    /// A `report_offset` sink that counts every write, for asserting the
+    /// backend writes on change only.
+    fn counting_report() -> (Binding<Point>, Rc<Cell<usize>>) {
+        let writes = Rc::new(Cell::new(0usize));
+        let offset = nami::binding(Point::zero());
+        let counted = offset.filter({
+            let writes = Rc::clone(&writes);
+            move |_| {
+                writes.set(writes.get() + 1);
+                true
+            }
+        });
+        (counted, writes)
     }
 
     #[test]
@@ -679,5 +801,78 @@ mod tests {
         assert!(handle.scroll_to(0.0, 120.0));
         assert!(!handle.tick_smooth_scroll(start + Duration::from_millis(16)));
         assert_eq!(handle.metrics().offset_y, 120.0);
+    }
+
+    #[test]
+    fn report_offset_writes_current_offset_on_attach() {
+        let handle = vertical_handle();
+        assert!(handle.apply_scroll_delta(0.0, -40.0, false));
+        let (report, writes) = counting_report();
+        handle.set_offset_report(Some(report.clone()));
+        assert_eq!(writes.get(), 1);
+        assert_eq!(report.snapshot(), Point::new(0.0, 40.0));
+    }
+
+    #[test]
+    fn report_offset_writes_on_direct_and_absolute_scrolls() {
+        let handle = vertical_handle();
+        let (report, writes) = counting_report();
+        handle.set_offset_report(Some(report.clone()));
+
+        // A trackpad pixel delta moves the offset directly: one write.
+        assert!(handle.apply_scroll_delta(0.0, -30.0, false));
+        assert_eq!(report.snapshot(), Point::new(0.0, 30.0));
+        assert_eq!(writes.get(), 2);
+
+        // A controller `scroll_to` lands immediately: one write.
+        assert!(handle.scroll_to(0.0, 150.0));
+        assert_eq!(report.snapshot(), Point::new(0.0, 150.0));
+        assert_eq!(writes.get(), 3);
+    }
+
+    #[test]
+    fn report_offset_writes_every_glide_frame_and_stays_silent_when_idle() {
+        let handle = vertical_handle();
+        let (report, writes) = counting_report();
+        handle.set_offset_report(Some(report.clone()));
+        assert_eq!(writes.get(), 1);
+
+        let start = Instant::now();
+        // A wheel line delta only retargets the glide — no offset write yet.
+        assert!(handle.apply_scroll_delta(0.0, -2.0, true));
+        assert_eq!(writes.get(), 1);
+
+        // Every animation frame that moves the offset writes once.
+        let mut now = start;
+        let mut frames = 0usize;
+        while handle.tick_smooth_scroll(now) {
+            frames += 1;
+            let reported = report.snapshot();
+            let metrics = handle.metrics();
+            assert!(
+                (f64::from(reported.y) - metrics.offset_y).abs() < 1e-4,
+                "reported offset {reported:?} lags the true offset {metrics:?}"
+            );
+            now += Duration::from_millis(8);
+        }
+        assert_eq!(writes.get(), 1 + frames);
+        assert_eq!(report.snapshot(), Point::new(0.0, 80.0));
+
+        // Idle handles are silent: ticks and a zero delta write nothing.
+        assert!(!handle.tick_smooth_scroll(now));
+        assert!(!handle.apply_scroll_delta(0.0, 0.0, false));
+        let _ = handle.tick_smooth_scroll(now + Duration::from_millis(8));
+        assert_eq!(writes.get(), 1 + frames);
+    }
+
+    #[test]
+    fn report_offset_stops_writing_once_disconnected() {
+        let handle = vertical_handle();
+        let (report, writes) = counting_report();
+        handle.set_offset_report(Some(report.clone()));
+        handle.set_offset_report(None);
+        assert!(handle.apply_scroll_delta(0.0, -10.0, false));
+        assert_eq!(writes.get(), 1);
+        assert_eq!(report.snapshot(), Point::zero());
     }
 }

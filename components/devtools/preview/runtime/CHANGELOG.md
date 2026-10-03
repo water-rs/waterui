@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/waterui-preview-v0.1.2...waterui-preview-v0.5.0) - 2026-09-20
+
+### Fixed
+
+- *(preview)* wait for parked local work before a one-shot render
+
+### Other
+
+- move the water CLI to water-rs/cli
+
 ## [0.1.2](https://github.com/water-rs/waterui/compare/waterui-preview-v0.1.1...waterui-preview-v0.1.2) - 2026-09-11
 
 ### Other

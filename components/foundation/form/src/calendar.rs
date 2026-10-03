@@ -14,7 +14,9 @@ use jiff::{
     ToSpan,
     civil::{Date, Weekday},
 };
-use nami::{Binding, Computed, SignalExt, collection::SignalCollection, signal::IntoComputed};
+use nami::{
+    Binding, Computed, Signal, SignalExt, collection::SignalCollection, signal::IntoComputed,
+};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::{IntoLabel, button};
 use waterui_core::interaction::Disabled;
@@ -71,9 +73,9 @@ impl Calendar {
     /// Sets the valid date range.
     #[must_use]
     pub fn range(mut self, range: RangeInclusive<Date>) -> Self {
-        if !visible_month_in_range(self.visible_month.get(), &range) {
+        if !visible_month_in_range(self.visible_month.snapshot(), &range) {
             self.visible_month
-                .set(initial_visible_month(Some(self.value.get()), &range));
+                .set(initial_visible_month(Some(self.value.snapshot()), &range));
         }
         self.range = range;
         self
@@ -427,11 +429,11 @@ pub(crate) fn multi_day_cell_content(
 
     if is_selectable {
         selectable_day_cell(cell.date, &decorated, &selected, move || {
-            let mut dates = selection.get();
-            if !dates.insert(cell.date) {
-                dates.remove(&cell.date);
-            }
-            selection.set(dates);
+            selection.with_mut(|dates| {
+                if !dates.insert(cell.date) {
+                    dates.remove(&cell.date);
+                }
+            });
         })
     } else {
         AnyView::new(day_grid_cell(

@@ -257,20 +257,36 @@ The `Window` builder, precisely:
 - `Window::new(title, state, content)` — the title is `impl IntoComputed<Str>` (a
   reactive window title is free), `state` is a `Binding<WindowState>` **by value**, and
   `content` is any `Fn() -> impl View`, so a bare function item works.
-- `.style(WindowStyle)` — exactly three variants: `Titled` (default), `Borderless`,
-  `FullSizeContentView` (content extends under the title bar). "Frosted" and
-  "transparent" are **not** styles — they are backgrounds:
-- `.background(..)` accepts a `Color` (a translucent one gives a transparent window) or a
-  `Material` (frosted glass; applied to the window's content, best-effort per backend).
+- `.style(..)` — a `WindowStyle` or a `Binding<WindowStyle>`; exactly three variants:
+  `Titled` (default), `Borderless`, `FullSizeContentView` (content extends under the
+  title bar). The style is reactive: setting the binding (or
+  `window.handle().set_style(..)`) re-applies it to the open window, e.g. to toggle
+  decorations. "Frosted" and "transparent" are **not** styles — they are backgrounds:
+- `.background(..)` accepts a `Color` (a translucent one gives a transparent window), a
+  `WindowBackground` (`Opaque` is the theme background) or a `Binding<WindowBackground>`,
+  or a `Material` (frosted glass; applied to the window's content, best-effort per
+  backend). The background is reactive: setting the binding (or
+  `window.handle().set_background(..)`) re-applies it to the open window, e.g. to toggle
+  between opaque and translucent.
 - `.resizable(bool)` — plain bool, default `true`. `.min_size(..)`/`.max_size(..)` each
   take one `impl IntoComputed<Size>` (a `Size` or a signal of one, not two floats);
   without a min, the backend derives one by measuring content at a zero proposal.
 - `.toolbar(..)` — window-level chrome; it installs `LabelDisplayMode::IconOnly` for its
   items automatically.
+- `.level(..)` — one `impl IntoComputed<WindowLevel>`; `WindowLevel::Normal` (default)
+  or `AlwaysOnTop` to float above other applications' windows.
+- `.resize_increments(..)` — one `impl IntoComputed<Size>`; the window's content size
+  then snaps to those steps while the user resizes.
 
 `WindowState` variants: `Normal`, `Closed` (**the `Default`**), `Minimized`,
-`Fullscreen`. `WindowState` is held in a binding, so opening, closing, minimizing, and
-restoring are ordinary reactive state changes:
+`Maximized`, `Fullscreen`. `WindowState` is held in a binding, so opening, closing,
+minimizing, maximizing, and restoring are ordinary reactive state changes:
+
+`Window::handle()` returns a `WindowHandle` that survives after the window is shown:
+`close()`, `minimize()`, `maximize()`, `fullscreen()`, `restore()`,
+`request_attention(UserAttention::Informational | UserAttention::Critical)` (the
+backend clears it when the window gains focus), `cancel_attention()`, and
+`set_frame(Rect)`.
 
 ```rust
 button("Open Window")

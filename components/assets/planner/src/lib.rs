@@ -72,14 +72,15 @@ pub struct BundleMount {
 
 /// Symbol prefix for `include_bundle!` mount metadata statics.
 ///
-/// `include_bundle!` emits one `#[used] static` per mounted directory whose
-/// mangled name ends in `{BUNDLE_META_PREFIX}<mount>`; the CLI enumerates the
+/// `include_bundle!` emits one static per mounted directory whose mangled
+/// name ends in `{BUNDLE_META_PREFIX}<mount>`; the CLI enumerates the
 /// compiled artifact's symbol table and decodes the matching
 /// [`BundleMountMeta`] payload.
 pub const BUNDLE_META_PREFIX: &str = "waterui_meta_bundle_";
 
 /// One bundle mount declared by `include_bundle!`, carried to the CLI as the
-/// NUL-terminated payload of a `#[used]` static.
+/// NUL-terminated payload of a `waterui_meta_bundle_*` static in the app
+/// crate's rlib.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleMountMeta {
     /// Logical mount name; `"assets"` is the main application asset root.

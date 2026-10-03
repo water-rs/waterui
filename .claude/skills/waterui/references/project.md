@@ -2,6 +2,7 @@
 
 ## Contents
 
+- Installing the CLI
 - Creating a project
 - Project shape
 - `Cargo.toml`: features that matter
@@ -13,21 +14,40 @@
 - Logging and debugging
 - Embedded targets (Dew)
 
+## Installing the CLI
+
+Install the prebuilt binary; do not build the CLI from source. `cargo install
+waterui-cli` compiles the CLI and its whole dependency graph, which takes minutes and
+is never what a user of the framework wants.
+
+```bash
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+```
+
+`water update` replaces the binary with the newest release; `water update --check`
+only reports what is available. A project pins its framework version separately from
+the CLI — see `water channel`.
+
 ## Creating a project
 
 Never hand-scaffold a WaterUI project. The generated layout is the source of truth and the
 CLI keeps it consistent with the backends it builds.
 
 ```bash
-water create "My App"                       # app mode (default)
-water create "My App" --mode playground     # playground mode
+water create "My App"
 water create "My App" --bundle-id dev.example.myapp
 water create "My App" --backends apple,android,hydrolysis
 ```
 
-`--mode playground` is the right default for experiments and examples: the CLI owns the
-native project entirely, so there is no Xcode project or Gradle wrapper to maintain. App
-mode gives you those files to edit when the app needs real native integration.
+There are no modes or package types to choose: every project is entry-owning — WaterUI
+owns the program entry and the CLI generates and manages every backend project, so there
+is no Xcode project or Gradle wrapper in your tree to maintain.
 
 ## Project shape
 
@@ -92,7 +112,6 @@ than features (`waterui-chart`, `waterui-map`, `waterui-barcode`, `waterui-parti
 
 ```toml
 [package]
-type = "app"                              # "app" | "playground"
 name = "My App"
 bundle_identifier = "dev.example.myapp"
 # assets_path = "assets"                  # default
@@ -209,7 +228,7 @@ water run --logs debug                 # stream device logs at debug and above
 water run --native-logs                # include native platform logs too — noisy
 
 water build <target>                   # compile the Rust library for a platform
-water package                          # package artifacts for distribution
+water package                          # package the production (release) build; --debug for an unoptimized one
 water devices                          # list simulators and devices
 water doctor                           # check the toolchain
 water clean

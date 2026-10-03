@@ -85,6 +85,7 @@ impl LocalExecutor for TestLocalExecutor {
 pub fn install_test_executor() {
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
         TestLocalExecutor,
+        waterui::task::RefreshRate::HEADLESS,
     ));
 }
 

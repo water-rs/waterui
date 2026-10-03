@@ -10,7 +10,7 @@ use crate::{
     container::FixedContainer,
     stack::{
         Alignment, HorizontalAlignment, VerticalAlignment,
-        distribute::{LineAnchor, container_line, cross_envelope},
+        distribute::{LineAnchor, container_line, cross_envelope, empty_placement, stack_members},
     },
 };
 
@@ -66,42 +66,26 @@ pub struct ZStackLayout {
 
 impl Layout for ZStackLayout {
     /// A `ZStack` is content-sized only while every child is — a child that
-    /// stretches (a `Color`, a `GpuSurface`) makes the stack stretch on the
+    /// stretches (a `Color`, a `GpuContentView`) makes the stack stretch on the
     /// same axes, since `place` hands such children the full bounds.
     ///
     /// Axis-relative answers have no direction to resolve against here:
-    /// `MainAxis` children (`Spacer`) want whatever space is offered, which in
-    /// a zstack is both axes; `CrossAxis` children (`Divider`) resolve to
-    /// their default orientation — a horizontal rule — and fill horizontally.
+    /// `MainAxis` children (`Spacer`) want whatever space the main axis
+    /// offers, and a zstack has none — a spacer claims nothing; `CrossAxis`
+    /// children (`Divider`) resolve to their default orientation — a
+    /// horizontal rule — and fill horizontally.
     fn stretch_axis(&self, children: &[StretchAxis]) -> StretchAxis {
-        let mut fills_h = false;
-        let mut fills_v = false;
-        for child in children {
-            match child {
-                StretchAxis::None => {}
-                StretchAxis::Both | StretchAxis::MainAxis => {
-                    fills_h = true;
-                    fills_v = true;
-                }
-                StretchAxis::Horizontal | StretchAxis::CrossAxis => fills_h = true,
-                StretchAxis::Vertical => fills_v = true,
-            }
-        }
-        match (fills_h, fills_v) {
-            (true, true) => StretchAxis::Both,
-            (true, false) => StretchAxis::Horizontal,
-            (false, true) => StretchAxis::Vertical,
-            (false, false) => StretchAxis::None,
-        }
+        crate::stack::axisless_stretch_union(children)
     }
 
     fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
-        if children.is_empty() {
+        let members = stack_members(children);
+        if members.is_empty() {
             return Size::zero();
         }
 
-        // Measure each child with the parent's proposal
-        let measurements: Vec<ChildMeasurement> = children
+        // Measure each member with the parent's proposal
+        let measurements: Vec<ChildMeasurement> = members
             .iter()
             .map(|child| ChildMeasurement {
                 dimensions: child.measure(proposal),
@@ -143,7 +127,8 @@ impl Layout for ZStackLayout {
         // placed in: every layer is proposed the resolved extent, so what it
         // lays out under is the space it actually has.
         let placement = ProposalSize::new(Some(bounds.width()), Some(bounds.height()));
-        let measurements: Vec<ChildMeasurement> = children
+        let members = stack_members(children);
+        let measurements: Vec<ChildMeasurement> = members
             .iter()
             .map(|child| ChildMeasurement {
                 dimensions: child.measure(placement),
@@ -169,9 +154,21 @@ impl Layout for ZStackLayout {
                 max_below,
             );
 
+        // One placement per child: members claim a layer each; a non-member
+        // is answered with a zero-size frame on the stack's line so the
+        // returned placements still line up one-for-one with `children`.
         let mut placements = Vec::with_capacity(children.len());
+        let mut measurements = measurements.iter();
 
-        for measurement in &measurements {
+        for child in children {
+            if child.is_empty() {
+                placements.push(empty_placement(Point::new(line_x, line_y), placement));
+                continue;
+            }
+
+            let measurement = measurements
+                .next()
+                .expect("stack members and measurements diverged");
             // A layer that answers an unbounded extent fills the bounds; every
             // other layer keeps its answer, overflowing the bounds when it is
             // larger, and sits with its guide on the stack's line.
@@ -397,6 +394,55 @@ mod tests {
         // ZStack takes the max width and max height
         assert!((size.width - 80.0).abs() < f32::EPSILON);
         assert!((size.height - 60.0).abs() < f32::EPSILON);
+    }
+
+    /// The leaf a backend hosts for a real `Spacer` view inside a zstack: the
+    /// view's own claim and priority band, plus the specified zero response a
+    /// spacer gives under a container that has no main axis.
+    struct ZStackSpacerLeaf;
+
+    impl SubView for ZStackSpacerLeaf {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::zero())
+        }
+        fn stretch_axis(&self) -> StretchAxis {
+            crate::spacer::spacer().stretch_axis()
+        }
+        fn priority(&self) -> i32 {
+            crate::spacer::Spacer::DEFAULT_LAYOUT_PRIORITY
+        }
+    }
+
+    #[test]
+    fn zstack_spacer_does_not_expand_root() {
+        let layout = ZStackLayout {
+            alignment: Alignment::Center,
+        };
+
+        let rigid = MockSubView {
+            size: Size::new(20.0, 10.0),
+        };
+        let spacer = ZStackSpacerLeaf;
+        let children: Vec<&dyn SubView> = vec![&rigid, &spacer];
+        let proposal = ProposalSize::new(Some(100.0), Some(60.0));
+
+        // A spacer claims nothing in a zstack, so the union of the children's
+        // stretch is empty and a root ZStack stays content-sized.
+        let axes: Vec<StretchAxis> = children.iter().map(|child| child.stretch_axis()).collect();
+        assert_eq!(layout.stretch_axis(&axes), StretchAxis::None);
+
+        assert_eq!(
+            layout.size_that_fits(proposal, &children),
+            Size::new(20.0, 10.0)
+        );
+
+        // The root is placed at its own answer stretched only on declared
+        // axes; nothing was declared, so the bounds stay content-sized.
+        let placements = layout.place(Rect::from_size(Size::new(20.0, 10.0)), proposal, &children);
+        assert_eq!(
+            placements[0].frame,
+            Rect::new(Point::zero(), Size::new(20.0, 10.0))
+        );
     }
 
     #[test]

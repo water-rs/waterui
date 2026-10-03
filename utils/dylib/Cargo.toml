@@ -24,22 +24,22 @@ waterui-internal.workspace = true
 default = [
     "gpu",
     "assets",
-    "media",
     "webview",
-    "inspector",
     "snackbar",
     "highlight",
     "locale-datetime",
     "locale-list",
 ]
-gpu = ["waterui-internal/gpu"]
+gpu = ["effects", "waterui-internal/gpu"]
+effects = ["waterui-internal/effects"]
 highlight = ["waterui-internal/highlight"]
 locale-datetime = ["waterui-internal/locale-datetime"]
 locale-list = ["waterui-internal/locale-list"]
 inspector = ["waterui-internal/inspector"]
 assets = ["waterui-internal/assets"]
-media = ["waterui-internal/media", "video"]
+media = ["waterui-internal/media"]
 video = ["waterui-internal/video"]
+remote = ["waterui-internal/remote"]
 video-gpu = ["waterui-internal/video-gpu"]
 webview = ["waterui-internal/webview"]
 navigation-restoration = ["waterui-internal/navigation-restoration"]

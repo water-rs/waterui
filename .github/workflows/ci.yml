@@ -156,7 +156,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Manifest derivation tests
-        run: uv run --with pytest pytest .github/scripts
+        run: >
+          uv run --with pytest --with 'tree-sitter==0.26.0'
+          --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
 
   # Security audit, license check and unused-dependency check are each a cheap
   # metadata pass over the dependency graph, but were previously three separate
@@ -217,31 +219,95 @@ jobs:
         run: |
           cargo machete --with-metadata
 
-  ffi-header:
-    name: FFI Header
+  # gpu-allocator's `windows >=0.53, <=0.62` requirement admits every windows
+  # line the lockfile already carries, so a partial lock re-resolution can
+  # slide it onto a different version than wgpu-hal's — and the windows
+  # crates' COM types do not unify across versions, which is how the Windows
+  # nightly's dx12 backend broke (#1338, the edge #1379 re-pinned by hand).
+  # Compiling that backend against the committed lockfile catches it:
+  # `wgpu-hal` is not a workspace member, so `dx12` is enabled through
+  # `wgpu/dx12`, which forwards to it. The check blocks an invalid lockfile;
+  # it does not alter Cargo's resolution.
+  windows-dx12:
+    name: Windows DX12 deps
     needs: changes
-    if: needs.changes.outputs.ffi == 'true'
-    # The header is platform-dependent: the Apple exports (Metal, CEF) only
-    # appear when cbindgen expands on an Apple target, and the committed header
-    # contains them. Regenerating anywhere else would delete them and break the
-    # Apple backend, so macOS is the canonical generation host.
-    runs-on: macos-latest
+    if: needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # Restore-only reader of the shared Linux `~/.cargo` tarball (see the
+      # cache budget note at the top of this file).
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: x86_64-pc-windows-msvc
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - name: Compile the DX12 backend against the committed lockfile
+        run: cargo check --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
+
+  # `rust-version` is a promise that the whole workspace compiles on that
+  # toolchain, and nothing else in this gate keeps it true: every other leg
+  # installs `stable` or a newer pin. `clippy::incompatible_msrv` only knows
+  # std API stabilization versions — language features, syntax, and a
+  # dependency that raised its own MSRV in a patch release are invisible to
+  # it. Only compiling on the declared toolchain catches those, which is what
+  # this leg does.
+  msrv:
+    name: MSRV
+    needs: changes
+    # Any non-prose file can introduce a construct the declared toolchain
+    # cannot compile; a dependency bump reaches the same check through the
+    # committed lockfile.
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.deps == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      # The toolchain pin, the cache and the verification all live in the
-      # action, which `ffi-header-cache.yml` runs on pushes to `dev` with
-      # `save: 'true'`. That warmer is the only writer; this job reads.
-      #
-      # The cache hits here where the old one never did: the generator is its
-      # own crate whose build costs cbindgen alone, the one framework compile
-      # left is cbindgen's check-profile expansion — rmeta, a fraction of the
-      # 0.8 GB dev-profile tarball this job measured when it last tried a target
-      # cache — and the nightly it runs on is a fixed date instead of a channel
-      # that moved out from under the key every day.
-      - uses: ./.github/actions/ffi-header
+      # `stable` here only resolves the manifest and installs tools; the
+      # compile below runs on the declared toolchain.
+      - uses: ./.github/actions/setup-rust
         with:
-          save: 'false'
+          cache: "false"
+      # The version comes from the manifest, not a literal in this file —
+      # two sources of truth drift apart, which is the defect this leg exists
+      # to close. `cargo msrv verify` reads `rust-version` out of the
+      # manifest again on its own before compiling, so both ends agree on
+      # what is being verified.
+      - name: Install and pin the declared toolchain
+        run: |
+          set -euo pipefail
+          msrv="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .rust_version')"
+          if ! [[ "$msrv" =~ ^[0-9]+\.[0-9]+ ]]; then
+            echo "::error file=Cargo.toml::the waterui package must declare a major.minor rust-version (got '$msrv')"
+            exit 1
+          fi
+          rustup toolchain install "$msrv" --profile minimal
+          # rust-toolchain.toml sets channel = "stable", and the file wins
+          # over `rustup default` — which is all dtolnay/rust-toolchain sets,
+          # so pinning through it would compile on stable and verify nothing.
+          # The environment variable is the override that beats the file.
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+      # Proof, not assumption: the log records the compiler this leg actually
+      # uses, and it must equal the declared version.
+      - name: Show the pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+      - uses: ./.github/actions/setup-linux-deps
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-msrv@0.19.3
+          path: ~/.cargo/bin/cargo-msrv*
+      - name: Verify the workspace builds on the declared MSRV
+        run: |
+          set -o pipefail
+          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example'; then
+            echo "::error::the workspace does not compile on the declared rust-version — either avoid the newer feature, or raise rust-version in [workspace.package] in Cargo.toml in the same pull request"
+            exit 1
+          fi
 
   android-ffi:
     name: Android FFI
@@ -336,6 +402,44 @@ jobs:
     with:
       full: false
 
+  # The one required check for the Test workflow. A pull request that changes
+  # no code skips the `test` call above, and a skipped reusable-workflow call
+  # reports a single `Test` check, never the nested `Test / <job>` names, so
+  # requiring those names left such a pull request pending forever. This job
+  # passes when `test` succeeded or was skipped by the path filter, and fails
+  # on anything else, including a failed `changes` job.
+  test-result:
+    name: Test result
+    needs: [changes, test, windows-dx12]
+    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Test to have passed or been skipped by the path filter
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TEST: ${{ needs.test.result }}
+          DX12: ${{ needs.windows-dx12.result }}
+        run: |
+          if [ "$CHANGES" != success ]; then
+            echo "::error::Changes finished as $CHANGES, so the Test selection is unknown"
+            exit 1
+          fi
+          case "$TEST" in
+            success | skipped) ;;
+            *)
+              echo "::error::Test finished as $TEST"
+              exit 1
+              ;;
+          esac
+          case "$DX12" in
+            success | skipped) ;;
+            *)
+              echo "::error::Windows DX12 deps finished as $DX12"
+              exit 1
+              ;;
+          esac
+
   # The nightly is the only run of the full suite, so its result gates the
   # release: a pull request into `main` merges only a certified `dev`.
   # `nightly.yml`'s promote job records a green run as an immutable
@@ -369,8 +473,29 @@ jobs:
       - name: Require a certified line
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+
+          # Which line is being published decides what certifies it. `dev` is
+          # certified by the nightly, and that is what the rest of this step
+          # checks. The release line is not: a `hotfix/*` branch cut from
+          # `main`, and the release-plz bump that follows it, publish `main` —
+          # already certified when it was released — plus their own delta,
+          # which their own checks gate. They can never descend from a
+          # certification recorded on `dev`, so holding them to one does not
+          # make them safer, it makes them impossible. Hold them to descending
+          # from `main` instead, which is what stops this exit from being used
+          # to route code onto the release line around `dev`.
+          if [ "${HEAD_REF}" != "dev" ]; then
+            if ! git merge-base --is-ancestor "${BASE_SHA}" "${HEAD_SHA}"; then
+              echo "::error::${HEAD_SHA} publishes the release line but does not descend from main (${BASE_SHA}); cut it from main"
+              exit 1
+            fi
+            echo "release line: ${HEAD_SHA} descends from main (${BASE_SHA}); the nightly certifies dev, not this"
+            exit 0
+          fi
 
           # The newest certification, selected the way promote records it in
           # .github/scripts/framework_manifest.py: among published non-draft

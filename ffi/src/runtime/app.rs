@@ -1,11 +1,26 @@
-use waterui::app::App;
+use waterui::app::{App, AppParts, LastWindowPolicy};
 use waterui_controls::menu::resolve_menu_bar_items;
 
 use crate::{IntoFFI, WuiEnv, array::WuiArray, views::WuiAnyViews, window::WuiWindow};
 #[cfg(any(feature = "android-jni", test))]
-use crate::{WuiAnyView, window::OwnedFfiHandle};
+use crate::{
+    WuiAnyView,
+    reactive::WuiComputed,
+    window::{OwnedFfiHandle, WuiAndroidWindow},
+};
 #[cfg(feature = "android-jni")]
 use core::ffi::c_void;
+#[cfg(any(feature = "android-jni", test))]
+use waterui_graphics::WorkingColor;
+
+into_ffi! {
+    LastWindowPolicy,
+    /// What the native host does once the application has no open window.
+    pub enum WuiLastWindowPolicy {
+        Quit,
+        StayResident,
+    }
+}
 
 /// FFI-compatible representation of an application.
 ///
@@ -14,13 +29,16 @@ use core::ffi::c_void;
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiApp {
-    /// Array of windows. The first window is the main window.
+    /// The windows opened at startup, in declaration order; possibly none.
     pub windows: WuiArray<WuiWindow>,
     /// The application menu bar as resolved menu items.
     pub menu_bar: *mut WuiAnyViews,
     /// The application environment containing injected services.
     /// Returned to native for use during rendering.
     pub env: *mut WuiEnv,
+    /// What the host does once the application has no open window, at startup
+    /// included.
+    pub last_window_policy: WuiLastWindowPolicy,
 }
 
 /// Raw handles transferred from the exported app entry point to Android JNI.
@@ -31,19 +49,27 @@ pub struct WuiApp {
 pub struct WuiAndroidAppHandles {
     pub content: *mut c_void,
     pub env: *mut c_void,
+    /// A `WuiComputed<WorkingColor>`: the window's resolved background.
+    pub background: *mut c_void,
 }
 
-/// The two handles transferred to Android's single root activity.
+/// The handles transferred to Android's single root activity.
 #[cfg(any(feature = "android-jni", test))]
 pub(crate) struct WuiAndroidApp {
-    content: OwnedFfiHandle<WuiAnyView>,
+    window: WuiAndroidWindow,
     env: OwnedFfiHandle<WuiEnv>,
 }
 
 #[cfg(any(feature = "android-jni", test))]
 impl WuiAndroidApp {
-    pub(crate) fn into_raw_parts(self) -> (*mut WuiAnyView, *mut WuiEnv) {
-        (self.content.into_raw(), self.env.into_raw())
+    pub(crate) fn into_raw_parts(
+        self,
+    ) -> (*mut WuiAnyView, *mut WuiEnv, *mut WuiComputed<WorkingColor>) {
+        (
+            self.window.content.into_raw(),
+            self.env.into_raw(),
+            self.window.background.into_raw(),
+        )
     }
 }
 
@@ -51,17 +77,23 @@ impl WuiAndroidApp {
 impl WuiApp {
     /// Projects a `WaterUI` app onto Android's single-activity model.
     ///
-    /// Android owns exactly one root content view and its environment. Window
-    /// chrome, menu-bar, sizing, and state handles have no Android owner and are
-    /// released before the two supported handles cross JNI.
+    /// Android owns exactly one root content view, its environment and the
+    /// window background. Window chrome, menu-bar, sizing, and state handles
+    /// have no Android owner and are released before the supported handles
+    /// cross JNI.
     pub(crate) fn into_android_projection(self) -> WuiAndroidApp {
         let Self {
             mut windows,
             menu_bar,
             env,
+            // Android has one root activity and no windowless state, so the
+            // policy has nothing to govern there.
+            last_window_policy: _,
         } = self;
         let menu_bar = OwnedFfiHandle::required(menu_bar, "WuiApp.menu_bar");
         let env = OwnedFfiHandle::required(env, "WuiApp.env");
+        // SAFETY: `env` owns a live environment for the rest of this call.
+        let environment: &waterui::Environment = unsafe { &*env.as_ptr() };
         let window_count = windows.len();
 
         if window_count != 1 {
@@ -69,10 +101,13 @@ impl WuiApp {
                 // SAFETY: `window` points at an initialized element of the array the
                 // caller handed over, and each element is read once.
                 let window = unsafe { core::ptr::read(window) };
-                window.dispose_android();
+                window.dispose_android(environment);
             }
             windows.consume();
-            panic!("Android backend requires exactly one window, got {window_count}");
+            panic!(
+                "Android backend requires exactly one window, got {window_count}: Android has one \
+                 root activity and no windowless foreground state"
+            );
         }
 
         // SAFETY: the branch above proves the array is non-empty, so the first element
@@ -83,7 +118,7 @@ impl WuiApp {
         drop(menu_bar);
 
         WuiAndroidApp {
-            content: window.into_android_content(),
+            window: window.into_android_window(environment),
             env,
         }
     }
@@ -93,10 +128,11 @@ impl WuiApp {
     #[doc(hidden)]
     #[must_use]
     pub fn into_android_handles(self) -> WuiAndroidAppHandles {
-        let (content, env) = self.into_android_projection().into_raw_parts();
+        let (content, env, background) = self.into_android_projection().into_raw_parts();
         WuiAndroidAppHandles {
             content: content.cast(),
             env: env.cast(),
+            background: background.cast(),
         }
     }
 }
@@ -105,12 +141,18 @@ impl IntoFFI for App {
     type FFI = WuiApp;
 
     fn into_ffi(self) -> Self::FFI {
-        let (windows, menu_bar, env) = self.into_parts();
+        let AppParts {
+            windows,
+            menu_bar,
+            env,
+            last_window,
+        } = self.into_parts();
         let menu_bar = crate::menu_items_views(resolve_menu_bar_items(&menu_bar, &env));
         WuiApp {
             windows: windows.into_ffi(),
             menu_bar,
             env: env.into_ffi(),
+            last_window_policy: last_window.into_ffi(),
         }
     }
 }
@@ -160,7 +202,7 @@ mod tests {
         type Output = Vec<ResolvedMenuItem>;
         type Guard = ();
 
-        fn get(&self) -> Self::Output {
+        fn snapshot(&self) -> Self::Output {
             Vec::new()
         }
 
@@ -211,6 +253,7 @@ mod tests {
             }),
             menu_bar,
             env: env.into_ffi(),
+            last_window_policy: WuiLastWindowPolicy::Quit,
         }
     }
 
@@ -243,15 +286,19 @@ mod tests {
         assert_eq!(toolbar_drops.get(), 1);
         assert_eq!(menu_drops.get(), 1);
         assert_eq!(env_drops.get(), 0);
-        assert!(!projection.content.as_ptr().is_null());
+        assert!(!projection.window.content.as_ptr().is_null());
+        assert!(!projection.window.background.as_ptr().is_null());
         assert!(!projection.env.as_ptr().is_null());
 
-        let (content, env) = projection.into_raw_parts();
+        let (content, env, background) = projection.into_raw_parts();
         // SAFETY: the caller contract makes `content` an owning handle consumed here.
         let content: AnyView = unsafe { IntoRust::into_rust(content) };
         // SAFETY: likewise for `env`.
         let env: Environment = unsafe { IntoRust::into_rust(env) };
         drop(content);
+        // SAFETY: likewise for the resolved background, which holds its own
+        // environment clone.
+        drop(unsafe { Box::from_raw(background) });
         drop(env);
 
         assert_eq!(env_drops.get(), 1);
@@ -276,7 +323,10 @@ mod tests {
 
             assert_eq!(
                 panic_message(payload.as_ref()),
-                format!("Android backend requires exactly one window, got {window_count}")
+                format!(
+                    "Android backend requires exactly one window, got {window_count}: Android \
+                     has one root activity and no windowless foreground state"
+                )
             );
             assert_eq!(storage_drops.get(), 1);
             assert_eq!(toolbar_drops.get(), window_count);

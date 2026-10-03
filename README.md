@@ -10,20 +10,37 @@
   </p>
 </div>
 
-`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Vello, and Dew is a CPU renderer frugal enough for microcontrollers.
+`WaterUI` is a cross-platform UI framework for Rust. You write views once, and each backend maps them onto whatever the platform actually uses: `UIKit` and `AppKit` on Apple, Android Views on Android, GTK4 on Linux. Where no native toolkit fits there are two self-drawn renderers: Hydrolysis draws on the GPU through Cherenkov, and Dew is a CPU renderer frugal enough for microcontrollers.
 
 State is plain values. Put mutable state in a `Binding`, derive from it with `Computed`, and hand those to views. When a value changes, the views that read it update. There is no virtual tree to diff, and changing one string never rebuilds the subtree around it.
 
 ## Getting started
 
+Install the `water` CLI. The installer downloads a prebuilt binary; nothing is
+compiled:
+
 ```bash
-cargo install waterui-cli
-water create counter --mode playground
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+```
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+```
+
+Then create and run a project:
+
+```bash
+water create counter
 cd counter
 water run
 ```
 
-A playground is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
+`water update` upgrades the CLI in place, and `water update --check` reports the
+newest release without installing it.
+
+A `WaterUI` project is a plain Rust crate; the CLI keeps native projects out of your source tree and manages them on demand. `src/lib.rs` looks like this:
 
 ```rust,ignore
 use waterui::app::App;
@@ -72,7 +89,7 @@ The same surface drives `water preview test` for semantic interaction tests and 
 
 ## Shipping a real app
 
-Playgrounds are for iteration. App mode generates platform projects that belong to you, so they can be customized, signed, and packaged:
+The same project you iterate on is the one that ships: the CLI generates and manages the platform projects, and builds, signs and packages the app from the declarations in `Water.toml`:
 
 ```bash
 water create my-app --backends apple,android
@@ -135,7 +152,7 @@ One thing to know early: `watch` replaces the subtree it wraps, losing any state
 | iOS and macOS | Apple | `UIKit` / `AppKit` |
 | Android | Android | Android Views |
 | Linux | GTK4 | GTK4 widgets |
-| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Vello) |
+| macOS, Linux, Windows, web | Hydrolysis | Self-drawn, GPU (Cherenkov) |
 | ESP32-S3 / ESP32-C3 | Dew | Self-drawn, CPU, dirty-region |
 
 ## Status

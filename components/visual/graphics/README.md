@@ -1,16 +1,19 @@
 # waterui-graphics
 
-High-performance GPU rendering primitives for WaterUI applications.
+GPU and engine rendering primitives for WaterUI applications.
 
 ## Overview
 
-`waterui-graphics` provides three distinct APIs for GPU-accelerated rendering, each targeting different levels of abstraction and use cases:
+`waterui-graphics` hosts the rendering contracts a WaterUI backend consumes:
 
-- **Canvas** - Beginner-friendly 2D vector graphics using Vello (shapes, paths, fills, strokes)
-- **ShaderSurface** - Intermediate shader-based rendering with automatic pipeline setup
-- **GpuSurface** - Advanced low-level wgpu access for custom GPU rendering
+- **GpuContentView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
+- **SceneView** - a view whose `SceneContent` records vector scenes into `cherenkov::Recorder`
+- **ShaderPaintView** - a view painted by a WGSL fragment shader
+- **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the GPU-animated `AnimatedMeshGradient` and `FlowingGradient`
+- **OffscreenRenderer** - headless rendering of either kind of content to `OffscreenImage`
+- **Effects** - GPU filter, transition and capture effects applied to arbitrary views
 
-All three APIs render at display refresh rates (60-120fps+) and support HDR surfaces when available. The crate automatically handles surface format selection, preferring Rgba16Float for HDR displays and falling back to sRGB formats on SDR displays.
+GPU paths run at display refresh rates and support HDR surfaces when the host offers one.
 
 ## Installation
 
@@ -30,316 +33,176 @@ waterui = "0.3"
 
 ## Quick Start
 
-### Canvas - Draw 2D Shapes
+### GpuContentView - Full wgpu Control
 
-The simplest way to draw vector graphics:
+For custom GPU rendering, implement the `GpuContent` trait and wrap it in a
+`GpuContentView`:
 
 ```rust
-use waterui::graphics::Canvas;
-use waterui::graphics::kurbo::{Circle, Line, Point, Rect};
-use waterui::graphics::peniko::Color;
+use waterui::graphics::{Context, Frame, GpuContent, GpuContentView};
 use waterui::prelude::*;
 
-fn main() -> impl View {
-    vstack((
-        text("H₂O Molecule").size(24),
-        text("Simple 2D molecular visualization").size(14),
-        Canvas::new(|ctx| {
-            let size = ctx.size();
-            let center = ctx.center();
+struct Flame;
 
-            // Background
-            ctx.fill(
-                Rect::from_origin_size(Point::ZERO, size),
-                Color::new([0.08, 0.1, 0.14, 1.0]),
-            );
+impl GpuContent for Flame {
+    fn setup(&mut self, gpu: &Context<'_>) {
+        // Create pipelines, buffers and bind groups against `gpu.device`.
+    }
 
-            // Molecule geometry
-            let oxygen_radius = 40.0;
-            let hydrogen_radius = 22.0;
-            let bond_length = 90.0;
-
-            // Water bond angle ~104.5°
-            let angle = 104.5_f64.to_radians() / 2.0;
-
-            let hx1 = center.x - bond_length * angle.sin();
-            let hy1 = center.y + bond_length * angle.cos();
-
-            let hx2 = center.x + bond_length * angle.sin();
-            let hy2 = center.y + bond_length * angle.cos();
-
-            let oxygen = center;
-            let hydrogen1 = Point::new(hx1, hy1);
-            let hydrogen2 = Point::new(hx2, hy2);
-
-            // Bonds
-            ctx.stroke(
-                Line::new(oxygen, hydrogen1),
-                Color::new([0.9, 0.9, 0.9, 0.8]),
-                4.0,
-            );
-
-            ctx.stroke(
-                Line::new(oxygen, hydrogen2),
-                Color::new([0.9, 0.9, 0.9, 0.8]),
-                4.0,
-            );
-
-            // Atoms
-            // Oxygen (O)
-            ctx.fill(
-                Circle::new(oxygen, oxygen_radius),
-                Color::new([0.85, 0.2, 0.25, 1.0]),
-            );
-
-            // Hydrogens (H)
-            ctx.fill(
-                Circle::new(hydrogen1, hydrogen_radius),
-                Color::new([0.95, 0.95, 0.95, 1.0]),
-            );
-
-            ctx.fill(
-                Circle::new(hydrogen2, hydrogen_radius),
-                Color::new([0.95, 0.95, 0.95, 1.0]),
-            );
-        }),
-        text("Bond angle ≈ 104.5°").size(12),
-    ))
-    .padding()
+    fn render(&mut self, frame: &mut Frame<'_>) {
+        // Encode one frame into `frame.view`, submit to `frame.queue`,
+        // and call `frame.request_redraw()` when the content animates.
+    }
 }
-```
-
-### ShaderSurface - WGSL Shaders Made Easy
-
-Load and render fragment shaders with automatic uniform management:
-
-```rust
-use waterui::graphics::shader;
-use waterui::prelude::*;
 
 fn main() -> impl View {
-    vstack((
-        text("Flame Animation").size(24),
-        text("GPU-rendered procedural fire").size(14),
-        // Just one line to load and render a shader!
-        shader!("starfield.wgsl").size(400.0, 500.0),
-        text("Rendered at 120fps").size(12),
-    ))
-    .padding()
+    GpuContentView::new(Flame).size(400.0, 500.0)
 }
 ```
 
-The shader automatically receives these uniforms:
-
-```wgsl
-struct Uniforms {
-    time: f32,           // Elapsed time in seconds
-    resolution: vec2<f32>, // Surface size in pixels
-    _padding: f32,
-}
-@group(0) @binding(0) var<uniform> uniforms: Uniforms;
-
-@fragment
-fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-    let t = uniforms.time;
-    return vec4<f32>(uv.x, uv.y, sin(t), 1.0);
-}
-```
-
-### GpuSurface - Full wgpu Control
-
-For advanced rendering pipelines, implement the `GpuRenderer` trait:
+`GpuContent` is `Send`: it is constructed on the UI thread and then lives on
+the render thread. Producers that are confined to the UI thread — a browser
+engine, a camera stream — keep their state in a `.on_frame` hook and post
+frames to the render side through shared state:
 
 ```rust
-use waterui::graphics::{GpuContext, GpuFrame, GpuRenderer, GpuSurface, bytemuck, wgpu};
-use waterui::prelude::*;
-
-fn main() -> impl View {
-    vstack((
-        text("Cinematic HDR Flame (GpuSurface)").size(24),
-        text("HDR film buffer + bloom + ACES tonemap").size(14),
-        GpuSurface::new(FlameRenderer::default()).size(400.0, 500.0),
-        text("Rendered at 120fps").size(12),
-    ))
-    .padding()
-}
+GpuContentView::new(RenderSide::new())
+    .on_frame(move || bridge.borrow_mut().frame())
 ```
 
-## Core Concepts
+Per-view hooks also exist for input (`on_input`), the IME caret
+(`on_ime_caret`), and accessibility (`labeled`, `described`).
 
-### Canvas Drawing API
+### SceneView - Vector Scenes
 
-`Canvas` provides a callback-based API where you receive a `DrawingContext` each frame:
-
-- **Shapes** - Fill and stroke circles, rectangles, lines, and arbitrary paths using `kurbo` geometry primitives
-- **Styling** - Apply solid colors or gradients using `peniko` brushes
-- **Layers** - Push clip layers and alpha layers for compositing effects
-- **Performance** - Renders via Vello at full GPU speed with anti-aliasing
-
-The `DrawingContext` provides helper methods:
+`SceneContent` records a vector scene into a `cherenkov::Recorder` each frame;
+the engine resources it names come from `RecordingResources`:
 
 ```rust
-ctx.size()      // Canvas dimensions as kurbo::Size
-ctx.center()    // Center point
-ctx.fill(shape, color)              // Fill a shape with solid color
-ctx.fill_brush(shape, brush)        // Fill with gradient/pattern
-ctx.stroke(shape, color, width)     // Stroke a shape outline
-ctx.push_clip(shape)                // Begin clipping region
-ctx.push_alpha(alpha, bounds)       // Begin alpha layer
-ctx.pop_layer()                     // End layer
-ctx.scene()                         // Access underlying Vello scene
-```
+use waterui::graphics::{RecordingResources, SceneContent, SceneView, cherenkov};
 
-### ShaderSurface Uniforms
+struct Graph;
 
-`ShaderSurface` automatically injects a uniform buffer accessible via `@group(0) @binding(0)`:
-
-- `time: f32` - Elapsed seconds since shader creation (for animations)
-- `resolution: vec2<f32>` - Current surface size in pixels
-- Fragment input `uv: vec2<f32>` - Normalized coordinates (0.0 to 1.0)
-
-### GpuRenderer Lifecycle
-
-The `GpuRenderer` trait defines three lifecycle methods:
-
-```rust
-pub trait GpuRenderer: 'static {
-    fn setup(&mut self, ctx: &GpuContext);
-    fn render(&mut self, frame: &GpuFrame);
-    fn resize(&mut self, width: u32, height: u32);
-}
-```
-
-- `setup()` - Called once when GPU resources are ready; create pipelines, buffers, bind groups
-- `resize()` - Called when surface size changes (before render); recreate size-dependent resources
-- `render()` - Called each frame with `GpuFrame` containing device, queue, texture, and dimensions
-
-### HDR Support
-
-All three APIs automatically detect and utilize HDR surfaces:
-
-```rust
-// In setup()
-if ctx.is_hdr() {
-    // Surface format is Rgba16Float or Rgba32Float
-    // Use extended color range (values > 1.0)
+impl SceneContent for Graph {
+    fn build_scene(
+        &mut self,
+        recorder: &mut cherenkov::Recorder,
+        resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        // Record drawing commands; return true when the scene changed.
+        true
+    }
 }
 
-// In render()
-if frame.is_hdr() {
-    // Render with HDR-specific parameters
-}
+let view = SceneView::new(Graph);
 ```
 
-HDR surfaces use `Rgba16Float` format when available, allowing color values beyond 1.0 for highlights and bloom effects.
-
-## Examples
-
-### Drawing with Gradients
+### ShaderPaintView - WGSL Shaders Made Easy
 
 ```rust
-use waterui::graphics::Canvas;
-use waterui::graphics::kurbo::Circle;
-use waterui::graphics::peniko::{Brush, Color, Gradient};
+use waterui::graphics::ShaderPaintView;
 
-Canvas::new(|ctx| {
-    let gradient = Gradient::new_linear((0.0, 0.0), (ctx.width as f64, ctx.height as f64))
-        .with_stops([
-            (0.0, Color::new([1.0, 0.2, 0.2, 1.0])),
-            (1.0, Color::new([0.2, 0.2, 1.0, 1.0])),
-        ]);
-
-    ctx.fill_brush(
-        Circle::new(ctx.center(), 100.0),
-        &Brush::Gradient(gradient),
-    );
-})
-```
-
-### Inline Shader
-
-```rust
-use waterui::graphics::ShaderSurface;
-
-ShaderSurface::new(r#"
+let view = ShaderPaintView::new(r#"
     @fragment
     fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         let t = uniforms.time;
-        let color = vec3<f32>(uv.x, uv.y, sin(t));
-        return vec4<f32>(color, 1.0);
+        return vec4<f32>(uv.x, uv.y, sin(t), 1.0);
     }
-"#)
+"#).animated(true);
 ```
 
-### Custom Render Pipeline
+`uniforms.time` and `uniforms.resolution` are injected automatically; extra
+user uniforms follow a signal via `.uniforms(...)`.
 
-See `examples/flame` in the `water-rs/shaderloom` repository for a complete example implementing:
+## Core Concepts
 
-- Multi-pass HDR rendering
-- Procedural flame shader with fractal noise
-- Bloom post-processing with separable Gaussian blur
-- ACES tonemapping with vignette and film grain
+### GpuContent Lifecycle
+
+```rust
+pub trait GpuContent: Send + 'static {
+    fn setup(&mut self, gpu: &Context<'_>);
+    fn render(&mut self, frame: &mut Frame<'_>);
+    fn is_opaque(&self) -> bool { false }
+    fn intrinsic_size(&self) -> Option<Size> { None }
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions { /* fill proposal */ }
+    fn preferred_surface_hdr(&self) -> Option<bool> { None }
+}
+```
+
+- `setup()` - Called once on the render thread; create pipelines, buffers, bind groups
+- `render()` - Called per frame with `Frame` carrying `device`, `queue`, `texture`, `view`, `format`, `width`, `height`, `scale`, `elapsed`, `delta`
+
+### External Frames
+
+Frames that already live in GPU memory — a video decoder's `CVPixelBuffer`, an
+`AHardwareBuffer`, a dmabuf — are not drawn by content. An
+`ExternalFrameSource` imports their planes onto the host's device and
+publishes `cherenkov_gpu::interop::ExternalFrame`s, which become the content
+of the `ExternalFrameView`'s own engine layer:
+
+```rust
+pub trait ExternalFrameSource: 'static {
+    fn start(&mut self, output: FrameOutput);
+    fn is_opaque(&self) -> bool { false }
+    fn intrinsic_size(&self) -> Option<Size> { None }
+    fn measure(&self, proposal: ProposalSize) -> ViewDimensions { /* fill proposal */ }
+    fn preferred_surface_hdr(&self) -> Option<bool> { None }
+}
+```
+
+- `start()` - Called on the UI thread each time a host builds the layer —
+  first presentation, and again on the new device after a device loss. The
+  `FrameOutput` is cloneable and `Send` on native targets; the decoder thread
+  imports planes onto `output.device()` and calls `output.present(frame)`.
+- A newer frame replaces one the host has not drawn yet; the host drains the
+  newest frame once per engine pass, so publishing never rebuilds the view.
+- The engine samples the planes in place and converts them with the frame's
+  `FrameColor` (matrix, range, siting, primaries, transfer, reference white)
+  behind its `FrameSync`.
+- `present` returns `RetiredOutput` once the host that started the output is
+  gone; stop producing for it.
+
+### Offscreen Rendering
+
+`GpuRuntime::render_content(content, size, scale)` renders a `GpuContent` to an
+`OffscreenImage` without a window; `OffscreenRenderer` does the same for scene
+content on either the GPU or CPU (`OffscreenRenderer::cpu`).
 
 ## API Overview
 
-### Canvas Module
+### Gpu Module
 
-- `Canvas::new(draw_fn)` - Create canvas with drawing callback
-- `DrawingContext` - Frame-by-frame drawing context with shape rendering methods
-- Re-exports: `kurbo` (2D geometry), `peniko` (colors, brushes, gradients)
+- `GpuContentView::new(content)` - Create a view from a `GpuContent`
+- `ExternalFrameView::new(source)` - Create a view from an `ExternalFrameSource`
+- `FrameOutput` - Where a source publishes frames: `device()`, `queue()`, `present(frame)`
+- `GpuContentRenderer` / `ExternalFrameRenderer` - Host-side renderers presenting either view into a native texture
+- `Context` - GPU resources during setup (adapter, device, queue, format, redraw)
+- `Frame` - Frame data during render (device, queue, texture, view, dimensions, timings)
+- `GpuRuntime` - Shared wgpu runtime for offscreen and host-driven rendering
+- `preferred_surface_format(caps, prefer_hdr)` - Pick a surface format, HDR preferred
 
-### ShaderSurface Module
+### Scene Module
 
-- `ShaderSurface::new(wgsl_source)` - Create surface from WGSL fragment shader string
-- `shader!(path)` - Macro to load shader from file at compile time
-- Automatic uniforms: `time`, `resolution`
-
-### GpuSurface Module
-
-- `GpuSurface::new(renderer)` - Create surface with custom `GpuRenderer`
-- `GpuRenderer` trait - Implement for custom GPU rendering logic
-- `GpuContext` - GPU resources during setup (device, queue, surface format)
-- `GpuFrame` - Frame data during render (device, queue, texture, view, dimensions)
-- `preferred_surface_format(caps)` - Helper to select best surface format (HDR preferred)
+- `SceneView::new(content)` - Create a view from a `SceneContent`
+- `SceneResources` - Engine resource registry a host builds with `new(Rc<Engine<B>>)`; `recording()` opens a `RecordingResources` for each recording
+- `RecordingResources` - The registration half handed to `build_scene`: `name`/`hold` plus `font`/`image`/`image16f`/`shader`
+- `Picture` - A retained recorded scene
 
 ### Re-exported Dependencies
 
-- `wgpu` - Direct access to wgpu types for `GpuRenderer` implementations
+- `wgpu` - Direct access to wgpu types for `GpuContent` implementations
+- `cherenkov` - The scene engine (`Recorder`, `Engine`, `Display`)
+- `kurbo` - 2D geometry
 - `bytemuck` - Safe byte conversions for uniform buffers
-- `kurbo` - 2D geometry (via `vello::kurbo`)
-- `peniko` - Styling primitives (via `vello::peniko`)
-
-## Features
-
-### Default Features
-
-- `canvas` - Enables Canvas API (depends on `wgpu` and `vello`)
-
-### Optional Features
-
-- `wgpu` - Enables GpuSurface and ShaderSurface (no Canvas)
-
-All features are enabled by default. To use only lower-level GPU APIs without Vello:
-
-```toml
-[dependencies]
-waterui-graphics = { version = "0.1.0", default-features = false, features = ["wgpu"] }
-```
-
-## Performance Notes
-
-- Canvas uses Vello's GPU-accelerated vector renderer with area-based anti-aliasing
-- All rendering stretches to fill available space by default (`StretchAxis::Both`)
-- Use `.size(width, height)` modifier to constrain dimensions
-- ShaderSurface compiles WGSL at setup time; compilation errors appear in logs
-- GpuSurface provides zero-cost abstraction over raw wgpu rendering
 
 ## Platform Support
 
-Graphics rendering requires a platform backend that supports wgpu:
+Graphics rendering requires a platform backend that presents engine content:
 
 - **Apple** (iOS, macOS) - Metal backend
 - **Android** - Vulkan backend
-- **Hydrolysis** - CPU rendering via Vello/tiny-skia (experimental)
+- **Hydrolysis** - Cherenkov GPU backend
 
 Terminal UI backend (`tui`) does not support GPU rendering.

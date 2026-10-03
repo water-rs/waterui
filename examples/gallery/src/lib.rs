@@ -29,6 +29,7 @@ use mdi::tune;
 use waterui::Color;
 use waterui::Handler;
 use waterui::Identifiable;
+use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::App;
@@ -428,8 +429,8 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
         section.title(),
         open.clone(),
         move |State(open): State<Binding<bool>>, State(rows): State<ReactiveList<Row>>| {
-            let expanded = !open.get();
-            open.set(expanded);
+            open.toggle();
+            let expanded = open.snapshot();
             set_group_expanded(&rows, group, expanded);
         },
     )
@@ -520,9 +521,24 @@ fn toggle_demo(wifi: &Binding<bool>, bluetooth: &Binding<bool>) -> impl View {
 }
 
 fn slider_demo(volume: &Binding<f64>) -> impl View {
+    let sizes = [
+        ("Extra small", ControlSize::ExtraSmall),
+        ("Small", ControlSize::Small),
+        ("Medium", ControlSize::Medium),
+        ("Large", ControlSize::Large),
+        ("Extra large", ControlSize::ExtraLarge),
+    ]
+    .map(|(label, size)| {
+        slider(label, volume)
+            .range(0.0..=100.0)
+            .size(size)
+            .value_indicator(|v| Str::from(format!("{v:.0}")))
+    });
+
     vstack((
-        note("Drag the slider; the progress bar reflects the value."),
+        note("Drag a slider; the value indicator follows the thumb and the progress bar reflects the value."),
         slider("Volume", volume).range(0.0..=100.0),
+        vstack(sizes).spacing(8.0),
         text!("Value: {volume}").body(),
         progress(volume.clone().map(|v| v / 100.0)).label("Volume"),
     ))
@@ -653,6 +669,7 @@ pub fn app(env: Environment) -> App {
 mod tests {
     use super::{catalog, new_state};
     use core::time::Duration;
+    use waterui::Signal;
     use waterui::Str;
     use waterui_testing::{Role, Styled, UiBuilder};
 
@@ -859,7 +876,7 @@ mod tests {
 
         app.query().role(Role::SWITCH).label("Wi-Fi").tap();
         assert!(
-            !wifi.get(),
+            !wifi.snapshot(),
             "flipping the Wi-Fi switch should clear its binding"
         );
         app.query()
@@ -870,7 +887,7 @@ mod tests {
 
         app.query().role(Role::CHECKBOX).label("Bluetooth").tap();
         assert!(
-            bluetooth.get(),
+            bluetooth.snapshot(),
             "tapping the Bluetooth checkbox should set its binding"
         );
         app.query()
@@ -912,7 +929,7 @@ mod tests {
 
         app.query().role(Role::SLIDER).label("Volume").increment();
         assert!(
-            (volume.get() - 41.0).abs() < 0.0001,
+            (volume.snapshot() - 41.0).abs() < 0.0001,
             "incrementing the slider should raise the volume binding by one a11y step"
         );
         assert!(
@@ -925,7 +942,7 @@ mod tests {
 
         app.query().role(Role::SLIDER).label("Volume").decrement();
         assert!(
-            (volume.get() - 40.0).abs() < 0.0001,
+            (volume.snapshot() - 40.0).abs() < 0.0001,
             "decrementing the slider should restore the previous volume"
         );
         assert!(
@@ -964,7 +981,7 @@ mod tests {
 
         app.query().label("Quantity").value("2").increment();
         assert_eq!(
-            quantity.get(),
+            quantity.snapshot(),
             3,
             "incrementing the stepper should raise its binding by one"
         );
@@ -978,7 +995,7 @@ mod tests {
 
         app.query().label("Quantity").value("3").decrement();
         assert_eq!(
-            quantity.get(),
+            quantity.snapshot(),
             2,
             "decrementing the stepper should restore the previous quantity"
         );
@@ -1021,7 +1038,7 @@ mod tests {
             .label("Name")
             .set_text("Ada Lovelace");
         assert_eq!(
-            name.get(),
+            name.snapshot(),
             Str::from("Ada Lovelace"),
             "the text field should update its bound demo state"
         );

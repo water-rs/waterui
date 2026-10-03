@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/navigation-v0.3.2...navigation-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+- [**breaking**] #[state] marks owned types as extractors over .state()
+- *(tabs)* add bottom_accessory, the iOS 26 tab bar mini-player slot
+- *(tabs)* add minimize_behavior for the iOS 26 collapsing tab bar
+- *(tabs)* [**breaking**] add TabRole, the search role via the UITab model
+
+### Fixed
+
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- declare stretch_axis on composite views before body resolution ([#952](https://github.com/water-rs/waterui/pull/952))
+- *(macros)* reject empty, positional and raw-identifier text! placeholders
+
+### Other
+
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+
 ## [0.3.2](https://github.com/water-rs/waterui/compare/navigation-v0.3.1...navigation-v0.3.2) - 2026-09-11
 
 ### Other

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/text-v0.4.1...text-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+- *(text)* add a monospaced font design as a semantic slot
+
+### Fixed
+
+- *(deps)* keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))
+- *(text)* [**breaking**] a size override drops the previous face's typography metrics
+- *(text)* map markdown headings to the descending platform type scale
+- *(macros)* reject empty, positional and raw-identifier text! placeholders
+
+### Other
+
+- drop dev-dependencies orphaned by the test moves; restore a trailing newline
+- restore the semantic coverage the harness migration dropped
+- Revert "fix(deps): keep dev-deps on unreleased satellites out of published manifests ([#1124](https://github.com/water-rs/waterui/pull/1124))" ([#1129](https://github.com/water-rs/waterui/pull/1129))
+- Merge pull request #770 from water-rs/fix/text-macro-placeholders
+- reorder suiteki imports ahead of waterui_*
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+- merge main (0.4.1 release commits) back into dev
+
 ## [0.4.1](https://github.com/water-rs/waterui/compare/text-v0.4.0...text-v0.4.1) - 2026-09-11
 
 ### Other

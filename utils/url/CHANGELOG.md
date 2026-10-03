@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/url-v0.3.1...url-v0.5.0) - 2026-09-20
+
+### Fixed
+
+- *(url)* retry remote downloads on transient failures
+
+### Other
+
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+
 ## [0.3.1](https://github.com/water-rs/waterui/compare/url-v0.3.0...url-v0.3.1) - 2026-09-11
 
 ### Other

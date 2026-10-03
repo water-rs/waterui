@@ -1,6 +1,6 @@
 [package]
 name = "waterui-graphics"
-version = "0.4.1"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -12,116 +12,82 @@ categories = ["gui"]
 
 [features]
 default = ["gpu"]
-# The `Scene2D` contract needs no rendering engine, so the two engine-backed
-# implementations of it are their own feature: a crate that only draws through
-# the contract, and lets a backend supply the scene, does not pull Vello.
-#
-# `wgpu` is here because the hybrid engine keeps images in an atlas texture the
-# renderer owns: drawing one means uploading it to the device, so the engine
-# implementation names the device, the queue and the encoder that fills it.
-vello-scene = [
-    "dep:vello",
-    "dep:vello_hybrid",
-    "dep:vello_common",
-    "dep:glifo",
-    "dep:wgpu",
-]
-# Rasterises a `SceneRecording` on the CPU through `vello_cpu`: what the FFI
-# backends need to show a `Picture` in a platform image view, and what Dew
-# paints with. Independent of `gpu`.
-cpu-scene = ["dep:vello_cpu"]
+# Filters on views (`.filter(F)`, `.blur(..)`, …) and the portable description
+# a backend reads from them: the filter's stages with their WGSL snippets, its
+# parameters and their reactive bindings, and its auxiliary images. It needs no
+# device, so a render target that lowers filters into its own primitives builds
+# it without the GPU stack.
+effects = ["dep:filtrate", "dep:arc-swap"]
+# GPU-only surfaces: user GPU content, running filters through `filtrate`'s
+# executor, arbitrary GPU effects on views, offscreen rendering through
+# `Engine<Gpu>`, and image decoding. Everything else — colours, gradients,
+# scenes, pictures and shader paints — records Cherenkov `Content` and needs no
+# device here.
 gpu = [
-    "vello-scene",
-    "dep:keyboard-types",
-    "dep:filtrate",
-    "dep:filtrate-core",
-    "dep:futures",
+    "effects",
+    "filtrate/gpu",
+    "dep:cherenkov-gpu",
+    "dep:thiserror",
     "dep:wgpu",
     "dep:bytemuck",
-    "dep:encase",
-    "dep:tracing",
     "dep:image",
-    "dep:png",
-    "dep:parking_lot",
-    "dep:rayon",
     "dep:mp4parse",
-    "dep:shaderloom",
-    "dep:naga",
-    "dep:ash",
-    "dep:wgpu-hal",
-    "dep:libc",
+    "dep:tracing",
     "dep:pollster",
+    "dep:shaderloom",
 ]
+# Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
+# whose image views take bitmaps.
+cpu = ["dep:cherenkov-cpu", "dep:thiserror", "dep:image"]
 
 [dependencies]
+arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
 nami.workspace = true
+cherenkov.workspace = true
+cherenkov-gpu = { workspace = true, optional = true }
+cherenkov-cpu = { workspace = true, optional = true }
+color.workspace = true
 filtrate = { workspace = true, optional = true }
-filtrate-core = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
-vello = { workspace = true, optional = true }
-vello_hybrid = { workspace = true, optional = true }
-vello_common = { workspace = true, optional = true }
-glifo = { workspace = true, optional = true }
-vello_cpu = { workspace = true, optional = true, features = [
-    "std",
-    "text",
-    "u8_pipeline",
-    "f32_pipeline",
-] }
-kurbo.workspace = true
-keyboard-types = { workspace = true, optional = true }
-peniko.workspace = true
-bytemuck = { version = "1.25", optional = true }
-encase = { workspace = true, optional = true }
-tracing = { workspace = true, optional = true }
+bytemuck = { version = "1", optional = true, features = ["derive"] }
+keyboard-types.workspace = true
+thiserror = { workspace = true, optional = true }
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
 # (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the
 # patched container to the platform decoder, so the encoder was pure weight.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff"], optional = true }
-png = { version = "0.18", optional = true }
-parking_lot = { version = "0.12", optional = true }
-rayon = { version = "1.12", optional = true }
 mp4parse = { version = "0.17", optional = true }
-shaderloom = { workspace = true, optional = true }
-num-traits = { version = "0.2", default-features = false }
-# Device-loss recovery rebuilds the GPU context from inside `context()`, a
-# synchronous call, so adapter/device setup needs a block_on that works on the
-# caller's thread.
+tracing = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
-
-[target.'cfg(target_os = "android")'.dependencies]
-# Android view capture reads a captured subtree out of an `AHardwareBuffer`,
-# which needs `VK_ANDROID_external_memory_android_hardware_buffer` and
-# `VK_EXT_queue_family_foreign` enabled on the device. wgpu does not enable
-# either, so the device is opened through the HAL adapter instead of
-# `Adapter::request_device`, and that is spelled in `ash`/`wgpu-hal` terms.
-ash = { workspace = true, optional = true }
-wgpu-hal = { workspace = true, features = ["vulkan"], optional = true }
-# `__system_property_get` is how the GPU path recognises an emulator guest.
-libc = { version = "0.2", optional = true }
-
-[build-dependencies]
-naga = { version = "30.0.1", features = ["wgsl-in"], optional = true }
-shaderloom = { workspace = true, features = ["build"], optional = true }
+# Only the runtime half: `build` pulls naga, which a device consumer never
+# needs — the shared device asks shaderloom which features its native shader
+# artifacts require (`shaderloom::required_features`).
+shaderloom = { workspace = true, optional = true, features = ["runtime"] }
 
 [dev-dependencies]
-# `mesh_gradient.wgsl` layout parity test parses the real shader source.
-naga = { version = "30.0.1", features = ["wgsl-in"] }
+# Tests record against `cherenkov::testing::Null` engines.
+cherenkov = { workspace = true, features = ["testing"] }
 pollster.workspace = true
+# The glyph-run recording test maps a character to a glyph id in a real font.
+ttf-parser = "0.25"
+# The external-frame tests count the device's live textures and read back
+# `Rgba16Float` host targets.
+wgpu = { workspace = true, features = ["counters"] }
+half = "2"
+# The accessibility-semantics tests mount graphics views in the Hydrolysis
+# semantic tree.
 waterui = { path = "../../.." }
 waterui-testing = { path = "../../../testing" }
-divan = "0.1"
 
-[[bench]]
-name = "filter_runtime"
-harness = false
+# The external-frame tests import real `IOSurface`-backed `CVPixelBuffer`
+# planes onto the Metal device.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-core-video = { version = "0.3", features = ["objc2-io-surface"] }
+objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 
 [lints]
 workspace = true
-
-# `shaderloom` and `naga` are used directly by build.rs; cargo-machete 0.9 does not scan build.rs.
-[package.metadata.cargo-machete]
-ignored = ["naga", "shaderloom"]

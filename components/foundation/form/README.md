@@ -53,7 +53,7 @@ fn profile_form() -> impl View {
     vstack((
         form(&form_binding),
         button("Save")
-            .action(move || tracing::debug!("Profile: {:?}", form_binding.get())),
+            .action(move || tracing::debug!("Profile: {:?}", form_binding.snapshot())),
     ))
 }
 ```
@@ -110,7 +110,7 @@ projected.name.set("Alice".to_string());
 projected.age.set(30);
 
 // Read entire form state
-let profile = form_binding.get();
+let profile = form_binding.snapshot();
 # }
 ```
 
@@ -140,7 +140,7 @@ fn login_view() -> impl View {
     vstack((
         form(&form_binding),
         button("Login").action(move || {
-            let credentials = form_binding.get();
+            let credentials = form_binding.snapshot();
             tracing::debug!("Logging in as: {}", credentials.username);
         }),
     ))
@@ -196,7 +196,7 @@ fn password_form() -> impl View {
         secure("Password", &password),
         secure("Confirm Password", &confirm),
         button("Create Account").action(move || {
-            let hash = password.get().hash();
+            let hash = password.snapshot().hash();
             tracing::debug!("Password hash: {}", hash);
         }),
     ))

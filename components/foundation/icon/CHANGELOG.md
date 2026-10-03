@@ -4,6 +4,14 @@ All notable changes to `waterui-icon` are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/icon-v0.3.2...icon-v0.5.0) - 2026-09-20
+
+### Other
+
+- move the water CLI to water-rs/cli
+- reorder suiteki imports ahead of waterui_*
+- [**breaking**] replace waterui-str with the extracted suiteki crate
+
 ## [0.3.2](https://github.com/water-rs/waterui/compare/icon-v0.3.1...icon-v0.3.2) - 2026-09-11
 
 ### Other

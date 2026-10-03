@@ -1,6 +1,6 @@
 [package]
 name = "waterui-core"
-version = "0.3.2"
+version = "0.5.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -12,6 +12,8 @@ keywords = ["ui", "core", "framework", "waterui"]
 categories = ["gui"]
 
 [dependencies]
+bitflags.workspace = true
+keyboard-types.workspace = true
 suiteki.workspace = true
 smallvec.workspace = true
 nami.workspace = true

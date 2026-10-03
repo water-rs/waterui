@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -5,8 +6,11 @@ use accesskit::{
     Action as AccessibilityAction, ActionData as AccessibilityActionData,
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
-use hydrolysis::{HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style};
-use waterui::app::App;
+use hydrolysis::{
+    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style,
+};
+use waterui::app::{App, AppParts};
+use waterui::window::Window;
 use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
@@ -60,10 +64,10 @@ pub fn ui() -> UiBuilder {
 /// through the styled builder instead:
 /// `ui().theme(style).viewport(w, h).mount_app(app)`.
 ///
-/// Only the main window's content is mounted: the headless runtime hosts a
-/// single window, so the app's menu bar and any additional windows are not
-/// mounted. Popup windows the app opens at runtime (context menus, pickers)
-/// are still merged into the accessibility tree by Hydrolysis.
+/// Only the app's first window is mounted: the headless runtime hosts a single
+/// window, so the app's menu bar and any further windows are not mounted.
+/// Popup windows the app opens at runtime (context menus, pickers) are still
+/// merged into the accessibility tree by Hydrolysis.
 ///
 /// # Panics
 ///
@@ -71,7 +75,11 @@ pub fn ui() -> UiBuilder {
 /// offscreen frame does not produce an accessibility tree.
 #[must_use]
 pub fn mount_app(app: App, style: impl Style) -> OffscreenApp {
-    let size = *app.main_window().frame.get().size();
+    let window = app
+        .windows()
+        .first()
+        .expect("mount_app mounts the app's first window, and the app declares none");
+    let size = *waterui_core::Signal::snapshot(&window.frame).size();
     ui().theme(style)
         .viewport(
             frame_points_as_u32(size.width),
@@ -394,9 +402,9 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// [`Self::scale_factor`] apply; [`mount_app`](crate::mount_app) is this
     /// method with the viewport sized from the window's declared frame.
     ///
-    /// Only the main window's content is mounted: the headless runtime hosts
-    /// a single window, so the app's menu bar and any additional windows are
-    /// not mounted. Popup windows the app opens at runtime (context menus,
+    /// Only the app's first window is mounted: the headless runtime hosts a
+    /// single window, so the app's menu bar and any further windows are not
+    /// mounted. Popup windows the app opens at runtime (context menus,
     /// pickers) are still merged into the accessibility tree by Hydrolysis.
     ///
     /// # Panics
@@ -407,11 +415,14 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// tree.
     #[must_use]
     pub fn mount_app(self, app: App) -> OffscreenApp {
-        let (windows, _menu_bar, app_env) = app.into_parts();
-        let window = windows
-            .into_iter()
-            .next()
-            .expect("App::into_parts yields the main window first");
+        let AppParts {
+            windows,
+            env: app_env,
+            ..
+        } = app.into_parts();
+        let window = windows.into_iter().next().expect(
+            "UiBuilder::mount_app mounts the app's first window, and the app declares none",
+        );
         // The app's environment is the composition root, so it layers over
         // the builder's — what the test installed applies underneath it.
         let mut env = app_env.layered_on(&self.env);
@@ -419,35 +430,73 @@ impl<S: Style> UiBuilder<Styled<S>> {
         // self-drawn video realization applies even where `App::new`'s
         // `realization::install` skipped it.
         waterui::realization::install_video(&mut env);
-        self.mount_rendered(env, window.content)
+        self.mount_rendered_window(env, window)
     }
 
-    /// Mounts `content` on the rendered runtime — the construction shared by
-    /// `mount_offscreen` and `mount_app`, which differ only in where the
-    /// environment and the view builder come from.
+    /// Mounts `content` on the rendered runtime — the mount a view-only
+    /// `mount_offscreen` performs, wrapped in the runtime's synthetic
+    /// default window.
     fn mount_rendered(self, env: Environment, content: AnyViewBuilder<AnyView>) -> OffscreenApp {
-        assert!(
-            self.scale_factor.is_finite() && self.scale_factor > 0.0,
-            "waterui-testing scale_factor must be finite and greater than zero, got {}",
-            self.scale_factor
-        );
-        let runtime = match self.flavor {
-            RuntimeFlavor::Test => HeadlessRuntime::new_for_tests(
-                env,
-                content,
-                self.width,
-                self.height,
-                self.style.style,
-            ),
+        let Self {
+            width,
+            height,
+            style,
+            flavor,
+            scale_factor,
+            ..
+        } = self;
+        let runtime = match flavor {
+            RuntimeFlavor::Test => {
+                HeadlessRuntime::new_for_tests(env, content, width, height, style.style)
+            }
             RuntimeFlavor::Application => {
-                HeadlessRuntime::new(env, content, self.width, self.height, self.style.style)
+                HeadlessRuntime::new(env, content, width, height, style.style)
             }
         };
+        Self::wrap_rendered(runtime, width, height, scale_factor)
+    }
+
+    /// Mounts the app's own [`Window`] — the mount the window runner
+    /// performs — so the viewport writes [`Window::frame`] on the app's
+    /// binding at mount and on every move/resize, and window events land on
+    /// [`Window::state`]. Mounting only the window's content would leave the
+    /// app's `frame` binding at its initial value, so every signal derived
+    /// from it — a `max_width` computed from the frame, a `when()` keyed on
+    /// width — would resolve against a size the mounted viewport never had.
+    fn mount_rendered_window(self, env: Environment, window: Window) -> OffscreenApp {
+        let Self {
+            width,
+            height,
+            style,
+            flavor,
+            scale_factor,
+            ..
+        } = self;
+        let runtime = match flavor {
+            RuntimeFlavor::Test => {
+                HeadlessRuntime::new_for_tests_with_window(env, window, width, height, style.style)
+            }
+            RuntimeFlavor::Application => {
+                HeadlessRuntime::new_with_window(env, window, width, height, style.style)
+            }
+        };
+        Self::wrap_rendered(runtime, width, height, scale_factor)
+    }
+
+    /// Wraps a rendered runtime in the offscreen session — the tail shared by
+    /// `mount_rendered` and `mount_rendered_window`.
+    fn wrap_rendered(
+        runtime: HeadlessRuntime,
+        width: u32,
+        height: u32,
+        scale_factor: f64,
+    ) -> OffscreenApp {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "waterui-testing scale_factor must be finite and greater than zero, got {scale_factor}"
+        );
         OffscreenApp {
-            app: SemanticApp::new(
-                runtime.with_scale_factor(self.scale_factor),
-                (self.width, self.height),
-            ),
+            app: SemanticApp::new(runtime.with_scale_factor(scale_factor), (width, height)),
         }
     }
 
@@ -1184,37 +1233,66 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             .push_input_event(driver::text_input_event(text.into()));
     }
 
-    /// Dispatches a named keyboard key such as `Backspace`, `Delete`, or `ArrowLeft`.
+    /// Dispatches a named keyboard key stroke — press, then release — such as
+    /// `Backspace`, `Delete`, or `ArrowLeft`.
     pub fn press_named_key(&mut self, key: impl Into<String>) {
         self.press_named_key_with(key, Modifiers::default());
     }
 
-    /// Dispatches a named keyboard key with explicit modifiers held.
+    /// Dispatches a named keyboard key stroke — press, then release — with
+    /// explicit modifiers held.
     pub fn press_named_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.queue_key_press(KeyCode::Named(key.into()), modifiers);
+        let key = KeyCode::Named(key.into());
+        self.queue_key_press(key.clone(), modifiers);
+        self.queue_key_release(key, modifiers);
         self.settle();
     }
 
-    /// Dispatches a character keyboard key without text-input synthesis.
+    /// Dispatches a character keyboard key stroke — press, then release —
+    /// without text-input synthesis.
     pub fn press_character_key(&mut self, key: impl Into<String>) {
         self.press_character_key_with(key, Modifiers::default());
     }
 
-    /// Dispatches a character keyboard key with explicit modifiers held.
+    /// Dispatches a character keyboard key stroke — press, then release —
+    /// with explicit modifiers held.
     pub fn press_character_key_with(&mut self, key: impl Into<String>, modifiers: Modifiers) {
-        self.queue_key_press(KeyCode::Character(key.into()), modifiers);
+        let key = KeyCode::Character(key.into());
+        self.queue_key_press(key.clone(), modifiers);
+        self.queue_key_release(key, modifiers);
         self.settle();
     }
 
-    /// Dispatches a keyboard key with explicit modifiers held, without the
-    /// semantic settle used by [`Self::press_named_key_with`] and
-    /// [`Self::press_character_key_with`]. The event is processed by the next
-    /// pump, so a key-triggered transient — a focus ring appearing on `Tab`,
-    /// a sheet dismissing on `Escape` — stays observable to
+    /// Presses a keyboard key and leaves it held, settling after the key-down.
+    /// Pair with [`Self::key_up`] to hold a key across calls.
+    pub fn key_down(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.queue_key_press(key, modifiers);
+        self.settle();
+    }
+
+    /// Releases a keyboard key held by [`Self::key_down`], settling after the
+    /// key-up.
+    pub fn key_up(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.queue_key_release(key, modifiers);
+        self.settle();
+    }
+
+    /// Queues a keyboard key-down with explicit modifiers held, without the
+    /// semantic settle used by [`Self::key_down`]. The event is processed by
+    /// the next pump, so a key-triggered transient — a focus ring appearing
+    /// on `Tab`, a sheet dismissing on `Escape` — stays observable to
     /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
     pub fn queue_key_press(&mut self, key: KeyCode, modifiers: Modifiers) {
         self.runtime
             .push_input_event(driver::key_press_event(key, modifiers));
+    }
+
+    /// Queues a keyboard key-up matching [`Self::queue_key_press`], without a
+    /// settle — the release half of the stroke [`Self::press_named_key_with`]
+    /// and [`Self::key_up`] dispatch.
+    pub fn queue_key_release(&mut self, key: KeyCode, modifiers: Modifiers) {
+        self.runtime
+            .push_input_event(driver::key_release_event(key, modifiers));
     }
 
     /// Pumps virtual frames until the runtime reports quiescence — no queued
@@ -1443,6 +1521,40 @@ impl SemanticApp<HeadlessRuntime> {
             .push_input_event(driver::pointer_move_event(x, y));
     }
 
+    /// Resolves the viewport point a pointer can activate on `node_id`'s
+    /// interaction owner, at the normalized position inside the owner's
+    /// region.
+    ///
+    /// The point is projected through the owner's clip chain and the window
+    /// bounds, so a partly visible element's point lands inside its visible
+    /// fragment — never in the clipped region where a press would hit
+    /// whatever lies beneath the clip, or nothing at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessibilityActivationPointError`] when the node is absent
+    /// from the runtime's accessibility state, carries no bounds, or the
+    /// clip chain and the window leave no visible fragment — a fully
+    /// clipped target has no point a pointer can reach.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "waterui-testing exposes f32 logical coordinates for pointer synthesis"
+    )]
+    pub fn activation_point(
+        &self,
+        node_id: NodeId,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) -> Result<(f32, f32), AccessibilityActivationPointError> {
+        self.runtime
+            .accessibility_activation_point(
+                node_id.as_accesskit(),
+                f64::from(normalized_x),
+                f64::from(normalized_y),
+            )
+            .map(|point| (point.x as f32, point.y as f32))
+    }
+
     /// Dispatches a pointer tap at viewport coordinates and settles resulting updates.
     pub fn tap_at(&mut self, x: f32, y: f32) {
         self.runtime
@@ -1590,6 +1702,97 @@ impl SemanticApp<HeadlessRuntime> {
         for event in driver::magnification_events(x, y, factor) {
             self.runtime.push_input_event(event);
         }
+    }
+
+    /// Hovers an OS file drag carrying `paths` over the point, then settles
+    /// resulting updates.
+    ///
+    /// This is the input path a real file drag takes: the platform reports
+    /// the pointer position outside the event stream — winit suppresses
+    /// cursor events while an external drag owns the pointer — and emits one
+    /// `HoveredFile` per path. A drop destination accepting `Files` enters
+    /// its hover state on the next pump.
+    pub fn hover_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        self.queue_hover_files_at(x, y, paths);
+        self.settle();
+    }
+
+    /// Queues the hover half of an OS file drag without the semantic settle
+    /// used by [`Self::hover_files_at`]: the host's pointer answer moves to
+    /// `x`,`y` and one [`InputEvent::FileHovered`](hydrolysis::InputEvent)
+    /// goes out per path. Follow with [`Self::queue_drop_files_at`] to drop
+    /// or [`Self::queue_cancel_files_hover`] to end the drag without one.
+    pub fn queue_hover_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        self.runtime.set_pointer_position(Some((x, y)));
+        for path in paths {
+            self.runtime
+                .push_input_event(driver::file_hovered_event(path.as_ref().to_path_buf()));
+        }
+    }
+
+    /// Drops an OS file drag carrying `paths` at the point — hover, then
+    /// drop — and settles resulting updates.
+    ///
+    /// The destination receives one `Files` payload holding every path;
+    /// winit reports the drag one event per file, so one `FileHovered` per
+    /// path goes out first, then one `FileDropped` per path.
+    pub fn drop_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        self.queue_drop_files_at(x, y, paths);
+        self.settle();
+    }
+
+    /// Queues a whole OS file drop without the semantic settle used by
+    /// [`Self::drop_files_at`]. Delivery lands a drain later than the drop
+    /// events — the runner waits out winit's missing drop-end marker before
+    /// handing the payload to the destination — so it arrives on a
+    /// subsequent pump, inside the next settle or
+    /// [`OffscreenApp::pump_for`].
+    pub fn queue_drop_files_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        paths: impl IntoIterator<Item = impl AsRef<Path>>,
+    ) {
+        let paths = paths
+            .into_iter()
+            .map(|path| path.as_ref().to_path_buf())
+            .collect::<Vec<_>>();
+        self.queue_hover_files_at(x, y, &paths);
+        for path in paths {
+            self.runtime
+                .push_input_event(driver::file_dropped_event(path));
+        }
+    }
+
+    /// Ends a hovering OS file drag without a drop — winit
+    /// `HoveredFileCancelled` — then settles resulting updates.
+    pub fn cancel_files_hover(&mut self) {
+        self.queue_cancel_files_hover();
+        self.settle();
+    }
+
+    /// Queues a file-drag cancellation without the semantic settle used by
+    /// [`Self::cancel_files_hover`]. The event is processed by the next
+    /// pump, so the destination's exit transient stays observable to
+    /// [`OffscreenApp::pump_for`] and [`OffscreenApp::snapshot`].
+    pub fn queue_cancel_files_hover(&mut self) {
+        self.runtime
+            .push_input_event(driver::file_hover_cancelled_event());
     }
 
     /// Pumps one complete offscreen frame at `at`, adopting the instant as the

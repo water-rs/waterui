@@ -449,7 +449,7 @@ pub fn map_centered_on_location(location: impl IntoComputed<Location>) -> Map {
 #[cfg(test)]
 mod tests {
     use super::{Coordinate, Map, MapStatus, Region};
-    use nami::Binding;
+    use nami::{Binding, Signal};
 
     #[test]
     fn a_map_reports_status_into_the_caller_owned_binding() {
@@ -463,10 +463,10 @@ mod tests {
         sink.set(MapStatus::Failed("style unreachable".into()));
 
         assert_eq!(
-            status.get().failure().map(ToString::to_string),
+            status.snapshot().failure().map(ToString::to_string),
             Some(String::from("style unreachable"))
         );
-        assert!(!status.get().is_loading());
+        assert!(!status.snapshot().is_loading());
     }
 
     #[test]

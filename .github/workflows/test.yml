@@ -74,6 +74,13 @@ jobs:
       # must not wait for the nightly to be noticed.
       - name: Clippy (workspace)
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --all-targets -- -D warnings
+      # Filters and their portable description without the GPU stack: no other
+      # pass builds `effects` with `gpu` off, so a GPU item leaking into the
+      # description would otherwise go unnoticed until a non-GPU target built it.
+      # Library only: `--all-targets` builds the dev-dependencies, whose
+      # `waterui` turns `gpu` back on through feature unification.
+      - name: Clippy (graphics effects without gpu)
+        run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and

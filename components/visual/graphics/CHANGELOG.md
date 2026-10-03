@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/water-rs/waterui/compare/graphics-v0.4.1...graphics-v0.5.0) - 2026-09-20
+
+### Added
+
+- *(testing)* [**breaking**] split the test harness into a semantic pipeline and a styled rendered pipeline
+- *(graphics)* DeviceLoss::observe wires a host-owned device
+- *(graphics)* [**breaking**] hand every GpuView a DeviceLoss handle
+- *(theme)* add the Error and ErrorForeground colour slots
+- *(ffi)* gate media/webview/gpu/map surfaces behind resolved capabilities
+- *(a11y)* [**breaking**] add a value channel to accessibility nodes
+
+### Fixed
+
+- *(gpu)* register a completion marker for every presented frame
+- *(graphics)* cap GPU runtime recreation at consecutive unproductive losses ([#1117](https://github.com/water-rs/waterui/pull/1117))
+- *(gpu)* derive GpuView animation clocks from GpuFrame::elapsed ([#1113](https://github.com/water-rs/waterui/pull/1113))
+- clear the wasm32 and Windows nightly lint failures
+- *(graphics)* answer an infinite scene proposal with the natural size
+- *(graphics)* mirror mesh_gradient.wgsl buffer layouts member-for-member
+- declare stretch_axis on composite views before body resolution ([#952](https://github.com/water-rs/waterui/pull/952))
+- *(graphics)* recover GPU surfaces when the driver loses the device ([#914](https://github.com/water-rs/waterui/pull/914))
+- *(ffi)* name the GPU device-loss cause in surface acquire failures
+- *(graphics)* strip wgpu debug flags on Android emulators
+- *(graphics)* use shader vector types in AnimatedMeshUniforms
+
+### Other
+
+- rustfmt
+- *(graphics)* order the animated mesh imports the way rustfmt does
+- Merge pull request #796 from water-rs/fix/animated-mesh-uniforms
+- move split-component examples to their repositories
+- Merge pull request #635 from water-rs/feat/a11y-value-channel-457
+- *(graphics)* fuse a filter with the filter it encloses
+- *(deps)* move the requirements the extraction left behind ([#557](https://github.com/water-rs/waterui/pull/557))
+
 ## [0.4.1](https://github.com/water-rs/waterui/compare/graphics-v0.4.0...graphics-v0.4.1) - 2026-09-11
 
 ### Other

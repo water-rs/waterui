@@ -1,0 +1,421 @@
+{
+  "frames" : {
+    "twins.a12.bar" : [
+      0,
+      62,
+      393,
+      44
+    ],
+    "twins.a12.content" : [
+      166.5,
+      62,
+      60,
+      300
+    ],
+    "twins.a12.scroll" : [
+      0,
+      62,
+      393,
+      778
+    ]
+  },
+  "meta" : {
+    "case" : "a12.bar",
+    "displayScale" : 3,
+    "osVersion" : "Version 26.5 (Build 23F73)",
+    "platform" : "ios",
+    "safeInsets" : {
+      "bottom" : 12,
+      "leading" : 0,
+      "top" : 62,
+      "trailing" : 0
+    },
+    "window" : {
+      "h" : 852,
+      "w" : 393,
+      "x" : 0,
+      "y" : 0
+    }
+  },
+  "nodes" : [
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 0,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 1,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 2,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 3,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 4,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 5,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 6,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 7,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 8,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 9,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 10,
+      "frame" : [
+        0,
+        62,
+        393,
+        778
+      ]
+    },
+    {
+      "cls" : "WuiAccessibilityLabel",
+      "depth" : 11,
+      "frame" : [
+        0,
+        62,
+        393,
+        778
+      ]
+    },
+    {
+      "adjustedContentInset" : [
+        0,
+        0,
+        0,
+        0
+      ],
+      "clips" : true,
+      "cls" : "WuiScroll",
+      "contentOffset" : [
+        0,
+        0
+      ],
+      "contentSize" : [
+        393,
+        300
+      ],
+      "depth" : 12,
+      "frame" : [
+        0,
+        62,
+        393,
+        778
+      ],
+      "label" : "twins.a12.scroll"
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 13,
+      "frame" : [
+        166.5,
+        62,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiAccessibilityLabel",
+      "depth" : 14,
+      "frame" : [
+        166.5,
+        62,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 15,
+      "frame" : [
+        166.5,
+        62,
+        60,
+        300
+      ],
+      "label" : "twins.a12.content"
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 16,
+      "frame" : [
+        166.5,
+        62,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "WuiColorView",
+      "depth" : 17,
+      "frame" : [
+        166.5,
+        62,
+        60,
+        300
+      ]
+    },
+    {
+      "cls" : "_UIScrollViewScrollIndicator",
+      "depth" : 13,
+      "frame" : [
+        387,
+        23,
+        3,
+        36
+      ]
+    },
+    {
+      "cls" : "UIView",
+      "depth" : 14,
+      "frame" : [
+        387,
+        23,
+        3,
+        36
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 10,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiWithEnv",
+      "depth" : 11,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 12,
+      "frame" : [
+        0,
+        0,
+        393,
+        852
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 13,
+      "frame" : [
+        0,
+        62,
+        393,
+        44
+      ]
+    },
+    {
+      "cls" : "WuiAccessibilityLabel",
+      "depth" : 14,
+      "frame" : [
+        0,
+        62,
+        393,
+        44
+      ]
+    },
+    {
+      "cls" : "WuiFixedContainer",
+      "depth" : 15,
+      "frame" : [
+        0,
+        62,
+        393,
+        44
+      ],
+      "label" : "twins.a12.bar"
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 16,
+      "frame" : [
+        0,
+        62,
+        393,
+        44
+      ]
+    },
+    {
+      "cls" : "WuiColorView",
+      "depth" : 17,
+      "frame" : [
+        0,
+        62,
+        393,
+        44
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 13,
+      "frame" : [
+        196.66666666666666,
+        116,
+        0,
+        724
+      ]
+    },
+    {
+      "cls" : "WuiSpacer",
+      "depth" : 14,
+      "frame" : [
+        196.66666666666666,
+        116,
+        0,
+        724
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 8,
+      "frame" : [
+        196.66666666666666,
+        451,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "WuiDynamic",
+      "depth" : 9,
+      "frame" : [
+        196.66666666666666,
+        451,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 10,
+      "frame" : [
+        196.66666666666666,
+        451,
+        0,
+        0
+      ]
+    },
+    {
+      "cls" : "WuiEmpty",
+      "depth" : 11,
+      "frame" : [
+        196.66666666666666,
+        451,
+        0,
+        0
+      ],
+      "hidden" : true
+    },
+    {
+      "cls" : "WuiAnyView",
+      "depth" : 4,
+      "frame" : [
+        0,
+        62,
+        393,
+        778
+      ]
+    },
+    {
+      "cls" : "WuiContainer",
+      "depth" : 5,
+      "frame" : [
+        0,
+        62,
+        393,
+        778
+      ]
+    }
+  ]
+}

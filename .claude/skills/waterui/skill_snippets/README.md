@@ -104,11 +104,11 @@ alignment of trailing comments, re-wraps long argument lists, expands one-line s
 bodies, and inlines short `let _ = { … };` wrappers. **That normalization is a sanctioned
 deviation** — it changes layout, never tokens.
 
-The accounting for the current skill text, over 876 snippet lines in 135 blocks:
+The accounting for the current skill text, over 878 snippet lines in 136 blocks:
 
 | Class | Lines |
 |---|---|
-| byte-identical to the skill | 509 |
+| byte-identical to the skill | 511 |
 | identical after whitespace normalization (rustfmt) | 251 |
 | restructured: listing splits, ellipsis fills, rustfmt re-wraps | 116 |
 
@@ -128,8 +128,8 @@ Some snippets resolve real paths, so the crate carries the files they name:
 
 Beyond `waterui` with every feature the skill documents, the crate depends on exactly the
 crates the skill's snippets name by path (`waterui-barcode`, `waterui-canvas`,
-`waterui-chart`, `waterui-graphics`, `waterui-locale`, `waterui-map`, `waterui-map-gpu`,
-`waterui-particle`, `waterui-url`, `waterkit-permission`, `jiff`, the two icon sets).
+`waterui-chart`, `waterui-locale`, `waterui-map`, `waterui-map-gpu`, `waterui-particle`,
+`waterui-url`, `waterkit-permission`, `jiff`, the two icon sets).
 `serde` is glue for media.md's `#[js_api]` payload type.
 
 The crate deliberately does **not** opt into `[lints] workspace = true`: the workspace's

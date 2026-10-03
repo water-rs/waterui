@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use icu_locale::fallback::LocaleFallbackConfig;
 use icu_locale::{LanguageIdentifier, Locale as IcuLocale, LocaleFallbacker};
 use icu_provider::DataLocale;
-use nami::{Binding, impl_constant};
+use nami::{Binding, Signal, impl_constant};
 use waterui_core::Environment;
 use waterui_core::extract::Extractor;
 
@@ -276,7 +276,7 @@ fn append_fallback_chain(locale: &Locale, seen: &mut BTreeSet<String>, out: &mut
 impl Extractor for Locale {
     fn extract(env: &Environment) -> Result<Self, waterui_core::Error> {
         if let Some(locale) = env.get::<Binding<Self>>() {
-            return Ok(locale.get());
+            return Ok(locale.snapshot());
         }
 
         if let Some(locale) = env.get::<Self>().cloned() {

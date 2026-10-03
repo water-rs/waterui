@@ -174,7 +174,8 @@ mod tests {
 
         let lines = lines
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             lines.as_slice(),
             [alloc::format!(

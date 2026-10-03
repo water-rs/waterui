@@ -1,0 +1,64 @@
+name: Layout decision
+
+# The layout system is frozen (AGENTS.md, "Layout Is Frozen"): its semantics
+# change only by a decision the maintainer records. A pull request that can
+# change layout semantics — any edit to the normative spec, an added or
+# deleted frozen file, or a semantic change inside one — is blocked until it
+# carries the `layout-decision` label, which the maintainer applies after
+# reviewing it. `.github/scripts/layout_gate.py` decides "semantic" from the
+# parsed syntax trees: comments, doc comments, lint attributes such as
+# `#[must_use]`, and `#[cfg(test)]` code cannot change semantics, so
+# lint-only, documentation-only and test-only pull requests do not need the
+# label.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    # `labeled`/`unlabeled` are not in the default trigger set; they must be
+    # listed so that applying the label re-runs this check.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  layout-gate:
+    name: Layout changes need the layout-decision label
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Scan the pull request for changes that can alter layout semantics
+        id: scan
+        run: |
+          set -euo pipefail
+          set +e
+          uv run .github/scripts/layout_gate.py \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > layout-scan.txt
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "touched=false" >> "$GITHUB_OUTPUT"
+          elif [ "$status" -eq 1 ]; then
+            echo "touched=true" >> "$GITHUB_OUTPUT"
+            while IFS= read -r line; do
+              echo "::warning::${line}"
+            done < layout-scan.txt
+          else
+            cat layout-scan.txt
+            exit "$status"
+          fi
+
+      - name: Block the merge without the layout-decision label
+        if: steps.scan.outputs.touched == 'true' && !contains(github.event.pull_request.labels.*.name, 'layout-decision')
+        run: |
+          echo "::error title=Layout decision::This pull request changes the frozen layout (docs/layout-spec.md, waterui-layout, or the core layout protocol). Only the maintainer applies the 'layout-decision' label, after deciding the change."
+          while IFS= read -r line; do
+            echo "::error::${line}"
+          done < layout-scan.txt
+          exit 1

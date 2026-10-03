@@ -16,6 +16,7 @@ use waterui::env::use_env;
 use waterui::prelude::theme_color::Surface;
 use waterui::prelude::*;
 use waterui::preview;
+use waterui::reactive::Signal;
 use waterui::reactive::binding;
 use waterui::shape::{RoundedRectangle, ShapeExt as _};
 use waterui_icons_lucide as lucide;
@@ -35,7 +36,7 @@ fn coordinate(latitude: f64, longitude: f64) -> Coordinate {
 }
 
 fn zoom_region(region: &Binding<Region>, scale: f64) {
-    let current = region.get();
+    let current = region.snapshot();
     let target = Region::new(
         current.center,
         current.latitude_delta * scale,

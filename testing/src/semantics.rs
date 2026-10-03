@@ -254,6 +254,8 @@ pub struct NodeSnapshot {
     pub(crate) hidden: bool,
     pub(crate) children: Vec<NodeId>,
     pub(crate) actions: Vec<AccessibilityAction>,
+    pub(crate) scroll_x: Option<f64>,
+    pub(crate) scroll_y: Option<f64>,
 }
 
 impl NodeSnapshot {
@@ -354,6 +356,21 @@ impl NodeSnapshot {
         &self.actions
     }
 
+    /// Returns the horizontal scroll offset the node reported, in the
+    /// coordinate space the backend exposes — a semantic list reports row
+    /// units — or `None` when the node reports no scroll position.
+    #[must_use]
+    pub const fn scroll_x(&self) -> Option<f64> {
+        self.scroll_x
+    }
+
+    /// Returns the vertical scroll offset the node reported, in the same
+    /// units as [`Self::scroll_x`].
+    #[must_use]
+    pub const fn scroll_y(&self) -> Option<f64> {
+        self.scroll_y
+    }
+
     fn from_accesskit(id: AccessibilityNodeId, node: &AccessibilityNode) -> Self {
         let checked = match node.toggled() {
             Some(AccessibilityToggled::True) => Some(CheckedState::True),
@@ -386,6 +403,8 @@ impl NodeSnapshot {
                 .into_iter()
                 .filter(|action| node.supports_action(*action))
                 .collect(),
+            scroll_x: node.scroll_x(),
+            scroll_y: node.scroll_y(),
         }
     }
 }

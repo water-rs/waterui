@@ -6,17 +6,19 @@ use std::time::Duration;
 use crate::driver::{DriverPumpResult, ResourceSampler};
 use accesskit::{ActionRequest as AccessibilityActionRequest, NodeId as AccessibilityNodeId};
 use hydrolysis::InputEvent;
-use vello::kurbo::Shape;
+use waterui::Binding;
 use waterui::ViewExt as _;
+use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
-use waterui::graphics::SceneViewMergeToParent;
+use waterui::graphics::cherenkov::{self, Draw as _, Recorder, kurbo};
 use waterui::graphics::color::Srgb;
-use waterui::graphics::{Scene2D, SceneContent, SceneView};
+use waterui::graphics::scene_view::SceneViewMergeToParent;
+use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
 use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Native, View};
+use waterui_core::{AnyView, Native, Signal, View};
 
 #[derive(Debug)]
 struct NoopDriver;
@@ -79,6 +81,8 @@ fn node(
         hidden: false,
         children: Vec::new(),
         actions: Vec::new(),
+        scroll_x: None,
+        scroll_y: None,
     }
 }
 
@@ -185,32 +189,33 @@ fn semantic_builder_does_not_require_theme_package() {
         .single();
 }
 
-/// The smallest `hydrolysis::Style` a test can write: `install_tokens`
+/// The smallest `Style` a test can write: `install_tokens`
 /// overrides the accent slot the framework defaults carry, and the
 /// `WidgetTheme` surface `Style` requires answers with inert metrics and
 /// no-op draw calls — nothing renders on the semantic pipeline.
 mod token_probe {
     use std::time::Duration;
 
-    use vello::kurbo::{BezPath, Point, Rect};
+    use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
-    use waterui::color::{ResolvedColor, Srgb};
-    use waterui::component::button::{ButtonSize, ButtonStyle};
+    use waterui::color::Srgb;
     use waterui::component::text;
     use waterui::component::toggle::ToggleStyle;
+    use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
+    use waterui::graphics::cherenkov::{Paint, Recorder};
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
     use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
     use waterui_backend_core::widget::{
-        BadgeMetrics, Brush, ButtonMetrics, DividerMetrics, DrawContext, InputFieldMetrics,
-        InteractionMotion, ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics,
-        ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
-        RadioSelectionMotion, SliderMetrics, StepperEnd, StepperMetrics, TableMetrics, TabsMetrics,
-        TextCaretMotion, TextContextMenuMetrics, ToggleMetrics, WidgetInteractionState,
-        WidgetTheme,
+        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
+        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
+        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        WidgetInteractionState, WidgetTheme,
     };
 
     use crate::Style;
@@ -223,7 +228,7 @@ mod token_probe {
 
     /// Formats an accent the way [`accent_probe`] labels it.
     pub(super) fn accent_label(accent: Srgb) -> String {
-        format!("accent:{:?}", ResolvedColor::from_srgb(accent))
+        format!("accent:{:?}", accent.resolve())
     }
 
     /// Reads the environment's accent slot and publishes its resolved value
@@ -233,7 +238,7 @@ mod token_probe {
         use_env(|env: Environment| {
             let accent = installed_color_signal::<theme_color::Accent>(&env)
                 .expect("the framework defaults carry the accent slot")
-                .get();
+                .snapshot();
             text(format!("accent:{accent:?}"))
         })
     }
@@ -245,7 +250,7 @@ mod token_probe {
         fn install_tokens(&self, env: &mut Environment) {
             install_color_signal::<theme_color::Accent>(
                 env,
-                constant(ResolvedColor::from_srgb(PROBE_ACCENT)).computed(),
+                constant(PROBE_ACCENT.resolve()).computed(),
             );
         }
     }
@@ -285,7 +290,7 @@ mod token_probe {
                     0.2,
                     1.0,
                 ),
-                linear_indeterminate_cycle: Duration::from_millis(2_000),
+                linear_indeterminate_cycle: Duration::from_secs(2),
                 loading_cycle: Duration::from_millis(4_666),
                 circular_indeterminate_cycle: Duration::from_millis(5_332),
             }
@@ -308,7 +313,7 @@ mod token_probe {
             }
         }
 
-        fn button_metrics(&self, _style: ButtonStyle, _size: ButtonSize) -> ButtonMetrics {
+        fn button_metrics(&self, _style: ButtonStyle, _size: ControlSize) -> ButtonMetrics {
             ButtonMetrics {
                 padding_x: 1.0,
                 padding_y: 2.0,
@@ -319,9 +324,10 @@ mod token_probe {
 
         fn draw_button_chrome(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _style: ButtonStyle,
+            _icon_only: bool,
             _state: WidgetInteractionState,
         ) {
         }
@@ -340,7 +346,7 @@ mod token_probe {
 
         fn draw_toggle_switch(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _progress: f32,
             _selected: bool,
@@ -350,7 +356,7 @@ mod token_probe {
 
         fn draw_toggle_checkbox(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _progress: f32,
             _state: WidgetInteractionState,
@@ -369,14 +375,14 @@ mod token_probe {
 
         fn draw_stepper_button(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _end: StepperEnd,
             _state: WidgetInteractionState,
         ) {
         }
-        fn draw_stepper_decrement_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_stepper_increment_icon(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_stepper_decrement_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_stepper_increment_icon(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn input_field_metrics(&self) -> InputFieldMetrics {
             InputFieldMetrics {
@@ -392,17 +398,17 @@ mod token_probe {
             Color::srgb(0, 0, 0)
         }
 
-        fn input_selection_brush(&self) -> Brush {
-            Brush::from(vello::peniko::Color::new([0.20, 0.45, 0.90, 0.28]))
+        fn input_selection_paint(&self) -> Paint {
+            Paint::Solid(Srgb::new(0.20, 0.45, 0.90).resolve().with_alpha(0.28))
         }
 
-        fn input_caret_brush(&self, opacity: f32) -> Brush {
-            Brush::from(vello::peniko::Color::new([0.12, 0.14, 0.18, opacity]))
+        fn input_caret_paint(&self, opacity: f32) -> Paint {
+            Paint::Solid(Srgb::new(0.12, 0.14, 0.18).resolve().with_alpha(opacity))
         }
 
         fn draw_input_field(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _state: WidgetInteractionState,
         ) {
@@ -422,9 +428,9 @@ mod token_probe {
             }
         }
 
-        fn draw_text_context_menu_panel(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_text_context_menu_panel(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
-        fn draw_text_context_menu_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_text_context_menu_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn picker_metrics(&self, _style: PickerStyle) -> PickerMetrics {
             PickerMetrics {
@@ -452,30 +458,30 @@ mod token_probe {
             }
         }
 
-        fn draw_picker_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_picker_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
-        fn draw_picker_popup(&self, _draw: &mut dyn DrawContext, _popup_rect: Rect) {}
+        fn draw_picker_popup(&self, _recorder: &mut Recorder, _popup_rect: Rect) {}
 
         fn draw_picker_popup_row_background(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _row_rect: Rect,
             _selected: bool,
         ) {
         }
 
-        fn draw_picker_separator(&self, _draw: &mut dyn DrawContext, _separator: Rect) {}
+        fn draw_picker_separator(&self, _recorder: &mut Recorder, _separator: Rect) {}
 
         fn draw_radio_indicator(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _center: Point,
             _radius: f64,
             _state: RadioIndicatorState,
         ) {
         }
 
-        fn slider_metrics(&self) -> SliderMetrics {
+        fn slider_metrics(&self, _size: ControlSize) -> SliderMetrics {
             SliderMetrics {
                 horizontal_inset: 12.0,
                 horizontal_spacing: 8.0,
@@ -489,21 +495,37 @@ mod token_probe {
 
         fn draw_slider_track(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _track_rect: Rect,
             _fill_rect: Rect,
+            _size: ControlSize,
             _state: WidgetInteractionState,
         ) {
         }
 
         fn draw_slider_thumb(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _center: Point,
             _radius: f64,
+            _size: ControlSize,
             _state: WidgetInteractionState,
         ) {
         }
+
+        fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics {
+            SliderValueIndicatorMetrics::new(8.0, 4.0, 4.0, 0.0, 0.0)
+        }
+
+        fn slider_value_indicator_color(&self) -> Color {
+            Color::srgb(255, 255, 255)
+        }
+
+        fn slider_value_indicator_font(&self) -> Font {
+            Font::default()
+        }
+
+        fn draw_slider_value_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics {
             match style {
@@ -535,15 +557,15 @@ mod token_probe {
 
         fn draw_progress_linear_track(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _active_end: Option<f64>,
         ) {
         }
-        fn draw_progress_linear_fill(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_progress_linear_fill(&self, _recorder: &mut Recorder, _bounds: Rect) {}
         fn draw_progress_linear_indeterminate(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _elapsed: Duration,
             _four_color: bool,
@@ -551,7 +573,7 @@ mod token_probe {
         }
         fn draw_progress_circular_track(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _center: Point,
             _radius: f64,
             _width: f64,
@@ -560,14 +582,14 @@ mod token_probe {
         }
         fn draw_progress_circular_fill(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _path: &BezPath,
             _width: f64,
         ) {
         }
         fn draw_progress_loading(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _elapsed: Duration,
             _four_color: bool,
@@ -576,7 +598,7 @@ mod token_probe {
 
         fn draw_progress_circular_indeterminate(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _center: Point,
             _radius: f64,
             _width: f64,
@@ -609,32 +631,39 @@ mod token_probe {
 
         fn draw_navigation_bar(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
-            _background: &Brush,
+            _background: &Paint,
         ) {
         }
 
-        fn draw_navigation_bar_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_navigation_back_button(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn tabs_metrics(&self) -> TabsMetrics {
+        fn draw_navigation_bar_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_navigation_back_button(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn tabs_metrics(&self, _layout: TabItemLayout) -> TabsMetrics {
             TabsMetrics {
                 bar_height: 48.0,
                 button_min_width: 48.0,
                 button_horizontal_inset: 16.0,
                 active_indicator_height: 3.0,
                 active_indicator_radius: 3.0,
+                icon_label_spacing: 4.0,
             }
         }
-        fn draw_tabs_bar(&self, _draw: &mut dyn DrawContext, _bounds: Rect, _top_edge: bool) {}
-        fn draw_tabs_highlight(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_scroll_indicator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_tabs_bar(&self, _recorder: &mut Recorder, _bounds: Rect, _top_edge: bool) {}
+        fn draw_tabs_highlight(
+            &self,
+            _recorder: &mut Recorder,
+            _bounds: Rect,
+            _layout: TabItemLayout,
+        ) {
+        }
+        fn draw_scroll_indicator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn divider_metrics(&self) -> DividerMetrics {
             DividerMetrics { thickness: 1.0 }
         }
 
-        fn draw_divider(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_divider(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn badge_metrics(&self) -> BadgeMetrics {
             BadgeMetrics {
@@ -656,8 +685,8 @@ mod token_probe {
             Font::default()
         }
 
-        fn draw_badge_small(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_badge_large(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_badge_small(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_badge_large(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn list_metrics(&self) -> ListMetrics {
             ListMetrics {
@@ -677,14 +706,14 @@ mod token_probe {
 
         fn draw_list_row_background(
             &self,
-            _draw: &mut dyn DrawContext,
+            _recorder: &mut Recorder,
             _bounds: Rect,
             _alternate: bool,
         ) {
         }
-        fn draw_list_move_control(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_list_delete_control(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_list_separator(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
+        fn draw_list_move_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_list_delete_control(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_list_separator(&self, _recorder: &mut Recorder, _bounds: Rect) {}
 
         fn table_metrics(&self) -> TableMetrics {
             TableMetrics {
@@ -697,16 +726,10 @@ mod token_probe {
             }
         }
 
-        fn draw_table_background(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_table_header_background(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_table_cell_border(&self, _draw: &mut dyn DrawContext, _bounds: Rect) {}
-        fn draw_table_column_separator(
-            &self,
-            _draw: &mut dyn DrawContext,
-            _from: Point,
-            _to: Point,
-        ) {
-        }
+        fn draw_table_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_table_header_background(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_table_cell_border(&self, _recorder: &mut Recorder, _bounds: Rect) {}
+        fn draw_table_column_separator(&self, _recorder: &mut Recorder, _from: Point, _to: Point) {}
     }
 }
 
@@ -770,6 +793,43 @@ fn free_mount_app_mounts_at_the_window_frame() {
     let mut app = mount_app(app, token_probe::TokenProbeStyle);
     let bounds = app.query().role(Role::LABEL).single().bounds();
     assert_eq!(bounds, NodeBounds::new(0.0, 0.0, 800.0, 600.0));
+}
+
+/// Chained frame setters mutate one `FrameLayout`, so `.size(40, 20)` followed
+/// by `.min_width(60)` inverts the width axis — and `min` wins, the same
+/// precedence CSS gives a `min-width` over a conflicting `max-width`: the
+/// chain asks for a 60x20 frame and resolves to exactly that.
+#[test]
+fn a_size_then_min_width_chain_resolves_to_the_minimum() {
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(200, 200)
+        .mount_offscreen(|| {
+            vstack((waterui::Color::srgb_hex("#E67E22")
+                .size(40.0, 20.0)
+                .min_width(60.0)
+                .a11y_label("chained"),))
+        });
+    let bounds = app.query().label("chained").single().bounds();
+    assert_eq!((bounds.width(), bounds.height()), (60.0, 20.0));
+}
+
+/// `.size(50, 80)` with `.min_height(100)` and `.min_width(60)` inverts both
+/// axes; each resolves to its minimum.
+#[test]
+fn a_size_then_min_height_and_min_width_chain_resolves_to_the_minimum() {
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(200, 200)
+        .mount_offscreen(|| {
+            vstack((waterui::Color::srgb_hex("#E67E22")
+                .size(50.0, 80.0)
+                .min_height(100.0)
+                .min_width(60.0)
+                .a11y_label("chained"),))
+        });
+    let bounds = app.query().label("chained").single().bounds();
+    assert_eq!((bounds.width(), bounds.height()), (60.0, 100.0));
 }
 
 #[test]
@@ -919,23 +979,24 @@ fn scene_view_exposes_accessibility_node_semantically() {
 struct TestSceneContent(Rc<Cell<bool>>);
 
 impl SceneContent for TestSceneContent {
-    fn build_scene(&mut self, scene: &mut dyn Scene2D, width: f32, height: f32) -> bool {
+    fn build_scene(
+        &mut self,
+        recorder: &mut Recorder,
+        _resources: &mut RecordingResources<'_>,
+        width: f32,
+        height: f32,
+    ) -> bool {
         self.0.set(true);
-        let rect = vello::kurbo::Rect::from_origin_size(
-            vello::kurbo::Point::new(8.0, 8.0),
-            vello::kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
-        )
-        .to_path(0.1);
-        let brush: vello::peniko::Brush = vello::peniko::Color::new([1.0, 0.0, 0.0, 1.0]).into();
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            vello::kurbo::Affine::IDENTITY,
-            &brush,
-            None,
-            &rect,
+        let rect = kurbo::Rect::from_origin_size(
+            (8.0, 8.0),
+            (f64::from(width.min(40.0)), f64::from(height.min(24.0))),
         );
+        let red = cherenkov::Color::<cherenkov::Srgb>::new([1.0, 0.0, 0.0, 1.0]);
+        recorder.fill(rect, WorkingColor::from(red));
         false
     }
+
+    fn rebuild_for_engine(&mut self) {}
 }
 
 #[test]
@@ -975,7 +1036,7 @@ fn semantic_mount_drains_spawned_local_work() {
         app.wait_for_existence(&status_selector, Duration::from_millis(500)),
         "expected the semantic runtime to drain spawn_local task and update the binding"
     );
-    assert_eq!(status.get().as_str(), "ready");
+    assert_eq!(status.snapshot().as_str(), "ready");
 }
 
 #[test]
@@ -1302,7 +1363,7 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         "expected initial FocusState to focus the username field"
     );
     app.assert_ui_focus(&username_selector);
-    assert_eq!(focus.get(), Some(Field::Username));
+    assert_eq!(focus.snapshot(), Some(Field::Username));
 
     let username_id = app
         .query()
@@ -1324,17 +1385,17 @@ fn ui_focus_is_separate_from_accessibility_focus() {
         .id();
     app.assert_ui_focus(&password_selector);
     assert_eq!(app.ui_focus(), Some(password_id));
-    assert_eq!(focus.get(), Some(Field::Password));
+    assert_eq!(focus.snapshot(), Some(Field::Password));
 
     app.query().role(Role::BUTTON).label("Submit").focus();
     let submit_id = app.query().role(Role::BUTTON).label("Submit").single().id();
     assert_eq!(submit_id, app.tree().focus());
     assert_eq!(app.ui_focus(), Some(password_id));
-    assert_eq!(focus.get(), Some(Field::Password));
+    assert_eq!(focus.snapshot(), Some(Field::Password));
 
     app.clear_ui_focus();
     assert_eq!(app.ui_focus(), None);
-    assert_eq!(focus.get(), None);
+    assert_eq!(focus.snapshot(), None);
     assert_eq!(app.tree().focus(), submit_id);
 }
 
@@ -1402,11 +1463,11 @@ fn ui_focus_accepts_a_new_target_after_being_cleared() {
 
     app.clear_ui_focus();
     assert_eq!(app.ui_focus(), None);
-    assert_eq!(focus.get(), None);
+    assert_eq!(focus.snapshot(), None);
 
     app.query().role(Role::TEXT_INPUT).label("Field").focus();
     app.assert_ui_focus(&selector);
-    assert_eq!(focus.get(), Some(0));
+    assert_eq!(focus.snapshot(), Some(0));
 }
 
 #[test]
@@ -1468,7 +1529,7 @@ fn committed_text_keeps_the_caret_at_the_end_across_retained_refreshes() {
         expected.push(character);
         app.text_input(character.to_string());
         assert_eq!(
-            value.get().as_str(),
+            value.snapshot().as_str(),
             expected,
             "each retained refresh must preserve the caret after the committed prefix"
         );
@@ -1548,4 +1609,276 @@ fn a_visually_animating_app_still_settles_and_stays_current() {
         !app.runtime.has_pending_semantic_update(),
         "reading the tree must have applied the update, not merely waited for it"
     );
+}
+
+/// A `press_named_key` stroke means the same thing on every runtime: the
+/// semantic pipeline activates the focused control on the press and the
+/// rendered pipeline on the release, so a focused button's action runs
+/// identically under `mount` and `mount_offscreen`. water-rs/waterui#1222.
+#[test]
+fn named_key_stroke_activates_a_focused_button_on_both_runtimes() {
+    use waterui::prelude::*;
+
+    let count = Binding::i32(0);
+    let count_for_view = count.clone();
+    let mut app = ui().viewport(160, 96).mount(move || {
+        waterui::component::button("Increment")
+            .action(|waterui::State(count): waterui::State<Binding<i32>>| {
+                *count.get_mut() += 1;
+            })
+            .state(&count_for_view)
+    });
+    app.query().role(Role::BUTTON).label("Increment").focus();
+    app.press_named_key("Enter");
+    assert_eq!(
+        count.snapshot(),
+        1,
+        "Enter on a focused button must run its action on the semantic runtime"
+    );
+
+    let count = Binding::i32(0);
+    let count_for_view = count.clone();
+    let mut app = ui()
+        .theme(token_probe::TokenProbeStyle)
+        .viewport(160, 96)
+        .mount_offscreen(move || {
+            waterui::component::button("Increment")
+                .action(|waterui::State(count): waterui::State<Binding<i32>>| {
+                    *count.get_mut() += 1;
+                })
+                .state(&count_for_view)
+        });
+    app.query().role(Role::BUTTON).label("Increment").focus();
+    app.press_named_key("Enter");
+    assert_eq!(
+        count.snapshot(),
+        1,
+        "Enter on a focused button must run its action on the rendered runtime"
+    );
+}
+
+// ============================================================================
+// List keyboard navigation (water-rs/waterui#1223)
+// ============================================================================
+
+/// Asserts the semantic tree's keyboard focus sits on the `List` row
+/// labelled `Row {index}` — row navigation moves `accessibility.focus`,
+/// which is what `tree().focus()` reports (UI focus is the separate
+/// text-caret channel).
+fn assert_row_focus(app: &mut SemanticApp, index: i32) {
+    let id = app
+        .query()
+        .role(Role::LIST_ITEM)
+        .label(format!("Row {index}"))
+        .single()
+        .id();
+    assert_eq!(
+        app.tree().focus(),
+        id,
+        "expected accessibility focus on Row {index}"
+    );
+}
+
+/// Locates the focused row by position among the list's `ListItem`
+/// children — for rows whose node does not carry the row label itself.
+fn assert_row_focus_at(app: &mut SemanticApp, index: usize) {
+    let list = app.query().role(Role::LIST).single();
+    let rows = app.query().role(Role::LIST_ITEM).children_of(&list).all();
+    let id = rows[index].id();
+    assert_eq!(
+        app.tree().focus(),
+        id,
+        "expected accessibility focus on row {index}"
+    );
+}
+
+/// `List` rows answer `ArrowDown`/`ArrowUp` through the accessibility tree:
+/// the arrows move keyboard focus to the adjacent row, the same focus the
+/// pointer and Tab paths share.
+#[test]
+fn list_arrow_keys_move_row_focus() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..4)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowDown");
+    assert_row_focus(&mut app, 1);
+    app.press_named_key("ArrowDown");
+    assert_row_focus(&mut app, 2);
+    app.press_named_key("ArrowUp");
+    assert_row_focus(&mut app, 1);
+}
+
+/// Arrow navigation only moves focus and scrolls: a `List` owns no
+/// selection for the backend to write — selection is app state a row reads
+/// through `ListItem::selected` — so stepping must never run a row's
+/// activation, or an `on_tap` that opens, deletes, or navigates would fire
+/// on every arrow press.
+#[test]
+fn list_arrow_keys_do_not_activate_rows() {
+    let taps = Binding::container(0i32);
+    let mut app = ui().mount({
+        let taps = taps.clone();
+        move || {
+            List::content(
+                (0..4)
+                    .map(|index| {
+                        let taps = taps.clone();
+                        move || {
+                            ListItem::new(text(format!("Row {index}")).on_tap({
+                                let taps = taps.clone();
+                                move || taps.with_mut(|t| *t += 1)
+                            }))
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    });
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowDown");
+    app.press_named_key("ArrowDown");
+    app.press_named_key("ArrowUp");
+    app.press_named_key("End");
+    app.press_named_key("ArrowDown");
+    app.press_named_key("Home");
+    assert_row_focus(&mut app, 0);
+    assert_eq!(
+        taps.snapshot(),
+        0,
+        "arrow, Home and End moved focus without running any row action"
+    );
+}
+
+/// `Enter`/`Space` activate the focused row through the activation it
+/// already exposes — here the row's tap surfaced as a `Button` child —
+/// exactly once per press, the way a pointer click on the row's centre
+/// resolves.
+#[test]
+fn list_enter_activates_focused_row() {
+    let taps = Binding::container(0i32);
+    let mut app = ui().mount({
+        let taps = taps.clone();
+        move || {
+            List::content(
+                (0..4)
+                    .map(|index| {
+                        let taps = taps.clone();
+                        move || {
+                            ListItem::new(vstack((text(format!("Row {index}"))
+                                .on_tap({
+                                    let taps = taps.clone();
+                                    move || taps.with_mut(|t| *t += 1)
+                                })
+                                .a11y_role(waterui::accessibility::AccessibilityRole::Button),)))
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }
+    });
+    app.press_named_key("Tab");
+    app.press_named_key("ArrowDown");
+    assert_row_focus_at(&mut app, 1);
+    app.press_named_key("Enter");
+    assert_eq!(
+        taps.snapshot(),
+        1,
+        "Enter runs the focused row's action once"
+    );
+    app.press_named_key("Space");
+    assert_eq!(
+        taps.snapshot(),
+        2,
+        "Space runs the focused row's action once"
+    );
+    assert_row_focus_at(&mut app, 1);
+}
+
+/// Stepping reveals the destination row: the semantic list reports its
+/// scroll offset in row units (one unit per row), so a reveal of row N lands
+/// `scrollY` at N.
+#[test]
+fn list_arrow_key_scrolls_row_into_view() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..20)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+
+    app.press_named_key("Tab");
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(0.0),
+        "the list starts unscrolled"
+    );
+    app.press_named_key("ArrowDown");
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(1.0),
+        "stepping to row 1 scrolls it into view"
+    );
+    for _ in 0..5 {
+        app.press_named_key("ArrowDown");
+    }
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(6.0),
+        "stepping to row 6 scrolls it into view"
+    );
+    app.press_named_key("ArrowUp");
+    assert_eq!(
+        app.query().role(Role::LIST).single().node().scroll_y(),
+        Some(5.0),
+        "stepping back up scrolls the row into view again"
+    );
+}
+
+/// `Home`/`End` move the focused row to the first and last rows of the list.
+#[test]
+fn list_home_end_move_row_focus_to_edges() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..4)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowDown");
+    app.press_named_key("End");
+    assert_row_focus(&mut app, 3);
+    app.press_named_key("Home");
+    assert_row_focus(&mut app, 0);
+}
+
+/// The arrows stop at the list's edges: stepping past the first or last row
+/// keeps focus where it was rather than leaving the list.
+#[test]
+fn list_arrow_keys_stop_at_row_boundaries() {
+    let mut app = ui().mount(|| {
+        List::content(
+            (0..3)
+                .map(|index| move || ListItem::new(text(format!("Row {index}"))))
+                .collect::<Vec<_>>(),
+        )
+    });
+    app.press_named_key("Tab");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("ArrowUp");
+    assert_row_focus(&mut app, 0);
+    app.press_named_key("End");
+    assert_row_focus(&mut app, 2);
+    app.press_named_key("ArrowDown");
+    assert_row_focus(&mut app, 2);
 }

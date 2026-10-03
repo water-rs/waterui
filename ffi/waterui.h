@@ -2,8 +2,8 @@
 //
 // This header declares the full waterui-ffi API surface. Which symbols are
 // actually linked depends on the crate features the app was built with:
-// GpuSurface/ViewEffect/AppliedFilter/GPU-runtime symbols exist only when the
-// `gpu` feature (default-on) is enabled, and the C API as a whole requires
+// GpuContent/GPU-runtime symbols exist only when the `gpu` feature
+// (default-on) is enabled, and the C API as a whole requires
 // `c-api` (Android's `android-jni` builds export JNI symbols instead).
 
 #ifdef __cplusplus
@@ -33,6 +33,61 @@ typedef struct WuiArray {
 } WuiArray;
 
 
+
+/**
+ * `WuiGesture.buttons` bit for the primary button.
+ */
+#define WATERUI_POINTER_BUTTON_PRIMARY (1 << 0)
+
+/**
+ * `WuiGesture.buttons` bit for the secondary button.
+ */
+#define WATERUI_POINTER_BUTTON_SECONDARY (1 << 1)
+
+/**
+ * `WuiGesture.buttons` bit for the middle button.
+ */
+#define WATERUI_POINTER_BUTTON_MIDDLE (1 << 2)
+
+/**
+ * `WuiGesture.buttons` bit for the "back" side button.
+ */
+#define WATERUI_POINTER_BUTTON_BACK (1 << 3)
+
+/**
+ * `WuiGesture.buttons` bit for the "forward" side button.
+ */
+#define WATERUI_POINTER_BUTTON_FORWARD (1 << 4)
+
+/**
+ * Modifier bit for the Shift key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_SHIFT 512
+
+/**
+ * Modifier bit for the Control key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_CONTROL 8
+
+/**
+ * Modifier bit for the Alt/Option key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_ALT 1
+
+/**
+ * Modifier bit for the Meta/Command key in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_META 64
+
+/**
+ * Modifier bit for the Caps Lock state in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_CAPS_LOCK 4
+
+/**
+ * Modifier bit for the Num Lock state in `WuiKeyPress::modifiers`.
+ */
+#define WUI_KEY_MODIFIER_NUM_LOCK 128
 
 /**
  * `Modifiers::SHIFT` — a shift key is held.
@@ -152,6 +207,150 @@ typedef enum WuiMenuItemTag {
 } WuiMenuItemTag;
 
 /**
+ * FFI-safe command role.
+ */
+typedef enum WuiCommandRole {
+  /**
+   * An ordinary command.
+   */
+  WuiCommandRole_Standard = 0,
+  /**
+   * A command that deletes or irreversibly changes data.
+   */
+  WuiCommandRole_Destructive = 1,
+} WuiCommandRole;
+
+/**
+ * C ABI mirror of [`AnchorEdge`].
+ */
+typedef enum WuiAnchorEdge {
+  /**
+   * Above the anchor.
+   */
+  WuiAnchorEdge_Top = 0,
+  /**
+   * Below the anchor.
+   */
+  WuiAnchorEdge_Bottom = 1,
+  /**
+   * Before the anchor in the layout direction.
+   */
+  WuiAnchorEdge_Leading = 2,
+  /**
+   * After the anchor in the layout direction.
+   */
+  WuiAnchorEdge_Trailing = 3,
+} WuiAnchorEdge;
+
+/**
+ * C ABI mirror of [`EdgeAlignment`].
+ */
+typedef enum WuiEdgeAlignment {
+  /**
+   * The overlay's start side lines up with the anchor's start side.
+   */
+  WuiEdgeAlignment_Start = 0,
+  /**
+   * The overlay is centered on the anchor.
+   */
+  WuiEdgeAlignment_Center = 1,
+  /**
+   * The overlay's end side lines up with the anchor's end side.
+   */
+  WuiEdgeAlignment_End = 2,
+} WuiEdgeAlignment;
+
+/**
+ * The tag half of [`WuiClamp`].
+ */
+typedef enum WuiClampTag {
+  /**
+   * The overlay may extend past the window's edges.
+   */
+  WuiClampTag_Off = 0,
+  /**
+   * The overlay is shifted to stay `margin` points inside the window.
+   */
+  WuiClampTag_Window = 1,
+} WuiClampTag;
+
+/**
+ * C ABI mirror of [`Dismissal`].
+ */
+typedef enum WuiDismissal {
+  /**
+   * Only setting the binding to `false` closes the overlay.
+   */
+  WuiDismissal_Manual = 0,
+  /**
+   * The backend also closes the overlay, writing `false` to its binding,
+   * when the user interacts outside it.
+   */
+  WuiDismissal_OutsideInteraction = 1,
+} WuiDismissal;
+
+/**
+ * C ABI mirror of [`waterui_backend_core::overlay::PhysicalEdge`]: the
+ * physical side of the anchor an overlay landed on — `Leading`/`Trailing`
+ * already resolved under the layout direction.
+ */
+typedef enum WuiPhysicalEdge {
+  /**
+   * Above the anchor.
+   */
+  WuiPhysicalEdge_Top = 0,
+  /**
+   * Below the anchor.
+   */
+  WuiPhysicalEdge_Bottom = 1,
+  /**
+   * To the anchor's left.
+   */
+  WuiPhysicalEdge_Left = 2,
+  /**
+   * To the anchor's right.
+   */
+  WuiPhysicalEdge_Right = 3,
+} WuiPhysicalEdge;
+
+/**
+ * C ABI mirror of [`LayoutDirection`].
+ */
+typedef enum WuiLayoutDirection {
+  /**
+   * Leading is the physical left edge.
+   */
+  WuiLayoutDirection_LeftToRight = 0,
+  /**
+   * Leading is the physical right edge.
+   */
+  WuiLayoutDirection_RightToLeft = 1,
+} WuiLayoutDirection;
+
+/**
+ * The kind of value a drag carries or a drop destination accepts.
+ */
+typedef enum WuiTransferKind {
+  /**
+   * Plain text.
+   */
+  WuiTransferKind_Text = 0,
+  /**
+   * A URL.
+   */
+  WuiTransferKind_Url = 1,
+  /**
+   * A list of file URLs.
+   */
+  WuiTransferKind_Files = 2,
+  /**
+   * An application value that stays in the process; it has no pasteboard
+   * representation.
+   */
+  WuiTransferKind_InProcess = 3,
+} WuiTransferKind;
+
+/**
  * FFI-safe representation of a material blur style.
  *
  * Maps to `SwiftUI`'s Material types on Apple platforms.
@@ -194,7 +393,11 @@ typedef enum WuiGlassStyle {
 } WuiGlassStyle;
 
 /**
- * C ABI mirror of [`GradientType`], the discriminator for a resolved gradient's shape.
+ * C ABI discriminator for the gradient payloads backends may receive.
+ *
+ * [`GradientType`](waterui_graphics::GradientType) also has a `Mesh`
+ * variant, but a mesh gradient resolves to engine content rather than to
+ * this payload, so it is deliberately not represented here.
  */
 typedef enum WuiGradientType {
   /**
@@ -209,10 +412,6 @@ typedef enum WuiGradientType {
    * Angular (conic) gradient around a center point.
    */
   WuiGradientType_Angular = 2,
-  /**
-   * 2D mesh gradient.
-   */
-  WuiGradientType_Mesh = 3,
 } WuiGradientType;
 
 /**
@@ -286,18 +485,18 @@ typedef enum WuiCursorStyle {
 } WuiCursorStyle;
 
 /**
- * FFI-safe representation of a drag data type tag.
+ * Whether a key handler consumed a key, as `KeyHandling` crosses the ABI.
  */
-typedef enum WuiDragDataTag {
+typedef enum WuiKeyHandling {
   /**
-   * Plain text content.
+   * The key was consumed; bubbling stops here.
    */
-  WuiDragDataTag_Text = 0,
+  WuiKeyHandling_Handled,
   /**
-   * A URL string.
+   * The key was not used; it keeps bubbling to the next ancestor.
    */
-  WuiDragDataTag_Url = 1,
-} WuiDragDataTag;
+  WuiKeyHandling_Ignored,
+} WuiKeyHandling;
 
 /**
  * Color scheme enum for FFI.
@@ -474,6 +673,24 @@ typedef enum WuiFontDesign {
 } WuiFontDesign;
 
 /**
+ * FFI-compatible representation of [`WindowStyle`].
+ */
+typedef enum WuiWindowStyle {
+  /**
+   * Standard window with title bar and controls.
+   */
+  WuiWindowStyle_Titled = 0,
+  /**
+   * Borderless window without title bar.
+   */
+  WuiWindowStyle_Borderless = 1,
+  /**
+   * Window where content extends into the title bar area.
+   */
+  WuiWindowStyle_FullSizeContentView = 2,
+} WuiWindowStyle;
+
+/**
  * FFI-compatible representation of [`WindowState`].
  */
 typedef enum WuiWindowState {
@@ -493,25 +710,84 @@ typedef enum WuiWindowState {
    * The window is maximized to fullscreen.
    */
   WuiWindowState_Fullscreen = 3,
+  /**
+   * The window fills the screen's work area, keeping its chrome and
+   * the system's panels.
+   */
+  WuiWindowState_Maximized = 4,
 } WuiWindowState;
 
 /**
- * FFI-compatible representation of [`WindowStyle`].
+ * FFI-compatible representation of [`WindowLevel`].
  */
-typedef enum WuiWindowStyle {
+typedef enum WuiWindowLevel {
   /**
-   * Standard window with title bar and controls.
+   * The window stacks with other windows as focus moves between them.
    */
-  WuiWindowStyle_Titled = 0,
+  WuiWindowLevel_Normal = 0,
   /**
-   * Borderless window without title bar.
+   * The window stays above other applications' normal windows.
    */
-  WuiWindowStyle_Borderless = 1,
+  WuiWindowLevel_AlwaysOnTop = 1,
+} WuiWindowLevel;
+
+/**
+ * FFI-compatible representation of `Option<UserAttention>` (see
+ * [`UserAttention`]).
+ *
+ * `None` is a variant of the enum itself so that watching the attention
+ * binding reports a withdrawn request without a second out-of-band channel.
+ */
+typedef enum WuiUserAttention {
   /**
-   * Window where content extends into the title bar area.
+   * No attention request is pending.
    */
-  WuiWindowStyle_FullSizeContentView = 2,
-} WuiWindowStyle;
+  WuiUserAttention_None = 0,
+  /**
+   * Something the user may want to look at: a finished task, a mention.
+   */
+  WuiUserAttention_Informational = 1,
+  /**
+   * Something the user must act on.
+   */
+  WuiUserAttention_Critical = 2,
+} WuiUserAttention;
+
+/**
+ * FFI mirror of [`MonitorSelector`].
+ */
+typedef enum WuiMonitorSelector {
+  /**
+   * The platform's primary display.
+   */
+  WuiMonitorSelector_Primary = 0,
+  /**
+   * The display under the pointer when the window is shown.
+   */
+  WuiMonitorSelector_Pointer = 1,
+  /**
+   * The display holding this application's focused window (`Primary` when none).
+   */
+  WuiMonitorSelector_Focused = 2,
+} WuiMonitorSelector;
+
+/**
+ * FFI mirror of [`Activation`].
+ */
+typedef enum WuiActivation {
+  /**
+   * Showing the window activates the app and focuses the window.
+   */
+  WuiActivation_OnShow = 0,
+  /**
+   * Showing does not take focus; a click on the window does.
+   */
+  WuiActivation_OnClick = 1,
+  /**
+   * The window never takes keyboard focus or activates the app.
+   */
+  WuiActivation_Never = 2,
+} WuiActivation;
 
 /**
  * Visual presentation mode for the label slot of every control.
@@ -621,6 +897,32 @@ typedef enum WuiToggleStyle {
    */
   WuiToggleStyle_Checkbox,
 } WuiToggleStyle;
+
+/**
+ *C ABI mirror of `ControlSize`.
+ */
+typedef enum WuiControlSize {
+  /**
+   *Mirrors `ControlSize::ExtraSmall`.
+   */
+  WuiControlSize_ExtraSmall,
+  /**
+   *Mirrors `ControlSize::Small`.
+   */
+  WuiControlSize_Small,
+  /**
+   *Mirrors `ControlSize::Medium`.
+   */
+  WuiControlSize_Medium,
+  /**
+   *Mirrors `ControlSize::Large`.
+   */
+  WuiControlSize_Large,
+  /**
+   *Mirrors `ControlSize::ExtraLarge`.
+   */
+  WuiControlSize_ExtraLarge,
+} WuiControlSize;
 
 /**
  *C ABI mirror of `PickerStyle`.
@@ -805,6 +1107,24 @@ typedef enum WuiAxis {
    */
   WuiAxis_All,
 } WuiAxis;
+
+/**
+ * Selection mode a `WuiList` is bound to — at most one per list.
+ */
+typedef enum WuiListSelectionMode {
+  /**
+   * Rows are not selectable; both binding slots are null.
+   */
+  WuiListSelectionMode_None = 0,
+  /**
+   * The list binds `Binding<Option<row id>>`.
+   */
+  WuiListSelectionMode_Single = 1,
+  /**
+   * The list binds `Binding<Set<row id>>`.
+   */
+  WuiListSelectionMode_Multiple = 2,
+} WuiListSelectionMode;
 
 /**
  * FFI representation of a media delivery strategy.
@@ -1289,37 +1609,6 @@ typedef enum WuiWebViewEventType {
 } WuiWebViewEventType;
 
 /**
- * The pixel layout an Android capture buffer must be allocated with.
- *
- * The backend allocates its `ImageReader` from this after attaching, so the
- * buffer it hands back is copy-compatible with the capture texture the filter
- * samples. The discriminants are the values the JNI binding returns as an
- * `Int`, and are part of the Kotlin contract.
- */
-enum WuiCaptureFormat
-#if __STDC_VERSION__ >= 202311L
-  : uint32_t
-#endif // __STDC_VERSION__ >= 202311L
- {
-  /**
-   * Four 8-bit unsigned channels: `AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM`,
-   * which is `android.graphics.PixelFormat.RGBA_8888`.
-   */
-  WuiCaptureFormat_Rgba8Unorm = 0,
-  /**
-   * Four 16-bit half-float channels:
-   * `AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT`, which is
-   * `android.graphics.PixelFormat.RGBA_FP16`.
-   */
-  WuiCaptureFormat_Rgba16Float = 1,
-};
-#if __STDC_VERSION__ >= 202311L
-typedef enum WuiCaptureFormat WuiCaptureFormat;
-#else
-typedef uint32_t WuiCaptureFormat;
-#endif // __STDC_VERSION__ >= 202311L
-
-/**
  * Which event a [`WuiSurfaceInputEvent`] carries.
  *
  * The tag decides which of the struct's payload fields are read; the rest are
@@ -1415,6 +1704,21 @@ typedef enum WuiScrollUnit {
 } WuiScrollUnit;
 
 /**
+ *C ABI mirror of `LastWindowPolicy`.
+ * What the native host does once the application has no open window.
+ */
+typedef enum WuiLastWindowPolicy {
+  /**
+   *Mirrors `LastWindowPolicy::Quit`.
+   */
+  WuiLastWindowPolicy_Quit,
+  /**
+   *Mirrors `LastWindowPolicy::StayResident`.
+   */
+  WuiLastWindowPolicy_StayResident,
+} WuiLastWindowPolicy;
+
+/**
  * 2D affine transform stored as a row-major 2x3 matrix.
  *
  * The transform maps a point `(x, y)` to:
@@ -1429,6 +1733,14 @@ typedef enum WuiScrollUnit {
  * a 2D rendering backend.
  */
 typedef struct Affine2 Affine2;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_AnchorEdge Binding_AnchorEdge;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -1477,6 +1789,14 @@ typedef struct Binding_MapStatus Binding_MapStatus;
  * changes, it can notify watchers that have registered interest in the value.
  */
 typedef struct Binding_Option_LiveWindow Binding_Option_LiveWindow;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_Option_UserAttention Binding_Option_UserAttention;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -1533,6 +1853,14 @@ typedef struct Binding_TrackCatalog Binding_TrackCatalog;
  * changes, it can notify watchers that have registered interest in the value.
  */
 typedef struct Binding_Vec_Date Binding_Vec_Date;
+
+/**
+ * A `Binding<T>` represents a mutable value of type `T` that can be observed.
+ *
+ * Bindings provide a reactive way to work with values. When a binding's value
+ * changes, it can notify watchers that have registered interest in the value.
+ */
+typedef struct Binding_Vec_Id Binding_Vec_Id;
 
 /**
  * A `Binding<T>` represents a mutable value of type `T` that can be observed.
@@ -1644,14 +1972,6 @@ typedef struct Computed_Region Computed_Region;
  * This type represents a computation that can be evaluated to produce a result of type `T`.
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
-typedef struct Computed_ResolvedColor Computed_ResolvedColor;
-
-/**
- * A wrapper around a boxed implementation of the `ComputedImpl` trait.
- *
- * This type represents a computation that can be evaluated to produce a result of type `T`.
- * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
- */
 typedef struct Computed_ResolvedFont Computed_ResolvedFont;
 
 /**
@@ -1701,6 +2021,38 @@ typedef struct Computed_Vec_Annotation Computed_Vec_Annotation;
  * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
  */
 typedef struct Computed_Vec_Date Computed_Vec_Date;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_WindowBackground Computed_WindowBackground;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_WindowLevel Computed_WindowLevel;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_WindowStyle Computed_WindowStyle;
+
+/**
+ * A wrapper around a boxed implementation of the `ComputedImpl` trait.
+ *
+ * This type represents a computation that can be evaluated to produce a result of type `T`.
+ * The computation is stored as a boxed trait object, allowing for dynamic dispatch.
+ */
+typedef struct Computed_WorkingColor Computed_WorkingColor;
 
 /**
  * A wrapper around a boxed implementation of the `ComputedImpl` trait.
@@ -1788,11 +2140,6 @@ typedef struct WuiAnyView WuiAnyView;
 typedef struct WuiAnyViews WuiAnyViews;
 
 /**
- * Opaque state held by the native backend for one semantic applied filter.
- */
-typedef struct WuiAppliedFilterState WuiAppliedFilterState;
-
-/**
  * The [`AssetServer`] a native web view owns.
  *
  * `FfiWebViewController` boxes the server a `WebView` was opened with and hands
@@ -1817,6 +2164,11 @@ typedef struct WuiCefSurfaceState WuiCefSurfaceState;
  *Opaque FFI handle owning a `Color`.
  */
 typedef struct WuiColor WuiColor;
+
+/**
+ * Opaque handle to the value one drag carries.
+ */
+typedef struct WuiDragPayload WuiDragPayload;
 
 /**
  * Opaque wrapper for Draggable.
@@ -1844,26 +2196,17 @@ typedef struct WuiEnv WuiEnv;
 typedef struct WuiFont WuiFont;
 
 /**
- * Submission fence returned after encoding an external-texture capture.
+ * Opaque state held by the native backend after initialization.
  *
- * The renderer state remains on its owning UI thread. Native consumes this
- * token by registering a completion with
- * [`waterui_gpu_capture_fence_on_complete`].
+ * One state type hosts both a `GpuContentView` and an `ExternalFrameView`:
+ * they differ only in how their engine layer is built.
  */
-typedef struct WuiGpuCaptureFence WuiGpuCaptureFence;
+typedef struct WuiGpuContentState WuiGpuContentState;
 
 /**
  *Opaque FFI handle owning a `GpuRuntime`.
  */
 typedef struct WuiGpuRuntime WuiGpuRuntime;
-
-/**
- * Opaque state held by the native backend after initialization.
- *
- * Owns the semantic renderer and environment GPU runtime independently of the
- * currently attached presentation surface.
- */
-typedef struct WuiGpuSurfaceState WuiGpuSurfaceState;
 
 /**
  *Opaque FFI handle owning a `RetainedCallback<IndexHandler>`.
@@ -1896,6 +2239,11 @@ typedef struct WuiMoveAction WuiMoveAction;
 typedef struct WuiOnEventHandler WuiOnEventHandler;
 
 /**
+ *Opaque FFI handle owning a `RetainedCallback<OnKeyPress>`.
+ */
+typedef struct WuiOnKeyPress WuiOnKeyPress;
+
+/**
  * Opaque handle owning a `Picture`.
  */
 typedef struct WuiPictureHandle WuiPictureHandle;
@@ -1911,6 +2259,11 @@ typedef struct WuiSharedAction WuiSharedAction;
 typedef struct WuiTabContent WuiTabContent;
 
 /**
+ *Opaque FFI handle owning a `ValueFormatter`.
+ */
+typedef struct WuiValueFormatter WuiValueFormatter;
+
+/**
  *Opaque FFI handle owning a `PlayerController`.
  */
 typedef struct WuiVideoController WuiVideoController;
@@ -1921,11 +2274,6 @@ typedef struct WuiVideoController WuiVideoController;
 typedef struct WuiVideoEventHandler WuiVideoEventHandler;
 
 /**
- * Opaque state held by the native backend after initialization.
- */
-typedef struct WuiViewEffectState WuiViewEffectState;
-
-/**
  *Opaque FFI handle owning a `BoxWatcherGuard`.
  */
 typedef struct WuiWatcherGuard WuiWatcherGuard;
@@ -1934,6 +2282,14 @@ typedef struct WuiWatcherGuard WuiWatcherGuard;
  *Opaque FFI handle owning a `Metadata`.
  */
 typedef struct WuiWatcherMetadata WuiWatcherMetadata;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_AnchorEdge WuiWatcher_AnchorEdge;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -2029,6 +2385,14 @@ typedef struct WuiWatcher_Option_Location WuiWatcher_Option_Location;
  * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
+typedef struct WuiWatcher_Option_UserAttention WuiWatcher_Option_UserAttention;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_Rect WuiWatcher_Rect;
 
 /**
@@ -2038,14 +2402,6 @@ typedef struct WuiWatcher_Rect WuiWatcher_Rect;
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
 typedef struct WuiWatcher_Region WuiWatcher_Region;
-
-/**
- * FFI-owned wrapper around a native watcher callback.
- *
- * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
- * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
- */
-typedef struct WuiWatcher_ResolvedColor WuiWatcher_ResolvedColor;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -2125,6 +2481,14 @@ typedef struct WuiWatcher_Vec_Date WuiWatcher_Vec_Date;
  * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
+typedef struct WuiWatcher_Vec_Id WuiWatcher_Vec_Id;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_VideoTrackSelection WuiWatcher_VideoTrackSelection;
 
 /**
@@ -2133,7 +2497,31 @@ typedef struct WuiWatcher_VideoTrackSelection WuiWatcher_VideoTrackSelection;
  * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
  * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
  */
+typedef struct WuiWatcher_WindowLevel WuiWatcher_WindowLevel;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
 typedef struct WuiWatcher_WindowState WuiWatcher_WindowState;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_WindowStyle WuiWatcher_WindowStyle;
+
+/**
+ * FFI-owned wrapper around a native watcher callback.
+ *
+ * Bridges a C function pointer pair (`call`/`drop`) into a Rust [`Watcher`]
+ * that can be registered with a [`WuiComputed`] or [`WuiBinding`].
+ */
+typedef struct WuiWatcher_WorkingColor WuiWatcher_WorkingColor;
 
 /**
  * FFI-owned wrapper around a native watcher callback.
@@ -2197,6 +2585,15 @@ typedef struct WuiTypeId {
  * by the `ffi_computed!` macro.
  */
 typedef struct Computed_bool WuiComputed_bool;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
+typedef struct Binding_i32 WuiBinding_i32;
 
 /**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
@@ -2425,6 +2822,11 @@ typedef struct WuiGesture_Tap_Body {
    * Number of taps required to recognize the gesture.
    */
   uint32_t count;
+  /**
+   * Mask of buttons that can tap (`WATERUI_POINTER_BUTTON_*`);
+   * `WATERUI_POINTER_BUTTON_PRIMARY` for a default gesture.
+   */
+  uint8_t buttons;
 } WuiGesture_Tap_Body;
 
 typedef struct WuiGesture_LongPress_Body {
@@ -2432,6 +2834,10 @@ typedef struct WuiGesture_LongPress_Body {
    * Minimum press duration in milliseconds before the gesture fires.
    */
   uint32_t duration;
+  /**
+   * Mask of buttons that can press (`WATERUI_POINTER_BUTTON_*`).
+   */
+  uint8_t buttons;
 } WuiGesture_LongPress_Body;
 
 typedef struct WuiGesture_Drag_Body {
@@ -2439,6 +2845,10 @@ typedef struct WuiGesture_Drag_Body {
    * Minimum drag distance (in points) before the gesture fires.
    */
   float min_distance;
+  /**
+   * Mask of buttons that can drag (`WATERUI_POINTER_BUTTON_*`).
+   */
+  uint8_t buttons;
 } WuiGesture_Drag_Body;
 
 typedef struct WuiGesture_Magnification_Body {
@@ -2605,6 +3015,26 @@ typedef struct WuiMetadata_WuiOnEvent {
 typedef struct WuiMetadata_WuiOnEvent WuiMetadataOnEvent;
 
 /**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_____WuiOnKeyPress {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  struct WuiOnKeyPress *value;
+} WuiMetadata_____WuiOnKeyPress;
+
+/**
+ * Type alias for `Metadata<OnKeyPress>` FFI struct.
+ */
+typedef struct WuiMetadata_____WuiOnKeyPress WuiMetadataOnKeyPress;
+
+/**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_computed_*`,
@@ -2762,6 +3192,222 @@ typedef struct WuiIgnorableMetadataAccessibilityState {
 } WuiIgnorableMetadataAccessibilityState;
 
 /**
+ * FFI-safe representation of `Selected`.
+ */
+typedef struct WuiSelected {
+  /**
+   * Reactive selected state to bind to the platform's selected
+   * accessibility trait.
+   */
+  WuiComputed_bool *selected;
+} WuiSelected;
+
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_WuiSelected {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  struct WuiSelected value;
+} WuiMetadata_WuiSelected;
+
+/**
+ * Type alias for `Metadata<Selected>` FFI struct
+ */
+typedef struct WuiMetadata_WuiSelected WuiMetadataSelected;
+
+/**
+ * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
+ * per-corner radii used only by the rounded-rect variants.
+ */
+typedef struct WuiShapeKind {
+  /**
+   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
+   * (uniform radius, normalized to the shorter side), 4 = uneven rounded
+   * rect (per-corner normalized radii), 5 = capsule, 6 = custom path,
+   * 7 = fixed rounded rect (uniform radius in logical points),
+   * 8 = fixed uneven rounded rect (per-corner radii in logical points).
+   */
+  int32_t tag;
+  /**
+   * Top-left corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float top_left;
+  /**
+   * Top-right corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float top_right;
+  /**
+   * Bottom-right corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float bottom_right;
+  /**
+   * Bottom-left corner radius, used by tags 3, 4, 7, and 8.
+   */
+  float bottom_left;
+} WuiShapeKind;
+
+/**
+ * FFI-safe representation of a path element.
+ * All coordinates are normalized (0.0-1.0) and scale with view bounds.
+ */
+typedef enum WuiPathCommand_Tag {
+  /**
+   * Move to a position without drawing.
+   */
+  WuiPathCommand_MoveTo,
+  /**
+   * Draw a straight line to a position.
+   */
+  WuiPathCommand_LineTo,
+  /**
+   * Draw a quadratic bezier curve.
+   */
+  WuiPathCommand_QuadTo,
+  /**
+   * Draw a cubic bezier curve.
+   */
+  WuiPathCommand_CubicTo,
+  /**
+   * Close the current subpath.
+   */
+  WuiPathCommand_Close,
+} WuiPathCommand_Tag;
+
+typedef struct WuiPathCommand_MoveTo_Body {
+  /**
+   * Target X coordinate.
+   */
+  float x;
+  /**
+   * Target Y coordinate.
+   */
+  float y;
+} WuiPathCommand_MoveTo_Body;
+
+typedef struct WuiPathCommand_LineTo_Body {
+  /**
+   * Target X coordinate.
+   */
+  float x;
+  /**
+   * Target Y coordinate.
+   */
+  float y;
+} WuiPathCommand_LineTo_Body;
+
+typedef struct WuiPathCommand_QuadTo_Body {
+  /**
+   * Control point X coordinate.
+   */
+  float cx;
+  /**
+   * Control point Y coordinate.
+   */
+  float cy;
+  /**
+   * End point X coordinate.
+   */
+  float x;
+  /**
+   * End point Y coordinate.
+   */
+  float y;
+} WuiPathCommand_QuadTo_Body;
+
+typedef struct WuiPathCommand_CubicTo_Body {
+  /**
+   * First control point X coordinate.
+   */
+  float c1x;
+  /**
+   * First control point Y coordinate.
+   */
+  float c1y;
+  /**
+   * Second control point X coordinate.
+   */
+  float c2x;
+  /**
+   * Second control point Y coordinate.
+   */
+  float c2y;
+  /**
+   * End point X coordinate.
+   */
+  float x;
+  /**
+   * End point Y coordinate.
+   */
+  float y;
+} WuiPathCommand_CubicTo_Body;
+
+typedef struct WuiPathCommand {
+  WuiPathCommand_Tag tag;
+  union {
+    WuiPathCommand_MoveTo_Body move_to;
+    WuiPathCommand_LineTo_Body line_to;
+    WuiPathCommand_QuadTo_Body quad_to;
+    WuiPathCommand_CubicTo_Body cubic_to;
+  };
+} WuiPathCommand;
+
+/**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
+typedef struct WuiArraySlice_WuiPathCommand {
+  struct WuiPathCommand *head;
+  uintptr_t len;
+} WuiArraySlice_WuiPathCommand;
+
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
+typedef struct WuiArrayVTable_WuiPathCommand {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiPathCommand (*slice)(const void*);
+} WuiArrayVTable_WuiPathCommand;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiPathCommand {
+  NonNull data;
+  struct WuiArrayVTable_WuiPathCommand vtable;
+} WuiArray_WuiPathCommand;
+
+/**
+ * FFI-safe representation of a clip shape.
+ * Contains the structured kind plus the path commands defining the mask.
+ */
+typedef struct WuiClipShape {
+  /**
+   * Shape kind for backend-side rendering. Prefer this over `commands`:
+   * the commands are in unit space, where a corner radius stretches with
+   * the clipped rect's aspect ratio.
+   */
+  struct WuiShapeKind kind;
+  /**
+   * Array of path commands defining the shape.
+   */
+  struct WuiArray_WuiPathCommand commands;
+} WuiClipShape;
+
+/**
  * FFI-safe representation of a shadow.
  */
 typedef struct WuiShadow {
@@ -2782,9 +3428,11 @@ typedef struct WuiShadow {
    */
   float radius;
   /**
-   * Corner radius of the element casting the shadow.
+   * The shape of the element casting the shadow: the caster's own shape —
+   * the one it is filled or clipped with — so a backend rasterizing the
+   * shadow itself blurs this silhouette.
    */
-  float corner_radius;
+  struct WuiClipShape silhouette;
 } WuiShadow;
 
 /**
@@ -3137,223 +3785,6 @@ typedef struct WuiMetadata_WuiRetain {
 typedef struct WuiMetadata_WuiRetain WuiMetadataRetain;
 
 /**
- * C ABI mirror of [`ShapeKind`], flattened into a discriminant tag plus the
- * per-corner radii used only by the rounded-rect variants.
- */
-typedef struct WuiShapeKind {
-  /**
-   * Discriminant: 0 = rect, 1 = circle, 2 = ellipse, 3 = rounded rect
-   * (uniform radius, normalized to the shorter side), 4 = uneven rounded
-   * rect (per-corner normalized radii), 5 = capsule, 6 = custom path,
-   * 7 = fixed rounded rect (uniform radius in logical points),
-   * 8 = fixed uneven rounded rect (per-corner radii in logical points).
-   */
-  int32_t tag;
-  /**
-   * Top-left corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float top_left;
-  /**
-   * Top-right corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float top_right;
-  /**
-   * Bottom-right corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float bottom_right;
-  /**
-   * Bottom-left corner radius, used by tags 3, 4, 7, and 8.
-   */
-  float bottom_left;
-} WuiShapeKind;
-
-/**
- * FFI-safe representation of a path command.
- * All coordinates are normalized (0.0-1.0) and scale with view bounds.
- */
-typedef enum WuiPathCommand_Tag {
-  /**
-   * Move to a position without drawing.
-   */
-  WuiPathCommand_MoveTo,
-  /**
-   * Draw a straight line to a position.
-   */
-  WuiPathCommand_LineTo,
-  /**
-   * Draw a quadratic bezier curve.
-   */
-  WuiPathCommand_QuadTo,
-  /**
-   * Draw a cubic bezier curve.
-   */
-  WuiPathCommand_CubicTo,
-  /**
-   * Draw an arc.
-   */
-  WuiPathCommand_Arc,
-  /**
-   * Close the current subpath.
-   */
-  WuiPathCommand_Close,
-} WuiPathCommand_Tag;
-
-typedef struct WuiPathCommand_MoveTo_Body {
-  /**
-   * Target X coordinate.
-   */
-  float x;
-  /**
-   * Target Y coordinate.
-   */
-  float y;
-} WuiPathCommand_MoveTo_Body;
-
-typedef struct WuiPathCommand_LineTo_Body {
-  /**
-   * Target X coordinate.
-   */
-  float x;
-  /**
-   * Target Y coordinate.
-   */
-  float y;
-} WuiPathCommand_LineTo_Body;
-
-typedef struct WuiPathCommand_QuadTo_Body {
-  /**
-   * Control point X coordinate.
-   */
-  float cx;
-  /**
-   * Control point Y coordinate.
-   */
-  float cy;
-  /**
-   * End point X coordinate.
-   */
-  float x;
-  /**
-   * End point Y coordinate.
-   */
-  float y;
-} WuiPathCommand_QuadTo_Body;
-
-typedef struct WuiPathCommand_CubicTo_Body {
-  /**
-   * First control point X coordinate.
-   */
-  float c1x;
-  /**
-   * First control point Y coordinate.
-   */
-  float c1y;
-  /**
-   * Second control point X coordinate.
-   */
-  float c2x;
-  /**
-   * Second control point Y coordinate.
-   */
-  float c2y;
-  /**
-   * End point X coordinate.
-   */
-  float x;
-  /**
-   * End point Y coordinate.
-   */
-  float y;
-} WuiPathCommand_CubicTo_Body;
-
-typedef struct WuiPathCommand_Arc_Body {
-  /**
-   * Center X coordinate.
-   */
-  float cx;
-  /**
-   * Center Y coordinate.
-   */
-  float cy;
-  /**
-   * Radius along the X axis.
-   */
-  float rx;
-  /**
-   * Radius along the Y axis.
-   */
-  float ry;
-  /**
-   * Start angle in radians.
-   */
-  float start;
-  /**
-   * Sweep angle in radians.
-   */
-  float sweep;
-} WuiPathCommand_Arc_Body;
-
-typedef struct WuiPathCommand {
-  WuiPathCommand_Tag tag;
-  union {
-    WuiPathCommand_MoveTo_Body move_to;
-    WuiPathCommand_LineTo_Body line_to;
-    WuiPathCommand_QuadTo_Body quad_to;
-    WuiPathCommand_CubicTo_Body cubic_to;
-    WuiPathCommand_Arc_Body arc;
-  };
-} WuiPathCommand;
-
-/**
- * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
- */
-typedef struct WuiArraySlice_WuiPathCommand {
-  struct WuiPathCommand *head;
-  uintptr_t len;
-} WuiArraySlice_WuiPathCommand;
-
-/**
- * The pair of function pointers `WuiArray` uses to view and free its backing storage.
- *
- * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
- * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
- */
-typedef struct WuiArrayVTable_WuiPathCommand {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiPathCommand (*slice)(const void*);
-} WuiArrayVTable_WuiPathCommand;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- *
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiPathCommand {
-  NonNull data;
-  struct WuiArrayVTable_WuiPathCommand vtable;
-} WuiArray_WuiPathCommand;
-
-/**
- * FFI-safe representation of a clip shape.
- * Contains the structured kind plus the path commands defining the mask.
- */
-typedef struct WuiClipShape {
-  /**
-   * Shape kind for backend-side rendering. Prefer this over `commands`:
-   * the commands are in unit space, where a corner radius stretches with
-   * the clipped rect's aspect ratio.
-   */
-  struct WuiShapeKind kind;
-  /**
-   * Array of path commands defining the shape.
-   */
-  struct WuiArray_WuiPathCommand commands;
-} WuiClipShape;
-
-/**
  * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
  * attached metadata value.
  */
@@ -3484,6 +3915,14 @@ typedef struct WuiMenuItem {
    */
   struct WuiShortcut *shortcut;
   /**
+   * What a command does, which decides its presentation.
+   */
+  enum WuiCommandRole role;
+  /**
+   * Optional secondary line under a command's label; null when absent.
+   */
+  struct WuiStr *subtitle;
+  /**
    * Nested menu items.
    */
   struct WuiAnyViews *items;
@@ -3497,6 +3936,20 @@ typedef struct WuiContextMenu {
    * Identity-aware reactive menu items.
    */
   struct WuiAnyViews *items;
+  /**
+   * The view to lift while the menu is open; null lifts the source view.
+   */
+  struct WuiAnyView *preview;
+  /**
+   * The interactive view anchored to the lifted preview; null when the
+   * menu has none.
+   */
+  struct WuiAnyView *accessory;
+  /**
+   * Dismiss requests from the accessory: every change closes the open
+   * menu.
+   */
+  WuiComputed_i32 *dismiss_requests;
 } WuiContextMenu;
 
 /**
@@ -3518,6 +3971,170 @@ typedef struct WuiMetadata_WuiContextMenu {
  * Type alias for `Metadata<ContextMenu>` FFI struct
  */
 typedef struct WuiMetadata_WuiContextMenu WuiMetadataContextMenu;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
+typedef struct Binding_AnchorEdge WuiBinding_AnchorEdge;
+
+/**
+ * C ABI mirror of [`Clamp`]: a flat tagged struct — `margin` only applies
+ * when `tag` is [`WuiClampTag::Window`].
+ */
+typedef struct WuiClamp {
+  /**
+   * Whether and how the overlay is kept inside the window.
+   */
+  enum WuiClampTag tag;
+  /**
+   * The minimum distance from the window's edges, in points.
+   */
+  float margin;
+} WuiClamp;
+
+/**
+ * C ABI mirror of [`AnchorPlacement`].
+ */
+typedef struct WuiAnchorPlacement {
+  /**
+   * The edge of the anchor the overlay is placed against.
+   */
+  enum WuiAnchorEdge edge;
+  /**
+   * How the overlay lines up with the anchor along that edge.
+   */
+  enum WuiEdgeAlignment alignment;
+  /**
+   * The distance between the anchor and the overlay, in points.
+   */
+  float gap;
+  /**
+   * Whether the overlay moves to the opposite edge when the preferred
+   * edge has no room for it.
+   */
+  bool flip;
+  /**
+   * How the overlay is kept inside the window.
+   */
+  struct WuiClamp clamp;
+} WuiAnchorPlacement;
+
+/**
+ * FFI-safe representation of an anchored overlay.
+ */
+typedef struct WuiAnchoredOverlay {
+  /**
+   * The view presented next to the anchor.
+   */
+  struct WuiAnyView *content;
+  /**
+   * Whether the overlay is presented; the backend writes `false` when it
+   * dismisses the overlay itself.
+   */
+  WuiBinding_bool *is_presented;
+  /**
+   * Where the overlay sits relative to the anchor.
+   */
+  struct WuiAnchorPlacement placement;
+  /**
+   * What besides the binding closes the overlay.
+   */
+  enum WuiDismissal dismissal;
+  /**
+   * The edge the overlay was placed against after any flip. The backend
+   * writes it on every placement.
+   */
+  WuiBinding_AnchorEdge *placed_edge;
+} WuiAnchoredOverlay;
+
+/**
+ * Generic FFI payload for `Metadata<T>` views: the wrapped content plus the
+ * attached metadata value.
+ */
+typedef struct WuiMetadata_WuiAnchoredOverlay {
+  /**
+   * The view content wrapped by this metadata node.
+   */
+  struct WuiAnyView *content;
+  /**
+   * The metadata value attached to `content`.
+   */
+  struct WuiAnchoredOverlay value;
+} WuiMetadata_WuiAnchoredOverlay;
+
+/**
+ * Type alias for `Metadata<AnchoredOverlay>` FFI struct
+ */
+typedef struct WuiMetadata_WuiAnchoredOverlay WuiMetadataAnchoredOverlay;
+
+/**
+ *C ABI mirror of `Point`.
+ */
+typedef struct WuiPoint {
+  /**
+   *Mirrors the `x` field of `Point`.
+   */
+  float x;
+  /**
+   *Mirrors the `y` field of `Point`.
+   */
+  float y;
+} WuiPoint;
+
+/**
+ *C ABI mirror of `Size`.
+ */
+typedef struct WuiSize {
+  /**
+   *Mirrors the `width` field of `Size`.
+   */
+  float width;
+  /**
+   *Mirrors the `height` field of `Size`.
+   */
+  float height;
+} WuiSize;
+
+/**
+ * C ABI mirror of [`Rect`]: an axis-aligned rectangle expressed as an
+ * origin point and a size, relative to its parent's coordinate space.
+ */
+typedef struct WuiRect {
+  /**
+   * The rectangle's origin.
+   */
+  struct WuiPoint origin;
+  /**
+   * The rectangle's size.
+   */
+  struct WuiSize size;
+} WuiRect;
+
+/**
+ * C ABI mirror of [`waterui_backend_core::overlay::AnchoredOverlayPlacement`]:
+ * the overlay's frame in window space and the anchor edge it was placed
+ * against after any flip.
+ */
+typedef struct WuiAnchoredOverlayPlacement {
+  /**
+   * The overlay's frame in window space.
+   */
+  struct WuiRect frame;
+  /**
+   * The physical edge of the anchor the overlay was placed against, after
+   * flipping.
+   */
+  enum WuiPhysicalEdge edge;
+  /**
+   * `edge` converted back to a logical [`AnchorEdge`] under the resolved
+   * layout direction — what the backend writes to `placed_edge`.
+   */
+  enum WuiAnchorEdge logical_edge;
+} WuiAnchoredOverlayPlacement;
 
 /**
  * FFI-safe representation of a Menu component.
@@ -3575,6 +4192,11 @@ typedef struct WuiDropDestination {
    * Opaque pointer to the drop handler.
    */
   struct WuiDropHandler *handler;
+  /**
+   * The kind of payload the destination accepts. A backend registers for the
+   * matching pasteboard type; `InProcess` destinations register for none.
+   */
+  enum WuiTransferKind accepted_kind;
 } WuiDropDestination;
 
 /**
@@ -3668,30 +4290,27 @@ typedef struct WuiMetadata_WuiHittable {
 typedef struct WuiMetadata_WuiHittable WuiMetadataHittable;
 
 /**
- *C ABI mirror of `ResolvedColor`.
+ * C ABI mirror of [`WorkingColor`]: premultiplied-free linear Display P3
+ * components with straight alpha.
  */
-typedef struct WuiResolvedColor {
+typedef struct WuiWorkingColor {
   /**
-   *Mirrors the `red` field of `ResolvedColor`.
+   * Linear Display P3 red.
    */
   float red;
   /**
-   *Mirrors the `green` field of `ResolvedColor`.
+   * Linear Display P3 green.
    */
   float green;
   /**
-   *Mirrors the `blue` field of `ResolvedColor`.
+   * Linear Display P3 blue.
    */
   float blue;
   /**
-   *Mirrors the `opacity` field of `ResolvedColor`.
+   * Straight alpha.
    */
-  float opacity;
-  /**
-   *Mirrors the `headroom` field of `ResolvedColor`.
-   */
-  float headroom;
-} WuiResolvedColor;
+  float alpha;
+} WuiWorkingColor;
 
 /**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
@@ -3700,7 +4319,7 @@ typedef struct WuiResolvedColor {
  * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
  * by the `ffi_computed!` macro.
  */
-typedef struct Computed_ResolvedColor WuiComputed_ResolvedColor;
+typedef struct Computed_WorkingColor WuiComputed_WorkingColor;
 
 /**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
@@ -3721,26 +4340,26 @@ typedef struct Binding_Color WuiBinding_Color;
 typedef struct Computed_Color WuiComputed_Color;
 
 /**
- *C ABI mirror of `ResolvedGradientStop`.
+ * C ABI mirror of a gradient colour stop.
  */
-typedef struct WuiResolvedGradientStop {
+typedef struct WuiGradientStop {
   /**
-   *Mirrors the `position` field of `ResolvedGradientStop`.
+   * Position along the gradient, from 0 to 1.
    */
   float position;
   /**
-   *Mirrors the `color` field of `ResolvedGradientStop`.
+   * The colour at this position.
    */
-  struct WuiResolvedColor color;
-} WuiResolvedGradientStop;
+  struct WuiWorkingColor color;
+} WuiGradientStop;
 
 /**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
  */
-typedef struct WuiArraySlice_WuiResolvedGradientStop {
-  struct WuiResolvedGradientStop *head;
+typedef struct WuiArraySlice_WuiGradientStop {
+  struct WuiGradientStop *head;
   uintptr_t len;
-} WuiArraySlice_WuiResolvedGradientStop;
+} WuiArraySlice_WuiGradientStop;
 
 /**
  * The pair of function pointers `WuiArray` uses to view and free its backing storage.
@@ -3748,10 +4367,10 @@ typedef struct WuiArraySlice_WuiResolvedGradientStop {
  * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
  * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
  */
-typedef struct WuiArrayVTable_WuiResolvedGradientStop {
+typedef struct WuiArrayVTable_WuiGradientStop {
   void (*drop)(void*);
-  struct WuiArraySlice_WuiResolvedGradientStop (*slice)(const void*);
-} WuiArrayVTable_WuiResolvedGradientStop;
+  struct WuiArraySlice_WuiGradientStop (*slice)(const void*);
+} WuiArrayVTable_WuiGradientStop;
 
 /**
  * A generic array structure for FFI, representing a contiguous sequence of elements.
@@ -3761,24 +4380,28 @@ typedef struct WuiArrayVTable_WuiResolvedGradientStop {
  * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
  * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
  */
-typedef struct WuiArray_WuiResolvedGradientStop {
+typedef struct WuiArray_WuiGradientStop {
   NonNull data;
-  struct WuiArrayVTable_WuiResolvedGradientStop vtable;
-} WuiArray_WuiResolvedGradientStop;
+  struct WuiArrayVTable_WuiGradientStop vtable;
+} WuiArray_WuiGradientStop;
 
 /**
- * C ABI mirror of [`ResolvedGradient`], the backend-native gradient payload
- * produced once a gradient's dynamic inputs have been resolved.
+ * C ABI mirror of [`Gradient`], the backend-native gradient payload in unit
+ * space.
+ *
+ * Backends scale it onto the view's bounds. A mesh gradient never reaches
+ * this payload: it resolves to engine content, so only linear, radial and
+ * angular gradients cross.
  */
-typedef struct WuiResolvedGradient {
+typedef struct WuiGradient {
   /**
-   * Gradient kind (linear, radial, angular, or mesh).
+   * Gradient kind (linear, radial or angular).
    */
   enum WuiGradientType gradient_type;
   /**
-   * The gradient's resolved color stops.
+   * The colour stops.
    */
-  struct WuiArray_WuiResolvedGradientStop stops;
+  struct WuiArray_WuiGradientStop stops;
   /**
    * Start point (linear) or center (radial/angular) x-coordinate.
    */
@@ -3796,14 +4419,14 @@ typedef struct WuiResolvedGradient {
    */
   float end_y;
   /**
-   * Start radius (radial) or start angle (angular).
+   * Start radius (radial) or start angle in radians (angular).
    */
   float start_value;
   /**
-   * End radius (radial) or end angle (angular).
+   * End radius (radial) or end angle in radians (angular).
    */
   float end_value;
-} WuiResolvedGradient;
+} WuiGradient;
 
 /**
  * C ABI mirror of [`ResolvedShape`], the backend-native shape payload
@@ -3821,11 +4444,11 @@ typedef struct WuiResolvedShape {
   /**
    * Read-only signal for the environment-resolved fill color.
    */
-  WuiComputed_ResolvedColor *fill;
+  WuiComputed_WorkingColor *fill;
 } WuiResolvedShape;
 
 /**
- * FFI-safe representation of an animation.
+ * FFI-safe representation of a `WaterUI` animation.
  *
  * cbindgen generates a tagged union with:
  * - `WuiAnimation_Tag` enum for variant discrimination
@@ -3834,24 +4457,31 @@ typedef struct WuiResolvedShape {
  */
 typedef enum WuiAnimation_Tag {
   /**
-   * No animation - changes apply immediately
+   * No animation: the change applies instantly.
+   *
+   * Returned when the watcher carried no animation metadata at all; the
+   * backend must not substitute its own default.
    */
   WuiAnimation_None,
   /**
-   * Timed cubic bezier animation with control points
+   * The platform's default animation for the change.
+   */
+  WuiAnimation_SystemDefault,
+  /**
+   * Timed cubic bezier curve with control points
    *
    * Native backends can use these control points with:
    * - Apple: `CAMediaTimingFunction(controlPoints:)`
    * - Android: `PathInterpolator(x1, y1, x2, y2)`
    */
-  WuiAnimation_Bezier,
+  WuiAnimation_Curve,
   /**
    * Spring animation with physics-based movement
    */
   WuiAnimation_Spring,
 } WuiAnimation_Tag;
 
-typedef struct WuiAnimation_Bezier_Body {
+typedef struct WuiAnimation_Curve_Body {
   /**
    * Duration in milliseconds
    */
@@ -3872,15 +4502,15 @@ typedef struct WuiAnimation_Bezier_Body {
    * Second control point Y
    */
   float y2;
-} WuiAnimation_Bezier_Body;
+} WuiAnimation_Curve_Body;
 
 typedef struct WuiAnimation_Spring_Body {
   /**
-   * Stiffness of the spring (higher = faster)
+   * The spring stiffness; higher values animate faster
    */
   float stiffness;
   /**
-   * Damping factor (higher = less bounce)
+   * The damping coefficient; higher values reduce bouncing
    */
   float damping;
 } WuiAnimation_Spring_Body;
@@ -3888,24 +4518,69 @@ typedef struct WuiAnimation_Spring_Body {
 typedef struct WuiAnimation {
   WuiAnimation_Tag tag;
   union {
-    WuiAnimation_Bezier_Body bezier;
+    WuiAnimation_Curve_Body curve;
     WuiAnimation_Spring_Body spring;
   };
 } WuiAnimation;
 
 /**
- * FFI-safe representation of drag data.
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
  */
-typedef struct WuiDragData {
+typedef struct WuiArraySlice_WuiStr {
+  struct WuiStr *head;
+  uintptr_t len;
+} WuiArraySlice_WuiStr;
+
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
+typedef struct WuiArrayVTable_WuiStr {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiStr (*slice)(const void*);
+} WuiArrayVTable_WuiStr;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiStr {
+  NonNull data;
+  struct WuiArrayVTable_WuiStr vtable;
+} WuiArray_WuiStr;
+
+/**
+ * A key press handed to a native `OnKeyPress` handler.
+ *
+ * `key` and `code` are owned strings: the caller hands over ownership and
+ * this crate frees them during [`waterui_call_on_key_press`]. A host builds
+ * them through its usual `WuiStr` constructor — never a zeroed struct, which
+ * has no valid array vtable.
+ */
+typedef struct WuiKeyPress {
   /**
-   * The type of data.
+   * The W3C `KeyboardEvent.key` name — `"a"`, `"Enter"`, `"Escape"`.
    */
-  enum WuiDragDataTag tag;
+  struct WuiStr key;
   /**
-   * The content (text or URL string).
+   * The W3C `KeyboardEvent.code` name — `"KeyA"`, `"Escape"`.
    */
-  struct WuiStr value;
-} WuiDragData;
+  struct WuiStr code;
+  /**
+   * The modifier chord, as `WUI_KEY_MODIFIER_*` bits.
+   */
+  uint32_t modifiers;
+  /**
+   * Whether the platform generated this press by auto-repeat.
+   */
+  bool repeat;
+} WuiKeyPress;
 
 /**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
@@ -4028,15 +4703,6 @@ typedef struct Binding_StyledStr WuiBinding_StyledStr;
  * by the `ffi_computed!` macro.
  */
 typedef struct Computed_f64 WuiComputed_f64;
-
-/**
- * FFI-owned wrapper around a [`waterui::Binding`] signal.
- *
- * Opaque to native code; accessed only through the `waterui_read_binding_*`,
- * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
- * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
- */
-typedef struct Binding_i32 WuiBinding_i32;
 
 /**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
@@ -4182,6 +4848,47 @@ typedef struct Binding_Secure WuiBinding_Secure;
 typedef struct Binding_Id WuiBinding_Id;
 
 /**
+ * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
+ */
+typedef struct WuiArraySlice_WuiId {
+  struct WuiId *head;
+  uintptr_t len;
+} WuiArraySlice_WuiId;
+
+/**
+ * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ *
+ * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
+ * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ */
+typedef struct WuiArrayVTable_WuiId {
+  void (*drop)(void*);
+  struct WuiArraySlice_WuiId (*slice)(const void*);
+} WuiArrayVTable_WuiId;
+
+/**
+ * A generic array structure for FFI, representing a contiguous sequence of elements.
+ *
+ * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
+ * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
+ * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
+ * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
+ */
+typedef struct WuiArray_WuiId {
+  NonNull data;
+  struct WuiArrayVTable_WuiId vtable;
+} WuiArray_WuiId;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
+typedef struct Binding_Vec_Id WuiBinding_Vec_Id;
+
+/**
  * One node of a backend's accessibility tree, as it crosses the boundary.
  *
  * Strings are borrowed for the duration of the call: the runtime copies what
@@ -4292,36 +4999,13 @@ typedef struct WuiResolvedFont {
 } WuiResolvedFont;
 
 /**
- * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
- */
-typedef struct WuiArraySlice_WuiId {
-  struct WuiId *head;
-  uintptr_t len;
-} WuiArraySlice_WuiId;
-
-/**
- * The pair of function pointers `WuiArray` uses to view and free its backing storage.
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
  *
- * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
- * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
  */
-typedef struct WuiArrayVTable_WuiId {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiId (*slice)(const void*);
-} WuiArrayVTable_WuiId;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- *
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiId {
-  NonNull data;
-  struct WuiArrayVTable_WuiId vtable;
-} WuiArray_WuiId;
+typedef struct Computed_WindowStyle WuiComputed_WindowStyle;
 
 /**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
@@ -4333,6 +5017,33 @@ typedef struct WuiArray_WuiId {
 typedef struct Binding_WindowState WuiBinding_WindowState;
 
 /**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_WindowLevel WuiComputed_WindowLevel;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Binding`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_binding_*`,
+ * `waterui_set_binding_*`, `waterui_watch_binding_*`, and
+ * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
+ */
+typedef struct Binding_Option_UserAttention WuiBinding_Option_UserAttention;
+
+/**
+ * FFI-owned wrapper around a [`waterui::Computed`] signal.
+ *
+ * Opaque to native code; accessed only through the `waterui_read_computed_*`,
+ * `waterui_watch_computed_*`, and `waterui_drop_computed_*` functions generated
+ * by the `ffi_computed!` macro.
+ */
+typedef struct Computed_WindowBackground WuiComputed_WindowBackground;
+
+/**
  * FFI-owned wrapper around a [`waterui::Binding`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_binding_*`,
@@ -4342,38 +5053,6 @@ typedef struct Binding_WindowState WuiBinding_WindowState;
 typedef struct Binding_Rect WuiBinding_Rect;
 
 /**
- * FFI-compatible representation of [`WindowBackground`].
- *
- * Only supports Opaque and Color. Material blur effects are handled
- * via `MaterialBackground` metadata on the window content.
- */
-typedef enum WuiWindowBackground_Tag {
-  /**
-   * Opaque system default background.
-   */
-  WuiWindowBackground_Opaque,
-  /**
-   * Solid color background (can be semi-transparent via alpha).
-   * Native must resolve the color using the environment.
-   */
-  WuiWindowBackground_Color,
-} WuiWindowBackground_Tag;
-
-typedef struct WuiWindowBackground_Color_Body {
-  /**
-   * Pointer to the reactive color to resolve and apply as the window background.
-   */
-  struct WuiColor *color;
-} WuiWindowBackground_Color_Body;
-
-typedef struct WuiWindowBackground {
-  WuiWindowBackground_Tag tag;
-  union {
-    WuiWindowBackground_Color_Body color;
-  };
-} WuiWindowBackground;
-
-/**
  * FFI-owned wrapper around a [`waterui::Computed`] signal.
  *
  * Opaque to native code; accessed only through the `waterui_read_computed_*`,
@@ -4381,6 +5060,62 @@ typedef struct WuiWindowBackground {
  * by the `ffi_computed!` macro.
  */
 typedef struct Computed_Size WuiComputed_Size;
+
+/**
+ * FFI mirror of [`Monitor`], built by the native backend that resolved the
+ * placement's selector.
+ *
+ * `name` is a borrowed NUL-terminated UTF-8 string (null when the platform
+ * reports no name): the native caller keeps it alive for the duration of the
+ * `place` call only — the Rust side copies what it needs before returning.
+ */
+typedef struct WuiMonitor {
+  /**
+   * Bounds in the global logical coordinate space.
+   */
+  struct WuiRect frame;
+  /**
+   * `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+   */
+  struct WuiRect visible_frame;
+  /**
+   * Physical pixels per logical point.
+   */
+  double scale_factor;
+  /**
+   * The platform's name for the display, or null.
+   */
+  const char *name;
+} WuiMonitor;
+
+/**
+ * Native invocation of [`WindowPlacement::place`]: the backend fills a
+ * [`WuiMonitor`] for the resolved selector and receives the frame to write.
+ */
+typedef struct WuiRect (*WuiPlaceFn)(const void *context, const struct WuiMonitor *monitor);
+
+/**
+ * FFI mirror of [`WindowPlacement`]: the selector plus the `place` closure as
+ * the usual context/call/drop triple.
+ */
+typedef struct WuiWindowPlacement {
+  /**
+   * Which monitor the backend resolves before calling `call`.
+   */
+  enum WuiMonitorSelector monitor;
+  /**
+   * The `place` closure's context, registered with `call` and `drop`.
+   */
+  void *context;
+  /**
+   * Resolved monitor in, window frame out.
+   */
+  WuiPlaceFn call;
+  /**
+   * Releases `context` exactly once when the window record is disposed.
+   */
+  void (*drop)(void*);
+} WuiWindowPlacement;
 
 /**
  * FFI-compatible representation of a window.
@@ -4415,13 +5150,15 @@ typedef struct WuiWindow {
    */
   struct WuiAnyView *toolbar;
   /**
-   * The visual style of the window.
+   * The visual style of the window, observed so a change after the window
+   * is shown is re-applied.
    */
-  enum WuiWindowStyle style;
+  WuiComputed_WindowStyle *style;
   /**
-   * The background style of the window.
+   * The window's reactive background. Resolve it with
+   * `waterui_resolve_window_background`, which consumes it.
    */
-  struct WuiWindowBackground background;
+  WuiComputed_WindowBackground *background;
   /**
    * Explicit minimum content size, or null to derive the minimum from the
    * content's layout (the root view measured at a zero proposal).
@@ -4431,6 +5168,29 @@ typedef struct WuiWindow {
    * Explicit maximum content size, or null for an unconstrained window.
    */
   WuiComputed_Size *max_size;
+  /**
+   * Monitor selection plus the `place` callback, or null for the
+   * platform's default placement.
+   */
+  struct WuiWindowPlacement *placement;
+  /**
+   * How showing and clicking the window affects focus and app activation.
+   */
+  enum WuiActivation activation;
+  /**
+   * Where the window stacks relative to other applications' windows.
+   */
+  WuiComputed_WindowLevel *level;
+  /**
+   * The window's request for the user's attention. The backend sets it back
+   * to `None` when the window gains focus.
+   */
+  WuiBinding_Option_UserAttention *attention;
+  /**
+   * The steps the window's content size moves in while the user resizes it,
+   * or null for continuous resizing.
+   */
+  WuiComputed_Size *resize_increments;
 } WuiWindow;
 
 /**
@@ -4538,6 +5298,15 @@ typedef struct WuiTextField {
    * exceed the limit rather than truncating the existing value.
    */
   uintptr_t line_limit;
+  /**
+   * The action run when the user submits the field with Return or Enter.
+   *
+   * `NULL` means the field has no submit action, and a single-line field
+   * leaves Return unconsumed so it bubbles to the field's ancestors. A
+   * field without a line limit consumes Return as a line break and never
+   * submits. Free with `waterui_drop_shared_action`.
+   */
+  struct WuiSharedAction *on_submit;
 } WuiTextField;
 
 /**
@@ -4596,6 +5365,14 @@ typedef struct WuiSlider {
    *Mirrors the `value` field of `SliderConfig`.
    */
   WuiBinding_f64 *value;
+  /**
+   *Mirrors the `size` field of `SliderConfig`.
+   */
+  enum WuiControlSize size;
+  /**
+   *Mirrors the `value_indicator` field of `SliderConfig`.
+   */
+  struct WuiValueFormatter *value_indicator;
 } WuiSlider;
 
 /**
@@ -5111,41 +5888,31 @@ typedef struct WuiContainer {
 typedef void (*WuiLayoutInvalidationCallback)(void *context);
 
 /**
- *C ABI mirror of `Size`.
+ * C ABI mirror of [`EdgeInsets`]: the space between a rectangle's edges and
+ * its content, in points.
+ *
+ * The value crosses the boundary as `*mut WuiEdgeInsets` — an owning handle
+ * the backend releases with `waterui_drop_edge_insets` when it is done with
+ * it. A null pointer defers to whatever insets the context supplies.
  */
-typedef struct WuiSize {
+typedef struct WuiEdgeInsets {
   /**
-   *Mirrors the `width` field of `Size`.
+   * The top edge inset, in points.
    */
-  float width;
+  float top;
   /**
-   *Mirrors the `height` field of `Size`.
+   * The leading edge inset, in points (left in left-to-right text).
    */
-  float height;
-} WuiSize;
-
-/**
- *C ABI mirror of `Point`.
- */
-typedef struct WuiPoint {
+  float leading;
   /**
-   *Mirrors the `x` field of `Point`.
+   * The bottom edge inset, in points.
    */
-  float x;
+  float bottom;
   /**
-   *Mirrors the `y` field of `Point`.
+   * The trailing edge inset, in points (right in left-to-right text).
    */
-  float y;
-} WuiPoint;
-
-/**
- * C ABI mirror of [`Rect`]: an axis-aligned rectangle expressed as an
- * origin point and a size, relative to its parent's coordinate space.
- */
-typedef struct WuiRect {
-  struct WuiPoint origin;
-  struct WuiSize size;
-} WuiRect;
+  float trailing;
+} WuiEdgeInsets;
 
 /**
  * C ABI mirror of one explicit horizontal alignment guide entry from
@@ -5298,6 +6065,11 @@ typedef struct WuiSubView {
    * Layout priority (higher = measured first, gets space preference)
    */
   int32_t priority;
+  /**
+   * Whether this child renders nothing — a semantic answer, not a measured
+   * size. `true` excludes the child from stack membership (§4.4).
+   */
+  bool is_empty;
 } WuiSubView;
 
 /**
@@ -5442,6 +6214,18 @@ typedef struct WuiScrollView {
    * request to the same target. Null if no controller is attached.
    */
   WuiComputed_i32 *scroll_generation;
+  /**
+   * Binding the backend writes the horizontal content offset, in points,
+   * into as the view scrolls — for `ScrollView::report_offset`. The
+   * binding is written, never read; null if none is connected.
+   */
+  WuiBinding_f32 *offset_x;
+  /**
+   * Binding the backend writes the vertical content offset, in points,
+   * into as the view scrolls — for `ScrollView::report_offset`. The
+   * binding is written, never read; null if none is connected.
+   */
+  WuiBinding_f32 *offset_y;
 } WuiScrollView;
 
 /**
@@ -5493,15 +6277,45 @@ typedef struct WuiListItem {
    */
   WuiComputed_bool *deletable;
   /**
-   * Read-only signal marking this item as the current selection; the
-   * backend draws its platform's selection chrome while it is true.
-   */
-  WuiComputed_bool *selected;
-  /**
    * Section break carried by this item — see [`WuiListSection`].
    */
   struct WuiListSection section;
+  /**
+   * The insets between the row's edges and its content, in points; null
+   * defers to the theme's row insets. Owned: over the C ABI the backend
+   * releases it with `waterui_drop_edge_insets`; over JNI the conversion
+   * takes ownership and frees it while flattening the edges into the
+   * item struct.
+   */
+  struct WuiEdgeInsets *insets;
 } WuiListItem;
+
+/**
+ * FFI representation of a list's selection bindings.
+ *
+ * Rows are keyed by the same erased id values `WuiAnyViews::get_id` reports,
+ * so the backend writes ids it received from the collection straight back,
+ * never inventing its own numbering. `single` is a `Binding<i32>` in which 0
+ * means nothing is selected (ids are non-zero); `multiple` is a
+ * `Binding<int[]>` carrying the selected ids. Slots not named by `mode` are
+ * null and must not be read or dropped. The backend draws its platform's
+ * selection chrome from these bindings and writes them on pointer, keyboard
+ * and accessibility input.
+ */
+typedef struct WuiListSelection {
+  /**
+   * Which selection mode the list is in.
+   */
+  enum WuiListSelectionMode mode;
+  /**
+   * Single-selection binding over erased row ids (0 = none), or null.
+   */
+  WuiBinding_i32 *single;
+  /**
+   * Multi-selection binding over erased row ids, or null.
+   */
+  WuiBinding_Vec_Id *multiple;
+} WuiListSelection;
 
 /**
  * FFI representation of a list.
@@ -5511,6 +6325,11 @@ typedef struct WuiList {
    * The list contents (array of list items).
    */
   struct WuiAnyViews *contents;
+  /**
+   * The list's selection bindings, keyed by the ids `contents` reports —
+   * see [`WuiListSelection`].
+   */
+  struct WuiListSelection selection;
   /**
    * Read-only signal for edit mode state.
    */
@@ -5535,6 +6354,16 @@ typedef struct WuiList {
    * Whether rows carry semantic section markers.
    */
   bool uses_sections;
+  /**
+   * Whether `min_row_height` holds a value; `false` uses the theme's
+   * one-line row height.
+   */
+  bool has_min_row_height;
+  /**
+   * The minimum height of a row in points, when `has_min_row_height` is
+   * true. `0` lets rows size to their content.
+   */
+  float min_row_height;
 } WuiList;
 
 /**
@@ -5647,38 +6476,6 @@ typedef struct Binding_VideoTrackSelection WuiBinding_VideoTrackSelection;
  * `waterui_drop_binding_*` functions generated by the `ffi_binding!` macro.
  */
 typedef struct Binding_TrackCatalog WuiBinding_TrackCatalog;
-
-/**
- * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
- */
-typedef struct WuiArraySlice_WuiStr {
-  struct WuiStr *head;
-  uintptr_t len;
-} WuiArraySlice_WuiStr;
-
-/**
- * The pair of function pointers `WuiArray` uses to view and free its backing storage.
- *
- * `drop` releases the boxed container referenced by [`WuiArray::data`](WuiArray),
- * and `slice` exposes that container's elements as a raw [`WuiArraySlice`].
- */
-typedef struct WuiArrayVTable_WuiStr {
-  void (*drop)(void*);
-  struct WuiArraySlice_WuiStr (*slice)(const void*);
-} WuiArrayVTable_WuiStr;
-
-/**
- * A generic array structure for FFI, representing a contiguous sequence of elements.
- *
- * `WuiArray` can represent multiple types of arrays, for instance, a `&[T]` (in this case, the lifetime of `WuiArray` is bound to the caller's scope),
- * or a value type having a static lifetime like `Vec<T>`, `Box<[T]>`, `Bytes`, or even a foreign allocated array.
- * For a value type, `WuiArray` contains a destructor function pointer to free the array buffer, whatever it is allocated by Rust side or foreign side.
- * We assume `T` does not contain any non-trivial drop logic, and `WuiArray` will not call `drop` on each element when it is dropped.
- */
-typedef struct WuiArray_WuiStr {
-  NonNull data;
-  struct WuiArrayVTable_WuiStr vtable;
-} WuiArray_WuiStr;
 
 /**
  * Native representation of one selectable audio track.
@@ -6298,7 +7095,7 @@ typedef struct WuiBar {
   /**
    * Reactive computed bar tint color, resolved against the environment.
    */
-  WuiComputed_ResolvedColor *color;
+  WuiComputed_WorkingColor *color;
   /**
    * Reactive signal controlling whether the bar is hidden.
    */
@@ -6626,36 +7423,45 @@ typedef struct WuiNavigationTransaction {
 } WuiNavigationTransaction;
 
 /**
- * FFI representation of a `GpuSurface` view.
+ * FFI representation of a [`GpuContentView`].
  *
- * This struct is passed to the native backend when rendering the view tree.
- * The native backend consumes it with `waterui_gpu_surface_create`, then owns
+ * The native backend consumes it with `waterui_gpu_content_create`, then owns
  * the returned state for the semantic view lifetime.
  */
-typedef struct WuiGpuSurface {
+typedef struct WuiGpuContent {
   /**
-   * Opaque pointer to the boxed `GpuSurface`.
-   * This is consumed during state creation and should not be used after.
+   * Opaque pointer to the boxed `GpuContentView`, consumed by
+   * `waterui_gpu_content_create` and null afterwards.
    */
-  void *surface;
+  void *view;
   /**
-   * Whether this surface should register as a picture-in-picture host.
+   * Whether the content has an intrinsic size (`intrinsic_size` is then
+   * meaningful); otherwise it fills whatever layout offers.
    */
-  bool has_picture_in_picture_host_id;
+  bool has_intrinsic_size;
   /**
-   * Stable picture-in-picture host id when `has_picture_in_picture_host_id` is true.
+   * The content's natural size in logical points.
    */
-  uint64_t picture_in_picture_host_id;
-} WuiGpuSurface;
+  struct WuiSize intrinsic_size;
+  /**
+   * Whether every pixel the content draws is opaque.
+   */
+  bool is_opaque;
+  /**
+   * Whether the view takes keyboard, pointer, IME and scroll events through
+   * `waterui_gpu_content_send_input_event`.
+   */
+  bool wants_input_events;
+} WuiGpuContent;
 
 /**
- * GPU surface plus retained CEF input and semantic state.
+ * GPU content plus retained CEF input and semantic state.
  */
 typedef struct WuiCefSurface {
   /**
-   * GPU presenter consumed by `WaterUI`'s native GPU surface host.
+   * GPU presenter consumed by `WaterUI`'s native GPU content host.
    */
-  struct WuiGpuSurface gpu_surface;
+  struct WuiGpuContent gpu_content;
   /**
    * Opaque input state retained until [`waterui_cef_surface_drop`].
    */
@@ -6983,170 +7789,55 @@ typedef struct WuiWebViewConfig {
 typedef struct WuiWebViewHandle (*WuiCreateWebViewFn)(struct WuiWebViewConfig);
 
 /**
- * FFI representation of a `Metadata<AppliedFilter>`.
- */
-typedef struct WuiAppliedFilter {
-  /**
-   * The child view to capture (pointer to `WuiAnyView`).
-   */
-  struct WuiAnyView *content;
-  /**
-   * Opaque pointer to the boxed `AppliedFilter`.
-   * This is consumed during create and should not be used after.
-   */
-  void *filter;
-} WuiAppliedFilter;
-
-/**
- * Native callback invoked when an idle applied-filter surface becomes dirty.
- */
-typedef void (*WuiAppliedFilterRedrawCallback)(void *context);
-
-/**
- * Resolved output size returned to native before render scheduling.
- */
-typedef struct WuiAppliedFilterOutputSize {
-  /**
-   * Output width in pixels.
-   */
-  uint32_t width;
-  /**
-   * Output height in pixels.
-   */
-  uint32_t height;
-} WuiAppliedFilterOutputSize;
-
-/**
- * Completion invoked after a GPU runtime is ready for installation.
- */
-typedef void (*WuiGpuRuntimeCreateCallback)(void *context, struct WuiGpuRuntime *runtime);
-
-/**
- * Releases the native context retained for asynchronous GPU runtime creation.
- */
-typedef void (*WuiGpuRuntimeCreateContextDrop)(void *context);
-
-/**
- * Renderer-driven HDR preference exported to native backends before init.
+ * FFI representation of an [`ExternalFrameView`].
  *
- * `has_preference = false` means the surface should follow backend/global policy.
+ * The native backend consumes it with `waterui_external_frame_create`, which
+ * returns the same [`WuiGpuContentState`] a `GpuContentView` gets; every other
+ * `waterui_gpu_content_*` entry point then drives it. An external-frame view
+ * takes no input.
  */
-typedef struct WuiGpuSurfaceHdrPreference {
+typedef struct WuiExternalFrame {
   /**
-   * Whether the renderer provided an explicit HDR/SDR preference.
+   * Opaque pointer to the boxed `ExternalFrameView`, consumed by
+   * `waterui_external_frame_create` and null afterwards.
+   */
+  void *view;
+  /**
+   * Whether the source has an intrinsic size (`intrinsic_size` is then
+   * meaningful); otherwise it fills whatever layout offers.
+   */
+  bool has_intrinsic_size;
+  /**
+   * The frames' natural size in logical points.
+   */
+  struct WuiSize intrinsic_size;
+  /**
+   * Whether every pixel of every frame is opaque.
+   */
+  bool is_opaque;
+} WuiExternalFrame;
+
+/**
+ * Native callback invoked when idle content becomes dirty.
+ */
+typedef void (*WuiGpuContentRedrawCallback)(void *context);
+
+/**
+ * Content-driven HDR preference exported to native backends before init.
+ *
+ * `has_preference = false` means the content should follow backend/global
+ * policy.
+ */
+typedef struct WuiGpuContentHdrPreference {
+  /**
+   * Whether the view or its content provided an explicit HDR/SDR preference.
    */
   bool has_preference;
   /**
    * Explicit preferred dynamic range when `has_preference` is true.
    */
   bool prefers_hdr;
-} WuiGpuSurfaceHdrPreference;
-
-/**
- * Native callback invoked when an idle `GpuSurface` becomes dirty.
- */
-typedef void (*WuiGpuSurfaceRedrawCallback)(void *context);
-
-/**
- * Completion function invoked after an external GPU capture submission.
- */
-typedef void (*WuiGpuCaptureCompletionCallback)(void *context);
-
-/**
- * Releases the foreign completion context after its callback returns.
- */
-typedef void (*WuiGpuCaptureCompletionDrop)(void *context);
-
-/**
- * FFI-safe pointer state for passing from native.
- *
- * Native backends should update this before each render call to provide
- * current pointer/cursor information to the GPU renderer.
- */
-typedef struct WuiPointerState {
-  /**
-   * Whether the pointer is currently over this surface.
-   */
-  bool has_position;
-  /**
-   * X coordinate in surface-local pixels.
-   */
-  float x;
-  /**
-   * Y coordinate in surface-local pixels.
-   */
-  float y;
-  /**
-   * Whether there's an active hit (press/touch in progress).
-   */
-  bool has_hit;
-  /**
-   * X coordinate where hit started.
-   */
-  float hit_x;
-  /**
-   * Y coordinate where hit started.
-   */
-  float hit_y;
-} WuiPointerState;
-
-/**
- * FFI-safe gesture state for zoom/pan interactions.
- *
- * Native backends should update this when pinch, pan, or double-tap
- * gestures are detected to enable interactive chart zoom/pan.
- */
-typedef struct WuiGestureState {
-  /**
-   * Whether a gesture is currently active.
-   */
-  bool active;
-  /**
-   * Cumulative pinch scale factor (1.0 = no scaling).
-   */
-  float pinch_scale;
-  /**
-   * Whether a pinch center is present.
-   */
-  bool has_pinch_center;
-  /**
-   * X coordinate of pinch center in surface-local pixels.
-   */
-  float pinch_center_x;
-  /**
-   * Y coordinate of pinch center in surface-local pixels.
-   */
-  float pinch_center_y;
-  /**
-   * Pan offset X in pixels since gesture began.
-   */
-  float pan_offset_x;
-  /**
-   * Pan offset Y in pixels since gesture began.
-   */
-  float pan_offset_y;
-  /**
-   * Whether a double-tap was detected this frame.
-   */
-  bool double_tap;
-} WuiGestureState;
-
-/**
- * FFI-safe combined input state for a `GpuSurface`.
- *
- * This keeps the native bridge minimal by forwarding pointer and gesture
- * snapshots in one call.
- */
-typedef struct WuiGpuSurfaceInput {
-  /**
-   * Current pointer snapshot.
-   */
-  struct WuiPointerState pointer;
-  /**
-   * Current gesture snapshot.
-   */
-  struct WuiGestureState gesture;
-} WuiGpuSurfaceInput;
+} WuiGpuContentHdrPreference;
 
 /**
  * One input event on its way to a GPU view.
@@ -7222,6 +7913,16 @@ typedef struct WuiSurfaceInputEvent {
 } WuiSurfaceInputEvent;
 
 /**
+ * Completion invoked after a GPU runtime is ready for installation.
+ */
+typedef void (*WuiGpuRuntimeCreateCallback)(void *context, struct WuiGpuRuntime *runtime);
+
+/**
+ * Releases the native context retained for asynchronous GPU runtime creation.
+ */
+typedef void (*WuiGpuRuntimeCreateContextDrop)(void *context);
+
+/**
  * FFI representation of a `Picture` view: the handle plus its size in points.
  */
 typedef struct WuiPicture {
@@ -7287,96 +7988,6 @@ typedef struct WuiBitmap {
 typedef struct Computed_RgbaBitmap WuiComputed_RgbaBitmap;
 
 /**
- * FFI representation of output size.
- */
-typedef enum WuiOutputSize_Tag {
-  /**
-   * Match the input view's size.
-   */
-  WuiOutputSize_MatchInput,
-  /**
-   * Fixed pixel dimensions.
-   */
-  WuiOutputSize_Fixed,
-  /**
-   * Scale factor relative to input.
-   */
-  WuiOutputSize_Scale,
-} WuiOutputSize_Tag;
-
-typedef struct WuiOutputSize_Fixed_Body {
-  /**
-   * Output width in pixels.
-   */
-  uint32_t width;
-  /**
-   * Output height in pixels.
-   */
-  uint32_t height;
-} WuiOutputSize_Fixed_Body;
-
-typedef struct WuiOutputSize_Scale_Body {
-  /**
-   * Multiplier applied to the input's width and height.
-   */
-  float factor;
-} WuiOutputSize_Scale_Body;
-
-typedef struct WuiOutputSize {
-  WuiOutputSize_Tag tag;
-  union {
-    WuiOutputSize_Fixed_Body fixed;
-    WuiOutputSize_Scale_Body scale;
-  };
-} WuiOutputSize;
-
-/**
- * FFI representation of a `ViewEffect` view.
- *
- * This struct is passed to the native backend when rendering the view tree.
- * The native backend should:
- * 1. Create capture and output layers
- * 2. Call `waterui_view_effect_create` immediately
- * 3. Attach the output layer once it exists
- * 4. Render the child view to the capture layer
- * 5. Call `waterui_view_effect_render` when rendering is scheduled
- */
-typedef struct WuiViewEffect {
-  /**
-   * The child view to capture (pointer to `WuiAnyView`).
-   */
-  struct WuiAnyView *content;
-  /**
-   * Opaque pointer to the boxed effect renderer.
-   * This is consumed during init and should not be used after.
-   */
-  void *effect;
-  /**
-   * Output size configuration.
-   */
-  struct WuiOutputSize output_size;
-} WuiViewEffect;
-
-/**
- * Resolved output size returned to native before render scheduling.
- */
-typedef struct WuiViewEffectOutputSize {
-  /**
-   * Output width in pixels.
-   */
-  uint32_t width;
-  /**
-   * Output height in pixels.
-   */
-  uint32_t height;
-} WuiViewEffectOutputSize;
-
-/**
- * Native callback invoked when an idle view-effect surface becomes dirty.
- */
-typedef void (*WuiViewEffectRedrawCallback)(void *context);
-
-/**
  * Callback for returning rendered RGBA data to Rust.
  */
 typedef struct ViewRenderCallback {
@@ -7415,6 +8026,18 @@ typedef void (*ViewRenderFn)(void *context,
                              void *view,
                              struct WuiSize size,
                              struct ViewRenderCallback callback);
+
+/**
+ * Raw handles transferred from the exported app entry point to Android JNI.
+ */
+typedef struct WuiAndroidAppHandles {
+  void *content;
+  void *env;
+  /**
+   * A `WuiComputed<WorkingColor>`: the window's resolved background.
+   */
+  void *background;
+} WuiAndroidAppHandles;
 
 /**
  * A raw, borrowed view of a `WuiArray`'s elements as a pointer and length.
@@ -7456,7 +8079,7 @@ typedef struct WuiArray_WuiWindow {
  */
 typedef struct WuiApp {
   /**
-   * Array of windows. The first window is the main window.
+   * The windows opened at startup, in declaration order; possibly none.
    */
   struct WuiArray_WuiWindow windows;
   /**
@@ -7468,6 +8091,11 @@ typedef struct WuiApp {
    * Returned to native for use during rendering.
    */
   struct WuiEnv *env;
+  /**
+   * What the host does once the application has no open window, at startup
+   * included.
+   */
+  enum WuiLastWindowPolicy last_window_policy;
 } WuiApp;
 
 
@@ -7556,6 +8184,26 @@ struct WuiEnv *waterui_clone_env(const struct WuiEnv *env);
  * duration of this function call.
  */
 WuiComputed_bool *waterui_env_disabled(const struct WuiEnv *env);
+
+/**
+ * Returns the `InteractionReport` binding `.interaction_state(...)` installs,
+ * or null when the view asks for no reporting.
+ *
+ * A backend that renders interactive controls itself must write the state of
+ * the outermost interactive control at or inside the reporting view into this
+ * binding — as `InteractionState` bits — every time it changes, and must leave
+ * it at the resting state while no interactive control is there. The binding
+ * is a read-write `WuiBinding<i32>` handle; drop it when done.
+ *
+ * # Safety
+ * The caller must ensure that `env` is a valid pointer to a properly
+ * initialized `waterui::Environment` instance and that the environment remains
+ * valid for the duration of this function call.
+ *
+ * # Panics
+ * Never in practice: the masked setter input is always in `u8` range.
+ */
+WuiBinding_i32 *waterui_env_interaction_report(const struct WuiEnv *env);
 
 /**
  * Gets the body of a view given the environment
@@ -7754,6 +8402,21 @@ WuiMetadataOnEvent waterui_force_as_metadata_on_event(struct WuiAnyView *view);
  * Returns the type ID as a 128-bit value for O(1) comparison.
  * Returns the view's `TypeId` (guaranteed unique within a single binary).
  */
+struct WuiTypeId waterui_metadata_on_key_press_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataOnKeyPress waterui_force_as_metadata_on_key_press(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
 struct WuiTypeId waterui_metadata_cursor_id(void);
 
 /**
@@ -7884,6 +8547,21 @@ struct WuiTypeId waterui_ignorable_metadata_accessibility_state_signal_id(void);
  * that contains an `IgnorableMetadata<$ty>`.
  */
 struct WuiIgnorableMetadataAccessibilityState waterui_force_as_ignorable_metadata_accessibility_state_signal(struct WuiAnyView *view);
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_metadata_selected_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataSelected waterui_force_as_metadata_selected(struct WuiAnyView *view);
 
 /**
  * Returns the type ID as a 128-bit value for O(1) comparison.
@@ -8087,6 +8765,15 @@ struct WuiSystemIcon waterui_menu_item_take_icon(struct WuiSystemIcon *icon);
 struct WuiShortcut waterui_menu_item_take_shortcut(struct WuiShortcut *shortcut);
 
 /**
+ * Takes the subtitle value from an owned menu-item subtitle allocation.
+ *
+ * # Safety
+ *
+ * `subtitle` must be consumed exactly once.
+ */
+struct WuiStr waterui_menu_item_take_subtitle(struct WuiStr *subtitle);
+
+/**
  * # Safety
  *
  * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
@@ -8114,6 +8801,92 @@ struct WuiTypeId waterui_metadata_context_menu_id(void);
  * that contains a `Metadata<$ty>`.
  */
 WuiMetadataContextMenu waterui_force_as_metadata_context_menu(struct WuiAnyView *view);
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+enum WuiAnchorEdge waterui_read_binding_anchor_edge(const WuiBinding_AnchorEdge *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_anchor_edge(WuiBinding_AnchorEdge *binding, enum WuiAnchorEdge value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_anchor_edge(const WuiBinding_AnchorEdge *binding,
+                                                          struct WuiWatcher_AnchorEdge *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_anchor_edge(WuiBinding_AnchorEdge *binding);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_AnchorEdge *waterui_new_watcher_anchor_edge(void *data,
+                                                              void (*call)(void*,
+                                                                           enum WuiAnchorEdge,
+                                                                           struct WuiWatcherMetadata*),
+                                                              void (*drop)(void*));
+
+/**
+ * Returns the type ID as a 128-bit value for O(1) comparison.
+ * Returns the view's `TypeId` (guaranteed unique within a single binary).
+ */
+struct WuiTypeId waterui_metadata_anchored_overlay_id(void);
+
+/**
+ * Force-casts an `AnyView` to this metadata type.
+ *
+ * # Safety
+ * The caller must ensure that `view` is a valid pointer to an `AnyView`
+ * that contains a `Metadata<$ty>`.
+ */
+WuiMetadataAnchoredOverlay waterui_force_as_metadata_anchored_overlay(struct WuiAnyView *view);
+
+/**
+ * Computes an anchored overlay's frame in window space.
+ *
+ * The same placement contract the Rust backends implement — so a native
+ * backend that positions the overlay itself (a `PopupWindow`, a borderless
+ * child window, a `GtkPopover` GTK cannot steer) calls this instead of
+ * re-implementing it.
+ *
+ * `overlay` is the content's ideal size; `window` is the window's bounds and
+ * `anchor` the anchor's frame, both in the same window coordinate space.
+ * `direction` resolves `Leading`/`Trailing` edges and `Start`/`End`
+ * alignments. Pass `NULL` for `env` to compute with the default
+ * left-to-right direction; when non-null the environment's layout direction
+ * wins over `direction`.
+ *
+ * # Safety
+ *
+ * `env` must be `NULL` or a valid `WuiEnv` pointer; all other inputs are
+ * plain-data FFI mirrors.
+ */
+struct WuiAnchoredOverlayPlacement waterui_anchored_overlay_place(struct WuiRect anchor,
+                                                                  struct WuiRect window,
+                                                                  struct WuiSize overlay,
+                                                                  struct WuiAnchorPlacement placement,
+                                                                  enum WuiLayoutDirection direction,
+                                                                  const struct WuiEnv *env);
 
 /**
  * # Safety
@@ -8280,7 +9053,7 @@ void waterui_drop_color(struct WuiColor *value);
  * # Safety
  * The computed pointer must be valid and point to a properly initialized computed object.
  */
-struct WuiResolvedColor waterui_read_computed_resolved_color(const WuiComputed_ResolvedColor *computed);
+struct WuiWorkingColor waterui_read_computed_working_color(const WuiComputed_WorkingColor *computed);
 
 /**
  * Watches for changes in a computed
@@ -8288,15 +9061,15 @@ struct WuiResolvedColor waterui_read_computed_resolved_color(const WuiComputed_R
  * The computed pointer must be valid and point to a properly initialized computed object.
  * The watcher pointer will be consumed and freed when the returned guard is dropped.
  */
-struct WuiWatcherGuard *waterui_watch_computed_resolved_color(const WuiComputed_ResolvedColor *computed,
-                                                              struct WuiWatcher_ResolvedColor *watcher);
+struct WuiWatcherGuard *waterui_watch_computed_working_color(const WuiComputed_WorkingColor *computed,
+                                                             struct WuiWatcher_WorkingColor *watcher);
 
 /**
  * Drops a computed
  * # Safety
  * The caller must ensure that `computed` is a valid pointer.
  */
-void waterui_drop_computed_resolved_color(WuiComputed_ResolvedColor *computed);
+void waterui_drop_computed_working_color(WuiComputed_WorkingColor *computed);
 
 /**
  * Creates a watcher from native callbacks.
@@ -8306,22 +9079,22 @@ void waterui_drop_computed_resolved_color(WuiComputed_ResolvedColor *computed);
  * All function pointers must be valid and `data` must remain valid
  * until `drop` is called exactly once.
  */
-struct WuiWatcher_ResolvedColor *waterui_new_watcher_resolved_color(void *data,
-                                                                    void (*call)(void*,
-                                                                                 struct WuiResolvedColor,
-                                                                                 struct WuiWatcherMetadata*),
-                                                                    void (*drop)(void*));
+struct WuiWatcher_WorkingColor *waterui_new_watcher_working_color(void *data,
+                                                                  void (*call)(void*,
+                                                                               struct WuiWorkingColor,
+                                                                               struct WuiWatcherMetadata*),
+                                                                  void (*drop)(void*));
 
 /**
  * Creates a computed signal from native callbacks.
  * # Safety
  * All function pointers must be valid and follow the expected calling conventions.
  */
-WuiComputed_ResolvedColor *waterui_new_computed_resolved_color(void *data,
-                                                               struct WuiResolvedColor (*get)(const void*),
-                                                               struct WuiWatcherGuard *(*watch)(const void*,
-                                                                                                struct WuiWatcher_ResolvedColor*),
-                                                               void (*drop)(void*));
+WuiComputed_WorkingColor *waterui_new_computed_working_color(void *data,
+                                                             struct WuiWorkingColor (*get)(const void*),
+                                                             struct WuiWatcherGuard *(*watch)(const void*,
+                                                                                              struct WuiWatcher_WorkingColor*),
+                                                             void (*drop)(void*));
 
 /**
  * Reads the current value from a binding
@@ -8368,20 +9141,6 @@ struct WuiWatcher_Color *waterui_new_watcher_color(void *data,
                                                    void (*drop)(void*));
 
 /**
- * # Safety
- *
- * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
- * `Native<_>` of the expected view type; it is consumed by this call and must
- * not be used afterwards.
- */
-struct WuiResolvedColor waterui_force_as_resolved_color(struct WuiAnyView *view);
-
-/**
- * Returns the stable `TypeId` identifying this view type across the FFI.
- */
-struct WuiTypeId waterui_resolved_color_id(void);
-
-/**
  * Consumes a semantic color view and returns its owned resolvable color handle.
  *
  * # Safety
@@ -8399,7 +9158,7 @@ struct WuiTypeId waterui_color_id(void);
  * Creates a new linear sRGBA color with optional HDR headroom.
  *
  * `headroom` is an HDR scale factor where `0.0` means SDR and values above
- * `0.0` allow the renderer to apply an extended range multiplier.
+ * `0.0` scale the colour into the extended range.
  *
  * # Safety
  *
@@ -8413,7 +9172,7 @@ struct WuiColor *waterui_color_from_linear_rgba_headroom(float red,
                                                          float headroom);
 
 /**
- * Creates a new linear sRGBA color (SDR only).
+ * Creates a new sRGBA color (SDR only) from encoded sRGB components.
  *
  * # Safety
  *
@@ -8429,8 +9188,8 @@ struct WuiColor *waterui_color_from_srgba(float red, float green, float blue, fl
  *
  * Both `color` and `env` must be valid, non-null pointers to their respective types.
  */
-WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
-                                                 const struct WuiEnv *env);
+WuiComputed_WorkingColor *waterui_resolve_color(const struct WuiColor *color,
+                                                const struct WuiEnv *env);
 
 /**
  * Resolves a reactive color signal in the given environment, yielding a
@@ -8442,8 +9201,8 @@ WuiComputed_ResolvedColor *waterui_resolve_color(const struct WuiColor *color,
  * by this call and must not be used afterwards; `env` must be a valid,
  * non-null `WuiEnv` borrowed for the call.
  */
-WuiComputed_ResolvedColor *waterui_resolve_computed_color(WuiComputed_Color *color,
-                                                          const struct WuiEnv *env);
+WuiComputed_WorkingColor *waterui_resolve_computed_color(WuiComputed_Color *color,
+                                                         const struct WuiEnv *env);
 
 /**
  * # Safety
@@ -8452,12 +9211,12 @@ WuiComputed_ResolvedColor *waterui_resolve_computed_color(WuiComputed_Color *col
  * `Native<_>` of the expected view type; it is consumed by this call and must
  * not be used afterwards.
  */
-struct WuiResolvedGradient waterui_force_as_resolved_gradient(struct WuiAnyView *view);
+struct WuiGradient waterui_force_as_gradient(struct WuiAnyView *view);
 
 /**
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
-struct WuiTypeId waterui_resolved_gradient_id(void);
+struct WuiTypeId waterui_gradient_id(void);
 
 /**
  * # Safety
@@ -8519,13 +9278,110 @@ struct WuiWatcher_CursorStyle *waterui_new_watcher_cursor_style(void *data,
                                                                 void (*drop)(void*));
 
 /**
- * Gets the current drag data value from a draggable.
+ * The kind of value `payload` carries.
+ *
+ * # Safety
+ *
+ * * `payload` must be a valid pointer to a live `WuiDragPayload`.
+ */
+enum WuiTransferKind waterui_drag_payload_kind(const struct WuiDragPayload *payload);
+
+/**
+ * The text a [`WuiTransferKind::Text`] payload carries.
+ *
+ * # Safety
+ *
+ * * `payload` must be a valid pointer to a live `WuiDragPayload`.
+ *
+ * # Panics
+ *
+ * Panics if the payload is not text.
+ */
+struct WuiStr waterui_drag_payload_text(const struct WuiDragPayload *payload);
+
+/**
+ * The URL a [`WuiTransferKind::Url`] payload carries, as a string.
+ *
+ * # Safety
+ *
+ * * `payload` must be a valid pointer to a live `WuiDragPayload`.
+ *
+ * # Panics
+ *
+ * Panics if the payload is not a URL.
+ */
+struct WuiStr waterui_drag_payload_url(const struct WuiDragPayload *payload);
+
+/**
+ * The file URLs a [`WuiTransferKind::Files`] payload carries.
+ *
+ * # Safety
+ *
+ * * `payload` must be a valid pointer to a live `WuiDragPayload`.
+ *
+ * # Panics
+ *
+ * Panics if the payload is not a file list.
+ */
+struct WuiArray_WuiStr waterui_drag_payload_files(const struct WuiDragPayload *payload);
+
+/**
+ * Creates a text payload for a drag arriving from another application.
+ *
+ * # Safety
+ *
+ * * `text` must be an owning `WuiStr`; it is consumed.
+ */
+struct WuiDragPayload *waterui_drag_payload_from_text(struct WuiStr text);
+
+/**
+ * Creates a URL payload for a drag arriving from another application.
+ *
+ * # Safety
+ *
+ * * `url` must be an owning `WuiStr` holding a valid URL; it is consumed.
+ *
+ * # Panics
+ *
+ * Panics if `url` does not parse.
+ */
+struct WuiDragPayload *waterui_drag_payload_from_url(struct WuiStr url);
+
+/**
+ * Creates a file-list payload from file URLs for a drag arriving from another
+ * application.
+ *
+ * # Safety
+ *
+ * * `urls` must be an owning `WuiArray` of owning `WuiStr` URLs; it is consumed.
+ *
+ * # Panics
+ *
+ * Panics if any URL does not parse.
+ */
+struct WuiDragPayload *waterui_drag_payload_from_files(struct WuiArray_WuiStr urls);
+
+/**
+ * Releases a payload handle.
+ *
+ * # Safety
+ *
+ * * `payload` must be an owning pointer returned by this module and not
+ *   released before.
+ */
+void waterui_drop_drag_payload(struct WuiDragPayload *payload);
+
+/**
+ * Reads the payload of a drag starting now from a draggable.
+ *
+ * The returned handle is owned by the caller and released with
+ * [`waterui_drop_drag_payload`].
  *
  * # Safety
  *
  * * `draggable` must be a valid pointer to a `WuiDraggable`.
  */
-struct WuiDragData waterui_draggable_get_data(const struct WuiDraggable *draggable);
+struct WuiDragPayload *waterui_draggable_payload(const struct WuiDraggable *draggable);
 
 /**
  * Drops a draggable.
@@ -8537,22 +9393,38 @@ struct WuiDragData waterui_draggable_get_data(const struct WuiDraggable *draggab
 void waterui_drop_draggable(struct WuiDraggable *draggable);
 
 /**
- * Calls the drop handler with the given data.
+ * Returns `true` if `dest` accepts `payload`: the payload has the type the
+ * destination's handler takes. A backend highlights and delivers only
+ * accepted drags.
  *
  * # Safety
  *
- * * `handler` must be a valid pointer to a `WuiDropDestination`.
+ * * `dest` must be a valid pointer to a `WuiDropDestination`.
+ * * `payload` must be a valid pointer to a live `WuiDragPayload`.
+ */
+bool waterui_drop_destination_accepts(const struct WuiDropDestination *dest,
+                                      const struct WuiDragPayload *payload);
+
+/**
+ * Delivers a dropped payload to the destination's handler. The payload stays
+ * owned by the caller.
+ *
+ * # Safety
+ *
+ * * `dest` must be a valid pointer to a `WuiDropDestination`.
  * * `env` must be a valid pointer to a `WuiEnv`.
- * * `data_tag` must be a valid `WuiDragDataTag` value.
- * * `data_value` must be a valid null-terminated UTF-8 string.
+ * * `payload` must be a valid pointer to a live `WuiDragPayload`.
+ *
+ * # Panics
+ *
+ * Panics if the destination does not accept the payload.
  */
 void waterui_call_drop_handler(const struct WuiDropDestination *dest,
                                const struct WuiEnv *env,
-                               enum WuiDragDataTag data_tag,
-                               const char *data_value);
+                               const struct WuiDragPayload *payload);
 
 /**
- * Calls the enter handler if set.
+ * Reports that an accepted drag entered the destination.
  *
  * # Safety
  *
@@ -8563,7 +9435,7 @@ void waterui_call_drop_enter_handler(const struct WuiDropDestination *dest,
                                      const struct WuiEnv *env);
 
 /**
- * Calls the exit handler if set.
+ * Reports that an accepted drag left the destination without dropping.
  *
  * # Safety
  *
@@ -8643,6 +9515,31 @@ void waterui_drop_on_event(struct WuiOnEventHandler *handler);
  * The gesture pointer must be valid and properly initialized.
  */
 void waterui_drop_gesture(struct WuiGesture *gesture);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_on_key_press(struct WuiOnKeyPress *value);
+
+/**
+ * Calls an `OnKeyPress` handler with the key press.
+ *
+ * The handler runs with `press` in its environment, readable as
+ * `Use<KeyPress>`; its [`WuiKeyHandling`] answer says whether the key keeps
+ * bubbling to the next ancestor. This handler can be called multiple times.
+ *
+ * # Safety
+ *
+ * * `handler` must be a valid pointer returned by
+ *   [`waterui_force_as_metadata_on_key_press`](crate::waterui_force_as_metadata_on_key_press).
+ * * `env` must be a valid pointer to a `WuiEnv`.
+ * * `press` is consumed by this call — its strings must not be used
+ *   afterwards.
+ */
+enum WuiKeyHandling waterui_call_on_key_press(const struct WuiOnKeyPress *handler,
+                                              const struct WuiEnv *env,
+                                              struct WuiKeyPress press);
 
 /**
  * # Safety
@@ -9241,6 +10138,36 @@ struct WuiWatcherGuard *waterui_watch_binding_id(const WuiBinding_Id *binding,
 void waterui_drop_binding_id(WuiBinding_Id *binding);
 
 /**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+struct WuiArray_WuiId waterui_read_binding_id_vec(const WuiBinding_Vec_Id *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_id_vec(WuiBinding_Vec_Id *binding, struct WuiArray_WuiId value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_id_vec(const WuiBinding_Vec_Id *binding,
+                                                     struct WuiWatcher_Vec_Id *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_id_vec(WuiBinding_Vec_Id *binding);
+
+/**
  * Creates a watcher from native callbacks.
  *
  * # Safety
@@ -9253,6 +10180,20 @@ struct WuiWatcher_Id *waterui_new_watcher_id(void *data,
                                                           struct WuiId,
                                                           struct WuiWatcherMetadata*),
                                              void (*drop)(void*));
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_Vec_Id *waterui_new_watcher_id_vec(void *data,
+                                                     void (*call)(void*,
+                                                                  struct WuiArray_WuiId,
+                                                                  struct WuiWatcherMetadata*),
+                                                     void (*drop)(void*));
 
 /**
  * Opens the inspector for this application.
@@ -9398,7 +10339,7 @@ WuiComputed_ColorScheme *waterui_theme_color_scheme(const struct WuiEnv *env);
  */
 void waterui_theme_install_color(struct WuiEnv *env,
                                  enum WuiColorSlot slot,
-                                 WuiComputed_ResolvedColor *signal);
+                                 WuiComputed_WorkingColor *signal);
 
 /**
  * Returns the color signal for a specific slot.
@@ -9408,7 +10349,7 @@ void waterui_theme_install_color(struct WuiEnv *env,
  * # Safety
  * The env pointer must be valid.
  */
-WuiComputed_ResolvedColor *waterui_theme_color(const struct WuiEnv *env, enum WuiColorSlot slot);
+WuiComputed_WorkingColor *waterui_theme_color(const struct WuiEnv *env, enum WuiColorSlot slot);
 
 /**
  * Installs a font signal for a specific slot.
@@ -9452,23 +10393,23 @@ void waterui_call_watcher_color_scheme(const struct WuiWatcher_ColorScheme *watc
 void waterui_drop_watcher_color_scheme(struct WuiWatcher_ColorScheme *watcher);
 
 /**
- *Delivers `value` to a `ResolvedColor` watcher.
+ *Delivers `value` to a `WorkingColor` watcher.
  *
  * # Safety
  * The watcher pointer must be a valid handle that is alive for this
  * call.
  */
-void waterui_call_watcher_resolved_color(const struct WuiWatcher_ResolvedColor *watcher,
-                                         struct WuiResolvedColor value);
+void waterui_call_watcher_working_color(const struct WuiWatcher_WorkingColor *watcher,
+                                        struct WuiWorkingColor value);
 
 /**
- *Releases a `ResolvedColor` watcher.
+ *Releases a `WorkingColor` watcher.
  *
  * # Safety
  * The watcher pointer must be an owning pointer from the matching
  * constructor that has not already been dropped.
  */
-void waterui_drop_watcher_resolved_color(struct WuiWatcher_ResolvedColor *watcher);
+void waterui_drop_watcher_working_color(struct WuiWatcher_WorkingColor *watcher);
 
 /**
  *Delivers `value` to a `ResolvedFont` watcher.
@@ -9540,6 +10481,43 @@ struct WuiWatcherGuard *waterui_anyviews_watch_range(const struct WuiAnyViews *a
                                                      void (*drop)(void*));
 
 /**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiWindowStyle waterui_read_computed_window_style(const WuiComputed_WindowStyle *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_window_style(const WuiComputed_WindowStyle *computed,
+                                                            struct WuiWatcher_WindowStyle *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_window_style(WuiComputed_WindowStyle *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_WindowStyle *waterui_new_watcher_window_style(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiWindowStyle,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
+
+/**
  * Reads the current value from a binding
  * # Safety
  * The binding pointer must be valid and point to a properly initialized binding object.
@@ -9582,6 +10560,106 @@ struct WuiWatcher_WindowState *waterui_new_watcher_window_state(void *data,
                                                                              enum WuiWindowState,
                                                                              struct WuiWatcherMetadata*),
                                                                 void (*drop)(void*));
+
+/**
+ * Reads the current value from a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ */
+enum WuiWindowLevel waterui_read_computed_window_level(const WuiComputed_WindowLevel *computed);
+
+/**
+ * Watches for changes in a computed
+ * # Safety
+ * The computed pointer must be valid and point to a properly initialized computed object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_computed_window_level(const WuiComputed_WindowLevel *computed,
+                                                            struct WuiWatcher_WindowLevel *watcher);
+
+/**
+ * Drops a computed
+ * # Safety
+ * The caller must ensure that `computed` is a valid pointer.
+ */
+void waterui_drop_computed_window_level(WuiComputed_WindowLevel *computed);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_WindowLevel *waterui_new_watcher_window_level(void *data,
+                                                                void (*call)(void*,
+                                                                             enum WuiWindowLevel,
+                                                                             struct WuiWatcherMetadata*),
+                                                                void (*drop)(void*));
+
+/**
+ * Reads the current value from a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+enum WuiUserAttention waterui_read_binding_user_attention(const WuiBinding_Option_UserAttention *binding);
+
+/**
+ * Sets the value of a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ */
+void waterui_set_binding_user_attention(WuiBinding_Option_UserAttention *binding,
+                                        enum WuiUserAttention value);
+
+/**
+ * Watches for changes in a binding
+ * # Safety
+ * The binding pointer must be valid and point to a properly initialized binding object.
+ * The watcher pointer will be consumed and freed when the returned guard is dropped.
+ */
+struct WuiWatcherGuard *waterui_watch_binding_user_attention(const WuiBinding_Option_UserAttention *binding,
+                                                             struct WuiWatcher_Option_UserAttention *watcher);
+
+/**
+ * Drops a binding
+ * # Safety
+ * The caller must ensure that `binding` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_binding_user_attention(WuiBinding_Option_UserAttention *binding);
+
+/**
+ * Creates a watcher from native callbacks.
+ *
+ * # Safety
+ *
+ * All function pointers must be valid and `data` must remain valid
+ * until `drop` is called exactly once.
+ */
+struct WuiWatcher_Option_UserAttention *waterui_new_watcher_user_attention(void *data,
+                                                                           void (*call)(void*,
+                                                                                        enum WuiUserAttention,
+                                                                                        struct WuiWatcherMetadata*),
+                                                                           void (*drop)(void*));
+
+/**
+ * Resolves a window's reactive background to the colour the native backend
+ * paints behind the window's content, consuming `background`.
+ *
+ * The returned signal follows both a change of the background — including a
+ * switch between opaque and a translucent colour — and a change of the colour
+ * it resolves to. A colour whose opacity is below one asks for a translucent
+ * window.
+ *
+ * # Safety
+ *
+ * `background` must be the owning `WuiWindow.background` handle, consumed by
+ * this call and not used afterwards; `env` must be a valid `WuiEnv` borrowed
+ * for the call.
+ */
+WuiComputed_WorkingColor *waterui_resolve_window_background(WuiComputed_WindowBackground *background,
+                                                            const struct WuiEnv *env);
 
 /**
  * Installs a `WindowManager` into the environment from a native function pointer.
@@ -9649,6 +10727,25 @@ struct WuiButton waterui_force_as_button(struct WuiAnyView *view);
  * Returns the stable `TypeId` identifying this view type across the FFI.
  */
 struct WuiTypeId waterui_button_id(void);
+
+/**
+ * # Safety
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
+ */
+void waterui_drop_value_formatter(struct WuiValueFormatter *value);
+
+/**
+ * Formats a slider value through the given formatter, producing the text the
+ * value indicator shows above the thumb while it is dragged.
+ *
+ * The returned `WuiStr` is owned by the caller.
+ *
+ * # Safety
+ *
+ * * `formatter` must be a valid pointer to a `WuiValueFormatter` that stays
+ *   alive for the duration of the call; it is only borrowed.
+ */
+struct WuiStr waterui_call_value_formatter(const struct WuiValueFormatter *formatter, double value);
 
 /**
  * # Safety
@@ -10110,6 +11207,16 @@ struct WuiWatcher_Rect *waterui_new_watcher_rect(void *data,
                                                               struct WuiRect,
                                                               struct WuiWatcherMetadata*),
                                                  void (*drop)(void*));
+
+/**
+ * Drops a `WuiEdgeInsets` handle produced by the Rust side.
+ *
+ * # Safety
+ *
+ * `value` must be a valid, owning `*mut WuiEdgeInsets` produced by the
+ * matching `into_ffi` conversion and not previously dropped.
+ */
+void waterui_drop_edge_insets(struct WuiEdgeInsets *value);
 
 /**
  * Calculates the size required by the layout given a proposal and child proxies.
@@ -11211,164 +12318,77 @@ WuiComputed_ResolvedFont *waterui_resolve_font(const struct WuiFont *font,
                                                const struct WuiEnv *env);
 
 /**
- * Returns the type ID as a 128-bit value for O(1) comparison.
- * Returns the view's `TypeId` (guaranteed unique within a single binary).
- */
-struct WuiTypeId waterui_metadata_applied_filter_id(void);
-
-/**
- * Force-casts an `AnyView` to this metadata type.
- *
  * # Safety
- * The caller must ensure that `view` is a valid pointer to an `AnyView`
- * that contains a `Metadata<$ty>`.
+ *
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
  */
-struct WuiAppliedFilter waterui_force_as_metadata_applied_filter(struct WuiAnyView *view);
+struct WuiGpuContent waterui_force_as_gpu_content(struct WuiAnyView *view);
 
 /**
- * Combines a filter with the filter it encloses, into one.
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
+struct WuiTypeId waterui_gpu_content_id(void);
+
+/**
+ * # Safety
  *
- * A component that filters its own body, filtered again by its caller, is two
- * filters over one subtree, and the `impl View` boundary between them hides
- * the first from the second's type — so nothing at the authoring layer fuses
- * them the way a chain written in one expression is fused. Run as written they
- * cost two captures of the same content, two presentation targets and two
- * full-size intermediates (#521).
- *
- * A backend reaches this when the walk it already runs to resolve a view — id
- * against its component registry, `waterui_view_body` when the id is not
- * registered — starts at `outer`'s content and lands on another filter. That
- * it landed there is the proof there was nothing realizable in between: every
- * view that could draw is a registered component that would have stopped the
- * walk first.
- *
- * That walk consumes the views it steps through, `outer`'s content among them,
- * so `outer.content` must already be null when this is called: the caller nulls
- * it as it walks, and a non-null one here would mean a handle the backend still
- * believes it owns.
- *
- * Both descriptors are consumed. The returned descriptor carries `inner`'s
- * content and a filter that runs `inner`'s filters and then `outer`'s, and the
- * caller repeats until the content no longer resolves to a filter.
+ * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
+ * `Native<_>` of the expected view type; it is consumed by this call and must
+ * not be used afterwards.
+ */
+struct WuiExternalFrame waterui_force_as_external_frame(struct WuiAnyView *view);
+
+/**
+ * Returns the stable `TypeId` identifying this view type across the FFI.
+ */
+struct WuiTypeId waterui_external_frame_id(void);
+
+/**
+ * Creates the persistent state for a `GpuContent` view.
  *
  * # Safety
  *
- * - `inner` and `outer` must be valid descriptors whose filters have not been
- *   consumed by a previous call to this function or to
- *   [`waterui_applied_filter_create`].
- * - `inner`'s content must be an owning handle from the matching FFI
- *   constructor; it becomes the returned descriptor's content.
+ * - `content` must be a valid, unconsumed descriptor returned by
+ *   `waterui_force_as_gpu_content`.
+ * - `env` must remain valid for this call and hold a GPU runtime
+ *   (`waterui_env_install_gpu_runtime`).
  *
  * # Panics
  *
- * Panics if either descriptor's filter was already consumed, or if `outer`
- * still holds a content handle.
+ * Panics if the descriptor was already consumed or the environment has no
+ * GPU runtime.
  */
-struct WuiAppliedFilter waterui_applied_filter_chain(struct WuiAppliedFilter *inner,
-                                                     struct WuiAppliedFilter *outer);
+struct WuiGpuContentState *waterui_gpu_content_create(struct WuiGpuContent *content,
+                                                      const struct WuiEnv *env);
 
 /**
- * Creates persistent state and immediately consumes the semantic filter.
+ * Creates the persistent state for an `ExternalFrameView`.
  *
- * Presentation targets are attached later with [`waterui_applied_filter_attach`],
- * so a view destroyed before layout still has one clear Rust owner.
+ * The returned state is driven by the same `waterui_gpu_content_*` entry
+ * points as a `GpuContentView`'s.
  *
  * # Safety
  *
- * `filter_ffi` must be a valid, unconsumed descriptor returned by
- * `waterui_force_as_metadata_applied_filter`.
- * `env` must contain an installed GPU runtime.
+ * - `frame` must be a valid, unconsumed descriptor returned by
+ *   `waterui_force_as_external_frame`.
+ * - `env` must remain valid for this call and hold a GPU runtime
+ *   (`waterui_env_install_gpu_runtime`).
  *
  * # Panics
  *
- * Panics if `filter_ffi`'s inner filter pointer is null, meaning the descriptor
- * was already consumed by a previous call to this function.
+ * Panics if the descriptor was already consumed or the environment has no
+ * GPU runtime.
  */
-struct WuiAppliedFilterState *waterui_applied_filter_create(struct WuiAppliedFilter *filter_ffi,
-                                                            const struct WuiEnv *env);
+struct WuiGpuContentState *waterui_external_frame_create(struct WuiExternalFrame *frame,
+                                                         const struct WuiEnv *env);
 
 /**
- * Attaches a presentation surface (non-Apple only).
- *
- * # Safety
- *
- * `state` must come from [`waterui_applied_filter_create`].
- *
- * # Panics
- *
- * Always panics: Apple hosts own their presentation memory and attach with
- * [`waterui_applied_filter_attach_host_textures`].
- */
-void waterui_applied_filter_attach(struct WuiAppliedFilterState *_state,
-                                   void *_output_layer,
-                                   uint32_t _input_width,
-                                   uint32_t _input_height,
-                                   bool _prefers_hdr);
-
-/**
- * The `MTLPixelFormat` an attached filter renders its output in (Apple only).
- *
- * The host allocates its `IOSurface` pair from this. It is the raw Metal enum
- * value rather than a `WuiCaptureFormat` because the two are not the same
- * alphabet: `WuiCaptureFormat` names `AHardwareBuffer` layouts, and the
- * presentation format here is `BGRA8Unorm_sRGB`, which has no name there.
- *
- * # Safety
- *
- * `state` must be a valid pointer from [`waterui_applied_filter_create`] with a
- * presentation target attached.
- *
- * # Panics
- *
- * Panics if the filter is detached, or if its output format has no Metal
- * equivalent.
- */
-uint32_t waterui_applied_filter_output_metal_pixel_format(const struct WuiAppliedFilterState *state);
-
-/**
- * Attaches host-owned presentation on Apple, where frames arrive per texture.
- *
- * No layer is named because none is configured: the host keeps a pair of
- * `IOSurface`-backed textures, hands one to
- * [`waterui_applied_filter_render_to_metal_texture`] per frame, and shows it
- * on `CALayer.contents` once that frame's fence completes. The texture format
- * is this call's answer, read back with
- * [`waterui_applied_filter_output_metal_pixel_format`].
- *
- * # Safety
- *
- * - `state` must come from [`waterui_applied_filter_create`].
- * - The state must currently be detached.
- *
- * # Panics
- *
- * Panics if `state` already has a presentation target attached, if
- * `input_width`/`input_height` is zero, or if the chosen format cannot carry
- * the subtree capture.
- */
-void waterui_applied_filter_attach_host_textures(struct WuiAppliedFilterState *state,
-                                                 uint32_t input_width,
-                                                 uint32_t input_height,
-                                                 bool prefers_hdr);
-
-/**
- * Detaches the presentation target without destroying the semantic filter.
- *
- * # Safety
- *
- * `state` must be valid and currently attached.
- *
- * # Panics
- *
- * Panics if `state` does not currently have an output surface attached.
- */
-void waterui_applied_filter_detach(struct WuiAppliedFilterState *state);
-
-/**
- * Installs the native wake target for reactive filter redraw requests.
+ * Installs the native wake target for content-driven redraw requests.
  *
  * The wake callback may be called from any thread. `drop_callback` releases
- * `context` after the callback is replaced or the applied filter is destroyed.
+ * `context` after the callback is replaced or the state is destroyed.
  *
  * # Safety
  *
@@ -11376,186 +12396,262 @@ void waterui_applied_filter_detach(struct WuiAppliedFilterState *state);
  * - Both callbacks must be thread-safe and use `context` only for the lifetime
  *   retained by `drop_callback`.
  */
-void waterui_applied_filter_set_redraw_callback(struct WuiAppliedFilterState *state,
-                                                void *context,
-                                                WuiAppliedFilterRedrawCallback wake,
-                                                WuiAppliedFilterRedrawCallback drop_callback);
+void waterui_gpu_content_set_redraw_callback(struct WuiGpuContentState *state,
+                                             void *context,
+                                             WuiGpuContentRedrawCallback wake,
+                                             WuiGpuContentRedrawCallback drop_callback);
 
 /**
- * Starts filter setup on the main-thread local executor.
+ * Reports whether the host shows the view.
  *
- * # Arguments
- *
- * * `state` - Pointer to attached state from `waterui_applied_filter_create`
+ * Hidden means the view's window is minimized, fully occluded or in the
+ * background, or the view is detached from its window. While hidden the
+ * redraw callback does not fire — the content's requests only mark it
+ * dirty — and the host renders nothing. Becoming visible fires the callback
+ * once, so exactly one frame renders from the current state. A state starts
+ * visible.
  *
  * # Safety
  *
- * - `state` must be a valid pointer from `waterui_applied_filter_create`
- * - A presentation target must be attached
+ * `state` must be a valid pointer returned by [`waterui_gpu_content_create`]
+ * or [`waterui_external_frame_create`].
  */
-void waterui_applied_filter_setup(struct WuiAppliedFilterState *state);
+void waterui_gpu_content_set_visible(const struct WuiGpuContentState *state, bool visible);
 
 /**
- * Returns whether asynchronous filter setup has completed.
- *
- * Completion also triggers the installed redraw callback.
+ * Whether the content has been set up on a target and can render.
  *
  * # Safety
  *
- * `state` must be a valid pointer returned by [`waterui_applied_filter_create`].
+ * `state` must be a valid pointer returned by [`waterui_gpu_content_create`].
  */
-bool waterui_applied_filter_is_ready(const struct WuiAppliedFilterState *state);
+bool waterui_gpu_content_is_ready(const struct WuiGpuContentState *state);
 
 /**
- * Render the filter into a host-owned Metal texture (Apple only).
+ * What this content says about itself, for a screen reader.
  *
- * The host keeps a pair of `IOSurface`-backed textures and hands in the one it
- * is not currently showing. The returned fence is that frame's: the host shows
- * the texture on `CALayer.contents` when it completes, never before, so a
- * half-drawn frame is never composited.
- *
- * `needs_redraw` is reported through `out_needs_redraw` because the return
- * value carries the fence.
+ * An owning [`WuiStr`], empty when the content has nothing to say — which a
+ * host treats the same way it treats a view that never had a label.
  *
  * # Safety
  *
- * - `state` must be a valid pointer from `waterui_applied_filter_create` with
- *   a presentation target attached.
- * - `texture` must point to a live `MTLTexture` of the attached format, at
- *   least `width` by `height`.
- * - `out_needs_redraw` must be writable.
+ * `state` must be a valid pointer returned by [`waterui_gpu_content_create`].
+ */
+struct WuiStr waterui_gpu_content_accessibility_label(const struct WuiGpuContentState *state);
+
+/**
+ * The semantic value this content carries, for a screen reader.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by [`waterui_gpu_content_create`].
+ */
+struct WuiStr waterui_gpu_content_accessibility_value(const struct WuiGpuContentState *state);
+
+/**
+ * Returns the HDR preference a `WuiGpuContent` declares.
+ *
+ * The view's own `prefer_hdr_surface`/`prefer_sdr_surface` wins over the
+ * content's `preferred_surface_hdr`.
+ *
+ * This must be called before `waterui_gpu_content_create` consumes the
+ * descriptor.
+ *
+ * # Safety
+ *
+ * - `content` must be a valid pointer obtained from
+ *   `waterui_force_as_gpu_content`
+ * - `content` must not have been consumed by `waterui_gpu_content_create`
+ */
+struct WuiGpuContentHdrPreference waterui_gpu_content_hdr_preference(const struct WuiGpuContent *content);
+
+/**
+ * Returns the HDR preference a `WuiExternalFrame` declares.
+ *
+ * The view's own `prefer_hdr_surface`/`prefer_sdr_surface` wins over the
+ * source's `preferred_surface_hdr`. This must be called before
+ * `waterui_external_frame_create` consumes the descriptor.
+ *
+ * # Safety
+ *
+ * - `frame` must be a valid pointer obtained from
+ *   `waterui_force_as_external_frame`
+ * - `frame` must not have been consumed by `waterui_external_frame_create`
+ */
+struct WuiGpuContentHdrPreference waterui_external_frame_hdr_preference(const struct WuiExternalFrame *frame);
+
+/**
+ * Measures the content without touching presentation resources.
+ *
+ * # Safety
+ *
+ * `state` must be valid and this function must run on the content's owning
+ * thread.
+ */
+struct WuiViewDimensions waterui_gpu_content_measure(const struct WuiGpuContentState *state,
+                                                     struct WuiProposalSize proposal);
+
+/**
+ * Attaches a native presentation surface (non-Apple only).
+ *
+ * # Safety
+ *
+ * `state` must come from [`waterui_gpu_content_create`].
  *
  * # Panics
  *
- * Panics if `texture` is null, if its format is not the one established at
- * attach, or if setup has not completed.
+ * Always panics: Apple hosts own their presentation memory and start the
+ * content with [`waterui_gpu_content_prepare_metal_texture`].
  */
-struct WuiGpuCaptureFence *waterui_applied_filter_render_to_metal_texture(struct WuiAppliedFilterState *state,
-                                                                          void *texture,
-                                                                          uint32_t width,
-                                                                          uint32_t height,
-                                                                          bool *out_needs_redraw);
+void waterui_gpu_content_attach(struct WuiGpuContentState *_state,
+                                void *_layer,
+                                uint32_t _width,
+                                uint32_t _height,
+                                bool _prefers_hdr);
 
 /**
- * Render the filter, presenting into the attached surface (non-Apple only).
+ * Detaches the native presentation surface (non-Apple only).
  *
  * # Safety
  *
- * `state` must come from [`waterui_applied_filter_create`].
+ * `state` must come from [`waterui_gpu_content_create`].
+ *
+ * # Panics
+ *
+ * Always panics: an Apple host releases its own textures.
+ */
+void waterui_gpu_content_detach(struct WuiGpuContentState *_state);
+
+/**
+ * Renders one frame into the attached swapchain (non-Apple only).
+ *
+ * # Safety
+ *
+ * `state` must come from [`waterui_gpu_content_create`].
  *
  * # Panics
  *
  * Always panics: Apple hosts render with
- * [`waterui_applied_filter_render_to_metal_texture`].
+ * [`waterui_gpu_content_render_to_metal_texture`].
  */
-bool waterui_applied_filter_render(struct WuiAppliedFilterState *_state,
-                                   uint32_t _width,
-                                   uint32_t _height);
+bool waterui_gpu_content_render(struct WuiGpuContentState *_state,
+                                uint32_t _width,
+                                uint32_t _height,
+                                double _scale,
+                                double _headroom);
 
 /**
- * Resolve the current output size from the latest observed filter state.
+ * Sets the content up for an external Metal render target's format.
  *
  * # Safety
  *
- * - `state` must be a valid pointer from `waterui_applied_filter_create`
+ * `state` must be valid and `texture` must point to a live `MTLTexture`.
  */
-struct WuiAppliedFilterOutputSize waterui_applied_filter_resolve_output_size(struct WuiAppliedFilterState *state,
-                                                                             uint32_t input_width,
-                                                                             uint32_t input_height);
+void waterui_gpu_content_prepare_metal_texture(struct WuiGpuContentState *state, void *texture);
 
 /**
- * Prepare the capture texture for rendering.
+ * Renders one frame into an external Metal texture (Apple only).
  *
- * Ensures the capture texture matches the requested dimensions.
+ * `width` and `height` are physical pixels; `scale` is how many of them one
+ * logical unit spans. `headroom` is the display's HDR headroom (peak white
+ * over SDR white; `1.0` on an SDR target). Returns whether another frame
+ * should be scheduled.
  *
  * # Safety
  *
- * `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
+ * `state` must be valid, `texture` must point to a live `MTLTexture`.
  *
  * # Panics
  *
- * Panics if `state` does not currently have an output surface attached.
+ * Panics if `texture` is null, if `scale` or `headroom` is not positive and
+ * finite, or if the texture's format differs from the one the content was
+ * prepared for.
  */
-void waterui_applied_filter_prepare_capture(struct WuiAppliedFilterState *state,
-                                            uint32_t width,
-                                            uint32_t height);
+bool waterui_gpu_content_render_to_metal_texture(struct WuiGpuContentState *state,
+                                                 void *texture,
+                                                 uint32_t width,
+                                                 uint32_t height,
+                                                 double scale,
+                                                 double headroom);
 
 /**
- * The pixel layout this filter's capture buffers must be allocated with (Android only).
+ * Releases the content and its state.
  *
  * # Safety
  *
- * `state` must be a valid pointer from `waterui_applied_filter_create` with an
- * attached target.
+ * `state` must be a valid pointer from [`waterui_gpu_content_create`], and
+ * must not be used after this call.
+ */
+void waterui_gpu_content_drop(struct WuiGpuContentState *state);
+
+/**
+ * Whether this GPU view handles its own keyboard, IME, pointer and scroll input.
+ *
+ * Hosts ask once per registration and install a key/IME responder only for the
+ * surfaces that answer `true`; a view that merely draws keeps every event with
+ * the surrounding `WaterUI` widgets.
+ *
+ * # Safety
+ *
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create).
+ */
+bool waterui_gpu_content_wants_input_events(const struct WuiGpuContentState *state);
+
+/**
+ * Delivers one input event to the GPU view.
+ *
+ * The event is translated to [`SurfaceInputEvent`] and handed to
+ * [`GpuContentView::input`](waterui_graphics::GpuContentView::input) before
+ * this returns. All three of the event's strings are consumed, whatever its
+ * kind.
+ *
+ * # Returns
+ *
+ * Whether the event reached the view. `false` means this view does not take
+ * input, and the host should fall through to its own handling of the event.
  *
  * # Panics
  *
- * Always panics: `AHardwareBuffer` capture only exists on Android.
- */
-WuiCaptureFormat waterui_applied_filter_capture_format(const struct WuiAppliedFilterState *_state);
-
-/**
- * Copies a captured `AHardwareBuffer` into the capture texture (Android only).
+ * Panics when the event's `key`/`code` are not W3C UI Events names, when
+ * `modifiers` carries a bit outside `WUI_SURFACE_MODIFIER_*`, or when `caret`
+ * is neither `-1` nor a UTF-8 boundary of `text` — see
+ * [`WuiSurfaceInputEvent`]'s conversion.
  *
  * # Safety
  *
- * `state` must be a valid pointer from `waterui_applied_filter_create` with an
- * attached target, and `buffer` a live `AHardwareBuffer`.
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create),
+ * and every [`WuiStr`] in `event` must be an owning handle from the matching
+ * FFI constructor.
+ */
+bool waterui_gpu_content_send_input_event(struct WuiGpuContentState *state,
+                                          struct WuiSurfaceInputEvent event);
+
+/**
+ * The GPU view's text caret, in logical surface-local coordinates.
+ *
+ * Native text-input clients place the input-method candidate window with it:
+ * `NSTextInputClient.firstRect(forCharacterRange:)` on macOS,
+ * `InputConnection`/`updateCursorAnchorInfo` on Android.
+ *
+ * # Returns
+ *
+ * Whether a caret was written to `out`. `false` leaves `out` untouched and
+ * means the view has no caret to place the panel against.
  *
  * # Panics
  *
- * Always panics: `AHardwareBuffer` capture only exists on Android.
- */
-struct WuiGpuCaptureFence *waterui_applied_filter_set_capture_hardware_buffer(struct WuiAppliedFilterState *_state,
-                                                                              void *_buffer);
-
-/**
- * Draws a `GpuSurface` nested in the captured subtree into the capture (Android only).
+ * Panics when `out` is null, or when the view reports a caret whose
+ * coordinates the `f32` layout ABI cannot represent.
  *
  * # Safety
  *
- * `filter` and `surface` must be valid state pointers from their matching
- * constructors.
- *
- * # Panics
- *
- * Always panics: nested-surface compositing only exists on Android, because
- * only there does the capture arrive with the surface missing from it.
+ * `state` must be a valid pointer returned by
+ * [`waterui_gpu_content_create`](super::gpu_content::waterui_gpu_content_create),
+ * and `out` must point to writable storage for one [`WuiRect`].
  */
-void waterui_applied_filter_composite_gpu_surface(struct WuiAppliedFilterState *_filter,
-                                                  struct WuiGpuSurfaceState *_surface,
-                                                  int32_t _x,
-                                                  int32_t _y,
-                                                  uint32_t _width,
-                                                  uint32_t _height,
-                                                  double _scale);
-
-/**
- * Get a pointer to the Metal texture backing the capture texture (Apple only).
- *
- * This exposes the underlying `MTLTexture` so native code can render directly
- * into the wgpu capture texture without extra copies.
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_applied_filter_create` with an attached target.
- *
- * # Panics
- *
- * Panics if `state` does not currently have a capture texture, meaning the
- * presentation target is detached.
- */
-void *waterui_applied_filter_get_capture_metal_texture(struct WuiAppliedFilterState *state);
-
-/**
- * Clean up `AppliedFilter` resources.
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_applied_filter_create`,
- * and must not be used after this call.
- */
-void waterui_applied_filter_drop(struct WuiAppliedFilterState *state);
+bool waterui_gpu_content_ime_caret(const struct WuiGpuContentState *state, struct WuiRect *out);
 
 /**
  * # Safety
@@ -11597,359 +12693,6 @@ void waterui_env_install_gpu_runtime(struct WuiEnv *env, struct WuiGpuRuntime *r
  * `env` must be valid and contain an installed GPU runtime.
  */
 void *waterui_gpu_runtime_metal_device(const struct WuiEnv *env);
-
-/**
- * # Safety
- *
- * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
- * `Native<_>` of the expected view type; it is consumed by this call and must
- * not be used afterwards.
- */
-struct WuiGpuSurface waterui_force_as_gpu_surface(struct WuiAnyView *view);
-
-/**
- * Returns the stable `TypeId` identifying this view type across the FFI.
- */
-struct WuiTypeId waterui_gpu_surface_id(void);
-
-/**
- * What this surface's content says about itself, for a screen reader.
- *
- * A surface is an opaque rectangle to the platform's accessibility layer:
- * whatever the formula, chart or diagram inside it means, nothing outside the
- * content can read it back off the pixels. A host names the surface's element
- * with this when the application named it nothing, so an explicit label from
- * the application always wins.
- *
- * Ask again after each frame. A view whose content follows a signal re-draws
- * and re-describes itself at the same moment, and the answer is empty until
- * asynchronous renderer setup finishes, which is before the first frame.
- *
- * # Returns
- *
- * An owning [`WuiStr`], empty when this surface has nothing to say — which a
- * host treats the same way it treats a view that never had a label. There is
- * deliberately no third state: "no label" and "the empty label" are the same
- * instruction to a screen reader, so the ABI does not carry a distinction
- * nothing acts on.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by
- * [`waterui_gpu_surface_create`], on the thread that created it.
- */
-struct WuiStr waterui_gpu_surface_accessibility_label(const struct WuiGpuSurfaceState *state);
-
-/**
- * The semantic value this surface's content carries, for a screen reader.
- *
- * This is the value channel's counterpart to
- * [`waterui_gpu_surface_accessibility_label`]: the content's own semantic
- * payload — a formula's spoken mathematics, a chart's summary — which a host
- * publishes on the surface's element so an application-supplied label does not
- * have to stand in for it.
- *
- * Ask again after each frame, for the same reason as the label: a view whose
- * content follows a signal re-draws and re-describes itself at the same
- * moment, and the answer is empty until asynchronous renderer setup finishes.
- *
- * # Returns
- *
- * An owning [`WuiStr`], empty when this surface publishes no value. There is
- * no third state: "no value" and "the empty value" are the same instruction
- * to a screen reader.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by
- * [`waterui_gpu_surface_create`], on the thread that created it.
- */
-struct WuiStr waterui_gpu_surface_accessibility_value(const struct WuiGpuSurfaceState *state);
-
-/**
- * Returns the renderer-driven HDR preference for a `WuiGpuSurface`.
- *
- * This must be called before `waterui_gpu_surface_create` consumes the surface.
- *
- * # Safety
- *
- * - `surface` must be a valid pointer obtained from `waterui_force_as_gpu_surface`
- * - `surface` must not have been consumed by `waterui_gpu_surface_create`
- */
-struct WuiGpuSurfaceHdrPreference waterui_gpu_surface_hdr_preference(const struct WuiGpuSurface *surface);
-
-/**
- * Creates the persistent state for one semantic `GpuSurface`.
- *
- * This consumes the renderer exactly once. Native presentation surfaces are
- * attached and detached independently with [`waterui_gpu_surface_attach`] and
- * [`waterui_gpu_surface_detach`].
- *
- * # Safety
- *
- * - `surface` must be a valid, unconsumed descriptor returned by
- *   `waterui_force_as_gpu_surface`.
- * - `env` must remain valid for this call; the state stores its own clone.
- *
- * # Panics
- *
- * Panics if `surface`'s inner `GpuSurface` pointer is null, meaning the
- * descriptor was already consumed by a previous call to this function.
- */
-struct WuiGpuSurfaceState *waterui_gpu_surface_create(struct WuiGpuSurface *surface,
-                                                      const struct WuiEnv *env);
-
-/**
- * Measures the semantic GPU view without touching presentation resources.
- *
- * # Safety
- *
- * `state` must be valid and this function must run on the renderer's owning
- * thread.
- */
-struct WuiViewDimensions waterui_gpu_surface_measure(const struct WuiGpuSurfaceState *state,
-                                                     struct WuiProposalSize proposal);
-
-/**
- * Returns the layout priority declared by the semantic GPU view.
- *
- * # Safety
- *
- * `state` must be valid and this function must run on the renderer's owning
- * thread.
- */
-int32_t waterui_gpu_surface_priority(const struct WuiGpuSurfaceState *state);
-
-/**
- * Attaches a native presentation surface (non-Apple only).
- *
- * # Safety
- *
- * `state` must come from [`waterui_gpu_surface_create`].
- *
- * # Panics
- *
- * Always panics: Apple hosts own their presentation memory and start the
- * renderer with [`waterui_gpu_surface_prepare_metal_texture`].
- */
-void waterui_gpu_surface_attach(struct WuiGpuSurfaceState *_state,
-                                void *_layer,
-                                uint32_t _width,
-                                uint32_t _height,
-                                bool _prefers_hdr);
-
-/**
- * Detaches the native presentation surface (non-Apple only).
- *
- * # Safety
- *
- * `state` must come from [`waterui_gpu_surface_create`].
- *
- * # Panics
- *
- * Always panics: an Apple host releases its own textures and has no swapchain
- * to detach.
- */
-void waterui_gpu_surface_detach(struct WuiGpuSurfaceState *_state);
-
-/**
- * Installs the native wake target for renderer-driven redraw requests.
- *
- * The wake callback may be called from any thread. `drop_callback` releases
- * `context` after the callback is replaced or the GPU state is destroyed.
- *
- * # Safety
- *
- * - `state` and `context` must be valid.
- * - Both callbacks must be thread-safe and use `context` only for the lifetime
- *   retained by `drop_callback`.
- */
-void waterui_gpu_surface_set_redraw_callback(struct WuiGpuSurfaceState *state,
-                                             void *context,
-                                             WuiGpuSurfaceRedrawCallback wake,
-                                             WuiGpuSurfaceRedrawCallback drop_callback);
-
-/**
- * Returns whether the renderer's asynchronous setup has completed.
- *
- * Setup completion also triggers the installed redraw callback, so native
- * backends can use this value to resolve first-paint readiness without polling.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by [`waterui_gpu_surface_create`].
- */
-bool waterui_gpu_surface_is_ready(const struct WuiGpuSurfaceState *state);
-
-/**
- * Renders one frame into the attached swapchain (non-Apple only).
- *
- * # Safety
- *
- * `state` must come from [`waterui_gpu_surface_create`].
- *
- * # Panics
- *
- * Always panics: Apple hosts render with
- * [`waterui_gpu_surface_render_to_metal_texture`].
- */
-bool waterui_gpu_surface_render(struct WuiGpuSurfaceState *_state,
-                                uint32_t _width,
-                                uint32_t _height,
-                                double _scale);
-
-/**
- * Starts asynchronous renderer setup for an external Metal render target.
- *
- * Completion triggers the installed redraw callback. Native must wait until
- * [`waterui_gpu_surface_is_ready`] returns true before rendering into the texture.
- *
- * # Safety
- *
- * `state` must be valid and `texture` must point to a live `MTLTexture`.
- */
-void waterui_gpu_surface_prepare_metal_texture(struct WuiGpuSurfaceState *state, void *texture);
-
-/**
- * Render a single frame into an external Metal texture (Apple only).
- *
- * `width` and `height` are physical pixels; `scale` is how many of them one
- * logical unit spans, so the renderer can work in the coordinate space the
- * view was laid out in.
- *
- * # Safety
- * `state` must be valid, `texture` must point to a `MTLTexture`.
- *
- * # Panics
- *
- * Panics if `texture` is null, or if `scale` is not positive and finite.
- */
-struct WuiGpuCaptureFence *waterui_gpu_surface_render_to_metal_texture(struct WuiGpuSurfaceState *state,
-                                                                       void *texture,
-                                                                       uint32_t width,
-                                                                       uint32_t height,
-                                                                       double scale);
-
-/**
- * Schedules one external capture submission completion and consumes its fence.
- *
- * `callback` runs exactly once on the shared GPU completion thread. `drop`
- * then runs exactly once on that same thread, including if the completion
- * driver fails before invoking `callback`. Native callbacks should only
- * enqueue their next platform-specific stage and return immediately.
- *
- * # Safety
- *
- * `fence` must be a valid owning pointer returned by an external capture entry
- * point — `waterui_gpu_surface_render_to_metal_texture` on Apple,
- * `waterui_applied_filter_set_capture_hardware_buffer` or
- * `waterui_view_effect_set_input_hardware_buffer` on Android — and must be
- * consumed once.
- * `context`, `callback`, and `drop` must remain valid until completion; Rust
- * consumes the context and releases it through `drop`.
- */
-void waterui_gpu_capture_fence_on_complete(struct WuiGpuCaptureFence *fence,
-                                           void *context,
-                                           WuiGpuCaptureCompletionCallback callback,
-                                           WuiGpuCaptureCompletionDrop drop);
-
-/**
- * Clean up GPU resources.
- *
- * This function should be called when the `GpuSurface` view is destroyed.
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_gpu_surface_create`,
- * and must not be used after this call.
- */
-void waterui_gpu_surface_drop(struct WuiGpuSurfaceState *state);
-
-/**
- * Update both pointer and gesture state for a `GpuSurface`.
- *
- * Native backends should prefer this API to minimize bridge calls.
- *
- * # Arguments
- *
- * * `state` - Pointer to the persistent state from `waterui_gpu_surface_create`
- * * `input` - Combined pointer + gesture snapshot
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_gpu_surface_create`.
- */
-void waterui_gpu_surface_set_input(struct WuiGpuSurfaceState *state,
-                                   struct WuiGpuSurfaceInput input);
-
-/**
- * Whether this GPU view handles its own keyboard, IME, pointer and scroll input.
- *
- * Hosts ask once per registration and install a key/IME responder only for the
- * surfaces that answer `true`; a view that merely draws keeps every event with
- * the surrounding `WaterUI` widgets.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by
- * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create).
- */
-bool waterui_gpu_surface_wants_input_events(const struct WuiGpuSurfaceState *state);
-
-/**
- * Delivers one input event to the GPU view.
- *
- * The event is translated to [`SurfaceInputEvent`] and handed to
- * [`GpuView::input`](waterui_graphics::GpuView::input) before this returns.
- * All three of the event's strings are consumed, whatever its kind.
- *
- * # Returns
- *
- * Whether the event reached the view. `false` means this surface does not take
- * input, or its asynchronous renderer setup has not finished yet — in both
- * cases the host should fall through to its own handling of the event.
- *
- * # Panics
- *
- * Panics when the event's `key`/`code` are not W3C UI Events names, when
- * `modifiers` carries a bit outside `WUI_SURFACE_MODIFIER_*`, or when `caret`
- * is neither `-1` nor a UTF-8 boundary of `text` — see
- * [`WuiSurfaceInputEvent`]'s conversion.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by
- * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
- * and every [`WuiStr`] in `event` must be an owning handle from the matching
- * FFI constructor.
- */
-bool waterui_gpu_surface_send_input_event(struct WuiGpuSurfaceState *state,
-                                          struct WuiSurfaceInputEvent event);
-
-/**
- * The GPU view's text caret, in logical surface-local coordinates.
- *
- * Native text-input clients place the input-method candidate window with it:
- * `NSTextInputClient.firstRect(forCharacterRange:)` on macOS,
- * `InputConnection`/`updateCursorAnchorInfo` on Android.
- *
- * # Returns
- *
- * Whether a caret was written to `out`. `false` leaves `out` untouched and
- * means the view has no caret to place the panel against.
- *
- * # Panics
- *
- * Panics when `out` is null, or when the view reports a caret whose
- * coordinates the `f32` layout ABI cannot represent.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by
- * [`waterui_gpu_surface_create`](super::gpu_surface::waterui_gpu_surface_create),
- * and `out` must point to writable storage for one [`WuiRect`].
- */
-bool waterui_gpu_surface_ime_caret(const struct WuiGpuSurfaceState *state, struct WuiRect *out);
 
 /**
  * # Safety
@@ -12035,263 +12778,6 @@ WuiComputed_RgbaBitmap *waterui_picture_bitmap(const struct WuiPictureHandle *pi
 void waterui_drop_picture(struct WuiPictureHandle *picture);
 
 /**
- * # Safety
- *
- * `view` must be a valid, owning `WuiAnyView` handle whose erased value is a
- * `Native<_>` of the expected view type; it is consumed by this call and must
- * not be used afterwards.
- */
-struct WuiViewEffect waterui_force_as_view_effect(struct WuiAnyView *view);
-
-/**
- * Returns the stable `TypeId` identifying this view type across the FFI.
- */
-struct WuiTypeId waterui_view_effect_id(void);
-
-/**
- * Creates persistent state and immediately consumes the semantic effect renderer.
- *
- * Presentation targets are attached later with [`waterui_view_effect_attach`],
- * so a view destroyed before layout still has one clear Rust owner.
- *
- * # Safety
- *
- * `effect` must be a valid, unconsumed descriptor returned by
- * `waterui_force_as_view_effect`.
- * `env` must contain an installed GPU runtime.
- *
- * # Panics
- *
- * Panics if `effect`'s inner effect pointer is null, meaning the descriptor
- * was already consumed by a previous call to this function.
- */
-struct WuiViewEffectState *waterui_view_effect_create(struct WuiViewEffect *effect,
-                                                      const struct WuiEnv *env);
-
-/**
- * Attaches a native presentation surface (non-Apple only).
- *
- * # Safety
- *
- * Unreachable on Apple, where the host starts the renderer with
- * [`waterui_view_effect_attach_host_textures`].
- *
- * # Panics
- *
- * Always.
- */
-void waterui_view_effect_attach(struct WuiViewEffectState *_state,
-                                void *_layer,
-                                uint32_t _input_width,
-                                uint32_t _input_height,
-                                bool _prefers_hdr);
-
-/**
- * Detaches the native presentation target without destroying the effect renderer.
- *
- * # Safety
- *
- * `state` must be valid and currently attached.
- *
- * # Panics
- *
- * Panics if `state` does not currently have an output surface attached.
- */
-void waterui_view_effect_detach(struct WuiViewEffectState *state);
-
-/**
- * Attaches host-owned presentation on Apple, where frames arrive per texture.
- *
- * No layer is named because none is configured: the host keeps a pair of
- * `IOSurface`-backed textures, hands one to
- * [`waterui_view_effect_render_to_metal_texture`] per frame, and shows it on
- * `CALayer.contents` once that frame's fence completes. The texture format is
- * this call's answer, read back with
- * [`waterui_view_effect_output_metal_pixel_format`], and the size the host
- * must allocate comes from [`waterui_view_effect_resolve_output_size`].
- *
- * # Safety
- *
- * - `state` must come from [`waterui_view_effect_create`].
- * - The state must currently be detached.
- *
- * # Panics
- *
- * Panics if `state` already has a presentation target attached, or if
- * `input_width`/`input_height` or the computed output size is zero.
- */
-void waterui_view_effect_attach_host_textures(struct WuiViewEffectState *state,
-                                              uint32_t input_width,
-                                              uint32_t input_height,
-                                              bool prefers_hdr);
-
-/**
- * The `MTLPixelFormat` an attached effect renders its output in (Apple only).
- *
- * The host allocates its `IOSurface` pair from this. It is the raw Metal enum
- * value because the presentation format has no name in the capture-format
- * alphabet the Android path uses.
- *
- * # Safety
- *
- * `state` must be a valid pointer from [`waterui_view_effect_create`] with a
- * presentation target attached.
- *
- * # Panics
- *
- * Panics if the effect is detached, or if its output format has no Metal
- * equivalent.
- */
-uint32_t waterui_view_effect_output_metal_pixel_format(const struct WuiViewEffectState *state);
-
-/**
- * The output size this effect resolves an input size to.
- *
- * The host allocates the textures it presents from, so unlike the swapchain
- * path the size cannot stay entirely on the Rust side.
- *
- * # Safety
- *
- * `state` must be a valid pointer from [`waterui_view_effect_create`].
- *
- * # Panics
- *
- * Panics if the resolved size is zero in either dimension.
- */
-struct WuiViewEffectOutputSize waterui_view_effect_resolve_output_size(const struct WuiViewEffectState *state,
-                                                                       uint32_t input_width,
-                                                                       uint32_t input_height);
-
-/**
- * Installs the native wake target for renderer-driven redraw requests.
- *
- * # Safety
- *
- * - `state` and `context` must be valid.
- * - Both callbacks must be thread-safe and use `context` only until
- *   `drop_callback` releases it.
- */
-void waterui_view_effect_set_redraw_callback(struct WuiViewEffectState *state,
-                                             void *context,
-                                             WuiViewEffectRedrawCallback wake,
-                                             WuiViewEffectRedrawCallback drop_callback);
-
-/**
- * Imports the Metal texture containing the captured child view.
- *
- * # Safety
- *
- * - state must be a valid pointer from `waterui_view_effect_create`.
- * - texture must point to a live `MTLTexture` for the duration of this call.
- *
- * # Panics
- *
- * Panics if the imported Metal texture did not resolve to a supported
- * texture format.
- */
-void waterui_view_effect_set_input_metal_texture(struct WuiViewEffectState *state,
-                                                 void *texture,
-                                                 uint32_t width,
-                                                 uint32_t height);
-
-/**
- * Copies a captured `AHardwareBuffer` into the effect's input (Android only).
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_view_effect_create` with an
- * attached target, and `buffer` a live `AHardwareBuffer`.
- *
- * # Panics
- *
- * Always panics: `AHardwareBuffer` capture only exists on Android.
- */
-struct WuiGpuCaptureFence *waterui_view_effect_set_input_hardware_buffer(struct WuiViewEffectState *_state,
-                                                                         void *_buffer);
-
-/**
- * Draws a `GpuSurface` nested in the captured subtree into the input (Android only).
- *
- * # Safety
- *
- * `effect` and `surface` must be valid state pointers from their matching
- * constructors.
- *
- * # Panics
- *
- * Always panics: nested-surface compositing only exists on Android, because
- * only there does the capture arrive with the surface missing from it.
- */
-void waterui_view_effect_composite_gpu_surface(struct WuiViewEffectState *_effect,
-                                               struct WuiGpuSurfaceState *_surface,
-                                               int32_t _x,
-                                               int32_t _y,
-                                               uint32_t _width,
-                                               uint32_t _height,
-                                               double _scale);
-
-/**
- * Returns whether asynchronous effect setup has completed.
- *
- * Completion also triggers the installed redraw callback.
- *
- * # Safety
- *
- * `state` must be a valid pointer returned by [`waterui_view_effect_create`].
- */
-bool waterui_view_effect_is_ready(const struct WuiViewEffectState *state);
-
-/**
- * Render the effect into a host-owned Metal texture (Apple only).
- *
- * The returned fence completes when the GPU has finished writing `texture`;
- * the host shows it then, and not before, because Core Animation would
- * otherwise composite a half-drawn frame.
- *
- * # Safety
- *
- * - `state` must come from [`waterui_view_effect_create`] with a host-texture
- *   target attached.
- * - `texture` must point to a live `MTLTexture` of the attached output format
- *   and the resolved output size.
- * - `out_needs_redraw` must be writable.
- *
- * # Panics
- *
- * Panics if the effect is detached, if setup has not completed, or if the host
- * texture's format does not match the attached output format.
- */
-struct WuiGpuCaptureFence *waterui_view_effect_render_to_metal_texture(struct WuiViewEffectState *state,
-                                                                       void *texture,
-                                                                       uint32_t width,
-                                                                       uint32_t height,
-                                                                       bool *out_needs_redraw);
-
-/**
- * Render the effect, presenting into the attached surface (non-Apple only).
- *
- * # Safety
- *
- * Unreachable on Apple, where the host renders with
- * [`waterui_view_effect_render_to_metal_texture`].
- *
- * # Panics
- *
- * Always.
- */
-bool waterui_view_effect_render(struct WuiViewEffectState *_state);
-
-/**
- * Clean up `ViewEffect` resources.
- *
- * # Safety
- *
- * `state` must be a valid pointer from `waterui_view_effect_create`,
- * and must not be used after this call.
- */
-void waterui_view_effect_drop(struct WuiViewEffectState *state);
-
-/**
  * Installs a `ViewRenderer` into the environment from a native function pointer.
  *
  * Native backends call this during initialization to register their view
@@ -12310,6 +12796,10 @@ void waterui_env_install_view_renderer(struct WuiEnv *env,
                                        void *context,
                                        ViewRenderFn render_fn,
                                        void (*drop_context)(void*));
+
+extern void *waterui_android_init(void);
+
+extern struct WuiAndroidAppHandles waterui_android_app(void *env);
 
 WuiEnv* waterui_init(void);
 

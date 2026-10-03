@@ -16,10 +16,10 @@ use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 
-use jni::objects::{Global, JClass, JObject, JObjectArray, JString, JValue};
+use jni::objects::{Global, JClass, JIntArray, JObject, JObjectArray, JString, JValue};
 use jni::signature::MethodSignature;
 use jni::strings::JNIStr;
-use jni::sys::{jint, jlong, jobject, jobjectArray};
+use jni::sys::{jint, jintArray, jlong, jobject, jobjectArray};
 use jni::{Env, EnvUnowned, jni_sig, jni_str};
 
 use crate::components::text::WuiHorizontalAlignment;
@@ -33,8 +33,8 @@ const WATCHER_STRUCT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/Watc
 const WATCHER_STRUCT_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(JJJ)V");
 const WATCHER_METADATA_CLASS: &JNIStr = jni_str!("dev/waterui/android/reactive/WuiWatcherMetadata");
 const WATCHER_METADATA_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(J)V");
-const RESOLVED_COLOR_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedColorStruct");
-const RESOLVED_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFFF)V");
+const WORKING_COLOR_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/WorkingColorStruct");
+const WORKING_COLOR_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(FFFF)V");
 const BITMAP_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/BitmapStruct");
 const BITMAP_CTOR: &MethodSignature<'static, 'static> = &jni_sig!("(IILjava/nio/ByteBuffer;J)V");
 const RESOLVED_FONT_CLASS: &JNIStr = jni_str!("dev/waterui/android/runtime/ResolvedFontStruct");
@@ -91,34 +91,29 @@ where
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<T>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<T>) };
-    computed.get().into_ffi().into_jint()
+    computed.snapshot().into_ffi().into_jint()
 }
 
 // ============================================================================
 // Helper Functions for Complex Type Conversion
 // ============================================================================
 
-/// Create a `ResolvedColorStruct` Java object from Rust values.
-fn create_resolved_color_struct<'local>(
+/// Create a `WorkingColorStruct` Java object from a colour.
+fn create_working_color_struct<'local>(
     env: &mut Env<'local>,
-    red: f32,
-    green: f32,
-    blue: f32,
-    opacity: f32,
-    headroom: f32,
+    color: crate::color::WuiWorkingColor,
 ) -> JObject<'local> {
     env.new_object(
-        RESOLVED_COLOR_CLASS,
-        RESOLVED_COLOR_CTOR,
+        WORKING_COLOR_CLASS,
+        WORKING_COLOR_CTOR,
         &[
-            JValue::Float(red),
-            JValue::Float(green),
-            JValue::Float(blue),
-            JValue::Float(opacity),
-            JValue::Float(headroom),
+            JValue::Float(color.red),
+            JValue::Float(color.green),
+            JValue::Float(color.blue),
+            JValue::Float(color.alpha),
         ],
     )
-    .expect("Failed to create ResolvedColorStruct")
+    .expect("Failed to create WorkingColorStruct")
 }
 
 /// Create a `ResolvedFontStruct` Java object from Rust values.
@@ -198,10 +193,12 @@ fn create_date_time_struct<'local>(
 
 /// Helper for reading a Str binding as Java String.
 fn read_binding_str_to_java_string(env: &mut Env, binding_ptr: jlong) -> jobject {
+    use nami::Signal as _;
+
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Str>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<waterui::Str>) };
-    let s: waterui::Str = binding.get();
+    let s: waterui::Str = binding.snapshot();
     env.new_string(s.as_str())
         .expect("read_binding_str_to_java_string: failed to create Java string")
         .into_raw()
@@ -259,13 +256,14 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingSecure<'lo
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobject {
+    use nami::Signal as _;
     use waterui_form::secure::Secure;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Secure>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Secure>) };
     super::with_env(&mut env, |env| {
-        env.new_string(binding.get().expose())
+        env.new_string(binding.snapshot().expose())
             .expect("readBindingSecure failed to create Java string")
             .into_raw()
     })
@@ -335,12 +333,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingId<'local>
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jint {
+    use nami::Signal as _;
     use waterui_core::id::Id;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Id>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Id>) };
-    binding.get().into_ffi().into_jint()
+    binding.snapshot().into_ffi().into_jint()
 }
 
 #[unsafe(no_mangle)]
@@ -362,18 +361,81 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingId<'local>(
 }
 
 #[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingIdVec<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+) -> jintArray {
+    use nami::Signal as _;
+    use waterui_core::id::Id;
+
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Vec<Id>>` and is only read here.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Id>>) };
+    let ids = binding.snapshot();
+    super::with_env(&mut env, |env| {
+        let array = env
+            .new_int_array(ids.len())
+            .expect("readBindingIdVec failed to allocate int array");
+        let values: Vec<jint> = ids.iter().map(|id| i32::from(*id)).collect();
+        array
+            .set_region(env, 0, &values)
+            .expect("readBindingIdVec failed to write ids");
+        array.into_raw()
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Replaces an id-vector binding from a Java int array.
+///
+/// # Safety
+///
+/// `binding_ptr` must point to a live `WuiBinding<Vec<Id>>`; `ids` must be a
+/// valid local JNI int-array reference for the duration of this call.
+unsafe extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_setBindingIdVec<'local>(
+    mut env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    binding_ptr: jlong,
+    ids: jintArray,
+) {
+    use crate::IntoRust;
+    use waterui_core::id::Id;
+
+    // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
+    // `WuiBinding<Vec<Id>>`; `Binding::set` needs only a shared reference.
+    let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Id>>) };
+    super::with_env(&mut env, |env| {
+        // SAFETY: the caller contract above makes `ids` a local reference the JVM
+        // keeps valid for this call.
+        let ids = unsafe { JIntArray::from_raw(env, ids) };
+        let mut values = vec![0; ids.len(env).expect("setBindingIdVec array length")];
+        ids.get_region(env, 0, &mut values)
+            .expect("setBindingIdVec failed to read ids");
+        binding.set(
+            values
+                .into_iter()
+                // SAFETY: Kotlin echoes back ids this binding previously produced, so
+                // each is a non-zero `Id` the mapping still knows.
+                .map(|inner| unsafe { WuiId { inner }.into_rust() })
+                .collect(),
+        );
+    });
+}
+
+#[unsafe(no_mangle)]
 extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingStyledStrPlain<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobject {
+    use nami::Signal as _;
     use waterui_text::styled::StyledStr;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<StyledStr>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<StyledStr>) };
     super::with_env(&mut env, |env| {
-        env.new_string(binding.get().to_plain().as_str())
+        env.new_string(binding.snapshot().to_plain().as_str())
             .expect("readBindingStyledStrPlain failed to create Java string")
             .into_raw()
     })
@@ -405,12 +467,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateVec<'l
     _class: JClass<'local>,
     binding_ptr: jlong,
 ) -> jobjectArray {
+    use nami::Signal as _;
     use waterui_form::picker::date::Date;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<Vec<Date>>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<Vec<Date>>) };
-    let dates = binding.get();
+    let dates = binding.snapshot();
     super::with_env(&mut env, |env| {
         let date_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/DateStruct"))
@@ -498,11 +561,12 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readBindingDateTime<'
 ) -> jobject {
     use crate::IntoFFI;
     use jiff::civil::DateTime;
+    use nami::Signal as _;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiBinding<DateTime>` and is only read here.
     let binding = unsafe { &*(binding_ptr as *const WuiBinding<DateTime>) };
-    let date_time: DateTime = binding.get();
+    let date_time: DateTime = binding.snapshot();
     let ffi = date_time.into_ffi();
 
     super::with_env(&mut env, |env| {
@@ -624,13 +688,13 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedBitmap<'l
     computed_ptr: jlong,
 ) -> jobject {
     use crate::IntoFFI;
+    use crate::components::picture::RgbaBitmap;
     use waterui::Signal;
-    use waterui_graphics::scene2d_cpu::RgbaBitmap;
 
     // SAFETY: Kotlin passes back the computed pointer `pictureBitmap` handed it,
     // which stays alive until `dropComputedBitmap` and is only ever read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<RgbaBitmap>) };
-    let bitmap = computed.get().into_ffi();
+    let bitmap = computed.snapshot().into_ffi();
     super::with_env(&mut env, |env| {
         let (width, height, buffer, handle) = bitmap_struct_args(env, bitmap);
         env.new_object(
@@ -664,27 +728,24 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_dropBitmap<'local>(
     }
 }
 
-/// Read a `ResolvedColor` computed value and return Java `ResolvedColorStruct`.
+/// Read a `WorkingColor` computed value and return Java `WorkingColorStruct`.
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedColor<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedWorkingColor<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     computed_ptr: jlong,
 ) -> jobject {
     use crate::IntoFFI;
-    use crate::color::WuiResolvedColor;
     use waterui::Signal;
-    use waterui_graphics::color::ResolvedColor;
+    use waterui_graphics::WorkingColor;
 
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
-    // `WuiComputed<ResolvedColor>` and is only read here.
-    let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedColor>) };
-    let resolved: ResolvedColor = computed.get();
-    let ffi: WuiResolvedColor = resolved.into_ffi();
+    // `WuiComputed<WorkingColor>` and is only read here.
+    let computed = unsafe { &*(computed_ptr as *const WuiComputed<WorkingColor>) };
+    let color = computed.snapshot().into_ffi();
 
     super::with_env(&mut env, |env| {
-        create_resolved_color_struct(env, ffi.red, ffi.green, ffi.blue, ffi.opacity, ffi.headroom)
-            .into_raw()
+        create_working_color_struct(env, color).into_raw()
     })
 }
 
@@ -702,7 +763,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedResolvedF
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<ResolvedFont>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<ResolvedFont>) };
-    let resolved: ResolvedFont = computed.get();
+    let resolved: ResolvedFont = computed.snapshot();
     let ffi = resolved.into_ffi();
 
     // The enums are repr(C), so their discriminants are the ordinals Kotlin
@@ -739,7 +800,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedStyledStr
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<StyledStr>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<StyledStr>) };
-    let styled_str: StyledStr = computed.get();
+    let styled_str: StyledStr = computed.snapshot();
 
     super::with_env(&mut env, |env| {
         styled_str_to_java(env, styled_str).into_raw()
@@ -830,7 +891,7 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_readComputedDateVec<'
     // SAFETY: Kotlin passes back the handle `waterui_*` handed it, which owns one live
     // `WuiComputed<Vec<Date>>` and is only read here.
     let computed = unsafe { &*(computed_ptr as *const WuiComputed<Vec<Date>>) };
-    let dates = computed.get();
+    let dates = computed.snapshot();
     super::with_env(&mut env, |env| {
         let date_class = env
             .find_class(jni_str!("dev/waterui/android/runtime/DateStruct"))
@@ -1192,7 +1253,7 @@ unsafe extern "C" fn watcher_call_color(
     invoke_owned_pointer_callback(data, value.cast(), metadata_ptr);
 }
 
-/// Call function for `ResolvedColor` watcher.
+/// Call function for `Bitmap` watcher.
 unsafe extern "C" fn watcher_call_bitmap(
     data: *mut (),
     value: crate::components::picture::WuiBitmap,
@@ -1215,20 +1276,19 @@ unsafe extern "C" fn watcher_call_bitmap(
     });
 }
 
-unsafe extern "C" fn watcher_call_resolved_color(
+unsafe extern "C" fn watcher_call_working_color(
     data: *mut (),
-    value: crate::color::WuiResolvedColor,
+    value: crate::color::WuiWorkingColor,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
     with_watcher_env(data, |env, watcher_data| {
-        let java_value = watcher_data.constructor(RESOLVED_COLOR_CLASS).new_object(
+        let java_value = watcher_data.constructor(WORKING_COLOR_CLASS).new_object(
             env,
             &[
                 JValue::Float(value.red).as_jni(),
                 JValue::Float(value.green).as_jni(),
                 JValue::Float(value.blue).as_jni(),
-                JValue::Float(value.opacity).as_jni(),
-                JValue::Float(value.headroom).as_jni(),
+                JValue::Float(value.alpha).as_jni(),
             ],
         );
 
@@ -1445,6 +1505,27 @@ unsafe extern "C" fn watcher_call_id(
     unsafe { call_jni_int_watcher(data, value, metadata_ptr) };
 }
 
+/// Call function for an id-vector watcher: the selected ids cross as `int[]`.
+unsafe extern "C" fn watcher_call_id_vec(
+    data: *mut (),
+    value: crate::array::WuiArray<WuiId>,
+    metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
+) {
+    with_watcher_env(data, |env, watcher_data| {
+        let values: Vec<jint> = value.as_slice().iter().map(|id| id.inner).collect();
+        value.consume();
+        let array = env
+            .new_int_array(values.len())
+            .expect("watcher_call_id_vec: failed to allocate callback ids");
+        array
+            .set_region(env, 0, &values)
+            .expect("watcher_call_id_vec: failed to write callback ids");
+        let array = JObject::from(array);
+        let metadata = create_metadata_object(env, watcher_data, metadata_ptr);
+        invoke_callback(env, &watcher_data.callback, &array, &metadata);
+    });
+}
+
 unsafe extern "C" fn watcher_call_color_scheme(
     data: *mut (),
     value: WuiColorScheme,
@@ -1561,6 +1642,7 @@ jni_create_watcher_typed!(Float, watcher_call_float, &[]);
 jni_create_watcher_typed!(String, watcher_call_string, &[]);
 jni_create_watcher_typed!(Secure, watcher_call_string, &[]);
 jni_create_watcher_typed!(Id, watcher_call_id, &[]);
+jni_create_watcher_typed!(IdVec, watcher_call_id_vec, &[]);
 jni_create_watcher_typed!(AnyView, watcher_call_any_view, &[]);
 jni_create_watcher_typed!(Color, watcher_call_color, &[]);
 jni_create_watcher_typed!(StyledStrPlain, watcher_call_styled_str_plain, &[]);
@@ -1574,9 +1656,9 @@ jni_create_watcher_typed!(
     ]
 );
 jni_create_watcher_typed!(
-    ResolvedColor,
-    watcher_call_resolved_color,
-    &[(RESOLVED_COLOR_CLASS, RESOLVED_COLOR_CTOR)]
+    WorkingColor,
+    watcher_call_working_color,
+    &[(WORKING_COLOR_CLASS, WORKING_COLOR_CTOR)]
 );
 jni_create_watcher_typed!(Bitmap, watcher_call_bitmap, &[(BITMAP_CLASS, BITMAP_CTOR)]);
 jni_create_watcher_typed!(

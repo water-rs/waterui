@@ -21,14 +21,14 @@
 
 use std::{fmt::Debug, rc::Rc};
 
-use nami::{Binding, Computed, SignalExt as _, impl_constant, signal::IntoComputed};
+use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
 use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View};
-use waterui_graphics::Color;
+use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View, flatten_signal};
+use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
 
-use crate::app::application_name;
+use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarManager;
 use crate::{
@@ -36,6 +36,7 @@ use crate::{
     background::{Material, MaterialBackground},
     component::label::LabelDisplayMode,
     prelude::FullScreenOverlayManager,
+    theme::color::Background,
 };
 
 /// Represents a window in the UI.
@@ -67,13 +68,22 @@ pub struct Window {
     pub toolbar: Option<AnyView>,
     /// The visual style of the window.
     ///
+    /// Reactive: backends observe the binding and re-apply the style when it
+    /// changes after the window is shown, so an app can toggle decorations at
+    /// runtime through [`WindowHandle::set_style`] or its own binding.
+    ///
     /// Notice that it may not be supported on all platforms.
-    pub style: WindowStyle,
+    pub style: Binding<WindowStyle>,
     /// The background style of the window.
     ///
-    /// Use this to create transparent or frosted glass windows.
+    /// Use this to create transparent or frosted glass windows. Reactive:
+    /// backends re-apply the background when the binding changes after the
+    /// window is shown, including a switch between [`WindowBackground::Opaque`]
+    /// and a translucent [`WindowBackground::Color`]. Backends paint what
+    /// [`Window::resolved_background`] resolves it to.
+    ///
     /// Notice that it may not be supported on all platforms.
-    pub background: WindowBackground,
+    pub background: Binding<WindowBackground>,
     /// Explicit minimum content size the window can be resized down to.
     ///
     /// When `None` (the default), the backend derives the minimum from the
@@ -99,6 +109,152 @@ pub struct Window {
     /// Native backends may require an explicit maximum. Same platform support
     /// notes as [`Self::min_size`].
     pub max_size: Option<Computed<Size>>,
+    /// The identity the desktop groups this window under.
+    ///
+    /// Window-manager rules, desktop-file matching, startup notification and
+    /// dock or taskbar grouping all key off this value: the X11 `WM_CLASS`
+    /// (both its instance and class part) and the Wayland `xdg_toplevel`
+    /// `app_id`.
+    ///
+    /// When `None` (the default), the window carries the application's own
+    /// identifier, [`application_identifier`](crate::app::application_identifier);
+    /// when that is empty too, the platform's default applies (the executable
+    /// name under X11 and Wayland).
+    ///
+    /// Platform support: X11 and Wayland through the hydrolysis backend.
+    /// macOS, iOS, Android and Windows identify an application by its bundle
+    /// or package, not per window, and ignore this.
+    pub app_id: Option<Str>,
+    /// The per-window instance name inside the desktop identity.
+    ///
+    /// `app_id` names the application class — the X11 `WM_CLASS` class part
+    /// and the Wayland `app_id` — while `instance_name` names this window's
+    /// instance inside it, the `WM_CLASS` `res_name` window managers like
+    /// i3/sway/awesome match on for per-window rules.
+    ///
+    /// When `None` (the default), the instance name is the window's
+    /// resolved [`app_id`](Self::app_id).
+    ///
+    /// Platform support: X11 through the hydrolysis backend. Wayland carries
+    /// only `app_id`, and the bundled platforms ignore this.
+    pub instance_name: Option<Str>,
+    /// Which monitor the window is placed on, and the frame it takes there.
+    ///
+    /// When `Some`, the backend resolves [`WindowPlacement::monitor`] each
+    /// time the window is shown, calls [`WindowPlacement::place`] with the
+    /// resolved [`Monitor`], and writes the returned rect into
+    /// [`frame`](Self::frame) before the window becomes visible — placement
+    /// therefore re-picks its monitor on every show, including after monitor
+    /// changes and for a window that was closed and shown again.
+    ///
+    /// When `None` (the default), the window takes [`frame`](Self::frame)'s
+    /// initial value, positioned where the platform puts it.
+    ///
+    /// Platform support: hydrolysis (winit) and GTK. Wayland compositors do
+    /// not expose global pointer position or absolute window positioning, so
+    /// only the size part of the returned rect applies there.
+    pub placement: Option<WindowPlacement>,
+    /// How showing and clicking the window affects keyboard focus and app
+    /// activation. See [`Activation`] for the per-platform notes.
+    pub activation: Activation,
+    /// Where the window stacks relative to other applications' windows.
+    ///
+    /// Platform support: hydrolysis/winit, macOS (`NSWindow.level`), GTK
+    /// where the compositor honours keep-above. Mobile platforms and
+    /// embedded displays have no stacking between applications and ignore
+    /// this.
+    pub level: Computed<WindowLevel>,
+    /// The window's request for the user's attention, if one is pending.
+    ///
+    /// Setting it asks the platform to draw the user to the window — a
+    /// flashing taskbar entry, a bouncing dock icon, the window manager's
+    /// demands-attention hint. The request lasts until the user focuses the
+    /// window, at which point the backend sets it back to `None`; setting it to
+    /// `None` withdraws it earlier.
+    ///
+    /// Platform support: hydrolysis/winit (X11, Wayland activation, Windows,
+    /// macOS), macOS (`NSApp.requestUserAttention`). Others ignore it.
+    pub attention: Binding<Option<UserAttention>>,
+    /// The steps the window's content size moves in while the user resizes
+    /// it, such as one character cell of a terminal.
+    ///
+    /// When `None` (the default), the window resizes continuously.
+    ///
+    /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
+    /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
+    pub resize_increments: Option<Computed<Size>>,
+}
+
+/// A connected display, as the backend resolved it for a window's placement.
+///
+/// A backend hands this to [`WindowPlacement::place`] after resolving the
+/// placement's [`MonitorSelector`]; it is a per-resolution snapshot, not a
+/// live handle — monitor geometry read elsewhere stays authoritative in the
+/// backend that produced it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Monitor {
+    /// Bounds in the global logical coordinate space window frames use.
+    pub frame: Rect,
+    /// `frame` minus what the desktop reserves (menu bar, dock, panels, taskbar).
+    /// Equal to `frame` where the platform reports no work area.
+    pub visible_frame: Rect,
+    /// Physical pixels per logical point.
+    pub scale_factor: f64,
+    /// The platform's name for the display, when it reports one.
+    pub name: Option<Str>,
+}
+
+/// Which monitor a window is placed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonitorSelector {
+    /// The platform's primary display (macOS: the one carrying the menu bar).
+    #[default]
+    Primary,
+    /// The display under the pointer when the window is shown.
+    Pointer,
+    /// The display holding this application's focused window.
+    /// Resolves as `Primary` when the application has no focused window.
+    Focused,
+}
+
+/// Where a window is placed.
+///
+/// The backend resolves `monitor` each time the window is shown, calls `place`
+/// with the result, and writes the returned rect into `Window::frame` before
+/// the window becomes visible.
+pub struct WindowPlacement {
+    /// The monitor a backend resolves before calling `place`.
+    pub monitor: MonitorSelector,
+    /// Computes the window frame from the resolved monitor's geometry.
+    ///
+    /// Backends call it once per show, immediately before the window becomes
+    /// visible; `place` answers in the same global logical space
+    /// [`Monitor::frame`] is expressed in.
+    pub place: Rc<dyn Fn(&Monitor) -> Rect>,
+}
+
+impl Debug for WindowPlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowPlacement")
+            .field("monitor", &self.monitor)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How showing and clicking a window affects keyboard focus and app activation.
+///
+/// This is for windows that must appear without stealing what the user is
+/// doing — a drop-down terminal is the canonical case: it overlays focused
+/// work and takes the keyboard only when its policy says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Activation {
+    /// Showing the window activates the app and focuses the window.
+    #[default]
+    OnShow,
+    /// Showing does not take focus; a click on the window does.
+    OnClick,
+    /// The window never takes keyboard focus or activates the app.
+    Never,
 }
 
 /// The state of a window.
@@ -115,8 +271,34 @@ pub enum WindowState {
     Closed,
     /// The window is minimized.
     Minimized,
+    /// The window fills the screen's work area, keeping its chrome and
+    /// the system's panels.
+    Maximized,
     /// The window is maximized to fullscreen.
     Fullscreen,
+}
+
+/// Where a window stacks relative to other applications' windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WindowLevel {
+    /// The window stacks with other windows as focus moves between them.
+    #[default]
+    Normal,
+    /// The window stays above other applications' normal windows.
+    AlwaysOnTop,
+}
+
+impl_constant!(WindowLevel);
+
+/// How urgently a window asks for the user's attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserAttention {
+    /// Something the user may want to look at: a finished task, a mention.
+    Informational,
+    /// Something the user must act on. Platforms that distinguish the two
+    /// keep drawing attention until the window is focused (macOS bounces the
+    /// dock icon repeatedly).
+    Critical,
 }
 
 /// The visual style of a window.
@@ -133,41 +315,97 @@ pub enum WindowStyle {
     FullSizeContentView,
 }
 
-/// The background style of a window (FFI level).
+/// The background style of a window.
 ///
 /// This only supports opaque or solid color backgrounds.
 /// For blur effects, use `Material` which wraps content with `MaterialBackground` metadata.
 ///
 /// # Platform Support
 ///
-/// - **macOS/iOS**: Supports both opaque and colored backgrounds.
-/// - **Android**: Supports colored backgrounds via `Window.setBackgroundDrawable()`.
-/// - **Linux (GTK)**: Supports colored backgrounds via window CSS/background styling.
+/// - **macOS**: `NSWindow.backgroundColor` and `isOpaque`.
+/// - **Android**: `Window.setBackgroundDrawable()`.
+/// - **Linux (GTK)**: window CSS background.
+/// - **Windows (`WinUI`)**: the content root's background brush.
+/// - **Hydrolysis**: the surface clear colour and composite alpha mode.
 #[derive(Debug, Clone, Default)]
 pub enum WindowBackground {
-    /// Opaque system default background.
+    /// Opaque background in the theme's [`Background`] colour.
     #[default]
     Opaque,
     /// Solid color background (can be semi-transparent via alpha).
     Color(Color),
 }
 
+impl WindowBackground {
+    /// The colour this background paints: the theme's [`Background`] colour
+    /// for [`Self::Opaque`], the declared colour otherwise.
+    #[must_use]
+    pub fn color(&self) -> Color {
+        match self {
+            Self::Opaque => Color::new(Background),
+            Self::Color(color) => color.clone(),
+        }
+    }
+}
+
+impl From<Color> for WindowBackground {
+    fn from(color: Color) -> Self {
+        Self::Color(color)
+    }
+}
+
+impl From<WindowBackground> for Binding<WindowBackground> {
+    fn from(background: WindowBackground) -> Self {
+        Self::container(background)
+    }
+}
+
+/// Resolves a reactive window background to the concrete colour a backend
+/// paints behind the window's content.
+///
+/// The result follows both a change of the background itself — including a
+/// switch between [`WindowBackground::Opaque`] and [`WindowBackground::Color`]
+/// — and a change of the colour it currently resolves to, such as a theme
+/// switch. A colour whose opacity is below one asks for a translucent window.
+#[must_use]
+pub fn resolve_background<S>(background: &S, env: &Environment) -> Computed<WorkingColor>
+where
+    S: Signal<Output = WindowBackground>,
+{
+    let env = env.clone();
+    flatten_signal(background.map(move |background| background.color().resolve(&env)))
+}
+
 /// Input type for `Window::background()` method.
 ///
-/// Allows setting window background via `Color` or `Material`.
-/// When `Material` is used, the window becomes opaque and the content
-/// is wrapped with a `MaterialBackground` metadata for native blur effects.
+/// Allows setting window background via a `Color`, a [`WindowBackground`], a
+/// `Binding<WindowBackground>` the app keeps to change it later, or a
+/// `Material`. When `Material` is used, the window becomes opaque and the
+/// content is wrapped with a `MaterialBackground` metadata for native blur
+/// effects.
 #[derive(Debug)]
 pub enum WindowBackgroundInput {
-    /// A solid color background.
-    Color(Color),
+    /// A reactive background: a fixed colour or `Opaque`, or a binding.
+    Background(Binding<WindowBackground>),
     /// A material blur effect (wraps content, window stays opaque).
     Material(Material),
 }
 
+impl From<WindowBackground> for WindowBackgroundInput {
+    fn from(background: WindowBackground) -> Self {
+        Self::Background(background.into())
+    }
+}
+
+impl From<Binding<WindowBackground>> for WindowBackgroundInput {
+    fn from(background: Binding<WindowBackground>) -> Self {
+        Self::Background(background)
+    }
+}
+
 impl From<Color> for WindowBackgroundInput {
     fn from(color: Color) -> Self {
-        Self::Color(color)
+        WindowBackground::Color(color).into()
     }
 }
 
@@ -202,6 +440,12 @@ impl WindowManager {
 impl_constant!(WindowState);
 impl_constant!(WindowStyle);
 
+impl From<WindowStyle> for Binding<WindowStyle> {
+    fn from(style: WindowStyle) -> Self {
+        Self::container(style)
+    }
+}
+
 impl Window {
     /// Create a new window with the specified title, state binding, and content.
     ///
@@ -220,21 +464,21 @@ impl Window {
         content: impl ViewBuilder,
     ) -> Self {
         let default_frame = Rect::new(Point::zero(), Size::new(800.0, 600.0));
-        let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
-        #[cfg(feature = "snackbar")]
-        let (snackbar_manager, snackbar_view) = SnackbarManager::new();
+        // Overlay and snackbar state are created inside the builder so each
+        // built instance owns its own managers: a `Dynamic` is single-consumer
+        // and cannot be mounted by more than one scene.
         let content = AnyViewBuilder::new(move || {
-            let overlay_manager = overlay_manager.clone();
-            #[cfg(feature = "snackbar")]
-            let snackbar_manager = snackbar_manager.clone();
+            let (overlay_manager, overlay_view) = FullScreenOverlayManager::new();
             let content = content
                 .build()
-                .overlay(overlay_view.clone())
+                .overlay(overlay_view)
                 .with(overlay_manager.clone())
                 .state(&overlay_manager);
             #[cfg(feature = "snackbar")]
+            let (snackbar_manager, snackbar_view) = SnackbarManager::new();
+            #[cfg(feature = "snackbar")]
             let content = content
-                .overlay(snackbar_view.clone())
+                .overlay(snackbar_view)
                 .with(snackbar_manager.clone())
                 .state(&snackbar_manager);
             AnyView::new(content)
@@ -248,10 +492,17 @@ impl Window {
             content,
             state,
             toolbar: None,
-            style: WindowStyle::default(),
-            background: WindowBackground::default(),
+            style: Binding::container(WindowStyle::default()),
+            background: Binding::container(WindowBackground::default()),
             min_size: None,
             max_size: None,
+            app_id: None,
+            instance_name: None,
+            placement: None,
+            activation: Activation::default(),
+            level: Computed::constant(WindowLevel::Normal),
+            attention: Binding::container(None),
+            resize_increments: None,
         }
     }
 
@@ -275,10 +526,75 @@ impl Window {
         self
     }
 
+    /// Set the identity the desktop groups this window under — its X11
+    /// `WM_CLASS` and Wayland `app_id`.
+    ///
+    /// See [`Self::app_id`] for the default and platform support notes.
+    #[must_use]
+    pub fn app_id(mut self, app_id: impl Into<Str>) -> Self {
+        self.app_id = Some(app_id.into());
+        self
+    }
+
+    /// Set the window's instance name inside the desktop identity — the X11
+    /// `WM_CLASS` instance part.
+    ///
+    /// See [`Self::instance_name`] for the default and platform support notes.
+    #[must_use]
+    pub fn instance_name(mut self, instance_name: impl Into<Str>) -> Self {
+        self.instance_name = Some(instance_name.into());
+        self
+    }
+
+    /// Set where the window stacks relative to other applications' windows.
+    ///
+    /// See [`Self::level`] for platform support notes.
+    #[must_use]
+    pub fn level(mut self, level: impl IntoComputed<WindowLevel>) -> Self {
+        self.level = level.into_computed();
+        self
+    }
+
+    /// Set the steps the window's content size moves in while the user
+    /// resizes it.
+    ///
+    /// See [`Self::resize_increments`] for platform support notes.
+    #[must_use]
+    pub fn resize_increments(mut self, increments: impl IntoComputed<Size>) -> Self {
+        self.resize_increments = Some(increments.into_computed());
+        self
+    }
+
     /// Set whether the window is resizable.
     #[must_use]
     pub const fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
+        self
+    }
+
+    /// Place the window on the monitor `monitor` resolves to, at the frame
+    /// `place` computes from that monitor's [`Monitor`].
+    ///
+    /// See [`Self::placement`] for the resolution contract and platform
+    /// support notes.
+    #[must_use]
+    pub fn placement(
+        mut self,
+        monitor: MonitorSelector,
+        place: impl Fn(&Monitor) -> Rect + 'static,
+    ) -> Self {
+        self.placement = Some(WindowPlacement {
+            monitor,
+            place: Rc::new(place),
+        });
+        self
+    }
+
+    /// Set how showing and clicking the window affects keyboard focus and
+    /// app activation. See [`Activation`].
+    #[must_use]
+    pub const fn activation(mut self, activation: Activation) -> Self {
+        self.activation = activation;
         self
     }
 
@@ -295,17 +611,23 @@ impl Window {
     }
 
     /// Set the visual style of the window.
+    ///
+    /// Takes a [`WindowStyle`] for a fixed style or a `Binding<WindowStyle>`
+    /// the app keeps to change the style after the window is shown.
     #[must_use]
-    pub const fn style(mut self, style: WindowStyle) -> Self {
-        self.style = style;
+    pub fn style(mut self, style: impl Into<Binding<WindowStyle>>) -> Self {
+        self.style = style.into();
         self
     }
 
     /// Set the background style of the window.
     ///
-    /// Accepts either a `Color` for solid backgrounds or a `Material` for blur effects.
-    /// When using `Material`, the window stays opaque and the content is wrapped with
-    /// `MaterialBackground` metadata handled by the native backend on a best-effort basis.
+    /// Accepts a `Color` for solid backgrounds, a [`WindowBackground`] or a
+    /// `Binding<WindowBackground>` to change the background after the window
+    /// is shown, or a `Material` for blur effects. When using `Material`, the
+    /// window stays opaque and the content is wrapped with
+    /// `MaterialBackground` metadata handled by the native backend on a
+    /// best-effort basis.
     ///
     /// # Examples
     ///
@@ -324,12 +646,12 @@ impl Window {
     #[must_use]
     pub fn background(mut self, background: impl Into<WindowBackgroundInput>) -> Self {
         match background.into() {
-            WindowBackgroundInput::Color(color) => {
-                self.background = WindowBackground::Color(color);
+            WindowBackgroundInput::Background(background) => {
+                self.background = background;
             }
             WindowBackgroundInput::Material(material) => {
                 // Keep window opaque, wrap content with MaterialBackground metadata
-                self.background = WindowBackground::Opaque;
+                self.background = Binding::container(WindowBackground::Opaque);
                 let content = self.content;
                 self.content = AnyViewBuilder::new(move || {
                     AnyView::new(IgnorableMetadata::new(
@@ -340,6 +662,13 @@ impl Window {
             }
         }
         self
+    }
+
+    /// The colour a backend paints behind the window's content, following the
+    /// reactive [`Self::background`]. See [`resolve_background`].
+    #[must_use]
+    pub fn resolved_background(&self, env: &Environment) -> Computed<WorkingColor> {
+        resolve_background(&self.background, env)
     }
 
     /// Builds the current window content tree.
@@ -379,16 +708,49 @@ impl Window {
             .into_computed()
     }
 
+    /// The identity to give the window, which is what a backend should set.
+    ///
+    /// A window that declares no [`app_id`](Self::app_id) of its own carries
+    /// the application's identifier, resolved here so that every backend
+    /// identifies a window the same way. The result is empty when neither was
+    /// given, which leaves the decision to the platform.
+    #[must_use]
+    pub fn display_app_id(&self) -> Str {
+        self.app_id.clone().unwrap_or_else(application_identifier)
+    }
+
+    /// The window's resolved instance name inside the desktop identity.
+    ///
+    /// A window that declares no [`instance_name`](Self::instance_name) of its
+    /// own carries its resolved [`app_id`](Self::display_app_id), which keeps
+    /// the platform default when that is empty too.
+    #[must_use]
+    pub fn display_instance_name(&self) -> Str {
+        self.instance_name
+            .clone()
+            .unwrap_or_else(|| self.display_app_id())
+    }
+
     /// Get a handle to control the window after showing it.
     #[must_use]
     pub fn handle(&self) -> WindowHandle {
         WindowHandle {
             frame: self.frame.clone(),
             state: self.state.clone(),
+            attention: self.attention.clone(),
+            style: self.style.clone(),
+            background: self.background.clone(),
         }
     }
 
     /// Show the window on screen.
+    ///
+    /// The window opens independently of any view's lifetime, which makes
+    /// this the way to show a window that must outlive every other window —
+    /// for example one reopened under
+    /// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
+    /// after the last window closed. For window presentation tied to a
+    /// mounted view, see [`conditional_window`].
     ///
     /// # Panics
     ///
@@ -445,7 +807,11 @@ impl WindowPresentation {
 /// window.
 ///
 /// The returned view is invisible and must be placed in the tree, or the
-/// window is never presented.
+/// window is never presented. The presentation lives only as long as the
+/// window hosting that view and ends when the host closes; a window that
+/// must outlive every other window — for example one reopened under
+/// [`LastWindowPolicy::StayResident`](crate::app::LastWindowPolicy::StayResident)
+/// after the last window closed — is opened with [`Window::show`] instead.
 pub fn conditional_window<F>(presentation: &WindowPresentation, creator: F) -> impl View + use<F>
 where
     F: Fn(Binding<WindowState>) -> Window + 'static,
@@ -457,7 +823,7 @@ where
         if s == WindowState::Closed {
             presented.set(false);
             AnyView::new(())
-        } else if !presented.get() {
+        } else if !presented.snapshot() {
             presented.set(true);
             AnyView::new(creator(state.clone()))
         } else {
@@ -471,6 +837,9 @@ where
 pub struct WindowHandle {
     frame: Binding<Rect>,
     state: Binding<WindowState>,
+    attention: Binding<Option<UserAttention>>,
+    style: Binding<WindowStyle>,
+    background: Binding<WindowBackground>,
 }
 
 impl WindowHandle {
@@ -484,7 +853,12 @@ impl WindowHandle {
         self.state.set(WindowState::Minimized);
     }
 
-    /// Maximize the window to fullscreen.
+    /// Maximize the window to the screen's work area.
+    pub fn maximize(&self) {
+        self.state.set(WindowState::Maximized);
+    }
+
+    /// Make the window fullscreen.
     pub fn fullscreen(&self) {
         self.state.set(WindowState::Fullscreen);
     }
@@ -494,8 +868,69 @@ impl WindowHandle {
         self.state.set(WindowState::Normal);
     }
 
+    /// Ask the platform to draw the user's attention to the window, until
+    /// the user focuses it.
+    pub fn request_attention(&self, urgency: UserAttention) {
+        self.attention.set(Some(urgency));
+    }
+
+    /// Withdraw a pending request for the user's attention.
+    pub fn cancel_attention(&self) {
+        self.attention.set(None);
+    }
+
     /// Set the frame of the window.
     pub fn set_frame(&self, frame: Rect) {
         self.frame.set(frame);
+    }
+
+    /// Set the visual style of the window; the backend re-applies it to the
+    /// shown window.
+    pub fn set_style(&self, style: WindowStyle) {
+        self.style.set(style);
+    }
+
+    /// Set the background of the window; the backend re-applies it to the
+    /// shown window.
+    pub fn set_background(&self, background: impl Into<WindowBackground>) {
+        self.background.set(background.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc};
+
+    use nami::{Binding, Signal};
+    use waterui_core::Environment;
+    use waterui_graphics::Color;
+
+    use super::{WindowBackground, resolve_background};
+
+    /// The resolved background follows a replacement of the background
+    /// itself, not only a change of the colour it started with.
+    #[test]
+    fn resolved_background_follows_a_replaced_background() {
+        let env = Environment::new();
+        let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
+        let resolved = resolve_background(&background, &env);
+        // Components are linear Display P3 red, green, blue, alpha: sRGB red
+        // lands near 0.82 in the wider P3 gamut.
+        assert!(resolved.snapshot().components[0] > 0.8);
+
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let _guard = resolved.watch({
+            let seen = seen.clone();
+            move |ctx| seen.borrow_mut().push(ctx.into_value())
+        });
+        background.set(WindowBackground::Color(
+            Color::srgb(0, 0, 255).with_opacity(0.5),
+        ));
+
+        let seen = seen.borrow();
+        let last = seen.last().expect("the replaced background was delivered");
+        assert!(last.components[2] > 0.9 && last.components[0] < 0.05);
+        assert!((last.components[3] - 0.5).abs() < 1e-6);
+        assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
     }
 }

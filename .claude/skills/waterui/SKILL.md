@@ -45,17 +45,17 @@ depend on before copying from it.
 ### 1. Pass the signal, never a snapshot of it
 
 Reactive APIs take `impl IntoComputed<T>`, `impl IntoSignalF32`, or `&Binding<T>`.
-Handing them `.get()` reads the value once and freezes it — the UI then never updates,
+Handing them `.snapshot()` reads the value once and freezes it — the UI then never updates,
 and nothing fails at compile time, so this bug is silent.
 
 ```rust
 view.opacity(fade.clone())              // reacts
-view.opacity(fade.get())                // frozen forever — a plain f32
+view.opacity(fade.snapshot())                // frozen forever — a plain f32
 Photo::new(url).blur(blur.clone())      // reacts
 text!("Count: {count}")                 // reacts
 ```
 
-`.get()` belongs inside event handlers and `.map()` closures, where you genuinely want
+`.snapshot()` belongs inside event handlers and `.map()` closures, where you genuinely want
 the value at that instant. It does not belong in a view body.
 
 ### 2. `watch` is not the reactive primitive — it is the escape hatch
@@ -95,7 +95,7 @@ parameter of that type.
 ```rust
 button("Search")
     .action(|State(q): State<Binding<Str>>, State(hist): State<Binding<Vec<Str>>>| {
-        hist.get_mut().push(q.get());
+        hist.with_mut(|h| h.push(q.snapshot()));
     })
     .state(&query)      // -> first parameter
     .state(&history)    // -> second parameter
@@ -207,7 +207,7 @@ use waterui::component::lazy::Lazy;                    // reactive stacks over a
 use waterui::views::ForEach;                           // the collection itself
 use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 use waterui::cursor::CursorStyle;
-use waterui::drag_drop::DragData;
+use waterui::drag_drop::{Files, Transferable};
 use waterui::env::with;                                // scope a value to a subtree
 use waterui::task::{sleep, spawn_local};               // async utilities
 ```
@@ -443,10 +443,10 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `Chart` (12 kinds) `Map` |
-| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuSurface` icon sets |
+| Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` `ExternalFrameView` icon sets |
 | Platform | `WebView` `#[js_api]` `waterui-chromium` |
 
 ## Verify before declaring done
@@ -514,7 +514,7 @@ whole app.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| UI never updates | `.get()` in a view body | pass the binding |
+| UI never updates | `.snapshot()` in a view body | pass the binding |
 | State resets on every keystroke | `watch` rebuilding the subtree | `text!` / signal-taking API / `Lazy::for_each` |
 | `no function or associated item named 'new'` on `Binding` | `Binding::new` does not exist | `Binding::i32(v)` / `Binding::container(v)` / `Binding::default()` |
 | `cannot find function 'when'` / derive `Identifiable` | not in the prelude | `use waterui::widget::condition::when;` / `use waterui::Identifiable;` |

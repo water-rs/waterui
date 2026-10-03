@@ -33,7 +33,7 @@ impl AspectRatioLayout {
     /// and `Fill` the larger. With one axis offered the other follows from the
     /// ratio, and with neither the child's own size sets the scale.
     fn resolve(&self, available: ProposalSize, content: Size) -> Size {
-        let ratio = self.ratio.get();
+        let ratio = self.ratio.snapshot();
         assert!(
             ratio > 0.0 && ratio.is_finite(),
             "aspect ratio must be a positive, finite width-to-height ratio, got {ratio}"

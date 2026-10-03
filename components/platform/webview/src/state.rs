@@ -179,7 +179,7 @@ impl StateRegistry {
             // patch read through it — so tagging here covers both.
             read: Box::new(move || {
                 let mut value =
-                    serde_json::to_value(reader.get()).expect("exposed state must serialize");
+                    serde_json::to_value(reader.snapshot()).expect("exposed state must serialize");
                 crate::big_integers::tag_unrepresentable(&mut value);
                 value
             }),
@@ -456,7 +456,7 @@ pub enum StateWriteError {
 mod tests {
     use super::{JsField, StateRegistry, StateWrite};
     use std::rc::Rc;
-    use waterui_core::{Binding, Computed, SignalExt};
+    use waterui_core::{Binding, Computed, Signal, SignalExt};
 
     fn registry() -> Rc<StateRegistry> {
         Rc::new(StateRegistry::default())
@@ -519,7 +519,7 @@ mod tests {
             .expect("applies");
 
         assert!(accepted, "the page's value stands");
-        assert_eq!(theme.get(), "dark");
+        assert_eq!(theme.snapshot(), "dark");
         assert!(
             registry.take_patch().is_none(),
             "an accepted write must not be echoed"

@@ -6,7 +6,7 @@ use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui_icons_material_icon as mdi;
 
-/// Glue: the app model navigation.md's snippets thread through their views.
+/// Glue: the app's model navigation.md's snippets thread through their views.
 /// `#[state]` marks it an extractor, which `send_draft`'s bare `mail: Mail`
 /// parameter relies on.
 #[state]
@@ -389,31 +389,52 @@ pub fn navigation_block_11(env: Environment) -> App {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`,
+// navigation.md § "## Windows" (prose): the `Window` builder — `.style(..)`
+// with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
+// `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`,
 // `.background(..)` with a Color or a Material, `.resizable(bool)`,
-// `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each), and
-// the `WindowState` variants. Not counted as a rust block.
+// `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
+// `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
+// `WindowHandle` controls. Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
-    use waterui::window::{Window, WindowState, WindowStyle};
+    use waterui::window::{
+        UserAttention, Window, WindowBackground, WindowLevel, WindowState, WindowStyle,
+    };
 
     let state = binding::<WindowState>(WindowState::default());
 
-    let _ = Window::new("W", state.clone(), || text("c"))
+    let window = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Titled)
         .background(Color::transparent())
         .resizable(true)
         .min_size(Size::new(320.0, 240.0))
-        .max_size(Size::new(1920.0, 1080.0));
-    let _ = Window::new("W", state, || text("c"))
+        .max_size(Size::new(1920.0, 1080.0))
+        .level(WindowLevel::AlwaysOnTop)
+        .resize_increments(Size::new(80.0, 24.0));
+    let handle = window.handle();
+    handle.maximize();
+    handle.request_attention(UserAttention::Informational);
+    handle.cancel_attention();
+    let _ = Window::new("W", state.clone(), || text("c"))
         .style(WindowStyle::Borderless)
         .background(Material::Regular);
+    let style = binding(WindowStyle::Titled);
+    let background = binding(WindowBackground::Opaque);
+    let window = Window::new("W", state, || text("c"))
+        .style(style.clone())
+        .background(background.clone());
+    window.handle().set_style(WindowStyle::Borderless);
+    window
+        .handle()
+        .set_background(Color::srgb(0, 0, 0).with_opacity(0.8));
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;
     let _ = WindowState::Closed;
     let _ = WindowState::Minimized;
+    let _ = WindowState::Maximized;
     let _ = WindowState::Fullscreen;
 }
 

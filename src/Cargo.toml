@@ -31,7 +31,6 @@ waterui-webview = { workspace = true, optional = true }
 # through `waterui_locale::LocalizedArgument`, so a WaterUI application that
 # formats a number into a string already depends on it.
 waterui-locale = { workspace = true, features = ["number"] }
-waterkit-screen = { workspace = true, optional = true }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
@@ -40,7 +39,7 @@ tracing.workspace = true
 unicode-segmentation = "1.13"
 tracing-subscriber = { workspace = true, optional = true }
 async-channel.workspace = true
-minstant.workspace = true
+web-time.workspace = true
 pulldown-cmark = { version = "0.13", optional = true }
 waterui-macros.workspace = true
 waterui-graphics = { workspace = true, default-features = false }
@@ -82,8 +81,6 @@ cpu-time.workspace = true
 default = [
     "gpu",
     "assets",
-    "media",
-    "inspector",
     "snackbar",
     "highlight",
     "locale-datetime",
@@ -99,8 +96,9 @@ locale-list = ["waterui-locale/list"]
 # because `code(…)` is a plain authoring API; an application that shows no code
 # drops syntect, two-face, and their syntax and theme tables by opting out.
 highlight = ["waterui-text/highlight"]
-# The devtools Inspector hub and its wire protocol. Default-on for
-# development hosts; embedded firmware disables it — the hub is desktop
+# The devtools Inspector hub and its wire protocol. Opt-in: a packaged
+# application that never attaches an inspector leaves the hub and its server
+# stack out, and embedded firmware disables it anyway — the hub is desktop
 # tooling, and its 64-bit sequence counters do not even exist on RV32
 # targets.
 inspector = ["dep:waterui-inspector-protocol", "dep:tracing-subscriber"]
@@ -112,20 +110,36 @@ inspector-signals = ["inspector", "nami/observability"]
 # Window-owned transient notifications. Embedded apps that do not select this
 # feature omit the manager, overlay, timers, and code-widget feedback path.
 snackbar = []
-# GPU rendering stack (wgpu/vello via waterui-graphics + waterui-svg). Default-on
-# so every existing consumer is unaffected. Disabling it lets a WaterUI app
-# cross-compile lean for embedded targets without the GPU stack.
+# Filters on views (`FilterViewExt`) and their portable description, without
+# the GPU stack: a backend that lowers filters into its own primitives reads
+# the description. Implied by `gpu`.
+effects = ["waterui-graphics/effects"]
+# GPU rendering stack (wgpu via waterui-graphics' Cherenkov engine +
+# waterui-svg). Default-on so every existing consumer is unaffected.
+# Disabling it lets a WaterUI app cross-compile lean for embedded targets
+# without the GPU stack.
 gpu = [
+    "effects",
     "waterui-graphics/gpu",
     "waterui-shape/gpu",
     "dep:waterui-svg",
-    "dep:waterkit-screen",
 ]
-# `asset!` expands media-kind assets into `waterui::media::Photo` /
-# `waterui::video::video`, so the assets feature must carry the media stack.
-assets = ["dep:waterui-assets", "dep:waterui-assets-macros", "media"]
-media = ["dep:waterui-media", "video"]
-video = ["dep:waterui-video"]
+# `asset!` expands image-kind assets into `waterui::media::Photo` (`ImageAsset`,
+# behind `waterui-assets`' `media` feature) and video-kind assets into
+# `waterui::video` (`VideoAsset`, behind `waterui-assets`' `video` feature);
+# each is enabled only when both sides are present.
+assets = ["dep:waterui-assets", "dep:waterui-assets-macros"]
+media = ["dep:waterui-media", "waterui-assets?/media"]
+video = ["dep:waterui-video", "waterui-media?/video", "waterui-assets?/video"]
+# Remote fetching (`Url::fetch`, `Data::from_remote`, remote `Photo` sources)
+# links the `zenwave` HTTP client through `waterui-url`/`waterui-media`. Off by
+# default so an application that never names a remote URL carries no HTTP
+# client — framework principle 5.
+remote = [
+    "waterui-url/remote",
+    "waterui-media?/remote",
+    "waterui-assets?/remote",
+]
 # `WaterUI`'s own GPU video player, installed as the video realization. Not
 # implied by `video`: Apple bridges AVPlayer, so an Apple application would
 # otherwise link and pay for a player it never runs. The backend that has no
@@ -179,6 +193,7 @@ all = [
     "video-gpu",
     "navigation-restoration",
     "snackbar",
+    "remote",
 ]
 
 [dev-dependencies]

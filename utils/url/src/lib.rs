@@ -37,7 +37,7 @@ use core::str::FromStr;
 pub use error::ParseError;
 pub use into_url::IntoUrl;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 use core::error::Error;
 
 use alloc::string::{String, ToString};
@@ -46,18 +46,19 @@ use base64::engine::general_purpose::STANDARD;
 use core::fmt;
 use suiteki::Str;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 use sha2::{Digest as _, Sha256};
 #[cfg(feature = "std")]
+use std::path::{Path, PathBuf};
+#[cfg(feature = "remote")]
 use std::{
     cell::Cell,
-    path::{Path, PathBuf},
     rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 use {
     executor_core::spawn_local,
     nami::Binding,
@@ -702,7 +703,7 @@ impl Url {
     /// download lazily on first observation and resolve to a cached local file URL.
     /// If a web fetch fails, observing the signal again retries the download
     /// until the fetch instance exhausts its retry budget.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[must_use]
     pub fn fetch(&self) -> Fetched {
         Fetched::new(self.clone())
@@ -783,10 +784,10 @@ impl From<Url> for Str {
 // This allows Url to be used directly with `IntoComputed<Url>`
 nami_core::impl_constant!(Url);
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 const FETCH_RETRY_BUDGET: u8 = 3;
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 #[derive(Debug)]
 struct FetchedState {
     result: Binding<Option<Url>>,
@@ -794,7 +795,7 @@ struct FetchedState {
     remaining_attempts: Cell<u8>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl FetchedState {
     fn new() -> Self {
         Self {
@@ -805,7 +806,7 @@ impl FetchedState {
     }
 
     fn try_start(&self) -> bool {
-        if self.result.get().is_some() {
+        if self.result.snapshot().is_some() {
             return false;
         }
 
@@ -838,14 +839,14 @@ impl FetchedState {
 }
 
 /// A reactive signal for fetched URL content.
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 #[derive(Debug, Clone)]
 pub struct Fetched {
     url: Url,
     state: Rc<FetchedState>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl Fetched {
     fn new(url: Url) -> Self {
         Self {
@@ -889,14 +890,14 @@ impl Fetched {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl Signal for Fetched {
     type Output = Option<Url>;
     type Guard = nami_core::watcher::BoxWatcherGuard;
 
-    fn get(&self) -> Self::Output {
+    fn snapshot(&self) -> Self::Output {
         self.ensure_started();
-        self.state.result.get()
+        self.state.result.snapshot()
     }
 
     fn watch(
@@ -909,7 +910,7 @@ impl Signal for Fetched {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 /// Errors that can occur while downloading a remote resource into memory.
 #[derive(Debug)]
 pub enum RemoteDownloadError {
@@ -921,7 +922,7 @@ pub enum RemoteDownloadError {
     ReadBody(String),
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl RemoteDownloadError {
     /// Returns the upstream HTTP status code when one exists.
     #[must_use]
@@ -945,7 +946,7 @@ impl RemoteDownloadError {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl fmt::Display for RemoteDownloadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -958,16 +959,16 @@ impl fmt::Display for RemoteDownloadError {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl Error for RemoteDownloadError {}
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 struct DownloadedRemoteBytes {
     bytes: Vec<u8>,
     content_type: Option<String>,
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 /// Downloads the bytes for a remote URL without writing them to disk.
 ///
 /// # Errors
@@ -978,7 +979,7 @@ pub async fn download_remote_bytes(url: &str) -> Result<Vec<u8>, RemoteDownloadE
     Ok(download_remote_bytes_with_content_type(url).await?.bytes)
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 async fn download_remote_bytes_with_content_type(
     url: &str,
 ) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
@@ -993,7 +994,10 @@ async fn download_remote_bytes_with_content_type(
         match download_remote_once(url).await {
             Err(error) if attempt < MAX_ATTEMPTS && error.is_transient() => {
                 tracing::warn!(%url, attempt, "remote download failed transiently; retrying");
-                std::thread::sleep(backoff);
+                // An async wait: this runs on whatever executor drove the
+                // download, and `thread::sleep` would park that thread —
+                // 500 ms, then 1.5 s — with everything else scheduled on it.
+                async_io::Timer::after(backoff).await;
                 backoff *= 3;
             }
             result => return result,
@@ -1001,7 +1005,7 @@ async fn download_remote_bytes_with_content_type(
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 async fn download_remote_once(url: &str) -> Result<DownloadedRemoteBytes, RemoteDownloadError> {
     let mut client = zenwave::client();
     let response = client
@@ -1033,7 +1037,7 @@ async fn download_remote_once(url: &str) -> Result<DownloadedRemoteBytes, Remote
     })
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 #[derive(Debug)]
 enum FetchError {
     CacheRootUnavailable,
@@ -1043,7 +1047,7 @@ enum FetchError {
     Persist(std::io::Error),
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1056,10 +1060,10 @@ impl fmt::Display for FetchError {
     }
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 impl Error for FetchError {}
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn fetch_cache_root() -> Option<PathBuf> {
     dirs::cache_dir()
         .map(|root| root.join("waterui").join("url-fetch"))
@@ -1069,17 +1073,17 @@ fn fetch_cache_root() -> Option<PathBuf> {
         })
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn fetch_cache_key(url: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(url.as_bytes()))
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn fetch_cache_entry_dir(cache_root: &Path, key: &str) -> PathBuf {
     cache_root.join(key)
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn cache_payload_path(cache_entry_dir: &Path, extension: Option<&str>) -> PathBuf {
     extension.map_or_else(
         || cache_entry_dir.join("payload"),
@@ -1087,12 +1091,12 @@ fn cache_payload_path(cache_entry_dir: &Path, extension: Option<&str>) -> PathBu
     )
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn cache_temp_path(cache_entry_dir: &Path, nonce: u128) -> PathBuf {
     cache_entry_dir.join(format!("incoming-{}-{nonce}", std::process::id()))
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn existing_fetch_cache_path_in(cache_root: &Path, key: &str) -> Option<PathBuf> {
     let cache_entry_dir = fetch_cache_entry_dir(cache_root, key);
     let payload = cache_entry_dir.join("payload");
@@ -1121,20 +1125,20 @@ fn existing_fetch_cache_path_in(cache_root: &Path, key: &str) -> Option<PathBuf>
     None
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn existing_fetch_cache_path(url: &Url) -> Option<PathBuf> {
     let cache_root = fetch_cache_root()?;
     let key = fetch_cache_key(url.as_str());
     existing_fetch_cache_path_in(&cache_root, &key)
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn existing_fetch_cache_url(url: &Url) -> Option<Url> {
     existing_fetch_cache_path(url)
         .map(|path| Url::from_file_path_str(path.to_string_lossy().to_string()))
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn infer_extension(path_extension: Option<&str>, content_type: Option<&str>) -> Option<String> {
     if let Some(extension) = path_extension {
         return Some(extension.to_ascii_lowercase());
@@ -1150,7 +1154,7 @@ fn infer_extension(path_extension: Option<&str>, content_type: Option<&str>) -> 
         .map(str::to_string)
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 fn preferred_extension<'a>(extensions: &'a [&'a str]) -> Option<&'a str> {
     [
         "txt", "json", "html", "xml", "css", "js", "jpg", "png", "gif",
@@ -1160,23 +1164,39 @@ fn preferred_extension<'a>(extensions: &'a [&'a str]) -> Option<&'a str> {
     .or_else(|| extensions.first().copied())
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 async fn fetch_remote_to_cache(
     url: String,
     path_extension: Option<String>,
 ) -> Result<Url, FetchError> {
     let cache_root = fetch_cache_root().ok_or(FetchError::CacheRootUnavailable)?;
-    std::fs::create_dir_all(&cache_root).map_err(FetchError::CreateCacheDir)?;
+    // Every filesystem call below goes through `blocking::unblock`: this is an
+    // `async fn`, so a synchronous `create_dir_all`, `read_dir`, `write` or
+    // `rename` stalls the executor thread for the duration of the syscall —
+    // unbounded for the payload write. The same offload pattern as
+    // `waterui_media::photo` and the preview runtime.
+    let root_for_create = cache_root.clone();
+    blocking::unblock(move || std::fs::create_dir_all(&root_for_create))
+        .await
+        .map_err(FetchError::CreateCacheDir)?;
     let key = fetch_cache_key(&url);
 
-    if let Some(cached) = existing_fetch_cache_path_in(&cache_root, &key) {
+    let root_for_scan = cache_root.clone();
+    let key_for_scan = key.clone();
+    let cached =
+        blocking::unblock(move || existing_fetch_cache_path_in(&root_for_scan, &key_for_scan))
+            .await;
+    if let Some(cached) = cached {
         return Ok(Url::from_file_path_str(
             cached.to_string_lossy().to_string(),
         ));
     }
 
     let cache_entry_dir = fetch_cache_entry_dir(&cache_root, &key);
-    std::fs::create_dir_all(&cache_entry_dir).map_err(FetchError::CreateCacheDir)?;
+    let entry_dir_for_create = cache_entry_dir.clone();
+    blocking::unblock(move || std::fs::create_dir_all(&entry_dir_for_create))
+        .await
+        .map_err(FetchError::CreateCacheDir)?;
 
     let downloaded = download_remote_bytes_with_content_type(&url)
         .await
@@ -1192,15 +1212,27 @@ async fn fetch_remote_to_cache(
         .unwrap_or_default();
     let temp_path = cache_temp_path(&cache_entry_dir, nonce);
 
-    std::fs::write(&temp_path, &downloaded.bytes).map_err(FetchError::WriteTemp)?;
+    let temp_for_write = temp_path.clone();
+    let bytes = downloaded.bytes;
+    blocking::unblock(move || std::fs::write(&temp_for_write, &bytes))
+        .await
+        .map_err(FetchError::WriteTemp)?;
 
-    if let Err(error) = std::fs::rename(&temp_path, &cache_path) {
-        if cache_path.exists() {
-            let _ = std::fs::remove_file(&temp_path);
-        } else {
-            return Err(FetchError::Persist(error));
+    let temp_for_persist = temp_path.clone();
+    let cache_for_persist = cache_path.clone();
+    blocking::unblock(move || {
+        if let Err(error) = std::fs::rename(&temp_for_persist, &cache_for_persist) {
+            // A concurrent fetch of the same URL won the rename; its payload
+            // is equivalent, so drop ours rather than failing.
+            if cache_for_persist.exists() {
+                let _ = std::fs::remove_file(&temp_for_persist);
+            } else {
+                return Err(FetchError::Persist(error));
+            }
         }
-    }
+        Ok(())
+    })
+    .await?;
 
     Ok(Url::from_file_path_str(
         cache_path.to_string_lossy().to_string(),
@@ -1210,7 +1242,7 @@ async fn fetch_remote_to_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -1601,15 +1633,15 @@ mod tests {
         assert!(Url::new("file.txt").is_relative());
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetch_resolves_local_url_immediately() {
         let url = Url::new("/tmp/example.txt");
         let fetched = url.fetch();
-        assert_eq!(fetched.get(), Some(url));
+        assert_eq!(fetched.snapshot(), Some(url));
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn infer_extension_uses_content_type_when_url_has_no_extension() {
         let url = Url::new("https://example.com/download");
@@ -1619,7 +1651,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetch_cache_key_has_fixed_length() {
         let long_path = "a".repeat(512);
@@ -1630,7 +1662,7 @@ mod tests {
         assert_eq!(key.len(), 43);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn existing_fetch_cache_path_ignores_incoming_files() {
         let unique = SystemTime::now()
@@ -1657,7 +1689,7 @@ mod tests {
         std::fs::remove_dir_all(&temp_dir).expect("temp cache dir should be removed");
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetched_state_allows_retry_after_failure() {
         let state = FetchedState::new();
@@ -1669,18 +1701,18 @@ mod tests {
         assert_eq!(state.remaining_attempts(), FETCH_RETRY_BUDGET - 2);
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetched_state_stops_restarting_after_resolution() {
         let state = FetchedState::new();
         assert!(state.try_start());
 
         state.resolve(Url::new("/tmp/example.txt"));
-        assert_eq!(state.result.get(), Some(Url::new("/tmp/example.txt")));
+        assert_eq!(state.result.snapshot(), Some(Url::new("/tmp/example.txt")));
         assert!(!state.try_start());
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetched_state_stops_retrying_after_budget_is_exhausted() {
         let state = FetchedState::new();
@@ -1694,7 +1726,7 @@ mod tests {
         assert!(!state.try_start());
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetch_remote_to_cache_downloads_with_zenwave() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
@@ -1738,7 +1770,7 @@ mod tests {
         server.join().expect("server thread should finish");
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     #[test]
     fn fetch_remote_to_cache_handles_long_urls() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");

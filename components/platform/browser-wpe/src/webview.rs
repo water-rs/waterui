@@ -222,7 +222,7 @@ impl WebViewHandle for WpeWebViewHandle {
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
         let enabled = Computed::new(enabled);
-        self.page.set_redirects_enabled(enabled.get());
+        self.page.set_redirects_enabled(enabled.snapshot());
         let page = self.page.clone();
         let guard = enabled.watch(move |context| {
             page.set_redirects_enabled(context.into_value());

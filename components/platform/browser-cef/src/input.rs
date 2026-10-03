@@ -15,20 +15,25 @@
 //!
 //! # Event order
 //!
-//! Text a keystroke produces may arrive either side of the
-//! [`SurfaceInputEvent::Key`] that produced it. The adapter holds a
-//! [`SurfaceInputEvent::TextInput`] until the next key press and prefers it
-//! over the character the logical key implies, because the platform's committed
-//! text is the authority on what a dead key or an accented layout actually
-//! typed. A backend that emits no text at all (GTK) is equally well served: the
-//! logical key carries the character.
+//! A press that produces text is followed by *its*
+//! [`SurfaceInputEvent::TextInput`] — pressed key, then text, then the
+//! release — the order the web platform gives `keydown` and `beforeinput`
+//! and the only order the surface vocabulary takes. The adapter sends the
+//! `RAWKEYDOWN` at press time and the character when the text lands: a
+//! `CHAR` event for the single BMP character CEF's key ABI carries,
+//! `commit_text` for the run it cannot hold (an emoji, a ligature). The
+//! committed text still wins over the character the logical key implies —
+//! it is the authority on what a dead key or an accented layout typed.
+//!
+//! A backend that emits no text at all (GTK) is equally well served: the
+//! logical key carries the character. "Is text coming" needs no timer —
+//! every backend delivers its events down one ordered queue, so the *next
+//! event of any kind* after a press is the answer: the press produced none,
+//! and its logical character goes out then.
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::str::FromStr as _;
 
-use waterui_core::Environment;
-use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
-use waterui_graphics::gpu_surface::{GpuContext, GpuFrame, GpuView};
 use waterui_graphics::input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
@@ -48,7 +53,7 @@ const KEYCODE_UNMAPPED: u16 = 0xffff;
 ///
 /// Holds the state CEF's windowless input ABI needs but does not carry in its
 /// events: the modifier chord, which pointer buttons are down, the sub-notch
-/// wheel remainder, and the text a keystroke produced.
+/// wheel remainder, and the press→text pairing (see the module docs).
 ///
 /// Positions are logical and surface-local, exactly as
 /// [`SurfaceInputEvent`] defines them: the page's own top-left is `(0, 0)`.
@@ -62,7 +67,7 @@ pub struct CefSurfaceInput {
     /// integer ABI. Dropping it turns a slow trackpad glide into no scroll at
     /// all.
     wheel_remainder: (f64, f64),
-    pending_text: Option<String>,
+    pairing: KeyPairing,
 }
 
 impl CefSurfaceInput {
@@ -73,7 +78,7 @@ impl CefSurfaceInput {
             page,
             modifiers: CefInputModifiers::default(),
             wheel_remainder: (0.0, 0.0),
-            pending_text: None,
+            pairing: KeyPairing::default(),
         }
     }
 
@@ -87,10 +92,19 @@ impl CefSurfaceInput {
     ///
     /// # Panics
     ///
-    /// Panics when two [`SurfaceInputEvent::TextInput`] events arrive with no
-    /// key press between them, or when a composition caret is not on a
-    /// character boundary of its text.
+    /// Panics when a composition caret is not on a character boundary of its
+    /// text.
     pub fn handle(&mut self, event: &SurfaceInputEvent) {
+        // Any event that is not text or a key answers "the press produced
+        // no text" for an owed press — the owed character goes out first
+        // (see the module docs for why no timer is needed).
+        if !matches!(
+            event,
+            SurfaceInputEvent::Key { .. } | SurfaceInputEvent::TextInput(_)
+        ) {
+            let calls = self.pairing.flush();
+            self.apply_key_calls(calls);
+        }
         match event {
             SurfaceInputEvent::Focus(focused) => self.page.set_focus(*focused),
             SurfaceInputEvent::Modifiers(modifiers) => self.set_modifiers(*modifiers),
@@ -121,11 +135,8 @@ impl CefSurfaceInput {
                 self.key(*pressed, key, *code);
             }
             SurfaceInputEvent::TextInput(text) => {
-                let previous = self.pending_text.replace(text.to_string());
-                assert!(
-                    previous.is_none(),
-                    "CEF received consecutive text input without the corresponding key event"
-                );
+                let calls = self.pairing.text(text);
+                self.apply_key_calls(calls);
             }
             // CEF has no "a composition began" call: the first pre-edit opens
             // the session on the browser side.
@@ -136,6 +147,25 @@ impl CefSurfaceInput {
             }
             SurfaceInputEvent::CompositionCommit(text) => self.page.commit_text(text, None),
             SurfaceInputEvent::CompositionCancel => self.page.cancel_composition(),
+        }
+    }
+
+    /// Plays the calls the press→text pairing resolved against the page.
+    fn apply_key_calls(&self, calls: Vec<KeyCall>) {
+        for call in calls {
+            match call {
+                KeyCall::Transition {
+                    pressed,
+                    input,
+                    modifiers,
+                } => self.page.key(pressed, input, modifiers),
+                KeyCall::Char {
+                    input,
+                    character,
+                    modifiers,
+                } => self.page.key_char(input, character, modifiers),
+                KeyCall::Commit { text } => self.page.commit_text(&text, None),
+            }
         }
     }
 
@@ -193,98 +223,152 @@ impl CefSurfaceInput {
     }
 
     fn key(&mut self, pressed: bool, key: &Key, code: Code) {
-        let text = if pressed {
-            self.pending_text.take()
-        } else {
-            None
-        };
-        // The platform's committed text wins over the character the logical key
-        // implies: a dead key resolving to "é" types "é", not the accent.
-        let text_character = text.as_deref().and_then(single_cef_character);
-        let input = CefKeyInput {
-            native_keycode: native_key_code(code),
-            keyval: windows_virtual_key(key),
-            character: text_character.or_else(|| key_character(key)),
-        };
-        self.page.key(pressed, input, self.modifiers);
+        let calls = self.pairing.key(pressed, key, code, self.modifiers);
+        self.apply_key_calls(calls);
         #[cfg(target_os = "macos")]
         if pressed && let Some(command) = MacEditShortcut::from_input(key, self.modifiers) {
             command.execute(&self.page);
         }
-        // Text CEF's single-UTF-16-unit character field cannot carry — an
-        // emoji, a ligature, a pasted run — is inserted as an edit instead.
-        if text_character.is_none()
-            && let Some(text) = text
-        {
-            self.page.commit_text(&text, None);
-        }
     }
 }
 
-/// A CEF presenter that also consumes the input landing on its surface.
+/// The press→text pairing as a pure event transform.
 ///
-/// The presenter and the input adapter are separate concerns — one owns the
-/// shared texture, the other owns Chromium's input ABI — but a backend that
-/// routes input to GPU views by
-/// [`wants_input_events`](GpuView::wants_input_events) needs them as one
-/// object. See [`gpu_view_with_input`](crate::gpu_view_with_input).
-pub struct CefInputGpuView<V> {
-    view: V,
-    input: CefSurfaceInput,
+/// A `CefPageHandle` cannot be constructed without a running browser, so the
+/// pairing emits the ABI calls it decides on as [`KeyCall`] data and
+/// [`CefSurfaceInput::apply_key_calls`] plays them — a test can drive the
+/// exact [`SurfaceInputEvent`] stream a backend produces and read the ABI
+/// back.
+#[derive(Debug, Default)]
+struct KeyPairing {
+    /// The most recent press still owed a character: its `RAWKEYDOWN` went
+    /// out at press time; the `CHAR` rides the press's own `TextInput`, or
+    /// the logical key's character goes out when the next event of any kind
+    /// arrives without one — the only distinction "text is coming" from
+    /// "no text is coming" a shared ordered queue offers.
+    owed: Option<OwedChar>,
 }
 
-impl<V> CefInputGpuView<V> {
-    pub const fn new(view: V, input: CefSurfaceInput) -> Self {
-        Self { view, input }
-    }
+/// A press whose `RAWKEYDOWN` went out with the character still owed.
+#[derive(Debug)]
+struct OwedChar {
+    /// The press's keycodes — the `CHAR` carries them so CEF correlates it
+    /// with the same physical key.
+    input: CefKeyInput,
+    /// The logical key — the fallback character when the backend reports no
+    /// text for the press at all (GTK emits key events only).
+    key: Key,
+    /// The chord held at press time: the `CHAR` reflects what was held then,
+    /// not whatever a later event moved the chord to.
+    modifiers: CefInputModifiers,
 }
 
-impl<V: GpuView> GpuView for CefInputGpuView<V> {
-    #[expect(
-        clippy::future_not_send,
-        reason = "CEF and WaterUI view state are confined to the UI thread"
-    )]
-    async fn setup(&mut self, ctx: &GpuContext<'_>, env: &mut Environment) {
-        self.view.setup(ctx, env).await;
+/// One ABI call the pairing asks the page to make.
+#[derive(Debug, PartialEq)]
+enum KeyCall {
+    /// A key transition carrying no character — `RAWKEYDOWN` on press,
+    /// `KEYUP` on release.
+    Transition {
+        /// `true` for a press, `false` for a release.
+        pressed: bool,
+        /// The key's CEF metadata, always without a character field.
+        input: CefKeyInput,
+        /// The modifier word to send with the event.
+        modifiers: CefInputModifiers,
+    },
+    /// The `CHAR` for a press — its paired `TextInput` when one arrived, or
+    /// the character the logical key implies when the next event arrived
+    /// first (the no-text backend case).
+    Char {
+        /// The owed press's keycodes.
+        input: CefKeyInput,
+        /// The single BMP character to type.
+        character: char,
+        /// The modifier word frozen at press time.
+        modifiers: CefInputModifiers,
+    },
+    /// `commit_text` for what a single `CHAR` cannot carry — a multi-unit
+    /// or supplementary-plane run — or for text that arrived with no press
+    /// behind it.
+    Commit {
+        /// The text to insert.
+        text: String,
+    },
+}
+
+impl KeyPairing {
+    /// Ends the owed-press wait without pairing: the press produced no
+    /// text, so its logical key's own character goes out now.
+    ///
+    /// Returns nothing for an owed press whose logical key types nothing
+    /// (a modifier, a dead key): such a press is a `RAWKEYDOWN`/`KEYUP`
+    /// pair with no `CHAR`, exactly what the platform reported.
+    fn flush(&mut self) -> Vec<KeyCall> {
+        let Some(owed) = self.owed.take() else {
+            return Vec::new();
+        };
+        key_character(&owed.key)
+            .map(|character| KeyCall::Char {
+                input: owed.input,
+                character,
+                modifiers: owed.modifiers,
+            })
+            .into_iter()
+            .collect()
     }
 
-    fn render(&mut self, frame: &mut GpuFrame) {
-        self.view.render(frame);
+    /// The calls a key transition resolves to. A press flushes the previous
+    /// owed press first — two presses with no text between them mean the
+    /// first produced none — then goes out as `RAWKEYDOWN` and becomes the
+    /// owed one. A release flushes and goes out as `KEYUP`.
+    fn key(
+        &mut self,
+        pressed: bool,
+        key: &Key,
+        code: Code,
+        modifiers: CefInputModifiers,
+    ) -> Vec<KeyCall> {
+        let mut calls = self.flush();
+        let input = CefKeyInput {
+            native_keycode: native_key_code(code),
+            keyval: windows_virtual_key(key),
+            character: None,
+        };
+        calls.push(KeyCall::Transition {
+            pressed,
+            input,
+            modifiers,
+        });
+        if pressed {
+            self.owed = Some(OwedChar {
+                input,
+                key: key.clone(),
+                modifiers,
+            });
+        }
+        calls
     }
 
-    fn preferred_surface_hdr(&self) -> Option<bool> {
-        self.view.preferred_surface_hdr()
-    }
-
-    fn is_opaque(&self) -> bool {
-        self.view.is_opaque()
-    }
-
-    fn wants_input_events(&self) -> bool {
-        true
-    }
-
-    fn input(&mut self, event: &SurfaceInputEvent) {
-        self.input.handle(event);
-    }
-
-    fn ime_caret(&self) -> Option<kurbo::Rect> {
-        // Wrapping a presenter must not take its caret away, even though no CEF
-        // presenter reports one today: Chromium knows where the composition is
-        // and the host would have to be told.
-        self.view.ime_caret()
-    }
-
-    fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        self.view.measure(proposal)
-    }
-
-    fn stretch_axis(&self) -> StretchAxis {
-        self.view.stretch_axis()
-    }
-
-    fn priority(&self) -> i32 {
-        self.view.priority()
+    /// The calls a `TextInput` resolves to. Following a press it is that
+    /// press's text — a `CHAR` when it is one BMP character, a commit when
+    /// it is not. With no owed press it is standalone text and commits
+    /// verbatim.
+    fn text(&mut self, text: &str) -> Vec<KeyCall> {
+        match self.owed.take() {
+            Some(owed) => vec![match single_cef_character(text) {
+                Some(character) => KeyCall::Char {
+                    input: owed.input,
+                    character,
+                    modifiers: owed.modifiers,
+                },
+                None => KeyCall::Commit {
+                    text: text.to_owned(),
+                },
+            }],
+            None => vec![KeyCall::Commit {
+                text: text.to_owned(),
+            }],
+        }
     }
 }
 
@@ -479,11 +563,165 @@ impl MacEditShortcut {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "macos")]
-    use super::{CefInputModifiers, MacEditShortcut};
+    use super::MacEditShortcut;
     use super::{
-        Code, Key, NamedKey, composition_selection, key_character, native_key_code,
-        single_cef_character, windows_virtual_key,
+        CefInputModifiers, Code, Key, KeyCall, KeyPairing, Modifiers, NamedKey, SurfaceInputEvent,
+        composition_selection, key_character, native_key_code, single_cef_character,
+        windows_virtual_key,
     };
+
+    /// A `Key` event the way a backend reports it.
+    fn key_event(pressed: bool, key: Key, code: Code) -> SurfaceInputEvent {
+        SurfaceInputEvent::Key {
+            pressed,
+            key,
+            code,
+            modifiers: Modifiers::empty(),
+            repeat: false,
+        }
+    }
+
+    /// The calls a sequence of surface events resolves to — the test's view
+    /// of the page.
+    fn calls_for(events: &[SurfaceInputEvent]) -> Vec<KeyCall> {
+        let modifiers = CefInputModifiers::default();
+        let mut pairing = KeyPairing::default();
+        events
+            .iter()
+            .flat_map(|event| match event {
+                SurfaceInputEvent::Key {
+                    pressed, key, code, ..
+                } => pairing.key(*pressed, key, *code, modifiers),
+                SurfaceInputEvent::TextInput(text) => pairing.text(text),
+                _ => pairing.flush(),
+            })
+            .collect()
+    }
+
+    /// What the calls would insert — `CHAR` characters and commits, in
+    /// order. This is the text the page ends up with.
+    fn typed_text(calls: &[KeyCall]) -> String {
+        calls
+            .iter()
+            .filter_map(|call| match call {
+                KeyCall::Char { character, .. } => Some(character.to_string()),
+                KeyCall::Commit { text } => Some(text.clone()),
+                KeyCall::Transition { .. } => None,
+            })
+            .collect()
+    }
+
+    /// Press → text → release for `a` and `b` types "ab" — each `CHAR`
+    /// rides the keycodes of the press its text belongs to, never the next
+    /// key's.
+    #[test]
+    fn text_following_a_press_pairs_with_that_press() {
+        let calls = calls_for(&[
+            key_event(true, Key::Character("a".into()), Code::KeyA),
+            SurfaceInputEvent::TextInput("a".into()),
+            key_event(false, Key::Character("a".into()), Code::KeyA),
+            key_event(true, Key::Character("b".into()), Code::KeyB),
+            SurfaceInputEvent::TextInput("b".into()),
+            key_event(false, Key::Character("b".into()), Code::KeyB),
+        ]);
+        assert_eq!(typed_text(&calls), "ab");
+        let char_keyvals: Vec<u32> = calls
+            .iter()
+            .filter_map(|call| match call {
+                KeyCall::Char { input, .. } => Some(input.keyval),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(char_keyvals, [u32::from('A'), u32::from('B')]);
+        // The character event follows its own press, not the next one.
+        assert!(matches!(
+            &calls[..3],
+            [
+                KeyCall::Transition { pressed: true, .. },
+                KeyCall::Char { character: 'a', .. },
+                KeyCall::Transition { pressed: false, .. },
+            ]
+        ));
+    }
+
+    /// Dead-acute then `e`: the dead key types nothing itself, and the
+    /// committed "é" — not the accent, not the `e` — is the text.
+    #[test]
+    fn a_dead_key_sequence_types_the_combined_character_once() {
+        let calls = calls_for(&[
+            key_event(true, Key::Named(NamedKey::Dead), Code::Unidentified),
+            key_event(false, Key::Named(NamedKey::Dead), Code::Unidentified),
+            key_event(true, Key::Character("e".into()), Code::KeyE),
+            SurfaceInputEvent::TextInput("é".into()),
+            key_event(false, Key::Character("e".into()), Code::KeyE),
+        ]);
+        assert_eq!(typed_text(&calls), "é");
+        // The dead press is exactly a RAWKEYDOWN/KEYUP pair — no CHAR.
+        assert_eq!(calls.len(), 5, "expected transitions + one CHAR: {calls:?}");
+    }
+
+    /// A backend that emits no text at all (GTK) still types the logical
+    /// key's character — sent when the next event, here the release,
+    /// arrives without a `TextInput`.
+    #[test]
+    fn a_press_with_no_text_types_the_logical_key_character() {
+        let calls = calls_for(&[
+            key_event(true, Key::Character("a".into()), Code::KeyA),
+            key_event(false, Key::Character("a".into()), Code::KeyA),
+        ]);
+        assert_eq!(typed_text(&calls), "a");
+        assert!(matches!(
+            &calls[..],
+            [
+                KeyCall::Transition { pressed: true, .. },
+                KeyCall::Char { character: 'a', .. },
+                KeyCall::Transition { pressed: false, .. },
+            ]
+        ));
+    }
+
+    /// Any event — not just a key — answers "no text is coming" for an
+    /// owed press.
+    #[test]
+    fn any_event_flushes_an_owed_press() {
+        let calls = calls_for(&[
+            key_event(true, Key::Character("a".into()), Code::KeyA),
+            SurfaceInputEvent::Focus(false),
+        ]);
+        assert_eq!(typed_text(&calls), "a");
+    }
+
+    /// Text a single `CHAR` cannot carry — supplementary-plane runs — goes
+    /// to the page as a commit, paired to its press the same way.
+    #[test]
+    fn text_beyond_one_utf16_unit_commits_instead_of_charring() {
+        let calls = calls_for(&[
+            key_event(true, Key::Character(" ".into()), Code::Space),
+            SurfaceInputEvent::TextInput("🚀".into()),
+            key_event(false, Key::Character(" ".into()), Code::Space),
+        ]);
+        assert!(matches!(
+            &calls[..],
+            [
+                KeyCall::Transition { pressed: true, .. },
+                KeyCall::Commit { text },
+                KeyCall::Transition { pressed: false, .. },
+            ] if text == "🚀"
+        ));
+    }
+
+    /// Text with no press behind it is an insertion, not a keystroke —
+    /// committed verbatim.
+    #[test]
+    fn standalone_text_commits_verbatim() {
+        let calls = calls_for(&[SurfaceInputEvent::TextInput("pasted".into())]);
+        assert_eq!(
+            calls.as_slice(),
+            &[KeyCall::Commit {
+                text: "pasted".to_owned()
+            }]
+        );
+    }
 
     #[test]
     fn character_keys_identify_themselves_by_their_uppercase_virtual_key() {

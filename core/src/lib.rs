@@ -63,7 +63,7 @@
 //!
 //! // Derive the exact value consumed by a signal-aware component.
 //! let label = counter.map(|count| format!("Current value: {count}"));
-//! assert_eq!(label.get(), "Current value: 0");
+//! assert_eq!(label.snapshot(), "Current value: 0");
 //! ```
 //!
 //! Signal-aware component inputs subscribe to derived values and update only the
@@ -104,8 +104,28 @@ pub use anyview::AnyView;
 pub use components::*;
 pub use easing::{EasingCurve, Interpolatable};
 pub use env::Environment;
+#[cfg(feature = "std")]
+pub use foundation::resources::ResourceContext;
+
+/// Capture standalone resource roots once when creating an application environment.
+///
+/// # Panics
+/// Panics if the native executable's location cannot be determined.
+#[doc(hidden)]
+pub fn install_application_resources(env: &mut Environment) {
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    if env.get::<ResourceContext>().is_none() {
+        env.insert(
+            ResourceContext::application()
+                .expect("application resources require an executable path"),
+        );
+    }
+    #[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
+    let _ = env;
+}
 pub use extract::State;
 pub use foundation::main_thread::MainThreadBound;
+pub use foundation::serial::{LatestDispatch, SerialDispatch};
 pub use foundation::signal::flatten_signal;
 pub use foundation::{env, extract, handler, id, main_thread, plugin, resolve};
 pub use nami as reactive;
@@ -113,7 +133,7 @@ pub use nami::signal::IntoSignal;
 pub use nami::{Binding, Computed, Signal, SignalExt, binding, constant, impl_constant};
 pub use state::IntoSignalF32;
 pub use suiteki::Str;
-pub use ui::{accessibility, event, gesture, interaction, layout, view, view_renderer, views};
+pub use ui::{accessibility, event, gesture, interaction, key, layout, view, view_renderer, views};
 pub use view::View;
 pub use view_renderer::{CustomViewRenderer, RenderResult, RenderSize, ViewRenderer};
 pub use waterui_macros::catalog;

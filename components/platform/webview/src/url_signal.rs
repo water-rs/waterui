@@ -78,16 +78,16 @@ mod tests {
     #[test]
     fn a_literal_becomes_a_constant_signal() {
         let signal = "https://waterui.dev".into_url_signal();
-        assert_eq!(signal.get().as_str(), "https://waterui.dev");
+        assert_eq!(signal.snapshot().as_str(), "https://waterui.dev");
     }
 
     #[test]
     fn a_binding_tracks_later_writes() {
         let url = Binding::container(Url::new("https://waterui.dev"));
         let signal = url.clone().into_url_signal();
-        assert_eq!(signal.get().as_str(), "https://waterui.dev");
+        assert_eq!(signal.snapshot().as_str(), "https://waterui.dev");
 
         url.set(Url::new("https://waterui.dev/docs"));
-        assert_eq!(signal.get().as_str(), "https://waterui.dev/docs");
+        assert_eq!(signal.snapshot().as_str(), "https://waterui.dev/docs");
     }
 }

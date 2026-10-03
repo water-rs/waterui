@@ -20,6 +20,21 @@ Until 1.0, that boundary is the product's major-release step: a new `0.x` minor 
 Make sure no warnings or errors are introduced in the codebase. If you encounter a warning or error, fix it before committing. Do not ignore warnings or errors. Even though clippy warnings.
 </important>
 
+## Supported Platforms
+
+**Retired platforms are unsupported.** Do not add, restore, or retain support for a
+retired platform in implementation code, dependencies, target selection, generated
+projects, packaging, CI, tests, or documentation. Remove obsolete support paths
+instead of maintaining compatibility shims or repairing retired targets. A failure
+on a retired target is a reason to remove that target, not to extend its support.
+
+Intel macOS (`x86_64-apple-darwin`) and Intel iOS simulators (`x86_64-apple-ios`)
+are retired and unsupported. Apple support is ARM64-only: macOS
+(`aarch64-apple-darwin`), iOS devices (`aarch64-apple-ios`), and iOS simulators
+(`aarch64-apple-ios-sim`). Default target selection must exclude Intel Apple
+targets, and explicit requests for them must fail with a clear unsupported-target
+error. This does not remove x86 support from other supported operating systems.
+
 ## Framework Design Principles
 
 These are constraints on every WaterUI feature, refactor, and review — not just the current task scope. They override convenience and they are not optional.
@@ -33,7 +48,7 @@ These are constraints on every WaterUI feature, refactor, and review — not jus
 4. **Bridge native first, then provide the cross-platform self-drawn realization.** For each semantic component, first implement a native bridge on every platform that has a suitable native primitive. Also implement the shared self-drawn realization when the component needs a portable backend. When a platform has no suitable native primitive, go directly to the self-drawn realization; do not introduce a third-party parallel engine and call it native. The self-drawn realization is a deliberate backend, never a runtime fallback for a failed native path. Particle systems and QR codes have no suitable platform primitive and therefore start as self-drawn components. For WaterUI's video-player contract, Apple platforms bridge AVPlayer / AVKit as the only approved native player; every non-Apple platform uses the WaterKit / GPU-surface player, without ExoPlayer / Media3. Native controls, codecs, protected surfaces, media sessions, and output devices may still be used as platform sublayers around that self-drawn player.
    Map follows the same contract: Apple platforms bridge MapKit, while platforms
    without a suitable platform map primitive use WaterUI's MapLibre-style,
-   Vello / wgpu vector realization. A bundled portable map engine is not a
+   Cherenkov / wgpu vector realization. A bundled portable map engine is not a
    native map. Native bridge failure is an error and must not silently switch
    realization at runtime.
 
@@ -57,7 +72,7 @@ These are the target architecture and acceptance criteria for repository changes
 - **Self-drawn components are independent versioned crates, not submodules.** SVG, canvas, chart, particle, barcode, and similar components own their implementations, tests, releases, and CI in their own repositories. They consume public `waterui-graphics` APIs and the core/layout/reactivity crates they actually need. Stable integration uses published crate versions. They must not depend on another repository's checkout layout or reach into its source tree for implementation or test resources.
 - **`examples/` keeps only examples whose subject is a native widget or a core framework behavior.** The boundary is the same one the code follows: this repository keeps the native-widget core, self-drawn components live in their own repositories, and a self-drawn component's demonstration belongs to that component's repository too — the barcode demo lives in `water-rs/barcode`, the image demo in `water-rs/image`, not here. Move the complete example, assets, project configuration, and validation responsibility with the component; update workspace membership, CI paths, and links, and remove the main-repository copy once the standalone example works. Use the owning repository's component source and explicit compatible framework dependencies, without relying on the WaterUI checkout layout. `examples/filter` is the single documented exception: it stays because its subject is the framework contract of applying GPU filter effects to arbitrary views, including native widgets — a cross-layer interaction this repository is responsible for. And because that path is GPU-rendered, a backend's e2e suite must verify the filter example **visually, never by pixel-exact comparison**: GPU output is not pixel-stable across platforms, adapters, or execution paths.
 - **Normal dependencies flow from the facade to components to foundations.** A component re-exported by `waterui` must not normally depend back on `waterui`. A backend that consumes the facade cannot also be re-exported by it until that reverse dependency is removed. Repository independence does not itself require a facade re-export of every backend.
-- **Concrete backends also have an independent-repository boundary.** Apple, Android, GTK, Hydrolysis, and Dew own their platform implementations and CI; shared backend contracts remain in WaterUI. The Apple backend is distributed from `water-rs/apple-backend` as a remote Swift package pinned by `apple-backend-version` in the root manifest's `[package.metadata.waterui]` — the model other backends follow as they leave the tree. A local checkout is used instead of the pin through `[backends.apple] backend_path` in an app project's `Water.toml`; a playground rejects backend tables, so it picks up a local checkout only as `<waterui_path>/backends/apple` (a symlink to the checkout works). Rust backends are not exceptions: replace workspace-only assumptions, cross-directory fixtures, and CLI path assumptions with public package interfaces and explicit version metadata before switching consumers. Hydrolysis can remain the integration-test host as a versioned dependency. Preserve each backend's rendering model; extraction is not permission to redesign shared contracts.
+- **Concrete backends also have an independent-repository boundary.** Apple, Android, GTK and Hydrolysis own their platform implementations and CI (Dew is being absorbed into Hydrolysis, water-rs/hydrolysis#187); shared backend contracts remain in WaterUI. The Apple backend is distributed from `water-rs/apple-backend` as a remote Swift package pinned by `apple-backend-version` in the root manifest's `[package.metadata.waterui]` — the model other backends follow as they leave the tree. A local checkout replaces the pin through `<waterui_path>/backends/apple` (a symlink to the checkout works); `Water.toml` has no `[backends.*]` tables. Rust backends are not exceptions: replace workspace-only assumptions, cross-directory fixtures, and CLI path assumptions with public package interfaces and explicit version metadata before switching consumers. Hydrolysis can remain the integration-test host as a versioned dependency. Preserve each backend's rendering model; extraction is not permission to redesign shared contracts.
 - **Keep local ecosystem checkouts together.** Independent component and backend repositories live under `~/Coding/water-rs/`, not as scattered siblings directly under `~/Coding/`. Create new extracted repositories there too. The WaterUI canonical checkout remains at `~/Coding/waterui`, and active agent workspace slots retain their existing paths. When relocating an existing checkout, preserve its entire Git directory, branches, staged and unstaged work, and update operational path references rather than cloning a second development line.
 - **Hydrolysis and its Material 3 theme are two independent repositories.** `hydrolysis` lives in water-rs/hydrolysis and `hydrolysis-m3` in water-rs/hydrolysis-m3; neither is nested in the other and neither is a WaterUI submodule. Each owns its implementation, dedicated examples, assets, tests, CI, and releases. Hydrolysis remains theme-independent and GPU-required; the MD3 package implements public widget/theme contracts without depending on renderer internals. WaterUI's CLI and integration tests select explicit compatible versions of both packages through channel metadata. A change to either is a pull request in its repository and a version bump here, never a crate in this tree.
 - **Reserve submodules for inseparable core dependencies such as nami.** Being first-party, needing independent CI, or being distributed from a Git repository is not sufficient reason to add a submodule. Independently distributed components and backends are consumed through explicit compatible package versions or source revisions, not brought back as submodules. Existing non-core gitlinks must be migrated deliberately, not removed before their replacements work.
@@ -68,6 +83,9 @@ These are the target architecture and acceptance criteria for repository changes
 - **Repository boundaries also define CI ownership.** Each component/backend repository checks its own implementation and platform matrix, with triggers scoped to affected packages and paths. WaterUI checks its foundations, facade exports, and cross-repository integration. Do not recreate the monorepo by running every extracted crate's implementation suite as a WaterUI workspace member. A moved check must have a verified owner; no platform, feature combination, fixture, or correctness signal may disappear during extraction.
 - **CI capacity: the `water-rs` organization is on GitHub Team, with 60 concurrent jobs in total and 20 of them macOS.** Every workflow is designed against that budget, and efficiency and parallelism are a standing concern on every CI touch, not a cleanup for later. Independent work fans out: matrix shards for the example sweeps, one concurrency group per dispatched run (a group shared by unrelated runs serializes them behind each other while runners sit idle), no job waiting on another it does not consume. Measure wall-clock from the Actions run itself, setup and cache restore included. Redundancy — the same dependency graph compiled twice in one run, a cache entry that restores nothing, a job whose output nobody reads, a cold build where a warm one was available — and any run far slower than the work it does are defects: warn the user immediately with the measurement rather than absorbing the cost silently.
 - **The WaterUI dev-push gate is format plus compilation/lint checks, and must finish in under 10 minutes.** Full tests, doctests, examples, expensive platform/feature matrices, coverage, and other complex suites run nightly rather than on the dev-push critical path. Additional PR ABI/security checks remain explicit. Prioritize cache capacity for the frequent compilation gate. Prove the budget with actual Actions wall-clock measurements, including setup and cache overhead; setting a timeout or skipping correctness checks is not proof of success.
+- **Build-time measurements cover only what users pay for.** Never measure the incremental build time of the WaterUI crates themselves, because nobody consumes that number. Measure two things:
+  - the cold build time;
+  - the incremental compile time and the `water preview` time of a real app that depends on WaterUI.
 - **Framework channels are not Rust toolchain channels.** The CLI must support the following framework selections:
 
   | Channel | Source and guarantee |
@@ -94,6 +112,25 @@ render, not because a reference framework does it differently. A difference
 between the document and the code is a bug in the code; a pull request that
 has to weaken a contract test or amend the document is rejected. The only path
 to a semantic change is a major-version decision recorded by the maintainer.
+
+`.github/workflows/layout-decision.yml` enforces this mechanically: a pull
+request fails until it carries the `layout-decision` label whenever it can
+change layout semantics — any edit to `docs/layout-spec.md`, a non-test Rust
+file added or deleted under `components/foundation/layout/src/` or at
+`core/src/ui/layout.rs`, or a change to such a file whose parsed syntax tree
+differs after comments, doc comments, lint attributes (`must_use`, `expect`,
+`allow`, `warn`, `deny`, `inline`, `doc`) and `#[cfg(test)]` items are removed;
+`.github/scripts/layout_gate.py` makes that comparison. Lint-only,
+documentation-only and test-only edits cannot change semantics, so they do
+not need the label. Only the maintainer applies that label; an agent never
+adds it, including to a pull request the maintainer approved in conversation.
+It records his decision that the change is either a conformance fix (the code
+now matches the document) or an approved amendment of the document.
+
+A case the document does not decide is not a licence to pick a behaviour in
+code. Every freeze break so far came from such a case found by a dogfood app;
+record it as an issue with the code's current behaviour, the reference
+framework's behaviour, and a recommended rule, and let the maintainer decide it.
 
 ## Engagement Rules
 
@@ -157,7 +194,7 @@ Keep the change set strictly scoped to the task.
 
 - Keep top-level folders semantic and minimal. Do not add generic crate buckets (`crates/`), implementation-detail roots (`internal/`, `facade/`), or top-level folders whose only purpose is a single package manifest. Put crates under the existing domain folder (`components/`, `utils/`, `backends/`, `kit/`, etc. — icon sets live under `components/icon/`) or under `src/` when they describe the root `waterui` package itself. Crate families that share a non-`waterui` prefix belong under one family directory such as `utils/filtrate/`, not as repeated sibling folders like `filtrate-core` / `filtrate-derive`.
 
-- **This repository is the non-self-drawn core, and nothing else.** What stays here is the part of WaterUI that needs every native backend to cooperate: `waterui-core` and the reactive, layout and text foundations, the FFI contract and the Apple/Android/GTK bridges, `waterui-backend-core`, and the components whose realization is a native primitive on each platform. The `water` CLI is not part of it: it lives in water-rs/cli, pins the framework crates it links at one `water-rs/waterui` revision, and resolves everything else about the framework at run time through the channels below. Everything self-drawn — the renderers (`hydrolysis`, `hydrolysis_m3`, `waterui-dew`) and every component that paints its own pixels (`waterui-svg`, `waterui-math`, `waterui-mermaid`, the crates listed in the next bullet) — lives in its own repository under `water-rs` and iterates on its own schedule. Releases are the boundary's stable form: a split repository depends on the framework as published on crates.io, and this tree consumes the split repository from crates.io, so the `[workspace.dependencies]` requirement names a published version. Between releases the two sides move on git: an unreleased change in a split repository is consumed here through a `[patch.crates-io]` entry pinned to the exact commit on that repository's `dev` (`git = "https://github.com/water-rs/<repo>", rev = "<sha>"`, as the `hydrolysis` entries do), and an unreleased framework change is consumed there the same way against this repository's `dev`. Always a `rev`, never a moving `branch` and never a `path` patch, so the graph stays reproducible; the CLI's `dev` channel resolves the same way. A framework pull request never carries split-repository code, and neither repository blocks the other. **Never ask the user to publish, release, tag, or bump a version as a prerequisite for your work.** A release is the user's decision on the user's schedule; unless the user has stated a release plan in the current task, the only way to consume an unreleased change is the git pin above, and "waiting for a release" is never a state a task ends in. When a pull request needs a scaffold pin such as `hydrolysis-version` to move to a version that does not exist yet, record that fact once in the pull request for whoever cuts the release, and finish the work. A new self-drawn component starts as its own repository, created from the `hydrolysis` template, and is never added to this tree.
+- **This repository is the non-self-drawn core, and nothing else.** What stays here is the part of WaterUI that needs every native backend to cooperate: `waterui-core` and the reactive, layout and text foundations, the FFI contract and the Apple/Android/GTK bridges, `waterui-backend-core`, and the components whose realization is a native primitive on each platform. The `water` CLI is not part of it: it lives in water-rs/cli, pins the framework crates it links at one `water-rs/waterui` revision, and resolves everything else about the framework at run time through the channels below. Everything self-drawn — the renderers (`hydrolysis`, `hydrolysis_m3`, and `waterui-dew` until Hydrolysis absorbs it) and every component that paints its own pixels (`waterui-svg`, `waterui-math`, `waterui-mermaid`, the crates listed in the next bullet) — lives in its own repository under `water-rs` and iterates on its own schedule. Releases are the boundary's stable form: a split repository depends on the framework as published on crates.io, and this tree consumes the split repository from crates.io, so the `[workspace.dependencies]` requirement names a published version. Between releases the two sides move on git: an unreleased change in a split repository is consumed here through a `[patch.crates-io]` entry pinned to the exact commit on that repository's `dev` (`git = "https://github.com/water-rs/<repo>", rev = "<sha>"`, as the `hydrolysis` entries do), and an unreleased framework change is consumed there the same way against this repository's `dev`. Always a `rev`, never a moving `branch` and never a `path` patch, so the graph stays reproducible; the CLI's `dev` channel resolves the same way. A framework pull request never carries split-repository code, and neither repository blocks the other. **Never ask the user to publish, release, tag, or bump a version as a prerequisite for your work.** A release is the user's decision on the user's schedule; unless the user has stated a release plan in the current task, the only way to consume an unreleased change is the git pin above, and "waiting for a release" is never a state a task ends in. When a pull request needs a scaffold pin such as `hydrolysis-version` to move to a version that does not exist yet, record that fact once in the pull request for whoever cuts the release, and finish the work. A new self-drawn component starts as its own repository, created from the `hydrolysis` template, and is never added to this tree.
 - **Before adding a component crate, check whether the workspace already depends on one.** Several components were split into their own repositories and come back in from crates.io, so they are invisible when you search `components/` — `waterui-barcode` (QR and the other symbologies), `waterui-chart`, `waterui-map-gpu`, `waterui-canvas`, `waterui-particle`, `waterui-image`, `waterui-video-gpu`, `waterui-visualizer`, `waterui-math`, `filtrate`, `shaderloom`, `nami`, `merman`. `waterui-mermaid` lives in water-rs/mermaid too, but its merman fork dependencies are git-only, so nothing here can consume it from crates.io — a git dependency is the only way to reach it. Read `[workspace.dependencies]` in the root `Cargo.toml`; each entry names a component that already exists, and a split component's example lives in that component's repository rather than in `examples/`. Extending one of those means a change in its own repository and a version bump here, never a second crate in this tree — and a QR-only type beside `Barcode` would be the parallel-type mistake Principle 1 rules out, since the symbology is an attribute of one semantic component.
 - Prefer modern, cutting-edge tooling over legacy defaults when we choose or scaffold a toolchain — `bun` over `npm`/`yarn`, `uv` over `pip`/`pipenv`, and similarly for other categories. This is about the defaults we generate, never about overriding a project's declared toolchain: a lockfile or manifest in the user's project is the source of truth and is always respected.
 - Do not drag unrelated files into the diff.
@@ -194,8 +231,8 @@ Keep the change set strictly scoped to the task.
 - `.claude/skills/waterui/skill_snippets/` is the compile gate for `.claude/skills/waterui`: every rust fence in the skill is transcribed there (verbatim modulo rustfmt, with loudly-marked glue) and CI compiles it. When you change a skill code snippet, regenerate the matching module following the conventions in that crate's README. Its `#[waterui::test]` / `#[waterui::bench]` transcriptions sit behind the non-default `compile-gate-tests` feature: CI compiles them with `cargo check -p skill_snippets --all-targets --features compile-gate-tests`, and they must never be executed — they address elements that do not exist, by design.
 - `waterui-testing` is based on the Hydrolysis accessibility tree, not native platform accessibility. Prefer `waterui-testing` for UI component coverage, and treat it as both an interaction test and an accessibility-correctness test.
 - Every UI component is expected to produce a meaningful accessibility tree. If a component cannot be covered by `waterui-testing`, treat that as a bug to fix rather than a gap to paper over.
-- `GpuSurface::new(renderer)` owns one `GpuView` instance for that surface lifetime. `GpuView::setup()` is where persistent GPU resources for that renderer instance belong. Do not move renderer state into hidden shared caches just to survive `GpuSurface` teardown or parent rebuild.
-- `GpuContext::redraw_handle` is how async work or an external event requests another frame for the same surface instance. A `GpuSurface` torn down by a parent rebuild takes its `GpuView` with it; that is the reconstruction contract, not a bug to route around with out-of-band renderer resurrection.
+- `GpuContentView::new(content)` owns one `GpuContent` instance for that view's lifetime. `GpuContent::setup(gpu: &Context)` is where persistent GPU resources for that content instance belong. Do not move content state into hidden shared caches just to survive `GpuContentView` teardown or parent rebuild.
+- `Context::redraw` is the `RedrawHandle` through which async work or an external event requests another frame for the same view instance. A `GpuContentView` torn down by a parent rebuild takes its content with it; that is the reconstruction contract, not a bug to route around with out-of-band renderer resurrection.
 - Prefer `#[waterui::test(view_fn)]` when a test only needs the default `UiTest::new().mount(view_fn)`; construct `UiTest` explicitly only for a custom viewport or environment. Verify layout through semantic children and bounds relationships in the Hydrolysis tree, never by attaching synthetic accessibility metadata to decorative fills.
 - Keep a component body's shape as simple and concrete as its semantics: do not wrap otherwise static content in a `Dynamic` because the body has a branch. `waterui_chart::Tooltip` only mounted cleanly once a `#[view_builder]` body branch was replaced by explicit `AnyView` branching.
 - For text APIs, use `text()` for static text and `text!` for reactive formatting. Do not use `watch()` to build reactive text when `text!` or signal-taking APIs already express the dependency directly.
@@ -207,8 +244,8 @@ Keep the change set strictly scoped to the task.
 - **Whoever owns the main loop supplies the `LocalExecutor`.** Every WaterUI host
   already has one — winit (`WinitMainThreadExecutor`), GTK
   (`GtkMainThreadExecutor`, via `glib::idle_add_local_once`), headless
-  (`HeadlessMainThreadExecutor`), dew (`embedded_executor::install()` plus a
-  per-frame `tick()`). Give `try_init_local_executor` an executor bound to that
+  (`HeadlessMainThreadExecutor`), the embedded host (`embedded_executor::install()` plus a
+  per-frame `tick()`, moving from Dew into Hydrolysis). Give `try_init_local_executor` an executor bound to that
   loop; never hand it `native_executor::NativeExecutor`. On non-Apple targets
   `NativeExecutor` delegates to the polyfill, whose `spawn_main_local` asserts it
   runs on the thread registered by `start_main_executor` — a blocking, never-
@@ -232,7 +269,7 @@ Keep the change set strictly scoped to the task.
     Standalone crate/backend-package verification uses the package's own toolchain: Cargo for Rust, SwiftPM for Swift packages, and Gradle for Android packages. This does not authorize hand-scaffolding an application or bypassing water for application deployment. If an application workflow requires direct adb/xcodebuild/other tool use because water lacks the capability, propose adding that capability to the CLI.
 
     Never hand-create or manually scaffold project/app structure. Always use `water create` (or existing generated project files) as the source of truth.
-    For monorepo examples/playgrounds in local dev mode, `Water.toml` must explicitly set `waterui_path = "../.."` to force local backend usage and avoid remote backend resolution.
+    For monorepo examples in local dev mode, `Water.toml` must explicitly set `waterui_path = "../.."` to force local backend usage and avoid remote backend resolution.
 </important>
 
 <important>
@@ -243,7 +280,7 @@ Keep the change set strictly scoped to the task.
 - The C ABI cannot carry generics, so every native/config type stores **erased** selection and item state: `Binding<Id>`, `Binding<Option<Id>>`, `Computed<Vec<PickerItem<Id>>>`. That erasure is deliberate and correct at that layer — do NOT report it as a design flaw, and do NOT try to make the FFI representation generic. Keep it *below* the authoring layer instead: the public constructor stays generic over the app's own type and erases through `Mapping<T>` (`core/src/foundation/id.rs`), which assigns stable `Id`s and maps them back with `to_data`. Canonical pairs are `Picker::new<T>` → `PickerConfig`, `NavigationSplitView::new<T>` → `NavigationSplitLayout`, and `Tabs::new<T>` → `TabsLayout`. The bug to look for is the opposite one: a type that is simultaneously the authoring API and the raw view (`raw_view!` + `ffi_view!` on the same struct) leaks `Id` into app code and forces callers to write `Id::try_from(1)` (no current component has this defect). Fix that by adding the generic constructor, never by changing the FFI type.
 - Put shader to a separate file rather than embedding as string literal. Same for large text assets.
 - Do not write duplicated code. If you find yourself copying and pasting code, consider refactoring it into a shared function or module.
-- Preserve the selected renderer's contract: Hydrolysis is GPU-required; Dew deliberately uses CPU rasterization for constrained devices. Do not add a CPU fallback to Hydrolysis or force GPU dependencies into Dew's lean graph.
+- Preserve the self-drawn backend's build-time selection: Hydrolysis renders through Cherenkov's GPU backend or its CPU backend at the microcontroller design point, chosen per target at build time. Never add a runtime fallback between them, and never let GPU or other heavyweight dependencies into a firmware build's graph.
 - You are not allowed to revert or restore files or hide problems. If you find a bug, fix it properly rather than working around it.
 - Do not leave legacy code for fallback. If a feature is deprecated, remove all related code.
 - No simplify, no stub, no fallback, no patch.
@@ -254,7 +291,7 @@ Keep the change set strictly scoped to the task.
 - Do not use `git checkout` to back out changes, as it can lead to loss of work
 - Import third-party crates instead of writing your own implementation. Less code is better.
 - Do not create custom Cargo target directories (for example, `CARGO_TARGET_DIR=/tmp/...`) in this monorepo. Always use the repository's default `target/` directory.
-- `GpuSurface` supports offload/offscreen rendering. When developing any `GpuRenderer`-based component, you must use offload/offscreen rendering for visual testing.
+- `OffscreenRenderer` renders `GpuContent` and scenes without a surface. When developing any `GpuContent`-based component, you must use offscreen rendering for visual testing.
 - CI is expensive, please read full error message if CI fails. Do not blindly push commits to trigger CI again before fixing all problems you learnt.
 - For public API design, follow this repository style consistently: `Type::new(...)` is the general constructor, while free function constructors such as `button(...)` are ergonomic convenience entry points. Do not introduce parallel APIs like `Type::custom(...)` when `Type::new(...)` already covers the general case.
 - Keep the constructor split explicit in API design and documentation:
@@ -268,10 +305,13 @@ Keep the change set strictly scoped to the task.
 
 ```bash
 # Install the `water` CLI (required for `water run` to work). It lives in
-# water-rs/cli; a change to it is a pull request there, not here.
-cargo install waterui-cli
-# …or its integration branch:
-cargo install --locked --git https://github.com/water-rs/cli waterui-cli
+# water-rs/cli; a change to it is a pull request there, not here. The installer
+# downloads a prebuilt binary, so this is seconds rather than a full compile,
+# and `water update` replaces it with the newest release afterwards.
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+# An unreleased CLI has no prebuilt artifact, so testing one does mean building
+# it — from a checkout of water-rs/cli:
+cargo install --path . --locked
 
 # Build entire workspace
 cargo build --workspace
@@ -305,16 +345,16 @@ water run --platform ios
 water run --platform android
 water run --platform linux --backend hydrolysis
 
-# Create a playground for quick experimentation
-water create "My Playground" --mode playground
+# Create a project for quick experimentation
+water create "My App"
 
 # Preview a view function (renders to PNG without running full app)
 water preview my_view --platform macos --path ./app --output preview.png
 ```
 
-## Playground mode
+## Project structure
 
-Playground mode allows CLI to delegate the detail of backend integration to the user, for instance, you cannot touch Xcode project directly in playground mode. Playground mode is recommended by default. All waterui project in this repo is in playground mode.
+Every WaterUI project is entry-owning: WaterUI owns the program entry and the CLI generates and manages every backend project, so there is no Xcode or Gradle project in the project directory to edit. `water create` produces exactly this shape; there are no package types or modes to choose.
 
 ## Preview System
 
@@ -344,7 +384,7 @@ WaterUI is a cross-platform reactive UI framework with both native platform brid
 ```
 Rust View Tree → Public view/backend contracts
   → FFI (C ABI / JNI) → Apple / Android native backend → Platform UI
-  → Rust backend → GTK native widgets or Hydrolysis GPU / Dew CPU rendering
+  → Rust backend → GTK native widgets or Hydrolysis on Cherenkov (GPU, or CPU on microcontrollers)
 ```
 
 ### Crate Structure
@@ -379,31 +419,25 @@ from crates.io. The versions the workspace builds against are the
 `[patch.crates-io]` there resolves the framework crates they name to this
 tree so the graph carries one copy of each.
 
-#### Rendering backend philosophy: Hydrolysis vs Dew (self-drawn renderers)
+#### Self-drawn rendering: Hydrolysis on Cherenkov
 
-WaterUI ships two self-drawn (non-native) renderers at deliberately opposite design points. They share `waterui-core`, reactivity, layout, and text, and diverge **only** in their render/flush strategy. Do not converge them, and do not port one's strategy onto the other — the divergence is the point. When touching either renderer, keep the change consistent with its half of this contract; a change that makes Hydrolysis frugal or Dew heavyweight is wrong by design.
+Hydrolysis is WaterUI's only self-drawn backend (water-rs/hydrolysis#187). It renders through Cherenkov (water-rs/cherenkov), which replaces Vello, and covers two design points that are selected per target at build time. The two are never switched at runtime, and neither is a fallback for the other:
 
-**Hydrolysis — the game-engine renderer (high-end, future-facing).**
-- GPU-first and GPU-required: rendering goes through Vello on `wgpu` with compute-shader support mandatory; there is no CPU rasterization path (`use_cpu: false`). Never add a CPU fallback or read GPU targets back to CPU in runtime rendering paths; offscreen test/snapshot export is a separate verification path.
-- Whole-scene redraw whenever it draws at all, like a game engine. There is intentionally **no** dirty-rectangle / partial-region / damage tracking, and there must not be. A frame is never partially redrawn: no region invalidation, no "only this widget changed so only repaint that rect", no damage accumulation. Do not add any of it.
-- The scope of a frame is all-or-nothing; *whether* to run one is a separate question, and Hydrolysis is free not to. The window pump is a two-state machine (`FrameMode` in the renderer's `src/runner/window.rs`): `Idle` does no work at all, and `Refresh` runs the full pass (relayouts the retained tree and re-encodes it). Every awake frame runs layout so the presented scene can never be stale against it. A window with nothing to show does not burn a frame. This is not damage tracking — every frame that *does* run still redraws the whole scene. Do not conflate the two: adding partial-region painting is forbidden, while skipping an idle frame is the design.
-- Targets high-end modern devices and high frame rates (120fps and above). High-refresh must be requested **explicitly** per platform (opt into ProMotion / high-refresh display links), not left to incidental vsync. Do not introduce a hard frame cap.
-- Designed to exploit modern hardware fully: modern GPU compute **and** multi-core CPU. Parallel scene building / rasterization across cores is part of the intended design; single-threaded execution is a gap to close, not the target. Do not assume or hard-wire single-threaded rendering.
-
-**Dew — the embedded renderer (constrained, resource-frugal).**
-- CPU-first; GPU is optional. The default and common path is pure-CPU rasterization (`vello_cpu` sparse-strip). It must run on MCU-class microcontrollers with no GPU and no full-resolution framebuffer.
-- Dirty-area rendering is the core architecture, not an optional optimization: only changed regions are re-rasterized, sliced into horizontal bands, so peak pixel memory is one band — never a full frame. Do not introduce full-frame redraw into Dew.
-- Modest, power-frugal frame rates: 30/60fps (the runtime ticks at ~16ms). Do not target 120fps here.
-- Lean, feature-gated dependency graph: firmware builds strip `gpu`/`widgets`/`gestures` and other heavy deps (`default-features = false`). Dew is `std`-based via its embedded RTOS, not bare-metal `no_std`. Do not pull GPU / `wgpu` / heavyweight crates into Dew's firmware graph.
+- **GPU (`cherenkov-gpu`)** for phones, tablets and desktops. The performance target is 120fps, an 8.33 ms frame budget at p99, on every scene, because current devices have high-refresh panels. 60fps is accepted only for a scene that is too complex to fit the budget in theory and that no other renderer in the harness fits either; it is never the default target. High refresh is requested **explicitly** per platform (ProMotion, high-refresh display links) and never left to incidental vsync, and there is no hard frame cap. It uses modern GPU compute **and** multi-core CPU: single-threaded execution is a gap to close, not the target. No runtime rendering path reads GPU targets back to the CPU; offscreen snapshot export is a separate verification path.
+- **CPU (`cherenkov-cpu`) at the microcontroller design point** for MCU-class devices with no GPU and no full-resolution framebuffer. It uses banded output through a small scratch buffer, native panel formats, command-level damage for partial panel transfers, and power-frugal frame rates (30/60fps). Firmware builds prune features so that `wgpu` and other heavyweight crates never enter the graph. It is `std`-based on an embedded RTOS, not bare-metal `no_std`.
+- **Damage is an engine concern.** Partial updates are an engine-internal optimization, verified bit-exact against a full render, and never part of the view-level contract.
+- **Hosts.** The embedded host family lives in Hydrolysis next to the windowed hosts: panel flush sinks (RGB565 and others over SPI/QSPI, plus a simulator window), the embedded executor with its per-frame tick, and input routing for touch, encoders and buttons. Dispatch, layout and input handling stay shared through `waterui-backend-core`. water-rs/dew retires once its examples, tests and CI coverage have moved; until then it changes only to carry that migration.
+- The frame model is decided by measurement, not by rule. Hydrolysis carries WaterUI's fine-grained reactivity into the engine (water-rs/hydrolysis#205): a paint-only change (colour, opacity, transform, a text run's content) reaches the engine as a live operand of the recorded command with no Hydrolysis tree walk and no layout pass; a layout-affecting change relayouts what it affects, with layout semantics exactly as `docs/layout-spec.md` defines them; animations are sampled where the engine samples them; an idle window does no CPU or GPU work. Today's pump still re-reads every reactive input, relayouts and re-encodes the whole retained tree on every awake frame (`refresh_window_scene` in the renderer's `src/runner/window.rs`) — that is the state being replaced, not a contract to preserve.
+- Every such choice is settled by a paired A/B measurement on a real device of three costs together: frame time (CPU per phase, GPU time, p99), energy per frame plus the energy of an idle window, and memory (CPU resident set and GPU allocations). Memory is a first-class cost: CPU and GPU throughput keep growing while memory keeps getting more expensive, so a cache or retained layer is adopted only when its measured win in time or energy pays for its memory. Browser-style stacks of retained caches — per-layer raster tiles, duplicated display lists — are the waste to avoid; when recomputing is fast enough, recompute.
 
 ### CLI (water-rs/cli)
 
 The `water` CLI orchestrates builds across platforms and lives in its own repository, https://github.com/water-rs/cli, with its own `AGENTS.md`, CI, nightly end-to-end suite and release cadence:
 
-- `water create` - Scaffold new project (supports `--mode playground` for quick experiments)
+- `water create` - Scaffold new project
 - `water run` - Build and deploy to device/simulator
 - `water build --platform <platform>` - Build the project for the selected platform and backend
-- `water package` - Package built artifacts for distribution
+- `water package` - Package the production (release) build; `--debug` packages an unoptimized one
 - `water clean` - Remove build artifacts
 - `water doctor` - Check development environment
 - `water devices` - List available devices and simulators
@@ -441,7 +475,7 @@ Uses `nami` crate for fine-grained reactivity:
 </important>
 
 <important>
-    You are not allowed to use `.get()` on Signals/Bindings directly in view body functions, as it breaks reactivity tracking. Instead, use zip and map combinators to derive new Computed values that depend on multiple signals.
+    You are not allowed to use `.snapshot()` on Signals/Bindings directly in view body functions, as it breaks reactivity tracking. Instead, use zip and map combinators to derive new Computed values that depend on multiple signals.
 </important>
 
 ### View Trait
@@ -471,7 +505,7 @@ waterui_ffi::export!();  // Generates FFI entry points
 - Rust edition 2024; the supported toolchain floor lives in `rust-version` in the root manifest, not here
 - Workspace lints enforce strict clippy rules including pedantic/nursery
 - One git worktree per task, as described under Engagement Rules.
-- The FFI header `ffi/waterui.h` is checked into version control; CI verifies it's up-to-date; **never write C header by hand**
+- The FFI header `ffi/waterui.h` is checked into version control and generated by `ffi/generator`; **never write C header by hand**. No CI job checks it any more: `waterui-ffi` and the header are removed once the new Apple and Android backends land, so regenerate it locally when you change an FFI export until then.
 - Add FFI exports and native bridges only when a component requires a genuine native primitive. Pure Rust compositions and self-drawn components reuse existing public contracts without inventing new C-ABI types (Principles 2 and 4).
 
 ### Testing Patterns

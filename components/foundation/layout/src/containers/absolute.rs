@@ -247,8 +247,8 @@ impl Layout for PositionedLayout {
                 match &self.target {
                     PositionTarget::Absolute { x, y } => {
                         let child_size = sanitize_size(intrinsic, bounds);
-                        let target_x = bounds.x() + x.get();
-                        let target_y = bounds.y() + y.get();
+                        let target_x = bounds.x() + x.snapshot();
+                        let target_y = bounds.y() + y.snapshot();
 
                         let x = target_x - child_size.width * self.anchor.x;
                         let y = target_y - child_size.height * self.anchor.y;
@@ -270,8 +270,8 @@ impl Layout for PositionedLayout {
                         offset_y,
                     } => {
                         let child_size = sanitize_size(intrinsic, bounds);
-                        let target_x = bounds.x() + bounds.width() * unit.x + offset_x.get();
-                        let target_y = bounds.y() + bounds.height() * unit.y + offset_y.get();
+                        let target_x = bounds.x() + bounds.width() * unit.x + offset_x.snapshot();
+                        let target_y = bounds.y() + bounds.height() * unit.y + offset_y.snapshot();
 
                         let x = target_x - child_size.width * self.anchor.x;
                         let y = target_y - child_size.height * self.anchor.y;
@@ -288,12 +288,14 @@ impl Layout for PositionedLayout {
                         )
                     }
                     PositionTarget::Pinned(pinned) => {
-                        let leading = pinned.leading.as_ref().map(waterui_core::Signal::get);
-                        let trailing = pinned.trailing.as_ref().map(waterui_core::Signal::get);
-                        let top = pinned.top.as_ref().map(waterui_core::Signal::get);
-                        let bottom = pinned.bottom.as_ref().map(waterui_core::Signal::get);
-                        let explicit_width = pinned.width.as_ref().map(waterui_core::Signal::get);
-                        let explicit_height = pinned.height.as_ref().map(waterui_core::Signal::get);
+                        let leading = pinned.leading.as_ref().map(waterui_core::Signal::snapshot);
+                        let trailing = pinned.trailing.as_ref().map(waterui_core::Signal::snapshot);
+                        let top = pinned.top.as_ref().map(waterui_core::Signal::snapshot);
+                        let bottom = pinned.bottom.as_ref().map(waterui_core::Signal::snapshot);
+                        let explicit_width =
+                            pinned.width.as_ref().map(waterui_core::Signal::snapshot);
+                        let explicit_height =
+                            pinned.height.as_ref().map(waterui_core::Signal::snapshot);
 
                         let mut width = explicit_width.unwrap_or_else(|| {
                             if let (Some(leading), Some(trailing)) = (leading, trailing) {

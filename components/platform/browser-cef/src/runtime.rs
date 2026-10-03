@@ -480,6 +480,14 @@ struct CefBootstrap {
 
 fn bootstrap(paths: &CefRuntimePaths) -> Result<CefBootstrap, i32> {
     let args = Args::new();
+    // The sandbox must start at process entry (see `initialize_sandbox_early`);
+    // packaged apps install it there and this reuses it — helper subprocesses
+    // and tests reach `bootstrap` first and initialize it here instead.
+    #[cfg(target_os = "macos")]
+    let sandbox = EARLY_SANDBOX
+        .with(|cell| cell.borrow_mut().take())
+        .unwrap_or_else(|| PlatformSandbox::initialize(paths, args.as_main_args()));
+    #[cfg(not(target_os = "macos"))]
     let sandbox = PlatformSandbox::initialize(paths, args.as_main_args());
     #[cfg(target_os = "windows")]
     let sandbox_info = sandbox.info();
@@ -506,6 +514,36 @@ fn bootstrap(paths: &CefRuntimePaths) -> Result<CefBootstrap, i32> {
         app,
         pump_requests,
     })
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static EARLY_SANDBOX: std::cell::RefCell<Option<PlatformSandbox>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Initializes the CEF sandbox at process entry on macOS.
+///
+/// `cef_sandbox_initialize` creates the seatbelt sandbox server; once other
+/// frameworks have claimed parts of the process bootstrap state it fails and
+/// returns null, so it must run before `NSApplication` and the backend's
+/// executors — the packaged entry point calls this first. `bootstrap`
+/// reuses the sandbox this installs.
+///
+/// # Panics
+///
+/// Panics when the packaged runtime is malformed or the sandbox cannot start.
+#[cfg(target_os = "macos")]
+pub fn initialize_sandbox_early() {
+    let paths = CefRuntimePaths::packaged();
+    paths.validate();
+    let args = Args::new();
+    EARLY_SANDBOX.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(PlatformSandbox::initialize(&paths, args.as_main_args()));
+        }
+    });
 }
 
 /// Executes one CEF subprocess from the packaged helper application.

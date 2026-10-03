@@ -24,11 +24,11 @@ use waterui_core::{
 };
 use waterui_graphics::color::Color;
 
-/// All view-level GPU filter modifiers (`.blur()`, `.brightness()`, ...) come
+/// All view-level filter modifiers (`.blur()`, `.brightness()`, ...) come
 /// from [`waterui_graphics::filter_view::FilterViewExt`]. This re-export
 /// makes them part of the `WaterUI` prelude alongside [`ViewExt`], so a single
 /// `use waterui::prelude::*;` is enough.
-#[cfg(feature = "gpu")]
+#[cfg(feature = "effects")]
 pub use waterui_graphics::filter_view::FilterViewExt;
 
 use suiteki::Str;
@@ -48,7 +48,7 @@ use crate::{
     },
     background::IntoBackground,
     border::Border,
-    drag_drop::{DragData, Draggable, DropDestination},
+    drag_drop::{Draggable, DropDestination, Transferable},
     filter::Opacity,
     gesture::{Gesture, GestureObserver, LongPressGesture, TapGesture},
     interaction::Hittable,
@@ -68,6 +68,8 @@ use waterkit_haptic::{Haptic, Intensity};
 use waterui_core::Metadata;
 use waterui_core::event::{Event, LifeCycle, LifeCycleHook, OnEvent};
 use waterui_core::id::TaggedView;
+use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
+use waterui_core::key::{KeyHandling, OnKeyPress};
 
 #[cfg(feature = "std")]
 fn trigger_impact_haptic(intensity: Intensity) {
@@ -431,6 +433,39 @@ pub trait ViewExt: View + Sized {
         self.event(Event::HoverExit, handler)
     }
 
+    /// Handles key presses that the focused view inside this one leaves
+    /// unconsumed.
+    ///
+    /// The keyboard goes to the focused view first. A key it does not use —
+    /// Escape, or an arrow in a single-line text field — bubbles to its
+    /// ancestors, nearest first, until a handler returns
+    /// [`KeyHandling::Handled`]. The handler
+    /// reads the key with `Use<KeyPress>`.
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::key::{KeyHandling, KeyPress, NamedKey, Key};
+    ///
+    /// let open = binding::<bool>(true);
+    /// let query = binding::<Str>(Str::default());
+    /// field("Search", &query).on_key_press(
+    ///     |Use(press): Use<KeyPress>, State(open): State<Binding<bool>>| {
+    ///         if press.key == Key::Named(NamedKey::Escape) {
+    ///             open.set(false);
+    ///             KeyHandling::Handled
+    ///         } else {
+    ///             KeyHandling::Ignored
+    ///         }
+    ///     },
+    /// ).state(&open);
+    /// ```
+    fn on_key_press<H, Args>(self, handler: H) -> Metadata<OnKeyPress>
+    where
+        H: Handler<Args, KeyHandling>,
+    {
+        Metadata::new(self, OnKeyPress::new(handler))
+    }
+
     /// Sets the cursor style when hovering over this view.
     ///
     /// The cursor style is scoped to the view's bounds - when the cursor exits
@@ -696,6 +731,11 @@ pub trait ViewExt: View + Sized {
     }
 
     /// Observes a gesture and executes an action when the gesture is recognized.
+    ///
+    /// The action resolves its extractors from the environment of the view it
+    /// is attached to, so a value it extracts with `State<T>` must be installed
+    /// with [`ViewExt::state`] on an ancestor: `view.gesture(..).state(&value)`,
+    /// not `view.state(&value).gesture(..)`.
     ///
     /// # Arguments
     /// * `gesture` - The gesture to observe
@@ -1055,11 +1095,12 @@ pub trait ViewExt: View + Sized {
     /// Attaches a context menu to this view.
     ///
     /// The context menu appears when the user:
-    /// - Long-presses on iOS/Android
-    /// - Right-clicks on macOS
+    /// - Long-presses on iOS/Android, or holds a touch or pen press elsewhere
+    /// - Secondary-clicks with a pointer
     ///
-    /// # Arguments
-    /// * `items` - The menu items to display
+    /// Pass the menu items directly, or a
+    /// [`ContextMenu`](crate::metadata::context_menu::ContextMenu) to also
+    /// choose the lifted preview and anchor an interactive accessory to it.
     ///
     /// # Example
     ///
@@ -1074,12 +1115,68 @@ pub trait ViewExt: View + Sized {
     /// ```
     fn context_menu(
         self,
-        items: impl crate::component::menu::MenuView,
+        menu: impl crate::metadata::context_menu::IntoContextMenu,
     ) -> crate::metadata::context_menu::ContextMenuView<Self> {
         crate::metadata::context_menu::ContextMenuView {
             content: self,
-            items: items.into_menu_items(),
+            menu: menu.into_context_menu(),
         }
+    }
+
+    /// Presents `overlay` next to this view, above all other content in the
+    /// window, while its binding is `true`.
+    ///
+    /// The backend places it against the preferred edge of this view, flips
+    /// it to the opposite edge when there is no room, and keeps it inside the
+    /// window, as the overlay's
+    /// [`AnchorPlacement`](crate::metadata::anchored_overlay::AnchorPlacement)
+    /// declares.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
+    /// use waterui::prelude::*;
+    ///
+    /// let open = binding(false);
+    /// let trigger = button("Options")
+    ///     .action({
+    ///         let open = open.clone();
+    ///         move || open.set(true)
+    ///     })
+    ///     .anchored_overlay(AnchoredOverlay::new(&open, text!("Popover")).edge(AnchorEdge::Bottom));
+    /// ```
+    fn anchored_overlay(
+        self,
+        overlay: crate::metadata::anchored_overlay::AnchoredOverlay,
+    ) -> Metadata<crate::metadata::anchored_overlay::AnchoredOverlay> {
+        Metadata::new(self, overlay)
+    }
+
+    /// Sets the minimum row height of every list inside this view, in points.
+    ///
+    /// Replaces the theme's one-line row height as the floor rows are measured
+    /// against; `0.0` sizes each row to its content plus its insets. Combine
+    /// with [`ListItem::insets`](crate::component::list::ListItem::insets) to
+    /// make individual rows compact.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use waterui::layout::padding::EdgeInsets;
+    /// use waterui::prelude::*;
+    ///
+    /// let log = List::content((
+    ///     || ListItem::new(text!("Alice joined the group")).insets(EdgeInsets::all(4.0)),
+    ///     || ListItem::new(text!("Hello")),
+    /// ))
+    /// .list_min_row_height(0.0);
+    /// ```
+    fn list_min_row_height(
+        self,
+        height: f32,
+    ) -> waterui_core::env::With<Self, crate::component::list::ListMinRowHeight> {
+        waterui_core::env::with(self, crate::component::list::ListMinRowHeight(height))
     }
 
     /// Extends this view's bounds to ignore safe area insets on the specified edges.
@@ -1143,42 +1240,51 @@ pub trait ViewExt: View + Sized {
         Metadata::new(self, Retain::new(value))
     }
 
-    /// Makes this view draggable with the specified data.
+    /// Makes this view draggable, carrying `payload`.
     ///
     /// When the user drags this view (click-drag on macOS, long-press-drag on iOS/Android),
-    /// the data will be transferred to any compatible drop destination.
+    /// the payload travels to drop destinations that accept its type. [`Str`],
+    /// [`Url`](crate::Url) and [`Files`](crate::drag_drop::Files) also reach other
+    /// applications; an application's own [`Transferable`] types stay in the process.
     ///
     /// # Arguments
-    /// * `data` - The data to transfer when dragging (can be reactive)
+    /// * `payload` - The value to transfer: a plain [`Transferable`] value, or a `Binding` /
+    ///   `Computed` of one, read when the drag begins
     ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::drag_drop::DragData;
+    /// use waterui::Str;
     ///
     /// text!("Drag me")
-    ///     .draggable(DragData::text("Hello!"));
+    ///     .draggable(Str::from("Hello!"));
     /// ```
-    fn draggable(self, data: impl IntoComputed<DragData>) -> Metadata<Draggable> {
-        Metadata::new(self, Draggable::new(data))
+    fn draggable<S>(self, payload: S) -> Metadata<Draggable>
+    where
+        S: waterui_core::Signal + Clone + 'static,
+        S::Output: Transferable,
+    {
+        Metadata::new(self, Draggable::new(payload))
     }
 
-    /// Makes this view a drop destination for dragged content.
+    /// Makes this view a drop destination for dragged values.
     ///
-    /// For simple cases without state, pass a handler directly. To inject
-    /// local state, use [`ViewExt::state`] and extract it in the handler.
+    /// The handler's first argument is the dropped value, and its type is the type this
+    /// destination accepts: a drag carrying any other type is neither highlighted nor
+    /// delivered. The remaining arguments are extractors, so local state injected with
+    /// [`ViewExt::state`] composes.
     ///
     /// # Example
     ///
     /// ```rust
     /// use waterui::prelude::*;
-    /// use waterui::drag_drop::DragData;
+    /// use waterui::Str;
     ///
-    /// // Simple usage without state
+    /// // Accepts plain text only.
     /// text!("Drop here")
-    ///     .drop_destination(|data: DragData| {
-    ///         let _ = data;
+    ///     .drop_destination(|text: Str| {
+    ///         let _ = text;
     ///     });
     ///
     /// // With injected state
@@ -1188,17 +1294,18 @@ pub trait ViewExt: View + Sized {
     ///     .state(&items)
     ///     .state(&count)
     ///     .drop_destination(
-    ///         |State(items): State<Binding<Vec<String>>>,
-    ///          State(count): State<Binding<i32>>,
-    ///          data: DragData| {
-    ///             items.get_mut().push(data.as_str().to_string());
+    ///         |text: Str,
+    ///          State(items): State<Binding<Vec<String>>>,
+    ///          State(count): State<Binding<i32>>| {
+    ///             items.get_mut().push(text.to_string());
     ///             *count.get_mut() += 1;
     ///         },
     ///     );
     /// ```
-    fn drop_destination<H, Args>(self, on_drop: H) -> Metadata<DropDestination>
+    fn drop_destination<T, H, Args>(self, on_drop: H) -> Metadata<DropDestination>
     where
-        H: Handler<Args, ()>,
+        T: Transferable,
+        H: EventHandler<T, Args>,
     {
         Metadata::new(self, DropDestination::new(on_drop))
     }
@@ -1277,11 +1384,48 @@ pub trait ViewExt: View + Sized {
         })
     }
 
+    /// Reports the state of the interactive control this modifies — or the
+    /// outermost one inside it — into `state`, whenever it changes.
+    ///
+    /// Use it to style chrome the control does not draw itself:
+    ///
+    /// ```rust
+    /// use waterui::prelude::*;
+    /// use waterui::interaction::InteractionState;
+    ///
+    /// let state = binding(InteractionState::empty());
+    /// let outline = state.map(|s: InteractionState| if s.contains(InteractionState::FOCUSED) { 3.0 } else { 1.0 });
+    /// let chip = button("Filter").action(|| {}).interaction_state(&state);
+    /// ```
+    fn interaction_state(self, state: &Binding<InteractionState>) -> impl View {
+        self.install(InteractionReport(state.clone()))
+    }
+
+    /// Marks the interactive control this modifies as selected.
+    ///
+    /// A selected control is in [`InteractionState::SELECTED`], so its
+    /// style's selected values apply — a selected list item's container, a
+    /// selected navigation destination's indicator — and assistive technology
+    /// announces it as selected. It applies to the control it modifies, not to
+    /// controls nested inside that control.
+    ///
+    /// [`InteractionState::SELECTED`]: waterui_core::interaction::InteractionState::SELECTED
+    fn selected(self, is_selected: impl IntoComputed<bool>) -> Metadata<Selected> {
+        Metadata::new(self, Selected(is_selected.into_computed()))
+    }
+
     /// Injects cloneable state into this view subtree's environment.
     ///
     /// Actions and event handlers can later extract the injected value using
     /// [`waterui_core::extract::State`] in their handler parameters — or bare,
     /// as `value: T`, when `T` is an owned type marked `#[state]`.
+    ///
+    /// A handler sees the environment its modified view resolves in, so a
+    /// `.state` install reaches the handler wherever it sits in the same
+    /// modifier chain — `.state(&v).on_hover_exit(h)` and
+    /// `.on_hover_exit(h).state(&v)` deliver the same value. State injected
+    /// inside the view's own body is not part of the chain and stays invisible
+    /// to the handler.
     ///
     /// # Example
     ///
@@ -1290,6 +1434,8 @@ pub trait ViewExt: View + Sized {
     ///
     /// let hover_count = binding::<i32>(0);
     /// let is_hovered = binding::<bool>(false);
+    ///
+    /// // The installs may sit before the handlers in the chain…
     /// let hoverable = text!("Hover Me!")
     ///     .state(&hover_count)
     ///     .state(&is_hovered)
@@ -1302,6 +1448,13 @@ pub trait ViewExt: View + Sized {
     ///     .on_hover_exit(|State(hovered): State<Binding<bool>>| {
     ///         hovered.set(false);
     ///     });
+    ///
+    /// // …or after them — both spellings resolve to the same environment.
+    /// let equivalent = text!("Hover Me!")
+    ///     .on_hover_enter(|State(count): State<Binding<i32>>| {
+    ///         *count.get_mut() += 1;
+    ///     })
+    ///     .state(&hover_count);
     /// ```
     fn state<T: Clone + 'static>(self, state: &T) -> With<Self, State<T>> {
         With::new(self, State(state.clone()))

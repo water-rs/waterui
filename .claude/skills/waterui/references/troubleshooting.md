@@ -14,18 +14,18 @@
 These are the expensive ones — the type system cannot catch them, so recognize them by
 symptom.
 
-**The UI never updates.** A `.get()` reached a view-building expression, turning a signal
-into a one-time snapshot. Search the view function for `.get()`; every occurrence outside a
+**The UI never updates.** A `.snapshot()` reached a view-building expression, turning a signal
+into a one-time value. Search the view function for `.snapshot()`; every occurrence outside a
 handler or a `.map()` closure is suspect.
 
 ```rust
-view.opacity(fade.get())      // frozen
+view.opacity(fade.snapshot())      // frozen
 view.opacity(fade.clone())    // reactive
 ```
 
-**Text is stale.** Same cause, wearing a different hat: `text(format!("Count: {}", n.get()))`
+**Text is stale.** Same cause, wearing a different hat: `text(format!("Count: {}", n.snapshot()))`
 formats once. Use `text!("Count: {n}")`. (Plain `text(format!(..))` over a *non-signal*
-value is fine — the defect is specifically `.get()` on a signal.)
+value is fine — the defect is specifically `.snapshot()` on a signal.)
 
 **Typed input resets, or a control loses focus on every keystroke.** Something above it is a
 `watch` that rebuilds the subtree. Replace it — reactive text with `text!`, a reactive
@@ -80,12 +80,12 @@ Use `app.pump_for(duration)`.
 | `cannot find function 'binding' in this scope` | not in the prelude | `use waterui::reactive::binding;` |
 | `cannot find derive macro 'Identifiable'` | the derive is not in the prelude | `use waterui::Identifiable;` |
 | `cannot find type 'ListDelete' / 'ListMove'` | not in the prelude | `use waterui::component::list::{ListDelete, ListMove};` |
-| `cannot find type 'TapGesture' / 'CursorStyle' / 'DragData'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
+| `cannot find type 'TapGesture' / 'CursorStyle' / 'Transferable'` | interaction types are not in the prelude | `use waterui::gesture::…;` / `use waterui::cursor::…;` / `use waterui::drag_drop::…;` |
 | `cannot find type 'PhotoEvent'` | the real name is `photo::Event` | `use waterui::media::photo::Event as PhotoEvent;` |
 | mismatched types on `LongPressGesture::new(Duration::…)` | it takes a `u32` in backend time units | `LongPressGesture::new(500)` |
 | `no method named 'drop_hover'` | it exists only on the value `.drop_destination(..)` returns | chain it directly after `.drop_destination` |
+| `the trait bound 'MyType: Transferable' is not satisfied` on `.draggable`/`.drop_destination` | a drag value must be marked transferable | `impl Transferable for MyType {}` (plus `impl_constant!(MyType)` to pass a plain value) |
 | `no method named 'is_empty'` on a signal | signal string methods are prefixed | `.str_is_empty()`, `.str_len()`, `.str_contains(..)` |
-| `no method named 'linear'` found for `Gradient` (or wrong-type stops) | the prelude's `Gradient` is the background enum, not the GPU view | `use waterui_graphics::Gradient;` (crate `waterui-graphics`, feature `gpu`) |
 | type annotations needed on `.select(1.0_f32, 0.3)` | suffixed literal fights inference | `.select(1.0 as f32, 0.3)` |
 | mismatched arms in `.select(TokenA, TokenB)` | both arms must be one concrete type | convert first: `let a: Color = Accent.into();` |
 | `this function takes 2 arguments but 1 was supplied` on `.scale` | transforms are per-axis | `.scale(x, y)`, `.offset(x, y)`, `.size(w, h)` |
@@ -113,12 +113,17 @@ genuinely a false positive, use a narrowly scoped item-level `expect` with a rea
 
 ## Runtime panics
 
-**"Environment state `T` not found".** A handler asked for a `State<T>` or a
+**"Environment state `T` not found at position N".** A handler asked for a `State<T>` or a
 `#[state]`-marked `T` that nothing injected. Add `.state(&value)` on the button, or on an
 ancestor container if several handlers need it.
 
 **"Environment value `T` not found".** Same, but for `Use<T>` — the value must be installed
 in the environment (typically in `app(env)`), not passed via `.state()`.
+
+**"Local executor not set".** `spawn_local` ran before the backend installed the
+thread-local executor — before it mounted the app's view, while `main` or a
+`Store::new` was still running. Move the call into `.task(..)`, `.on_appear`, or
+a handler body.
 
 **A panic under `LabelDisplayMode::IconOnly`.** Some label in that subtree has no
 `.icon(..)`. Scope the install more narrowly or give every label an icon.
@@ -172,10 +177,12 @@ permission failure.
 `dev = ["waterui/dynamic_linking"]` feature stanza generated projects carry — see
 `references/project.md`.
 
-**A change to the CLI has no effect.** The `water` on `PATH` is a previously installed
-binary. Reinstall it (`cargo install waterui-cli`, or `cargo install --locked --git
-https://github.com/water-rs/cli waterui-cli` for the integration branch), or invoke the
-freshly built one directly.
+**The CLI is out of date, or a change to it has no effect.** The `water` on `PATH` is a
+previously installed binary. `water update` replaces it with the newest release, and
+`water update --check` reports what is available without installing. When you are
+working on the CLI itself, `cargo install --path .` from that checkout replaces the
+binary, or invoke the freshly built one directly — that is the only case that compiles
+the CLI from source.
 
 **Scrolling or interaction is janky in a dev build only.** Check that the build has a
 release-ish profile; a full stack compiled at `-O0` with debug info is slow in a way that

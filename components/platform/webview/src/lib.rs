@@ -87,7 +87,7 @@ pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
 ///
 ///     /// The page calls `await counter.add({ by: 2 })`.
 ///     async fn add(&self, by: u32) {
-///         self.count.set(self.count.get() + by);
+///         *self.count.get_mut() += by;
 ///     }
 /// }
 ///
@@ -494,7 +494,7 @@ impl WebView {
         let guard = user_agent.watch(move |context| {
             handle.set_user_agent(context.into_value().as_str());
         });
-        self.handle.set_user_agent(user_agent.get().as_str());
+        self.handle.set_user_agent(user_agent.snapshot().as_str());
         self.retained.push(Rc::new((user_agent, guard)));
         self
     }
@@ -693,7 +693,7 @@ where
         }
     });
     if !emitted_during_subscription.get() {
-        navigate(url.get());
+        navigate(url.snapshot());
     }
     guard
 }
@@ -912,7 +912,7 @@ impl WebViewOpen {
         let (webview, initial, url) = match target {
             WebViewTarget::Url(url) => {
                 let webview = controller.open();
-                (webview, url.get(), Some(url))
+                (webview, url.snapshot(), Some(url))
             }
             WebViewTarget::Assets { server, entry } => {
                 let webview = controller.open_with(WebViewConfig {
@@ -1071,9 +1071,9 @@ mod tests {
             .redirects_enabled
             .expect("the redirect policy was configured");
 
-        assert!(!configured.get());
+        assert!(!configured.snapshot());
         redirects.set(true);
-        assert!(configured.get());
+        assert!(configured.snapshot());
     }
 
     #[derive(Clone)]
@@ -1086,8 +1086,8 @@ mod tests {
         type Output = Url;
         type Guard = <Binding<Url> as Signal>::Guard;
 
-        fn get(&self) -> Self::Output {
-            self.source.get()
+        fn snapshot(&self) -> Self::Output {
+            self.source.snapshot()
         }
 
         fn watch(&self, watcher: impl Fn(Context<Self::Output>) + 'static) -> Self::Guard {
