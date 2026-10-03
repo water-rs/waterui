@@ -12,6 +12,12 @@ use tracing_subscriber::fmt::MakeWriter;
 /// The log tag every record carries — the app's own channel in logcat.
 const TAG: &std::ffi::CStr = c"WaterUI";
 
+/// `ANDROID_LOG_INFO` from `<android/log.h>` — an NDK `android_LogPriority`
+/// C enum. Its value is part of the frozen liblog ABI, not a framework
+/// resource id, so spelling it here is safe in a way `android.R.attr.*`
+/// literals are not.
+const ANDROID_LOG_INFO: i32 = 4;
+
 #[link(name = "log")]
 unsafe extern "C" {
     /// Writes `text` to logcat at `priority` under `tag`.
@@ -60,9 +66,9 @@ impl Drop for RecordWriter {
         // and a malformed one is never worth a second syscall to split.
         if let Ok(text) = CString::new(self.buffer.as_slice()) {
             // SAFETY: `TAG` and `text` are NUL-terminated C strings that
-            // outlive the call; INFO is a valid logcat priority.
+            // outlive the call; `ANDROID_LOG_INFO` is a valid priority.
             unsafe {
-                __android_log_write(4, TAG.as_ptr(), text.as_ptr());
+                __android_log_write(ANDROID_LOG_INFO, TAG.as_ptr(), text.as_ptr());
             }
         }
     }

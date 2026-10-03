@@ -71,7 +71,7 @@ pub fn mount(
     // resolves both out of the environment for the render context.
     env_rust.insert(Rc::clone(&platform));
     crate::dispatch::install(&mut env_rust);
-    let theme = crate::theme::install(&mut env_rust, &platform);
+    let theme = crate::theme::install(&mut env_rust, env, &platform)?;
     let locale = crate::locale::install(&mut env_rust, &platform);
 
     let parts = app(env_rust).into_parts();
@@ -165,10 +165,10 @@ pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeOnConfigurati
     _this: jni::objects::JObject<'caller>,
     handle: jlong,
 ) {
-    let outcome = unowned_env.with_env(|_env| -> jni::errors::Result<()> {
+    let outcome = unowned_env.with_env(|env| -> jni::errors::Result<()> {
         // SAFETY: the handle stays live until nativeDestroy.
         let runtime = unsafe { runtime(handle) };
-        crate::theme::refresh(&runtime.theme);
+        crate::theme::refresh(env, &runtime.theme)?;
         crate::locale::refresh(&runtime.locale, &runtime.platform);
         Ok(())
     });

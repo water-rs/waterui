@@ -25,22 +25,6 @@ use crate::dispatch::Dispatcher;
 use crate::jvm::{self, Platform};
 use crate::native_layout::ViewSubView;
 
-/// Gravity's horizontal half — vertical centering is fixed by the frame the
-/// layout gives the view, never by the label's gravity.
-mod gravity {
-    pub const START: i32 = 0x0080_0003;
-    pub const CENTER_HORIZONTAL: i32 = 1;
-    pub const END: i32 = 0x0080_0005;
-    pub const CENTER_VERTICAL: i32 = 0x10;
-}
-
-/// `View.TEXT_ALIGNMENT_*` — the layout-direction-aware alignment.
-mod text_alignment {
-    pub const TEXT_START: i32 = 5;
-    pub const CENTER: i32 = 4;
-    pub const TEXT_END: i32 = 6;
-}
-
 /// Claims `Native<TextConfig>` and `Native<Str>`.
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<TextConfig>(|config, ctx| render_text(ctx, &config));
@@ -93,24 +77,29 @@ fn render_text(ctx: &RenderContext, config: &TextConfig) -> NativeLeaf {
     let view = jvm::retain(leaf.view());
     let align_platform = platform.clone();
     leaf.bind(&config.paragraph_alignment, move |alignment| {
-        let (gravity, alignment) = if alignment == HorizontalAlignment::Leading {
-            (
-                gravity::START | gravity::CENTER_VERTICAL,
-                text_alignment::TEXT_START,
-            )
-        } else if alignment == HorizontalAlignment::Trailing {
-            (
-                gravity::END | gravity::CENTER_VERTICAL,
-                text_alignment::TEXT_END,
-            )
-        } else {
-            (
-                gravity::CENTER_HORIZONTAL | gravity::CENTER_VERTICAL,
-                text_alignment::CENTER,
-            )
-        };
         jvm::with_env(|env| {
+            // Gravity places the laid-out text in the frame, text alignment
+            // picks the edge. `TEXT_ALIGNMENT_TEXT_*` is the script-aware
+            // value — distinct from `VIEW_*`, whose start/end resolve the
+            // layout direction instead. Every constant is the platform's
+            // own, resolved in `Bindings`.
             let bindings = align_platform.bindings();
+            let (gravity, alignment) = if alignment == HorizontalAlignment::Leading {
+                (
+                    bindings.gravity_start() | bindings.gravity_center_vertical(),
+                    bindings.text_alignment_text_start(),
+                )
+            } else if alignment == HorizontalAlignment::Trailing {
+                (
+                    bindings.gravity_end() | bindings.gravity_center_vertical(),
+                    bindings.text_alignment_text_end(),
+                )
+            } else {
+                (
+                    bindings.gravity_center_horizontal() | bindings.gravity_center_vertical(),
+                    bindings.text_alignment_center(),
+                )
+            };
             bindings
                 .set_gravity(env, view.as_ref(), gravity)
                 .and_then(|()| bindings.set_text_alignment(env, view.as_ref(), alignment))

@@ -20,10 +20,10 @@
 use core::cell::Cell;
 use core::marker::PhantomData;
 
-use jni::objects::{Global, JClass, JObject, JString};
+use jni::objects::{Global, JClass, JObject, JString, JValueOwned};
 use jni::objects::{JFieldID, JMethodID, JStaticFieldID, JStaticMethodID};
 use jni::signature::{JavaType, Primitive, ReturnType};
-use jni::strings::JNIStr;
+use jni::strings::{JNIStr, JNIString};
 use jni::sys::{jint, jlong, jvalue};
 use jni::{Env, JavaVM, jni_sig, jni_str};
 
@@ -92,6 +92,7 @@ pub struct Bindings {
     view_set_content_description: JMethodID,
     view_set_text_alignment: JMethodID,
     view_set_clickable: JMethodID,
+    view_set_elevation: JMethodID,
     view_set_important_for_accessibility: JMethodID,
     view_set_background_color: JMethodID,
     view_set_clip_children: JMethodID,
@@ -153,18 +154,39 @@ pub struct Bindings {
     theme: Global<JClass<'static>>,
     theme_resolve_attribute: JMethodID,
 
+    // android/R$attr — the class the theme-attribute ids live on. The
+    // field VALUES are resource ids assigned per platform release and
+    // are not stable constants, so every attribute the theme reads is
+    // looked up by name at runtime.
+    r_attr: Global<JClass<'static>>,
+
     // android/content/res/Configuration.
     configuration_ui_mode: JFieldID,
 
     // android/util/DisplayMetrics.
     display_metrics_density: JFieldID,
 
-    // android/util/TypedValue.
+    // android/util/TypedValue — the fields a resolved attribute is read
+    // through, plus its public `TYPE_*` codes resolved by name.
     typed_value: Global<JClass<'static>>,
     typed_value_ctor: JMethodID,
     typed_value_type: JFieldID,
     typed_value_data: JFieldID,
     typed_value_resource_id: JFieldID,
+    typed_value_string: JFieldID,
+    typed_value_type_reference: jint,
+    typed_value_type_attribute: jint,
+    typed_value_type_string: jint,
+    typed_value_type_first_int: jint,
+    typed_value_type_last_color_int: jint,
+
+    // android/graphics/Color — parses a literal hex color string a theme
+    // may hand back for a color attribute (`TYPE_STRING` values).
+    color: Global<JClass<'static>>,
+    color_parse_color: JStaticMethodID,
+
+    // java/lang/Object — `toString`, the generic read on `CharSequence`.
+    object_to_string: JMethodID,
 
     // android/os/Looper.
     looper: Global<JClass<'static>>,
@@ -176,11 +198,49 @@ pub struct Bindings {
     locale_get_default: JStaticMethodID,
     locale_to_language_tag: JMethodID,
 
-    // android/view/View$MeasureSpec.
+    // android/view/View$MeasureSpec — the packed-spec methods and the
+    // public mode constants (`UNSPECIFIED`, `AT_MOST`, `EXACTLY`),
+    // resolved by name like every other framework value.
     measure_spec: Global<JClass<'static>>,
     measure_spec_make: JStaticMethodID,
     measure_spec_get_mode: JStaticMethodID,
     measure_spec_get_size: JStaticMethodID,
+    measure_spec_mode_unspecified: jint,
+    measure_spec_mode_at_most: jint,
+    measure_spec_mode_exactly: jint,
+
+    // Framework constants read through JNI at resolve time — public
+    // `static final int` values looked up by name instead of baked in.
+    // android/view/Gravity.
+    gravity: Global<JClass<'static>>,
+    gravity_start: jint,
+    gravity_center_horizontal: jint,
+    gravity_end: jint,
+    gravity_center_vertical: jint,
+    // android/view/View.
+    view_text_alignment_text_start: jint,
+    view_text_alignment_center: jint,
+    view_text_alignment_text_end: jint,
+    view_important_for_accessibility_yes: jint,
+    view_important_for_accessibility_no_hide_descendants: jint,
+    // android/content/res/Configuration.
+    configuration_ui_mode_night_mask: jint,
+    configuration_ui_mode_night_yes: jint,
+}
+
+/// Throws `android.content.res.Resources.NotFoundException` naming the
+/// `android.R.attr` field behind a theme-resolution failure — the error
+/// contract theme resolution reports through. A pending Java exception
+/// the failed lookup left behind is cleared first so this one lands.
+fn attr_not_found(env: &mut Env, attr: &JNIStr, detail: &str) -> jni::errors::Error {
+    if env.exception_check() {
+        env.exception_clear();
+    }
+    let _ = env.throw_new(
+        jni_str!("android/content/res/Resources$NotFoundException"),
+        JNIString::new(alloc::format!("android.R.attr.{attr}: {detail}")),
+    );
+    jni::errors::Error::JavaException
 }
 
 /// Another global reference to `view` — the way a leaf shares its platform
@@ -353,11 +413,31 @@ impl Bindings {
         let configuration = class(jni_str!("android/content/res/Configuration"))?;
         let display_metrics = class(jni_str!("android/util/DisplayMetrics"))?;
         let typed_value = class(jni_str!("android/util/TypedValue"))?;
+        let r_attr = class(jni_str!("android/R$attr"))?;
         let looper = class(jni_str!("android/os/Looper"))?;
         let locale = class(jni_str!("java/util/Locale"))?;
         let window_manager = class(jni_str!("android/view/WindowManager"))?;
         let display = class(jni_str!("android/view/Display"))?;
         let measure_spec = class(jni_str!("android/view/View$MeasureSpec"))?;
+        let gravity = class(jni_str!("android/view/Gravity"))?;
+        let color = class(jni_str!("android/graphics/Color"))?;
+        let object = class(jni_str!("java/lang/Object"))?;
+
+        // A public `static final int` on a framework class, read by name:
+        // the crate never bakes a framework constant in — a wrong literal
+        // is a wrong answer the compiler cannot see, and a missing field
+        // fails at resolve time naming it.
+        let const_int = |env: &mut Env,
+                         class: &Global<JClass>,
+                         name: &'static JNIStr|
+         -> jni::errors::Result<jint> {
+            let field = env.get_static_field_id(class, name, jni_sig!("I"))?;
+            // SAFETY: resolved static int field on a framework class.
+            unsafe {
+                env.get_static_field_unchecked(class, field, JavaType::Primitive(Primitive::Int))?
+                    .i()
+            }
+        };
 
         Ok(Self {
             rust_view_group_ctor: env.get_method_id(
@@ -414,6 +494,11 @@ impl Bindings {
                 &view,
                 jni_str!("setClickable"),
                 jni_sig!("(Z)V"),
+            )?,
+            view_set_elevation: env.get_method_id(
+                &view,
+                jni_str!("setElevation"),
+                jni_sig!("(F)V"),
             )?,
             view_set_important_for_accessibility: env.get_method_id(
                 &view,
@@ -582,6 +667,7 @@ impl Bindings {
                 jni_sig!("(ILandroid/util/TypedValue;Z)Z"),
             )?,
             theme,
+            r_attr,
 
             configuration_ui_mode: env.get_field_id(
                 &configuration,
@@ -607,7 +693,34 @@ impl Bindings {
                 jni_str!("resourceId"),
                 jni_sig!("I"),
             )?,
+            typed_value_string: env.get_field_id(
+                &typed_value,
+                jni_str!("string"),
+                jni_sig!("Ljava/lang/CharSequence;"),
+            )?,
+            typed_value_type_reference: const_int(env, &typed_value, jni_str!("TYPE_REFERENCE"))?,
+            typed_value_type_attribute: const_int(env, &typed_value, jni_str!("TYPE_ATTRIBUTE"))?,
+            typed_value_type_string: const_int(env, &typed_value, jni_str!("TYPE_STRING"))?,
+            typed_value_type_first_int: const_int(env, &typed_value, jni_str!("TYPE_FIRST_INT"))?,
+            typed_value_type_last_color_int: const_int(
+                env,
+                &typed_value,
+                jni_str!("TYPE_LAST_COLOR_INT"),
+            )?,
             typed_value,
+
+            color_parse_color: env.get_static_method_id(
+                &color,
+                jni_str!("parseColor"),
+                jni_sig!("(Ljava/lang/String;)I"),
+            )?,
+            color,
+
+            object_to_string: env.get_method_id(
+                &object,
+                jni_str!("toString"),
+                jni_sig!("()Ljava/lang/String;"),
+            )?,
 
             looper_get_main_looper: env.get_static_method_id(
                 &looper,
@@ -648,7 +761,47 @@ impl Bindings {
                 jni_str!("getSize"),
                 jni_sig!("(I)I"),
             )?,
+            measure_spec_mode_unspecified: const_int(env, &measure_spec, jni_str!("UNSPECIFIED"))?,
+            measure_spec_mode_at_most: const_int(env, &measure_spec, jni_str!("AT_MOST"))?,
+            measure_spec_mode_exactly: const_int(env, &measure_spec, jni_str!("EXACTLY"))?,
             measure_spec,
+
+            gravity_start: const_int(env, &gravity, jni_str!("START"))?,
+            gravity_center_horizontal: const_int(env, &gravity, jni_str!("CENTER_HORIZONTAL"))?,
+            gravity_end: const_int(env, &gravity, jni_str!("END"))?,
+            gravity_center_vertical: const_int(env, &gravity, jni_str!("CENTER_VERTICAL"))?,
+            gravity,
+            view_text_alignment_text_start: const_int(
+                env,
+                &view,
+                jni_str!("TEXT_ALIGNMENT_TEXT_START"),
+            )?,
+            view_text_alignment_center: const_int(env, &view, jni_str!("TEXT_ALIGNMENT_CENTER"))?,
+            view_text_alignment_text_end: const_int(
+                env,
+                &view,
+                jni_str!("TEXT_ALIGNMENT_TEXT_END"),
+            )?,
+            view_important_for_accessibility_yes: const_int(
+                env,
+                &view,
+                jni_str!("IMPORTANT_FOR_ACCESSIBILITY_YES"),
+            )?,
+            view_important_for_accessibility_no_hide_descendants: const_int(
+                env,
+                &view,
+                jni_str!("IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS"),
+            )?,
+            configuration_ui_mode_night_mask: const_int(
+                env,
+                &configuration,
+                jni_str!("UI_MODE_NIGHT_MASK"),
+            )?,
+            configuration_ui_mode_night_yes: const_int(
+                env,
+                &configuration,
+                jni_str!("UI_MODE_NIGHT_YES"),
+            )?,
         })
     }
 }
@@ -802,6 +955,13 @@ impl Bindings {
     }
 
     /// `view.layout(l, t, r, b)` — the placement a container writes.
+    ///
+    /// The write is the leaf's whole layout pass: `measure` runs first with
+    /// `EXACTLY` specs matching the frame. A `ViewGroup` leaf (the button
+    /// shell, a `Dynamic` host) places children in `onLayout` from
+    /// `getMeasuredWidth`/`getMeasuredHeight`, which stay zero on a view
+    /// that only ever saw `layout()`; a plain leaf measures to the same
+    /// frame Rust is about to set, so the extra call is a no-op.
     pub fn layout(
         &self,
         env: &mut Env,
@@ -811,6 +971,10 @@ impl Bindings {
         right: jint,
         bottom: jint,
     ) -> jni::errors::Result<()> {
+        let exactly = self.measure_spec_exactly();
+        let width_spec = self.make_measure_spec(env, right - left, exactly)?;
+        let height_spec = self.make_measure_spec(env, bottom - top, exactly)?;
+        self.measure(env, view, width_spec, height_spec)?;
         // SAFETY: resolved id; `view` is a View.
         unsafe {
             env.call_method_unchecked(
@@ -1178,6 +1342,20 @@ impl Bindings {
         Ok(())
     }
 
+    /// `view.setElevation(px)` — pixels, not dp.
+    pub fn set_elevation(&self, env: &mut Env, view: &JObject, px: f32) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `view` is a View.
+        unsafe {
+            env.call_method_unchecked(
+                view,
+                self.view_set_elevation,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { f: px }],
+            )?;
+        }
+        Ok(())
+    }
+
     /// `view.setImportantForAccessibility(mode)` —
     /// `View.IMPORTANT_FOR_ACCESSIBILITY_*`.
     pub fn set_important_for_accessibility(
@@ -1265,6 +1443,48 @@ impl Bindings {
         tag.try_to_string(env)
     }
 
+    /// `Object.toString` — the generic read on any `CharSequence` or
+    /// object a field hands back.
+    pub fn to_string(&self, env: &mut Env, object: &JObject) -> jni::errors::Result<String> {
+        // SAFETY: resolved method; every object answers `toString`.
+        let s = unsafe {
+            env.call_method_unchecked(object, self.object_to_string, ReturnType::Object, &[])?
+        };
+        let s: JString = env.cast_local::<JString>(s.l()?)?;
+        s.try_to_string(env)
+    }
+
+    /// `TypedValue.string` as a Rust `String` — the text a `TYPE_STRING`
+    /// value carries (a literal hex color or a resource path).
+    pub fn typed_value_string(
+        &self,
+        env: &mut Env,
+        value: &JObject,
+    ) -> jni::errors::Result<String> {
+        // SAFETY: resolved field on a TypedValue; `string` is a
+        // CharSequence the field sig declares.
+        let chars =
+            unsafe { env.get_field_unchecked(value, self.typed_value_string, JavaType::Object)? };
+        self.to_string(env, &chars.l()?)
+    }
+
+    /// `Color.parseColor(text)` — a theme-resolved color string as ARGB;
+    /// `Err` surfaces the platform's `IllegalArgumentException` for a
+    /// string that names no color.
+    pub fn parse_color(&self, env: &mut Env, text: &str) -> jni::errors::Result<jint> {
+        let text = env.new_string(text)?;
+        // SAFETY: resolved static method; the arg is a String.
+        unsafe {
+            env.call_static_method_unchecked(
+                &self.color,
+                self.color_parse_color,
+                ReturnType::Primitive(Primitive::Int),
+                &[jvalue { l: text.as_raw() }],
+            )?
+            .i()
+        }
+    }
+
     /// `View.MeasureSpec.makeMeasureSpec(size, mode)` — the packed spec.
     pub fn make_measure_spec(
         &self,
@@ -1310,6 +1530,102 @@ impl Bindings {
             )?
         };
         size.i()
+    }
+
+    /// `View.MeasureSpec.UNSPECIFIED` — resolved at startup, not baked in.
+    pub const fn measure_spec_unspecified(&self) -> jint {
+        self.measure_spec_mode_unspecified
+    }
+
+    /// `View.MeasureSpec.AT_MOST`.
+    pub const fn measure_spec_at_most(&self) -> jint {
+        self.measure_spec_mode_at_most
+    }
+
+    /// `View.MeasureSpec.EXACTLY`.
+    pub const fn measure_spec_exactly(&self) -> jint {
+        self.measure_spec_mode_exactly
+    }
+
+    /// `TypedValue.TYPE_REFERENCE` — resolved at startup, not baked in.
+    pub const fn typed_value_type_reference(&self) -> jint {
+        self.typed_value_type_reference
+    }
+
+    /// `TypedValue.TYPE_ATTRIBUTE`.
+    pub const fn typed_value_type_attribute(&self) -> jint {
+        self.typed_value_type_attribute
+    }
+
+    /// `TypedValue.TYPE_STRING`.
+    pub const fn typed_value_type_string(&self) -> jint {
+        self.typed_value_type_string
+    }
+
+    /// `TypedValue.TYPE_FIRST_INT` — the low end of the direct-int range
+    /// (`data` carries the value).
+    pub const fn typed_value_type_first_int(&self) -> jint {
+        self.typed_value_type_first_int
+    }
+
+    /// `TypedValue.TYPE_LAST_COLOR_INT` — the high end of it.
+    pub const fn typed_value_type_last_color_int(&self) -> jint {
+        self.typed_value_type_last_color_int
+    }
+
+    /// `Gravity.START` — resolved at startup, not baked in.
+    pub const fn gravity_start(&self) -> jint {
+        self.gravity_start
+    }
+
+    /// `Gravity.CENTER_HORIZONTAL`.
+    pub const fn gravity_center_horizontal(&self) -> jint {
+        self.gravity_center_horizontal
+    }
+
+    /// `Gravity.END`.
+    pub const fn gravity_end(&self) -> jint {
+        self.gravity_end
+    }
+
+    /// `Gravity.CENTER_VERTICAL`.
+    pub const fn gravity_center_vertical(&self) -> jint {
+        self.gravity_center_vertical
+    }
+
+    /// `View.TEXT_ALIGNMENT_TEXT_START`.
+    pub const fn text_alignment_text_start(&self) -> jint {
+        self.view_text_alignment_text_start
+    }
+
+    /// `View.TEXT_ALIGNMENT_CENTER`.
+    pub const fn text_alignment_center(&self) -> jint {
+        self.view_text_alignment_center
+    }
+
+    /// `View.TEXT_ALIGNMENT_TEXT_END`.
+    pub const fn text_alignment_text_end(&self) -> jint {
+        self.view_text_alignment_text_end
+    }
+
+    /// `View.IMPORTANT_FOR_ACCESSIBILITY_YES`.
+    pub const fn important_for_accessibility_yes(&self) -> jint {
+        self.view_important_for_accessibility_yes
+    }
+
+    /// `View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS`.
+    pub const fn important_for_accessibility_no_hide_descendants(&self) -> jint {
+        self.view_important_for_accessibility_no_hide_descendants
+    }
+
+    /// `Configuration.UI_MODE_NIGHT_MASK`.
+    pub const fn ui_mode_night_mask(&self) -> jint {
+        self.configuration_ui_mode_night_mask
+    }
+
+    /// `Configuration.UI_MODE_NIGHT_YES`.
+    pub const fn ui_mode_night_yes(&self) -> jint {
+        self.configuration_ui_mode_night_yes
     }
 }
 
@@ -1362,14 +1678,53 @@ impl Platform {
         ui_mode.i()
     }
 
-    /// `theme.resolveAttribute(attr, typedValue, true)` +
-    /// `resources.getColor(resourceId, theme)` — a themed color as ARGB.
+    /// `android.R.attr.<name>` — the theme attribute's framework id,
+    /// looked up by reflection at runtime. `android.R.attr.*` values
+    /// are resource ids assigned per platform release, never stable
+    /// constants, so the crate names every attribute it reads and
+    /// resolves the ids here instead of baking them in.
     ///
-    /// Answers `None` when the theme does not resolve the attribute to a
-    /// color; a missing token is the caller's to fill.
-    pub fn theme_color(&self, env: &mut Env, attr: jint) -> jni::errors::Result<Option<jint>> {
+    /// # Errors
+    ///
+    /// A pending `Resources.NotFoundException` naming the attribute
+    /// when the platform defines no such field.
+    pub fn framework_attr(
+        &self,
+        env: &mut Env,
+        name: &'static JNIStr,
+    ) -> jni::errors::Result<jint> {
+        match env.get_static_field_id(&self.bindings.r_attr, name, jni_sig!("I")) {
+            // SAFETY: resolved static int field on android.R.attr.
+            Ok(field) => unsafe {
+                env.get_static_field_unchecked(
+                    &self.bindings.r_attr,
+                    field,
+                    JavaType::Primitive(Primitive::Int),
+                )?
+                .i()
+            },
+            Err(_) => Err(attr_not_found(
+                env,
+                name,
+                "the platform defines no such attribute",
+            )),
+        }
+    }
+
+    /// `theme.resolveAttribute(attr, typedValue, true)` +
+    /// `resources.getColor(resolvedId, theme)` — a themed color as ARGB.
+    ///
+    /// # Errors
+    ///
+    /// A pending `Resources.NotFoundException` naming `android.R.attr`
+    /// `<attr_name>` when the attribute does not resolve to a color.
+    pub fn theme_color(
+        &self,
+        env: &mut Env,
+        attr: jint,
+        attr_name: &'static JNIStr,
+    ) -> jni::errors::Result<jint> {
         let theme = self.theme(env)?;
-        let resources = self.resources(env)?;
         // SAFETY: resolved constructor; `value` is a fresh TypedValue the
         // resolve call fills by contract.
         let value = unsafe {
@@ -1393,52 +1748,128 @@ impl Platform {
             )?
         };
         if !resolved.z()? {
-            return Ok(None);
+            return Err(attr_not_found(
+                env,
+                attr_name,
+                "the activity theme does not resolve it",
+            ));
         }
+        self.theme_color_from_value(env, &value, attr_name)
+    }
+
+    /// The ARGB a resolved `TypedValue` carries for `attr_name`,
+    /// interpreted the way `ResourcesImpl.getColor` reads a theme color
+    /// attribute: an int-typed value (`TYPE_FIRST_INT` through
+    /// `TYPE_LAST_COLOR_INT`) carries the ARGB in `data`; a
+    /// `TYPE_REFERENCE` names the color resource in `data` —
+    /// `resourceId` is the resource the value was *declared in*, on API
+    /// 36 the framework style carrying the theme assignment, and feeding
+    /// it to `getColor` throws `NotFoundException` on a style id; a
+    /// `TYPE_STRING` value is a literal color string to parse; a
+    /// `TYPE_ATTRIBUTE` maps the attribute onto another attribute and
+    /// resolves one hop deeper. Anything else is not a color.
+    fn theme_color_from_value(
+        &self,
+        env: &mut Env,
+        value: &JObject,
+        attr_name: &'static JNIStr,
+    ) -> jni::errors::Result<jint> {
+        let bindings = &self.bindings;
         // SAFETY: resolved fields on the TypedValue `resolveAttribute` filled.
         let (kind, data, resource_id) = unsafe {
             (
                 env.get_field_unchecked(
-                    &value,
-                    self.bindings.typed_value_type,
+                    value,
+                    bindings.typed_value_type,
                     JavaType::Primitive(Primitive::Int),
-                )?,
+                )?
+                .i()?,
                 env.get_field_unchecked(
-                    &value,
-                    self.bindings.typed_value_data,
+                    value,
+                    bindings.typed_value_data,
                     JavaType::Primitive(Primitive::Int),
-                )?,
+                )?
+                .i()?,
                 env.get_field_unchecked(
-                    &value,
-                    self.bindings.typed_value_resource_id,
+                    value,
+                    bindings.typed_value_resource_id,
                     JavaType::Primitive(Primitive::Int),
-                )?,
+                )?
+                .i()?,
             )
         };
-        let kind = kind.i()?;
-        // `TYPE_INT_COLOR_*` (16..=31) carries the ARGB in `data`; a
-        // `TYPE_REFERENCE` (1) names a color resource to resolve.
-        if (16..32).contains(&kind) {
-            return Ok(Some(data.i()?));
+        if (bindings.typed_value_type_first_int()..=bindings.typed_value_type_last_color_int())
+            .contains(&kind)
+        {
+            return Ok(data);
         }
-        if kind != 1 {
-            return Ok(None);
+        if kind == bindings.typed_value_type_attribute() {
+            return self.theme_color(env, data, attr_name);
         }
-        // SAFETY: resolved method; `resource_id` names a color resource.
+        if kind == bindings.typed_value_type_string() {
+            // Two shapes land here: a literal color string (`"#33FF…"`,
+            // resourceId 0) to parse, or a resource path
+            // ("res/color/x.xml") whose res id `resourceId` already
+            // carries — the id `getColor` wants.
+            if resource_id != 0 {
+                return self.resource_color(env, resource_id, attr_name, 0);
+            }
+            let text = bindings.typed_value_string(env, value)?;
+            return bindings.parse_color(env, &text).map_err(|_| {
+                attr_not_found(
+                    env,
+                    attr_name,
+                    &alloc::format!("it resolves to the string \"{text}\", which is not a color"),
+                )
+            });
+        }
+        if kind != bindings.typed_value_type_reference() {
+            return Err(attr_not_found(
+                env,
+                attr_name,
+                &alloc::format!(
+                    "the theme resolves it to a TypedValue of type {kind} \
+                     (data 0x{data:08x}, resourceId 0x{resource_id:08x}), not a color",
+                ),
+            ));
+        }
+        self.resource_color(env, data, attr_name, resource_id)
+    }
+
+    /// `resources.getColor(res_id, theme)` — a themed color resource as
+    /// ARGB, with `declared_in` naming the resource the value was
+    /// declared in for the failure message.
+    fn resource_color(
+        &self,
+        env: &mut Env,
+        res_id: jint,
+        attr_name: &'static JNIStr,
+        declared_in: jint,
+    ) -> jni::errors::Result<jint> {
+        let theme = self.theme(env)?;
+        let resources = self.resources(env)?;
+        // SAFETY: resolved method; `res_id` names a color resource.
         let color = unsafe {
             env.call_method_unchecked(
                 &resources,
                 self.bindings.resources_get_color,
                 ReturnType::Primitive(Primitive::Int),
-                &[
-                    jvalue {
-                        i: resource_id.i()?,
-                    },
-                    jvalue { l: theme.as_raw() },
-                ],
-            )?
+                &[jvalue { i: res_id }, jvalue { l: theme.as_raw() }],
+            )
         };
-        Ok(Some(color.i()?))
+        color.map_or_else(
+            |_| {
+                Err(attr_not_found(
+                    env,
+                    attr_name,
+                    &alloc::format!(
+                        "it resolves to resource 0x{res_id:08x} \
+                         (declared in 0x{declared_in:08x}), which is not a color",
+                    ),
+                ))
+            },
+            JValueOwned::i,
+        )
     }
 
     /// `context.getSystemService("window").getDefaultDisplay()

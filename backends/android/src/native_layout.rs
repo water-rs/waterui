@@ -16,19 +16,16 @@ use jni::sys::jint;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::PlatformView;
-use crate::jvm::{self, Platform};
+use crate::jvm::{self, Bindings, Platform};
 
-/// `View.MeasureSpec` modes, as `MeasureSpec` encodes them.
-const MODE_UNSPECIFIED: jint = 0;
-const MODE_AT_MOST: jint = 0x8000_0000u32.cast_signed();
-
-/// The mode a proposal axis carries: a bound when the parent offered one,
-/// free when it did not.
-const fn mode_of(axis: Option<f32>) -> jint {
+/// The mode a proposal axis carries: `AT_MOST` — a bound — when the
+/// parent offered one, `UNSPECIFIED` when it did not. The values are the
+/// platform's own `View.MeasureSpec` constants, resolved in `Bindings`.
+const fn mode_of(bindings: &Bindings, axis: Option<f32>) -> jint {
     if axis.is_some() {
-        MODE_AT_MOST
+        bindings.measure_spec_at_most()
     } else {
-        MODE_UNSPECIFIED
+        bindings.measure_spec_unspecified()
     }
 }
 
@@ -46,9 +43,8 @@ fn spec_of(
 
 fn make_spec(env: &mut Env, platform: &Platform, axis: Option<f32>) -> jni::errors::Result<jint> {
     let px = axis.map_or(0, |dp| platform.dp_to_px(dp));
-    platform
-        .bindings()
-        .make_measure_spec(env, px, mode_of(axis))
+    let bindings = platform.bindings();
+    bindings.make_measure_spec(env, px, mode_of(bindings, axis))
 }
 
 /// Packs a measured pixel size the way `nativeMeasure` returns it to Kotlin.
@@ -77,11 +73,15 @@ pub fn spec_axis_to_proposal(
     platform: &Platform,
     spec: jint,
 ) -> jni::errors::Result<Option<f32>> {
-    let mode = platform.bindings().measure_spec_mode(env, spec)?;
-    let size = platform.bindings().measure_spec_size(env, spec)?;
-    Ok(match mode {
-        MODE_UNSPECIFIED => None,
-        _ => Some(platform.px_to_dp(size)),
+    let bindings = platform.bindings();
+    let mode = bindings.measure_spec_mode(env, spec)?;
+    let size = bindings.measure_spec_size(env, spec)?;
+    // `EXACTLY` and `AT_MOST` both bound the child to the spec size;
+    // `UNSPECIFIED` leaves it free.
+    Ok(if mode == bindings.measure_spec_unspecified() {
+        None
+    } else {
+        Some(platform.px_to_dp(size))
     })
 }
 
