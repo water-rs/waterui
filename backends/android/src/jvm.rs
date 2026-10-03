@@ -100,6 +100,8 @@ pub struct Bindings {
     // android/view/ViewGroup.
     view_group_add_view: JMethodID,
     view_group_remove_view: JMethodID,
+    view_group_index_of_child: JMethodID,
+    view_group_add_view_at: JMethodID,
 
     // android/widget/TextView.
     text_view: Global<JClass<'static>>,
@@ -530,6 +532,16 @@ impl Bindings {
                 &view_group,
                 jni_str!("removeView"),
                 jni_sig!("(Landroid/view/View;)V"),
+            )?,
+            view_group_index_of_child: env.get_method_id(
+                &view_group,
+                jni_str!("indexOfChild"),
+                jni_sig!("(Landroid/view/View;)I"),
+            )?,
+            view_group_add_view_at: env.get_method_id(
+                &view_group,
+                jni_str!("addView"),
+                jni_sig!("(Landroid/view/View;I)V"),
             )?,
 
             text_view_ctor: env.get_method_id(
@@ -1039,6 +1051,46 @@ impl Bindings {
                 self.view_group_remove_view,
                 ReturnType::Primitive(Primitive::Void),
                 &[jvalue { l: child.as_raw() }],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `parent.indexOfChild(child)` — `-1` when detached.
+    pub fn index_of_child(
+        &self,
+        env: &mut Env,
+        parent: &JObject,
+        child: &JObject,
+    ) -> jni::errors::Result<jint> {
+        // SAFETY: resolved id; `parent` is a ViewGroup, `child` a View.
+        unsafe {
+            env.call_method_unchecked(
+                parent,
+                self.view_group_index_of_child,
+                ReturnType::Primitive(Primitive::Int),
+                &[jvalue { l: child.as_raw() }],
+            )?
+            .i()
+        }
+    }
+
+    /// `parent.addView(child, index)` — the lazy reconcile's ordered insert.
+    pub fn add_view_at(
+        &self,
+        env: &mut Env,
+        parent: &JObject,
+        child: &JObject,
+        index: jint,
+    ) -> jni::errors::Result<()> {
+        // SAFETY: resolved id; `parent` is a ViewGroup, `child` a View,
+        // `index` a valid position by the caller's contract.
+        unsafe {
+            env.call_method_unchecked(
+                parent,
+                self.view_group_add_view_at,
+                ReturnType::Primitive(Primitive::Void),
+                &[jvalue { l: child.as_raw() }, jvalue { i: index }],
             )?;
         }
         Ok(())
