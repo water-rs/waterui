@@ -474,26 +474,32 @@ mod tabs {
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         use libtest_mimic::Trial;
         Vec::from([
-            Trial::test("bottom_accessory_mounts_into_the_controller", || {
+            Trial::test("tabs::bottom_accessory_mounts_into_the_controller", || {
                 bottom_accessory_mounts_into_the_controller();
                 Ok(())
             }),
-            Trial::test("binding_updates_preserve_the_accessory_mount", || {
+            Trial::test("tabs::binding_updates_preserve_the_accessory_mount", || {
                 binding_updates_preserve_the_accessory_mount();
                 Ok(())
             }),
-            Trial::test("tab_selection_does_not_rebuild_the_accessory", || {
+            Trial::test("tabs::tab_selection_does_not_rebuild_the_accessory", || {
                 tab_selection_does_not_rebuild_the_accessory();
                 Ok(())
             }),
-            Trial::test("dropping_the_leaf_releases_accessory_watchers", || {
-                dropping_the_leaf_releases_accessory_watchers();
-                Ok(())
-            }),
-            Trial::test("each_minimize_behavior_maps_to_the_uikit_property", || {
-                each_minimize_behavior_maps_to_the_uikit_property();
-                Ok(())
-            }),
+            Trial::test(
+                "tabs::dropping_the_leaf_releases_accessory_watchers",
+                || {
+                    dropping_the_leaf_releases_accessory_watchers();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "tabs::each_minimize_behavior_maps_to_the_uikit_property",
+                || {
+                    each_minimize_behavior_maps_to_the_uikit_property();
+                    Ok(())
+                },
+            ),
         ])
     }
 
