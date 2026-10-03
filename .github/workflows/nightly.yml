@@ -134,7 +134,7 @@ jobs:
       # depend on the feature set and already ran in `test`; an instrumented
       # rebuild of the same fixtures would measure nothing extra (trybuild's
       # own target dir is not instrumented) and cost a cold framework compile.
-      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --exclude waterui-apple --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
+      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4

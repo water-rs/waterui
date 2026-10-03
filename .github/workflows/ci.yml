@@ -304,7 +304,7 @@ jobs:
       - name: Verify the workspace builds on the declared MSRV
         run: |
           set -o pipefail
-          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple; then
+          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui; then
             echo "::error::the workspace does not compile on the declared rust-version — either avoid the newer feature, or raise rust-version in [workspace.package] in Cargo.toml in the same pull request"
             exit 1
           fi

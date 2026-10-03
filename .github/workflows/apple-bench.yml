@@ -23,13 +23,30 @@ jobs:
     runs-on: macos-26
     env:
       CARGO_TERM_COLOR: always
+      # Same toolchain policy as ci.yml (#328): no compile wrapper on CI.
+      RUSTC_WRAPPER: ""
+      CARGO_INCREMENTAL: 0
       CARGO_BUILD_TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+          cache: "false"
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes (source packages are toolchain-independent). This lane never
+      # saves and caches no `target`, so it can never evict the gate's
+      # compile cache.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
       # The benches run against the backend's real AppKit objects — no
       # seam, header or harness archive exists to link.
       - name: Benchmark (informational)

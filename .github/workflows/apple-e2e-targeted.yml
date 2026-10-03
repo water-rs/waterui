@@ -51,13 +51,16 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Same toolchain policy as ci.yml (#328): no compile wrapper on CI — the
+  # sccache hit rate on this suite was 2-8% while the cached artifact grew
+  # the shared 10 GB quota. Native shader/codec wrappers stay off CI too.
+  RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
-  # `cargo install --path` otherwise builds in a tempdir that rust-cache can
-  # never see. Point it at the cloned workspace's target dir so the CLI build
-  # is incremental across runs.
+  # `cargo install --path` otherwise builds in a tempdir. Point it at the
+  # cloned workspace's target dir so the CLI build lands in the checkout.
   CARGO_TARGET_DIR: ${{ github.workspace }}/target
 
 jobs:
@@ -104,13 +107,24 @@ jobs:
           echo "Examples: ${examples}"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/setup-rust
         with:
-          shared-key: e2e-targeted-cli
-          workspaces: water-cli
+          toolchain: stable
+          cache: "false"
+
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes (source packages are toolchain-independent). No save and no
+      # `target` cache in this lane.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Build the water CLI
         run: cargo install --path "${WATER_CLI_DIR:-water-cli}" --locked --root "${{ github.workspace }}/cli-bin"
@@ -148,22 +162,31 @@ jobs:
         run: ./.github/scripts/setup-e2e.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: nightly-2026-09-17
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
           components: llvm-tools-preview
+          cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache (the old per-leg `target`
+      # writer is gone).
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: e2e-targeted-ios
-          cache-directories: target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -275,18 +298,26 @@ jobs:
         run: ./.github/scripts/setup-e2e.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: nightly-2026-09-17
+          cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: e2e-targeted-macos
-          cache-directories: target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4

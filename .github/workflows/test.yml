@@ -73,7 +73,7 @@ jobs:
       # `#[cfg(test)]` module or a `tests/` target that no longer compiles
       # must not wait for the nightly to be noticed.
       - name: Clippy (workspace)
-        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets -- -D warnings
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -106,6 +106,7 @@ jobs:
           cargo clippy --locked --profile ci-check --workspace --all-targets --all-features \
             --exclude '*-example' \
             --exclude waterui-apple \
+            --exclude cocoa-ui \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
@@ -251,9 +252,9 @@ jobs:
       # only here — each shells out to a fixture build that does not depend on
       # the outer feature set, so the all-features passes and coverage skip
       # them (see below).
-      - run: cargo nextest run --locked --workspace --exclude '*-example' --exclude waterui-apple --profile ci
+      - run: cargo nextest run --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --locked --doc --workspace --exclude '*-example' --exclude waterui-apple
+      - run: cargo test --locked --doc --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui
       # The pilot's hit/miss evidence (#1145): the shim accumulates per-crate
       # counters in its stats db during the builds above, and `stow status`
       # prints them — it only shows them when the project config exists, so
@@ -329,6 +330,7 @@ jobs:
           cargo nextest run --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
             --exclude waterui-apple \
+            --exclude cocoa-ui \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
@@ -387,6 +389,7 @@ jobs:
           cargo nextest run --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
             --exclude waterui-apple \
+            --exclude cocoa-ui \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \

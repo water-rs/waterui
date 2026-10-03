@@ -138,7 +138,10 @@ export WATERUI_IOS_SIM_UDID="${simulator_udid}"
 export WATERUI_REFERENCE_METRICS="${reference_metrics}"
 
 # The native assertions run inside the same simulator through the target
-# runner — every test binary is spawned on the device itself.
-cargo nextest run -p waterui-apple --locked --features native-test \
+# runner — every test binary is spawned on the device itself. cocoa-ui
+# joins the same invocation: its standalone iOS-sim nextest coverage
+# transfers 1:1 onto the backend's graph (the `native` harness=false test
+# needs no feature gate; `native-test` is waterui-apple's own feature).
+cargo nextest run -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test \
   --manifest-path "${repo_root}/Cargo.toml" \
   --target aarch64-apple-ios-sim

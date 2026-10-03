@@ -25,12 +25,11 @@ name: Apple E2E Suite
 # (a single ~105-minute macOS job) is a weekly signal, not a nightly one:
 # it runs on the Sunday schedule and on dispatch.
 #
-# The e2e jobs pin a dated nightly rather than floating `nightly`: Cargo folds
-# `rustc -vV` into every unit fingerprint, so a toolchain that rotates daily
-# would invalidate the restored `target` unconditionally and the
-# build cache could never be warm for the next night. Bump the pin
-# deliberately; the trade is that the suite no longer exercises each night's
-# newest rustc.
+# The e2e jobs pin a dated nightly rather than floating `nightly` so one
+# run certifies one (framework, lockfile, CLI, rustc) tuple — a floating
+# toolchain would make a night impossible to compare with the last. Bump
+# the pin deliberately; the trade is that the suite no longer exercises
+# each night's newest rustc.
 
 on:
   # Invoked by the repository's Nightly workflow through workflow_call so a
@@ -89,14 +88,18 @@ permissions:
 # value is the complete report. The group is keyed by ref because a group
 # holds one running and one pending run — with a single global group a
 # dispatch on a topic branch queued behind the dev nightly, and the next
-# dispatch cancelled it (run 35281834319). Branch runs share nothing with
-# the dev run but the rust-cache key, and two savers of one key only race
-# harmlessly.
+# dispatch cancelled it (run 35281834319). Branch runs share the
+# `cargo-sources` registry archive read-only — no job here saves a cache,
+# so ref runs can never race a writer.
 concurrency:
   group: apple-e2e-${{ github.ref }}
   cancel-in-progress: false
 
 env:
+  # Same toolchain policy as ci.yml (#328): no compile wrapper on CI — the
+  # sccache hit rate on this suite was 2-8% while the cached artifact grew
+  # the shared 10 GB quota. Native shader/codec wrappers stay off CI too.
+  RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: "0"
@@ -145,13 +148,25 @@ jobs:
         run: echo "package_groups=$(./.github/scripts/group-examples.sh)" >> "${GITHUB_OUTPUT}"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: ./.github/actions/setup-rust
         with:
-          shared-key: nightly-cli
-          workspaces: water-cli
+          toolchain: stable
+          cache: "false"
+
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes (source packages are toolchain-independent). No save and no
+      # `target` cache in this suite: a nightly compile must never evict
+      # the PR gate's compile cache from the shared 10 GB quota.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Build the water CLI
         run: cargo install --path "${WATER_CLI_DIR:-water-cli}" --locked --root "${{ github.workspace }}/cli-bin"
@@ -168,10 +183,10 @@ jobs:
   # capture shards the bundles as one tarball per group — the shards used to
   # each pay the same ~32-minute cold release build, sixteen times a night
   # for identical artifacts (#218), and the serial leg still packaged for
-  # ~90 of the run's ~102 minutes (#252). The legs share the platform's
-  # rust-cache key, so a warm night costs each leg only its own examples'
-  # builds; a cold night re-pays the framework build per leg but stays well
-  # under the serial wall clock. A package failure fails here with the
+  # ~90 of the run's ~102 minutes (#252). The legs share the
+  # `cargo-sources` archive read-only, so every leg still saves its source
+  # downloads and the matrix keeps its independent shard parallelism — no
+  # leg is a cache writer. A package failure fails here with the
   # example's log tail, and the shards never start.
   build-ios:
     name: build-ios-${{ matrix.group.i }}
@@ -203,35 +218,29 @@ jobs:
         run: ./.github/scripts/setup-e2e.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: nightly-2026-09-17
           targets: aarch64-apple-ios-sim
+          cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache (the old per-leg
+      # `~/.water/build_cache/target` writer is gone): a heavy leg must
+      # never evict the gate's compile cache.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: nightly-e2e-ios
-          # The Cargo workspace is this checkout; the key follows its
-          # lockfile, so a night whose dependencies moved writes a fresh
-          # entry instead of skipping the save as "already cached".
-          # `water` (water-rs/cli#65) builds into its per-user shared target,
-          # `~/.water/build_cache/target/{static,shared,host}` — the release
-          # units for the platform and the dev-profile host rlib the CLI reads
-          # `waterui_meta_*` symbols from — not into `target`, so the
-          # ~30 min this job spends compiling cold only rides the cache through
-          # this entry (#215 removed it against the pre-#65 layout).
-          cache-directories: ~/.water/build_cache/target
-          # Any run on dev writes (the concurrency group serialises them), so a
-          # dispatched re-test warms the cache as well as the schedule. Save
-          # even when the job fails: the build finished before the packaging
-          # or staging error, and a red result must not cost the next run a
-          # cold build.
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -250,9 +259,7 @@ jobs:
           # with parallel codegen cut the per-example release link ~2.7x
           # (76 s -> 29 s measured locally) while waterui's shipping
           # [profile.release] stays untouched. Scoped to this step: the
-          # release-metrics job must keep measuring the shipped profile,
-          # and CARGO_* env vars fold into the rust-cache key by prefix, so
-          # job scope would fork the shared nightly-e2e-* entry.
+          # release-metrics job must keep measuring the shipped profile.
           CARGO_PROFILE_RELEASE_LTO: thin
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           WATERUI_DIR: ${{ github.workspace }}
@@ -318,34 +325,28 @@ jobs:
         run: ./.github/scripts/setup-e2e.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: nightly-2026-09-17
+          cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache (the old per-leg
+      # `~/.water/build_cache/target` writer is gone): a heavy leg must
+      # never evict the gate's compile cache.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: nightly-e2e-macos
-          # The Cargo workspace is this checkout; the key follows its
-          # lockfile, so a night whose dependencies moved writes a fresh
-          # entry instead of skipping the save as "already cached".
-          # `water` (water-rs/cli#65) builds into its per-user shared target,
-          # `~/.water/build_cache/target/{static,shared,host}` — the release
-          # units for the platform and the dev-profile host rlib the CLI reads
-          # `waterui_meta_*` symbols from — not into `target`, so the
-          # ~30 min this job spends compiling cold only rides the cache through
-          # this entry.
-          cache-directories: ~/.water/build_cache/target
-          # Any run on dev writes (the concurrency group serialises them), so a
-          # dispatched re-test warms the cache as well as the schedule. Save
-          # even when the job fails: the build finished before the packaging
-          # or staging error, and a red result must not cost the next run a
-          # cold build.
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -364,9 +365,7 @@ jobs:
           # with parallel codegen cut the per-example release link ~2.7x
           # (76 s -> 29 s measured locally) while waterui's shipping
           # [profile.release] stays untouched. Scoped to this step: the
-          # release-metrics job must keep measuring the shipped profile,
-          # and CARGO_* env vars fold into the rust-cache key by prefix, so
-          # job scope would fork the shared nightly-e2e-* entry.
+          # release-metrics job must keep measuring the shipped profile.
           CARGO_PROFILE_RELEASE_LTO: thin
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
           WATERUI_DIR: ${{ github.workspace }}
@@ -629,20 +628,35 @@ jobs:
       CARGO_BUILD_TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+          cache: "false"
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache in this suite.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: apple-e2e-host-native
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
+      # cocoa-ui joins this same invocation: standalone Cocoa host
+      # nextest/doc coverage transfers 1:1 onto the backend's graph.
+      # `native-test` is waterui-apple's feature; the cocoa-ui `native`
+      # harness=false test is not feature-gated.
       - name: Test
-        run: cargo nextest run -p waterui-apple --locked --features native-test
+        run: cargo nextest run -p waterui-apple -p cocoa-ui --locked --features waterui-apple/native-test
       - name: Doc tests
-        run: cargo test -p waterui-apple --locked --doc
+        run: cargo test -p waterui-apple -p cocoa-ui --locked --doc
       # The benches are an informational trend series, not a gate: this step
       # only guarantees they stay compilable. Numbers come from the bench
       # lane and the Mac mini, never a shared macOS runner.
@@ -677,7 +691,7 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly-2026-09-17
       # Packages the repository's own ios_test_host fixture in dev profile —
       # not one of the release examples build-ios packages — so it keeps its
-      # own toolchain, cache and target dir.
+      # own toolchain and target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -688,32 +702,31 @@ jobs:
         run: ./.github/scripts/setup-e2e.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: nightly-2026-09-17
           targets: aarch64-apple-ios-sim
           # run-ios-device-tests.sh verifies the packaged archive's exports
           # with the llvm-nm shipped by this toolchain.
           components: llvm-tools-preview
+          cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache (the old per-leg
+      # `~/.water/build_cache/target` writer is gone).
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: nightly-e2e-ios
-          # The Cargo workspace is this checkout; the key follows its
-          # lockfile, so a night whose dependencies moved writes a fresh
-          # entry instead of skipping the save as "already cached".
-          cache-directories: ~/.water/build_cache/target
-          # Any run on dev writes (the concurrency group serialises them), so a
-          # dispatched re-test warms the cache as well as the schedule. Save
-          # even when the shard fails: the build finished before the parity
-          # comparison, and a red parity result must not cost the next run a
-          # cold build.
-          save-if: ${{ github.ref == 'refs/heads/dev' }}
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -876,7 +889,7 @@ jobs:
       # file, so the pin reaches cargo through the CLI.
       RUSTUP_TOOLCHAIN: nightly-2026-09-17
       # Packages a generated hello-world playground rather than a discovered
-      # example, so it keeps its own toolchain, cache and target dir.
+      # example, so it keeps its own toolchain and target dir.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
@@ -887,19 +900,27 @@ jobs:
         run: ./.github/scripts/setup-e2e.sh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: nightly-2026-09-17
           targets: aarch64-apple-ios-sim
+          cache: "false"
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`
+      # pushes. No save and no `target` cache.
+      - name: Restore Cargo sources
+        uses: actions/cache/restore@v4
         with:
-          shared-key: nightly-package-size
-          cache-directories: ~/.water/build_cache/target
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4

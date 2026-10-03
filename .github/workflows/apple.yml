@@ -11,6 +11,7 @@ name: Apple backend
 
 permissions:
   contents: read
+  pull-requests: read
 
 on:
   # Integration branches only: a topic branch that also has a pull request
@@ -68,7 +69,52 @@ concurrency:
   group: apple-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Same toolchain policy as ci.yml (#328): no compile wrapper and no
+  # incremental artifacts on CI — a fresh runner can never reuse them, so
+  # they only bloat the restored cache — and the per-change gate does not
+  # pay for debuginfo it never reads. Measurement profiles that need them
+  # (release metrics, benches) are set by their own jobs.
+  RUSTC_WRAPPER: ""
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
+  # The Swift legs (format/lint/ast-grep, the four build shapes, Periphery)
+  # only run when a real Swift input moved: the host package manifest, the
+  # adapter, the test/reference sources, or the lint configs. A Rust-only
+  # change still gets every compile/lint check below — the skipped jobs
+  # report neutral, which a required status accepts.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      swift: ${{ steps.filter.outputs.swift == 'true' || steps.filter.outputs.workflows == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          base: ${{ github.ref_name }}
+          filters: |
+            swift:
+              - "Package.swift"
+              - ".swiftpm/**"
+              - "backends/apple/**/*.swift"
+              - "backends/apple/.swiftformat"
+              - "backends/apple/.swiftlint.yml"
+              - "backends/apple/.ci/**"
+              - ".periphery.yml"
+            workflows:
+              - ".github/workflows/apple.yml"
+              - ".github/actions/**"
+
+
   # None of the lint tools need macOS: swiftformat and ast-grep are pure source
   # tools, and the pinned swiftlint-static binary bundles SourceKit (which the
   # `unused_import` rule requires). Running on Ubuntu frees one slot of the
@@ -76,6 +122,8 @@ jobs:
   # cache key; bump them there to upgrade.
   lint:
     name: lint
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +170,8 @@ jobs:
   # configuration. The repository-root Package.swift is the manifest.
   swift:
     name: swift (${{ matrix.configuration }})
+    needs: changes
+    if: needs.changes.outputs.swift == 'true'
     runs-on: macos-26
     strategy:
       fail-fast: false
@@ -189,13 +239,49 @@ jobs:
       CARGO_BUILD_TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # This job is the only Apple cache writer (#328/#458 discipline) and
+      # it writes two deliberately separate archives:
+      #   * `cargo-sources` — only ~/.cargo/registry + ~/.cargo/git, keyed on
+      #     the root lockfile. Source archives are toolchain-independent, so
+      #     every Apple lane on every Rust toolchain restores this same key.
+      #   * `apple-target` — only `target`, keyed on the ACTUAL installed
+      #     rustc fingerprint + OS/arch + the root lockfile, so a toolchain
+      #     roll can never restore a stale object set and a lockfile change
+      #     only degrades to the prefix restore (cargo's own fingerprints
+      #     then decide what rebuilds).
+      # Both are saved on integration pushes to `dev` only, after every
+      # check below has passed — pull requests and manual runs are
+      # restore-only readers. Every other Apple lane restores the same
+      # `cargo-sources` paths/key read-only and caches no `target`, so a
+      # nightly or bench build can never evict this gate's compile cache.
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy, rustfmt
           targets: aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim
-      - uses: Swatinem/rust-cache@v2
+          cache: "false"
+      - name: Rust toolchain fingerprint
+        id: rustc-fingerprint
+        run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+      - name: Restore Cargo sources
+        id: cargo-sources
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-sources-${{ runner.os }}-
+      - name: Restore compiled target cache
+        id: apple-target
+        uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-
       - name: Format
-        run: cargo fmt -p waterui-apple -- --check
+        run: cargo fmt -p waterui-apple -p cocoa-ui -- --check
       # `native-test` is on for these legs because the `native`
       # test target is `required-features`-gated: without the feature
       # `--all-targets` silently skips it and none of the harness code is
@@ -207,6 +293,16 @@ jobs:
         run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios -- -D warnings
       - name: Clippy (iOS simulator)
         run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios-sim -- -D warnings
+      # `cocoa-ui` compiles inside the backend's graph, but a dependency is
+      # never linted — its own `-D warnings` legs kept their standalone
+      # coverage shape: `--all-targets` on the same three ARM64 targets
+      # (the `native` harness=false test target needs no feature gate).
+      - name: Clippy (cocoa-ui, macOS)
+        run: cargo clippy -p cocoa-ui --all-targets --locked -- -D warnings
+      - name: Clippy (cocoa-ui, iOS)
+        run: cargo clippy -p cocoa-ui --all-targets --locked --target aarch64-apple-ios -- -D warnings
+      - name: Clippy (cocoa-ui, iOS simulator)
+        run: cargo clippy -p cocoa-ui --all-targets --locked --target aarch64-apple-ios-sim -- -D warnings
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —
@@ -232,6 +328,28 @@ jobs:
           echo "non-GPU feature set: ${features}"
           cargo clippy -p waterui-apple --locked \
             --no-default-features --features "${features}" -- -D warnings
+      # The `apple-target` cache holds this directory for the next run; the
+      # number is evidence for the repository's 10 GB budget review, not a
+      # gate.
+      - name: Target size
+        run: du -sh target
+      # Writer side of the two archives described above — reached only when
+      # every check passed, on `dev` pushes only, and skipped when the exact
+      # key was already restored (nothing new to publish).
+      - name: Save Cargo sources
+        if: github.ref == 'refs/heads/dev' && steps.cargo-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+      - name: Save compiled target cache
+        if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: target
+          key: ${{ steps.apple-target.outputs.cache-primary-key }}
       # Host-side tests and the bench compile live in the suite's
       # `host-native` job (apple-e2e.yml) — the dev-push gate here is format
       # plus compile/lint only.
