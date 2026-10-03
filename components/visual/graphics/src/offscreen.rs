@@ -369,12 +369,19 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// Renders a recorded `picture` under `transform` into `size` pixels and
     /// reads it back.
     ///
+    /// The renderer makes the drawing its own first:
+    /// [`rebuild_for_engine`](PictureRecording::rebuild_for_engine) replays
+    /// the recording's semantic [`PictureSource`](crate::picture::PictureSource)
+    /// against this engine's [`SceneResources`], so a recording made on
+    /// another engine draws here — even after that engine is gone — and a
+    /// recording that names no resource keeps its exact recorded snapshot.
+    /// The frame holds the rebuilt recording's registrations until the
+    /// pixels are read; `picture` itself is unchanged and still belongs to
+    /// the engine that recorded it.
+    ///
     /// # Errors
     /// [`OffscreenError`] when the surface cannot be created, the frame does
     /// not render, or the target cannot be read back.
-    ///
-    /// # Panics
-    /// When `picture` names resources registered on another engine.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render_picture(
         &self,
@@ -386,6 +393,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
             (size.width(), size.height()),
             OffscreenFormat::LinearF16,
         ))?;
+        let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();
         resources.hold(picture.held());
         let recorded = surface.record(|recorder: &mut Recorder| {
@@ -398,12 +406,19 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     /// Renders a recorded `picture` under `transform` into `size` pixels and
     /// reads it back.
     ///
+    /// The renderer makes the drawing its own first:
+    /// [`rebuild_for_engine`](PictureRecording::rebuild_for_engine) replays
+    /// the recording's semantic [`PictureSource`](crate::picture::PictureSource)
+    /// against this engine's [`SceneResources`], so a recording made on
+    /// another engine draws here — even after that engine is gone — and a
+    /// recording that names no resource keeps its exact recorded snapshot.
+    /// The frame holds the rebuilt recording's registrations until the
+    /// pixels are read; `picture` itself is unchanged and still belongs to
+    /// the engine that recorded it.
+    ///
     /// # Errors
     /// [`OffscreenError`] when the surface cannot be created, the frame does
     /// not render, or the target cannot be read back.
-    ///
-    /// # Panics
-    /// When `picture` names resources registered on another engine.
     #[cfg(target_arch = "wasm32")]
     #[cfg_attr(
         target_arch = "wasm32",
@@ -425,6 +440,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
                 OffscreenFormat::LinearF16,
             ))
             .await?;
+        let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();
         resources.hold(picture.held());
         let recorded = surface.record(|recorder: &mut Recorder| {
@@ -502,5 +518,102 @@ mod tests {
         let image = OffscreenImage::from_readback(&readback);
         assert_eq!(image.pixel(0, 0), [255, 255, 255, 128]);
         assert_eq!(image.pixel(1, 0), [0, 0, 0, 0]);
+    }
+
+    #[cfg(all(feature = "cpu", not(target_arch = "wasm32")))]
+    mod cpu {
+        use alloc::sync::Arc;
+
+        use cherenkov::kurbo::{Affine, Rect};
+        use cherenkov::{
+            Draw, ImageColorSpace, ImageData, Rgba8, Sampling, StaticRecorder, WorkingColor,
+        };
+        use cherenkov_cpu::Raster;
+
+        use crate::offscreen::{OffscreenImage, OffscreenRenderer, OffscreenSize};
+        use crate::picture::{Picture, PictureSource};
+        use crate::resources::RecordingResources;
+
+        /// A 2×1 image: left texel red, right texel blue.
+        struct TwoPixels {
+            bytes: Arc<[u8]>,
+        }
+
+        impl PictureSource for TwoPixels {
+            fn record(
+                &self,
+                recorder: &mut StaticRecorder,
+                resources: &mut RecordingResources<'_>,
+            ) {
+                let image = resources
+                    .image(
+                        ImageData::<Rgba8>::new(2, 1, Arc::clone(&self.bytes))
+                            .expect("image source")
+                            .color_space(ImageColorSpace::Srgb)
+                            .premultiplied(),
+                    )
+                    .expect("image registration");
+                recorder.image(
+                    resources.name(&image),
+                    Rect::new(0.0, 0.0, 8.0, 8.0),
+                    Sampling::Nearest,
+                );
+            }
+        }
+
+        fn red_left_blue_right(image: &OffscreenImage) {
+            let left = image.pixel(2, 4);
+            let right = image.pixel(6, 4);
+            assert!(left[0] > 200 && left[2] < 40, "left texel: {left:?}");
+            assert!(right[2] > 200 && right[0] < 40, "right texel: {right:?}");
+        }
+
+        #[test]
+        fn a_picture_recorded_on_another_engine_renders_here() {
+            let source = OffscreenRenderer::<Raster>::cpu().expect("source engine failed to start");
+            let recording = Picture::record_with(
+                source.resources(),
+                TwoPixels {
+                    bytes: Arc::from([255, 0, 0, 255, 0, 0, 255, 255]),
+                },
+            );
+            let renderer = OffscreenRenderer::<Raster>::cpu().expect("engine failed to start");
+            let size = OffscreenSize::try_from_pixels(8, 8).expect("non-zero");
+            red_left_blue_right(
+                &renderer
+                    .render_picture(&recording, size, Affine::IDENTITY)
+                    .expect("a foreign-engine recording must render on this engine"),
+            );
+
+            // Rendering here did not take the recording from its own engine.
+            red_left_blue_right(
+                &source
+                    .render_picture(&recording, size, Affine::IDENTITY)
+                    .expect("the recording's own engine must still draw it"),
+            );
+
+            // The source engine is gone; the recording's semantic source
+            // still replays onto this engine.
+            drop(source);
+            red_left_blue_right(
+                &renderer
+                    .render_picture(&recording, size, Affine::IDENTITY)
+                    .expect("a recording outlives the engine that recorded it"),
+            );
+        }
+
+        #[test]
+        fn a_resource_free_picture_keeps_its_exact_snapshot() {
+            let recording = Picture::record(|scene| {
+                scene.fill(Rect::new(0.0, 0.0, 4.0, 8.0), WorkingColor::BLACK);
+            });
+            let renderer = OffscreenRenderer::<Raster>::cpu().expect("engine failed to start");
+            let size = OffscreenSize::try_from_pixels(8, 8).expect("non-zero");
+            let image = renderer
+                .render_picture(&recording, size, Affine::IDENTITY)
+                .expect("rasterise failed");
+            assert_eq!(image.pixel(2, 4), [0, 0, 0, 255]);
+            assert_eq!(image.pixel(6, 4), [0, 0, 0, 0]);
+        }
     }
 }
