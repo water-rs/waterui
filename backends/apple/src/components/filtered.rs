@@ -768,6 +768,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, frame: CaptureFrame) {
                     return;
                 };
                 state.frame_presentation_in_flight.set(false);
+                state.render_in_flight.set(false);
                 finish_presented_frame(&state, pending.get(), needs_redraw, &submitted_context);
             });
         },
