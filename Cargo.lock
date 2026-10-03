@@ -10540,7 +10540,7 @@ version = "0.1.0"
 dependencies = [
  "nami",
  "suiteki",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tracing",
  "waterui-core",
  "waterui-graphics",
