@@ -137,6 +137,9 @@ impl<E: Effect> Effect for OutputSizedEffect<E> {
         self.effect.set_redraw_callback(callback);
     }
 
+    // `EffectContext` is `Rc`-backed — GPU setup is bound to the renderer's
+    // thread, so the returned future is deliberately not `Send`.
+    #[allow(clippy::future_not_send)]
     async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
         self.effect.setup(ctx).await
     }

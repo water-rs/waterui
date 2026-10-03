@@ -1155,7 +1155,7 @@ fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
 /// instantiates the GL backend's EGL driver stack only on hosts that need it —
 /// a headless CI box where Mesa llvmpipe supplies GL 4.5 compute shaders —
 /// never alongside a Vulkan adapter it would sit idle next to.
-#[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     match wgpu::Backends::from_env() {
         Some(backends) => vec![backends],
@@ -1173,7 +1173,7 @@ fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDes
 /// surface-compatible, not `Noop`, software only when `selection` allows it,
 /// and compute-capable. `None` means this tier satisfied nothing; the
 /// inspected list comes back either way for the no-adapter panic.
-#[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+#[cfg(not(target_arch = "wasm32"))]
 async fn probe_adapters(
     instance: &wgpu::Instance,
     compatible_surface: Option<&wgpu::Surface<'_>>,
@@ -1253,7 +1253,7 @@ async fn probe_adapters(
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+#[cfg(not(target_arch = "wasm32"))]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
     if inspected_adapters.is_empty() {
         panic!(
@@ -1278,7 +1278,9 @@ async fn request_instance_and_adapter(
     context: &str,
     selection: AdapterSelection,
 ) -> (wgpu::Instance, wgpu::Adapter) {
-    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    // WebGPU is the only wgpu backend wasm can reach, so the adapter is
+    // requested rather than enumerated on every wasm build shape.
+    #[cfg(target_arch = "wasm32")]
     {
         let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(
             wgpu::Backends::from_env().unwrap_or(wgpu::Backends::BROWSER_WEBGPU),
@@ -1296,7 +1298,7 @@ async fn request_instance_and_adapter(
         (instance, adapter)
     }
 
-    #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
+    #[cfg(not(target_arch = "wasm32"))]
     {
         let tiers = hydrolysis_backend_tiers();
         let mut inspected_adapters = Vec::new();

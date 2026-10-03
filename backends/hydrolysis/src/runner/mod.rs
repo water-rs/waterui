@@ -41,12 +41,17 @@ use waterui_text::FontCollection;
 
 #[cfg(target_os = "android")]
 pub mod android;
+// Bare wasm has no window pump to drive these modules' diagnostics, fonts
+// and menu-bar plumbing.
+#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 mod executor;
+#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 pub(crate) mod ime;
+#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub(crate) mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub(crate) mod placement;
@@ -57,6 +62,9 @@ mod tests;
 mod web_accessibility;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 mod web_runner;
+// Bare wasm compiles the module for its profile types (the semantic runtime
+// uses them everywhere) but has no window pump to call the rest.
+#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod window;
 #[cfg(hydrolysis_winit)]
 mod winit_runner;
@@ -70,6 +78,8 @@ use fonts::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
+// Bare wasm has no window model until `web` compiles the browser runner.
+#[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 use window::*;
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.

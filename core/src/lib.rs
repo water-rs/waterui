@@ -112,6 +112,12 @@ pub use foundation::resources::ResourceContext;
 /// # Panics
 /// Panics if the native executable's location cannot be determined.
 #[doc(hidden)]
+// On wasm32 or without std the whole body below collapses to a no-op, so
+// the function is const-eligible only under those cfgs.
+#[cfg_attr(
+    any(not(feature = "std"), target_arch = "wasm32"),
+    allow(clippy::missing_const_for_fn)
+)]
 pub fn install_application_resources(env: &mut Environment) {
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     if env.get::<ResourceContext>().is_none() {

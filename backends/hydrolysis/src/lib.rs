@@ -1,6 +1,9 @@
 //! Hydrolysis backend.
 
 mod engine;
+// Bare wasm reaches none of the env-driven window/console paths that call
+// these helpers.
+#[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod env;
 mod gpu_view;
 mod localization;
@@ -69,7 +72,13 @@ pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 #[cfg(target_os = "android")]
 pub use runner::android;
-#[cfg(not(target_os = "android"))]
+// `runner::run` exists on every non-Android shape except bare wasm without
+// `web`: wasm32 reaches no windowing model until the browser runner is
+// compiled in.
+#[cfg(all(
+    not(target_os = "android"),
+    any(not(target_arch = "wasm32"), feature = "web")
+))]
 pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]

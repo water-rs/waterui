@@ -372,6 +372,9 @@ impl MenuShortcutRegistry {
     /// once (`resolve_menu_bar_items` keeps the signal reactive, so item
     /// edits apply on the next lookup) and registers once; re-registration
     /// replaces the source rather than stacking it.
+    // Only windowed runners register menus — bare wasm compiles the impl
+    // for the rest of its surface and has no caller for this one.
+    #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
     pub(crate) fn register_menu_bar(
         &self,
         items: Computed<Vec<ResolvedMenuItem>>,
