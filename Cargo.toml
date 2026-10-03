@@ -231,6 +231,7 @@ waterui-icons-lucide = { version = "0.5.1", path = "components/icon/lucide" }
 waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
+waterui-meta = { version = "0.5.1", path = "utils/meta" }
 waterkit-location = "0.1.4"
 waterkit-screen = "0.1.4"
 waterkit-audio = { version = "0.1.4", default-features = false }
