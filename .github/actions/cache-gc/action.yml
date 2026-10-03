@@ -1,0 +1,42 @@
+name: Collect superseded Actions cache entries
+description: >-
+  Keeps one live entry per cache purpose per ref and reports the size of
+  every entry it sees, so a lockfile fingerprint change stops leaving its
+  predecessor in the repository's 10 GB budget until LRU eviction (#1441).
+# rust-cache and install-action name every entry `<purpose>-<fingerprint>`:
+# a cache hit requires the exact key, so once a run saves its replacement the
+# older fingerprint of the same purpose can never be restored again — it is
+# dead weight until eviction. Grouping key = the key minus its trailing
+# `-<8+ hex>` fingerprint, per ref, since a pull request's entry restores for
+# that branch's builds just like dev's does for dev.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        shopt -s extglob
+        declare -A seen=()
+        echo "| Cache entry | Ref | Size | Action |"
+        echo "|---|---|---:|---|" >> "$GITHUB_STEP_SUMMARY"
+        gh cache list --limit 200 \
+          --json id,key,ref,sizeInBytes,createdAt \
+          --jq 'sort_by(.key, .createdAt) | reverse | .[] | [.id, .key, .ref, .sizeInBytes, .createdAt] | @tsv' |
+        while IFS=$'\t' read -r id key ref size created; do
+          purpose="${key%-*([0-9a-fA-F])}"
+          [ "$purpose" = "$key" ] && purpose="$key"
+          group="$purpose|$ref"
+          if [ "${seen[$group]:-}" = "" ]; then
+            action="keep (newest)"
+          else
+            action="delete (superseded by ${seen[$group]%%|*})"
+            gh cache delete "$id"
+          fi
+          seen[$group]="$key|$id"
+          gib=$(awk -v b="$size" 'BEGIN { printf "%.2f", b/1073741824 }')
+          line="| \`$key\` | \`$ref\` | ${gib} GiB | $action |"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          echo "$key ($ref) ${gib} GiB: $action"
+        done

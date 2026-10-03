@@ -538,3 +538,18 @@ jobs:
           fi
 
           echo "nightly line healthy: ${tag} certifies ${certified}, and the latest nightly run is certified"
+
+  # Only pushes to `main` save cache entries here (dev pushes are dev.yml's);
+  # runs even on a red gate because `cache-on-failure` still writes the
+  # replacement this job then reports (#1441).
+  cache-gc:
+    name: Cache garbage collection
+    if: always() && github.ref == 'refs/heads/main'
+    needs: test-result
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cache-gc

@@ -43,3 +43,17 @@ jobs:
       package-args: ${{ needs.scope.outputs.package-args }}
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
       test-assets: ${{ needs.scope.outputs.test-assets == 'true' }}
+  # The lint job saves its target cache on dev even when it fails
+  # (cache-on-failure), so this runs after it in every outcome: one live
+  # entry per purpose per ref, and every entry's size reported (#1441).
+  cache-gc:
+    name: Cache garbage collection
+    if: always()
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/cache-gc
