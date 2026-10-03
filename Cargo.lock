@@ -10196,6 +10196,7 @@ dependencies = [
  "waterui-shape",
  "waterui-svg",
  "waterui-text",
+ "waterui-ts-schema",
  "waterui-url",
  "waterui-video",
  "waterui-video-gpu",
@@ -10572,7 +10573,7 @@ dependencies = [
  "rustc-demangle",
  "serde",
  "suiteki",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "waterui-core",
  "waterui-macros",
 ]

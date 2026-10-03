@@ -113,8 +113,22 @@ pub enum TypeSchema {
     String,
     /// `Option<T>`, projected as `T | null`.
     Option(&'static Self),
-    /// A homogeneous sequence — `Vec<T>`, a slice or an array — projected as `T[]`.
+    /// A homogeneous sequence of any length — `Vec<T>` or a slice —
+    /// projected as `T[]`.
     List(&'static Self),
+    /// A fixed-length array — `[T; N]` — projected as the tuple type
+    /// `[T, T, …]` with one slot per element.
+    ///
+    /// The length is part of the type because it is part of the contract: the
+    /// conversion refuses an array of any other length, and `T[]` would
+    /// promise TypeScript something the seam does not accept.
+    Array {
+        /// The element type.
+        item: &'static Self,
+        /// How many elements the array carries, at most
+        /// [`MAX_ARRAY_LEN`](crate::MAX_ARRAY_LEN).
+        len: usize,
+    },
     /// A string-keyed map, projected as `Record<K, V>`.
     Map {
         /// The key type; a string type by construction, see
@@ -129,9 +143,27 @@ pub enum TypeSchema {
     Accessor(&'static Self),
     /// An opaque handle to a Rust-composed view subtree, projected as `View`.
     View,
+    /// A function that builds a view each time it is called, projected as
+    /// `() => JSX.Element`.
+    ///
+    /// A [`View`](Self::View) handle crosses once and is taken once: it is a
+    /// subtree that already exists. A destination or a page is not that — a
+    /// `ViewBuilder` may be built again at any time, and each build needs a
+    /// fresh subtree — so what crosses is the function, called per build.
+    ViewBuilder,
     /// A callback the TypeScript side invokes, projected as
     /// `(…) => void`. The slice holds the argument types in order.
     Callback(&'static [Self]),
+    /// A choice of shapes, projected as the union `A | B | …`.
+    ///
+    /// No Rust type projects to a union — a field has one type — so no derive
+    /// produces this node. It exists for the component catalog, where an
+    /// attribute genuinely accepts several shapes that the Rust side converts
+    /// from: `padding` takes `true`, a number or an edge-insets object, which
+    /// is a union in TypeScript exactly as it is a set of `From` impls in
+    /// Rust. A type that declares one writes its own [`TsType`](crate::TsType)
+    /// impl beside the conversion that reads the same shapes.
+    Union(&'static [Self]),
     /// A struct with named fields, projected as an object type.
     Struct(StructSchema),
     /// An enum, projected according to its [`EnumRepresentation`].
@@ -217,6 +249,17 @@ pub enum VariantPayload {
     Struct(&'static [FieldSchema]),
 }
 
+impl TypeSchema {
+    /// Whether this node renders as a union, and therefore needs parentheses
+    /// where TypeScript's `[]` suffix would otherwise bind tighter than `|`.
+    ///
+    /// An `Option<T>` renders as `T | null`, which is a union however it is
+    /// spelled in Rust.
+    const fn is_union(&self) -> bool {
+        matches!(self, Self::Union(_) | Self::Option(_))
+    }
+}
+
 impl fmt::Display for TypeSchema {
     /// Renders the node as the TypeScript type expression that refers to it.
     ///
@@ -230,11 +273,36 @@ impl fmt::Display for TypeSchema {
             Self::Number(kind) => f.write_str(kind.ts_name()),
             Self::String => f.write_str("string"),
             Self::Option(inner) => write!(f, "{inner} | null"),
+            // `T[]` binds tighter than `|`, so an element type that is itself
+            // a union or an option needs parentheses: without them
+            // `List(Union(Bool, Number))` reads as `boolean | number[]`,
+            // which is a different type — a boolean or an array of numbers.
+            Self::List(inner) if inner.is_union() => write!(f, "({inner})[]"),
             Self::List(inner) => write!(f, "{inner}[]"),
+            Self::Array { item, len } => {
+                f.write_str("[")?;
+                for index in 0..*len {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                f.write_str("]")
+            }
             Self::Map { key, value } => write!(f, "Record<{key}, {value}>"),
             Self::Signal(inner) => write!(f, "Signal<{inner}>"),
             Self::Accessor(inner) => write!(f, "Accessor<{inner}>"),
+            Self::Union(members) => {
+                for (index, member) in members.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(" | ")?;
+                    }
+                    write!(f, "{member}")?;
+                }
+                Ok(())
+            }
             Self::View => f.write_str("View"),
+            Self::ViewBuilder => f.write_str("() => JSX.Element"),
             Self::Callback(arguments) => {
                 f.write_str("(")?;
                 for (index, argument) in arguments.iter().enumerate() {

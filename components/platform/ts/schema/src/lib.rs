@@ -48,6 +48,20 @@
 //! `no_dead_strip` on Mach-O, so a release artifact would carry the payload
 //! all the way into the application.
 //!
+//! # The component catalog
+//!
+//! The same format carries a second payload: [`CatalogSchema`], the runtime's
+//! component table — which components JSX may name, what each one's
+//! attributes are, and which modifier attributes exist. It is built from the
+//! same [`TypeSchema`] constants, encoded by [`encode_catalog`] during const
+//! evaluation, and read back by [`decode_catalog`].
+//!
+//! A third payload records a *mount point*: one `tsx!` call site, naming the
+//! module it mounts and the props contract it is typed against. See
+//! [`encode_mount`] and [`decode_mount`]. The three kinds are told apart by
+//! the byte after the version, so no decoder can read another kind as a
+//! malformed payload of its own.
+//!
 //! # Type mapping
 //!
 //! | Rust | TypeScript | Node |
@@ -55,11 +69,13 @@
 //! | `Binding<T>` | `Signal<T>` | [`TypeSchema::Signal`] |
 //! | `Computed<T>` | `Accessor<T>` | [`TypeSchema::Accessor`] |
 //! | `AnyView` | `View` | [`TypeSchema::View`] |
-//! | `Box<dyn Fn(A)>`, `Rc<dyn Fn(A)>` | `(arg0: A) => void` | [`TypeSchema::Callback`] |
+//! | a JavaScript view builder | `() => JSX.Element` | [`TypeSchema::ViewBuilder`] |
+//! | `Box`/`Rc<dyn Fn(A)>`, `fn(A)` — at most 8 arguments | `(arg0: A) => void` | [`TypeSchema::Callback`] |
 //! | `#[derive(TsType)]` struct | object type | [`TypeSchema::Struct`] |
 //! | `#[derive(TsType)]` enum | string union or tagged object | [`TypeSchema::Enum`] |
 //! | `Option<T>` | `T \| null` | [`TypeSchema::Option`] |
-//! | `Vec<T>`, `[T; N]`, `&'static [T]` | `T[]` | [`TypeSchema::List`] |
+//! | `Vec<T>`, `&'static [T]` | `T[]` | [`TypeSchema::List`] |
+//! | `[T; N]` | `[T, …]`, a tuple of N | [`TypeSchema::Array`] |
 //! | `BTreeMap<K, V>`, `HashMap<K, V>` | `Record<K, V>` | [`TypeSchema::Map`] |
 //! | `String`, `Str`, `&'static str` | `string` | [`TypeSchema::String`] |
 //! | `f32`, `f64`, integers to 32 bits | `number` | [`TypeSchema::Number`] |
@@ -74,19 +90,26 @@
 // this crate, in its tests and doctests, and in a dependent crate alike.
 extern crate self as waterui_ts_schema;
 
+mod catalog;
 mod decode;
 mod encode;
 pub mod format;
 mod impls;
+mod mount;
 pub mod owned;
 mod tree;
 
 #[cfg(test)]
 mod tests;
 
+pub use catalog::{
+    Catalog, CatalogSchema, ChildrenSlot, Component, ComponentSchema, Modifier, ModifierSchema,
+    attributes_of, catalog_encoded_len, decode_catalog, encode_catalog,
+};
 pub use decode::{DecodeError, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
-pub use format::FORMAT_VERSION;
+pub use format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH};
+pub use mount::{MountPoint, decode_mount, encode_mount, mount_encoded_len, struct_name};
 pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,
@@ -142,12 +165,17 @@ pub use waterui_macros::TsProps;
 /// type's constant and the compiler resolves aliases and generic parameters
 /// before anything is encoded. Implement it with `#[derive(TsType)]` for
 /// application structs and enums; the mapped built-in types implement it here.
+///
+/// Callbacks — `Box<dyn Fn(..)>` in every `Send`/`Sync` flavour, bare
+/// `Rc<dyn Fn(..)>`, and `fn(..)` pointers — project with at most eight
+/// arguments; a wider signature has no schema and fails the bound.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no TypeScript projection and cannot cross the props seam",
     label = "no `TsType` schema for `{Self}`",
     note = "props fields must be mapped types: `Binding<T>`, `Computed<T>`, `AnyView`, \
-            `Box`/`Rc<dyn Fn(..)>`, `Option`, `Vec`, `BTreeMap`/`HashMap`, a string, a \
-            number, `bool`, or a struct or enum deriving `TsType`",
+            `Box`/`Rc<dyn Fn(..)>` or a `fn(..)` pointer of at most 8 arguments, \
+            `Option`, `Vec`, `BTreeMap`/`HashMap`, a string, a number, `bool`, or a \
+            struct or enum deriving `TsType`",
     note = "there is no implicit fallback: add `#[derive(TsType)]` to `{Self}`, or change \
             the field's type"
 )]
@@ -173,6 +201,15 @@ pub trait TsMapKey: TsType {}
 ///
 /// Derived by `#[derive(TsProps)]`, which also emits the artifact static the
 /// CLI reads.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a TypeScript props contract and cannot be mounted",
+    label = "`{Self}` does not derive `TsProps`",
+    note = "a mounted TypeScript module is typed against its props: add \
+            `#[derive(TsProps)]` to `{Self}`, which is what gives it the contract hash a \
+            bundle is checked against",
+    note = "a module that takes no props mounts against `waterui::ts::NoProps`, which \
+            `tsx!(\"./promo.tsx\")` with no props argument uses"
+)]
 pub trait TsProps: TsType {
     /// The encoded [`TsType::SCHEMA`], without the NUL terminator the artifact
     /// static appends — the exact bytes the CLI recovers and [`decode`] reads.
