@@ -56,7 +56,10 @@ def framework_scaffold(framework):
     plus the `{name}-backend-version` of a backend pinned by release or the
     `{name}-backend-revision` of one pinned by commit — and every pinned
     platform host: `{name}-host-url`, `{name}-host-revision` and
-    `{name}-host-subdirectory` — from `[package.metadata.waterui]`.
+    `{name}-host-subdirectory` for an external host, or
+    `{name}-host-subdirectory` alone for a host that lives in this
+    repository — it then names a path inside the certified framework
+    checkout itself — from `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
     metadata = framework["package"]["metadata"]["waterui"]
     workspace = framework["workspace"]["dependencies"]

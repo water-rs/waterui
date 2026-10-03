@@ -75,14 +75,12 @@ apple-backend-revision = "b6ddc957c569ac42cd63675cbab176002746a7e2"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
-# Gradle project for `--platform android --backend hydrolysis`. The revision
-# is exact: the JNI schema the Kotlin host speaks must match the `hydrolysis`
-# crate the generated launcher links, so it tracks that crate's pinned
-# revision rather than a branch. `subdirectory` names the Gradle composite
-# root inside the checkout.
-hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis"
-hydrolysis-android-host-revision = "01172c0513a5e83c5fa472d4917f4caf259ac097"
-hydrolysis-android-host-subdirectory = "android"
+# Gradle project for `--platform android --backend hydrolysis`. The host
+# lives in this repository now (#1428): the framework revision the manifest
+# certifies is already the revision the Kotlin host's JNI schema must match,
+# so no second pin exists — `subdirectory` names the Gradle composite root
+# inside this checkout.
+hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
 # Crates released from their own repositories whose requirement a scaffolded
 # project pins; the requirement string itself is read from
 # `[workspace.dependencies]` below.
