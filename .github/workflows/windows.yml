@@ -49,14 +49,11 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
-      # Only the integration branches write the shared Cargo source cache.
-      # The Windows target archive no longer competes with the fast lint
-      # gate for the repository's 10 GB budget (#458). Tests still run in
-      # every supported shape below; only their cache allocation changes.
-      # Other Windows jobs restore the same source cache without saving.
-      # This job is the sole writer of the shared `cargo-sources-Windows`
-      # archive (only ~/.cargo/registry + ~/.cargo/git, lockfile-keyed);
-      # the lint job below restores it read-only like every other reader.
+      # Nightly jobs save no cache entries of their own (#1441): the 10 GB
+      # budget belongs to the PR/dev-push gate, and this leg only restores
+      # whatever shared Cargo source cache a gate run last wrote. The Windows
+      # target archive no longer competes for the budget (#458). Tests still
+      # run in every supported shape below; only the cache allocation changes.
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -88,23 +85,29 @@ jobs:
       # honours ahead of `cef-runtime` for exactly this case — so Windows keeps
       # compile coverage of the backend without provisioning the SDK.
       #
-      # The two CEF example crates inherit that problem one level down. They
-      # select `waterui-browser-cef` with `webview`/`chromium` but not
-      # `cef-runtime`, so its build script skips `native/windows_sandbox.cc`
-      # while `runtime.rs` still declares the `waterui_cef_windows_sandbox_*`
-      # externs under `cfg(windows)` — the crate compiles and then fails to
-      # link. Every pass that links a test binary therefore excludes them, the
-      # same way it excludes the backend itself; the clippy pass in the lint
-      # job keeps them, because it checks without linking and the compile
-      # coverage is worth having.
+      # The `*-example` packages cost the tail of this cold build (#1441):
+      # their own crates plus the dependency trees only they pull (nokhwa,
+      # xcap, maplibre-expr, the waterkit camera/screen stack) were about
+      # a quarter of the 34-minute compile. The six that carry tests of their
+      # own run in the dedicated pass below instead; the other ~30 have no
+      # tests on any platform and are still compiled by the lint job's
+      # `--all-targets` clippy, so no check is lost — only linked binaries.
+      #
+      # Of the six, `chromium-example` cannot link here (one level below its
+      # backend's missing `cef_sandbox`) and `stress-example` is already red
+      # on dev — its steady-redraw bench GPU-times-out on the WARP software
+      # adapter (#1509). That leaves gallery, list, reply and typography-rtl.
       #
       # One full-workspace pass under default features. A workspace-wide
       # `--all-features` pass is structurally impossible — `waterui-ffi`
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
-      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
+      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
+      - name: Test (examples that carry tests)
+        run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
+      # No example carries a doc comment, so the glob loses no doctest.
+      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -113,23 +116,6 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
-      # Same ordering as the other source writers: retire superseded
-      # generations of this job's own family on this exact ref first, then
-      # save — so the save itself cannot evict a live, unrelated cache.
-      - name: Retire superseded cache generations
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
-        uses: ./.github/actions/retire-cargo-caches
-        with:
-          families: cargo-sources-${{ runner.os }}-
-          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Save Cargo sources
-        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
-        uses: ./.github/actions/cargo-sources
-        with:
-          operation: save
-          primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
-
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
   # (#362): this job stores only `~/.cargo`, like the macOS jobs.
@@ -207,8 +193,8 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      # Writes the Windows `~/.cargo` tarball (see the cache budget note in
-      # ci.yml); the target directory belongs to the test job above. This
+      # Restore-only like the rest of this leg (#1441): nightly saves no
+      # cache entries of its own; the 10 GB budget belongs to the gate. This
       # block used to save a 2.2 GB target tarball on every pull request
       # fingerprint, ungated.
       - uses: ./.github/actions/setup-rust
@@ -229,8 +215,10 @@ jobs:
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       # Compile the CEF backend without its binary distribution (see the test
-      # job for why it cannot be linked here).
-      - run: cargo check --locked --profile ci-check -p waterui-browser-cef --features compile-only
+      # job for why it cannot be linked here). Clippy, not check (#1441): the
+      # pass used to re-check a graph the workspace lint already covers while
+      # the crate itself had no lint coverage; now it carries its own.
+      - run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features compile-only --all-targets -- -D warnings
       # Windows-only code is invisible to every other leg: a `cfg(windows)` body
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
