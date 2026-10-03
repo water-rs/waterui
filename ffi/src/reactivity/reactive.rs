@@ -19,7 +19,7 @@ use waterui::Str;
 use waterui::reactive::watcher::BoxWatcherGuard;
 use waterui::reactive::watcher::Metadata;
 use waterui_text::styled::StyledStr;
-opaque!(WuiWatcherMetadata, Metadata, watcher_metadata, any());
+opaque!(WuiWatcherMetadata, Metadata, watcher_metadata, all());
 
 opaque!(WuiWatcherGuard, BoxWatcherGuard, box_watcher_guard, any());
 

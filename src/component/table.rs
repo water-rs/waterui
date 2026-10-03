@@ -27,7 +27,10 @@ use waterui_core::{
 use waterui_locale::locale_binding;
 use waterui_text::{IntoText, Text};
 
-use crate::{AnyView, Environment, View, views::Views};
+use crate::{
+    AnyView, Environment, View,
+    views::{ViewSnapshot, Views},
+};
 
 /// Configuration for a table component.
 #[derive(Debug)]
@@ -314,7 +317,7 @@ fn build_table_rows(columns: Computed<Vec<TableColumn>>) -> impl View {
             let cells = HStack::for_each(
                 SignalCollection::new(columns.clone()),
                 move |column: TableColumn| {
-                    column.rows().get_view(row).map_or_else(
+                    column.rows().snapshot().get_view(row).map_or_else(
                         || Text::new("").max_width(f32::INFINITY),
                         |text| text.max_width(f32::INFINITY),
                     )

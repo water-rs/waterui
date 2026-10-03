@@ -627,7 +627,7 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "bc1ffc4cf0cc
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "add3782ece2c48db44f28873dd6e2ce63e50cf9f" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "4f95775bcef3022e6d5a52c2aa09aee02afb628f" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "4266f453bde34be2fb159694a41cb926cc65e9da" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2b288a4433e0d5abab16658a2cc3aca02932e1d2" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "775892d150332c75e68d7317534bdec1bbeeb14d" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "87080fc2e06628eb990af9fdbfbc3b8a28af5acc" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }

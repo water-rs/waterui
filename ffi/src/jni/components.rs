@@ -10,6 +10,7 @@ extern crate alloc;
 extern crate std;
 
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::{vec, vec::Vec};
 #[cfg(target_os = "android")]
 use core::ffi::c_void;
@@ -1175,33 +1176,41 @@ struct AnyViewsWatchData {
     callback: Global<JObject<'static>>,
 }
 
+/// Clones the watcher's own handle to its JNI capabilities so `onChanged` may
+/// drop the watch guard mid-callback without freeing what this call still
+/// reads — the same `retain_watcher_data` contract the reactive watchers use.
+///
+/// # Safety
+///
+/// `data` must be the payload of a watcher that has not been dropped yet.
+unsafe fn retain_anyviews_watch_data(data: *mut ()) -> Rc<AnyViewsWatchData> {
+    // SAFETY: the caller contract makes `data` the live boxed `Rc<AnyViewsWatchData>`
+    // from `any_views_watch_range`, so cloning it only bumps its refcount.
+    unsafe { Rc::clone(&*data.cast_const().cast::<Rc<AnyViewsWatchData>>()) }
+}
+
 unsafe extern "C" fn anyviews_watch_call(
     data: *mut (),
-    ids: crate::array::WuiArray<crate::id::WuiId>,
+    snapshot: *mut crate::views::WuiViewSnapshot,
     metadata_ptr: *mut crate::reactive::WuiWatcherMetadata,
 ) {
-    // SAFETY: the signal hands the callback an owning metadata handle; Android does
-    // not read it, so it is released at the end of this call.
-    drop(unsafe { Box::from_raw(metadata_ptr) });
-    let values: Vec<jint> = ids.iter().map(|id| id.inner).collect();
-    ids.consume();
-
     // SAFETY: `data` is the payload `any_views_watch_range` registered with this entry
     // point, live until the paired drop entry point reclaims it.
-    let watcher_data = unsafe { &*data.cast::<AnyViewsWatchData>() };
+    let watcher_data = unsafe { retain_anyviews_watch_data(data) };
 
+    // Both handles transfer to Kotlin: `onChanged` owns them and releases the
+    // snapshot through `dropViewSnapshot` and the metadata — which carries the
+    // `CollectionChange` — through `dropWatcherMetadata` once reconciliation
+    // is done.
     super::with_attached_env(&watcher_data.jvm, |env| {
-        let ids = env
-            .new_int_array(values.len())
-            .expect("anyviews_watch_call: failed to allocate callback IDs");
-        ids.set_region(env, 0, &values)
-            .expect("anyviews_watch_call: failed to write callback IDs");
-        let ids = JObject::from(ids);
         env.call_method(
             &watcher_data.callback,
             jni_str!("onChanged"),
-            jni_sig!("([I)V"),
-            &[JValue::Object(&ids)],
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(snapshot as jlong),
+                JValue::Long(metadata_ptr as jlong),
+            ],
         )
         .expect("anyviews_watch_call: NativeAnyViewsWatcher.onChanged failed");
     })
@@ -1212,25 +1221,68 @@ unsafe extern "C" fn anyviews_watch_drop(data: *mut ()) {
     // SAFETY: `data` is the boxed payload `any_views_watch_range` registered with this
     // drop entry point, which the watcher invokes once.
     unsafe {
-        let _: Box<AnyViewsWatchData> = Box::from_raw(data.cast::<AnyViewsWatchData>());
+        let _: Box<Rc<AnyViewsWatchData>> = Box::from_raw(data.cast::<Rc<AnyViewsWatchData>>());
     }
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsLen<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsSnapshot<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jlong {
+    // SAFETY: Kotlin passes back a view-collection handle the renderer still owns;
+    // the returned snapshot handle is a fresh owning one.
+    unsafe {
+        crate::views::waterui_anyviews_snapshot(handle as *const crate::views::WuiAnyViews) as jlong
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewSnapshotLen<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
 ) -> jint {
-    // SAFETY: Kotlin passes back a view-collection handle the renderer still owns,
-    // only read here.
-    let len =
-        unsafe { crate::views::waterui_anyviews_len(handle as *const crate::views::WuiAnyViews) };
-    jint::try_from(len).expect("view collection length exceeds jint capacity")
+    // SAFETY: Kotlin passes back a snapshot handle it still owns, only read here.
+    let len = unsafe {
+        crate::views::waterui_view_snapshot_len(handle as *const crate::views::WuiViewSnapshot)
+    };
+    jint::try_from(len).expect("view snapshot length exceeds jint capacity")
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewSnapshotRangeStart<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jint {
+    // SAFETY: Kotlin passes back a snapshot handle it still owns, only read here.
+    let start = unsafe {
+        crate::views::waterui_view_snapshot_range_start(
+            handle as *const crate::views::WuiViewSnapshot,
+        )
+    };
+    jint::try_from(start).expect("view snapshot range start exceeds jint capacity")
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewSnapshotRangeEnd<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jint {
+    // SAFETY: Kotlin passes back a snapshot handle it still owns, only read here.
+    let end = unsafe {
+        crate::views::waterui_view_snapshot_range_end(
+            handle as *const crate::views::WuiViewSnapshot,
+        )
+    };
+    jint::try_from(end).expect("view snapshot range end exceeds jint capacity")
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewSnapshotGetIdsInRange<'local>(
     mut env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
@@ -1240,11 +1292,10 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange
     super::with_env(&mut env, |env| {
         let start = usize::try_from(start).expect("id range start must not be negative");
         let end = usize::try_from(end).expect("id range end must not be negative");
-        // SAFETY: Kotlin passes back a view-collection handle the renderer still owns,
-        // only read here.
+        // SAFETY: Kotlin passes back a snapshot handle it still owns, only read here.
         let ids = unsafe {
-            crate::views::waterui_anyviews_get_ids_in_range(
-                handle as *const crate::views::WuiAnyViews,
+            crate::views::waterui_view_snapshot_get_ids_in_range(
+                handle as *const crate::views::WuiViewSnapshot,
                 start,
                 end,
             )
@@ -1254,26 +1305,42 @@ extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetIdsInRange
         let values: Vec<jint> = rust_ids.into_iter().map(i32::from).collect();
         let array = env
             .new_int_array(values.len())
-            .expect("anyViewsGetIdsInRange: failed to allocate jintArray");
+            .expect("viewSnapshotGetIdsInRange: failed to allocate jintArray");
         array
             .set_region(env, 0, &values)
-            .expect("anyViewsGetIdsInRange: failed to write ids into jintArray");
+            .expect("viewSnapshotGetIdsInRange: failed to write ids into jintArray");
         array.into_raw()
     })
 }
 
 #[unsafe(no_mangle)]
-extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_anyViewsGetView<'local>(
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_viewSnapshotGetView<'local>(
     _env: EnvUnowned<'local>,
     _class: JClass<'local>,
     handle: jlong,
     index: jint,
 ) -> jlong {
-    let index = usize::try_from(index).expect("view collection index must not be negative");
-    // SAFETY: Kotlin passes back a view-collection handle the renderer still owns; the
-    // returned view handle is a fresh owning one.
+    let index = usize::try_from(index).expect("view snapshot index must not be negative");
+    // SAFETY: Kotlin passes back a snapshot handle it still owns; the returned
+    // view handle is a fresh owning one.
     unsafe {
-        crate::views::waterui_anyviews_get_view(handle as *const crate::views::WuiAnyViews, index)
+        crate::views::waterui_view_snapshot_get_view(
+            handle as *const crate::views::WuiViewSnapshot,
+            index,
+        ) as jlong
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_dev_waterui_android_ffi_WatcherJni_cloneViewSnapshot<'local>(
+    _env: EnvUnowned<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) -> jlong {
+    // SAFETY: Kotlin passes back a snapshot handle it still owns; the returned
+    // handle is an independently owned clone.
+    unsafe {
+        crate::views::waterui_view_snapshot_clone(handle as *const crate::views::WuiViewSnapshot)
             as jlong
     }
 }
@@ -1302,7 +1369,7 @@ fn any_views_watch_range<'local>(
         let callback = env
             .new_global_ref(callback)
             .expect("WatcherJni.anyViewsWatchRange failed to create callback global reference");
-        let data = Box::new(AnyViewsWatchData { jvm, callback });
+        let data = Box::new(Rc::new(AnyViewsWatchData { jvm, callback }));
         let data_ptr = Box::into_raw(data).cast::<()>();
         let start = usize::try_from(start).expect("watch range start must not be negative");
         let end = usize::try_from(end).expect("watch range end must not be negative");

@@ -2140,6 +2140,11 @@ typedef struct WuiAnyView WuiAnyView;
 typedef struct WuiAnyViews WuiAnyViews;
 
 /**
+ *Opaque FFI handle owning a `AnyViewsSnapshot<AnyView>`.
+ */
+typedef struct WuiViewSnapshot WuiViewSnapshot;
+
+/**
  * The [`AssetServer`] a native web view owns.
  *
  * `FfiWebViewController` boxes the server a `WebView` was opened with and hands
@@ -10437,35 +10442,84 @@ void waterui_drop_watcher_resolved_font(struct WuiWatcher_ResolvedFont *watcher)
 void waterui_drop_anyviews(struct WuiAnyViews *value);
 
 /**
- * Gets a view at the specified index.
- *
  * # Safety
- * The caller must ensure that `anyview` is a valid pointer and `index` is within bounds.
+ * The caller must ensure that `value` is a valid pointer obtained from the corresponding FFI function.
  */
-struct WuiAnyView *waterui_anyviews_get_view(const struct WuiAnyViews *anyview, uintptr_t index);
+void waterui_drop_view_snapshot(struct WuiViewSnapshot *value);
 
 /**
- * Gets the number of views in the collection.
+ * Captures the collection's current state as an immutable, owning snapshot.
  *
  * # Safety
- * The caller must ensure that `anyviews` is a valid pointer.
+ * The caller must ensure that `anyviews` is a valid pointer. The returned
+ * handle is owned by the caller and must be released with
+ * `waterui_drop_view_snapshot` (or cloned with `waterui_view_snapshot_clone`
+ * when several owners need it).
  */
-uintptr_t waterui_anyviews_len(const struct WuiAnyViews *anyviews);
+struct WuiViewSnapshot *waterui_anyviews_snapshot(const struct WuiAnyViews *anyviews);
 
 /**
- * Gets the view IDs in `[start, end)` range.
+ * Clones a view snapshot, returning an independently owned handle.
  *
  * # Safety
- * The caller must ensure that `anyviews` is a valid pointer.
+ * The caller must ensure that `snapshot` is a valid pointer. The returned
+ * handle is owned by the caller and must be released with
+ * `waterui_drop_view_snapshot`.
  */
-struct WuiArray_WuiId waterui_anyviews_get_ids_in_range(const struct WuiAnyViews *anyviews,
-                                                        uintptr_t start,
-                                                        uintptr_t end);
+struct WuiViewSnapshot *waterui_view_snapshot_clone(const struct WuiViewSnapshot *snapshot);
+
+/**
+ * Gets the number of positions the snapshot captured.
+ *
+ * # Safety
+ * The caller must ensure that `snapshot` is a valid pointer.
+ */
+uintptr_t waterui_view_snapshot_len(const struct WuiViewSnapshot *snapshot);
+
+/**
+ * Gets the first collection-wide index the snapshot captured.
+ *
+ * # Safety
+ * The caller must ensure that `snapshot` is a valid pointer.
+ */
+uintptr_t waterui_view_snapshot_range_start(const struct WuiViewSnapshot *snapshot);
+
+/**
+ * Gets the collection-wide index one past the last position the snapshot captured.
+ *
+ * # Safety
+ * The caller must ensure that `snapshot` is a valid pointer.
+ */
+uintptr_t waterui_view_snapshot_range_end(const struct WuiViewSnapshot *snapshot);
+
+/**
+ * Gets a view at the specified collection-wide index from the snapshot.
+ *
+ * # Safety
+ * The caller must ensure that `snapshot` is a valid pointer. Indices outside
+ * the snapshot's range return null.
+ */
+struct WuiAnyView *waterui_view_snapshot_get_view(const struct WuiViewSnapshot *snapshot,
+                                                  uintptr_t index);
+
+/**
+ * Gets the view IDs in `[start, end)` collection-wide range from the snapshot.
+ *
+ * # Safety
+ * The caller must ensure that `snapshot` is a valid pointer and that
+ * `[start, end)` lies inside the snapshot's range.
+ */
+struct WuiArray_WuiId waterui_view_snapshot_get_ids_in_range(const struct WuiViewSnapshot *snapshot,
+                                                             uintptr_t start,
+                                                             uintptr_t end);
 
 /**
  * Watches for changes in a views collection within `[start, end)` range.
  *
- * The callback receives the current list of view IDs in the watched range.
+ * Each callback receives an owning snapshot handle covering the requested
+ * range resolved against that notification's captured data, plus the watcher
+ * metadata. The callee owns the snapshot handle and must release it with
+ * `waterui_drop_view_snapshot` once the reconciliation it supplies is done.
  *
  * # Safety
  * - `anyviews` must be a valid pointer.
@@ -10476,7 +10530,7 @@ struct WuiWatcherGuard *waterui_anyviews_watch_range(const struct WuiAnyViews *a
                                                      uintptr_t end,
                                                      void *data,
                                                      void (*call)(void*,
-                                                                  struct WuiArray_WuiId,
+                                                                  struct WuiViewSnapshot*,
                                                                   struct WuiWatcherMetadata*),
                                                      void (*drop)(void*));
 
