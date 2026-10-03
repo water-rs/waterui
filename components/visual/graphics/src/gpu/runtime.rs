@@ -165,7 +165,9 @@ pub struct SharedGpuContext {
 }
 
 impl SharedGpuContext {
-    /// Requests a high-performance adapter and a device with default limits.
+    /// Requests a high-performance adapter and a device with the adapter's
+    /// own limits — wgpu's default limit set exceeds what constrained
+    /// adapters (the iOS simulator's is one) can grant.
     ///
     /// Device loss otherwise surfaces only as a bare `Validation` status on the
     /// next swapchain acquire, with the reason discarded; the `DeviceLoss`
@@ -213,6 +215,10 @@ impl SharedGpuContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("waterui GpuRuntime"),
                 required_features,
+                // The adapter's own limits, not wgpu's defaults: a default
+                // that exceeds the adapter's ceiling fails the request
+                // outright (iOS simulator: default 16 > adapter 15).
+                required_limits: adapter.limits(),
                 ..Default::default()
             })
             .await?;
@@ -373,6 +379,12 @@ struct RuntimeInner {
     /// it on its own thread.
     #[cfg(not(target_arch = "wasm32"))]
     rebuild_exhausted: Mutex<Option<String>>,
+    /// Notified on every rebuild outcome — a published fresh context, a
+    /// retryable recreation failure and the exhausted budget — so a
+    /// [`GpuRuntime::context_after`] waiter always wakes to observe the
+    /// state it was waiting on.
+    #[cfg(not(target_arch = "wasm32"))]
+    published: event_listener::Event,
 }
 
 impl fmt::Debug for GpuRuntime {
@@ -409,6 +421,8 @@ impl GpuRuntime {
             rebuild_in_flight: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
             rebuild_exhausted: Mutex::new(None),
+            #[cfg(not(target_arch = "wasm32"))]
+            published: event_listener::Event::new(),
         });
         #[cfg(not(target_arch = "wasm32"))]
         Self::arm_rebuild_wakeup(&inner);
@@ -512,6 +526,39 @@ impl GpuRuntime {
         )
     }
 
+    /// Waits for the first live context newer than `generation`.
+    ///
+    /// Resolves as soon as a rebuild after device loss has published a
+    /// context whose generation is strictly newer — immediately when that
+    /// publication already landed, otherwise when the runtime's rebuild
+    /// thread stores the fresh context. The listener is installed before
+    /// the current context is observed, so a publication racing the call is
+    /// never missed; waiting is the event's own parking, not a poll.
+    ///
+    /// Dropping the returned future cancels the wait: the listener keeps no
+    /// state behind and no task survives the caller.
+    ///
+    /// Only native targets rebuild — WebGPU's recovery contract is the
+    /// unchanged `context()` behaviour of keeping the lost context — so the
+    /// wait exists on `cfg(not(target_arch = "wasm32"))` only.
+    ///
+    /// # Panics
+    ///
+    /// Same budget as [`context`](Self::context): a run of devices that each
+    /// died before presenting a frame is unrecoverable, and the panic that
+    /// call would raise propagates through the wait.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn context_after(&self, generation: u64) -> Shared<SharedGpuContext> {
+        loop {
+            let listener = self.inner.published.listen();
+            let context = self.context();
+            if context.generation() > generation && context.device_lost_reason().is_none() {
+                return context;
+            }
+            listener.await;
+        }
+    }
+
     /// Spawns the context rebuild, once per device loss.
     ///
     /// `request_adapter`/`request_device` are driver calls that take tens of
@@ -566,7 +613,10 @@ impl GpuRuntime {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
                 // `rebuild_in_flight` stays set: the device is unrecoverable,
-                // so no further attempt is ever spawned.
+                // so no further attempt is ever spawned. The verdict is the
+                // last state change a `context_after` waiter can observe, so
+                // it is woken to fail on it.
+                inner.published.notify(usize::MAX);
                 return;
             }
             drop(unproductive);
@@ -611,10 +661,18 @@ impl GpuRuntime {
                     }
                     Err(payload) => {
                         worker.rebuild_in_flight.store(false, Ordering::Release);
+                        // Woken waiters re-kick the rebuild through `context()`
+                        // before this thread dies.
+                        worker.published.notify(usize::MAX);
                         std::panic::resume_unwind(payload);
                     }
                 }
                 worker.rebuild_in_flight.store(false, Ordering::Release);
+                // `rebuild_in_flight` is clear before the notification so a
+                // woken waiter that finds the context still lost can kick the
+                // next attempt instead of parking on an event that never
+                // fires again.
+                worker.published.notify(usize::MAX);
             })
             .expect("failed to spawn the GPU runtime rebuild thread");
     }
@@ -744,7 +802,7 @@ impl GpuRuntime {
         scale: f32,
     ) -> OffscreenImage {
         let content = GpuContentView::new(content).take_engine_content(|| {});
-        let mut renderer = GpuContentRenderer::new(self, content, size);
+        let mut renderer = GpuContentRenderer::new(self, self.context(), content, size);
         renderer.render(
             size,
             Display {
@@ -780,7 +838,7 @@ impl GpuRuntime {
         scale: f32,
     ) -> OffscreenImage {
         let content = GpuContentView::new(content).take_engine_content(|| {});
-        let mut renderer = GpuContentRenderer::new(self, content, size).await;
+        let mut renderer = GpuContentRenderer::new(self, self.context(), content, size).await;
         renderer
             .render(
                 size,
@@ -841,14 +899,13 @@ struct LayerHost {
 }
 
 impl LayerHost {
-    /// Creates an engine and a retained surface on the runtime's current
-    /// context.
+    /// Creates an engine and a retained surface on `context`, the one
+    /// generation the whole host is bound to.
     ///
     /// # Panics
     /// When engine or surface creation fails.
     #[cfg(not(target_arch = "wasm32"))]
-    fn new(runtime: &GpuRuntime, size: OffscreenSize) -> Self {
-        let context = runtime.context();
+    fn new(runtime: &GpuRuntime, context: Shared<SharedGpuContext>, size: OffscreenSize) -> Self {
         let engine = runtime
             .engine_on(&context)
             .expect("native content engine creation failed");
@@ -859,8 +916,8 @@ impl LayerHost {
         Self::assemble(surface, engine, context, textures)
     }
 
-    /// Creates an engine and a retained surface on the runtime's current
-    /// context.
+    /// Creates an engine and a retained surface on `context`, the one
+    /// generation the whole host is bound to.
     ///
     /// # Panics
     /// When engine or surface creation fails.
@@ -869,8 +926,11 @@ impl LayerHost {
         clippy::future_not_send,
         reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
     )]
-    async fn new(runtime: &GpuRuntime, size: OffscreenSize) -> Self {
-        let context = runtime.context();
+    async fn new(
+        runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
+        size: OffscreenSize,
+    ) -> Self {
         let engine = runtime
             .engine_on(&context)
             .await
@@ -1017,19 +1077,24 @@ impl fmt::Debug for GpuContentRenderer {
 }
 
 impl GpuContentRenderer {
-    /// Moves the producer to a retained engine layer on the runtime's current
-    /// context.
+    /// Moves the producer to a retained engine layer on `context` — the one
+    /// generation the caller retains for the frame this renderer presents.
     ///
     /// # Panics
     /// When engine or surface creation fails.
     #[must_use]
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(runtime: &GpuRuntime, content: GpuContentBox, size: OffscreenSize) -> Self {
-        Self::install(LayerHost::new(runtime, size), content, size)
+    pub fn new(
+        runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
+        producer: GpuContentBox,
+        size: OffscreenSize,
+    ) -> Self {
+        Self::install(LayerHost::new(runtime, context, size), producer, size)
     }
 
-    /// Moves the producer to a retained engine layer on the runtime's current
-    /// context.
+    /// Moves the producer to a retained engine layer on `context` — the one
+    /// generation the caller retains for the frame this renderer presents.
     ///
     /// # Panics
     /// When engine or surface creation fails.
@@ -1038,8 +1103,13 @@ impl GpuContentRenderer {
         clippy::future_not_send,
         reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
     )]
-    pub async fn new(runtime: &GpuRuntime, content: GpuContentBox, size: OffscreenSize) -> Self {
-        Self::install(LayerHost::new(runtime, size).await, content, size)
+    pub async fn new(
+        runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
+        producer: GpuContentBox,
+        size: OffscreenSize,
+    ) -> Self {
+        Self::install(LayerHost::new(runtime, context, size).await, producer, size)
     }
 
     fn install(host: LayerHost, content: GpuContentBox, size: OffscreenSize) -> Self {
@@ -1152,9 +1222,10 @@ impl fmt::Debug for ExternalFrameRenderer {
 }
 
 impl ExternalFrameRenderer {
-    /// Builds the layer on the runtime's current context and starts the
-    /// stream's source on that device. `redraw` wakes the host whenever the
-    /// source publishes a frame.
+    /// Builds the layer on `context` — the one generation the caller retains
+    /// for the frame this renderer presents — and starts the stream's source
+    /// on that device. `redraw` wakes the host whenever the source publishes
+    /// a frame.
     ///
     /// # Panics
     /// When engine or surface creation fails.
@@ -1162,16 +1233,18 @@ impl ExternalFrameRenderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new(
         runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
         stream: &ExternalFrameStream,
         size: OffscreenSize,
         redraw: RedrawHandle,
     ) -> Self {
-        Self::install(LayerHost::new(runtime, size), stream, redraw)
+        Self::install(LayerHost::new(runtime, context, size), stream, redraw)
     }
 
-    /// Builds the layer on the runtime's current context and starts the
-    /// stream's source on that device. `redraw` wakes the host whenever the
-    /// source publishes a frame.
+    /// Builds the layer on `context` — the one generation the caller retains
+    /// for the frame this renderer presents — and starts the stream's source
+    /// on that device. `redraw` wakes the host whenever the source publishes
+    /// a frame.
     ///
     /// # Panics
     /// When engine or surface creation fails.
@@ -1182,11 +1255,12 @@ impl ExternalFrameRenderer {
     )]
     pub async fn new(
         runtime: &GpuRuntime,
+        context: Shared<SharedGpuContext>,
         stream: &ExternalFrameStream,
         size: OffscreenSize,
         redraw: RedrawHandle,
     ) -> Self {
-        Self::install(LayerHost::new(runtime, size).await, stream, redraw)
+        Self::install(LayerHost::new(runtime, context, size).await, stream, redraw)
     }
 
     fn install(host: LayerHost, stream: &ExternalFrameStream, redraw: RedrawHandle) -> Self {
