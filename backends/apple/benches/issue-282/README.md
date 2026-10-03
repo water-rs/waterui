@@ -171,9 +171,26 @@ Disk is allocated bytes; app and executable package sizes are logical bytes.
 ## Event and ownership protocol
 
 1. Install the release simulator bundle when applicable.
-2. Start live `log stream --style ndjson --level info`, filtered broadly
-   by subsystem `dev.waterui`.
-3. Await the stream's attach header through its pipe before spawning the app.
+2. Start a live `log stream --style ndjson --level info` (the shared argv
+   tail in `stream_args.py`, used by both legs) with no wire-level
+   predicate — PID/subsystem filtering is owned once by the driver's
+   StructuredLogStream. An idle stream emits no `dev.waterui` events, so a
+   subsystem predicate would deadlock attach-before-spawn.
+   - macOS: `/usr/bin/log stream` requires an admin account. The bench
+     account is non-admin, so each macOS measurement command runs under the
+     per-command privileged parent `observer.py`
+     (`sudo python3 observer.py -- <command>`): it owns the observer
+     process, writes its stderr and exit status to
+     `BENCH282_LOG_STREAM_DIAG`, and hands the driver — dropped to the real
+     bench account via initgroups/setgid/setuid — a read-only pipe FD as
+     `BENCH282_LOG_STREAM_FD`. The driver never spawns or owns the observer.
+   - iOS: `xcrun simctl spawn <udid> log stream` needs no host privilege and
+     stays under the bench account; its stderr goes to a per-command
+     diagnostic file under `logs/` (stderr is not schema).
+3. Await stream readiness through its pipe before spawning the app: the
+   `Filtering the log data` preamble on hosts that emit it, or the first
+   successfully parsed event where no preamble exists (in-simulator
+   streams emit none). A valid event is honest attach evidence.
 4. Spawn the app and obtain its PID. Structured events already received or
    buffered in the pipe remain available.
 5. Accept `waterui_first_paint_ms=` only from an event with that exact
@@ -182,7 +199,8 @@ Disk is allocated bytes; app and executable package sizes are logical bytes.
    median of the final five. An early process exit invalidates the leg.
 7. Reap the owned app and log stream on success, exceptions and interruption.
    Simulator termination and uninstall are registered before launch; cleanup
-   continues even if another cleanup callback fails.
+   continues even if another cleanup callback fails. Stream failures report
+   the true exit status and diagnostics of the stream owner.
 
 There is no log-show replay or readiness sleep. The only sleep is the
 specified RSS sampling interval. First paint is the backend's process-start
