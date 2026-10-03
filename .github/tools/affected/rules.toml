@@ -1,0 +1,33 @@
+# Determinator rules for the fast gate (ci.yml `scope`, dev.yml `scope`).
+#
+# A changed file under a package's directory already belongs to that
+# package — the determinator's ancestor matching, which the gate relies on
+# for every source, host, shader, fixture and asset file a crate carries.
+# These rules only map what lies outside every package: a path no rule
+# matches still selects the whole workspace (the determinator's own
+# fallback for outside files), so an unlisted path widens the gate rather
+# than silently narrowing it.
+
+# The toolchain and cargo-level configuration can change every build the
+# gate might run.
+[[path-rule]]
+globs = ["rust-toolchain.toml", ".cargo/**"]
+mark-changed = "all"
+
+# The gate's own machinery — workflows, composite actions, the scripts they
+# run and this tool (including this rules file) — can rewrite what a run
+# does, so a change there is verified against the whole workspace.
+[[path-rule]]
+globs = [
+    ".github/workflows/**",
+    ".github/actions/**",
+    ".github/scripts/**",
+    ".github/tools/**",
+]
+mark-changed = "all"
+
+# Prose selects nothing: documentation, issue templates and the
+# repository's markdown files cannot change what compiles.
+[[path-rule]]
+globs = ["docs/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
+mark-changed = []

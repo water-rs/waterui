@@ -11,6 +11,24 @@ on:
       full:
         type: boolean
         default: false
+      # The affected-only scope, computed by affected.yml for the fast
+      # callers (#458's follow-up): `workspace` sweeps everything as
+      # before, a package list scopes check+clippy to those crates and
+      # their reverse dependencies, and `comment-only` narrows it further
+      # to rustdoc + clippy on the files' owners when no .rs syntax tree
+      # changed. The nightly always sweeps (`full`).
+      affected:
+        type: string
+        default: "workspace"
+      package-args:
+        type: string
+        default: ""
+      comment-only:
+        type: boolean
+        default: false
+      test-assets:
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -69,6 +87,7 @@ jobs:
       # `include_bytes!` of files this repository deliberately does not store;
       # `--all-targets` compiles the test modules, so they must exist first.
       - name: Generate Hydrolysis test assets
+        if: inputs.full || inputs['test-assets']
         uses: ./.github/actions/generate-test-assets
       - name: Format
         run: cargo fmt --all -- --check
@@ -77,14 +96,32 @@ jobs:
       # `--all-targets` in the fast shape too: the gate runs no test, but a
       # `#[cfg(test)]` module or a `tests/` target that no longer compiles
       # must not wait for the nightly to be noticed.
+      #
+      # The fast gate sweeps only when the affected scope is `workspace` —
+      # a change under no package's directory. A scoped diff gets check +
+      # clippy on the determinator's set (changed crates plus every reverse
+      # dependency that could rebuild differently); a comment-only diff
+      # narrows to rustdoc + clippy on the owning crates alone.
       - name: Clippy (workspace)
+        if: inputs.full || inputs.affected == 'workspace'
         run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --all-targets -- -D warnings
+      - name: Check and clippy (affected packages)
+        if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && inputs.affected != ''
+        run: |
+          cargo check --locked --profile ci-check ${{ inputs.package-args }} --all-targets
+          cargo clippy --locked --profile ci-check ${{ inputs.package-args }} --all-targets -- -D warnings
+      - name: Clippy and rustdoc (comment-only owners)
+        if: inputs.full == false && inputs['comment-only'] == true
+        run: |
+          cargo clippy --locked --profile ci-check ${{ inputs.package-args }} --all-targets -- -D warnings
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps ${{ inputs.package-args }}
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
       # Library only: `--all-targets` builds the dev-dependencies, whose
       # `waterui` turns `gpu` back on through feature unification.
       - name: Clippy (graphics effects without gpu)
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-graphics')
         run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor

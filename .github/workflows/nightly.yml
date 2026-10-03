@@ -68,6 +68,15 @@ jobs:
     name: Windows
     uses: ./.github/workflows/windows.yml
 
+  # The whole-workspace MSRV sweep: the per-change gate runs this check
+  # only when a diff touches a toolchain boundary, so the nightly carries
+  # the standing signal that `dev` still compiles on the declared
+  # `rust-version` — including pins that moved a dependency's floor under
+  # a released patch.
+  msrv:
+    name: MSRV
+    uses: ./.github/workflows/msrv.yml
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -165,7 +174,7 @@ jobs:
 
   test-report:
     name: Test Report
-    needs: [test, windows, webview-js, ts-js]
+    needs: [test, windows, webview-js, ts-js, msrv]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -182,7 +191,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -226,7 +235,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, promote]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5
