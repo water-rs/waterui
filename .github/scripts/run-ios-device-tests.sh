@@ -132,9 +132,9 @@ fi
 # forwards into every spawned test process as SIMCTL_CHILD_*.
 # Assigned before exporting: `export X="$(...)"` would mask the
 # substitution's exit status, so a failing reference build must fail here.
+export WATERUI_IOS_SIM_UDID="${simulator_udid}"
 reference_metrics="$("${repo_root}/.github/scripts/prepare-native-reference.sh" \
   "$(mktemp -d)/native-reference")"
-export WATERUI_IOS_SIM_UDID="${simulator_udid}"
 export WATERUI_REFERENCE_METRICS="${reference_metrics}"
 
 # The native assertions run inside the same simulator through the target
