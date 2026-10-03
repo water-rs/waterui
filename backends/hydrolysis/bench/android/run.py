@@ -25,6 +25,13 @@ APK production is parameterized: android-backend fixtures come from
 `water package --backend android`; the hydrolysis host's packaging lands
 with the plan's step 7 — until then `--apk-dir` maps fixture names to
 locally built APKs.
+
+The Gradle trees (`reference/` here, `android/` for the host) are the
+callers of `scripts/fetch-gradle-wrapper.py`: their `gradlew` scripts
+need `gradle/wrapper/gradle-wrapper.jar`, which the repository does not
+store. Run `uv run scripts/fetch-gradle-wrapper.py` once before any
+`./gradlew` invocation — it materializes the jar for every wrapper in
+the tree, hash-verified against the published checksums.
 """
 
 from __future__ import annotations

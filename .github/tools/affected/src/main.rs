@@ -137,7 +137,7 @@ fn parse_args() -> (String, String) {
     while let Some(arg) = args.next() {
         match arg.as_ref() {
             "--base" => base = Some(args.next().expect("--base needs a value")),
-"--head" => head = args.next().expect("--head needs a value"),
+            "--head" => head = args.next().expect("--head needs a value"),
             other => panic!("unknown argument: {other}"),
         }
     }
@@ -240,6 +240,23 @@ fn test_asset_consumers(graph: &PackageGraph) -> BTreeSet<String> {
     consumers
 }
 
+/// The package a path would ancestor-match to, using the same
+/// `member_by_path` walk the determinator performs after its rules: the
+/// first ancestor directory that is a workspace member's source
+/// directory. Needed for the rule-carve-out — a mark-nothing rule may
+/// still consume a file that lives inside a package (prose globs cannot
+/// express "outside every package" in globset syntax, where `*` crosses
+/// separators), and in-package files belong to their package because
+/// `include_str!` and `#![doc]` compile them into the crate.
+fn ancestor_owner(graph: &PackageGraph, path: &Utf8Path) -> Option<PackageId> {
+    for ancestor in path.ancestors() {
+        if let Ok(package) = graph.workspace().member_by_path(ancestor) {
+            return Some(package.id().clone());
+        }
+    }
+    None
+}
+
 fn main() {
     let (base, head) = parse_args();
 
@@ -281,6 +298,11 @@ fn main() {
     // to equal it.
     let mut workspace = false;
     let mut owners: BTreeMap<String, Option<String>> = BTreeMap::new();
+    // Packages the rules swallowed but that own the file anyway: the
+    // determinator's own set cannot see them, so they are unioned into
+    // `affected` below. Reverse dependencies are not pulled in — an
+    // include_str'd document compiles into its owning crate alone.
+    let mut manual_affected: BTreeSet<String> = BTreeSet::new();
     for path in &changed {
         let mut matched: Vec<&PackageId> = Vec::new();
         let verdict = determinator.match_path(path.as_str(), |id| matched.push(id));
@@ -290,15 +312,33 @@ fn main() {
                 owners.insert(path.clone(), None);
             }
             PathMatch::RuleMatched(_) => {
-                owners.insert(path.clone(), None);
+                // A rule swallowed the path. When it lives inside a real
+                // package anyway — `components/…/instructions.md` matched
+                // by `*.md`, say — it still belongs to that package:
+                // prose carve-outs apply outside packages only.
+                match ancestor_owner(&new_graph, Utf8Path::new(path.as_str())) {
+                    Some(id)
+                        if id != *root.package_id || root.owns(Utf8Path::new(path.as_str())) =>
+                    {
+                        let name = new_graph
+                            .metadata(&id)
+                            .expect("ancestor match is a known package")
+                            .name()
+                            .to_string();
+                        manual_affected.insert(name.clone());
+                        owners.insert(path.clone(), Some(name));
+                    }
+                    _ => {
+                        owners.insert(path.clone(), None);
+                    }
+                }
             }
             PathMatch::AncestorMatched => {
                 let owned: Vec<&PackageId> = matched
                     .iter()
                     .copied()
                     .filter(|id| {
-                        **id != *root.package_id
-                            || root.owns(Utf8Path::new(path.as_str()))
+                        **id != *root.package_id || root.owns(Utf8Path::new(path.as_str()))
                     })
                     .collect();
                 if owned.is_empty() {
@@ -322,7 +362,9 @@ fn main() {
         .packages(DependencyDirection::Forward)
         .map(|metadata| metadata.name().to_string())
         .collect();
+    affected.extend(manual_affected);
     affected.sort_unstable();
+    affected.dedup();
 
     println!(
         "{}",

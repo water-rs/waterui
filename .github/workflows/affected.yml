@@ -33,9 +33,6 @@ on:
           `true` when every changed .rs file's syntax tree is unchanged
           after comments, doc comments and doc attributes are removed.
         value: ${{ jobs.scope.outputs.comment-only }}
-      owners:
-        description: The crates owning the changed .rs files.
-        value: ${{ jobs.scope.outputs.owners }}
       msrv:
         description: >
           `true` when the diff can move the toolchain floor — a
@@ -56,7 +53,6 @@ jobs:
       packages: ${{ steps.compute.outputs.packages }}
       package-args: ${{ steps.compute.outputs.package-args }}
       comment-only: ${{ steps.compute.outputs.comment-only }}
-      owners: ${{ steps.compute.outputs.owners }}
       msrv: ${{ steps.compute.outputs.msrv }}
       test-assets: ${{ steps.compute.outputs.test-assets }}
     steps:
@@ -84,7 +80,6 @@ jobs:
               echo "packages=workspace"
               echo "package-args="
               echo "comment-only=false"
-              echo "owners="
               echo "msrv=true"
               echo "test-assets=true"
             } >> "$GITHUB_OUTPUT"

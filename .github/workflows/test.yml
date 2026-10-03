@@ -247,6 +247,12 @@ jobs:
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p hydrolysis --features web \
             -- -D warnings
+          # The bare build is a separate gate: every feature off selects a
+          # third of the backend's `cfg(feature)` surface that `web` never
+          # compiles — call sites a feature gates out rot silently otherwise.
+          cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
+            -p hydrolysis --no-default-features \
+            -- -D warnings
 
   # The workspace test run, per platform, also carrying the doctests that
   # share its build. It is the single longest leg in CI and everything else
@@ -520,6 +526,14 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
+      # Hydrolysis's own CI ran this clippy shape on macos-latest alongside
+      # Linux and Windows; the in-tree move kept it on Linux only, which
+      # silently dropped the backend's `cfg(target_os = "macos")` lint
+      # coverage (#1428 review). This leg restores it, on the same feature
+      # sweep the Linux lint step runs — `webview-system` is the macOS-only
+      # entry point no other leg sees.
+      - name: Clippy (hydrolysis, checked feature set)
+        run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       # `cargo test` rather than nextest: CEF's browser process has to own the
       # main thread, libtest runs test bodies on spawned ones, so the target is
       # `harness = false` and nextest cannot enumerate it.
