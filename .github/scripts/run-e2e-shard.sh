@@ -160,6 +160,36 @@ if [[ "${platform}" == "ios" ]]; then
   trap 'xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
 fi
 
+# The capture helpers below re-invoke the checker sources constantly: the
+# settle loop runs a pixel compare once per poll (up to the 90 s deadline,
+# per example and per reference capture), content/compare run again per
+# example and twin, and every macOS frame first asks window-id for the
+# window number. `swift <file>` re-parses and type-checks the source on
+# every call — measured here at ~1.5 s for `content` on a real capture
+# vs ~0.02 s for the compiled binary — and the pixel loop itself runs
+# interpreted. The sources stay unchanged; they are compiled once per job
+# into scratch space and the binaries are reused for every call. Nothing
+# persists between jobs — the directory lives under TMPDIR and the EXIT
+# trap removes it.
+swift_tools_dir="$(mktemp -d "${TMPDIR:-/tmp}/e2e-swift-tools.XXXXXX")"
+if [[ "${platform}" == "ios" ]]; then
+  trap 'rm -rf "${swift_tools_dir}"; xcrun simctl status_bar "${SIMULATOR_UDID}" clear >/dev/null 2>&1 || true' EXIT
+else
+  trap 'rm -rf "${swift_tools_dir}"' EXIT
+fi
+if ! swiftc -O -o "${swift_tools_dir}/compare-screenshots" \
+     "${workspace}/.github/scripts/compare-screenshots.swift"; then
+  echo "::error::Failed to compile compare-screenshots.swift."
+  exit 1
+fi
+if [[ "${platform}" == "macos" ]]; then
+  if ! swiftc -O -o "${swift_tools_dir}/window-id" \
+       "${workspace}/.github/scripts/window-id.swift"; then
+    echo "::error::Failed to compile window-id.swift."
+    exit 1
+  fi
+fi
+
 # One frame from the current platform target. macOS captures need the pid that
 # owns the window; the running example is the default, the SwiftUI reference
 # host passes its own.
@@ -170,7 +200,7 @@ capture_frame() {
     xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
   else
     local window_id
-    window_id="$(swift "${workspace}/.github/scripts/window-id.swift" "${pid}")"
+    window_id="$("${swift_tools_dir}/window-id" "${pid}")"
     screencapture -x -o -l"${window_id}" "${target}"
   fi
 }
@@ -202,7 +232,7 @@ capture_settled() {
   while (( SECONDS < deadline )); do
     if capture_frame "${target}" ${pid:+"${pid}"} && [[ -f "${target}" ]]; then
       if [[ -f "${anchor}" ]] && \
-         DIFF_BUDGET=0.01 swift "${workspace}/.github/scripts/compare-screenshots.swift" \
+         DIFF_BUDGET=0.01 "${swift_tools_dir}/compare-screenshots" \
            compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" >/dev/null 2>&1; then
         if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
           rm -f "${anchor}"
@@ -686,7 +716,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     kill "${app_pid}" 2>/dev/null || true
   fi
 
-  if ! swift "${workspace}/.github/scripts/compare-screenshots.swift" content "${shot}"; then
+  if ! "${swift_tools_dir}/compare-screenshots" content "${shot}"; then
     echo "::error::Captured screenshot for ${example} is blank."
     failures+=("${example}: blank")
     report+=("| \`${example}\` | blank capture | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
@@ -709,7 +739,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     report+=("| \`${example}\` | launched (no baseline yet) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   else
     diff_image="${shots_dir}/${platform}-${example}-diff.png"
-    if compare_out="$(swift "${workspace}/.github/scripts/compare-screenshots.swift" \
+    if compare_out="$("${swift_tools_dir}/compare-screenshots" \
         compare "${baseline}" "${shot}" "${diff_image}")"; then
       report+=("| \`${example}\` | baseline match | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
@@ -734,7 +764,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       echo "::error::Could not capture the SwiftUI reference for ${example}."
       failures+=("${example}: reference capture")
       report+=("| \`${example}\` (parity) | reference failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif ! swift "${workspace}/.github/scripts/compare-screenshots.swift" \
+    elif ! "${swift_tools_dir}/compare-screenshots" \
         content "${ref_shot}" >/dev/null 2>&1; then
       echo "::error::SwiftUI reference for ${example} captured blank."
       failures+=("${example}: reference blank")
@@ -745,7 +775,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       # pixel-compared.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     elif parity_out="$(DIFF_BUDGET="${budget}" \
-        swift "${workspace}/.github/scripts/compare-screenshots.swift" \
+        "${swift_tools_dir}/compare-screenshots" \
         compare "${ref_shot}" "${shot}" "${parity_diff}" 2>&1)"; then
       parity_fraction="${parity_out#compare: }"
       parity_fraction="${parity_fraction%% *}"
