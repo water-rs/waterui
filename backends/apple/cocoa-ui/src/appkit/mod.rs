@@ -74,7 +74,7 @@ pub use button::Button;
 pub use color_view::ColorView;
 pub use color_well::ColorWell;
 pub use colors::AppColor;
-pub use context_menu::{AccessoryPanel, ContextMenu};
+pub use context_menu::ContextMenu;
 pub use control::{activate, first_button, first_control};
 pub use cursor::Cursor;
 pub use date_picker::{DatePicker, DatePickerElements};
