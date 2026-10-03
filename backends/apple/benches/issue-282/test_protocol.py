@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import drive as d
+import observer
 
 
 class ProtocolTests(unittest.TestCase):
@@ -274,13 +275,24 @@ class ProtocolTests(unittest.TestCase):
 
     def test_fragmented_stream_retains_early_marker_and_filters_pid(self):
         proc = MagicMock()
-        parser = d.StructuredLogStream(proc)
+        parser = d.StructuredLogStream(proc.stdout)
         chunks = [b"Filtering the log ", b"data\n" + self.event(91, 999) + self.event(92, 777, "foreign") + self.event(92)[:15],
                   self.event(92)[15:]]
         with patch.object(d.select, "select", return_value=([proc.stdout], [], [])), \
                 patch.object(d.os, "read", side_effect=chunks):
             parser.await_attach(float("inf"))
             self.assertEqual(parser.first_paint(92, self.m["legs"]["launch"], float("inf")), 17)
+
+    def test_attach_accepts_first_event_when_no_preamble(self):
+        reader = MagicMock()
+        with patch.object(d.select, "select", return_value=([reader], [], [])), \
+                patch.object(d.os, "read", side_effect=[self.event(92)]):
+            parser = d.StructuredLogStream(reader)
+            parser.await_attach(float("inf"))
+            self.assertTrue(parser.attached)
+
+    def test_observer_stream_tail_matches_driver(self):
+        self.assertEqual(observer.LOG_STREAM_TAIL, d.LOG_STREAM_TAIL)
 
     def launch_fixture(self, platform, fail=None):
         app = self.root / "Test.app"
@@ -289,6 +301,12 @@ class ProtocolTests(unittest.TestCase):
                       "simulator_udid": "test-simulator"})
         stream, process = MagicMock(), MagicMock(pid=92)
         calls, stopped = [], []
+        stream_env = {}
+        if platform == "macos":
+            read_fd, write_fd = os.pipe()
+            self.addCleanup(os.close, write_fd)
+            stream_env = {"BENCH282_LOG_STREAM_FD": str(read_fd),
+                          "BENCH282_LOG_STREAM_DIAG": str(self.root / "observer.log")}
         parser = MagicMock()
         def attach(deadline):
             calls.append("attach")
@@ -325,7 +343,8 @@ class ProtocolTests(unittest.TestCase):
             if fail == "rss":
                 raise d.BenchError("rss failed")
             return [100] * 20
-        with patch.object(d.subprocess, "Popen", side_effect=popen), \
+        with patch.dict(d.os.environ, stream_env), \
+                patch.object(d.subprocess, "Popen", side_effect=popen), \
                 patch.object(d, "StructuredLogStream", return_value=parser), \
                 patch.object(d, "run", side_effect=run), \
                 patch.object(d, "stop_process", side_effect=stopped.append), \
@@ -343,8 +362,13 @@ class ProtocolTests(unittest.TestCase):
             else:
                 rec = d.leg_launch(self.m, {}, "old", "fresh", platform, 1)
                 self.assertEqual(rec["metrics"]["first_paint_ms"], 17)
-            self.assertIn(stream, stopped)
-            stream.stdout.close.assert_called_once()
+            if platform == "macos":
+                # Reader FD closed by the driver's ExitStack, not by us.
+                with self.assertRaises(OSError):
+                    os.fstat(read_fd)
+            else:
+                self.assertIn(stream, stopped)
+                stream.stdout.close.assert_called_once()
             if platform == "macos" and "spawn" in calls and fail != "spawn":
                 self.assertIn(process, stopped)
             if platform == "ios-simulator":
@@ -368,17 +392,17 @@ class ProtocolTests(unittest.TestCase):
         self.launch_fixture("ios-simulator", "cleanup")
 
     def test_attach_timeout_fails_before_spawn(self):
-        proc = MagicMock()
+        reader = MagicMock()
         with patch.object(d.select, "select", return_value=([], [], [])):
             with self.assertRaisesRegex(d.BenchError, "deadline"):
-                d.StructuredLogStream(proc).await_attach(float("inf"))
+                d.StructuredLogStream(reader).await_attach(float("inf"))
 
     def test_stream_eof_fails(self):
         proc = MagicMock()
         with patch.object(d.select, "select", return_value=([proc.stdout], [], [])), \
                 patch.object(d.os, "read", return_value=b""):
             with self.assertRaisesRegex(d.BenchError, "closed"):
-                d.StructuredLogStream(proc).await_attach(float("inf"))
+                d.StructuredLogStream(proc.stdout).await_attach(float("inf"))
 
     def test_stop_process_kills_group_even_after_leader_exits(self):
         proc = MagicMock(pid=92)
