@@ -9968,9 +9968,7 @@ name = "waterui-android"
 version = "0.1.0"
 dependencies = [
  "executor-core",
- "futures",
  "jni 0.22.4",
- "libc",
  "nami",
  "native-executor",
  "ndk",
@@ -9988,7 +9986,6 @@ dependencies = [
 name = "waterui-android-test-app"
 version = "0.1.0"
 dependencies = [
- "jni 0.22.4",
  "waterui",
  "waterui-android",
 ]

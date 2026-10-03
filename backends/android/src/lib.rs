@@ -27,6 +27,12 @@
 
 extern crate alloc;
 
+// `export_app!` expands in the *application's* crate, which carries no
+// `jni` dependency — the expansion spells these paths instead. Hidden:
+// not part of the API, only the macro's private reach-in.
+#[doc(hidden)]
+pub use jni as __jni;
+
 pub mod contract;
 pub mod dispatch;
 pub mod embedding;
@@ -67,12 +73,12 @@ macro_rules! export_app {
         /// `dev.waterui.android.WaterActivity`.
         #[unsafe(no_mangle)]
         pub extern "system" fn Java_dev_waterui_android_WaterRuntime_nativeCreate<'caller>(
-            mut unowned_env: ::jni::EnvUnowned<'caller>,
-            _this: ::jni::objects::JObject<'caller>,
-            activity: ::jni::objects::JObject<'caller>,
-            root: ::jni::objects::JObject<'caller>,
-        ) -> ::jni::sys::jlong {
-            let outcome = unowned_env.with_env(|env| -> ::jni::errors::Result<_> {
+            mut unowned_env: $crate::__jni::EnvUnowned<'caller>,
+            _this: $crate::__jni::objects::JObject<'caller>,
+            activity: $crate::__jni::objects::JObject<'caller>,
+            root: $crate::__jni::objects::JObject<'caller>,
+        ) -> $crate::__jni::sys::jlong {
+            let outcome = unowned_env.with_env(|env| -> $crate::__jni::errors::Result<_> {
                 let app =
                     |env: ::waterui::Environment| $app(::waterui::configure_environment!(env));
                 $crate::entry::mount(env, activity, root, app)

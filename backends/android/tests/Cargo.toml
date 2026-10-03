@@ -16,6 +16,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 waterui.workspace = true
-# `export_app!` emits `::jni::` paths in this crate.
-jni.workspace = true
 waterui-android = { path = "..", features = ["text", "container", "button"] }
