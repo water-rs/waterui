@@ -94,9 +94,9 @@ jobs:
       # `--all-targets` clippy, so no check is lost — only linked binaries.
       #
       # Of the six, `chromium-example` cannot link here (one level below its
-      # backend's missing `cef_sandbox`) and `stress-example` is already red
-      # on dev — its steady-redraw bench GPU-times-out on the WARP software
-      # adapter (#1509). That leaves gallery, list, reply and typography-rtl.
+      # backend's missing `cef_sandbox`), so it stays out. `stress-example`
+      # runs red here until the Cherenkov pin picks up the upload-staging
+      # timeout fix — that is the honest state of the leg.
       #
       # One full-workspace pass under default features. A workspace-wide
       # `--all-features` pass is structurally impossible — `waterui-ffi`
@@ -104,7 +104,7 @@ jobs:
       # enabling `c-api` and `android-jni` together can never build.
       - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
-        run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p typography-rtl-example
+        run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.
       # No example carries a doc comment, so the glob loses no doctest.
       - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
