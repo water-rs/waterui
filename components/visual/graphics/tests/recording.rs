@@ -14,11 +14,13 @@ use std::sync::Arc;
 use cherenkov::kurbo::{Affine, Rect, Shape};
 use cherenkov::{
     ContentChange, Draw, FontSource, Glyph, GlyphRun, GlyphStyle, ImageColorSpace, ImageData,
-    Recorder, Rgba8, Sampling, WorkingColor,
+    Recorder, Rgba8, Sampling, StaticRecorder, WorkingColor,
 };
 use nami::{Binding, SignalExt};
 use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
-use waterui_graphics::{Picture, RecordingResources, Registered, SceneContent, SceneView};
+use waterui_graphics::{
+    Picture, PictureSource, RecordingResources, Registered, SceneContent, SceneView,
+};
 
 /// sRGB red as the engine's working colour — `WorkingColor::new` names
 /// Display P3 components directly, which sRGB cannot hold, so pixel
@@ -91,6 +93,57 @@ fn tiny_image() -> ImageData<Rgba8> {
         .premultiplied()
 }
 
+struct TinyImageSource {
+    bytes: Arc<[u8]>,
+}
+
+impl PictureSource for TinyImageSource {
+    fn record(&self, recorder: &mut StaticRecorder, resources: &mut RecordingResources<'_>) {
+        let image = resources
+            .image(
+                ImageData::<Rgba8>::new(2, 1, Arc::clone(&self.bytes))
+                    .expect("image source")
+                    .color_space(ImageColorSpace::Srgb)
+                    .premultiplied(),
+            )
+            .expect("image registration failed");
+        recorder.image(
+            resources.name(&image),
+            Rect::new(0.0, 0.0, 8.0, 8.0),
+            Sampling::Nearest,
+        );
+    }
+}
+
+struct GlyphSource {
+    bytes: Arc<[u8]>,
+    glyph: u32,
+}
+
+impl PictureSource for GlyphSource {
+    fn record(&self, recorder: &mut StaticRecorder, resources: &mut RecordingResources<'_>) {
+        let font = resources
+            .font(FontSource::bytes(Arc::clone(&self.bytes)))
+            .expect("font registration failed");
+        recorder.glyphs(
+            GlyphRun {
+                font: resources.name(&font),
+                size: 28.0,
+                coords: Vec::new().into(),
+                glyphs: vec![Glyph {
+                    id: self.glyph,
+                    x: 4.0,
+                    y: 28.0,
+                    transform: None,
+                }]
+                .into(),
+                style: GlyphStyle::Fill,
+            },
+            srgb(1.0, 1.0, 1.0),
+        );
+    }
+}
+
 #[test]
 fn image_data_rejects_zero_size_and_byte_length_mismatch() {
     assert!(ImageData::<Rgba8>::new(0, 1, Vec::from([0u8; 4])).is_err());
@@ -103,22 +156,8 @@ fn image_data_rejects_zero_size_and_byte_length_mismatch() {
 #[test]
 fn an_image_draws_where_the_recording_put_it() {
     let mut rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
-    let image = rasterizer
-        .resources()
-        .image(tiny_image())
-        .expect("image registration failed");
-
-    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
-        // The image's own rect fills its destination: left half red, right
-        // blue.
-        recorder.image(
-            names.name(&image),
-            Rect::new(0.0, 0.0, 8.0, 8.0),
-            Sampling::Nearest,
-        );
-    });
-    // The recording holds the image; the code that registered it need not.
-    drop(image);
+    let source = Arc::<[u8]>::from([255, 0, 0, 255, 0, 0, 255, 255]);
+    let recording = Picture::record_with(rasterizer.resources(), TinyImageSource { bytes: source });
     let bitmap = rasterizer
         .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
@@ -136,29 +175,14 @@ fn a_glyph_run_draws_its_glyphs() {
     let glyph = face.glyph_index('A').expect("the test font has no 'A'").0;
 
     let mut rasterizer = Rasterizer::new(32, 32).expect("engine failed to start");
-    let font = rasterizer
-        .resources()
-        .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
-        .expect("font registration failed");
-
-    let recording = Picture::record_with(rasterizer.resources(), |recorder, names| {
-        recorder.glyphs(
-            GlyphRun {
-                font: names.name(&font),
-                size: 28.0,
-                coords: Vec::new().into(),
-                glyphs: vec![Glyph {
-                    id: u32::from(glyph),
-                    x: 4.0,
-                    y: 28.0,
-                    transform: None,
-                }]
-                .into(),
-                style: GlyphStyle::Fill,
-            },
-            srgb(1.0, 1.0, 1.0),
-        );
-    });
+    let source = Arc::<[u8]>::from(FONT);
+    let recording = Picture::record_with(
+        rasterizer.resources(),
+        GlyphSource {
+            bytes: source,
+            glyph: u32::from(glyph),
+        },
+    );
     let bitmap = rasterizer
         .rasterize(&recording, Affine::IDENTITY)
         .expect("rasterise failed");
@@ -246,6 +270,10 @@ impl SceneContent for LateImage {
             );
         }
         false
+    }
+
+    fn rebuild_for_engine(&mut self) {
+        self.image = None;
     }
 }
 

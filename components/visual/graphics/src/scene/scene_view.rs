@@ -98,6 +98,25 @@ pub trait SceneContent: 'static {
         height: f32,
     ) -> bool;
 
+    /// Reconstructs this content for a newly created engine generation.
+    ///
+    /// A `SceneContent` may own registrations, a Cherenkov recording, or
+    /// another object whose identity belongs to the engine that created it.
+    /// Those values cannot be carried into a replacement engine. Recovery
+    /// clears or rebuilds this content's engine-bound state while retaining
+    /// its semantic/source state for the next [`build_scene`](Self::build_scene)
+    /// call. The host invokes this before it records the first scene on the
+    /// replacement engine, and then supplies that call's `RecordingResources`
+    /// as usual.
+    ///
+    /// Content that owns no engine-bound state must implement this explicitly
+    /// as an empty reset.
+    /// Content that caches a [`Registered`](crate::scene::resources::Registered),
+    /// a [`PictureRecording`](crate::picture::PictureRecording), or another
+    /// generation-bound value must preserve its semantic inputs while
+    /// rebuilding that value.
+    fn rebuild_for_engine(&mut self);
+
     /// Installs an invalidation callback that content can trigger from signal watchers.
     ///
     /// The host installs one when it mounts the content and clears it with
@@ -345,6 +364,18 @@ impl SceneView {
     pub fn into_content(self) -> Box<dyn SceneContent> {
         self.content
     }
+
+    /// Replaces this view's content with its source-preserving reconstruction
+    /// for a newly created engine generation.
+    ///
+    /// The returned view keeps the same layout and accessibility contract;
+    /// only engine-bound scene state is reconstructed. The host must call this
+    /// before the first recording made with the replacement engine.
+    #[must_use]
+    pub fn rebuild_for_engine(mut self) -> Self {
+        self.content.rebuild_for_engine();
+        self
+    }
 }
 
 impl NativeView for SceneView {
@@ -368,6 +399,8 @@ impl View for SceneView {
 
 #[cfg(test)]
 mod tests {
+    use cherenkov::{Draw, kurbo::Shape};
+
     use super::{
         NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
         StretchAxis, resolve_scene_proposal, scene_stretch_axis,
@@ -375,6 +408,33 @@ mod tests {
 
     /// Content that is naturally 100x200 — twice as tall as it is wide.
     struct Tall;
+
+    struct Rebuildable {
+        value: f32,
+    }
+
+    impl SceneContent for Rebuildable {
+        fn build_scene(
+            &mut self,
+            recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            width: f32,
+            height: f32,
+        ) -> bool {
+            recorder.fill(
+                cherenkov::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+                    .to_path(0.1),
+                cherenkov::WorkingColor::BLACK,
+            );
+            false
+        }
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            Some(Size::new(self.value, 1.0))
+        }
+
+        fn rebuild_for_engine(&mut self) {}
+    }
 
     impl SceneContent for Tall {
         fn build_scene(
@@ -390,6 +450,8 @@ mod tests {
         fn intrinsic_size(&self) -> Option<Size> {
             Some(Size::new(100.0, 200.0))
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content with no size of its own, which is the trait's default.
@@ -405,6 +467,8 @@ mod tests {
         ) -> bool {
             false
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// Content that says what it draws, the way a formula or a chart does.
@@ -424,6 +488,8 @@ mod tests {
         fn accessibility_value(&self) -> Option<alloc::string::String> {
             Some("x squared plus one".into())
         }
+
+        fn rebuild_for_engine(&mut self) {}
     }
 
     /// The view must forward exactly what its content offers a screen reader:
@@ -444,6 +510,17 @@ mod tests {
             SceneView::new(Sizeless).accessibility_value(),
             None,
             "content with nothing to say must not invent a value either"
+        );
+    }
+
+    #[test]
+    fn reconstruction_replaces_engine_bound_content_and_preserves_semantic_state() {
+        let view = SceneView::new(Rebuildable { value: 37.0 });
+        let rebuilt = view.rebuild_for_engine();
+        assert_eq!(
+            rebuilt.intrinsic_size(),
+            Some(Size::new(37.0, 1.0)),
+            "reconstruction must carry semantic state into the new content"
         );
     }
 

@@ -141,6 +141,11 @@ impl SceneContent for ShaderContent {
         false
     }
 
+    fn rebuild_for_engine(&mut self) {
+        self.shader = None;
+        self.animation_watch = None;
+    }
+
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
         self.animation_watch =
             invalidator.map(|invalidator| invalidate_on_change(&invalidator, &self.animated));

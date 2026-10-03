@@ -188,6 +188,8 @@ impl SceneContent for MeshContent {
         });
         false
     }
+
+    fn rebuild_for_engine(&mut self) {}
 }
 
 #[cfg(test)]

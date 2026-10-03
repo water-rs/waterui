@@ -57,9 +57,10 @@ android-min-api-level = 26
 # Native backends are pinned to compatible commits. The CLI preserves these
 # revisions when scaffolding a project; neither backend rides a gitlink.
 apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-# The objc2 Rust backend (`waterui-apple`), which the framework's FFI
-# surface and the CLI's entry-owning Apple packaging require.
-apple-backend-revision = "84b13b3e9c60cab1ade9fa5b6e01d18bcde99f55"
+# The objc2 Rust backend (`waterui-apple`) consumed by the CLI's
+# entry-owning Apple packaging. This revision has no waterui-ffi or generated
+# C-header dependency.
+apple-backend-revision = "b6ddc957c569ac42cd63675cbab176002746a7e2"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
@@ -522,7 +523,7 @@ waterui-webview = { path = "components/platform/webview" }
 # The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
 # removed on this branch; the pinned revision carries the icon-button
 # contract (water-rs/hydrolysis#115). Drop it once a release has the change.
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "c16c410866c4694ada6cf110b83f946e0f30a079" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "169c42a810c4662abda184c89c114846877b13ec" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
@@ -587,15 +588,15 @@ wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968
 # TEMP: local path pins of the migrated component repositories for the
 # nami-snapshot migration — converted to git revs of each repo's
 # devin/chore/nami-snapshot head before the branch is pushed.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "8fce880bc3d053e5c49dcf9e695f0308ccfa38a0" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "86bbeb637c2792e69f4f6ddd2d453c3d32d06bc6" }
-waterui-chart = { git = "https://github.com/water-rs/chart", rev = "fa38cabe5a49a3bcb1d809018115c8fb66e6ce7d" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "fadcb404b749b70907d535a2449a6a9fcad798a7" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "49486aedd4b5a0b38ae27d7a4021b7efb217ca89" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "039e0b9e7a15ea4a2b7651bbdce3d9dee0ba1752" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "01172c0513a5e83c5fa472d4917f4caf259ac097" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "149fcea688d90ffa8edd1b66e64796dc1b7c3f38" }
-waterui-svg = { git = "https://github.com/water-rs/svg", rev = "bdc07b2488cef4823ed7995dd56384b2383d7348" }
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "491ada1c7db31bdab657135338a5bd670adbe61f" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "83f004bb1745708cbe9a72395756677c706f1020" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "add3782ece2c48db44f28873dd6e2ce63e50cf9f" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "4f95775bcef3022e6d5a52c2aa09aee02afb628f" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "4266f453bde34be2fb159694a41cb926cc65e9da" }
+hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2b288a4433e0d5abab16658a2cc3aca02932e1d2" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "87080fc2e06628eb990af9fdbfbc3b8a28af5acc" }
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
 waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
@@ -616,7 +617,7 @@ waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev =
 # codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
 # 0.1.2 registry release; this is the rev waterkit pins itself.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }
-waterui-math = { git = "https://github.com/water-rs/math", rev = "d263e493d39e93ca822e621b0b951e377cbf496d" }
+waterui-math = { git = "https://github.com/water-rs/math", rev = "878bfc0284b32ee18c1a50860adf9ba489a4d5ab" }
 
 # The published backend crates still read the pre-rename signal API — their
 # `nami` requirements (`^0.11.2` and peers) cannot resolve beside the pinned
@@ -625,6 +626,6 @@ waterui-math = { git = "https://github.com/water-rs/math", rev = "d263e493d39e93
 # `[workspace.dependencies]` requirements (`0.2.1`, `0.1.0`, `0.3.0`), keeping
 # the stable channel's registry scaffolds untouched. Drop the entries once
 # each backend releases a migrated version.
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "1b683d0daab9a119396fb3b31d31bc2445f39bc9" }
+waterui-dew = { git = "https://github.com/water-rs/dew", rev = "db709fc0c29fd1b4493c014409406de710f8b915" }
 waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }

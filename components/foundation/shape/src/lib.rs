@@ -1323,6 +1323,13 @@ impl SceneContent for MorphContent {
         false
     }
 
+    fn rebuild_for_engine(&mut self) {
+        if let Some(driver) = &mut self.driver {
+            driver.task = None;
+        }
+        self.shader = None;
+    }
+
     /// The morph clock runs while the content is mounted: from the host
     /// installing its invalidator at mount to the host clearing it.
     fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
