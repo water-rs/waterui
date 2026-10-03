@@ -110,13 +110,6 @@ fn ideal_size(leaf: &NativeLeaf) -> cocoa_ui::Size {
     }
 }
 
-/// Whether the view's bounds are empty — `bounds.isEmpty`.
-#[cfg(target_os = "ios")]
-fn bounds_is_empty(view: &cocoa_ui::PlatformView) -> bool {
-    let bounds = view::bounds(view);
-    bounds.size.width <= 0.0 || bounds.size.height <= 0.0
-}
-
 /// `dismissPresentedMenu`: close whatever is tracking and drop the
 /// accessory; the platform teardown paths do the same, so teardown is
 /// idempotent.
@@ -307,36 +300,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         }
                     }),
                     preview: Rc::new({
-                        let state = Rc::clone(&state);
                         let host = host.clone();
                         move |_| {
-                            let state = state.borrow();
-                            let host: &cocoa_ui::PlatformView = &host;
-                            state.preview.as_ref().map_or_else(
-                                || Some(uikit::targeted_preview(host)),
-                                |preview| {
-                                    let bounds = view::bounds(host);
-                                    // The highlight preview runs before
-                                    // the provider lays the view out;
-                                    // give it its ideal bounds so the
-                                    // lift has something to snapshot.
-                                    if bounds_is_empty(preview.leaf.view()) {
-                                        let size = ideal_size(&preview.leaf);
-                                        view::set_frame(
-                                            preview.leaf.view(),
-                                            Rect::new(0.0, 0.0, size.width, size.height),
-                                        );
-                                    }
-                                    Some(uikit::targeted_preview_at(
-                                        preview.leaf.view(),
-                                        host,
-                                        cocoa_ui::Point::new(
-                                            bounds.size.width / 2.0,
-                                            bounds.size.height / 2.0,
-                                        ),
-                                    ))
-                                },
-                            )
+                            // `UITargetedPreview` requires its view to be
+                            // in a window, so the highlight always lifts
+                            // the source; a custom preview's card is the
+                            // preview controller's content, not this view.
+                            Some(uikit::targeted_preview(&host))
                         }
                     }),
                     will_display: Rc::new({
