@@ -83,6 +83,10 @@ impl AcceleratedFrameSink for LinuxFrameSink {
     }
 }
 
+// `CefUiBridge::new` stores every platform's sink constructor behind one
+// `fn(GpuHandles, ...)` type, so this signature is fixed even though the
+// assert below only needs a borrow.
+#[allow(clippy::needless_pass_by_value)]
 fn make_frame_sink(handles: GpuHandles, mailbox: Arc<OwnedFrameMailbox>) -> LinuxFrameSink {
     assert!(
         matches!(
