@@ -32,6 +32,15 @@ the two legs are never compared as the same operation. Package legs always
 include the full native build. Every subprocess is bounded (<= 30 min/step),
 readiness is event-driven on the log-stream pipe, and the launch marker is
 scoped to the measured PID — no cross-process log fallback.
+
+Input architecture: the old side keeps its standalone apple-backend checkout
+plus the harness-owned `waterui/backends/apple` link. The new side has no
+separate backend at all: the Apple backend returned into the framework
+repository as the tracked `backends/apple` workspace member, so the waterui
+checkout's single HEAD owns framework and backend together — there is no
+new-side backend pin, clone, link or env SHA. The driver validates that the
+member is a real tracked directory whose package is `waterui-apple`, listed
+as a workspace member, beside the root Swift package.
 """
 
 import argparse
@@ -244,8 +253,23 @@ def waterui_dir(side):
     return ROOT / "checkouts" / side / "waterui"
 
 
-def backend_dir(side):
-    return ROOT / "checkouts" / side / "apple-backend"
+# Checkout folder per pin name; the new side has no apple_backend pin.
+CHECKOUT_FOLDERS = {"apple_backend": "apple-backend", "waterui": "waterui", "cli": "cli"}
+
+
+def pin_names(manifest, side):
+    """A side's checkout pins are the entries that carry a repo URL; layout
+    descriptors such as backend_layout are not pins."""
+    return tuple(name for name, cfg in manifest["sides"][side].items()
+                 if isinstance(cfg, dict) and "repo" in cfg)
+
+
+def backend_dir(manifest, side):
+    """Old: standalone apple-backend checkout. New: the tracked member inside
+    the waterui checkout — same repository, same HEAD."""
+    if side == "old":
+        return ROOT / "checkouts" / side / "apple-backend"
+    return waterui_dir(side) / manifest["sides"][side]["backend_layout"]["path"]
 
 
 def project_dir(manifest, side, subject_name):
@@ -445,7 +469,7 @@ def manifest_timeouts():
 
 def requested_pins(manifest):
     return {side: {name: resolve_pin(pins, name, side)
-                   for name in ("apple_backend", "waterui", "cli")}
+                   for name in pin_names(manifest, side)}
             for side, pins in manifest["sides"].items()}
 
 
@@ -484,7 +508,9 @@ def preparation_command(argv, timeout_s, source_sha, **kwargs):
 
 
 def require_clean_checkout(path, backend=None):
-    """Reject tracked changes and untracked source before trusting a pin."""
+    """Reject tracked changes and untracked source before trusting a pin.
+    `backend` is the old side's expected standalone link target only; the new
+    side's backends/apple is tracked, so an untracked entry there is dirt."""
     if backend is not None:
         link = path / "backends" / "apple"
         if not link.is_symlink() or link.resolve() != backend.resolve():
@@ -495,6 +521,53 @@ def require_clean_checkout(path, backend=None):
                if not (backend is not None and line == "?? backends/apple")]
     if changes:
         raise BenchError(f"{path}: dirty checkout (tracked changes or untracked inputs); refusing source provenance")
+
+
+def validate_backend_member(manifest, side):
+    """The side's exact backend binding, inside the waterui checkout.
+
+    Old: the harness-owned `backends/apple` symlink must point at the side's
+    standalone apple-backend checkout. New: `backends/apple` must be a real
+    tracked directory of the waterui checkout — never a link, nested
+    repository or foreign path — whose Cargo package is the declared
+    `waterui-apple` workspace member, with the root Swift package present.
+    The waterui HEAD being the verified pin then owns framework and backend
+    together: one exact commit per repository."""
+    waterui = waterui_dir(side)
+    link = waterui / "backends" / "apple"
+    if side == "old":
+        if not link.is_symlink() or link.resolve() != backend_dir(manifest, side).resolve():
+            raise BenchError(f"{link}: expected the harness-owned backend link")
+        return
+    layout = manifest["sides"][side]["backend_layout"]
+    member = waterui / layout["path"]
+    if member.is_symlink() or not member.is_dir():
+        raise BenchError(
+            f"{member}: new-side backend must be a tracked directory inside "
+            "the waterui checkout — not a link or missing member")
+    if (member / ".git").exists():
+        raise BenchError(
+            f"{member}: nested repository — the new-side backend shares the "
+            "waterui checkout's HEAD, it is not its own clone")
+    if not checked_output(["git", "-C", str(waterui), "ls-files", "--", layout["path"]]):
+        raise BenchError(f"{member}: backend directory is not tracked by the waterui checkout")
+    pkg = member / "Cargo.toml"
+    if not pkg.is_file():
+        raise BenchError(f"{pkg}: backend manifest missing")
+    name = tomllib.loads(pkg.read_text()).get("package", {}).get("name")
+    if name != layout["package"]:
+        raise BenchError(f"{pkg}: expected package {layout['package']}, found {name!r}")
+    root_manifest = waterui / "Cargo.toml"
+    if not root_manifest.is_file():
+        raise BenchError(f"{root_manifest}: waterui checkout root manifest missing")
+    members = tomllib.loads(root_manifest.read_text()).get("workspace", {}).get("members")
+    covered = {match for pattern in (members if isinstance(members, list) else [])
+               for match in glob.glob(pattern, root_dir=waterui)}
+    if layout["path"] not in covered:
+        raise BenchError(
+            f"{member}: not a workspace member of {root_manifest}")
+    if not (waterui / layout["swift_package"]).is_file():
+        raise BenchError(f"{waterui / layout['swift_package']}: root Swift package missing")
 
 
 def owned_checkout(ctx, path, url, backend=None):
@@ -569,21 +642,28 @@ def preflight_inputs(manifest, ctx, state, requested, finalize, supplied):
                 raise BenchError(f"{side}/{name}: prepared pin change requires new-side finalization")
     checkouts = []
     for side, pins in manifest["sides"].items():
+        if side == "old":
+            link = waterui_dir(side) / "backends" / "apple"
+            if link.is_symlink():
+                if link.resolve() != backend_dir(manifest, side).resolve():
+                    raise BenchError(f"{link}: foreign backend link")
+            elif link.exists():
+                raise BenchError(f"{link}: expected our backend link")
         link = waterui_dir(side) / "backends" / "apple"
-        if link.is_symlink():
-            if link.resolve() != backend_dir(side).resolve():
-                raise BenchError(f"{link}: foreign backend link")
-        elif link.exists():
-            raise BenchError(f"{link}: expected our backend link")
-        for name, folder in (("apple_backend", "apple-backend"), ("waterui", "waterui"), ("cli", "cli")):
-            path = ROOT / "checkouts" / side / folder
+        for name in pin_names(manifest, side):
+            path = ROOT / "checkouts" / side / CHECKOUT_FOLDERS[name]
             head = None
-            backend = backend_dir(side) if name == "waterui" and link.is_symlink() else None
+            backend = backend_dir(manifest, side) \
+                if name == "waterui" and side == "old" and link.is_symlink() else None
             if path.exists():
                 head = owned_checkout(ctx, path, pins[name]["repo"], backend)
                 if head != requested[side][name]:
                     if not finalize or side != "new":
                         raise BenchError(f"{side}/{name}: checkout pin change requires new-side finalization")
+                elif name == "waterui" and side == "new":
+                    # An already-pinned waterui checkout proves its backend
+                    # binding now; a pending replace revalidates after fetch.
+                    validate_backend_member(manifest, side)
             checkouts.append(PreparedCheckout(side, name, path, pins[name]["repo"], head,
                                               requested[side][name], backend))
     tools = tuple(PreparedCLI(side, requested[side]["cli"],
@@ -605,14 +685,19 @@ def prepare_checkouts(manifest, ctx, state, requested, plan):
                 raise BenchError("input replacement did not reach the requested exact SHA")
     for side in manifest["sides"]:
         link = waterui_dir(side) / "backends" / "apple"
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.is_symlink():
-            if link.resolve() != backend_dir(side).resolve():
-                raise BenchError(f"{link}: foreign backend link")
-        elif link.exists():
-            raise BenchError(f"{link}: expected our backend link")
+        if side == "old":
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if link.is_symlink():
+                if link.resolve() != backend_dir(manifest, side).resolve():
+                    raise BenchError(f"{link}: foreign backend link")
+            elif link.exists():
+                raise BenchError(f"{link}: expected our backend link")
+            else:
+                link.symlink_to(backend_dir(manifest, side), target_is_directory=True)
         else:
-            link.symlink_to(backend_dir(side), target_is_directory=True)
+            # The backend arrived with the waterui checkout itself — never
+            # create or accept a link/foreign path for it.
+            validate_backend_member(manifest, side)
     state["prepared_pins"] = requested
     save_state(state)
 
@@ -739,23 +824,23 @@ def write_toml(path, data):
         raise BenchError(f"TOML round-trip failed: {path}")
 
 
-def ensure_backend_path(water_toml, backend, scheme, side):
+def ensure_backend_path(manifest, water_toml, scheme, side):
     """Pin the manifest's backend binding for the side's exact CLI schema.
     The old CLI persists `[backends.apple] backend_path` (+ `scheme`). The new
     CLI records no `backends` table at all — `water create` already recorded
-    `waterui_path`, and the backend comes from the harness-owned
-    `backends/apple` link under it, so a new-side manifest is validated, never
-    written here."""
+    `waterui_path`, and the backend is the tracked `backends/apple` member
+    inside that checkout (same HEAD owns both), so a new-side manifest is
+    validated, never written here."""
     if side == "old":
         data = tomllib.loads(water_toml.read_text())
         apple = data.setdefault("backends", {}).setdefault("apple", {})
-        apple["backend_path"] = str(backend)
+        apple["backend_path"] = str(backend_dir(manifest, side))
         apple["scheme"] = scheme
         write_toml(water_toml, data)
-    validate_backend_path(water_toml, backend, side)
+    validate_backend_path(manifest, water_toml, side)
 
 
-def validate_backend_path(water_toml, backend, side):
+def validate_backend_path(manifest, water_toml, side):
     data = tomllib.loads(water_toml.read_text())
     package = data.get("package", {})
     if side == "new":
@@ -765,14 +850,12 @@ def validate_backend_path(water_toml, backend, side):
         if not isinstance(waterui, str) or \
                 Path(waterui).resolve() != waterui_dir(side).resolve():
             raise BenchError(f"{water_toml}: new side requires exact waterui_path")
-        link = Path(waterui) / "backends" / "apple"
-        if not link.is_symlink() or link.resolve() != Path(backend).resolve():
-            raise BenchError(
-                f"{water_toml}: new side requires the harness-owned "
-                f"backends/apple link to {backend}")
+        # The backend binding itself: the tracked member inside that exact
+        # checkout — never a link, foreign path or independent clone.
+        validate_backend_member(manifest, side)
         return
     apple = data.get("backends", {}).get("apple", {})
-    if apple.get("backend_path") != str(backend):
+    if apple.get("backend_path") != str(backend_dir(manifest, side)):
         raise BenchError(f"{water_toml}: exact [backends.apple].backend_path mismatch")
     if package.get("type") != "app" or not apple.get("scheme"):
         raise BenchError(f"{water_toml}: old app mode requires type and scheme")
@@ -841,14 +924,14 @@ def stage_form(manifest, side):
     if side == "old":
         package["type"] = "app"
         water_toml["backends"] = {"apple": {
-            "backend_path": str(backend_dir(side)),
+            "backend_path": str(backend_dir(manifest, side)),
             "scheme": manifest["subjects"]["form"]["scheme"]}}
     write_toml(dest / "Water.toml", water_toml)
     write_toml(dest / "Cargo.toml", {
         "package": {"name": "form_example", "version": "0.1.0", "edition": "2024", "publish": False},
         "features": {"dev": ["waterui/dynamic_linking"]},
         "dependencies": {"waterui": {"path": str(waterui_dir(side))}}})
-    validate_backend_path(dest / "Water.toml", backend_dir(side), side)
+    validate_backend_path(manifest, dest / "Water.toml", side)
     return dest
 
 
@@ -874,8 +957,8 @@ def cmd_scaffold(manifest, side):
         run_or_die(argv, manifest["timeouts"]["scaffold"],
                    f"water create {side}", cwd=apps_parent,
                    log_file=LOGS / f"create-{side}.log")
-    ensure_backend_path(fresh_dir / "Water.toml",
-                        backend_dir(side), fresh["scheme"], side)
+    ensure_backend_path(manifest, fresh_dir / "Water.toml",
+                        fresh["scheme"], side)
 
     form_dir = stage_form(manifest, side)
 
@@ -931,10 +1014,10 @@ def cmd_parity(manifest):
     if failures:
         sys.exit(1)
     for side in manifest["sides"]:
-        verify_checkouts(state, side)
+        verify_checkouts(manifest, state, side)
         for subject in manifest["subjects"]:
             project = project_dir(manifest, side, subject)
-            validate_backend_path(project / "Water.toml", backend_dir(side), side)
+            validate_backend_path(manifest, project / "Water.toml", side)
             if hashlib.sha256((project / "Cargo.lock").read_bytes()).hexdigest() != state["lockfile_sha256"][f"{side}/{subject}"]:
                 raise BenchError(f"{project}: lockfile changed after scaffold")
     state["parity_passed"] = True
@@ -964,13 +1047,15 @@ def toolchain_guard(manifest, record):
     record["toolchain_match"] = True
 
 
-def verify_checkouts(state, side):
-    for name, folder in (("apple_backend", "apple-backend"), ("waterui", "waterui"), ("cli", "cli")):
-        path = ROOT / "checkouts" / side / folder
+def verify_checkouts(manifest, state, side):
+    for name in pin_names(manifest, side):
+        path = ROOT / "checkouts" / side / CHECKOUT_FOLDERS[name]
         head = checked_output(["git", "-C", str(path), "rev-parse", "HEAD"])
         if head != state["resolved_pins"][side][name]:
             raise BenchError(f"{path}: checkout no longer matches resolved pin")
-        require_clean_checkout(path, backend_dir(side) if name == "waterui" else None)
+        backend = backend_dir(manifest, side) if name == "waterui" and side == "old" else None
+        require_clean_checkout(path, backend)
+    validate_backend_member(manifest, side)
 
 
 def source_fingerprint(manifest, side, subject):
@@ -1086,7 +1171,9 @@ def leg_package(manifest, ctx, side, subject_name, platform, sample):
     record["cold_clean"] = cold_clean(manifest, ctx, side, subject, project)
     extra = manifest["legs"]["package"].get(
         "platform_extra_args", {}).get(platform, [])
-    argv = [str(water_bin(side)), "package", "--platform", platform,
+    json_receipt = side in manifest["legs"]["package"].get("json_receipt_sides", [])
+    argv = [str(water_bin(side)), *(["--json"] if json_receipt else []),
+            "package", "--platform", platform,
             "--backend", "apple", "--release", *extra,
             "--path", str(project)]
     rec = run(argv, timeout_for(manifest, "package"),
@@ -1097,20 +1184,36 @@ def leg_package(manifest, ctx, side, subject_name, platform, sample):
     usage = disk_usage(manifest, subject, project, ctx["home"])
     record["disk_bytes"] = usage
 
-    # Exact artifact path only: the CLI's own "Packaged at" line. No glob
-    # fallback — an unlocated artifact is a failed leg, not a guess.
+    # Exact artifact path only, from the side's authoritative packaging
+    # receipt — the old CLI's human 'Packaged at' line, the new CLI's
+    # structured JSONL status record ({"status": "✓", "message": "Packaged
+    # at <path>"}). No glob fallback — an unlocated artifact is a failed leg,
+    # not a guess.
     app_path = None
     log_text = Path(rec["log_file"]).read_text(errors="replace") \
         if rec["log_file"] else ""
-    hits = re.findall(r"(?m)Packaged at ([^\r\n]+)",
-                      re.sub(r"\x1b\[[0-9;]*m", "", log_text))
+    if json_receipt:
+        hits = []
+        for line in log_text.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("status") and isinstance(event.get("message"), str) \
+                    and event["message"].startswith("Packaged at "):
+                hits.append(event["message"][len("Packaged at "):])
+    else:
+        hits = re.findall(r"(?m)Packaged at ([^\r\n]+)",
+                          re.sub(r"\x1b\[[0-9;]*m", "", log_text))
     if hits:
         candidate = Path(hits[-1].strip())
         if candidate.is_dir() and candidate.suffix == ".app":
             app_path = candidate
     if rec["exit_code"] == 0 and not rec["timed_out"] and app_path is None:
-        record["diagnosis"] = ("no usable 'Packaged at <path>' line in the "
-                               "package log; artifact unlocated")
+        record["diagnosis"] = (
+            "no usable 'Packaged at <path>' "
+            + ("JSONL status record" if json_receipt else "line")
+            + " in the package log; artifact unlocated")
         return record
     if app_path is not None:
         exe_name = read_bundle_executable(app_path, platform)
@@ -1342,8 +1445,8 @@ def cmd_measure(manifest, side, subject_name, leg, platform, sample):
     state.pop("last_success", None)
     save_state(state)
     project = project_dir(manifest, side, subject_name)
-    validate_backend_path(project / "Water.toml", backend_dir(side), side)
-    verify_checkouts(state, side)
+    validate_backend_path(manifest, project / "Water.toml", side)
+    verify_checkouts(manifest, state, side)
     if source_fingerprint(manifest, side, subject_name) != state["source_sha256"][f"{side}/{subject_name}"]:
         raise BenchError("application sources changed outside the defined incremental edit")
     lock = hashlib.sha256((project / "Cargo.lock").read_bytes()).hexdigest()
@@ -1445,7 +1548,7 @@ def inputs_locked(manifest, state):
         and (not manifest["sides"][side][name].get("sha")
              or rp[side][name] == manifest["sides"][side][name]["sha"])
         for side in manifest["sides"]
-        for name in ("apple_backend", "waterui", "cli"))
+        for name in pin_names(manifest, side))
     locks_ok = all(
         re.fullmatch(r"[0-9a-f]{64}", state.get("lockfile_sha256", {}).get(k, ""))
         for k in ("old/fresh", "old/form", "new/fresh", "new/form"))

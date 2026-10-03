@@ -38,28 +38,27 @@
       "build_scope": "cargo rust-library only — the old CLI's `water build` compiles the crate; the native/Xcode link happens inside `water package`/`water run`. Package legs therefore include the full native build on this side."
     },
     "new": {
-      "apple_backend": {
-        "repo": "https://github.com/water-rs/apple-backend.git",
-        "sha": null,
-        "sha_env": "BENCH282_NEW_APPLE_BACKEND_SHA",
-        "pending": "Required exact coordinator-approved backend commit after signed fixes land; the former 7088fd9 placeholder is prohibited.",
-        "rejected_shas": ["7088fd966688eaa0ac0f5f567ca3e9e4247b9e76"]
-      },
       "waterui": {
         "repo": "https://github.com/water-rs/waterui.git",
         "sha": null,
         "sha_env": "BENCH282_NEW_WATERUI_SHA",
-        "pending": "The wgpu 30 migration is landing on dev imminently; the final new-side framework pin is the post-migration commit the coordinator supplies. No speculative SHA is recorded."
+        "pending": "The coordinator supplies the frozen, merged and reviewed new-side framework commit — the Apple backend has returned into this repository as the tracked backends/apple member, so this single commit owns framework and backend together. No speculative SHA is recorded; there is no independent backend pin to supply."
+      },
+      "backend_layout": {
+        "path": "backends/apple",
+        "package": "waterui-apple",
+        "swift_package": "Package.swift",
+        "note": "The new-side Apple backend is a tracked Cargo workspace member inside the waterui checkout — the same HEAD owns both. It is never a separate clone, symlink or pin; the driver validates the member's trackedness, package name, workspace membership and the root Swift package at every input gate."
       },
       "cli": {
         "repo": "https://github.com/water-rs/cli.git",
         "sha": null,
         "sha_env": "BENCH282_NEW_CLI_SHA",
-        "pending": "The coordinator supplies the eventual signed dev commit containing cli#260 (the real pending fix — earlier references to #258/#259 were wrong). No speculative SHA is recorded; setup fails until the exact commit is supplied via manifest or BENCH282_NEW_CLI_SHA (40-hex), then fetches and HEAD-verifies it."
+        "pending": "The coordinator supplies the frozen new-side CLI commit (the entry-owning CLI line). No speculative SHA is recorded; setup fails until the exact commit is supplied via manifest or BENCH282_NEW_CLI_SHA (40-hex), then fetches and HEAD-verifies it."
       },
-      "provenance": "Old side is the certified Nightly E2E pairing. All three new-side exact commits are required coordinator inputs, verified at explicit finalization before scaffold or measurement.",
+      "provenance": "Old side is the certified Nightly E2E pairing. Both new-side exact commits — waterui (owning backends/apple in-tree) and cli — are required coordinator inputs, verified at explicit finalization before scaffold or measurement.",
       "create_extra_args": [],
-      "build_scope": "rust library + managed native backend host project — the new CLI generates and builds the WaterUIApp host inside the managed build cache during `water build`."
+      "build_scope": "rust library + managed native backend host project — the new CLI generates and builds the WaterUIApp host inside the managed build cache during `water build`, and its entry-owning packaging produces the app binary directly."
     }
   },
   "subjects": {
@@ -89,7 +88,7 @@
       "crate_name": "form_example",
       "scheme": "form_example",
       "preview_target": "demo",
-      "comment": "The form src tree comes from the exact old framework pin. Old manifests require package.type=app and an Apple scheme alongside the exact [backends.apple] backend_path; new manifests carry no [backends.*] table — the backend binding is waterui_path plus the harness-owned backends/apple link.",
+      "comment": "The form src tree comes from the exact old framework pin. Old manifests require package.type=app and an Apple scheme alongside the exact [backends.apple] backend_path; new manifests carry no [backends.*] table — the backend binding is waterui_path, whose checkout contains the tracked backends/apple member.",
       "incremental_edit": {
         "before": "text(\"WaterUI Form Examples\")",
         "after": "text(\"WaterUI Form Examples!\")"
@@ -212,7 +211,8 @@
       },
       "cold": true,
       "timeout_s": 1800,
-      "comment": "Release packaging; measured metric is artifact size (app_bytes, executable_bytes), timing recorded for context. --unsigned is the supported flag for a signing-free host.",
+      "json_receipt_sides": ["new"],
+      "comment": "Release packaging; measured metric is artifact size (app_bytes, executable_bytes), timing recorded for context. --unsigned is the supported flag for a signing-free host. New-side packaging runs `water --json package`; the structured JSONL status record is the authoritative artifact path — the human 'Packaged at' line is the old-side receipt.",
       "required_metrics": [
         "wall_ms",
         "app_bytes",
@@ -331,5 +331,5 @@
     "default_leg": 900
   },
   "timeouts_comment": "No single step may exceed 30 minutes; every leg and setup step is individually bounded and records timed_out on expiry.",
-  "protocol_version": 4
+  "protocol_version": 5
 }

@@ -25,6 +25,7 @@ members = [
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/apple",
+    "backends/apple/cocoa-ui",
     "backends/apple/Examples/liquid_glass",
     "backends/apple/Tests/IOSTestHost",
     "backends/core",

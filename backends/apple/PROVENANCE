@@ -48,3 +48,5 @@ without invalid inheritance, removes an unused direct Shape dependency,
 renames the Cargo features to native-test and env, and fixes imported
 fixture formatting and prose. Native rendering and layout semantics are
 unchanged by these hygiene changes.
+
+The paired measurement driver also incorporates a2c25d92f9c1b2fba4417b852674b52ab72891ce, adapting only its new-side source identity to the tracked Apple workspace member and the CLI packaging receipt.

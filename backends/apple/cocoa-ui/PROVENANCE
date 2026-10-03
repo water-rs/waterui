@@ -1,0 +1,44 @@
+cocoa-ui source provenance
+
+This directory is the tracked source tree of the water-rs/cocoa-ui
+repository — the safe, idiomatic Rust API over AppKit and UIKit the
+native Apple backend binds through — imported without git ancestry.
+The original repository RETAINS its full source history; its archival
+is pending until this in-tree import completes native acceptance.
+
+Imported source — byte-identical to upstream `dev` at:
+
+  03cc55e1973581f2c9966e80c81b773da1db9898 — Cocoa#12, the merged
+  private native-cache device binding (signed head 70de15a, full CI
+  run 37090423845 green before merge).
+
+Reconciliation at import time: no open pull requests and no unique
+work on any upstream branch — `origin/feat/281-objc2-contract`,
+`origin/feat/appkit-window-extras` and `origin/main` each hold zero
+commits ahead of `origin/dev`, verified via `git log origin/dev..<branch>`.
+
+Files imported: `src/` (123 files), `tests/native/`, `examples/`
+(smoke fixtures), `Cargo.toml`, `README.md`, `LICENSE-APACHE`,
+`LICENSE-MIT`.
+
+Deliberate manifest adjustments on import (source unchanged):
+
+  - `repository` repointed to water-rs/waterui and `publish = false`
+    added, matching this repository's platform-backend policy.
+  - `[patch.crates-io]` removed: the workspace root carries the same
+    eleven water-rs/wgpu entries at the identical rev `4b35d8bc…`,
+    so resolution is unchanged and the wgpu 30 fork pins are preserved.
+
+Excluded from the import: `.git`, `Cargo.lock` (the workspace lock
+owns resolution), `.github/` (CI coverage transfers to this
+repository's apple.yml and apple-e2e.yml workflows), `.cargo/config.toml` and `.github/scripts/nextest-ios-sim.sh`
+(the root `.cargo/config.toml` and `.github/scripts/nextest-ios-sim.sh`
+already supply the equivalent `aarch64-apple-ios-sim` runner, keyed by
+`WATERUI_IOS_SIM_UDID`), `.gitignore`, `AGENTS.md`, and every generated
+or build output.
+
+The `waterui-apple` crate now depends on this member by path; the
+crate name, public API, feature granularity (`map`/`avkit`/`webview`),
+lint set and explicit dependency declarations are unchanged.
+
+Imported nonempty text files missing a terminal newline were normalized during signed integration; source behavior is unchanged.

@@ -152,6 +152,9 @@ jobs:
         with:
           toolchain: nightly-2026-09-17
           targets: aarch64-apple-ios-sim
+          # run-ios-device-tests.sh verifies the packaged archive's exports
+          # with the llvm-nm shipped by this toolchain.
+          components: llvm-tools-preview
 
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain

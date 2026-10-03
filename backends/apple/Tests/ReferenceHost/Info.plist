@@ -9,5 +9,8 @@
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
+  <key>UIApplicationSceneManifest</key><dict>
+    <key>UIApplicationSupportsMultipleScenes</key><false/>
+  </dict>
   <key>UIDeviceFamily</key><array><integer>1</integer><integer>2</integer></array>
 </dict></plist>

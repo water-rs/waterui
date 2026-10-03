@@ -97,9 +97,18 @@ if [[ "${example}" != "none" ]]; then
   # The thin adapter binds `waterui_apple_mount` through `@_extern(c)` and
   # the generated app entry point calls `waterui_apple_main`; both symbols
   # are the `export_app!` contract and must be defined by this archive.
-  # `grep -qx` reads nm's whole output, so no broken-pipe false negative.
+  # Use the producing Rust toolchain's reader for embedded LLVM objects.
+  # Reader errors fail validation. Consume the complete symbol table so
+  # an early match cannot terminate upstream processes under pipefail.
+  llvm_nm="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-nm"
+  [[ -x "${llvm_nm}" ]] || {
+    echo "error: ${llvm_nm} is missing; run rustup component add llvm-tools-preview" >&2
+    exit 1
+  }
+  symbol_table="$("${llvm_nm}" -gU "${archive}")"
   for symbol in _waterui_apple_main _waterui_apple_mount; do
-    nm -gU "${archive}" | awk '{print $3}' | grep -qx "${symbol}" || {
+    printf '%s\n' "${symbol_table}" | awk -v s="${symbol}" \
+      '$3 == s { found = 1 } END { exit !found }' || {
       echo "error: ${symbol} is not defined by ${archive};" \
         "the packaged app cannot bind the adapter" >&2
       exit 1

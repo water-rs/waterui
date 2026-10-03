@@ -188,7 +188,9 @@ objc2-metal = { version = "0.3", features = [
     "MTLResource",
     "MTLTexture",
 ] }
-cocoa-ui = { git = "https://github.com/water-rs/cocoa-ui", rev = "03cc55e1973581f2c9966e80c81b773da1db9898" }
+# The Cocoa bindings live in-tree at backends/apple/cocoa-ui (imported from
+# water-rs/cocoa-ui@03cc55e1 — see that directory's PROVENANCE).
+cocoa-ui = { path = "cocoa-ui" }
 # Optional component dependencies — a port's feature gates them so an app
 # that never uses the component links none of it.
 waterui-webview = { workspace = true, optional = true }

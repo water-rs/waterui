@@ -8,16 +8,20 @@ water-rs/apple-backend#282. No measurement results have been accepted.
 | Side | apple-backend | waterui | CLI |
 | --- | --- | --- | --- |
 | old | `c7908d7e3b7ec6b4d00f2af294be4ea5404ec92c` | `8cf506ce4ecce482878983e74eb2723a46f1b9bb` | `3927ddc56039512777db22f0d4fd8b2f3f71a1d0` |
-| new | Required `BENCH282_NEW_APPLE_BACKEND_SHA` | Required `BENCH282_NEW_WATERUI_SHA` | Required `BENCH282_NEW_CLI_SHA` |
+| new | — *tracked `backends/apple` member of the waterui checkout* | Required `BENCH282_NEW_WATERUI_SHA` | Required `BENCH282_NEW_CLI_SHA` |
 
 The old triplet is the pairing resolved by Nightly E2E run 36561768882.
-The coordinator supplies all three exact new-side SHAs after the signed
-fixes land. The former backend placeholder `7088fd9` is explicitly rejected,
-even if supplied through the environment. Fixed old pins cannot be overridden.
-The warm cloud host was prepared with old CLI `3927ddc` and new CLI `63d5ef6`.
-The native-only Apple configuration requires CLI `223487133c` and a later
-framework pin. Supply the full 40-character coordinator-approved SHAs;
-the harness never expands these abbreviations or infers a binary's source.
+The new-side Apple backend returned into the framework repository: it is the
+tracked `backends/apple` workspace member inside the waterui checkout, and
+the checkout's single HEAD owns framework and backend together — there is no
+new-side backend pin, clone, symlink or `BENCH282_NEW_APPLE_BACKEND_SHA`.
+The coordinator supplies both exact new-side SHAs — the frozen, merged and
+reviewed framework commit and the matching CLI commit — before any
+scaffold or measurement. Fixed old pins cannot be overridden. The new-side
+CLI is the entry-owning line: `water --json package` emits a structured
+JSONL status record whose `Packaged at` message is the authoritative
+artifact path. Supply the full 40-character coordinator-approved SHAs;
+the harness never expands abbreviations or infers a binary's source.
 
 Use Python 3.11+ and `uv`. The script declares its maintained TOML writer,
 `tomli-w==1.2.0`, inline; reading uses standard-library `tomllib`.
@@ -30,22 +34,28 @@ inputs and snapshots the host toolchain into the measurement run. It also
 performs preparation, so an already provisioned host can call it directly.
 
 Before any scaffold directory, parity result or measurement record exists,
-finalization may reconcile **all three new-side pins**: backend, framework and
-CLI. Old-side pins and receipts remain immutable. Each exact checkout path must
-be owned by bench282, a standalone repository with one worktree, the expected
-origin and a completely clean index/worktree including untracked files.
-The harness fetches the supplied SHA, performs an ordinary detached checkout,
-then rechecks HEAD and cleanliness. It never resets, forces, retries candidates
-or replaces another worktree. The stable backend symlink continues to refer
-to this same owned path and is the only untracked framework entry permitted,
-after its exact target is verified. Ordinary `setup` cannot change prepared pins.
+finalization may reconcile **both new-side pins**: framework and CLI. Old-side
+pins and receipts remain immutable. Each exact checkout path must be owned by
+bench282, a standalone repository with one worktree, the expected origin and a
+completely clean index/worktree including untracked files. The harness fetches
+the supplied SHA, performs an ordinary detached checkout, then rechecks HEAD
+and cleanliness. It never resets, forces, retries candidates or replaces
+another worktree. On the old side, the stable backend symlink continues to
+refer to its owned standalone apple-backend path and is the only untracked
+framework entry permitted, after its exact target is verified. On the new
+side there is nothing to link: the backend arrived inside the waterui
+checkout itself, so its `backends/apple` must be a real tracked directory —
+a link, nested repository, foreign path, missing member, wrong Cargo package
+name, absent workspace membership or a missing root Swift package fails.
+Ordinary `setup` cannot change prepared pins.
 
 Before mutation, a typed `PreparedInputs` plan checks every existing source
 checkout's ownership, origin, HEAD and complete tracked/untracked cleanliness,
-both backend links, and both installed CLI receipts. A dirty checkout, wrong
-receipt, old-side change or started run fails before fetch, checkout, receipt
-replacement or input-state writes. Only after the whole preflight succeeds are
-the planned exact commits fetched and checked out.
+the old-side backend link or new-side tracked member, and both installed CLI
+receipts. A dirty checkout, wrong receipt, old-side change or started run
+fails before fetch, checkout, receipt replacement or input-state writes.
+Only after the whole preflight succeeds are the planned exact commits fetched
+and checked out.
 
 Finalization invalidates unmeasured source/lock/parity/package state while
 archiving the previous pins, receipts and derived state in `input_history`.
@@ -114,17 +124,19 @@ The old CLI requires `[package] type = "app"` and `[backends.apple] scheme`;
 the harness also persists its exact `[backends.apple] backend_path`. The new
 CLI rejects the retired app-mode keys through
 `project_model/app_mode.rs::APP_MODE_KEYS`, and generated projects carry no
-`[backends.*]` table at all: its local backend is the `backends/apple`
-checkout under `waterui_path` — here the harness-owned symlink whose exact
-target is verified. New manifests therefore record `waterui_path` and
-`[package]` only; any `backends` table or `package.type` fails validation,
-as does a wrong or non-owned backend link.
+`[backends.*]` table at all: its backend is the tracked `backends/apple`
+Cargo workspace member inside the `waterui_path` checkout — the same
+repository, the same HEAD, never declared in the manifest. New manifests
+therefore record `waterui_path` and `[package]` only; any `backends` table
+or `package.type` fails validation, as does a backend member that is a link,
+foreign path, untracked or not the `waterui-apple` workspace member beside
+the root Swift package.
 All generated/edited TOML uses parsed tables and the serializer. The exact
 backend binding is read back and validated on both sides, including paths
 containing quotes.
-These schemas were audited in local CLI source at old pin 3927ddc, new-side
-feat/223-embedded-mode 1e65f438 and current origin/dev; the eventual new
-pin still requires the cloud pilot.
+These schemas were audited in local CLI source at old pin 3927ddc and the
+new-side CLI line on origin/dev, whose entry-owning packaging owns the app
+binary directly; the eventual new pin still requires the cloud pilot.
 
 Incremental builds change one rendered header string:
 `WaterUI Demo` → `WaterUI Demo!`, or
@@ -194,8 +206,11 @@ A package's launch is immediate: no intervening cold wipe can remove its
 artifact. Incremental, warm-preview and launch legs require the immediately
 preceding successful matching leg, including sample ID. A historical result
 cannot certify current warm state. Duplicate sample identities are refused.
-Artifacts are located from the CLI's complete `Packaged at` line (including
-spaces); executable names come from Info.plist.
+Artifacts are located from each CLI's own packaging receipt — the old CLI's
+complete `Packaged at` line, the new CLI's structured JSONL status record
+(`{"status": "\u2713", "message": "Packaged at <path>"}` from
+`water --json package`), spaces included; executable names come from
+Info.plist. An unlocated artifact is a failed leg, never a glob guess.
 
 The manifest defines the complete required metric matrix, including build
 disk use. There are 200 measurement commands and 54 paired scalar cells.
@@ -211,12 +226,13 @@ app/dependency features and build scopes accompany the JSON report.
 The coordinator owns provisioning and execution on the same macOS VM.
 Provision the dedicated account and its own rustup/Xcode/uv environment,
 then place this directory under its home. Run from a shell owned by
-`bench282`, with all three final pins supplied by the coordinator:
+`bench282`, with both final new-side pins supplied by the coordinator:
 
 ```sh
 export BENCH282_ROOT=/Users/bench282/bench282
-# Export BENCH282_NEW_APPLE_BACKEND_SHA, BENCH282_NEW_WATERUI_SHA,
-# and BENCH282_NEW_CLI_SHA as exact commits.
+# Export BENCH282_NEW_WATERUI_SHA and BENCH282_NEW_CLI_SHA as exact commits.
+# There is no BENCH282_NEW_APPLE_BACKEND_SHA — the new-side backend is the
+# tracked backends/apple member inside the waterui checkout, same HEAD.
 # cli-provenance.json contains the existing coordinator build receipts.
 uv run --script drive.py finalize-inputs --cli-provenance cli-provenance.json
 uv run --script drive.py scaffold old

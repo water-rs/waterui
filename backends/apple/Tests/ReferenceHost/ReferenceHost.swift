@@ -154,18 +154,35 @@ private final class ReferenceController: UIViewController {
   }
 }
 
-@main
 @MainActor
-final class ReferenceApp: UIResponder, UIApplicationDelegate {
+private final class ReferenceSceneDelegate: UIResponder, UIWindowSceneDelegate {
   var window: UIWindow?
-  func application(
-    _ application: UIApplication,
-    didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
-  ) -> Bool {
-    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 402, height: 874))
+  func scene(
+    _ scene: UIScene, willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions
+  ) {
+    guard let windowScene = scene as? UIWindowScene else {
+      preconditionFailure("ReferenceHost only supplies UIWindowScene configurations")
+    }
+    let window = UIWindow(windowScene: windowScene)
+    window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
     window.rootViewController = ReferenceController()
     self.window = window
     window.makeKeyAndVisible()
-    return true
+  }
+}
+
+@main
+@MainActor
+final class ReferenceApp: UIResponder, UIApplicationDelegate {
+  func application(
+    _ application: UIApplication,
+    configurationForConnecting connectingSceneSession: UISceneSession,
+    options: UIScene.ConnectionOptions
+  ) -> UISceneConfiguration {
+    let configuration = UISceneConfiguration(
+      name: "Default Configuration", sessionRole: connectingSceneSession.role)
+    configuration.delegateClass = ReferenceSceneDelegate.self
+    return configuration
   }
 }

@@ -167,6 +167,7 @@ impl ScrollView {
     }
 
     /// The scrolled content.
+    #[must_use = "this borrows the scrolled content without consuming it"]
     pub const fn content(&self) -> &AnyView {
         &self.content
     }
