@@ -39,6 +39,13 @@ pub(crate) use engine_await;
 /// between the caller and an engine call; native keeps the synchronous
 /// signature so no second code path exists there.
 ///
+/// The wasm futures this macro emits are intentionally `!Send`: wasm32 is
+/// single-threaded, the engine's `Rc`/`RefCell` handles and thread-local
+/// pools never cross a thread, and `future_not_send` exists to catch
+/// `Send`-promising public futures — which none of these are. The allow
+/// lives on the macro arm rather than per function so a future added to
+/// this list inherits the same justification.
+///
 /// Two forms: `fn name(args) -> ret { body }` shares the signature across
 /// targets; `fn name {native-args} {wasm-args} -> ret { body }` diverges the
 /// parameter lists where a callback becomes an `AsyncFn` on wasm. A third
@@ -52,6 +59,7 @@ macro_rules! cfg_async_fn {
             #[cfg(not(target_arch = "wasm32"))]
             $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
             #[cfg(target_arch = "wasm32")]
+            #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
             $(#[$meta])* $vis async fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
         }
     };
@@ -61,6 +69,7 @@ macro_rules! cfg_async_fn {
         #[cfg(not(target_arch = "wasm32"))]
         $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($native_args)*) $(-> $ret)? $body
         #[cfg(target_arch = "wasm32")]
+        #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
         $(#[$meta])* $vis async fn $name $(<$($gen $(: $bound)?),*>)? ($($wasm_args)*) $(-> $ret)? $body
     };
     ($(#[$meta:meta])*
@@ -68,6 +77,7 @@ macro_rules! cfg_async_fn {
         #[cfg(not(target_arch = "wasm32"))]
         $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
         #[cfg(target_arch = "wasm32")]
+        #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
         $(#[$meta])* $vis async fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
     };
 }
@@ -179,6 +189,10 @@ impl CherenkovSurface {
     /// [`Self::new`], async on wasm32 where `Engine::surface` awaits the
     /// browser device.
     #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
     pub(crate) async fn new(
         engine: Rc<GpuEngine>,
         device: &wgpu::Device,
@@ -266,6 +280,10 @@ impl CherenkovSurface {
     /// [`Self::render`], async on wasm32 where `Engine::render` awaits the
     /// browser device.
     #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
     pub(crate) async fn render(&mut self) -> cherenkov::Next {
         let next = self
             .engine

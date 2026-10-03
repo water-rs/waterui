@@ -706,6 +706,13 @@ pub(crate) fn set_model_caret_position(
     changed
 }
 
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the browser Clipboard handle is a JS object and `!Send` by design"
+    )
+)]
 pub(crate) async fn read_clipboard_text_async() -> Option<String> {
     let clipboard = match Clipboard::new() {
         Ok(value) => value,

@@ -1167,6 +1167,9 @@ impl SemanticCore {
         _items: &mut Vec<PopupMenuNode>,
         _point: kurbo::Point,
     ) {
+        // The signature keeps `&self` so the call sites do not branch on the
+        // build shape: the real variant needs the tree this menu belongs to.
+        let _ = self;
     }
 
     /// The topmost context-menu target that covers `point` and wholly

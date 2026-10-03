@@ -1,3 +1,12 @@
+// The whole module compiles only into wasm32 + `web`: every future here
+// awaits handles that are JS objects — DOM elements, the Clipboard, wgpu
+// WebGPU devices — which are `!Send` by design on the single-threaded
+// target, and none of these functions promise `Send` futures.
+#![allow(
+    clippy::future_not_send,
+    reason = "wasm32 is single-threaded; the browser handles these futures hold are !Send by design"
+)]
+
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -172,7 +181,7 @@ impl SurfaceProvider for BrowserSurface {
 }
 
 pub struct BrowserWindow {
-    browser_window: BrowserHostWindow,
+    host_window: BrowserHostWindow,
     document: Document,
     canvas: HtmlCanvasElement,
     ime_input: HtmlInputElement,
@@ -205,6 +214,15 @@ impl core::fmt::Debug for BrowserWindow {
 }
 
 impl BrowserWindow {
+    /// The registration this performs runs entirely on the page's
+    /// objects; the returned future is `!Send` by design — wasm32 is
+    /// single-threaded and every handle it holds is a JS object.
+    ///
+    /// # Panics
+    ///
+    /// When the page exposes no window, document, canvas or input element
+    /// the host cannot function, so the constructor panics naming the
+    /// missing object rather than failing the first paint later.
     pub async fn new(schedule_frame: Rc<dyn Fn()>, occlusion_wake: Rc<dyn Fn()>) -> Self {
         let browser_window =
             web_sys::window().expect("hydrolysis web platform: browser window unavailable");
@@ -271,13 +289,14 @@ impl BrowserWindow {
         };
 
         Self {
-            browser_window,
+            host_window: browser_window,
             document,
             canvas,
             ime_input,
             surface,
             pending_events,
             redraw_requested,
+
             offscreen,
             scale_factor,
             pending_resize,
@@ -348,7 +367,7 @@ impl PlatformWindow for BrowserWindow {
                 .set_property("height", &format!("{}px", frame.height().max(1.0)))
                 .expect("hydrolysis web platform: failed to set fallback canvas height");
 
-            let resize = measure_canvas(&self.browser_window, &self.canvas);
+            let resize = measure_canvas(&self.host_window, &self.canvas);
             apply_canvas_resize(&self.canvas, resize);
             self.pending_resize.set(Some(resize));
         }
@@ -363,7 +382,7 @@ impl PlatformWindow for BrowserWindow {
     }
 
     /// The page's own report: `document.hidden` covers a backgrounded
-    /// tab or window, and the IntersectionObserver cell covers the
+    /// tab or window, and the `IntersectionObserver` cell covers the
     /// canvas scrolled out of view or `display:none`'d by an app-driven
     /// minimized state.
     fn is_occluded(&self) -> bool {
@@ -507,7 +526,7 @@ fn find_or_create_ime_input(document: &Document) -> HtmlInputElement {
 fn measure_canvas(browser_window: &BrowserHostWindow, canvas: &HtmlCanvasElement) -> PendingResize {
     let scale_factor = browser_window.device_pixel_ratio();
     assert!(
-        !(!scale_factor.is_finite() || scale_factor <= 0.0),
+        scale_factor.is_finite() && scale_factor > 0.0,
         "hydrolysis web platform received invalid devicePixelRatio {scale_factor}"
     );
 
@@ -625,8 +644,8 @@ fn register_listeners(
         let canvas = canvas.clone();
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
-        let scale_factor = scale_factor.clone();
-        let pending_resize = pending_resize.clone();
+        // The original `scale_factor`/`pending_resize` move straight into
+        // this closure — nothing after the block needs their Rc handle.
         let schedule_frame = schedule_frame.clone();
         listeners.push(add_event_listener(
             &browser_window_target,
@@ -920,8 +939,8 @@ fn register_listeners(
         let pending_events = pending_events.clone();
         let redraw_requested = redraw_requested.clone();
         let schedule_frame = schedule_frame.clone();
-        let composing = composing.clone();
-        let suppress_next_input = suppress_next_input.clone();
+        // `composing`/`suppress_next_input` end here — the originals move
+        // into the closure rather than spending an Rc clone each.
         listeners.push(add_event_listener(
             &ime_input_target,
             "compositionend",
@@ -942,8 +961,8 @@ fn register_listeners(
     }
 
     {
-        let pending_events = pending_events.clone();
-        let redraw_requested = redraw_requested.clone();
+        // Both originals move into the blur closure — its registration is
+        // the last use either Rc has.
         let schedule_frame = schedule_frame.clone();
         listeners.push(add_event_listener(
             &ime_input_target,

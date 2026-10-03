@@ -296,8 +296,12 @@ fn apply_node(element: &HtmlElement, node: &Node) {
 
 fn aria_role(role: Role) -> Option<&'static str> {
     Some(match role {
-        Role::Unknown | Role::GenericContainer | Role::Window => return None,
-        Role::TextRun | Role::Label | Role::Paragraph => return None,
+        Role::Unknown
+        | Role::GenericContainer
+        | Role::Window
+        | Role::TextRun
+        | Role::Label
+        | Role::Paragraph => return None,
         Role::Cell | Role::LayoutTableCell | Role::GridCell => "cell",
         Role::Row | Role::LayoutTableRow => "row",
         Role::RowHeader => "rowheader",
@@ -318,7 +322,6 @@ fn aria_role(role: Role) -> Option<&'static str> {
         Role::Footer => "contentinfo",
         Role::Header => "banner",
         Role::ComboBox | Role::EditableComboBox => "combobox",
-        Role::Group | Role::Pane => "group",
         Role::Heading => "heading",
         Role::Main => "main",
         Role::MenuBar => "menubar",
@@ -333,9 +336,8 @@ fn aria_role(role: Role) -> Option<&'static str> {
         Role::TabPanel => "tabpanel",
         Role::TextInput | Role::MultilineTextInput | Role::PasswordInput => "textbox",
         Role::SpinButton => "spinbutton",
-        Role::ScrollView => "region",
+        Role::ScrollView | Role::Section | Role::Region => "region",
         Role::RootWebArea | Role::Application => "application",
-        Role::Section | Role::Region => "region",
         _ => "group",
     })
 }

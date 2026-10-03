@@ -1,5 +1,13 @@
 //! Browser event loop: canvas surface, RAF scheduling, DOM input listeners.
 
+// Compiles only into wasm32 + `web`: the fetch/frame futures hold `Rc`,
+// `Closure` and JS-object handles that are `!Send` by design on the
+// single-threaded target, and every one is driven by `spawn_local`.
+#![allow(
+    clippy::future_not_send,
+    reason = "wasm32 is single-threaded; the runner's Rc and JS handles never cross a thread"
+)]
+
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -446,11 +454,12 @@ pub fn run(app: App, style: impl crate::Style) {
                 // DOM listeners fire between frames, so the runner is
                 // normally free; if a frame is mid-borrow the occlusion
                 // report is read there anyway (`frame` syncs every tick).
-                let mut hidden = false;
-                if let Ok(mut runner) = handle.runner.try_borrow_mut() {
+                let hidden = if let Ok(mut runner) = handle.runner.try_borrow_mut() {
                     runner.runtime.sync_occlusion();
-                    hidden = runner.runtime.is_hidden();
-                }
+                    runner.runtime.is_hidden()
+                } else {
+                    false
+                };
                 // A hidden pump posts nothing: the armed work survives
                 // for the restore frame the next wake schedules.
                 if !hidden {

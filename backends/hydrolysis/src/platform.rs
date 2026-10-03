@@ -861,6 +861,13 @@ impl OffscreenGpuContext {
     }
 
     /// Requests a context on the adapter `WaterUI` would render an application on.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+        )
+    )]
     pub async fn new() -> Self {
         Self::new_with_adapter_selection(AdapterSelection::PRODUCTION).await
     }
@@ -887,6 +894,13 @@ impl OffscreenGpuContext {
         expect(
             clippy::arc_with_non_send_sync,
             reason = "`OffscreenGpuContextInner` holds a wgpu adapter, device and queue, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The context is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+        )
+    )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
         )
     )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
@@ -1283,6 +1297,13 @@ Surface-compatible adapters inspected: {}. \
 /// Hydrolysis can use. The instance is returned because a wgpu `Surface` must
 /// be created on the instance that produced its adapter — the caller keeps
 /// both, or recreates its surface on the returned instance.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; adapter handles are !Send by design"
+    )
+)]
 async fn request_instance_and_adapter(
     context: &str,
     selection: AdapterSelection,
@@ -1291,6 +1312,9 @@ async fn request_instance_and_adapter(
     // requested rather than enumerated on every wasm build shape.
     #[cfg(target_arch = "wasm32")]
     {
+        // The caller's selection preference only matters where backends can
+        // be enumerated; on wasm every request goes to the one adapter source.
+        let _ = selection;
         let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(
             wgpu::Backends::from_env().unwrap_or(wgpu::Backends::BROWSER_WEBGPU),
         ));
@@ -1379,6 +1403,13 @@ impl core::fmt::Debug for OffscreenSurface {
 }
 
 impl OffscreenSurface {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+        )
+    )]
     pub async fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self::on_context(OffscreenGpuContext::new().await, width, height, format)
     }
