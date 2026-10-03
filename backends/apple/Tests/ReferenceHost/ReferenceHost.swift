@@ -116,7 +116,7 @@ private final class ReferenceController: UIViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     results.startFailureDeadline()
-    // The original plain-field test measured an unparented hosting controller.
+    // The original plain-field test measured a parentless hosting controller.
     // Attaching it to this window adds safe-area height to sizeThatFits.
     field.view.frame = CGRect(x: 0, y: 0, width: 402, height: 800)
     results.field =

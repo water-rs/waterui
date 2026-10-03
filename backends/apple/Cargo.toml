@@ -77,7 +77,7 @@ default = [
     "toggle",
     "view_effect",
     "view_renderer",
-    "with_env",
+    "env",
 ]
 anchored_overlay = []
 accessibility_identifier = []
@@ -151,12 +151,12 @@ media = ["video", "video_player"]
 # without media compiles and links none of it.
 video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
 video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
-with_env = []
+env = []
 
 # Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
 # `native_test_support` module (private windows + embedding internals),
 # never part of a production build.
-native-test-support = []
+native-test = []
 
 
 [dependencies]
@@ -174,7 +174,6 @@ waterui-graphics = { workspace = true, features = [
     "gpu",
     "cpu",
 ] }
-waterui-shape = { workspace = true, default-features = true }
 # HAL access to the runtime device for native Metal presentation.
 wgpu-hal = { workspace = true }
 # `addCompletedHandler` blocks on the submitted Metal command buffer —
@@ -212,7 +211,7 @@ tracing-subscriber = { workspace = true }
 tracing-panic = { workspace = true }
 
 objc2 = { workspace = true }
-objc2-foundation = { workspace = true, default-features = false, features = [
+objc2-foundation = { version = "0.3", default-features = false, features = [
     "NSAttributedString",
     "NSDate",
     "NSValue",
@@ -247,7 +246,7 @@ path = "Tests/native.rs"
 harness = false
 # The suite links `native_test_support`, which only exists behind the
 # non-default feature; lanes that want it pass it explicitly.
-required-features = ["native-test-support"]
+required-features = ["native-test"]
 
 [[bench]]
 name = "hot_paths"

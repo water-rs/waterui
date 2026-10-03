@@ -615,7 +615,7 @@ jobs:
           retention-days: 7
 
   # The backend's host-side test legs, nightly and on every suite run: the
-  # native libtest-mimic suite (Tests/native.rs, `native-test-support`) on
+  # native libtest-mimic suite (Tests/native.rs, `native-test`) on
   # the macOS host, the doctests, and the bench-compile guard that keeps the
   # criterion benches building. They run here rather than in the per-change
   # lane so the dev-push gate stays format + compile/lint.
@@ -640,7 +640,7 @@ jobs:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
       - name: Test
-        run: cargo nextest run -p waterui-apple --locked --features native-test-support
+        run: cargo nextest run -p waterui-apple --locked --features native-test
       - name: Doc tests
         run: cargo test -p waterui-apple --locked --doc
       # The benches are an informational trend series, not a gate: this step
@@ -655,7 +655,7 @@ jobs:
   # `export_app!` archive defines the `waterui_apple_main`/`waterui_apple_mount`
   # entry points the thin Swift adapter binds, installs and launches the
   # packaged app on an iOS simulator, and runs the native libtest-mimic
-  # suite (Tests/native.rs, `native-test-support`) inside that simulator
+  # suite (Tests/native.rs, `native-test`) inside that simulator
   # through the aarch64-apple-ios-sim target runner. It belongs to the
   # nightly rather than the PR lane: measured cold on a PR run it timed out
   # at thirty minutes (CLI build ~5.5m, `water package` ~10.5m, then a cold

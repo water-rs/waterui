@@ -3,7 +3,7 @@
 The 33 former Swift cases below are accounted for individually. The backend has
 no Swift implementation or shared C wire API. `Tests/migration.rs` contains the
 #299 behavior ports; `Tests/native.rs` retains the separate #294 contract cases.
-Both run on the real process main thread under `native-test-support`.
+Both run on the real process main thread under `native-test`.
 
 Source migration is not a runtime pass: cloud verification must build and run the
 native target and the reference app on the same simulator/runtime. Run

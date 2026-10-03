@@ -4,9 +4,6 @@
 //! Component rendering and layout stay in Rust; the Swift package only owns
 //! native host views and the opaque runtime and mount handles.
 
-// The `with_env` feature name is fixed by the port contract.
-#![allow(clippy::redundant_feature_names)]
-
 extern crate alloc;
 
 pub mod contract;
@@ -44,8 +41,8 @@ pub(crate) mod windows;
 
 /// Harness-only internals for `Tests/native.rs`: private `windows` and
 /// `embedding` reach for the owned embedding contract. Never compiled
-/// into a production build — gated behind `native-test-support`.
-#[cfg(feature = "native-test-support")]
+/// into a production build — gated behind `native-test`.
+#[cfg(feature = "native-test")]
 #[doc(hidden)]
 #[path = "../Tests/native_support.rs"]
 pub mod native_test_support;

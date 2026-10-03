@@ -28,6 +28,7 @@ members = [
     "backends/apple/Examples/liquid_glass",
     "backends/apple/Tests/IOSTestHost",
     "backends/core",
+    "tests/layout-twins/waterui",
     "components/icon/*",
 ]
 exclude = [

@@ -93,7 +93,7 @@ fn trials() -> Vec<Trial> {
             },
         ),
     ];
-    #[cfg(all(target_os = "macos", feature = "native-test-support"))]
+    #[cfg(all(target_os = "macos", feature = "native-test"))]
     let tests = {
         let mut tests = tests;
         tests.extend([
@@ -454,9 +454,9 @@ mod resolve {
 /// Window lifecycle on a real, never-shown `NSWindow` — only reachable
 /// because the harness runs on the true main thread, which is the only
 /// place `-[NSWindow init]` is legal. The assertion bodies live in the
-/// crate's `native-test-support` feature, which owns the private reach
+/// crate's `native-test` feature, which owns the private reach
 /// into `windows` and `embedding`.
-#[cfg(all(target_os = "macos", feature = "native-test-support"))]
+#[cfg(all(target_os = "macos", feature = "native-test"))]
 mod window {
     pub use waterui_apple::native_test_support::{
         bind_root_window_wires_a_live_window, manager_installs_into_the_environment,

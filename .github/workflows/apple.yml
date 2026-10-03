@@ -196,17 +196,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt -p waterui-apple -- --check
-      # `native-test-support` is on for these legs because the `native`
+      # `native-test` is on for these legs because the `native`
       # test target is `required-features`-gated: without the feature
       # `--all-targets` silently skips it and none of the harness code is
       # linted. Production paths are unchanged — the feature only makes
       # the suite's support module exist.
       - name: Clippy (macOS)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test-support -- -D warnings
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test -- -D warnings
       - name: Clippy (iOS)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test-support --target aarch64-apple-ios -- -D warnings
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios -- -D warnings
       - name: Clippy (iOS simulator)
-        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test-support --target aarch64-apple-ios-sim -- -D warnings
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test --target aarch64-apple-ios-sim -- -D warnings
       # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
       # used to cover are Cargo features now (waterui#343 reasoned the same
       # way), so they lint under -D warnings like the production legs —

@@ -42,3 +42,9 @@ is the single SwiftPM manifest) and the obsolete .swiftpm/ test scheme
 
 Imported text files without a terminal newline were normalized during
 signed integration. No other source changes beyond those noted above.
+
+Workspace integration also declares the Apple Foundation feature selection
+without invalid inheritance, removes an unused direct Shape dependency,
+renames the Cargo features to native-test and env, and fixes imported
+fixture formatting and prose. Native rendering and layout semantics are
+unchanged by these hygiene changes.

@@ -117,7 +117,7 @@ impl Dispatcher {
         feature = "scale",
         feature = "secure",
         feature = "shadow",
-        feature = "with_env"
+        feature = "env"
     ))]
     pub(crate) fn register_view<T: 'static>(
         &mut self,

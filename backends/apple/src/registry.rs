@@ -114,7 +114,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
     crate::components::retain::install(dispatcher);
     #[cfg(feature = "secure")]
     crate::components::secure::install(dispatcher);
-    #[cfg(feature = "with_env")]
+    #[cfg(feature = "env")]
     crate::components::with_env::install(dispatcher);
 
     // Interaction metadata — the non-gesture interaction leaves.

@@ -167,10 +167,6 @@ impl ScrollView {
     }
 
     /// The scrolled content.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "AnyView itself is must-use; the accessor annotation would trigger double_must_use"
-    )]
     pub const fn content(&self) -> &AnyView {
         &self.content
     }

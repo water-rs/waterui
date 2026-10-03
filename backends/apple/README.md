@@ -21,7 +21,7 @@ ARM64 Apple only: `aarch64-apple-darwin`, `aarch64-apple-ios`, and
 ```bash
 cargo test -p waterui-apple                  # unit + doc
 cargo nextest run -p waterui-apple \
-    --features native-test-support           # native libtest-mimic suite
+    --features native-test           # native libtest-mimic suite
 ```
 
 The same suite runs inside a booted iPhone simulator via the

@@ -12,7 +12,7 @@
 #     packaging leg cannot turn the check green — and the packaged `.app`
 #     installs and launches on the simulator; and
 #   * the `native` libtest-mimic suite (Tests/native.rs, behind the
-#     `native-test-support` feature) runs inside the same booted device:
+#     `native-test` feature) runs inside the same booted device:
 #     `cargo nextest run --target aarch64-apple-ios-sim` hands every test
 #     binary to the `nextest-ios-sim.sh` target runner
 #     (`.cargo/config.toml`), which `simctl spawn`s it, so UIKit-touching
@@ -130,6 +130,6 @@ export WATERUI_REFERENCE_METRICS="${reference_metrics}"
 
 # The native assertions run inside the same simulator through the target
 # runner — every test binary is spawned on the device itself.
-cargo nextest run -p waterui-apple --locked --features native-test-support \
+cargo nextest run -p waterui-apple --locked --features native-test \
   --manifest-path "${repo_root}/Cargo.toml" \
   --target aarch64-apple-ios-sim

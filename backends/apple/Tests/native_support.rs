@@ -1,7 +1,7 @@
 //! Harness-only reach into the embedding contract.
 //!
 //! Compiled into the crate only behind the non-default
-//! `native-test-support` feature and pulled in through
+//! `native-test` feature and pulled in through
 //! `#[path]` in `lib.rs`, so `native` test binaries can assert the
 //! private window lifecycle without widening the public API. Each entry
 //! takes the harness's real `MainThreadMarker` — the cases build real

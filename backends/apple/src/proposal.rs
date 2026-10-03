@@ -86,7 +86,7 @@ pub fn deliver_key(view_key: usize, proposal: ProposalSize) {
     feature = "scale",
     feature = "secure",
     feature = "shadow",
-    feature = "with_env"
+    feature = "env"
 ))]
 pub fn register_sink(view: &PlatformView, sink: impl Fn(ProposalSize) + 'static) -> SinkGuard {
     CHANNELS.with(|channels| {
@@ -124,7 +124,7 @@ pub fn register_sink(view: &PlatformView, sink: impl Fn(ProposalSize) + 'static)
     feature = "scale",
     feature = "secure",
     feature = "shadow",
-    feature = "with_env"
+    feature = "env"
 ))]
 #[derive(Debug)]
 pub struct SinkGuard {
@@ -159,7 +159,7 @@ pub struct SinkGuard {
     feature = "scale",
     feature = "secure",
     feature = "shadow",
-    feature = "with_env"
+    feature = "env"
 ))]
 impl Drop for SinkGuard {
     fn drop(&mut self) {

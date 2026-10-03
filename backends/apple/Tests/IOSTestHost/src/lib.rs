@@ -42,42 +42,42 @@ fn message_row(sender: &'static str, subject: &'static str, preview: &'static st
 
 fn inbox() -> impl View {
     List::content((
-            || {
-                message_row(
-                    "Ada Lovelace",
-                    "WaterUI render loop",
-                    "The nested vstack inside this row must paint its text.",
-                )
-            },
-            || {
-                message_row(
-                    "Grace Hopper",
-                    "List cell layout",
-                    "Three lines sit in a vstack nested in the row's hstack.",
-                )
-            },
-            || {
-                message_row(
-                    "Edsger Dijkstra",
-                    "Placement proposals",
-                    "Every nested stack receives the width its parent proposes.",
-                )
-            },
-            || {
-                message_row(
-                    "Barbara Liskov",
-                    "Substitution",
-                    "Cells measure correctly; their text must render too.",
-                )
-            },
-            || {
-                message_row(
-                    "Margaret Hamilton",
-                    "Priority display",
-                    "Zero-width frames are the regression this fixture guards.",
-                )
-            },
-        ))
+        || {
+            message_row(
+                "Ada Lovelace",
+                "WaterUI render loop",
+                "The nested vstack inside this row must paint its text.",
+            )
+        },
+        || {
+            message_row(
+                "Grace Hopper",
+                "List cell layout",
+                "Three lines sit in a vstack nested in the row's hstack.",
+            )
+        },
+        || {
+            message_row(
+                "Edsger Dijkstra",
+                "Placement proposals",
+                "Every nested stack receives the width its parent proposes.",
+            )
+        },
+        || {
+            message_row(
+                "Barbara Liskov",
+                "Substitution",
+                "Cells measure correctly; their text must render too.",
+            )
+        },
+        || {
+            message_row(
+                "Margaret Hamilton",
+                "Priority display",
+                "Zero-width frames are the regression this fixture guards.",
+            )
+        },
+    ))
 }
 
 pub fn app(env: Environment) -> App {

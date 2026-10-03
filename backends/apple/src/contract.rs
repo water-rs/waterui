@@ -263,7 +263,7 @@ impl Drop for Mounted {
     }
 }
 
-/// Adopts every unparented `UIViewController` whose root view sits inside
+/// Adopts every parentless `UIViewController` whose root view sits inside
 /// `root`'s subtree under the controller enclosing that view's superview.
 /// A leaf's own view is often a `HostView` wrapper around the controller's
 /// root view, so checking only the top view misses the controller one level
