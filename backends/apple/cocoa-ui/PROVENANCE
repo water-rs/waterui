@@ -3,8 +3,9 @@ cocoa-ui source provenance
 This directory is the tracked source tree of the water-rs/cocoa-ui
 repository — the safe, idiomatic Rust API over AppKit and UIKit the
 native Apple backend binds through — imported without git ancestry.
-The original repository RETAINS its full source history; its archival
-is pending until this in-tree import completes native acceptance.
+The original repository is ARCHIVED and retains its full source history.
+Maintenance and native validation now live in water-rs/waterui at
+backends/apple/cocoa-ui (archival recorded in WaterUI issue #1450).
 
 Imported source — byte-identical to upstream `dev` at:
 
