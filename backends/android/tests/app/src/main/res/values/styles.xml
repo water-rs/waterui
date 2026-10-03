@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Test-app chrome: keep the platform action bar and opt out of the
+         enforced edge-to-edge layout so the demo content lands below the
+         bars instead of under them. Safe-area insets reach the backend as
+         environment data in a follow-up; the skeleton demo only needs a
+         plain content region. -->
+    <style name="WaterUITestTheme" parent="@android:style/Theme.Material.Light">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

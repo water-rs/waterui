@@ -1,0 +1,99 @@
+name: Set up the Android NDK toolchain
+description: >-
+  Installs the pinned NDK, reads the framework's Android API floor from
+  package.metadata.waterui, and points cargo and cc at the NDK's clang —
+  the shared prologue every job that compiles for an Android target runs.
+inputs:
+  ndk-version:
+    description: >-
+      NDK release to install. The pin is the version the CLI's toolchain
+      check installs; local-cache stays off because the fetch is already
+      served from GitHub's own cache.
+    default: r29
+  spirv-tools:
+    description: >-
+      Also probe the NDK's shader-tools spirv-opt and add it to PATH. Jobs
+      whose graph includes cherenkov-gpu need it — its build script shells
+      out to the spirv-opt the NDK bundles, so the probe belongs here
+      rather than inside a build script.
+    default: "false"
+  kotlin:
+    description: >-
+      Also install kotlinc at the version pinned in
+      backends/android/gradle/libs.versions.toml. Jobs whose graph includes
+      waterkit need it — the waterkit build scripts run kotlinc when the
+      target is Android, and the catalog pin keeps this job, the host
+      library, and the app agreeing on one version.
+    default: "false"
+outputs:
+  ndk-path:
+    description: The installed NDK's root directory.
+    value: ${{ steps.ndk.outputs.ndk-path }}
+  api-level:
+    description: The framework's Android API floor.
+    value: ${{ steps.api-level.outputs.api }}
+runs:
+  using: composite
+  steps:
+    - uses: nttld/setup-ndk@v1
+      id: ndk
+      with:
+        ndk-version: ${{ inputs.ndk-version }}
+        local-cache: false
+    - name: Read the framework's Android API floor
+      id: api-level
+      shell: bash
+      run: |
+        set -euo pipefail
+        api="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "waterui") | .metadata.waterui["android-min-api-level"] | numbers')"
+        if ! [[ "$api" =~ ^[0-9]+$ ]]; then
+          echo "::error file=Cargo.toml::package.metadata.waterui.android-min-api-level must be an integer API level (got '$api')"
+          exit 1
+        fi
+        echo "WATERUI_ANDROID_MIN_API_LEVEL=$api" >> "$GITHUB_ENV"
+        echo "api=$api" >> "$GITHUB_OUTPUT"
+    - name: Point cargo at the NDK toolchain
+      shell: bash
+      env:
+        ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        PROBE_SPIRV_OPT: ${{ inputs.spirv-tools }}
+      run: |
+        set -euo pipefail
+        api="$WATERUI_ANDROID_MIN_API_LEVEL"
+        bin="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+        if ! "$bin/aarch64-linux-android$api-clang" --version; then
+          echo "::error::the NDK toolchain at $bin cannot compile for API $api"
+          find "$bin" -maxdepth 1 | head -60
+          exit 1
+        fi
+        {
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$bin/aarch64-linux-android$api-clang"
+          echo "CC_aarch64_linux_android=$bin/aarch64-linux-android$api-clang"
+          echo "CXX_aarch64_linux_android=$bin/aarch64-linux-android$api-clang++"
+          echo "AR_aarch64_linux_android=$bin/llvm-ar"
+        } >> "$GITHUB_ENV"
+        # cherenkov-gpu's build script shells out to the spirv-opt the NDK
+        # bundles; prove it exists here rather than inside a build script.
+        if [[ "$PROBE_SPIRV_OPT" == "true" ]]; then
+          shaders="$ANDROID_NDK_ROOT/shader-tools/linux-x86_64"
+          if ! "$shaders/spirv-opt" --version; then
+            echo "::error::the NDK at $ANDROID_NDK_ROOT ships no spirv-opt under shader-tools"
+            exit 1
+          fi
+          echo "$shaders" >> "$GITHUB_PATH"
+        fi
+    - name: Install the Kotlin compiler
+      if: inputs.kotlin == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        version="$(sed -n 's/^kotlin = "\(.*\)"$/\1/p' backends/android/gradle/libs.versions.toml)"
+        if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error file=backends/android/gradle/libs.versions.toml::cannot read the pinned Kotlin version (got '$version')"
+          exit 1
+        fi
+        curl -fsSL -o /tmp/kotlinc.zip "https://github.com/JetBrains/kotlin/releases/download/v$version/kotlin-compiler-$version.zip"
+        unzip -q /tmp/kotlinc.zip -d "$RUNNER_TEMP"
+        echo "KOTLIN_HOME=$RUNNER_TEMP/kotlinc" >> "$GITHUB_ENV"

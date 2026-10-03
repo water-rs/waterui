@@ -9964,6 +9964,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-android"
+version = "0.1.0"
+dependencies = [
+ "executor-core",
+ "jni 0.22.4",
+ "nami",
+ "native-executor",
+ "ndk",
+ "tracing",
+ "tracing-panic",
+ "tracing-subscriber",
+ "waterui",
+ "waterui-backend-core",
+ "waterui-core",
+ "waterui-layout",
+ "waterui-locale",
+]
+
+[[package]]
+name = "waterui-android-test-app"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+ "waterui-android",
+]
+
+[[package]]
 name = "waterui-apple"
 version = "0.1.0"
 dependencies = [

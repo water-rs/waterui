@@ -29,6 +29,8 @@ members = [
     "backends/apple/Examples/liquid_glass",
     "backends/apple/Tests/IOSTestHost",
     "backends/core",
+    "backends/android",
+    "backends/android/tests",
     "tests/layout-twins/waterui",
     "components/icon/*",
 ]
