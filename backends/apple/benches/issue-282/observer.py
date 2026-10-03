@@ -75,15 +75,41 @@ async def acquire(coro, role, owned, remaining, errors):
         try:
             proc = await asyncio.wait_for(asyncio.shield(task), 2)
         except BaseException:
-            task.cancel()
-            owned.append((role, None))
-            errors.append(f"{role}: spawn interrupted/timed out before "
-                          f"the factory returned — outcome unknown")
+            if task.done():
+                if task.cancelled():
+                    owned.append((role, None))
+                else:
+                    # The factory actually finished — register its real
+                    # result (task.result() re-raises a real spawn error
+                    # so a known failure is never reported as unknown).
+                    owned.append((role, task.result()))
+            else:
+                task.cancel()
+                owned.append((role, None))
+                errors.append(f"{role}: spawn interrupted/timed out "
+                              f"before the factory returned — outcome "
+                              f"unknown")
             raise
         owned.append((role, proc))
         raise
     owned.append((role, proc))
     return proc
+
+
+async def bounded_wait(proc, seconds):
+    """Await proc bounded by `seconds`; absorbed cancellations never abort
+    the wait — at most one cancel per handled signal can arrive, so a
+    bounded retry count is sufficient. Returns True if the process exited."""
+    task = asyncio.ensure_future(proc.wait())
+    for _ in range(3):
+        try:
+            await asyncio.wait_for(asyncio.shield(task), seconds)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        except asyncio.CancelledError:
+            continue  # absorbed: signal landed during cleanup — keep waiting
+    return task.done()
 
 
 async def run(argv, ent, bench_root, logs_dir, timeout):
@@ -214,9 +240,7 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
             if proc is None:
                 continue
             if proc.returncode is None:
-                try:
-                    await asyncio.wait_for(proc.wait(), 5)
-                except asyncio.TimeoutError:
+                if not await bounded_wait(proc, 5):
                     if isinstance(alive_at_term.get(role), PermissionError):
                         cleanup_errors.append(
                             f"SIGTERM killpg({role} {proc.pid}): "
@@ -228,9 +252,7 @@ async def run(argv, ent, bench_root, logs_dir, timeout):
                     except PermissionError as exc:
                         cleanup_errors.append(
                             f"SIGKILL killpg({role} {proc.pid}): {exc}")
-                    try:
-                        await asyncio.wait_for(proc.wait(), 10)
-                    except asyncio.TimeoutError:
+                    if not await bounded_wait(proc, 10):
                         cleanup_errors.append(
                             f"wait({role} {proc.pid}): still running")
             elif isinstance(alive_at_term.get(role), PermissionError):
