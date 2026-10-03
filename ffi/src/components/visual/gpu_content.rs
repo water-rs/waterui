@@ -49,11 +49,9 @@ use {
 use waterui_core::Str;
 use waterui_core::layout::{ProposalSize, Size, ViewDimensions};
 use waterui_graphics::cherenkov::{Display, Next, kurbo};
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-use waterui_graphics::gpu::SharedGpuContext;
 use waterui_graphics::gpu::{
     ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
-    GpuContentView, GpuRuntime, RedrawHandle,
+    GpuContentView, GpuRuntime, RedrawHandle, SharedGpuContext,
 };
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
@@ -161,10 +159,12 @@ trait HostedView {
     fn ime_caret(&self) -> Option<kurbo::Rect>;
     /// Runs the view's per-frame UI hook before the engine pass.
     fn before_frame(&self);
-    /// Builds the view's engine layer on the runtime's current context.
+    /// Builds the view's engine layer on `context`, the generation the
+    /// calling frame retained.
     fn renderer(
         &mut self,
         runtime: &GpuRuntime,
+        context: Arc<SharedGpuContext>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
     ) -> Box<dyn HostedRenderer>;
@@ -211,6 +211,7 @@ impl HostedView for GpuContentView {
     fn renderer(
         &mut self,
         runtime: &GpuRuntime,
+        context: Arc<SharedGpuContext>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
     ) -> Box<dyn HostedRenderer> {
@@ -221,7 +222,7 @@ impl HostedView for GpuContentView {
             self.engine_content(),
             move || redraw.request_redraw(),
         );
-        Box::new(GpuContentRenderer::new(runtime, content, size))
+        Box::new(GpuContentRenderer::new(runtime, context, content, size))
     }
 }
 
@@ -265,12 +266,14 @@ impl HostedView for ExternalFrameView {
     fn renderer(
         &mut self,
         runtime: &GpuRuntime,
+        context: Arc<SharedGpuContext>,
         redraw: &RedrawHandle,
         size: OffscreenSize,
     ) -> Box<dyn HostedRenderer> {
         let stream: ExternalFrameStream = self.stream();
         Box::new(ExternalFrameRenderer::new(
             runtime,
+            context,
             &stream,
             size,
             redraw.clone(),
@@ -323,6 +326,12 @@ pub struct WuiGpuContentState {
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     context_generation: u64,
     redraw: RedrawHandle,
+    /// Wakes the host through `redraw` each time the runtime publishes a
+    /// context generation, so a renderer idled by device loss draws again
+    /// without waiting on a display tick. Dropping the task cancels the
+    /// subscription; WebGPU never rebuilds, so there is nothing to hear.
+    #[cfg(not(target_arch = "wasm32"))]
+    _publication: executor_core::AnyExecutorTask<()>,
     /// The redraw waker installed by the host; the handle above fires it.
     waker: Arc<arc_swap::ArcSwapOption<ForeignRedrawTarget>>,
     /// Whether the content asked for a frame since the last render.
@@ -402,16 +411,20 @@ impl WuiGpuContentState {
     /// While the runtime's rebuild is in flight the returned context is still
     /// the lost one — nothing may touch it, so this returns early and the
     /// frame reports pending until the fresh generation lands.
+    ///
+    /// The returned context is the one the frame must run on end to end:
+    /// whatever generation the surface and renderer were validated against
+    /// here is the generation their work targets.
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    fn ensure_current_context(&mut self) {
+    fn ensure_current_context(&mut self) -> Arc<SharedGpuContext> {
         let context = self.runtime.context();
         if context.device_lost_reason().is_some() {
-            return;
+            return context;
         }
         let attached = !self.attached_layer.is_null();
         if context.generation() == self.context_generation && (!attached || self.surface.is_some())
         {
-            return;
+            return context;
         }
         self.renderer = None;
         if attached {
@@ -428,15 +441,19 @@ impl WuiGpuContentState {
             self.prepare_format(format);
         }
         self.context_generation = context.generation();
+        context
     }
 
     /// Renders through the retained engine and presents its composed texture.
     ///
     /// The renderer — engine, surface and the view's layer — is built lazily
-    /// on the first frame and rebuilt from the view whenever the runtime's
-    /// context generation moves on.
+    /// on the first frame and rebuilt from the view whenever `context`'s
+    /// generation moves past the one it was created on. The whole frame runs
+    /// on the `context` the caller retained: the generation check, the
+    /// renderer construction and the presentation all agree on one device.
     fn render_into(
         &mut self,
+        context: &Arc<SharedGpuContext>,
         texture: &wgpu::Texture,
         format: wgpu::TextureFormat,
         (width, height): (u32, u32),
@@ -450,7 +467,7 @@ impl WuiGpuContentState {
         // and rebuilt holds a dead device; recreate it on the current one.
         // Apple has no `ensure_current_context`, so this is the only place a
         // stale renderer is dropped there.
-        let generation = self.runtime.context().generation();
+        let generation = context.generation();
         if self
             .renderer
             .as_ref()
@@ -462,6 +479,7 @@ impl WuiGpuContentState {
             self.renderer = Some(
                 self.view.renderer(
                     &self.runtime,
+                    Arc::clone(context),
                     &self.redraw,
                     OffscreenSize::try_from_pixels(width, height)
                         .expect("native target must be nonempty"),
@@ -649,6 +667,18 @@ unsafe fn create_state(
 
     #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     let context_generation = runtime.context().generation();
+    #[cfg(not(target_arch = "wasm32"))]
+    let publication = {
+        let runtime = runtime.clone();
+        let redraw = redraw.clone();
+        let mut generation = runtime.context().generation();
+        executor_core::spawn(async move {
+            loop {
+                generation = runtime.context_after(generation).await.generation();
+                redraw.request_redraw();
+            }
+        })
+    };
     Box::into_raw(Box::new(WuiGpuContentState {
         runtime,
         view,
@@ -665,6 +695,8 @@ unsafe fn create_state(
         #[cfg(not(any(target_os = "macos", target_os = "ios")))]
         context_generation,
         redraw,
+        #[cfg(not(target_arch = "wasm32"))]
+        _publication: publication,
         waker,
         dirty,
         visible,
@@ -1101,50 +1133,47 @@ pub unsafe extern "C" fn waterui_gpu_content_render(
 
     // Recreate the context's device generation when the driver reported the
     // previous one lost; surface and renderer are bound to the dead device and
-    // must be rebuilt from the retained layer before anything else runs.
-    state.ensure_current_context();
+    // must be rebuilt from the retained layer before anything else runs. The
+    // context this returns is the one the whole frame runs on: the surface
+    // was validated against it, so acquire, render and present stay on its
+    // device even if the runtime publishes a newer generation mid-frame.
+    let context = state.ensure_current_context();
 
     // The whole frame is device-bound work; run_gpu_frame recovers a loss the
     // driver announces mid-frame as `None` instead of unwinding over the FFI.
-    let presented = super::run_gpu_frame(
-        &state.runtime.context(),
-        "waterui_gpu_content_render",
-        || {
-            let Some((surface, config)) = state.surface.as_mut() else {
-                // The content was detached while the frame was already inside
-                // the C call; nothing to draw, so stay pending.
-                return true;
-            };
-            if config.width != width || config.height != height {
-                config.width = width;
-                config.height = height;
-                let gpu = state.runtime.context();
-                super::checked_surface_configure(
-                    surface,
-                    gpu.device(),
-                    config,
-                    "waterui_gpu_content_render",
-                );
-                state.surface_size = (width, height);
-            }
-            let gpu = state.runtime.context();
-            let Some(output) =
-                super::acquire_surface_texture(surface, &gpu, config, "waterui_gpu_content_render")
-            else {
-                // Nothing was drawn, so the frame this call was asked for is
-                // still pending: the host must come back for it once the
-                // surface can be acquired again. Reporting it done here would
-                // strand a view whose only clock is its own render loop.
-                return true;
-            };
-            let format = output.texture.format();
-            let still_pending =
-                state.render_into(&output.texture, format, (width, height), display);
-            gpu.queue().present(output);
-            gpu.note_frame_presented();
-            still_pending
-        },
-    );
+    let presented = super::run_gpu_frame(&context, "waterui_gpu_content_render", || {
+        let Some((surface, config)) = state.surface.as_mut() else {
+            // The content was detached while the frame was already inside
+            // the C call; nothing to draw, so stay pending.
+            return true;
+        };
+        if config.width != width || config.height != height {
+            config.width = width;
+            config.height = height;
+            super::checked_surface_configure(
+                surface,
+                context.device(),
+                config,
+                "waterui_gpu_content_render",
+            );
+            state.surface_size = (width, height);
+        }
+        let Some(output) =
+            super::acquire_surface_texture(surface, &context, config, "waterui_gpu_content_render")
+        else {
+            // Nothing was drawn, so the frame this call was asked for is
+            // still pending: the host must come back for it once the
+            // surface can be acquired again. Reporting it done here would
+            // strand a view whose only clock is its own render loop.
+            return true;
+        };
+        let format = output.texture.format();
+        let still_pending =
+            state.render_into(&context, &output.texture, format, (width, height), display);
+        context.queue().present(output);
+        context.note_frame_presented();
+        still_pending
+    });
     // A device loss caught mid-frame leaves the frame pending exactly like a
     // skipped acquire: the next render rebuilds and draws.
     presented.unwrap_or(true)
@@ -1299,7 +1328,7 @@ pub unsafe extern "C" fn waterui_gpu_content_render_to_metal_texture(
             wgpu::wgt::TextureUses::COLOR_TARGET,
         )
     };
-    let needs_redraw = state.render_into(&wgpu_texture, format, (width, height), display);
+    let needs_redraw = state.render_into(&context, &wgpu_texture, format, (width, height), display);
     // The host reads the texture after the queue drains; ordering the frame's
     // work before this empty submission is what it waits on.
     context.queue().submit([]);
@@ -1448,6 +1477,9 @@ mod visibility_tests {
     /// visible wakes it exactly once.
     #[test]
     fn hidden_external_frames_do_not_wake_the_host() {
+        // The state's publication subscription spawns on the global executor;
+        // `waterui_init` installs one in a real host.
+        let _ = executor_core::try_init_global_executor(native_executor::NativeExecutor::new());
         let runtime = pollster::block_on(GpuRuntime::new())
             .expect("a Metal adapter is required on test hardware");
         let mut env = waterui::Environment::new();

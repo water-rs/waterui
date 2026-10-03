@@ -117,11 +117,12 @@ mod linux {
             .expect("WPE smoke viewport must be non-zero");
         let mut view = DmaBufGpuView::new(source).into_view();
         let content = view.take_engine_content(|| {});
-        let mut renderer = GpuContentRenderer::new(&gpu_runtime, content, size);
+        let context = gpu_runtime.context();
+        let mut renderer = GpuContentRenderer::new(&gpu_runtime, context.clone(), content, size);
         // The UI hook feeds the content's mailbox; run it before presenting so
         // the smoke frame is queued for the render.
         view.frame();
-        let device = gpu_runtime.device();
+        let device = context.device();
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wpe_smoke_target"),
             size: wgpu::Extent3d {
@@ -169,7 +170,7 @@ mod linux {
                 depth_or_array_layers: 1,
             },
         );
-        gpu_runtime.queue().submit([encoder.finish()]);
+        context.queue().submit([encoder.finish()]);
         buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         device
             .poll(wgpu::PollType::wait_indefinitely())
