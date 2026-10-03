@@ -635,7 +635,7 @@ mod tabs {
         track.set(String::from("third"));
         let text = label
             .downcast_ref::<Label>()
-            .and_then(|label| label.source_text())
+            .and_then(Label::source_text)
             .expect("the retained label");
         let text = text.string().to_string();
         assert!(text.contains("second") && !text.contains("third"));
