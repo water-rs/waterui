@@ -2,6 +2,12 @@
 //! text, a counter driven by a real tap, a toggle and a text field — enough
 //! to show a rendered UI, redraw on interaction, resize on recreation, and
 //! idle with no pumping between frames.
+//!
+//! A workspace member, so host cargo sweeps reach it: its only artifact is
+//! the cdylib the Kotlin host loads, and every symbol it names (jni,
+//! `hydrolysis::android`) exists on Android alone — off the target the crate
+//! is empty by contract.
+#![cfg(target_os = "android")]
 
 use std::rc::Rc;
 
