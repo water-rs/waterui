@@ -108,10 +108,11 @@ mod platform {
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::geometry::Rect;
     use cocoa_ui::objc2_ui_kit::{
-        NSDirectionalRectEdge, UINavigationController, UIScrollView, UITabAccessory,
-        UITabBarMinimizeBehavior,
+        UINavigationController, UIScrollView, UITabAccessory, UITabBarMinimizeBehavior,
     };
-    use cocoa_ui::uikit::{HostView, TabSpec, TabsController, view_controller};
+    use cocoa_ui::uikit::{
+        HostView, TabContentController, TabSpec, TabsController, view_controller,
+    };
     use cocoa_ui::{Retained, view};
     use waterui::navigation::{TabsLayout, tab::TabBarMinimizeBehavior};
     use waterui::reactive::Signal;
@@ -203,18 +204,21 @@ mod platform {
         }
 
         // `UITabBarMinimizeBehavior` collapses bottom chrome on the
-        // pane's scroll: `UIKit` only auto-associates a scroll view that
-        // is the controller's root view itself, and each pane mounts
-        // inside a wrapper — associate the pane's own scroll view for
-        // the bottom edge explicitly.
+        // pane's scroll: `UIKit` asks each selected controller for its
+        // `contentScrollViewForEdge:` whenever it tracks a scroll —
+        // answering through the declared walk on every query keeps the
+        // association current, so navigation pushes, pops and pane
+        // replacements resolve the surface that is actually showing
+        // rather than a pointer captured at install.
         if let Some(controllers) = tabs.viewControllers() {
             for controller in &controllers {
-                if let Some(root) = controller.view()
-                    && let Some(scroll) = declared_scroll_view(&root)
-                {
-                    controller
-                        .setContentScrollView_forEdge(Some(&scroll), NSDirectionalRectEdge::Bottom);
-                }
+                let controller = controller
+                    .clone()
+                    .downcast::<TabContentController>()
+                    .expect("tab controllers are CocoaUiTabContentController");
+                controller.set_bottom_scroll_surface(|controller| {
+                    declared_scroll_view(controller.view()?.as_ref())
+                });
             }
         }
 
