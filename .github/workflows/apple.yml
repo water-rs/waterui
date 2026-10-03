@@ -1,0 +1,237 @@
+name: Apple backend
+
+# The per-change gate for the in-tree Apple backend (backends/apple:
+# `waterui-apple`, Rust on objc2) and the thin Swift host package
+# (backends/apple/Sources/WaterUI, published through the root Package.swift).
+# Only changes that can affect the backend's build, tests, benches or lint
+# outcome start it — every job draws from the org's macOS pool (20 of 60
+# total slots). The backend consumes the in-tree component and foundation
+# crates as workspace members, so those paths trigger this lane too: a
+# foundation change must not merge while it breaks the Apple build.
+
+permissions:
+  contents: read
+
+on:
+  # Integration branches only: a topic branch that also has a pull request
+  # would otherwise run the job twice for one commit.
+  push:
+    branches: [main, dev]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - Package.swift
+      - ".swiftpm/**"
+      - "backends/apple/**"
+      - "backends/core/**"
+      - "core/**"
+      - "components/**"
+      - "src/**"
+      - "macros/**"
+      - "ffi/**"
+      - "testing/**"
+      - "utils/**"
+      - "facade.rs"
+      - ".cargo/**"
+      - ".config/**"
+      - "rust-toolchain.toml"
+      - ".periphery.yml"
+      - .github/workflows/apple.yml
+      - ".github/scripts/**"
+      - ".github/actions/metal-toolchain/**"
+  pull_request:
+    branches: ["**"]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - Package.swift
+      - ".swiftpm/**"
+      - "backends/apple/**"
+      - "backends/core/**"
+      - "core/**"
+      - "components/**"
+      - "src/**"
+      - "macros/**"
+      - "ffi/**"
+      - "testing/**"
+      - "utils/**"
+      - "facade.rs"
+      - ".cargo/**"
+      - ".config/**"
+      - "rust-toolchain.toml"
+      - ".periphery.yml"
+      - .github/workflows/apple.yml
+      - ".github/scripts/**"
+      - ".github/actions/metal-toolchain/**"
+
+concurrency:
+  group: apple-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # None of the lint tools need macOS: swiftformat and ast-grep are pure source
+  # tools, and the pinned swiftlint-static binary bundles SourceKit (which the
+  # `unused_import` rule requires). Running on Ubuntu frees one slot of the
+  # org's 20-slot macOS pool for every run. Tool versions are pinned in the
+  # cache key; bump them there to upgrade.
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: lint-tools
+        with:
+          path: backends/apple/.ci/bin
+          key: lint-tools-v2-swiftlint-0.65.1-swiftformat-0.63.0-ast-grep-0.45.3
+      - name: Install lint tools
+        if: steps.lint-tools.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p backends/apple/.ci/bin && cd backends/apple/.ci/bin
+          curl -sSfL -o /tmp/swiftlint.zip https://github.com/realm/SwiftLint/releases/download/0.65.1/swiftlint_linux_amd64.zip
+          unzip -jo /tmp/swiftlint.zip swiftlint-static -d .
+          mv swiftlint-static swiftlint
+          curl -sSfL -o /tmp/swiftformat.zip https://github.com/nicklockwood/SwiftFormat/releases/download/0.63.0/swiftformat_linux.zip
+          unzip -jo /tmp/swiftformat.zip -d .
+          mv swiftformat_linux swiftformat
+          curl -sSfL -o /tmp/ast-grep.zip https://github.com/ast-grep/ast-grep/releases/download/0.45.3/app-x86_64-unknown-linux-gnu.zip
+          unzip -jo /tmp/ast-grep.zip -d .
+          chmod +x swiftlint swiftformat sg ast-grep
+      - uses: actions/cache/save@v4
+        if: steps.lint-tools.outputs.cache-hit != 'true'
+        with:
+          path: backends/apple/.ci/bin
+          key: ${{ steps.lint-tools.outputs.cache-primary-key }}
+      # The lint configs live beside the source they cover; running from the
+      # backend directory keeps their `included`/relative paths unambiguous.
+      - run: echo "$PWD/backends/apple/.ci/bin" >> "$GITHUB_PATH"
+      - name: SwiftFormat lint
+        run: cd backends/apple && swiftformat . --lint --config .swiftformat
+      - name: SwiftLint
+        run: cd backends/apple && swiftlint lint --strict --config .swiftlint.yml
+      - name: ast-grep
+        run: ast-grep scan backends/apple/Sources backends/apple/Tests --inline-rules "$(cat backends/apple/.ci/sg/swift.yml)" --report-style short
+
+  # The Swift side is the thin host adapter in backends/apple/Sources/WaterUI
+  # — a single file that binds the backend's `waterui_apple_*` entry points
+  # through `@_extern(c)`. There is no generated header to sync and no Swift
+  # compilation conditions left: the component shapes the `WATERUI_MAP`/
+  # `WATERUI_NO_GPU` legs used to cover are Cargo features now, compiled in
+  # the Rust lane below, so this job builds the one remaining shape per
+  # configuration. The repository-root Package.swift is the manifest.
+  swift:
+    name: swift (${{ matrix.configuration }})
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ matrix.configuration }}-${{ hashFiles('Package.swift', 'backends/apple/Sources/**', 'backends/apple/Tests/**', '.periphery.yml') }}
+          restore-keys: swiftpm-${{ matrix.configuration }}-
+      - name: Build
+        run: >-
+          swift build --configuration ${{ matrix.configuration }}
+          -Xswiftc -warnings-as-errors
+      # iOS legs: SwiftPM generates the `waterui-apple-host` workspace and
+      # scheme on demand. Build it for the supported ARM64 simulator and
+      # device destinations; `ONLY_ACTIVE_ARCH`/`ARCHS` keeps the simulator
+      # leg from compiling the retired x86_64 iOS target. Both destinations
+      # are build-only and debug-only: no simulator boots, the device leg
+      # signs nothing, and release adds nothing a compile can observe.
+      - name: Build (ios-simulator)
+        if: matrix.configuration == 'debug'
+        run: >-
+          xcodebuild build -scheme waterui-apple-host
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath .build/ios-sim
+          ONLY_ACTIVE_ARCH=YES ARCHS=arm64
+          SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
+      - name: Build (ios-device)
+        if: matrix.configuration == 'debug'
+        run: >-
+          xcodebuild build -scheme waterui-apple-host
+          -destination 'generic/platform=iOS'
+          -derivedDataPath .build/ios-device
+          ONLY_ACTIVE_ARCH=YES ARCHS=arm64
+          SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
+          CODE_SIGNING_ALLOWED=NO
+      # Lives inside this job rather than its own: a separate job cost a
+      # whole macOS slot just to redo checkout and brew. Its scan build
+      # lands in `.build` and stays cached.
+      - name: Install Periphery
+        if: matrix.configuration == 'debug'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install periphery
+      - name: Run Periphery
+        if: matrix.configuration == 'debug'
+        run: periphery scan --config .periphery.yml
+
+  # One job for every target: the three clippy passes, the feature shapes,
+  # the tests and the bench compile share one checkout, one toolchain
+  # install and one warm dependency graph — a matrix would pay the full
+  # dependency build again on every leg. The iOS passes need the iOS SDK,
+  # which only a macOS runner has. CARGO_BUILD_TARGET pins the host graph
+  # to aarch64-apple-darwin so the untargeted steps build into the same
+  # target dir the explicit clippy legs use; the iOS legs override it.
+  rust:
+    name: rust
+    runs-on: macos-26
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: aarch64-apple-darwin, aarch64-apple-ios, aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt -p waterui-apple -- --check
+      # `native-test-support` is on for these legs because the `native`
+      # test target is `required-features`-gated: without the feature
+      # `--all-targets` silently skips it and none of the harness code is
+      # linted. Production paths are unchanged — the feature only makes
+      # the suite's support module exist.
+      - name: Clippy (macOS)
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test-support -- -D warnings
+      - name: Clippy (iOS)
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test-support --target aarch64-apple-ios -- -D warnings
+      - name: Clippy (iOS simulator)
+        run: cargo clippy -p waterui-apple --all-targets --locked --features native-test-support --target aarch64-apple-ios-sim -- -D warnings
+      # The component shapes the Swift `WATERUI_MAP`/`WATERUI_NO_GPU` legs
+      # used to cover are Cargo features now (waterui#343 reasoned the same
+      # way), so they lint under -D warnings like the production legs —
+      # `cargo check` would let a warnings-only regression ship. `map`
+      # pulls waterui-map + cocoa-ui/map.
+      - name: Clippy (map)
+        run: cargo clippy -p waterui-apple --locked --features map -- -D warnings
+      # The no-GPU shape is the default component set minus the features
+      # that depend on GPU support (`gpu_surface` and what requires it:
+      # `applied_filter`, `view_effect`, `picture`, `resolved_gradient`).
+      # The list is derived from the manifest's own `default` table rather
+      # than a hardcoded copy, so a newly ported component joins the shape
+      # automatically and only the GPU set is subtracted. `--no-default-features`
+      # alone would disable every ported component — much weaker than the
+      # old no-gpu leg.
+      - name: Clippy (no GPU components)
+        run: |
+          features="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "waterui-apple") | .features.default[]' \
+            | grep -vx -e gpu_surface -e applied_filter -e view_effect \
+                -e picture -e resolved_gradient \
+            | paste -sd, -)"
+          echo "non-GPU feature set: ${features}"
+          cargo clippy -p waterui-apple --locked \
+            --no-default-features --features "${features}" -- -D warnings
+      # Host-side tests and the bench compile live in the suite's
+      # `host-native` job (apple-e2e.yml) — the dev-push gate here is format
+      # plus compile/lint only.

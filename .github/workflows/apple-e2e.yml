@@ -1,0 +1,1119 @@
+name: Apple E2E Suite
+
+# The heavy end-to-end suite, once a day against `dev` and on demand: every
+# runnable example in this repository is built and launched on an iOS
+# simulator and on macOS, its first settled screen is captured, and the capture
+# is verified — non-blank always, pixel-compared where a recorded baseline
+# exists under backends/apple/Tests/E2EBaselines, and parity-compared against the example's
+# SwiftUI twin rendered live by Tests/E2EReference when one is registered.
+# `apple.yml` is the per-change gate; this suite is far too heavy for one.
+# Building each example for the simulator also compiles the UIKit half of the
+# backend daily (#4). A red run opens one tracking issue and keeps it current.
+# Dispatching with `record_baselines` captures fresh baselines and parity
+# budgets and opens a PR containing them.
+#
+# Shape (#156, #218): `prepare` builds the water CLI once and hands it to
+# every job as an artifact — seventeen macOS jobs each running
+# `cargo install` cost ~110 macOS-minutes a night for one binary.
+# `build-ios`/`build-macos` then package the examples, fanned out over
+# PACKAGE_GROUP_TOTAL weight-balanced matrix legs per platform (#252 — the
+# serial packaging leg was ~90 of the run's ~102 minutes); each leg
+# uploads its bundles as its own tarball and the capture shards download
+# every leg's tarball, merge them, and only launch, capture and compare.
+# The shards used to each pay the same ~32-minute cold release build —
+# sixteen times a night for identical artifacts. The release-metrics job
+# (a single ~105-minute macOS job) is a weekly signal, not a nightly one:
+# it runs on the Sunday schedule and on dispatch.
+#
+# The e2e jobs pin a dated nightly rather than floating `nightly`: Cargo folds
+# `rustc -vV` into every unit fingerprint, so a toolchain that rotates daily
+# would invalidate the restored `target` unconditionally and the
+# build cache could never be warm for the next night. Bump the pin
+# deliberately; the trade is that the suite no longer exercises each night's
+# newest rustc.
+
+on:
+  # Invoked by the repository's Nightly workflow through workflow_call so a
+  # single run certifies one (framework, lockfile, CLI) combination — a
+  # separate schedule would certify a different tree than the nightly that
+  # promotes it. The Sunday nightly also measures release metrics; the
+  # `record_baselines` input flows through from that dispatch.
+  # Sunday-only: the weekly release-metrics measurement. The full suite is
+  # certified through the repository's Nightly (workflow_call); a scheduled
+  # run here skips every heavy leg and produces only the trend series.
+  schedule:
+    - cron: "23 5 * * 0"
+  workflow_call:
+    inputs:
+      release_metrics:
+        description: Also run the release-metrics measurement legs
+        required: false
+        type: boolean
+        default: false
+      record_baselines:
+        description: Capture fresh screenshot baselines and open a PR
+        required: false
+        type: boolean
+        default: false
+      cli_ref:
+        description: water-rs/cli branch, tag, or full commit SHA (default dev)
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      release_metrics:
+        description: Also run the release-metrics measurement legs
+        required: true
+        type: boolean
+        default: false
+      record_baselines:
+        description: Capture fresh screenshot baselines and open a PR
+        required: true
+        type: boolean
+        default: false
+      cli_ref:
+        description: water-rs/cli branch, tag, or full commit SHA (default dev)
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  # The failure report opens or updates an issue.
+  issues: write
+  # The baseline-publish job opens a pull request.
+  pull-requests: write
+
+# One nightly per ref at a time, and a running one is never cancelled: its
+# value is the complete report. The group is keyed by ref because a group
+# holds one running and one pending run — with a single global group a
+# dispatch on a topic branch queued behind the dev nightly, and the next
+# dispatch cancelled it (run 35281834319). Branch runs share nothing with
+# the dev run but the rust-cache key, and two savers of one key only race
+# harmlessly.
+concurrency:
+  group: apple-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  SHARD_TOTAL: 8
+  PACKAGE_GROUP_TOTAL: 5
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: macos-26
+    timeout-minutes: 30
+    # `prepare` is the only job allowed to resolve the CLI ref; every
+    # consumer fetches the commit published here so one run certifies one
+    # (framework, CLI) pair. The framework and the Apple backend are the
+    # checked-out commit itself.
+    outputs:
+      waterui_ref: ${{ steps.setup.outputs.waterui_ref }}
+      waterui_sha: ${{ steps.setup.outputs.waterui_sha }}
+      cli_ref: ${{ steps.setup.outputs.cli_ref }}
+      cli_sha: ${{ steps.setup.outputs.cli_sha }}
+      package_groups: ${{ steps.groups.outputs.package_groups }}
+    env:
+      # The CLI's own target directory, cached under its own key: it shares
+      # nothing with the framework builds the shards perform.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/water-cli/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        id: setup
+        env:
+          WATER_CLI_REF: ${{ inputs.cli_ref }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      # The packaging legs fan out over a matrix of example groups; the
+      # partition is computed here, once, from the same discovered set the
+      # packaging script sees, so every leg certifies the same set and a
+      # new example joins the lightest group automatically. Greedy LPT
+      # over measured per-example packaging seconds (#252) — a count or
+      # checksum split leaves one leg holding the long tail.
+      - name: Partition examples into packaging groups
+        id: groups
+        env:
+          WATERUI_DIR: ${{ github.workspace }}
+        run: echo "package_groups=$(./.github/scripts/group-examples.sh)" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-cli
+          workspaces: water-cli
+
+      - name: Build the water CLI
+        run: cargo install --path "${WATER_CLI_DIR:-water-cli}" --locked --root "${{ github.workspace }}/cli-bin"
+
+      - name: Upload the water CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+  # One build matrix per platform packages every example once and hands the
+  # capture shards the bundles as one tarball per group — the shards used to
+  # each pay the same ~32-minute cold release build, sixteen times a night
+  # for identical artifacts (#218), and the serial leg still packaged for
+  # ~90 of the run's ~102 minutes (#252). The legs share the platform's
+  # rust-cache key, so a warm night costs each leg only its own examples'
+  # builds; a cold night re-pays the framework build per leg but stays well
+  # under the serial wall clock. A package failure fails here with the
+  # example's log tail, and the shards never start.
+  build-ios:
+    name: build-ios-${{ matrix.group.i }}
+    needs: prepare
+    runs-on: macos-26
+    if: github.event_name != 'schedule'
+    # A group's share is ~10 min of thin-LTO packaging warm plus setup and
+    # upload; a cold-cache night adds one framework build to the leg's first
+    # example. 60 minutes keeps a wide margin over both.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJson(needs.prepare.outputs.package_groups) }}
+    env:
+      # This checkout pins `stable` in rust-toolchain.toml and the
+      # water CLI builds every crate under the toolchain the project selects.
+      # This job builds under the dated nightly pinned below (the header
+      # explains why), and rustup ranks this variable above the project's
+      # file, so the pin reaches cargo through the CLI.
+      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+          targets: aarch64-apple-ios-sim
+
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e-ios
+          # The Cargo workspace is this checkout; the key follows its
+          # lockfile, so a night whose dependencies moved writes a fresh
+          # entry instead of skipping the save as "already cached".
+          # `water` (water-rs/cli#65) builds into its per-user shared target,
+          # `~/.water/build_cache/target/{static,shared,host}` — the release
+          # units for the platform and the dev-profile host rlib the CLI reads
+          # `waterui_meta_*` symbols from — not into `target`, so the
+          # ~30 min this job spends compiling cold only rides the cache through
+          # this entry (#215 removed it against the pre-#65 layout).
+          cache-directories: ~/.water/build_cache/target
+          # Any run on dev writes (the concurrency group serialises them), so a
+          # dispatched re-test warms the cache as well as the schedule. Save
+          # even when the job fails: the build finished before the packaging
+          # or staging error, and a red result must not cost the next run a
+          # cold build.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          cache-on-failure: true
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Package this group's iOS examples
+        env:
+          PLATFORM: ios
+          EXAMPLES: ${{ matrix.group.examples }}
+          # These bundles exist to be screenshotted, not shipped: thin LTO
+          # with parallel codegen cut the per-example release link ~2.7x
+          # (76 s -> 29 s measured locally) while waterui's shipping
+          # [profile.release] stays untouched. Scoped to this step: the
+          # release-metrics job must keep measuring the shipped profile,
+          # and CARGO_* env vars fold into the rust-cache key by prefix, so
+          # job scope would fork the shared nightly-e2e-* entry.
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          PACKAGE_OUT_DIR: ${{ github.workspace }}/packaged-ios
+        run: ./.github/scripts/package-examples.sh
+
+      # Bundles must survive the artifact round trip intact — symlinks,
+      # permissions and the ad-hoc code signature — so they cross as a tar,
+      # not as a bare directory upload. Only apps/ and logs/ cross: every
+      # group writes its own package-sizes json and .size entries file, and
+      # identical paths inside merged tars would silently overwrite.
+      - name: Archive packaged iOS apps
+        run: COPYFILE_DISABLE=1 tar -C "${{ github.workspace }}" -cf "packaged-ios-${{ matrix.group.i }}.tar" packaged-ios/apps packaged-ios/logs
+
+      - name: Upload packaged iOS apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-ios-${{ matrix.group.i }}
+          path: packaged-ios-${{ matrix.group.i }}.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      # Separate from the bundle tar so startup-report can merge the numbers
+      # without downloading the apps. Every group uploads the same
+      # package-sizes-ios.json filename under its own artifact name; the
+      # report's sizes/*/package-sizes-*.json glob merges all of them.
+      - name: Upload iOS package sizes
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-sizes-ios-${{ matrix.group.i }}
+          path: packaged-ios/package-sizes-ios.json
+          retention-days: 90
+          if-no-files-found: error
+
+  build-macos:
+    name: build-macos-${{ matrix.group.i }}
+    needs: prepare
+    runs-on: macos-26
+    if: github.event_name != 'schedule'
+    # A group's share is ~10 min of thin-LTO packaging warm plus setup and
+    # upload; a cold-cache night adds one framework build to the leg's first
+    # example. 60 minutes keeps a wide margin over both.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJson(needs.prepare.outputs.package_groups) }}
+    env:
+      # This checkout pins `stable` in rust-toolchain.toml and the
+      # water CLI builds every crate under the toolchain the project selects.
+      # This job builds under the dated nightly pinned below (the header
+      # explains why), and rustup ranks this variable above the project's
+      # file, so the pin reaches cargo through the CLI.
+      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e-macos
+          # The Cargo workspace is this checkout; the key follows its
+          # lockfile, so a night whose dependencies moved writes a fresh
+          # entry instead of skipping the save as "already cached".
+          # `water` (water-rs/cli#65) builds into its per-user shared target,
+          # `~/.water/build_cache/target/{static,shared,host}` — the release
+          # units for the platform and the dev-profile host rlib the CLI reads
+          # `waterui_meta_*` symbols from — not into `target`, so the
+          # ~30 min this job spends compiling cold only rides the cache through
+          # this entry.
+          cache-directories: ~/.water/build_cache/target
+          # Any run on dev writes (the concurrency group serialises them), so a
+          # dispatched re-test warms the cache as well as the schedule. Save
+          # even when the job fails: the build finished before the packaging
+          # or staging error, and a red result must not cost the next run a
+          # cold build.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          cache-on-failure: true
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Package this group's macOS examples
+        env:
+          PLATFORM: macos
+          EXAMPLES: ${{ matrix.group.examples }}
+          # These bundles exist to be screenshotted, not shipped: thin LTO
+          # with parallel codegen cut the per-example release link ~2.7x
+          # (76 s -> 29 s measured locally) while waterui's shipping
+          # [profile.release] stays untouched. Scoped to this step: the
+          # release-metrics job must keep measuring the shipped profile,
+          # and CARGO_* env vars fold into the rust-cache key by prefix, so
+          # job scope would fork the shared nightly-e2e-* entry.
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          PACKAGE_OUT_DIR: ${{ github.workspace }}/packaged-macos
+        run: ./.github/scripts/package-examples.sh
+
+      # Bundles must survive the artifact round trip intact — symlinks,
+      # permissions and the ad-hoc code signature — so they cross as a tar,
+      # not as a bare directory upload. Only apps/ and logs/ cross: every
+      # group writes its own package-sizes json and .size entries file, and
+      # identical paths inside merged tars would silently overwrite.
+      - name: Archive packaged macOS apps
+        run: COPYFILE_DISABLE=1 tar -C "${{ github.workspace }}" -cf "packaged-macos-${{ matrix.group.i }}.tar" packaged-macos/apps packaged-macos/logs
+
+      - name: Upload packaged macOS apps
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-macos-${{ matrix.group.i }}
+          path: packaged-macos-${{ matrix.group.i }}.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      # Separate from the bundle tar so startup-report can merge the numbers
+      # without downloading the apps. Every group uploads the same
+      # package-sizes-macos.json filename under its own artifact name; the
+      # report's sizes/*/package-sizes-*.json glob merges all of them.
+      - name: Upload macOS package sizes
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-sizes-macos-${{ matrix.group.i }}
+          path: packaged-macos/package-sizes-macos.json
+          retention-days: 90
+          if-no-files-found: error
+
+  e2e-ios:
+    name: e2e-ios-${{ matrix.shard }}
+    needs: [prepare, build-ios]
+    runs-on: macos-26
+    if: github.event_name != 'schedule'
+    # ~7 examples × ~3 min of launch/settle/capture/twin/compare plus
+    # simulator boot and the artifact download — no compile. 45 minutes keeps
+    # a wide margin over the ~30 measured.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Download packaged iOS apps
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packaged-ios-*
+          path: packaged-artifacts
+          merge-multiple: true
+      - name: Unpack packaged iOS apps
+        run: |
+          set -euo pipefail
+          for archive in packaged-artifacts/packaged-ios-*.tar; do
+            tar -xf "${archive}" -C "${{ github.workspace }}"
+          done
+
+      - name: Boot iOS simulator
+        run: |
+          set -euo pipefail
+          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [[ -z "${simulator_udid}" ]]; then
+            echo "::error::No available iPhone simulator found."
+            exit 1
+          fi
+          echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
+          xcrun simctl boot "${simulator_udid}" || true
+          xcrun simctl bootstatus "${simulator_udid}" -b
+          # An iOS capture is the whole display (macOS captures the app's own
+          # window), so a SpringBoard notification banner lands in the frame and
+          # reads as a divergence from the app's own baseline and from the
+          # SwiftUI twin. Booting out the delivery daemon stops every banner for
+          # this boot; the device is created fresh per run, so nothing persists.
+          xcrun simctl spawn "${simulator_udid}" \
+            launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
+          # The capture is compared pixel-by-pixel; pin the status bar so the
+          # clock and battery do not diff against the baseline.
+          xcrun simctl status_bar "${simulator_udid}" override \
+            --time "9:41" \
+            --batteryState charged \
+            --batteryLevel 100 \
+            --cellularMode active \
+            --cellularBars 4 \
+            --wifiBars 3
+
+      - name: Run iOS e2e shard
+        env:
+          PLATFORM: ios
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ env.SHARD_TOTAL }}
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          SHOTS_DIR: ${{ github.workspace }}/e2e-shots
+          RECORD_DIR: ${{ github.workspace }}/e2e-baselines
+          RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
+          PREBUILT_DIR: ${{ github.workspace }}/packaged-ios
+        run: ./.github/scripts/run-e2e-shard.sh
+
+      - name: Upload iOS shard captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-ios-${{ matrix.shard }}
+          path: e2e-shots/
+          retention-days: 14
+
+      # Launch timings are recorded even when a shard fails — a regression
+      # that makes an app slow is exactly the signal this data exists for.
+      # Package sizes come from the build-ios job's own artifact — they are a
+      # property of the package, not of the capture.
+      - name: Upload iOS startup times
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-times-ios-${{ matrix.shard }}
+          path: |
+            e2e-logs/startup-times-*.json
+            e2e-logs/memory-*.json
+          retention-days: 90
+
+      - name: Upload iOS shard logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-ios-${{ matrix.shard }}
+          path: e2e-logs/
+          retention-days: 14
+
+      - name: Upload recorded iOS baselines
+        if: inputs.record_baselines == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-baselines-ios-${{ matrix.shard }}
+          path: e2e-baselines/
+          retention-days: 7
+
+  e2e-macos:
+    name: e2e-macos-${{ matrix.shard }}
+    needs: [prepare, build-macos]
+    runs-on: macos-26
+    if: github.event_name != 'schedule'
+    # ~7 examples × ~3 min of launch/settle/capture/twin/compare plus the
+    # artifact download — no compile. 45 minutes keeps a wide margin over the
+    # ~30 measured.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Download packaged macOS apps
+        uses: actions/download-artifact@v4
+        with:
+          pattern: packaged-macos-*
+          path: packaged-artifacts
+          merge-multiple: true
+      - name: Unpack packaged macOS apps
+        run: |
+          set -euo pipefail
+          for archive in packaged-artifacts/packaged-macos-*.tar; do
+            tar -xf "${archive}" -C "${{ github.workspace }}"
+          done
+
+      - name: Run macOS e2e shard
+        env:
+          PLATFORM: macos
+          SHARD_INDEX: ${{ matrix.shard }}
+          SHARD_TOTAL: ${{ env.SHARD_TOTAL }}
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          SHOTS_DIR: ${{ github.workspace }}/e2e-shots
+          RECORD_DIR: ${{ github.workspace }}/e2e-baselines
+          RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
+          PREBUILT_DIR: ${{ github.workspace }}/packaged-macos
+        run: ./.github/scripts/run-e2e-shard.sh
+
+      - name: Upload macOS shard captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-macos-${{ matrix.shard }}
+          path: e2e-shots/
+          retention-days: 14
+
+      - name: Upload macOS startup times
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-times-macos-${{ matrix.shard }}
+          path: |
+            e2e-logs/startup-times-*.json
+            e2e-logs/memory-*.json
+          retention-days: 90
+
+      - name: Upload macOS shard logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-macos-${{ matrix.shard }}
+          path: e2e-logs/
+          retention-days: 14
+
+      - name: Upload recorded macOS baselines
+        if: inputs.record_baselines == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-baselines-macos-${{ matrix.shard }}
+          path: e2e-baselines/
+          retention-days: 7
+
+  # The backend's host-side test legs, nightly and on every suite run: the
+  # native libtest-mimic suite (Tests/native.rs, `native-test-support`) on
+  # the macOS host, the doctests, and the bench-compile guard that keeps the
+  # criterion benches building. They run here rather than in the per-change
+  # lane so the dev-push gate stays format + compile/lint.
+  host-native:
+    name: host-native
+    if: github.event_name != 'schedule'
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: apple-e2e-host-native
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
+      - name: Test
+        run: cargo nextest run -p waterui-apple --locked --features native-test-support
+      - name: Doc tests
+        run: cargo test -p waterui-apple --locked --doc
+      # The benches are an informational trend series, not a gate: this step
+      # only guarantees they stay compilable. Numbers come from the bench
+      # lane and the Mac mini, never a shared macOS runner.
+      - name: Benchmarks (compile)
+        run: cargo bench -p waterui-apple --locked --no-run
+
+  # The embedding contract is verified end to end: this job stages the same
+  # waterui checkout the shards build, packages the repository's own
+  # ios_test_host fixture with the water CLI from `prepare`, asserts the
+  # `export_app!` archive defines the `waterui_apple_main`/`waterui_apple_mount`
+  # entry points the thin Swift adapter binds, installs and launches the
+  # packaged app on an iOS simulator, and runs the native libtest-mimic
+  # suite (Tests/native.rs, `native-test-support`) inside that simulator
+  # through the aarch64-apple-ios-sim target runner. It belongs to the
+  # nightly rather than the PR lane: measured cold on a PR run it timed out
+  # at thirty minutes (CLI build ~5.5m, `water package` ~10.5m, then a cold
+  # simulator boot), and even warm it does not fit a per-change gate. The
+  # helper fails the run when the archive lacks the entry points, so a
+  # broken staging step cannot turn the check green by skipping.
+  ios-device-tests:
+    name: ios-device-tests
+    needs: prepare
+    runs-on: macos-26
+    if: github.event_name != 'schedule'
+    timeout-minutes: 60
+    env:
+      # This checkout pins `stable` in rust-toolchain.toml and the
+      # water CLI builds every crate under the toolchain the project selects.
+      # This job builds under the dated nightly pinned below (the header
+      # explains why), and rustup ranks this variable above the project's
+      # file, so the pin reaches cargo through the CLI.
+      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      # Packages the repository's own ios_test_host fixture in dev profile —
+      # not one of the release examples build-ios packages — so it keeps its
+      # own toolchain, cache and target dir.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+          targets: aarch64-apple-ios-sim
+
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-e2e-ios
+          # The Cargo workspace is this checkout; the key follows its
+          # lockfile, so a night whose dependencies moved writes a fresh
+          # entry instead of skipping the save as "already cached".
+          cache-directories: ~/.water/build_cache/target
+          # Any run on dev writes (the concurrency group serialises them), so a
+          # dispatched re-test warms the cache as well as the schedule. Save
+          # even when the shard fails: the build finished before the parity
+          # comparison, and a red parity result must not cost the next run a
+          # cold build.
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+          cache-on-failure: true
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+          echo "WATER_BIN=${{ github.workspace }}/cli-bin/bin/water" >> "$GITHUB_ENV"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run packaged-app and native iOS tests
+        env:
+          WATERUI_DIR: ${{ github.workspace }}
+        run: ./.github/scripts/run-ios-device-tests.sh ios_test_host
+
+  # Every shard uploads one startup-times JSON and one memory JSON; the build
+  # jobs upload one package-size JSON per platform. This job merges them into
+  # launch-timing + footprint + size artifacts and a step-summary table so a
+  # slow or bloated example is visible without digging through sixteen
+  # archives. All measurements come from the release packages build-ios and
+  # build-macos built.
+  startup-report:
+    name: startup-report
+    if: always() && github.event_name != 'schedule' 
+    needs: [prepare, build-ios, build-macos, e2e-ios, e2e-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Note the certified inputs
+        run: |
+          {
+            echo "### Certified inputs"
+            echo "- framework + backends/apple: \`${{ needs.prepare.outputs.waterui_sha }}\` (${{ needs.prepare.outputs.waterui_ref }})"
+            echo "- water CLI: \`${{ needs.prepare.outputs.cli_sha }}\` (${{ needs.prepare.outputs.cli_ref }})"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Download startup times
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: startup-times-*
+          path: startup/
+
+      - name: Download package sizes
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: package-sizes-*
+          path: sizes/
+
+      - name: Merge startup times
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, json, os, re
+          merged = {"ios": {}, "macos": {}}
+          memory = {"ios": {}, "macos": {}}
+          sizes = {"ios": {}, "macos": {}}
+          for path in sorted(glob.glob("startup/*/startup-times-*.json")):
+              m = re.search(r"startup-times-(ios|macos)-\d+\.json$", path)
+              if not m:
+                  continue
+              try:
+                  with open(path) as f:
+                      merged[m.group(1)].update(json.load(f))
+              except Exception:
+                  pass
+          for path in sorted(glob.glob("startup/*/memory-*.json")):
+              m = re.search(r"memory-(ios|macos)-\d+\.json$", path)
+              if not m:
+                  continue
+              try:
+                  with open(path) as f:
+                      memory[m.group(1)].update(json.load(f))
+              except Exception:
+                  pass
+          for path in sorted(glob.glob("sizes/*/package-sizes-*.json")):
+              m = re.search(r"package-sizes-(ios|macos)\.json$", path)
+              if not m:
+                  continue
+              try:
+                  with open(path) as f:
+                      sizes[m.group(1)].update(json.load(f))
+              except Exception:
+                  pass
+          with open("startup-times.json", "w") as f:
+              json.dump(merged, f, indent=2, sort_keys=True)
+              f.write("\n")
+          with open("memory-footprints.json", "w") as f:
+              json.dump(memory, f, indent=2, sort_keys=True)
+              f.write("\n")
+          with open("package-sizes.json", "w") as f:
+              json.dump(sizes, f, indent=2, sort_keys=True)
+              f.write("\n")
+          examples = sorted(set(merged["ios"]) | set(merged["macos"]))
+          rows = ["| Example | iOS .app | macOS .app | iOS paint | macOS paint | iOS peak RSS | macOS peak RSS |",
+                  "| --- | --- | --- | --- | --- | --- | --- |"]
+          for name in examples:
+              cells = []
+              for plat in ("ios", "macos"):
+                  size = sizes[plat].get(name)
+                  cells.append(f"{size['app_bytes'] / 1048576:.1f} MB" if isinstance(size, dict)
+                               else "—" if name in sizes[plat] else "not run")
+              for plat in ("ios", "macos"):
+                  ms = merged[plat].get(name)
+                  cells.append(f"{ms} ms" if isinstance(ms, (int, float))
+                               else "—" if name in merged[plat] else "not run")
+              for plat in ("ios", "macos"):
+                  rss = memory[plat].get(name)
+                  cells.append(f"{rss / 1048576:.1f} MB" if isinstance(rss, (int, float))
+                               else "—" if name in memory[plat] else "not run")
+              rows.append(f"| `{name}` | {cells[0]} | {cells[1]} | {cells[2]} | {cells[3]} | {cells[4]} | {cells[5]} |")
+          with open("startup-summary.md", "w") as f:
+              f.write("## Per-example release metrics (packaged `.app` builds)\n\n" + "\n".join(rows) + "\n")
+          PY
+          cat startup-summary.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload merged startup times
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-times
+          path: |
+            startup-times.json
+            memory-footprints.json
+            package-sizes.json
+          retention-days: 90
+
+  # A minimal hello-world app is almost all framework: its release .app size
+  # moves only when the backend or the shared dependency tree grows. Each
+  # platform leg packages it once, gates the byte counts against
+  # backends/apple/Tests/E2EBaselines/package-size.json for its platform (5%
+  # tolerance fails the leg) so size regressions land on the nightly report
+  # instead of shipping silently, then launches the packaged build to record
+  # first-paint latency and peak RSS. The legs share the same inputs and are
+  # independent: the serialized ~105-minute single job was split because a
+  # weekly trend series has no need to serialize one platform's package
+  # behind the other's. The merge job folds the two
+  # platform outputs into one release-metrics report.
+  release-metrics:
+    name: release-metrics-${{ matrix.platform }}
+    needs: prepare
+    # Weekly (the Sunday schedule) and on dispatch: measuring release size,
+    # startup and memory is a trend series, not a nightly gate, and on the
+    # other six nights the slots go to the shards.
+    if: github.event_name == 'schedule' || inputs.release_metrics
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos, ios-simulator]
+    env:
+      # This checkout pins `stable` in rust-toolchain.toml and the
+      # water CLI builds every crate under the toolchain the project selects.
+      # This job builds under the dated nightly pinned below (the header
+      # explains why), and rustup ranks this variable above the project's
+      # file, so the pin reaches cargo through the CLI.
+      RUSTUP_TOOLCHAIN: nightly-2026-09-17
+      # Packages a generated hello-world playground rather than a discovered
+      # example, so it keeps its own toolchain, cache and target dir.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+          targets: aarch64-apple-ios-sim
+
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-package-size
+          cache-directories: ~/.water/build_cache/target
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+      - name: Water CLI under test
+        run: echo "WATER_BIN=${{ github.workspace }}/cli-bin/bin/water" >> "$GITHUB_ENV"
+
+      - name: Boot iOS simulator
+        if: matrix.platform == 'ios-simulator'
+        run: |
+          set -euo pipefail
+          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [[ -z "${simulator_udid}" ]]; then
+            echo "::error::No available iPhone simulator found."
+            exit 1
+          fi
+          echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
+          xcrun simctl boot "${simulator_udid}" || true
+          xcrun simctl bootstatus "${simulator_udid}" -b
+          # An iOS capture is the whole display (macOS captures the app's own
+          # window), so a SpringBoard notification banner lands in the frame and
+          # reads as a divergence from the app's own baseline and from the
+          # SwiftUI twin. Booting out the delivery daemon stops every banner for
+          # this boot; the device is created fresh per run, so nothing persists.
+          xcrun simctl spawn "${simulator_udid}" \
+            launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
+
+      - name: Measure release size, startup, and memory
+        env:
+          WATERUI_DIR: ${{ github.workspace }}
+          RECORD_DIR: ${{ github.workspace }}/e2e-baselines
+          METRICS_DIR: ${{ github.workspace }}/release-metrics-${{ matrix.platform }}
+          RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
+          PLATFORMS: ${{ matrix.platform }}
+        run: ./.github/scripts/check-package-size.sh
+
+      - name: Summarize release metrics
+        if: always()
+        run: cat release-metrics-${{ matrix.platform }}/release-metrics.md >> "${GITHUB_STEP_SUMMARY}" || true
+
+      - name: Upload release metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metrics-${{ matrix.platform }}
+          path: release-metrics-${{ matrix.platform }}/
+          retention-days: 90
+
+      - name: Upload size measurement
+        if: inputs.record_baselines == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-baselines-package-size-${{ matrix.platform }}
+          path: e2e-baselines/
+          retention-days: 7
+
+  # The two platform legs produce one platform slice each; this job merges
+  # them into the single release-metrics report the suite reports on.
+  release-metrics-report:
+    name: release-metrics-report
+    if: always() && (github.event_name == 'schedule' || inputs.release_metrics)
+    needs: release-metrics
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download platform metrics
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: release-metrics-*
+          path: metrics/
+
+      - name: Merge platform metrics
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, json
+          merged = {}
+          sections = []
+          for path in sorted(glob.glob("metrics/release-metrics-*/release-metrics.json")):
+              with open(path) as f:
+                  for label, platforms in json.load(f).items():
+                      merged.setdefault(label, {}).update(platforms)
+          for path in sorted(glob.glob("metrics/release-metrics-*/release-metrics.md")):
+              sections.append(open(path).read())
+          with open("release-metrics.json", "w") as f:
+              json.dump(merged, f, indent=2, sort_keys=True)
+              f.write("\n")
+          with open("release-metrics.md", "w") as f:
+              f.write("## Per-platform release metrics\n\n" + "\n".join(sections))
+          print(open("release-metrics.md").read())
+          PY
+          cat release-metrics.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload merged release metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metrics
+          path: |
+            release-metrics.json
+            release-metrics.md
+          retention-days: 90
+
+  # Baselines are recorded on CI, not locally: window metrics, scale factors,
+  # and OS rendering all differ across machines. A record run uploads its
+  # captures; this job files them under backends/apple/Tests/E2EBaselines and opens a PR so a
+  # human reviews every changed pixel.
+  publish-baselines:
+    name: publish-baselines
+    if: always() && inputs.record_baselines == true
+    needs: [e2e-ios, e2e-macos, release-metrics]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download recorded baselines
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: e2e-baselines-*
+          path: recorded/
+
+      # Baselines here are text manifests only — parity budgets and the
+      # package-size measurement — never committed captures. The recorded
+      # PNGs stay on the run's e2e-baselines-* artifacts for review; how a
+      # reviewed capture becomes a committed, generator-pinned reference is
+      # under design (issue pending).
+      - name: Merge recorded package-size measurement
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, json, os
+          merged_path = "backends/apple/Tests/E2EBaselines/package-size.json"
+          merged = {}
+          if os.path.exists(merged_path):
+              with open(merged_path) as f:
+                  merged = json.load(f)
+          for path in glob.glob("recorded/*/package-size.json"):
+              with open(path) as f:
+                  merged.update(json.load(f))
+          with open(merged_path, "w") as f:
+              json.dump(merged, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+
+      # Recorded parity fractions become the new allowed budgets, with headroom
+      # for ordinary render jitter (25% + 0.2pt of a percentage point) so the
+      # gate trips on real drift, not noise.
+      - name: Merge recorded parity budgets
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import glob, json, os
+          budgets_path = "backends/apple/Tests/E2EBaselines/parity-budgets.json"
+          budgets = {}
+          if os.path.exists(budgets_path):
+              with open(budgets_path) as f:
+                  budgets = json.load(f)
+          for path in glob.glob("recorded/*/parity/*.txt"):
+              stem = os.path.basename(path)[:-4]
+              platform, _, example = stem.partition("-")
+              with open(path) as f:
+                  fraction = float(f.read().strip())
+              budgets.setdefault(platform, {})[example] = \
+                  min(1.0, round(fraction * 1.25 + 0.002, 4))
+          with open(budgets_path, "w") as f:
+              json.dump(budgets, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+
+      - name: Open baseline pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git add -A backends/apple/Tests/E2EBaselines
+          if git diff --cached --quiet; then
+            echo "No baseline changes to publish."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="e2e/baselines-${GITHUB_RUN_ID}"
+          git checkout -b "${branch}"
+          git commit -m "test: refresh e2e screenshot baselines"
+          git push -u origin "${branch}"
+          gh pr create --base dev \
+            --title "test: refresh e2e screenshot baselines" \
+            --body "Baselines recorded by nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. The captures themselves are on the run's e2e-baselines-* artifacts — review them; a changed budget or measurement without an expected visual change is a regression report, not a rubber stamp."
+
+  # One issue per broken nightly, updated in place while it stays red, so a
+  # failure that nobody was watching is on the board by morning. Record runs
+  # are expected to capture a partially broken suite — they do not report.
+  report:
+    name: Report failure
+    needs: [prepare, build-ios, build-macos, e2e-ios, e2e-macos, release-metrics, ios-device-tests, host-native]
+    if: failure() && github.event_name != 'workflow_call' && inputs.record_baselines != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: JasonEtco/create-an-issue@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WATERUI_SHA: ${{ needs.prepare.outputs.waterui_sha }}
+          WATERUI_REF: ${{ needs.prepare.outputs.waterui_ref }}
+          CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+          CLI_REF: ${{ needs.prepare.outputs.cli_ref }}
+        with:
+          filename: .github/APPLE_E2E_FAILURE.md
+          update_existing: true
+          search_existing: open

@@ -9,7 +9,8 @@ name: Nightly
 # coverage and the `cargo hack
 # --each-feature` sweep. `ci.yml` is the per-change gate. The backend
 # repositories drive the examples on their platforms in their own nightlies;
-# they do not run this suite, and nothing else does either.
+# the in-tree Apple backend is the exception — its packaged-example suite
+# (`apple-e2e.yml`) is invoked here so the certification covers it.
 #
 # A green run certifies its commit as an immutable `nightly-*` prerelease,
 # which `water channel nightly` resolves and the `Nightly healthy` check in
@@ -68,6 +69,20 @@ jobs:
     name: Windows
     uses: ./.github/workflows/windows.yml
 
+  # The in-tree Apple backend's packaged-example suite — group packaging on
+  # iOS simulator and macOS, the capture shards and the packaged-app/native
+  # device tests — so one run certifies the whole (framework, backends/apple,
+  # lockfile, CLI) combination, not just the framework half.
+  apple-e2e:
+    name: Apple e2e
+    uses: ./.github/workflows/apple-e2e.yml
+    permissions:
+      # The suite's publish-baselines job pushes a branch and opens a PR on
+      # record dispatches; its report job files the failure issue.
+      contents: write
+      pull-requests: write
+      issues: write
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -119,7 +134,7 @@ jobs:
       # depend on the feature set and already ran in `test`; an instrumented
       # rebuild of the same fixtures would measure nothing extra (trybuild's
       # own target dir is not instrumented) and cost a cold framework compile.
-      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
+      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --exclude waterui-apple --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
@@ -174,7 +189,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report, apple-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -218,7 +233,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, promote]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, promote, apple-e2e]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

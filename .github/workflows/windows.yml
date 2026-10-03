@@ -90,9 +90,9 @@ jobs:
       # `--all-features` pass is structurally impossible — `waterui-ffi`
       # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
       # enabling `c-api` and `android-jni` together can never build.
-      - run: cargo nextest run --locked --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
+      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --locked --doc --workspace --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
+      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude waterui-dylib --exclude waterui-browser-cef --exclude webview-cef-example --exclude chromium-example
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -148,6 +148,7 @@ jobs:
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci `
             --exclude waterui `
+            --exclude waterui-apple `
             --exclude waterui-dylib `
             --exclude '*-example' `
             --exclude waterui-core `
@@ -195,4 +196,4 @@ jobs:
       # is compiled nowhere else, so a lint that fires only there reaches
       # nobody.
       - name: Clippy
-        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude waterui-apple --exclude waterui-dylib --exclude waterui-browser-cef --all-targets -- -D warnings

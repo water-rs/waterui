@@ -1,0 +1,24 @@
+name: Metal toolchain
+description: >-
+  Makes sure Xcode's Metal compiler can run. shaderloom's build script turns
+  every WGSL shader into a Metal library with `xcrun metal` while cargo builds
+  filtrate, so a job that compiles a WaterUI app on macOS needs the toolchain
+  even though the app it packages never links Metal sources itself. The
+  macos-26 runner image ships Xcode 26 without the separately downloaded
+  Metal toolchain (`metal` is present but refuses to run), which only shows
+  once the cargo cache misses filtrate's build script.
+runs:
+  using: composite
+  steps:
+    - name: Install the Metal toolchain when Xcode ships without it
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The stub Xcode ships without the toolchain answers `--version`; only
+        # a real compile tells whether shaders can be built.
+        probe="${{ github.action_path }}/probe.metal"
+        if xcrun metal -c "${probe}" -o "${RUNNER_TEMP}/probe.air" >/dev/null 2>&1; then
+          exit 0
+        fi
+        xcodebuild -downloadComponent MetalToolchain
+        xcrun metal -c "${probe}" -o "${RUNNER_TEMP}/probe.air"

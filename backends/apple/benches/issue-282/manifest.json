@@ -1,0 +1,335 @@
+{
+  "issue": "water-rs/apple-backend#282",
+  "purpose": "Paired measurement of the Swift backend (old) vs the merged Rust/objc2 backend (new): package size, dev cold/incremental build time and written disk, preview latency, release launch-to-first-frame and steady RSS.",
+  "samples_per_leg": 5,
+  "dedicated_user": {
+    "name": "bench282",
+    "expected_home": "/Users/bench282",
+    "mechanism": "A NEW dedicated OS user on the measurement host — the same fresh-user mechanism the cli nightly legs use, not a HOME override. The driver itself must run as this user (sudo -Hu bench282 python3 drive.py ...): dirs::home_dir() then yields the user's real home, and ~/.water under it is wholly measurement-owned, so a true cold build can wipe the entire cache — shared target dep units included — without touching the primary user's caches. The driver refuses state-changing commands under any other uid.",
+    "validation": [
+      "running uid == bench282's uid (pwd.getpwnam, not $USER)",
+      "Path.home() equals the account's NFSHomeDirectory and is under expected_home",
+      "BENCH282_ROOT is inside that home and owned by that uid",
+      "every path deleted or wiped resolves inside the dedicated home and is owned by the dedicated uid — checked before each cold cleanup",
+      "a pre-existing non-empty ~/.water that the driver did not claim aborts setup rather than inheriting foreign cache"
+    ]
+  },
+  "sides": {
+    "old": {
+      "apple_backend": {
+        "repo": "https://github.com/water-rs/apple-backend.git",
+        "sha": "c7908d7e3b7ec6b4d00f2af294be4ea5404ec92c",
+        "note": "dev at the commit #281 branched from, per the issue"
+      },
+      "waterui": {
+        "repo": "https://github.com/water-rs/waterui.git",
+        "sha": "8cf506ce4ecce482878983e74eb2723a46f1b9bb"
+      },
+      "cli": {
+        "repo": "https://github.com/water-rs/cli.git",
+        "sha": "3927ddc56039512777db22f0d4fd8b2f3f71a1d0"
+      },
+      "provenance": "waterui/cli SHAs are the exact commits the apple-backend Nightly E2E prepare job resolved for run 36561768882 (2026-09-29, head_sha=c7908d7e) — the certified pairing CI used, not a timestamp guess.",
+      "create_extra_args": [
+        "--backends",
+        "apple",
+        "-y"
+      ],
+      "build_scope": "cargo rust-library only — the old CLI's `water build` compiles the crate; the native/Xcode link happens inside `water package`/`water run`. Package legs therefore include the full native build on this side."
+    },
+    "new": {
+      "apple_backend": {
+        "repo": "https://github.com/water-rs/apple-backend.git",
+        "sha": null,
+        "sha_env": "BENCH282_NEW_APPLE_BACKEND_SHA",
+        "pending": "Required exact coordinator-approved backend commit after signed fixes land; the former 7088fd9 placeholder is prohibited.",
+        "rejected_shas": ["7088fd966688eaa0ac0f5f567ca3e9e4247b9e76"]
+      },
+      "waterui": {
+        "repo": "https://github.com/water-rs/waterui.git",
+        "sha": null,
+        "sha_env": "BENCH282_NEW_WATERUI_SHA",
+        "pending": "The wgpu 30 migration is landing on dev imminently; the final new-side framework pin is the post-migration commit the coordinator supplies. No speculative SHA is recorded."
+      },
+      "cli": {
+        "repo": "https://github.com/water-rs/cli.git",
+        "sha": null,
+        "sha_env": "BENCH282_NEW_CLI_SHA",
+        "pending": "The coordinator supplies the eventual signed dev commit containing cli#260 (the real pending fix — earlier references to #258/#259 were wrong). No speculative SHA is recorded; setup fails until the exact commit is supplied via manifest or BENCH282_NEW_CLI_SHA (40-hex), then fetches and HEAD-verifies it."
+      },
+      "provenance": "Old side is the certified Nightly E2E pairing. All three new-side exact commits are required coordinator inputs, verified at explicit finalization before scaffold or measurement.",
+      "create_extra_args": [],
+      "build_scope": "rust library + managed native backend host project — the new CLI generates and builds the WaterUIApp host inside the managed build cache during `water build`."
+    }
+  },
+  "subjects": {
+    "fresh": {
+      "kind": "created",
+      "display_name": "Bench282",
+      "bundle_id": "dev.waterui.bench282",
+      "folder_name": "bench282",
+      "crate_name": "bench282",
+      "scheme": "bench282",
+      "preview_target": null,
+      "comment": "Generated source is identical across sides. Incremental builds change one rendered header, resetting to baseline before each cold build, preview pair, and release package.",
+      "incremental_edit": {
+        "before": "text(\"WaterUI Demo\")",
+        "after": "text(\"WaterUI Demo!\")"
+      }
+    },
+    "form": {
+      "kind": "app",
+      "folder_name": "form",
+      "source": {
+        "repo": "https://github.com/water-rs/waterui.git",
+        "sha": "8cf506ce4ecce482878983e74eb2723a46f1b9bb",
+        "path": "examples/form"
+      },
+      "bundle_id": "com.waterui.form_example",
+      "crate_name": "form_example",
+      "scheme": "form_example",
+      "preview_target": "demo",
+      "comment": "The form src tree comes from the exact old framework pin. Old manifests require package.type=app and an Apple scheme alongside the exact [backends.apple] backend_path; new manifests carry no [backends.*] table — the backend binding is waterui_path plus the harness-owned backends/apple link.",
+      "incremental_edit": {
+        "before": "text(\"WaterUI Form Examples\")",
+        "after": "text(\"WaterUI Form Examples!\")"
+      }
+    }
+  },
+  "legs": {
+    "cold-build": {
+      "platforms": [
+        "macos",
+        "ios-simulator"
+      ],
+      "command": [
+        "water",
+        "build",
+        "--platform",
+        "{platform}",
+        "--path",
+        "{project}"
+      ],
+      "cold": true,
+      "timeout_s": 1800,
+      "required_metrics": [
+        "wall_ms",
+        "build_disk_bytes"
+      ]
+    },
+    "incremental-build": {
+      "platforms": [
+        "macos",
+        "ios-simulator"
+      ],
+      "command": [
+        "water",
+        "build",
+        "--platform",
+        "{platform}",
+        "--path",
+        "{project}"
+      ],
+      "cold": false,
+      "requires_warm_state": true,
+      "timeout_s": 900,
+      "required_metrics": [
+        "wall_ms",
+        "build_disk_bytes"
+      ]
+    },
+    "preview-cold": {
+      "platforms": [
+        "macos"
+      ],
+      "subjects": [
+        "form"
+      ],
+      "command": [
+        "water",
+        "preview",
+        "{preview_target}",
+        "--platform",
+        "{platform}",
+        "--output",
+        "{out_png}",
+        "--path",
+        "{project}"
+      ],
+      "cold": true,
+      "timeout_s": 1800,
+      "required_metrics": [
+        "wall_ms",
+        "png_bytes"
+      ]
+    },
+    "preview-warm": {
+      "platforms": [
+        "macos"
+      ],
+      "subjects": [
+        "form"
+      ],
+      "command": [
+        "water",
+        "preview",
+        "{preview_target}",
+        "--platform",
+        "{platform}",
+        "--output",
+        "{out_png}",
+        "--path",
+        "{project}"
+      ],
+      "cold": false,
+      "timeout_s": 600,
+      "required_metrics": [
+        "wall_ms",
+        "png_bytes"
+      ]
+    },
+    "package": {
+      "platforms": [
+        "macos",
+        "ios",
+        "ios-simulator"
+      ],
+      "command": [
+        "water",
+        "package",
+        "--platform",
+        "{platform}",
+        "--backend",
+        "apple",
+        "--release",
+        "--path",
+        "{project}"
+      ],
+      "platform_extra_args": {
+        "ios": [
+          "--unsigned"
+        ]
+      },
+      "cold": true,
+      "timeout_s": 1800,
+      "comment": "Release packaging; measured metric is artifact size (app_bytes, executable_bytes), timing recorded for context. --unsigned is the supported flag for a signing-free host.",
+      "required_metrics": [
+        "wall_ms",
+        "app_bytes",
+        "executable_bytes"
+      ]
+    },
+    "launch": {
+      "platforms": [
+        "macos",
+        "ios-simulator"
+      ],
+      "cold": false,
+      "timeout_s": 300,
+      "stream_attach_timeout_s": 30,
+      "rss_samples": 20,
+      "rss_interval_s": 0.5,
+      "steady_tail": 5,
+      "marker": "waterui_first_paint_ms=",
+      "log_subsystem": "dev.waterui",
+      "comment": "Start subsystem-filtered NDJSON live log stream and await its attach header BEFORE app spawn. Buffer structured events, then filter processID and subsystem after PID becomes known. All owned processes are cleaned up on every exit. RSS requires the full 20-sample window; last 5 median is steady RSS.",
+      "required_metrics": [
+        "first_paint_ms",
+        "marker_observed_wall_ms",
+        "steady_rss_bytes",
+        "peak_rss_bytes"
+      ]
+    }
+  },
+  "cold_clean": {
+    "cli_commands": [
+      [
+        "water",
+        "clean",
+        "--path",
+        "{project}",
+        "--backend",
+        "apple",
+        "-y"
+      ]
+    ],
+    "owned_delete_globs_note": "Dedicated bench282 owns all caches. Wipe complete build cache, DerivedData and SwiftPM compiled caches; retain Cargo registry downloads and toolchains. Package/launch pairs are adjacent so cleanup never destroys an upcoming launch's input.",
+    "wipe_whole_dirs": [
+      "{home}/.water/build_cache",
+      "{home}/Library/Caches/org.swift.swiftpm",
+      "{home}/Library/Developer/Xcode/DerivedData"
+    ],
+    "owned_delete_globs": [
+      "{project}/target",
+      "{project}/apple",
+      "{project}/DerivedData",
+      "{project}/.water",
+      "{project}/preview*.png",
+      "{project}/ffi"
+    ],
+    "owned_delete_globs_comment": "Per-project trees under the dedicated home: generated Xcode DerivedData entries and in-project build outputs."
+  },
+  "disk_usage_paths": [
+    "{home}/.water/build_cache",
+    "{home}/Library/Developer/Xcode/DerivedData",
+    "{home}/Library/Caches/org.swift.swiftpm",
+    "{project}/target",
+    "{project}/apple",
+    "{project}/DerivedData",
+    "{project}/ffi"
+  ],
+  "toolchain_probes": [
+    [
+      "sw_vers"
+    ],
+    [
+      "xcodebuild",
+      "-version"
+    ],
+    [
+      "xcode-select",
+      "-p"
+    ],
+    [
+      "swiftc",
+      "--version"
+    ],
+    [
+      "rustc",
+      "--version"
+    ],
+    [
+      "cargo",
+      "--version"
+    ],
+    [
+      "uname",
+      "-m"
+    ],
+    [
+      "sysctl",
+      "-n",
+      "hw.memsize",
+      "hw.ncpu"
+    ]
+  ],
+  "measured_env_overrides": {
+    "WATERUI_DISABLE_SCCACHE": "1",
+    "RUSTC_WRAPPER": null,
+    "SCCACHE": null,
+    "CARGO_INCREMENTAL": null,
+    "CARGO_TARGET_DIR": null,
+    "CARGO_BUILD_TARGET_DIR": null,
+    "RUSTC_WORKSPACE_WRAPPER": null
+  },
+  "timeouts": {
+    "clone": 1800,
+    "cargo_install": 1800,
+    "scaffold": 900,
+    "lockfile": 600,
+    "clean_step": 600,
+    "default_leg": 900
+  },
+  "timeouts_comment": "No single step may exceed 30 minutes; every leg and setup step is individually bounded and records timed_out on expiry.",
+  "protocol_version": 4
+}

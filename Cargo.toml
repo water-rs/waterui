@@ -24,6 +24,9 @@ members = [
     "macros",
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
+    "backends/apple",
+    "backends/apple/Examples/liquid_glass",
+    "backends/apple/Tests/IOSTestHost",
     "backends/core",
     "components/icon/*",
 ]
@@ -57,17 +60,17 @@ categories = ["gui"]
 # the same facts from the checked-out manifest directly.
 [package.metadata.waterui]
 # The lowest CLI version that may consume this framework revision.
-minimum-cli-version = "0.4.0"
+# 0.4.4 understands `apple-backend-path`.
+minimum-cli-version = "0.4.4"
 # The Android API floor the native runtime supports; the backend's Gradle
 # `minSdk` must agree.
 android-min-api-level = 26
-# Native backends are pinned to compatible commits. The CLI preserves these
-# revisions when scaffolding a project; neither backend rides a gitlink.
-apple-backend-url = "https://github.com/water-rs/apple-backend.git"
-# The objc2 Rust backend (`waterui-apple`) consumed by the CLI's
-# entry-owning Apple packaging. This revision has no waterui-ffi or generated
+# The objc2 Rust backend (`waterui-apple`) lives in-tree at
+# `backends/apple`; it rides the framework's own commit — consumed as a path
+# package of the selected source — and the CLI preserves that location when
+# scaffolding a project. This revision has no waterui-ffi or generated
 # C-header dependency.
-apple-backend-revision = "b6ddc957c569ac42cd63675cbab176002746a7e2"
+apple-backend-path = "backends/apple"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
