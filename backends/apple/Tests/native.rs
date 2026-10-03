@@ -493,6 +493,10 @@ mod tabs {
                 pane_scroll_view_tracks_nav_pushes();
                 Ok(())
             }),
+            libtest_mimic::Trial::test("tabs::pane_scroll_view_tracks_dynamic_replacement", || {
+                pane_scroll_view_tracks_dynamic_replacement();
+                Ok(())
+            }),
             libtest_mimic::Trial::test("tabs::bottom_accessory_mounts_into_the_controller", || {
                 bottom_accessory_mounts_into_the_controller();
                 Ok(())
@@ -794,6 +798,91 @@ mod tabs {
                 .is_none(),
             "a scroll-free pane associates nothing"
         );
+    }
+
+    /// A `Dynamic` pane replacement re-answers through the same declared
+    /// chain: swap in fresh scroll content and the next query reports
+    /// the new surface; swap to scroll-free content and the answer is
+    /// `None` exactly. The replaced scroll deallocates once the pools
+    /// drain — nothing in the tab controller retains it.
+    pub fn pane_scroll_view_tracks_dynamic_replacement() {
+        use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
+        use waterui::component::Dynamic;
+        use waterui_backend_core::AnyView;
+
+        let scrolled = binding(true);
+        let content = scrolled.clone();
+        let pane = binding(Pane::One);
+        // Render inside a bounded pool: the leaf's own `Retained`/`Rc`
+        // ownership survives, while every autoreleased temporary the
+        // mount produced drains now — the weak read later must not meet
+        // a render-time retainer in the harness's outer pool.
+        let leaf = autoreleasepool(|_| {
+            resolve::render(Tabs::new(
+                &pane,
+                vec![Tab::container(Pane::One, label("One"), move || {
+                    Dynamic::watch(content.clone(), |scrolled| {
+                        if scrolled {
+                            AnyView::new(scroll(text("surface")))
+                        } else {
+                            AnyView::new(text("plain"))
+                        }
+                    })
+                })],
+            ))
+        });
+        let controller = autoreleasepool(|_| {
+            tab_bar_controller(&leaf)
+                .viewControllers()
+                .expect("tabs installed")
+                .objectAtIndex(0)
+        });
+        // Every association/query temporary drains before the swap: the
+        // weak read afterwards must not meet an autoreleased retainer.
+        let weak_old = autoreleasepool(|_| {
+            let old_scrolls = scroll_views_in(&controller.view().expect("the pane's root view"));
+            assert_eq!(old_scrolls.len(), 1, "the fixture mounts one scroll");
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the scroll associates for the bottom edge");
+            assert_eq!(
+                Retained::as_ptr(&associated),
+                Retained::as_ptr(&old_scrolls[0])
+            );
+            Weak::from_retained(&old_scrolls[0])
+        });
+
+        // Replacing the pane's content inside a bounded pool keeps UIKit
+        // autorelease temporaries from holding the old surface past the
+        // swap — the weak read happens after the drain.
+        autoreleasepool(|_| {
+            scrolled.set(false);
+        });
+        assert!(
+            autoreleasepool(|_| controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none()),
+            "a scroll-free replacement answers None"
+        );
+        assert!(
+            weak_old.load().is_none(),
+            "the replaced scroll is deallocated — nothing retained it"
+        );
+
+        // Swapping scroll content back in mounts a fresh surface the next
+        // query reports — not the released one.
+        autoreleasepool(|_| {
+            scrolled.set(true);
+            let new_scrolls = scroll_views_in(&controller.view().expect("the pane's root view"));
+            assert_eq!(new_scrolls.len(), 1, "the replacement mounts one scroll");
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the new scroll associates for the bottom edge");
+            assert_eq!(
+                Retained::as_ptr(&associated),
+                Retained::as_ptr(&new_scrolls[0])
+            );
+        });
     }
 
     /// The association answers the *current* surface on every `UIKit`
