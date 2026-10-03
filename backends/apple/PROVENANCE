@@ -36,9 +36,9 @@ Excluded from the import: Cargo.lock (the workspace lock owns
 resolution), .github/ (CI migrated separately), .cargo/ and .config/
 (member-level cargo/nextest config is inert under a root workspace —
 the iOS-simulator runner and the bindgen triple fix moved into the root
-.cargo/config.toml / .config/nextest.toml), Package.swift and .swiftpm/
-(moved to the repository root — the root Package.swift is the single
-SwiftPM manifest), and every generated or build output.
+.cargo/config.toml / .config/nextest.toml), Package.swift (moved to the repository root — the root Package.swift
+is the single SwiftPM manifest) and the obsolete .swiftpm/ test scheme
+(its WaterUITests target no longer exists; native tests live in Rust), and every generated or build output.
 
 Imported text files without a terminal newline were normalized during
 signed integration. No other source changes beyond those noted above.
