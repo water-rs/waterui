@@ -40,6 +40,9 @@ on:
       - .github/workflows/apple.yml
       - ".github/scripts/**"
       - ".github/actions/metal-toolchain/**"
+      - ".github/actions/setup-rust/**"
+      - ".github/actions/cargo-sources/**"
+      - ".github/actions/retire-cargo-caches/**"
   pull_request:
     branches: ["**"]
     paths:
@@ -64,6 +67,9 @@ on:
       - .github/workflows/apple.yml
       - ".github/scripts/**"
       - ".github/actions/metal-toolchain/**"
+      - ".github/actions/setup-rust/**"
+      - ".github/actions/cargo-sources/**"
+      - ".github/actions/retire-cargo-caches/**"
 
 concurrency:
   group: apple-${{ github.ref }}
@@ -234,6 +240,12 @@ jobs:
   rust:
     name: rust
     runs-on: macos-26
+    permissions:
+      contents: read
+      # Retires superseded generations of only this job's two cache
+      # families (cargo-sources-macOS-*, apple-target-macOS-ARM64-*) on
+      # the job's own ref, then saves the replacement archives.
+      actions: write
     env:
       CARGO_TERM_COLOR: always
       CARGO_BUILD_TARGET: aarch64-apple-darwin
@@ -264,14 +276,7 @@ jobs:
         run: echo "hash=$(rustc -vV | shasum -a 256 | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
       - name: Restore Cargo sources
         id: cargo-sources
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-sources-${{ runner.os }}-
+        uses: ./.github/actions/cargo-sources
       - name: Restore compiled target cache
         id: apple-target
         uses: actions/cache/restore@v4
@@ -334,16 +339,33 @@ jobs:
       - name: Target size
         run: du -sh target
       # Writer side of the two archives described above — reached only when
-      # every check passed, on `dev` pushes only, and skipped when the exact
-      # key was already restored (nothing new to publish).
-      - name: Save Cargo sources
-        if: github.ref == 'refs/heads/dev' && steps.cargo-sources.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+      # every check passed, on `dev`/`main` pushes only (the compiled-target
+      # archive stays `dev`-only), and skipped when the exact key was already
+      # restored (nothing new to publish). The retirement step runs BEFORE
+      # the saves: a lockfile bump mints a new key, so the superseded
+      # generations of this job's own two families on this exact ref are
+      # deleted first — otherwise the save itself can evict a live,
+      # unrelated cache while the stale generation sits under quota.
+      - name: Retire superseded cache generations
+        if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+        uses: ./.github/actions/retire-cargo-caches
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          families: cargo-sources-${{ runner.os }}-,apple-target-${{ runner.os }}-${{ runner.arch }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.apple-target.outputs.cache-primary-key }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # The sources archive is writable from both integration branches:
+      # caches are only visible to the ref that wrote them (plus its base
+      # and the default branch), so a dev-only writer would leave every
+      # `main` run cold. The target archive stays dev-only — a `main` run
+      # cannot restore a dev cache through the prefix either, so the
+      # release-line target cache remains explicitly cold unless a cache
+      # written on `main` or the default branch exists.
+      - name: Save Cargo sources
+        if: (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true'
+        uses: ./.github/actions/cargo-sources
+        with:
+          operation: save
+          primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
       - name: Save compiled target cache
         if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

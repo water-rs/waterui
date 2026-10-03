@@ -34,19 +34,12 @@ jobs:
           targets: aarch64-apple-darwin
           cache: "false"
       # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`
-      # pushes (source packages are toolchain-independent). This lane never
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes (source packages are toolchain-independent). This lane never
       # saves and caches no `target`, so it can never evict the gate's
       # compile cache.
       - name: Restore Cargo sources
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-sources-${{ runner.os }}-
+        uses: ./.github/actions/cargo-sources
       # The benches run against the backend's real AppKit objects — no
       # seam, header or harness archive exists to link.
       - name: Benchmark (informational)

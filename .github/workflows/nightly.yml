@@ -54,6 +54,11 @@ jobs:
   test:
     name: Test
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: true
 
@@ -68,6 +73,11 @@ jobs:
   windows:
     name: Windows
     uses: ./.github/workflows/windows.yml
+    # The Windows source writer's cache-retirement step needs actions:write
+    # on its own family; nothing else in the called workflow gains it.
+    permissions:
+      contents: read
+      actions: write
 
   # The in-tree Apple backend's packaged-example suite — group packaging on
   # iOS simulator and macOS, the capture shards and the packaged-app/native
@@ -103,10 +113,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: llvm-tools-preview
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
         # The instrumented run executes the same GPU-backed snapshot tests as
         # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
@@ -151,10 +162,11 @@ jobs:
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
       - uses: ./.github/actions/install-tool
         with:
