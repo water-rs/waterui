@@ -84,19 +84,20 @@ impl AcceleratedFrameSink for LinuxFrameSink {
 }
 
 fn make_frame_sink(handles: GpuHandles, mailbox: Arc<OwnedFrameMailbox>) -> LinuxFrameSink {
+    let GpuHandles {
+        adapter,
+        device,
+        queue,
+    } = handles;
     assert!(
         matches!(
-            handles.adapter.get_info().backend,
+            adapter.get_info().backend,
             wgpu::Backend::Vulkan | wgpu::Backend::Gl
         ),
         "CEF DMA-BUF composition requires WaterUI's Vulkan or EGL/GLES backend"
     );
     LinuxFrameSink {
-        importer: Rc::new(DmaBufImporter::new(
-            &handles.device,
-            &handles.queue,
-            &handles.adapter,
-        )),
+        importer: Rc::new(DmaBufImporter::new(&device, &queue, &adapter)),
         mailbox,
     }
 }
