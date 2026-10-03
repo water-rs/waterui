@@ -2233,3 +2233,52 @@ impl ToJavaStruct for crate::WuiMenuItem {
         .expect("Failed to create MenuItemStruct")
     }
 }
+
+/// `MetadataTransitionStruct(contentPtr: Long, specPtr: Long)`
+///
+/// `specPtr` is the owning transition declaration, released by
+/// `WatcherJni.transitionDropSpec` once no ghost still references it.
+impl ToJavaStruct for crate::WuiMetadata<*mut crate::events::transition::WuiTransitionSpec> {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/MetadataTransitionStruct"
+            ))
+            .expect("MetadataTransitionStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(JJ)V"),
+            &[
+                JValue::Long(self.content as jlong),
+                JValue::Long(self.value as jlong),
+            ],
+        )
+        .expect("Failed to create MetadataTransitionStruct")
+    }
+}
+
+/// `TransitionPropertiesStruct(opacity: Float, scaleX: Float, scaleY: Float,
+/// translationX: Float, translationY: Float, rotation: Float, blur: Float)`
+impl ToJavaStruct for crate::events::transition::WuiTransitionProperties {
+    fn to_java_struct<'local>(self, env: &mut JNIEnv<'local>) -> JObject<'local> {
+        let class = env
+            .find_class(jni_str!(
+                "dev/waterui/android/runtime/TransitionPropertiesStruct"
+            ))
+            .expect("TransitionPropertiesStruct class not found");
+        env.new_object(
+            &class,
+            jni_sig!("(FFFFFFF)V"),
+            &[
+                JValue::Float(self.opacity),
+                JValue::Float(self.scale_x),
+                JValue::Float(self.scale_y),
+                JValue::Float(self.translation_x),
+                JValue::Float(self.translation_y),
+                JValue::Float(self.rotation),
+                JValue::Float(self.blur),
+            ],
+        )
+        .expect("Failed to create TransitionPropertiesStruct")
+    }
+}

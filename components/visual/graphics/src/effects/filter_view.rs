@@ -272,6 +272,11 @@ impl ParamGuards {
         Reactive(slot)
     }
 
+    /// Retains a UI-side subscription until this filtered view is dropped.
+    pub fn retain(&mut self, guard: impl Any) {
+        self.0.push(Box::new(guard));
+    }
+
     fn extend(&mut self, other: Self) {
         self.0.extend(other.0);
     }
