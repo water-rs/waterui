@@ -1393,8 +1393,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The single wake every visibility source shares: ancestor
         // emitters (hidden/alpha/frame/bounds/reparent on `CocoaUi`
-        // classes, this `HostView` included, plus the documented `NSView`
-        // frame/bounds notifications on foreign `AppKit` ancestors) and
+        // classes, this `HostView` included; foreign ancestors report
+        // through the explicit host `updateVisibility` contract) and
         // the enclosing scroll-viewport observation all land here. The
         // `VisibilityWatch` owns every registration and detaches them
         // all when the state drops.

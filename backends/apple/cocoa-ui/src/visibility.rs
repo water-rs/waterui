@@ -225,13 +225,20 @@ pub struct VisibilityWakes {
 /// Registers `handler` on `view` and every ancestor that can publish
 /// visibility changes — the same ancestor chain [`presentable`] walks.
 ///
-/// Each `CocoaUi` node subscribes through its emitter; on `AppKit` every
-/// other ancestor gets the documented `NSView` frame/bounds
-/// notifications (its `postsFrameChangedNotifications` /
-/// `postsBoundsChangedNotifications` values are restored when the token
-/// drops). The returned [`VisibilityWakes`] owns the whole chain:
-/// refresh by dropping the old set — the new walk then binds only the
-/// ancestors that currently enclose `view`.
+/// Each `CocoaUi` node subscribes through its emitter. Foreign
+/// (non-`CocoaUi`) ancestors publish nothing here: mutating a foreign
+/// view's notification flags is unsound once several mounted leaves
+/// share the ancestor — one token's restore can silence another live
+/// observation — so geometry, `hidden`/`alpha`, and reparent changes a
+/// host makes outside `CocoaUi` containers are reported through the
+/// explicit host visibility contract (`waterui_apple_update_visibility`
+/// / `-[WaterUIHostController updateVisibility]`) instead. Scroll
+/// ancestors stay automatic: [`crate::scroll::observe_scroll_viewport`]
+/// rides public `UIScrollView`/`NSScrollView` APIs on any class.
+///
+/// The returned [`VisibilityWakes`] owns the whole chain: refresh by
+/// dropping the old set — the new walk then binds only the ancestors
+/// that currently enclose `view`.
 pub fn subscribe_visibility_wakes(view: &PlatformView, handler: &Rc<dyn Fn()>) -> VisibilityWakes {
     let mut subscriptions = Vec::new();
     let mut ancestor: Option<Retained<PlatformView>> = Some(Retained::from(view));
@@ -242,68 +249,14 @@ pub fn subscribe_visibility_wakes(view: &PlatformView, handler: &Rc<dyn Fn()>) -
         // SAFETY: `superview` is a read-only accessor queried on the main
         // thread, as every visibility decision is.
         let next = unsafe { current.superview() };
-        let emitter = emitter_of(&current);
-        #[cfg(target_os = "ios")]
-        if let Some(emitter) = emitter {
+        if let Some(emitter) = emitter_of(&current) {
             subscriptions.push(emitter.subscribe(&Rc::downgrade(handler)));
         }
-        #[cfg(target_os = "macos")]
-        subscriptions.push(emitter.map_or_else(
-            || subscribe_native_ancestor(&current, handler),
-            |emitter| emitter.subscribe(&Rc::downgrade(handler)),
-        ));
         ancestor = next;
     }
     VisibilityWakes {
         _subscriptions: subscriptions,
     }
-}
-
-/// `AppKit`: wakes `handler` on a foreign ancestor's frame or bounds
-/// change via the documented `NSView` notifications, restoring the
-/// view's posting flags when the token drops. `UIKit` has no equivalent
-/// public hook — see the module documentation.
-#[cfg(target_os = "macos")]
-fn subscribe_native_ancestor(view: &objc2_app_kit::NSView, handler: &Rc<dyn Fn()>) -> Subscription {
-    let mtm =
-        objc2::MainThreadMarker::new().expect("visibility subscriptions run on the main thread");
-    let posted_frames = view.postsFrameChangedNotifications();
-    let posted_bounds = view.postsBoundsChangedNotifications();
-    view.setPostsFrameChangedNotifications(true);
-    view.setPostsBoundsChangedNotifications(true);
-    let frame = {
-        let handler = handler.clone();
-        crate::notification::observe_object(
-            mtm,
-            // SAFETY: a static `NSString` constant `AppKit` owns.
-            &crate::notification::NotificationName::framework(unsafe {
-                objc2_app_kit::NSViewFrameDidChangeNotification
-            }),
-            AsRef::<objc2::runtime::AnyObject>::as_ref(view),
-            move || handler(),
-        )
-    };
-    let bounds = {
-        let handler = handler.clone();
-        crate::notification::observe_object(
-            mtm,
-            // SAFETY: a static `NSString` constant `AppKit` owns.
-            &crate::notification::NotificationName::framework(unsafe {
-                objc2_app_kit::NSViewBoundsDidChangeNotification
-            }),
-            AsRef::<objc2::runtime::AnyObject>::as_ref(view),
-            move || handler(),
-        )
-    };
-    let weak_view = objc2::rc::Weak::new(view);
-    Subscription::new(move || {
-        drop(frame);
-        drop(bounds);
-        if let Some(view) = weak_view.load() {
-            view.setPostsFrameChangedNotifications(posted_frames);
-            view.setPostsBoundsChangedNotifications(posted_bounds);
-        }
-    })
 }
 
 /// The emitter `view` hosts, if it is one of the `CocoaUi` classes that
@@ -363,10 +316,18 @@ impl std::fmt::Debug for VisibilityWatch {
     }
 }
 
-#[derive(Debug)]
 struct ScrollBinding {
     _observation: ScrollObservation,
-    view: Retained<ScrollView>,
+    /// The scroll ancestor this binding watches, kept weakly: the watch
+    /// is owned by a descendant, so a strong retain here would loop the
+    /// view hierarchy (`scroll → subtree → view → state → watch`).
+    view: objc2::rc::Weak<ScrollView>,
+}
+
+impl std::fmt::Debug for ScrollBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScrollBinding").finish_non_exhaustive()
+    }
 }
 
 impl VisibilityWatch {
@@ -396,7 +357,7 @@ impl VisibilityWatch {
         let mut slot = self.scroll.borrow_mut();
         let unchanged = match (slot.as_ref(), scroll.as_ref()) {
             (Some(binding), Some(scroll)) => {
-                Retained::as_ptr(&binding.view) == Retained::as_ptr(scroll)
+                binding.view.load().as_ref().map(Retained::as_ptr) == Some(Retained::as_ptr(scroll))
             }
             (None, None) => true,
             _ => false,
@@ -409,7 +370,7 @@ impl VisibilityWatch {
                 let handler = self.handler.clone();
                 move || handler()
             }),
-            view: scroll,
+            view: objc2::rc::Weak::new(&*scroll),
         });
     }
 }

@@ -1644,22 +1644,26 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         });
     }
 
-    // The single wake every visibility source shares: ancestor emitters
-    // (hidden/alpha/frame/bounds/reparent on `CocoaUi` classes and, on
-    // `AppKit`, the documented `NSView` frame/bounds notifications) and
-    // the enclosing scroll-viewport observation all land here. The
-    // `VisibilityWatch` owns every registration and detaches them all
-    // when the state drops.
+    // The single wake every visibility source shares: ancestor
+    // emitters (hidden/alpha/frame/bounds/reparent on `CocoaUi`
+    // classes; foreign ancestors report through the explicit host
+    // `updateVisibility` contract) and the enclosing scroll-viewport
+    // observation all land here. The `VisibilityWatch` owns every
+    // registration and detaches them all when the state drops. Both
+    // captures are weak — a strong `view` would close
+    // `state → watch → wake → view` onto the existing `view → handler
+    // → state` edge and leak the surface.
     let wake: Rc<dyn Fn()> = Rc::new({
         let state = Rc::downgrade(state);
-        let view = platform_view.clone();
+        let view = objc2::rc::Weak::new(&**platform_view);
         move || {
-            if let Some(state) = state.upgrade() {
-                if let Some(watch) = state.visibility_watch.borrow().as_ref() {
-                    watch.refresh(view.as_platform_view());
-                }
-                update_display_link_state(&state, &view);
+            let (Some(state), Some(view)) = (state.upgrade(), view.load()) else {
+                return;
+            };
+            if let Some(watch) = state.visibility_watch.borrow().as_ref() {
+                watch.refresh(view.as_platform_view());
             }
+            update_display_link_state(&state, &view);
         }
     });
     *state.visibility_watch.borrow_mut() = Some(cocoa_ui::visibility::VisibilityWatch::new(

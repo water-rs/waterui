@@ -305,9 +305,11 @@ fn a_windowed_view_is_presentable_until_clipped_or_hidden() {
 /// every observable ancestor, `refresh` detaches the old chain's tokens
 /// before binding the new one — so a reparent's previous ancestors can
 /// never reach the handler — and dropping the watch stops delivery
-/// entirely. A plain `NSView` ancestor with no emitter still wakes
-/// through the documented `NSView` frame/bounds notifications, and the
-/// subscription restores its posting flags on detach.
+/// entirely. A plain `NSView` ancestor with no emitter stays
+/// unobserved: mutating its notification flags is unsound under shared
+/// leaves, so a host reports its changes through `updateVisibility`
+/// instead — the watch must neither subscribe to it nor touch its
+/// posting flags.
 fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
     let mtm = marker();
     let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
@@ -351,9 +353,11 @@ fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
         "an ancestor the watch detached still delivered a wake"
     );
 
-    // A foreign (non-`CocoaUi`) ancestor emits no visibility event of
-    // its own; the subscription rides the documented `NSView`
-    // frame/bounds notifications instead, then restores its flags.
+    // A foreign (non-`CocoaUi`) ancestor publishes nothing the watch can
+    // subscribe to — per-watch flag mutation was unsound — so its frame
+    // change must NOT reach the wake and its posting flags must stay
+    // untouched; the host reports those changes through the explicit
+    // `updateVisibility` contract.
     // SAFETY: `initWithFrame:` on a fresh `NSView` allocation on the main
     // thread.
     let plain: Retained<NSView> = unsafe {
@@ -362,22 +366,35 @@ fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
     host.add_subview(&plain);
     cocoa_ui::view::remove_from_superview(&child);
     cocoa_ui::view::add_subview(&plain, &child);
+    let posted_frame = plain.postsFrameChangedNotifications();
     let posted_bounds = plain.postsBoundsChangedNotifications();
     watch.refresh(&child);
     let before = fires.get();
     plain.setFrameSize(Size::new(180.0, 200.0).into());
     assert_eq!(
         fires.get() - before,
-        1,
-        "a foreign ancestor's frame change never reached the wake"
+        0,
+        "a foreign ancestor's frame change must not wake a descendant — hosts call updateVisibility"
     );
+    // `AppKit` itself enables posting on windowed views — the watch's
+    // contract is only that it leaves the flags exactly as it found
+    // them.
+    assert_eq!(
+        (
+            plain.postsFrameChangedNotifications(),
+            plain.postsBoundsChangedNotifications()
+        ),
+        (posted_frame, posted_bounds),
+        "the watch mutated a foreign ancestor's posting flags"
+    );
+    // The host-side contract: emitting on a mounted `CocoaUi` root — the
+    // call `waterui_apple_update_visibility` performs — still reaches
+    // the wake through the foreign layer.
+    let before = fires.get();
+    host.visibility_emitter().emit();
+    assert_eq!(fires.get() - before, 1);
 
     drop(watch);
-    assert_eq!(
-        plain.postsBoundsChangedNotifications(),
-        posted_bounds,
-        "detaching did not restore the ancestor's posting flags"
-    );
     let before = fires.get();
     plain.setFrameSize(Size::new(200.0, 200.0).into());
     other.visibility_emitter().emit();
