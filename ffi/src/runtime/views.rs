@@ -23,7 +23,7 @@ opaque!(
     WuiViewSnapshot,
     AnyViewsSnapshot<AnyView>,
     view_snapshot,
-    any()
+    all()
 );
 
 /// Captures the collection's current state as an immutable, owning snapshot.
