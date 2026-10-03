@@ -67,6 +67,8 @@ impl SceneContent for ScenePane {
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
 
+    fn rebuild_for_engine(&mut self) {}
+
     fn wants_input_events(&self) -> bool {
         true
     }
@@ -98,6 +100,8 @@ impl SceneContent for IntrinsicScenePane {
     }
 
     fn input(&mut self, _event: &SurfaceInputEvent) {}
+
+    fn rebuild_for_engine(&mut self) {}
 }
 
 /// Which kind of input-receiving leaf the panes are built from.

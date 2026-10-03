@@ -584,6 +584,10 @@ impl SceneContent for SceneProbe {
         self.invalidator = invalidator;
     }
 
+    fn rebuild_for_engine(&mut self) {
+        self.invalidator = None;
+    }
+
     fn wants_input_events(&self) -> bool {
         true
     }

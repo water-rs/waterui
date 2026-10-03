@@ -25,6 +25,10 @@ members = [
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
     "backends/core",
+    "backends/hydrolysis",
+    # The Android debug app's Rust half is a package nested inside the
+    # backend's directory, so it joins the workspace explicitly.
+    "backends/hydrolysis/android/test-app/rust",
     "components/icon/*",
 ]
 exclude = [
@@ -254,6 +258,7 @@ waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/in
 waterui-inspector-app = { version = "0.5.2", path = "components/devtools/inspector/app" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
+waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # Nothing in this workspace links the GTK, WinUI or Dew backends: the `water`
 # CLI reads these entries to scaffold a launcher crate against the published
 # versions. A `git` half here would not be inert — the CLI's stable channel
@@ -263,7 +268,7 @@ waterui-winui = "0.1.0"
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
-hydrolysis = { version = "0.3.1", default-features = false }
+hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
 waterui-dew = "0.3.0"
 waterui = { version = "0.5.2", path = "." }
 waterui-icons-codegen = { version = "0.5.1", path = "components/icon/codegen" }
@@ -529,10 +534,10 @@ waterui-url = { path = "utils/url" }
 waterui-controls = { path = "components/foundation/controls" }
 waterui-video = { path = "components/multimedia/video" }
 waterui-macros = { path = "macros" }
-# The Hydrolysis renderer and its Material 3 theme are extracted too (#480,
-# #481) and pull the rest of the framework from the registry; every crate they
-# name needs an entry here or the workspace builds a second `waterui` beside
-# its own.
+# The Hydrolysis renderer lives in this workspace at `backends/hydrolysis`
+# (#1428); its Material 3 theme is still external (#481) and pulls the rest
+# of the framework from the registry, so every crate it names needs an entry
+# here or the workspace builds a second `waterui` beside its own.
 waterui = { path = "." }
 waterui-assets = { path = "components/assets/runtime" }
 waterui-assets-core = { path = "components/assets/core" }
@@ -543,19 +548,13 @@ waterui-inspector-protocol = { path = "components/devtools/inspector/protocol" }
 waterui-locale = { path = "utils/locale" }
 waterui-navigation = { path = "components/foundation/navigation" }
 waterui-webview = { path = "components/platform/webview" }
-# The executor now takes its refresh rate from the host (#1201), and the
-# registry hydrolysis still calls the removed display probe. This is the
-# hydrolysis revision that supplies the rate from winit's monitors,
-# implements the icon-button contract (water-rs/hydrolysis#115),
-# renders the framework-owned ListSelection (water-rs/waterui#1226),
-# resolves pointer activation points through the node's clip chain
-# (water-rs/hydrolysis#27), and carries the macOS menu-bar fix
-# (water-rs/hydrolysis#322); drop it when a hydrolysis release carries
-# those changes.
-# hydrolysis is pinned by the migration block at the bottom of this table.
-# The registry 0.3.1 theme implements the four-argument `draw_button_chrome`
-# removed on this branch; the pinned revision carries the icon-button
-# contract (water-rs/hydrolysis#115). Drop it once a release has the change.
+# `hydrolysis-m3` declares its renderer requirement against the registry;
+# this entry makes it resolve to the in-tree backend so the graph carries
+# exactly one hydrolysis. The registry 0.3.1 theme implements the
+# four-argument `draw_button_chrome` removed on this branch; the pinned
+# revision carries the icon-button contract (water-rs/hydrolysis#115). Drop
+# the git pin once a release has the change.
+hydrolysis = { path = "backends/hydrolysis" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "169c42a810c4662abda184c89c114846877b13ec" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
@@ -627,7 +626,6 @@ waterui-chart = { git = "https://github.com/water-rs/chart", rev = "bc1ffc4cf0cc
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "add3782ece2c48db44f28873dd6e2ce63e50cf9f" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "4f95775bcef3022e6d5a52c2aa09aee02afb628f" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "4266f453bde34be2fb159694a41cb926cc65e9da" }
-hydrolysis = { git = "https://github.com/water-rs/hydrolysis", rev = "2b288a4433e0d5abab16658a2cc3aca02932e1d2" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "87080fc2e06628eb990af9fdbfbc3b8a28af5acc" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }

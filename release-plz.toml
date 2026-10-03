@@ -234,3 +234,10 @@ version_group = "waterui"
 [[package]]
 name = "waterui-backend-core"
 version_group = "waterui"
+
+# Hydrolysis releases on its own version line — it is not in the waterui
+# version group — under `hydrolysis-v*` tags.
+[[package]]
+name = "hydrolysis"
+git_release_name = "hydrolysis-v{{ version }}"
+git_tag_name = "hydrolysis-v{{ version }}"

@@ -1671,6 +1671,8 @@ impl SceneContent for Chart {
     fn accessibility_label(&self) -> Option<String> {
         Some("weekly chart".to_string())
     }
+
+    fn rebuild_for_engine(&mut self) {}
 }
 
 #[test]

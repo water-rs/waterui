@@ -579,6 +579,8 @@ impl SceneContent for SceneProbe {
     fn ime_caret(&self) -> Option<kurbo::Rect> {
         probe_caret()
     }
+
+    fn rebuild_for_engine(&mut self) {}
 }
 
 fn surface_view(scene: bool, log: ProbeLog) -> AnyView {

@@ -241,6 +241,10 @@ impl SceneContent for ImagePane {
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<waterui_graphics::SceneInvalidator>) {}
+
+    fn rebuild_for_engine(&mut self) {
+        self.image = None;
+    }
 }
 
 /// An opaque red image — semitransparent fixtures read back white over the

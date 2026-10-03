@@ -101,6 +101,10 @@ impl SceneContent for ImagePane {
     }
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
+
+    fn rebuild_for_engine(&mut self) {
+        self.image = None;
+    }
 }
 
 /// The bytes the issue's malformed case ships — the 100-byte grayscale plane

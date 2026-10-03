@@ -48,6 +48,8 @@ impl SceneContent for RecorderPane {
 
     fn set_invalidator(&mut self, _invalidator: Option<SceneInvalidator>) {}
 
+    fn rebuild_for_engine(&mut self) {}
+
     fn wants_input_events(&self) -> bool {
         true
     }
