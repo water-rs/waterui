@@ -19,7 +19,7 @@ dev = ["waterui/dynamic_linking"]
 wpe = ["dep:waterui-browser-wpe"]
 
 [dependencies]
-waterui = { workspace = true, features = ["webview"] }
+waterui = { workspace = true, features = ["webview", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 serde = { workspace = true, features = ["derive"] }
 
 # Linux has no system web engine to bridge outside GTK, so the app brings one.

@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-chart.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-icons-lucide.workspace = true

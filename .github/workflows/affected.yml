@@ -1,0 +1,88 @@
+name: Affected scope
+
+# Computes what the PR/push gate must compile for a diff: the workspace
+# packages the determinator (`determinator`, guppy's diff-driven package
+# selection, comparing the base and head package graphs) marks as changed
+# plus every reverse dependency a change could reach, resolved through the
+# rules in .github/tools/affected/rules.toml. Prose selects nothing; an
+# outside-package path no rule names selects everything; uncertainty
+# always widens the gate instead of narrowing it.
+#
+# Callers pass the comparison base — a pull request's base sha or a push's
+# `before` sha. Empty means "no diff": the whole workspace is in scope.
+
+on:
+  workflow_call:
+    inputs:
+      base:
+        description: >
+          Revision the diff is measured from (PR base sha, push `before`
+          sha). Empty selects the whole workspace.
+        type: string
+        required: false
+        default: ""
+    outputs:
+      packages:
+        description: Space-separated package names, `workspace`, or empty.
+        value: ${{ jobs.scope.outputs.packages }}
+      package-args:
+        description: The affected packages rendered as cargo `-p` flags.
+        value: ${{ jobs.scope.outputs.package-args }}
+      comment-only:
+        description: >
+          `true` when every changed .rs file's syntax tree is unchanged
+          after comments, doc comments and doc attributes are removed.
+        value: ${{ jobs.scope.outputs.comment-only }}
+      msrv:
+        description: >
+          `true` when the diff can move the toolchain floor — a
+          rust-version key, a dependency section, or Cargo.lock.
+        value: ${{ jobs.scope.outputs.msrv }}
+      test-assets:
+        description: >
+          `true` when hydrolysis or a reverse dependency is in scope and
+          the generated fonts/fixture must exist before compiling tests.
+        value: ${{ jobs.scope.outputs.test-assets }}
+
+jobs:
+  scope:
+    name: Affected scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      packages: ${{ steps.compute.outputs.packages }}
+      package-args: ${{ steps.compute.outputs.package-args }}
+      comment-only: ${{ steps.compute.outputs.comment-only }}
+      msrv: ${{ steps.compute.outputs.msrv }}
+      test-assets: ${{ steps.compute.outputs.test-assets }}
+    steps:
+      - uses: actions/checkout@v4
+        # The diff and the base revision's package graph both need the
+        # history, so the checkout is complete.
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - name: Build the determinator tool
+        run: cargo build --locked --release --manifest-path .github/tools/affected/Cargo.toml
+      - uses: astral-sh/setup-uv@v6
+      - name: Compute the affected set
+        id: compute
+        run: |
+          if [ -z "${{ inputs.base }}" ]; then
+            # No base to diff against: the whole workspace is in scope,
+            # and MSRV keeps its signal rather than guessing it away.
+            {
+              echo "packages=workspace"
+              echo "package-args="
+              echo "comment-only=false"
+              echo "msrv=true"
+              echo "test-assets=true"
+            } >> "$GITHUB_OUTPUT"
+          else
+            uv run .github/scripts/affected.py --base "${{ inputs.base }}"
+          fi

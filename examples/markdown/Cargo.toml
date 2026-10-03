@@ -15,4 +15,4 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 # `include_markdown!` and `RichText` live behind `flow-markdown`.
-waterui = { workspace = true, features = ["flow-markdown"] }
+waterui = { workspace = true, features = ["flow-markdown", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
