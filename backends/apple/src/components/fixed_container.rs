@@ -219,6 +219,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     .map(|child| view::retain_base(child.view()))
             }
         });
+        // The scroll-surface search descends through this container's
+        // children, in stacking order.
+        host.set_scroll_surface_handler({
+            let state = Rc::clone(&state);
+            move |_host| {
+                state
+                    .borrow()
+                    .children
+                    .iter()
+                    .map(|child| view::retain_base(child.view()))
+                    .collect()
+            }
+        });
 
         let measure_state = Rc::clone(&state);
         host.set_measure_handler(move |_host, proposal| {
