@@ -1,0 +1,35 @@
+[package]
+name = "waterui-ts-schema"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+readme = "../../../../README.md"
+repository.workspace = true
+description = "TypeScript props contract schema for WaterUI, encoded into the compiled artifact"
+keywords = ["typescript", "schema", "waterui", "ui", "gui"]
+categories = ["gui"]
+
+[dependencies]
+serde = { workspace = true, features = ["derive", "std"] }
+thiserror.workspace = true
+const-fnv1a-hash.workspace = true
+waterui-macros = { workspace = true, optional = true }
+waterui-core = { workspace = true, optional = true }
+suiteki = { workspace = true, optional = true }
+
+[features]
+default = ["derive", "waterui"]
+# `#[derive(TsType)]` and `#[derive(TsProps)]`, re-exported from `waterui-macros`.
+derive = ["dep:waterui-macros"]
+# Schemas for the framework's own types: `Binding`, `Computed`, `AnyView`, `Str`.
+# A consumer that only reads encoded payloads — the `water` CLI generating a
+# `.d.ts` from an rlib — turns this off and links none of the framework.
+waterui = ["dep:waterui-core", "dep:suiteki"]
+
+[dev-dependencies]
+object = { version = "0.37", default-features = false, features = ["read", "std"] }
+rustc-demangle = "0.1"
+
+[lints]
+workspace = true
