@@ -252,6 +252,10 @@ jobs:
         with:
           families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.lint-target.outputs.cache-primary-key }}
+          # One live entry per cache purpose on this ref — the shared sweep
+          # covers families no single job owns (install-tool pins, apt
+          # packages, in-tree tool builds) (#1441).
+          sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save Cargo sources
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}

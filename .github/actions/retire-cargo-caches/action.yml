@@ -10,6 +10,13 @@ description: >-
   Ref-scoped family prefixes only: pull-request caches, other families,
   and other refs are never touched; API errors fail the step.
 
+  With `sweep` the same call also retires all but the newest generation
+  of EVERY cache purpose on the current ref — grouped by stripping a
+  trailing `-<8+ hex>` content fingerprint from the key — which covers
+  the rotating families no single job owns: install-tool version pins,
+  SwiftPM archives, the apt package cache, in-tree tool builds. One
+  mechanism, no second sweeper job.
+
 inputs:
   families:
     description: >-
@@ -21,6 +28,13 @@ inputs:
       Pipe-separated exact keys this run is about to save; they are
       never deleted.
     required: true
+  sweep:
+    description: >-
+      "true" also retires all but the newest same-ref entry of every
+      cache purpose (key minus a trailing -<8+ hex> fingerprint). Keys
+      listed in primary-keys are still never deleted.
+    required: false
+    default: "false"
   github-token:
     description: Token with actions:write on the repository.
     required: true
@@ -33,6 +47,7 @@ runs:
       env:
         FAMILY_PREFIXES: ${{ inputs.families }}
         PRIMARY_KEYS: ${{ inputs.primary-keys }}
+        SWEEP: ${{ inputs.sweep }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -59,3 +74,35 @@ runs:
             }));
           }
           core.info(`retired ${retired.length} superseded cache entries: ${retired.join(', ') || 'none'}`);
+
+          if (process.env.SWEEP === 'true') {
+            // Purpose-grouped sweep: a purpose is the key minus a trailing
+            // `-<8+ hex>` fingerprint, so every content-addressed family
+            // keeps exactly its newest generation on this ref. Pinned keys
+            // carry no fingerprint suffix, so each is its own purpose and
+            // always kept — same coverage the dedicated cache-gc sweep had.
+            const retiredIds = new Set(stale.map((e) => e.id));
+            const purposeOf = (k) => k.replace(/-[0-9a-fA-F]{8,}$/, '');
+            const newest = new Map();
+            for (const e of entries) {
+              if (e.ref !== context.ref || retiredIds.has(e.id) || primaries.has(e.key)) continue;
+              const cur = newest.get(purposeOf(e.key));
+              if (!cur || Date.parse(e.created_at) > Date.parse(cur.created_at)) {
+                newest.set(purposeOf(e.key), e);
+              }
+            }
+            const superseded = entries.filter((e) =>
+              e.ref === context.ref && !retiredIds.has(e.id) && !primaries.has(e.key) &&
+              newest.get(purposeOf(e.key)) !== e);
+            const swept = [];
+            for (let i = 0; i < superseded.length; i += 4) {
+              await Promise.all(superseded.slice(i, i + 4).map(async (e) => {
+                await github.rest.actions.deleteActionsCacheById(
+                  { owner, repo, cache_id: e.id });
+                swept.push(`${e.key}#${e.id}`);
+              }));
+            }
+            const gib = (e) => ((e.size_in_bytes || 0) / 1024 ** 3).toFixed(2);
+            for (const e of superseded) core.info(`swept ${e.key}#${e.id} (${gib(e)} GiB)`);
+            core.info(`sweep retired ${swept.length} superseded cache entries across ${newest.size} live purposes`);
+          }
