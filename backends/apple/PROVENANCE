@@ -3,10 +3,11 @@ WaterUI Apple backend source provenance
 This directory is the tracked source tree of the former
 water-rs/apple-backend repository, imported without git ancestry
 because that history contains commits a signed-ancestry repository
-cannot accept. The original repository's full history is RETAINED by
-water-rs/apple-backend; its archival is PENDING until this in-tree
-import completes native acceptance — the old repository is not yet
-archived.
+cannot accept. The original repository's full history is RETAINED by the archived
+water-rs/apple-backend repository. Native source and consuming-application
+acceptance completed in WaterUI issues #1431 and #1471. Development,
+packaging and implementation CI now belong to this repository; the
+archived repository is not a build dependency.
 
 Imported source — byte-identical to upstream merge `1c95fe2`:
 
