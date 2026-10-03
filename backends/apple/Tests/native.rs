@@ -108,40 +108,9 @@ fn trials() -> Vec<Trial> {
         ]);
         tests
     };
-    #[cfg(target_os = "ios")]
-    let tests = {
-        let mut tests = tests;
-        tests.extend([
-            Trial::test("tabs::bottom_accessory_mounts_into_the_controller", || {
-                tabs::bottom_accessory_mounts_into_the_controller();
-                Ok(())
-            }),
-            Trial::test("tabs::binding_updates_preserve_the_accessory_mount", || {
-                tabs::binding_updates_preserve_the_accessory_mount();
-                Ok(())
-            }),
-            Trial::test("tabs::tab_selection_does_not_rebuild_the_accessory", || {
-                tabs::tab_selection_does_not_rebuild_the_accessory();
-                Ok(())
-            }),
-            Trial::test(
-                "tabs::dropping_the_leaf_releases_accessory_watchers",
-                || {
-                    tabs::dropping_the_leaf_releases_accessory_watchers();
-                    Ok(())
-                },
-            ),
-            Trial::test(
-                "tabs::each_minimize_behavior_maps_to_the_uikit_property",
-                || {
-                    tabs::each_minimize_behavior_maps_to_the_uikit_property();
-                    Ok(())
-                },
-            ),
-        ]);
-        tests
-    };
     let mut tests = tests;
+    #[cfg(target_os = "ios")]
+    tests.extend(tabs::trials());
     tests.extend(migration::trials());
     tests
 }
@@ -501,6 +470,32 @@ mod tabs {
     use waterui_apple::contract::NativeLeaf;
 
     use super::resolve;
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        use libtest_mimic::Trial;
+        Vec::from([
+            Trial::test("bottom_accessory_mounts_into_the_controller", || {
+                bottom_accessory_mounts_into_the_controller();
+                Ok(())
+            }),
+            Trial::test("binding_updates_preserve_the_accessory_mount", || {
+                binding_updates_preserve_the_accessory_mount();
+                Ok(())
+            }),
+            Trial::test("tab_selection_does_not_rebuild_the_accessory", || {
+                tab_selection_does_not_rebuild_the_accessory();
+                Ok(())
+            }),
+            Trial::test("dropping_the_leaf_releases_accessory_watchers", || {
+                dropping_the_leaf_releases_accessory_watchers();
+                Ok(())
+            }),
+            Trial::test("each_minimize_behavior_maps_to_the_uikit_property", || {
+                each_minimize_behavior_maps_to_the_uikit_property();
+                Ok(())
+            }),
+        ])
+    }
 
     /// Tab identity for the fixtures.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
