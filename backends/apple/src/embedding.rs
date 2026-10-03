@@ -336,6 +336,33 @@ pub unsafe extern "C" fn waterui_apple_mount_drop(mount: *mut c_void) {
     drop(unsafe { Box::from_raw(mount.cast::<Mount>()) });
 }
 
+/// Re-evaluates presentation visibility for everything mounted under this
+/// instance.
+///
+/// An embedding host calls this after mutating an ancestor of its mounted
+/// root — hiding or showing it, changing its alpha, its clipping bounds,
+/// its transform, or reparenting it inside the same window. WaterUI-owned
+/// layout, scroll and scene transitions reach surfaces on their own;
+/// ancestors outside the `CocoaUi` classes publish nothing a descendant
+/// can observe, so the host must report those mutations itself.
+///
+/// # Panics
+/// Panics off the main thread.
+///
+/// # Safety
+/// `mount` is a live mount handle borrowed on the main thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn waterui_apple_update_visibility(mount: *const c_void) {
+    MainThreadMarker::new().expect("visibility refresh runs on the main thread");
+    // SAFETY: the caller borrows a live mount for this call. Emitting on
+    // the mounted root wakes every surface watch that subscribed to it —
+    // ancestor subscriptions cover the whole mounted tree.
+    unsafe { &*mount.cast::<Mount>() }
+        .root
+        .visibility_emitter()
+        .emit();
+}
+
 /// Returns the mount's scene route, valid only in its owning runtime.
 ///
 /// # Panics

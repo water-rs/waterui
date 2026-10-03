@@ -32,6 +32,8 @@ private func mountCreate(
 ) -> UnsafeMutableRawPointer
 @_extern(c, "waterui_apple_mount_drop")
 private func mountDrop(_ _: UnsafeMutableRawPointer)
+@_extern(c, "waterui_apple_update_visibility")
+private func updateVisibility(_ mount: UnsafeRawPointer)
 
 /// Resources supplied by the native application or the embedding package.
 public struct WaterUIResourceContext: Sendable {
@@ -87,7 +89,7 @@ private final class PendingRuntime {
 @MainActor
 private final class WaterUIMount {
   private let runtime: WaterUIRuntime
-  private let pointer: UnsafeMutableRawPointer
+  let pointer: UnsafeMutableRawPointer
 
   init(runtime: WaterUIRuntime, host: AnyObject, resources: WaterUIResourceContext) {
     self.runtime = runtime
@@ -154,6 +156,19 @@ public final class WaterUIHostController: UIViewController {
     mount = WaterUIMount(runtime: runtime, host: view, resources: resources)
   }
 
+  /// Re-evaluates presentation visibility across the mounted tree.
+  ///
+  /// WaterUI-owned layout, scroll and scene changes reach surfaces on
+  /// their own. Mutations on containers between the window and this
+  /// controller's `view` — `isHidden`, `alpha`, clipping bounds,
+  /// transform, or reparenting it inside the same window — publish
+  /// nothing a mounted surface can observe; call this so surfaces parked
+  /// for visibility re-check and resume.
+  public func updateVisibility() {
+    guard let mount else { return }
+    updateVisibility(UnsafeRawPointer(mount.pointer))
+  }
+
   public var sceneOwner: WaterUISceneOwner {
     loadViewIfNeeded()
     return mount!.sceneOwner
@@ -192,6 +207,19 @@ public final class WaterUIHostController: NSViewController {
   public override func viewDidLoad() {
     super.viewDidLoad()
     mount = WaterUIMount(runtime: runtime, host: view, resources: resources)
+  }
+
+  /// Re-evaluates presentation visibility across the mounted tree.
+  ///
+  /// WaterUI-owned layout, scroll and window transitions reach surfaces
+  /// on their own, and AppKit ancestors publish frame/bounds
+  /// notifications the surfaces subscribe to. Mutations on containers
+  /// between the window and this controller's `view` — `isHidden`,
+  /// `alphaValue`, or reparenting it inside the same window — do not;
+  /// call this so surfaces parked for visibility re-check and resume.
+  public func updateVisibility() {
+    guard let mount else { return }
+    updateVisibility(UnsafeRawPointer(mount.pointer))
   }
 }
 

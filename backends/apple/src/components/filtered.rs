@@ -176,13 +176,10 @@ pub struct FilteredState {
     /// The in-flight effect setup. Stored so dropping the state cancels a
     /// setup parked on `context_after` instead of leaking the future.
     setup_task: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
-    /// The single re-evaluation closure every ancestor emitter and the
-    /// scroll-viewport observation share — one attach+schedule pass per
-    /// wake.
-    visibility_wake: RefCell<Option<Rc<dyn Fn()>>>,
-    /// The enclosing scroll-viewport observation: `(observation, observed
-    /// scroll view)` — rebound when the nearest scroll ancestor changes.
-    scroll_watch: RefCell<Option<(cocoa_ui::scroll::ScrollObservation, usize)>>,
+    /// The leaf's owned visibility observation: ancestor-chain wakes
+    /// plus the enclosing scroll-viewport watch, rebound together and
+    /// fully detached on drop.
+    visibility_watch: RefCell<Option<cocoa_ui::visibility::VisibilityWatch>>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -971,37 +968,14 @@ fn handle_redraw(state: &Rc<FilteredState>) {
 }
 
 /// Rebinds the visibility watches to the host's current hierarchy —
-/// subscribe the shared wake on every emitting ancestor and re-arm the
-/// enclosing scroll-viewport observation when the nearest scroll view
-/// changed.
+/// the owned [`cocoa_ui::visibility::VisibilityWatch`] re-walks the
+/// ancestor chain, detaching the links the reparent left behind, and
+/// re-arms the enclosing scroll-viewport observation when the nearest
+/// scroll view changed.
 fn refresh_visibility_watches(state: &Rc<FilteredState>) {
-    if let Some(wake) = state.visibility_wake.borrow().as_ref() {
-        cocoa_ui::visibility::subscribe_visibility_wakes(&state.view, wake);
+    if let Some(watch) = state.visibility_watch.borrow().as_ref() {
+        watch.refresh(&state.view);
     }
-    let scroll = cocoa_ui::scroll::enclosing_scroll_view(&state.view);
-    let observed = scroll
-        .as_ref()
-        .map_or(0, |scroll| core::ptr::from_ref(&**scroll) as usize);
-    let mut slot = state.scroll_watch.borrow_mut();
-    if slot
-        .as_ref()
-        .is_some_and(|(_, current)| *current == observed)
-    {
-        return;
-    }
-    *slot = scroll.map(|scroll| {
-        let observed = core::ptr::from_ref(&*scroll) as usize;
-        let weak = Rc::downgrade(state);
-        (
-            cocoa_ui::scroll::observe_scroll_viewport(&scroll, move || {
-                if let Some(state) = weak.upgrade() {
-                    initialize_gpu(&state);
-                    schedule_frame_if_needed(&state);
-                }
-            }),
-            observed,
-        )
-    });
 }
 
 /// `handleWindowChange` — leaving the window defers teardown to whichever
@@ -1013,7 +987,7 @@ fn handle_window_change(state: &Rc<FilteredState>) {
         state.needs_render.set(false);
         state.pending_dynamic_range.borrow_mut().take();
         complete_ready(state, false);
-        state.scroll_watch.borrow_mut().take();
+        refresh_visibility_watches(state);
         if state.render_in_flight.get() || state.frame_presentation_in_flight.get() {
             state.detach_after_capture.set(true);
         } else {
@@ -1373,8 +1347,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 gpu_generation: Cell::new(Some(gpu_context.generation())),
                 context_watch: RefCell::new(None),
                 setup_task: RefCell::new(None),
-                visibility_wake: RefCell::new(None),
-                scroll_watch: RefCell::new(None),
+                visibility_watch: RefCell::new(None),
             }
         });
         *state.effects.borrow_mut() = Some(effects);
@@ -1420,18 +1393,25 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The single wake every visibility source shares: ancestor
         // emitters (hidden/alpha/frame/bounds/reparent on `CocoaUi`
-        // classes, this `HostView` included) and the enclosing
-        // scroll-viewport observation all land here.
-        *state.visibility_wake.borrow_mut() = Some(Rc::new({
+        // classes, this `HostView` included, plus the documented `NSView`
+        // frame/bounds notifications on foreign `AppKit` ancestors) and
+        // the enclosing scroll-viewport observation all land here. The
+        // `VisibilityWatch` owns every registration and detaches them
+        // all when the state drops.
+        let wake: Rc<dyn Fn()> = Rc::new({
             let weak = Rc::downgrade(&state);
             move || {
                 if let Some(state) = weak.upgrade() {
+                    refresh_visibility_watches(&state);
                     initialize_gpu(&state);
                     schedule_frame_if_needed(&state);
                 }
             }
-        }));
-        refresh_visibility_watches(&state);
+        });
+        *state.visibility_watch.borrow_mut() = Some(cocoa_ui::visibility::VisibilityWatch::new(
+            &state.view,
+            wake,
+        ));
         #[cfg(target_os = "macos")]
         {
             let state = state.clone();

@@ -176,10 +176,10 @@ fn a_windowless_or_sceneless_view_is_not_presentable() {
     assert!(!cocoa_ui::visibility::presentable(&child));
 }
 
-/// The typed-owned wake on `UIKit`: one closure subscribes on every
-/// emitting `CocoaUi` ancestor, a repeat subscribe deduplicates, the
-/// hidden→visible transitions keep firing, and a dropped handler stops
-/// receiving — no registry, no polling.
+/// The typed-owned wake on `UIKit`: `VisibilityWatch` binds one closure
+/// on every emitting `CocoaUi` ancestor, hidden→visible transitions keep
+/// firing, a reparent's `refresh` detaches the former chain's tokens,
+/// and a dropped watch stops delivery — no registry, no polling.
 fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
     let mtm = marker();
     let host = HostView::new(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
@@ -192,16 +192,28 @@ fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
         let fires = Rc::clone(&fires);
         move || fires.set(fires.get() + 1)
     });
-    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
-    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    let watch = cocoa_ui::visibility::VisibilityWatch::new(&child, wake);
     cocoa_ui::view::set_hidden(&host, true);
     assert_eq!(fires.get(), 1);
     cocoa_ui::view::set_hidden(&host, false);
     assert_eq!(fires.get(), 2);
 
-    drop(wake);
+    // Reparenting onto a detached sibling removes `host` from the chain:
+    // the refresh binds only `other`, and an emission on `host` can no
+    // longer reach the handler.
+    cocoa_ui::view::remove_from_superview(&child);
+    let other = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    other.add_subview(&child);
+    watch.refresh(&child);
+    other.visibility_emitter().emit();
+    assert_eq!(fires.get(), 3);
+    host.visibility_emitter().emit();
+    assert_eq!(fires.get(), 3, "a detached ancestor still delivered a wake");
+
+    drop(watch);
     cocoa_ui::view::set_hidden(&host, true);
-    assert_eq!(fires.get(), 2, "a dead handler kept receiving wakes");
+    other.visibility_emitter().emit();
+    assert_eq!(fires.get(), 3, "a dropped watch kept receiving wakes");
 }
 
 /// The `#[unsafe(method(..))]` names must install the `ObjC` selectors

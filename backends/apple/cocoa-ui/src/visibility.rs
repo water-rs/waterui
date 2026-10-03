@@ -8,43 +8,57 @@
 //! into a clip region nobody sees.
 //!
 //! [`VisibilityEmitter`] is the instance-owned event a `CocoaUi` view
-//! class hosts: a subtree `subscribe`s one re-check closure and the view
-//! `emit`s it when its hidden, alpha, frame, bounds or hierarchy state
-//! changes. [`subscribe_visibility_wakes`] registers that closure on
-//! `view` and every emitting ancestor — there is no registry and nothing
-//! static; each emitter belongs to the view instance that fires it.
+//! class hosts: [`subscribe_visibility_wakes`] registers one re-check
+//! closure on `view` and every emitting ancestor and hands back a
+//! [`VisibilityWakes`] token set — dropping it detaches every link, so a
+//! refresh after a reparent cannot leave the old chain alive. There is
+//! no registry and nothing static; each emitter belongs to the view
+//! instance that fires it. [`VisibilityWatch`] owns one mounted leaf's
+//! full observation — that token set plus the enclosing scroll-viewport
+//! watch — and rebinds both together.
 //!
-//! Ancestors outside the `CocoaUi` classes cannot emit. A scroll view —
-//! ours or third-party — still wakes subscribers through
-//! [`crate::scroll::observe_scroll_viewport`], which owns its observer
-//! token per instance; a clip change inside a foreign container that is
-//! not a scroll view (a resized map or web view ancestor) is a documented
-//! gap, not claimed coverage.
+//! Ancestors outside the `CocoaUi` classes cannot emit. On `AppKit` the
+//! public `NSViewFrameDidChangeNotification` /
+//! `NSViewBoundsDidChangeNotification` pair is enabled on every foreign
+//! ancestor for the subscription's lifetime, so host-owned containers
+//! still wake descendants when their frames or bounds move. On `UIKit`
+//! a foreign non-scroll ancestor's hidden, alpha, frame, transform or
+//! reparent inside the same window publishes nothing a descendant can
+//! observe — `UIView`'s geometry and hidden key paths carry no
+//! documented KVO guarantee — so embedding hosts that mutate such a
+//! container must refresh the mounted instance explicitly (the
+//! `WaterUIHostController` contract). Scroll ancestors on either
+//! platform wake through [`crate::scroll::observe_scroll_viewport`],
+//! which covers `UIScrollView`/`NSScrollView` subclasses and third-party
+//! scroll views alike.
 //!
 //! # Safety
 //!
 //! The `unsafe`-free geometry paths call public `UIKit`/`AppKit` rectangle
-//! conversion APIs on the main thread; the impl blocks use `unsafe` only
-//! where a platform call is marked unsafe by `objc2`.
+//! conversion APIs on the main thread; `unsafe` is used only where a
+//! platform call is marked unsafe by `objc2` or where a notification
+//! constant is a static `NSString` the framework owns.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use objc2::rc::Retained;
 
 use crate::PlatformView;
+use crate::scroll::{ScrollObservation, ScrollView};
 
 /// Whether `view` could show pixels right now.
 ///
-/// `UIKit`: the view sits in a window of an active application, neither it
-/// nor any ancestor is hidden or fully transparent, and its window-space
-/// bounds intersect the window's bounds and every ancestor that clips —
-/// `clipsToBounds` or `layer.masksToBounds`, which `UIScrollView` sets.
+/// `UIKit`: the view sits in a window whose owning scene is
+/// foreground-active, neither it nor any ancestor is hidden or fully
+/// transparent, and its window-space bounds intersect the window's
+/// bounds and every ancestor that clips — `clipsToBounds` or
+/// `layer.masksToBounds`, which `UIScrollView` sets.
 ///
 /// `AppKit`: the view sits in a visible, un-miniaturized window on a
 /// screen, no ancestor hides it or zeroes its alpha, and the native
-/// `visibleRect` — `AppKit`'s own account of clipping ancestors — is
-/// nonempty.
+/// `visibleRect` — `AppKit`'s own account of clipping ancestors —
+/// intersects the view's bounds.
 ///
 /// The test is deliberately conservative: intersecting bounding
 /// rectangles only proves a pixel *may* be on screen. Exact opaque
@@ -55,14 +69,120 @@ pub fn presentable(view: &PlatformView) -> bool {
     imp::presentable(view)
 }
 
+/// Whether `window` can put a frame in front of someone — the
+/// window-level half of [`presentable`], shared by the weaker attach and
+/// buffer-allocation gates that must not wait for full visibility.
+///
+/// `UIKit`: the window's *owning* `UIWindowScene` is foreground-active —
+/// not merely the process reporting `UIApplication.isActive`. On a
+/// multi-scene session (iPad windows side by side) a background or
+/// unattached scene must not schedule its surfaces at all (#1327).
+///
+/// `AppKit`: the window is visible, un-miniaturized and on a screen.
+#[must_use]
+pub fn window_presentable(
+    #[cfg(target_os = "ios")] window: &objc2_ui_kit::UIWindow,
+    #[cfg(target_os = "macos")] window: &objc2_app_kit::NSWindow,
+) -> bool {
+    imp::window_presentable(window)
+}
+
+// MARK: - Emitters
+
+/// One subscriber slot on an emitter: the closure kept weakly so a
+/// surface that dies stops waking, and an id its [`Subscription`] detaches.
+struct Slot {
+    id: u64,
+    handler: Weak<dyn Fn()>,
+}
+
+/// The emitter's shared state, one `Rc` per view instance.
+struct Shared {
+    slots: RefCell<Vec<Slot>>,
+    /// `emit` is running — a nested `emit` coalesces into one more pass
+    /// instead of recursing into the handler list.
+    emitting: Cell<bool>,
+    /// A nested `emit` asked for another pass.
+    pending: Cell<bool>,
+    next_id: Cell<u64>,
+}
+
 /// The typed, instance-owned visibility event an owned view class hosts.
 ///
-/// `subscribe` keeps a weak handle on the closure, so a surface that is
-/// reparented or torn down prunes itself on the next `emit` and can never
-/// be woken through a stale ancestor.
-#[derive(Default)]
+/// Subscribing returns a [`Subscription`] token; dropping it detaches the
+/// closure from this emitter deterministically. The closure is also held
+/// weakly, so one that dies without its token stops firing on the next
+/// `emit` and is pruned.
 pub struct VisibilityEmitter {
-    handlers: RefCell<Vec<Weak<dyn Fn()>>>,
+    shared: Rc<Shared>,
+}
+
+impl Default for VisibilityEmitter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl VisibilityEmitter {
+    /// An emitter with no subscribers.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            shared: Rc::new(Shared {
+                slots: RefCell::new(Vec::new()),
+                emitting: Cell::new(false),
+                pending: Cell::new(false),
+                next_id: Cell::new(0),
+            }),
+        }
+    }
+
+    /// Runs every live subscription, then prunes the dead ones.
+    ///
+    /// Handlers are collected before any run, so a handler that
+    /// subscribes or detaches mid-emit cannot invalidate the iteration.
+    /// A handler that re-entrantly `emit`s does not recurse: it marks a
+    /// pending pass, which this call then runs against the refreshed
+    /// chain — removals a handler performed are already reflected.
+    pub fn emit(&self) {
+        if self.shared.emitting.replace(true) {
+            self.shared.pending.set(true);
+            return;
+        }
+        loop {
+            let live: Vec<Rc<dyn Fn()>> = {
+                let mut slots = self.shared.slots.borrow_mut();
+                slots.retain(|slot| slot.handler.strong_count() > 0);
+                slots
+                    .iter()
+                    .filter_map(|slot| slot.handler.upgrade())
+                    .collect()
+            };
+            for handler in live {
+                handler();
+            }
+            if !self.shared.pending.replace(false) {
+                self.shared.emitting.set(false);
+                return;
+            }
+        }
+    }
+
+    /// Registers `handler` until the returned token drops.
+    fn subscribe(&self, handler: &Weak<dyn Fn()>) -> Subscription {
+        let id = self.shared.next_id.get();
+        self.shared.next_id.set(id + 1);
+        self.shared.slots.borrow_mut().push(Slot {
+            id,
+            handler: handler.clone(),
+        });
+        let shared = Rc::downgrade(&self.shared);
+        Subscription::new(move || {
+            if let Some(shared) = shared.upgrade() {
+                shared.slots.borrow_mut().retain(|slot| slot.id != id);
+            }
+        })
+    }
 }
 
 impl std::fmt::Debug for VisibilityEmitter {
@@ -71,58 +191,119 @@ impl std::fmt::Debug for VisibilityEmitter {
     }
 }
 
-impl VisibilityEmitter {
-    /// Registers `handler`; subscribing the same closure twice is a no-op
-    /// so refreshing a subscription set after a reparent is cheap.
-    pub fn subscribe(&self, handler: &Rc<dyn Fn()>) {
-        let weak = Rc::downgrade(handler);
-        let mut handlers = self.handlers.borrow_mut();
-        if !handlers.iter().any(|existing| existing.ptr_eq(&weak)) {
-            handlers.push(weak);
-        }
-    }
+/// One registered wake's detach-on-drop handle.
+#[must_use = "dropping detaches the subscription immediately"]
+pub struct Subscription(Option<Box<dyn FnOnce()>>);
 
-    /// Runs every live subscription and prunes the dead ones.
-    ///
-    /// Handlers are collected before any run: a handler that re-entrantly
-    /// subscribes or unsubscribes cannot invalidate the iteration, and a
-    /// handler that emits again simply queues another pass.
-    pub fn emit(&self) {
-        let live: Vec<Rc<dyn Fn()>> = {
-            let mut handlers = self.handlers.borrow_mut();
-            let live: Vec<Rc<dyn Fn()>> = handlers.iter().filter_map(Weak::upgrade).collect();
-            *handlers = live.iter().map(Rc::downgrade).collect();
-            live
-        };
-        for handler in live {
-            handler();
+impl Subscription {
+    fn new(detach: impl FnOnce() + 'static) -> Self {
+        Self(Some(Box::new(detach)))
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        if let Some(detach) = self.0.take() {
+            detach();
         }
     }
 }
 
-/// Registers `handler` on `view` and every ancestor that can emit
+impl std::fmt::Debug for Subscription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Subscription").finish_non_exhaustive()
+    }
+}
+
+/// Every wake one observation registered — drop detaches them all.
+#[derive(Debug)]
+#[must_use = "dropping detaches every registered wake"]
+pub struct VisibilityWakes {
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Registers `handler` on `view` and every ancestor that can publish
 /// visibility changes — the same ancestor chain [`presentable`] walks.
 ///
-/// Subscriptions deduplicate per closure, so re-running after a reparent
-/// only attaches to newly enclosing emitters; stale ancestors keep a weak
-/// handle that never fires again once `handler` is dropped.
-pub fn subscribe_visibility_wakes(view: &PlatformView, handler: &Rc<dyn Fn()>) {
+/// Each `CocoaUi` node subscribes through its emitter; on `AppKit` every
+/// other ancestor gets the documented `NSView` frame/bounds
+/// notifications (its `postsFrameChangedNotifications` /
+/// `postsBoundsChangedNotifications` values are restored when the token
+/// drops). The returned [`VisibilityWakes`] owns the whole chain:
+/// refresh by dropping the old set — the new walk then binds only the
+/// ancestors that currently enclose `view`.
+pub fn subscribe_visibility_wakes(view: &PlatformView, handler: &Rc<dyn Fn()>) -> VisibilityWakes {
+    let mut subscriptions = Vec::new();
     let mut ancestor: Option<Retained<PlatformView>> = Some(Retained::from(view));
     while let Some(current) = ancestor {
-        if let Some(emitter) = emitter_of(&current) {
-            emitter.subscribe(handler);
+        #[cfg(target_os = "ios")]
+        let next = current.superview();
+        #[cfg(target_os = "macos")]
+        // SAFETY: `superview` is a read-only accessor queried on the main
+        // thread, as every visibility decision is.
+        let next = unsafe { current.superview() };
+        let emitter = emitter_of(&current);
+        #[cfg(target_os = "ios")]
+        if let Some(emitter) = emitter {
+            subscriptions.push(emitter.subscribe(&Rc::downgrade(handler)));
         }
         #[cfg(target_os = "macos")]
-        {
-            // SAFETY: `superview` is a read-only accessor queried on the
-            // main thread, as every visibility decision is.
-            ancestor = unsafe { current.superview() };
-        }
-        #[cfg(target_os = "ios")]
-        {
-            ancestor = current.superview();
-        }
+        subscriptions.push(emitter.map_or_else(
+            || subscribe_native_ancestor(&current, handler),
+            |emitter| emitter.subscribe(&Rc::downgrade(handler)),
+        ));
+        ancestor = next;
     }
+    VisibilityWakes {
+        _subscriptions: subscriptions,
+    }
+}
+
+/// `AppKit`: wakes `handler` on a foreign ancestor's frame or bounds
+/// change via the documented `NSView` notifications, restoring the
+/// view's posting flags when the token drops. `UIKit` has no equivalent
+/// public hook — see the module documentation.
+#[cfg(target_os = "macos")]
+fn subscribe_native_ancestor(view: &objc2_app_kit::NSView, handler: &Rc<dyn Fn()>) -> Subscription {
+    let mtm =
+        objc2::MainThreadMarker::new().expect("visibility subscriptions run on the main thread");
+    let posted_frames = view.postsFrameChangedNotifications();
+    let posted_bounds = view.postsBoundsChangedNotifications();
+    view.setPostsFrameChangedNotifications(true);
+    view.setPostsBoundsChangedNotifications(true);
+    let frame = {
+        let handler = handler.clone();
+        crate::notification::observe_object(
+            mtm,
+            // SAFETY: a static `NSString` constant `AppKit` owns.
+            &crate::notification::NotificationName::framework(unsafe {
+                objc2_app_kit::NSViewFrameDidChangeNotification
+            }),
+            AsRef::<objc2::runtime::AnyObject>::as_ref(view),
+            move || handler(),
+        )
+    };
+    let bounds = {
+        let handler = handler.clone();
+        crate::notification::observe_object(
+            mtm,
+            // SAFETY: a static `NSString` constant `AppKit` owns.
+            &crate::notification::NotificationName::framework(unsafe {
+                objc2_app_kit::NSViewBoundsDidChangeNotification
+            }),
+            AsRef::<objc2::runtime::AnyObject>::as_ref(view),
+            move || handler(),
+        )
+    };
+    let weak_view = objc2::rc::Weak::new(view);
+    Subscription::new(move || {
+        drop(frame);
+        drop(bounds);
+        if let Some(view) = weak_view.load() {
+            view.setPostsFrameChangedNotifications(posted_frames);
+            view.setPostsBoundsChangedNotifications(posted_bounds);
+        }
+    })
 }
 
 /// The emitter `view` hosts, if it is one of the `CocoaUi` classes that
@@ -155,22 +336,82 @@ fn emitter_of(view: &PlatformView) -> Option<&VisibilityEmitter> {
     None
 }
 
-/// Whether `window` can put a frame in front of someone — the
-/// window-level half of [`presentable`], shared by the weaker attach and
-/// buffer-allocation gates that must not wait for full visibility.
+// MARK: - The owned watch
+
+/// One mounted leaf's owned visibility observation: the subscribed
+/// ancestor chain plus the enclosing scroll-viewport watch, rebound
+/// together so a reparent never leaves a stale link behind.
 ///
-/// `UIKit`: the window's *owning* `UIWindowScene` is foreground-active —
-/// not merely the process reporting `UIApplication.isActive`. On a
-/// multi-scene session (iPad windows side by side) a background or
-/// unattached scene must not schedule its surfaces at all (#1327).
-///
-/// `AppKit`: the window is visible, un-miniaturized and on a screen.
-#[must_use]
-pub fn window_presentable(
-    #[cfg(target_os = "ios")] window: &objc2_ui_kit::UIWindow,
-    #[cfg(target_os = "macos")] window: &objc2_app_kit::NSWindow,
-) -> bool {
-    imp::window_presentable(window)
+/// Both components that schedule frames keep one of these. The shared
+/// `handler` closure runs on every ancestor emission and every scroll
+/// move; [`VisibilityWatch::refresh`] re-walks the hierarchy when the
+/// tree changes. Dropping the watch detaches everything — the surfaces'
+/// state drop is the full teardown.
+pub struct VisibilityWatch {
+    /// The re-evaluate closure every wake in this observation shares.
+    handler: Rc<dyn Fn()>,
+    /// The currently bound ancestor chain; replaced whole on refresh.
+    wakes: RefCell<Option<VisibilityWakes>>,
+    /// The nearest scroll ancestor's viewport watch and the view it
+    /// binds, compared by object identity.
+    scroll: RefCell<Option<ScrollBinding>>,
+}
+
+impl std::fmt::Debug for VisibilityWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VisibilityWatch").finish_non_exhaustive()
+    }
+}
+
+#[derive(Debug)]
+struct ScrollBinding {
+    _observation: ScrollObservation,
+    view: Retained<ScrollView>,
+}
+
+impl VisibilityWatch {
+    /// Subscribes `handler` to `view`'s visibility chain and arms its
+    /// scroll-viewport watch.
+    #[must_use = "dropping the watch detaches every wake"]
+    pub fn new(view: &PlatformView, handler: Rc<dyn Fn()>) -> Self {
+        let watch = Self {
+            handler,
+            wakes: RefCell::new(None),
+            scroll: RefCell::new(None),
+        };
+        watch.refresh(view);
+        watch
+    }
+
+    /// Rebinds against `view`'s current hierarchy: the old chain's
+    /// tokens drop (detaching ancestors the view left behind), the new
+    /// walk subscribes fresh, and the scroll watch re-arms only when the
+    /// nearest scroll ancestor changed. The whole sequence is
+    /// synchronous on the main thread, so no wake can be lost between
+    /// the detach and the re-subscribe.
+    pub fn refresh(&self, view: &PlatformView) {
+        self.wakes.borrow_mut().take();
+        *self.wakes.borrow_mut() = Some(subscribe_visibility_wakes(view, &self.handler));
+        let scroll = crate::scroll::enclosing_scroll_view(view);
+        let mut slot = self.scroll.borrow_mut();
+        let unchanged = match (slot.as_ref(), scroll.as_ref()) {
+            (Some(binding), Some(scroll)) => {
+                Retained::as_ptr(&binding.view) == Retained::as_ptr(scroll)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return;
+        }
+        *slot = scroll.map(|scroll| ScrollBinding {
+            _observation: crate::scroll::observe_scroll_viewport(&scroll, {
+                let handler = self.handler.clone();
+                move || handler()
+            }),
+            view: scroll,
+        });
+    }
 }
 
 /// The intersection of `a` and `b`; `None` when they share no area.

@@ -322,13 +322,10 @@ struct SurfaceState {
     /// frame's context reported device loss. Stored so a newer wait
     /// replaces it and dropping the state cancels it.
     context_watch: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
-    /// The single re-evaluation closure every ancestor emitter and the
-    /// scroll-viewport observation share — one `update_display_link_state`
-    /// per wake.
-    visibility_wake: RefCell<Option<Rc<dyn Fn()>>>,
-    /// The enclosing scroll-viewport observation: `(observation, observed
-    /// scroll view)` — rebound when the nearest scroll ancestor changes.
-    scroll_watch: RefCell<Option<(cocoa_ui::scroll::ScrollObservation, usize)>>,
+    /// The surface's owned visibility observation: ancestor-chain wakes
+    /// plus the enclosing scroll-viewport watch, rebound together and
+    /// fully detached on drop.
+    visibility_watch: RefCell<Option<cocoa_ui::visibility::VisibilityWatch>>,
 }
 
 impl core::fmt::Debug for SurfaceState {
@@ -417,8 +414,7 @@ impl SurfaceState {
             last_resolved_size: RefCell::new(None),
             gpu_generation: Cell::new(None),
             context_watch: RefCell::new(None),
-            visibility_wake: RefCell::new(None),
-            scroll_watch: RefCell::new(None),
+            visibility_watch: RefCell::new(None),
         }
     }
 
@@ -735,38 +731,14 @@ fn detach_if_attached(state: &SurfaceState) {
 // MARK: - Frame scheduling (WuiDisplayLinkDriver + WuiRedrawCallback)
 
 /// Rebinds the visibility watches to the surface's current hierarchy —
-/// subscribe the shared wake on every emitting ancestor and re-arm the
-/// enclosing scroll-viewport observation when the nearest scroll view
-/// changed (`updateVisibilityWatches`).
+/// the owned [`cocoa_ui::visibility::VisibilityWatch`] re-walks the
+/// ancestor chain, detaching the links the reparent left behind, and
+/// re-arms the enclosing scroll-viewport observation when the nearest
+/// scroll view changed (`updateVisibilityWatches`).
 fn refresh_visibility_watches(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let platform_view = view.as_platform_view();
-    if let Some(wake) = state.visibility_wake.borrow().as_ref() {
-        cocoa_ui::visibility::subscribe_visibility_wakes(platform_view, wake);
+    if let Some(watch) = state.visibility_watch.borrow().as_ref() {
+        watch.refresh(view.as_platform_view());
     }
-    let scroll = cocoa_ui::scroll::enclosing_scroll_view(platform_view);
-    let observed = scroll
-        .as_ref()
-        .map_or(0, |scroll| core::ptr::from_ref(&**scroll) as usize);
-    let mut slot = state.scroll_watch.borrow_mut();
-    if slot
-        .as_ref()
-        .is_some_and(|(_, current)| *current == observed)
-    {
-        return;
-    }
-    *slot = scroll.map(|scroll| {
-        let observed = core::ptr::from_ref(&*scroll) as usize;
-        let weak = Rc::downgrade(state);
-        let view = view.clone();
-        (
-            cocoa_ui::scroll::observe_scroll_viewport(&scroll, move || {
-                if let Some(state) = weak.upgrade() {
-                    update_display_link_state(&state, &view);
-                }
-            }),
-            observed,
-        )
-    });
 }
 
 /// Re-runs `initialize_gpu` once a frame could be shown again, then drives
@@ -1614,7 +1586,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
                 state.keep_redrawing.set(false);
                 state.clock.stop();
                 state.observers.borrow_mut().clear();
-                state.scroll_watch.borrow_mut().take();
+                refresh_visibility_watches(&state, &view);
                 return;
             };
             if let Some(scale) = view.backing_scale() {
@@ -1673,16 +1645,25 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
     }
 
     // The single wake every visibility source shares: ancestor emitters
-    // (hidden/alpha/frame/bounds/reparent on `CocoaUi` classes) and the
-    // enclosing scroll-viewport observation all land here.
-    *state.visibility_wake.borrow_mut() = Some(Rc::new({
+    // (hidden/alpha/frame/bounds/reparent on `CocoaUi` classes and, on
+    // `AppKit`, the documented `NSView` frame/bounds notifications) and
+    // the enclosing scroll-viewport observation all land here. The
+    // `VisibilityWatch` owns every registration and detaches them all
+    // when the state drops.
+    let wake: Rc<dyn Fn()> = Rc::new({
         let state = Rc::downgrade(state);
         let view = platform_view.clone();
         move || {
             if let Some(state) = state.upgrade() {
+                if let Some(watch) = state.visibility_watch.borrow().as_ref() {
+                    watch.refresh(view.as_platform_view());
+                }
                 update_display_link_state(&state, &view);
             }
         }
-    }));
-    refresh_visibility_watches(state, platform_view);
+    });
+    *state.visibility_watch.borrow_mut() = Some(cocoa_ui::visibility::VisibilityWatch::new(
+        platform_view.as_platform_view(),
+        wake,
+    ));
 }

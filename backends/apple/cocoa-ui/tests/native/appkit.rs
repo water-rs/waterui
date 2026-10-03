@@ -9,8 +9,9 @@ use cocoa_ui::appkit::{HostView, Label, Window, WindowLevel, WindowStyle};
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::Bool;
 use cocoa_ui::objc2::{msg_send, sel};
-use cocoa_ui::objc2_foundation::{NSArray, NSNotFound, NSRange, NSString};
-use cocoa_ui::{Rect, Size};
+use cocoa_ui::objc2_app_kit::NSView;
+use cocoa_ui::objc2_foundation::{NSArray, NSNotFound, NSRange, NSRect, NSString};
+use cocoa_ui::{Point, Rect, Size};
 use libtest_mimic::Trial;
 
 use crate::harness::marker;
@@ -300,10 +301,13 @@ fn a_windowed_view_is_presentable_until_clipped_or_hidden() {
     window.close();
 }
 
-/// The typed-owned wake: `subscribe_visibility_wakes` registers one
-/// closure on every emitting ancestor, deduplicates a repeat subscribe,
-/// and stops delivering once the handler is dropped — no registry, no
-/// polling, and a hidden→visible reparent keeps firing.
+/// The typed-owned wake: `VisibilityWatch` registers the one closure on
+/// every observable ancestor, `refresh` detaches the old chain's tokens
+/// before binding the new one — so a reparent's previous ancestors can
+/// never reach the handler — and dropping the watch stops delivery
+/// entirely. A plain `NSView` ancestor with no emitter still wakes
+/// through the documented `NSView` frame/bounds notifications, and the
+/// subscription restores its posting flags on detach.
 fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
     let mtm = marker();
     let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
@@ -319,10 +323,7 @@ fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
         let fires = Rc::clone(&fires);
         move || fires.set(fires.get() + 1)
     });
-    // Subscribing the same closure twice keeps one registration — each
-    // distinct event below moves the count by exactly one.
-    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
-    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    let watch = cocoa_ui::visibility::VisibilityWatch::new(&child, wake);
     let before = fires.get();
     cocoa_ui::view::set_hidden(&host, true);
     assert_eq!(fires.get() - before, 1);
@@ -331,27 +332,59 @@ fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
     assert_eq!(fires.get() - before, 1);
 
     // A reparent emits its own `didMoveToSuperview`/`didMoveToWindow`
-    // wakes on the child — the resubscribe then lands the closure on the
-    // new ancestor's emitter too, so its transitions still reach it.
+    // wakes on the child; the refresh that follows detaches the old
+    // chain's tokens — an emission on a former ancestor can no longer
+    // reach the handler — and binds the new one. `other` stays a
+    // detached sibling so `host` genuinely leaves the chain.
     cocoa_ui::view::remove_from_superview(&child);
     let other = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
-    host.add_subview(&other);
     other.add_subview(&child);
-    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    watch.refresh(&child);
     let before = fires.get();
-    cocoa_ui::view::set_hidden(&other, true);
+    other.visibility_emitter().emit();
     assert_eq!(fires.get() - before, 1);
     let before = fires.get();
-    cocoa_ui::view::set_hidden(&other, false);
-    assert_eq!(fires.get() - before, 1);
-
-    drop(wake);
-    let before = fires.get();
-    cocoa_ui::view::set_hidden(&host, true);
+    host.visibility_emitter().emit();
     assert_eq!(
         fires.get() - before,
         0,
-        "a dead handler kept receiving wakes"
+        "an ancestor the watch detached still delivered a wake"
+    );
+
+    // A foreign (non-`CocoaUi`) ancestor emits no visibility event of
+    // its own; the subscription rides the documented `NSView`
+    // frame/bounds notifications instead, then restores its flags.
+    // SAFETY: `initWithFrame:` on a fresh `NSView` allocation on the main
+    // thread.
+    let plain: Retained<NSView> = unsafe {
+        msg_send![mtm.alloc::<NSView>(), initWithFrame: NSRect::new(Point::new(0.0, 0.0).into(), Size::new(200.0, 200.0).into())]
+    };
+    host.add_subview(&plain);
+    cocoa_ui::view::remove_from_superview(&child);
+    cocoa_ui::view::add_subview(&plain, &child);
+    let posted_bounds = plain.postsBoundsChangedNotifications();
+    watch.refresh(&child);
+    let before = fires.get();
+    plain.setFrameSize(Size::new(180.0, 200.0).into());
+    assert_eq!(
+        fires.get() - before,
+        1,
+        "a foreign ancestor's frame change never reached the wake"
+    );
+
+    drop(watch);
+    assert_eq!(
+        plain.postsBoundsChangedNotifications(),
+        posted_bounds,
+        "detaching did not restore the ancestor's posting flags"
+    );
+    let before = fires.get();
+    plain.setFrameSize(Size::new(200.0, 200.0).into());
+    other.visibility_emitter().emit();
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "a dropped watch kept receiving wakes"
     );
 
     window.close();
