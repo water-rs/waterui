@@ -12,6 +12,7 @@ import { toSignal } from "../../src/js/host.js";
 
 export function createFakeHost(environment = {}) {
   const calls = [];
+  const invocations = [];
   let nextId = 1;
   const pending = createSignal(false);
 
@@ -134,6 +135,16 @@ export function createFakeHost(environment = {}) {
     environment() {
       return environment;
     },
+
+    // The bridge's own entry: `makeCallback` wraps this one. Recorded rather
+    // than dispatched, since there is no Rust registry behind a fake host.
+    invoke(id, ...args) {
+      invocations.push([id, ...args]);
+      calls.push(["invoke", id, ...args]);
+      return "invoked";
+    },
+
+    invocations,
   };
 
   return host;
