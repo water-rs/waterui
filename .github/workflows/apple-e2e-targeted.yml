@@ -113,18 +113,11 @@ jobs:
           cache: "false"
 
       # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`
-      # pushes (source packages are toolchain-independent). No save and no
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes (source packages are toolchain-independent). No save and no
       # `target` cache in this lane.
       - name: Restore Cargo sources
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-sources-${{ runner.os }}-
+        uses: ./.github/actions/cargo-sources
 
       - name: Build the water CLI
         run: cargo install --path "${WATER_CLI_DIR:-water-cli}" --locked --root "${{ github.workspace }}/cli-bin"
@@ -175,18 +168,11 @@ jobs:
         uses: ./.github/actions/metal-toolchain
 
       # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`
-      # pushes. No save and no `target` cache (the old per-leg `target`
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes. No save and no `target` cache (the old per-leg `target`
       # writer is gone).
       - name: Restore Cargo sources
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-sources-${{ runner.os }}-
+        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4
@@ -307,17 +293,10 @@ jobs:
         uses: ./.github/actions/metal-toolchain
 
       # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`
-      # pushes. No save and no `target` cache.
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes. No save and no `target` cache.
       - name: Restore Cargo sources
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            cargo-sources-${{ runner.os }}-
+        uses: ./.github/actions/cargo-sources
 
       - name: Install the water CLI
         uses: actions/download-artifact@v4

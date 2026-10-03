@@ -1,0 +1,56 @@
+name: Cargo sources
+
+description: >-
+  Restores the shared per-OS Cargo sources archive — only
+  ~/.cargo/registry and ~/.cargo/git, keyed on the root lockfile. Source
+  packages are toolchain-independent, so every lane on an OS shares one
+  archive. Exactly one writer job per OS saves it (the lint job for Linux,
+  the Apple gate's rust job for macOS, the Windows test job for Windows);
+  every other lane restores it read-only and caches no target, so a heavy
+  run can never evict the gate caches or duplicate the source tarball.
+
+inputs:
+  operation:
+    description: >-
+      "restore" (default) or "save" the shared archive. Only the single
+      writer job per OS saves.
+    required: false
+    default: restore
+  primary-key:
+    description: >-
+      The exact key to save under when operation is "save" — the writer's
+      forwarded cache-primary-key output.
+    required: false
+    default: ""
+
+outputs:
+  cache-hit:
+    description: Whether the exact primary key was restored.
+    value: ${{ steps.restore.outputs.cache-hit }}
+  cache-primary-key:
+    description: The primary key a writer would save under.
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Cargo sources
+      id: restore
+      if: inputs.operation == 'restore'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          cargo-sources-${{ runner.os }}-
+    - name: Save Cargo sources
+      id: save
+      if: inputs.operation == 'save'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ inputs.primary-key }}
