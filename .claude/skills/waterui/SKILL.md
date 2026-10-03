@@ -306,7 +306,9 @@ text!("Blur: {blur:.1}")                        // format specs work
 text("0x1F60").monospaced()                     // the platform's fixed-pitch face, same size
 ```
 
-Import the macro and write bare `text!` — never `waterui::text!`. On a `Text`, `.size(..)`
+Import the macro and write bare `text!` — never `waterui::text!`. The same goes for every
+name, inside macro bodies too: bring it into scope with `use` and write `ForEach`, not
+`::waterui_core::views::ForEach`. On a `Text`, `.size(..)`
 is the *font* size (and shadows the two-argument frame `.size(w, h)`). `.monospaced()` is a
 design, not a family: it keeps the slot and size and each backend picks its own monospaced
 face, so never spell a font name for code.

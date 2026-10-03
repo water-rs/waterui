@@ -56,7 +56,9 @@ type Shared<T> = Rc<T>;
 /// browser's compositor callback, a network task.
 ///
 /// The backend supplies it in [`Context`]; requesting a redraw while a frame
-/// is already scheduled is a no-op.
+/// is already scheduled is a no-op. It wakes the same view instance only: a
+/// [`GpuContentView`] that a parent rebuild tears down takes its content with
+/// it, and a later request through its handle redraws nothing.
 #[derive(Clone)]
 pub struct RedrawHandle(Arc<dyn Fn() + Send + Sync>);
 
@@ -242,6 +244,14 @@ pub type FrameHook = Rc<dyn Fn()>;
 pub type CaretQuery = Rc<dyn Fn() -> Option<kurbo::Rect>>;
 
 /// A view whose pixels come from [`GpuContent`].
+///
+/// # Content lifetime
+///
+/// The view owns one [`GpuContent`] instance for its whole lifetime, and
+/// [`GpuContent::setup`] is where that instance creates its persistent GPU
+/// resources. When a parent rebuild tears the view down, the content goes
+/// with it and the rebuilt view starts a new instance. Content state does not
+/// move into hidden shared caches to survive that.
 ///
 /// # Layout Behavior
 ///
