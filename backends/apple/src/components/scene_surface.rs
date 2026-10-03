@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
-use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
+use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_graphics::cherenkov::{
     Content, Display, Draw, Engine, FrameTime, Next, Surface, kurbo,
 };
@@ -26,6 +26,13 @@ use super::{HostedRenderer, HostedView};
 pub struct Scene {
     view: Rc<RefCell<SceneView>>,
     dirty: Rc<Cell<bool>>,
+    /// The intrinsic size the layout was last notified about: the baseline
+    /// `measurement_dependency_invalidated` compares the live
+    /// [`SceneContent::intrinsic_size`](waterui_graphics::scene_view::SceneContent::intrinsic_size)
+    /// against. It is seeded before the content invalidator is installed, and
+    /// it advances only when a measurement invalidation is emitted — ordinary
+    /// `measure` calls and placement commits never write it.
+    last_published: Cell<Option<Size>>,
 }
 
 impl Scene {
@@ -33,6 +40,7 @@ impl Scene {
     #[must_use]
     pub fn new(view: SceneView) -> Self {
         Self {
+            last_published: Cell::new(view.intrinsic_size()),
             view: Rc::new(RefCell::new(view)),
             dirty: Rc::new(Cell::new(true)),
         }
@@ -93,6 +101,26 @@ impl HostedView for Scene {
     }
 
     fn before_frame(&self) {}
+
+    /// The scene's measurement contract is its explicit intrinsic size, not
+    /// the answer under a delivered proposal: a placement that pinned every
+    /// axis — the `Some(0)` slot an image is handed before its decode — keeps
+    /// the under-proposal answer identical on both sides of the intrinsic's
+    /// arrival, so a response-delta check there can never see it. Comparing
+    /// the live `intrinsic_size` with the last published value catches the
+    /// real dependency: `None -> Some` on decode, a later aspect change, and
+    /// the matching `stretch_axis` `Both -> None` transition all emit exactly
+    /// once, and a parent that legitimately re-places the leaf at the same
+    /// slot re-publishes the same intrinsic and stabilises instead of
+    /// invalidating forever.
+    fn measurement_dependency_invalidated(&self) -> Option<bool> {
+        let current = self.view.borrow().intrinsic_size();
+        if current == self.last_published.get() {
+            return Some(false);
+        }
+        self.last_published.set(current);
+        Some(true)
+    }
 
     fn renderer(
         &mut self,
@@ -347,6 +375,77 @@ mod tests {
                     | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
+    }
+
+    /// Content whose intrinsic size resolves asynchronously — the same shape
+    /// as an image that only learns its pixels after decode.
+    struct AsyncIntrinsic {
+        size: Rc<Cell<Option<Size>>>,
+    }
+
+    impl SceneContent for AsyncIntrinsic {
+        fn build_scene(
+            &mut self,
+            _recorder: &mut Recorder,
+            _resources: &mut RecordingResources<'_>,
+            _width: f32,
+            _height: f32,
+        ) -> bool {
+            false
+        }
+
+        fn intrinsic_size(&self) -> Option<Size> {
+            self.size.get()
+        }
+
+        fn rebuild_for_engine(&mut self) {}
+    }
+
+    /// The measurement dependency is the intrinsic itself: a leaf handed a
+    /// `Some(0)` slot before its intrinsic arrives still invalidates when it
+    /// lands, probe-only measures never consume the pending change, the
+    /// emission fires once, and a parent that keeps the leaf on a dead axis
+    /// re-publishes the same intrinsic and stabilises.
+    #[test]
+    fn intrinsic_arrival_invalidates_once_regardless_of_pinned_placement() {
+        let size = Rc::new(Cell::new(None));
+        let scene = Scene::new(SceneView::new(AsyncIntrinsic { size: size.clone() }));
+        // The initial zero-height placement committed: the baseline must not
+        // fire for the unchanged intrinsic.
+        assert!(
+            scene.measurement_dependency_invalidated() == Some(false),
+            "unchanged intrinsic stays quiet even on a pinned Some(0) slot"
+        );
+
+        // The intrinsic resolves, then probe-only measures run before the
+        // invalidation check does: a baseline a measure could overwrite
+        // would lose the pending change here.
+        size.set(Some(Size::new(2249.0, 1500.0)));
+        assert_eq!(
+            scene.measure(ProposalSize::new(304.0, 0.0)).size,
+            Size::new(304.0, 0.0),
+            "the pinned slot still answers zero after the decode"
+        );
+        assert_ne!(
+            scene.measure(ProposalSize::new(304.0, None)).size,
+            Size::new(304.0, 0.0),
+            "an open proposal now sees the new intrinsic"
+        );
+        assert_eq!(
+            scene.measurement_dependency_invalidated(),
+            Some(true),
+            "the intervening measures must not consume the change"
+        );
+        let _ = scene.measure(ProposalSize::new(304.0, None));
+        assert_eq!(
+            scene.measurement_dependency_invalidated(),
+            Some(false),
+            "the emitted intrinsic is the new baseline: re-checks stay quiet"
+        );
+
+        // A legitimately fixed slot that differs from the intrinsic still
+        // does not thrash: the dependency did not change again.
+        assert_eq!(scene.measurement_dependency_invalidated(), Some(false));
     }
 
     /// The recording wraps the logical-point content in exactly one
