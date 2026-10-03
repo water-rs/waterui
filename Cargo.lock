@@ -1179,18 +1179,18 @@ dependencies = [
 
 [[package]]
 name = "bon"
-version = "3.10.1"
+version = "3.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60eafe0d77c3a2fc292c1d1346c3041b33c0a108085a2afabf672b70f69dbbc9"
+checksum = "214f5df094ce551a10a30ffb9c70243d61f121a3d985a6495933e181dee6a7d2"
 dependencies = [
  "bon-macros",
 ]
 
 [[package]]
 name = "bon-macros"
-version = "3.10.1"
+version = "3.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd0f9631d8aaaee112c41985d675ef269e02acbd4f33122836af4f0c5f699ff6"
+checksum = "2706da6c749998cc555d04184909608956a69ad3f8ab1a076fbc867b4a3c3ce5"
 dependencies = [
  "darling",
  "ident_case",
@@ -1372,9 +1372,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.5.1"
+version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f360145194ee8e21db5ee7f3fcd4fe52210864c75c985dae33218202c8bbe040"
+checksum = "f74872d07caf508b30a21f6836e7d7016a2eaf7d9ff4f48deaa58cd8a0407630"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1467,7 +1467,7 @@ source = "git+https://github.com/water-rs/cherenkov?rev=2cae05177f4ae0252ae225ab
 dependencies = [
  "color",
  "filtrate-core",
- "kurbo",
+ "kurbo 0.13.1",
  "libm",
  "nami-core",
  "rustc-hash 2.1.3",
@@ -1486,7 +1486,7 @@ dependencies = [
  "cherenkov",
  "filtrate-core",
  "half",
- "kurbo",
+ "kurbo 0.13.1",
  "libm",
  "png",
  "rayon",
@@ -1513,7 +1513,7 @@ dependencies = [
  "gloo-timers 0.3.0",
  "half",
  "js-sys",
- "kurbo",
+ "kurbo 0.13.1",
  "libc",
  "libm",
  "naga",
@@ -1766,6 +1766,41 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-graphics-types 0.2.0",
  "objc",
+]
+
+[[package]]
+name = "cocoa-ui"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "dispatch2",
+ "keyboard-types",
+ "kurbo 0.12.0",
+ "libc",
+ "libtest-mimic",
+ "mach2 0.7.0",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-av-foundation",
+ "objc2-av-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-location 0.3.2",
+ "objc2-core-media",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "objc2-io-surface",
+ "objc2-map-kit",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "objc2-security",
+ "objc2-ui-kit 0.3.2",
+ "objc2-web-kit",
+ "oslog",
+ "tracing",
+ "wgpu",
+ "wgpu-hal",
 ]
 
 [[package]]
@@ -2899,6 +2934,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
+name = "escape8259"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5692dd7b5a1978a5aeb0ce83b7655c58ca8efdcb79d21036ea249da95afec2c6"
+
+[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3180,9 +3221,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
-version = "0.12.5"
+version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8eb065f3251655b3c90e22e5e363f310fc5332fb3402e37bbc94752283248f6"
+checksum = "6c92d9081c7ab3bd83ef1eecdfad090f3d966e3ce74106779664114cfe1a6274"
 dependencies = [
  "bytemuck",
 ]
@@ -3895,7 +3936,7 @@ dependencies = [
  "jni 0.21.1",
  "js-sys",
  "keyboard-types",
- "kurbo",
+ "kurbo 0.13.1",
  "libc",
  "log",
  "lru 0.18.5",
@@ -4702,6 +4743,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ios-test-host"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4954,6 +5002,17 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kurbo"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce9729cc38c18d86123ab736fd2e7151763ba226ac2490ec092d1dd148825e32"
+dependencies = [
+ "arrayvec",
+ "euclid",
+ "smallvec",
+]
+
+[[package]]
+name = "kurbo"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b60dfc32f652b926df6192e55525b16d186c69d47876c3ead4da5cc9f8450e2"
@@ -4964,6 +5023,13 @@ dependencies = [
  "polycool",
  "serde",
  "smallvec",
+]
+
+[[package]]
+name = "layout-twins"
+version = "0.1.0"
+dependencies = [
+ "waterui",
 ]
 
 [[package]]
@@ -5072,6 +5138,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libtest-mimic"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14e6ba06f0ade6e504aff834d7c34298e5155c6baca353cc6a4aaff2f9fd7f33"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap",
+ "escape8259",
+]
+
+[[package]]
 name = "libwayshot-xcap"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5121,6 +5199,13 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+
+[[package]]
+name = "liquid-glass-example"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+]
 
 [[package]]
 name = "list-example"
@@ -5224,6 +5309,12 @@ name = "mach2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
+
+[[package]]
+name = "mach2"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0d28e293f2b8c9d2b2d1c0193bd3c1cbdc0d2cf396888dc01162f7cf9d6c3f3"
 
 [[package]]
 name = "macroific"
@@ -5771,7 +5862,7 @@ name = "nami-core"
 version = "0.3.3"
 source = "git+https://github.com/water-rs/nami?rev=f1db5017f5d64cb45b9b304c74ff420377258476#f1db5017f5d64cb45b9b304c74ff420377258476"
 dependencies = [
- "kurbo",
+ "kurbo 0.13.1",
 ]
 
 [[package]]
@@ -6252,6 +6343,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-av-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b375b013b8a710c67770ca8b45993f0fc22ad7a4ff88e95101b1efbc0b7de4"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-av-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-avf-audio"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6295,6 +6398,16 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-contacts"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b034b578389f89a85c055eacc8d8b368be5f04a6c1b07f672bf3aec21d0ef621"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -6402,7 +6515,7 @@ checksum = "000cfee34e683244f284252ee206a27953279d370e309649dc3ee317b37e5781"
 dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
- "objc2-contacts",
+ "objc2-contacts 0.2.2",
  "objc2-foundation 0.2.2",
 ]
 
@@ -6547,6 +6660,24 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-app-kit 0.2.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-map-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "579edede1c244621cd8229b70ea6e20e6ec3bab5a74afdfd494b446b681e1e64"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "dispatch2",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-contacts 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-location 0.3.2",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -6882,6 +7013,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oslog"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80d2043d1f61d77cb2f4b1f7b7b2295f40507f5f8e9d1c8bf10a1ca5f97a3969"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7061,7 +7201,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "839c8299360d2e998bdb106dc0a6cd71dcc5f4df51df1b620361bf50e283cca6"
 dependencies = [
  "color",
- "kurbo",
+ "kurbo 0.13.1",
  "linebender_resource_handle",
  "smallvec",
 ]
@@ -8928,7 +9068,7 @@ version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
 dependencies = [
- "kurbo",
+ "kurbo 0.13.1",
  "siphasher",
 ]
 
@@ -9892,7 +10032,7 @@ checksum = "e3e29e3e199888d594edd191c5917a2d5c1893b8bf20076c2bf4df7a40a2ee71"
 dependencies = [
  "dpi",
  "keyboard-types",
- "kurbo",
+ "kurbo 0.13.1",
 ]
 
 [[package]]
@@ -10030,7 +10170,7 @@ checksum = "977d0a4abdef933f424a99fe09f95576e089b90aebc6f016a3bc813762493e91"
 dependencies = [
  "data-url",
  "imagesize",
- "kurbo",
+ "kurbo 0.13.1",
  "log",
  "pico-args",
  "roxmltree",
@@ -10067,9 +10207,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.26.1"
+version = "1.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
+checksum = "97277d36b9c3ace13e58fa6e753f8b0bbbf302a18dd193240d70f9e29681059a"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -10617,6 +10757,72 @@ dependencies = [
 ]
 
 [[package]]
+name = "waterui-android"
+version = "0.1.0"
+dependencies = [
+ "executor-core",
+ "jni 0.22.4",
+ "nami",
+ "native-executor",
+ "ndk",
+ "tracing",
+ "tracing-panic",
+ "tracing-subscriber",
+ "waterui",
+ "waterui-backend-core",
+ "waterui-core",
+ "waterui-layout",
+ "waterui-locale",
+]
+
+[[package]]
+name = "waterui-android-test-app"
+version = "0.1.0"
+dependencies = [
+ "waterui",
+ "waterui-android",
+]
+
+[[package]]
+name = "waterui-apple"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "block2 0.6.2",
+ "cocoa-ui",
+ "cookie",
+ "criterion",
+ "dispatch2",
+ "executor-core",
+ "futures",
+ "kurbo 0.13.1",
+ "libc",
+ "libtest-mimic",
+ "native-executor",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "pollster 1.0.1",
+ "serde_json",
+ "tracing",
+ "tracing-panic",
+ "tracing-subscriber",
+ "waterkit-audio",
+ "waterui",
+ "waterui-backend-core",
+ "waterui-core",
+ "waterui-graphics",
+ "waterui-locale",
+ "waterui-map",
+ "waterui-video",
+ "waterui-webview",
+ "wgpu-hal",
+]
+
+[[package]]
 name = "waterui-assets"
 version = "0.5.1"
 dependencies = [
@@ -10667,13 +10873,14 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "walkdir",
  "waterui-assets-core",
+ "waterui-meta",
 ]
 
 [[package]]
 name = "waterui-backend-core"
 version = "0.5.2"
 dependencies = [
- "kurbo",
+ "kurbo 0.13.1",
  "nami",
  "num-traits",
  "tracing",
@@ -10694,7 +10901,7 @@ source = "git+https://github.com/water-rs/barcode?rev=491ada1c7db31bdab657135338
 dependencies = [
  "barcoders",
  "fast_qr",
- "kurbo",
+ "kurbo 0.13.1",
  "nami",
  "thiserror 2.0.21",
  "waterui-core",
@@ -10750,7 +10957,7 @@ dependencies = [
  "executor-core",
  "futures",
  "keycode",
- "kurbo",
+ "kurbo 0.13.1",
  "libloading 0.9.0",
  "nami",
  "num-traits",
@@ -10776,7 +10983,7 @@ source = "git+https://github.com/water-rs/canvas?rev=83f004bb1745708cbe9a7239575
 dependencies = [
  "cherenkov",
  "image",
- "kurbo",
+ "kurbo 0.13.1",
  "nami",
  "parley",
  "tracing",
@@ -10870,7 +11077,7 @@ dependencies = [
  "executor-core",
  "jiff",
  "jni 0.22.4",
- "kurbo",
+ "kurbo 0.13.1",
  "libc",
  "nami",
  "native-executor",
@@ -11111,6 +11318,7 @@ dependencies = [
  "futures",
  "nami",
  "native-executor",
+ "object",
  "pastey 0.2.3",
  "pulldown-cmark",
  "robius-open",
@@ -11124,6 +11332,7 @@ dependencies = [
  "waterui",
  "waterui-assets",
  "waterui-assets-macros",
+ "waterui-assets-planner",
  "waterui-barcode",
  "waterui-canvas",
  "waterui-chart",
@@ -11138,6 +11347,7 @@ dependencies = [
  "waterui-macros",
  "waterui-math",
  "waterui-media",
+ "waterui-meta",
  "waterui-navigation",
  "waterui-particle",
  "waterui-shape",
@@ -11231,7 +11441,7 @@ dependencies = [
  "geo-types",
  "getrandom 0.2.17",
  "image",
- "kurbo",
+ "kurbo 0.13.1",
  "lru 0.16.4",
  "maplibre-expr",
  "mvt-reader",
@@ -11258,7 +11468,7 @@ version = "0.2.0"
 source = "git+https://github.com/water-rs/math?rev=878bfc0284b32ee18c1a50860adf9ba489a4d5ab#878bfc0284b32ee18c1a50860adf9ba489a4d5ab"
 dependencies = [
  "cherenkov",
- "kurbo",
+ "kurbo 0.13.1",
  "mathcat",
  "nami",
  "parley",
@@ -11331,6 +11541,10 @@ dependencies = [
  "waterui-video",
  "zenwave",
 ]
+
+[[package]]
+name = "waterui-meta"
+version = "0.5.1"
 
 [[package]]
 name = "waterui-navigation"
@@ -11444,7 +11658,7 @@ dependencies = [
  "hydrolysis",
  "hydrolysis-m3",
  "image",
- "kurbo",
+ "kurbo 0.13.1",
  "pollster 1.0.1",
  "serde_json",
  "sysinfo",
@@ -11517,12 +11731,12 @@ version = "0.1.0"
 dependencies = [
  "const-fnv1a-hash",
  "object",
- "rustc-demangle",
  "serde",
  "suiteki",
  "thiserror 2.0.21",
  "waterui-core",
  "waterui-macros",
+ "waterui-meta",
 ]
 
 [[package]]

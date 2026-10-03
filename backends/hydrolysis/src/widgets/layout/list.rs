@@ -27,7 +27,7 @@ use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::interaction::Selected;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{SharedAnyViews, Views};
+use waterui_core::views::{SharedAnyViews, Views, ViewSnapshot};
 use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
@@ -162,7 +162,7 @@ impl ListRowSelection {
     /// the row loop does.
     fn index_of(&self, id: ListItemId) -> Option<usize> {
         (0..nami::Signal::snapshot(&self.contents.len()))
-            .find(|index| self.contents.get_id(*index) == Some(id))
+            .find(|index| self.contents.snapshot().get_id(*index) == Some(id))
     }
 
     /// Writes a row interaction into the selection binding: plain selects the
@@ -188,7 +188,7 @@ impl ListRowSelection {
                 };
                 selection.set(
                     (start..=end)
-                        .filter_map(|row| self.contents.get_id(row))
+                        .filter_map(|row| self.contents.snapshot().get_id(row))
                         .collect(),
                 );
             }
@@ -539,11 +539,11 @@ impl ListRenderState {
                 }
                 let index = if preserve_anchor_index {
                     anchor.index.min(len - 1)
-                } else if self.config.contents.get_id(anchor.index) == Some(anchor.id) {
+                } else if self.config.contents.snapshot().get_id(anchor.index) == Some(anchor.id) {
                     anchor.index
                 } else {
                     (0..len)
-                        .find(|index| self.config.contents.get_id(*index) == Some(anchor.id))
+                        .find(|index| self.config.contents.snapshot().get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
                 Some(
@@ -695,7 +695,7 @@ impl ListRenderState {
         let id = self
             .config
             .contents
-            .get_id(window.start)
+            .snapshot().get_id(window.start)
             .unwrap_or_else(|| panic!("hydrolysis List item {} has no stable id", window.start));
         self.viewport_anchor.set(Some(ListViewportAnchor {
             id,
@@ -944,7 +944,7 @@ pub fn list_accessibility(
             );
             let row_id = list
                 .contents
-                .get_id(index)
+                .snapshot().get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
             let key_base = row_a11y_key_base(row_id);
             if let Some(header) = chrome.header.clone() {
@@ -1444,7 +1444,7 @@ pub fn render_list_parts(
             row_env.insert(crate::widgets::controls::button::ListRowChrome);
             let item = materialize_list_item(&contents, index, &row_env);
             let row_id = contents
-                .get_id(index)
+                .snapshot().get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
             let chrome = state.borrow().section_chrome(index);
             // A row's extent covers the section chrome it owns, so scroll offsets,

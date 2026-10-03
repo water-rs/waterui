@@ -85,7 +85,10 @@ pub use semantic::{SemanticPumpResult, SemanticRuntime};
 use window::{RuntimeWindow, advance_runtime, handle_input_events, render_window};
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(not(target_arch = "wasm32"))]
-use window::{FrameReader, render_window_with_capture, runtime_window_origin};
+use window::{FrameReader, render_window_with_capture};
+// `runtime_window_origin` is reached only by headless's accessibility-action path.
+#[cfg(all(not(target_arch = "wasm32"), feature = "accessibility"))]
+use window::runtime_window_origin;
 // Names the `#[cfg(test)]` suite pulls through `super::`; kept out of the
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]

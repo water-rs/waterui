@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
+use waterui_core::views::ViewSnapshot;
 
 impl RenderNode {
     /// Build a node from a view, capturing live reactive inputs. Native leaves
@@ -859,10 +860,10 @@ impl RenderNode {
         let entries = (0..len)
             .map(|index| {
                 let id = views
-                    .get_id(index)
+                    .snapshot().get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"));
                 let view = views
-                    .get_view(index)
+                    .snapshot().get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                 CollectionEntry::stable(
                     id,

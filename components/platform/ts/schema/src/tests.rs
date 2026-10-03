@@ -1,8 +1,9 @@
 //! Format-level tests: encoding invariants and decoder rejections.
 //!
 //! The end-to-end test — derive, then read the payload back out of the
-//! compiled artifact's symbol table — lives in `tests/artifact.rs`, because it
-//! has to look at the binary it is running from.
+//! compiled artifact's metadata directory section — lives in
+//! `tests/artifact.rs`, because it has to look at the binary it is running
+//! from.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -455,7 +456,7 @@ fn display_renders_typescript_type_expressions() {
 /// Every fixture is named `Props` so the comparison isolates one difference at
 /// a time. The type name is part of the contract, and two identically shaped
 /// `Props` types encode identically — which is the reason the alias fixtures
-/// can share a metadata symbol leaf without conflicting.
+/// can share a metadata record name without conflicting.
 #[cfg(feature = "derive")]
 mod hashing {
     /// Written with concrete types.
@@ -630,9 +631,17 @@ mod raw_identifiers {
             panic!("`r#Type` is a struct")
         };
         assert_eq!(schema.name, "Type");
-        // The metadata static exists only in debug builds.
+        // The metadata static exists only in debug builds, and its bytes are
+        // the directory record: the unrawed name, NUL, the contract, NUL.
         #[cfg(debug_assertions)]
-        assert_eq!(crate::payload(&waterui_meta_tsprops_Type), r#Type::ENCODED);
+        {
+            let (name, rest) =
+                waterui_meta_tsprops_Type.split_at("waterui_meta_tsprops_Type".len() + 1);
+            assert_eq!(name, b"waterui_meta_tsprops_Type\0");
+            // The record's payload field is the encoded array — the contract
+            // plus its NUL — and the record adds its own NUL terminator.
+            assert_eq!(crate::payload(&rest[..rest.len() - 1]), r#Type::ENCODED);
+        }
     }
 }
 

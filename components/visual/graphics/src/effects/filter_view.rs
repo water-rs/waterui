@@ -17,7 +17,10 @@
 //!
 //! Reactive parameters are [`Reactive`] slots: a nami signal on the UI side
 //! feeds a `Send` value slot the render side samples, and a change carrying
-//! an [`Animation`] in its metadata hands an interpolator to every watcher.
+//! a public [`Animation`] in its metadata hands an interpolator to every
+//! watcher. The engine consumes its own `cherenkov::Animation`, so the
+//! metadata type is mapped through the public `curve()`/`duration()`
+//! contract at the watcher boundary.
 
 extern crate alloc;
 
@@ -30,7 +33,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
-use cherenkov::{Animation, RenderTransfer, curve_value, settled, spring_step};
+use cherenkov::{RenderTransfer, curve_value, settled, spring_step};
 pub use filtrate::filters::{BlendMode, TransitionDirection};
 use filtrate::{
     AnimatedCallback, AnimatedTarget, AuxData, AuxImage, Chain, ColorStage, Filter, FilterExt as _,
@@ -39,6 +42,8 @@ use filtrate::{
 };
 pub use filtrate::{FilterImage, LutImage};
 use nami::{Signal, signal::IntoComputed};
+use waterui_core::animation::Animation;
+use waterui_core::easing::EasingCurve;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
@@ -248,7 +253,10 @@ impl ParamGuards {
         });
         let target = Arc::clone(&slot);
         let guard = signal.watch(move |context| {
-            let animation = context.metadata().try_get::<Animation>();
+            let animation = context
+                .metadata()
+                .try_get::<Animation>()
+                .map(|animation| cherenkov_animation(&animation));
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
             target.watchers.for_each(|callback| {
@@ -269,8 +277,28 @@ impl ParamGuards {
     }
 }
 
-/// A Cherenkov [`Animation`] driving a scalar filter parameter.
-struct AnimationInterpolator(Animation);
+/// Maps the public [`Animation`] onto the engine's execution type through
+/// its `curve()`/`duration()` contract — [`Animation::Default`] resolves
+/// through those accessors to the documented ease-in-out 250 ms.
+fn cherenkov_animation(animation: &Animation) -> cherenkov::Animation {
+    match animation.curve() {
+        EasingCurve::CubicBezier(x1, y1, x2, y2) => {
+            cherenkov::Animation::Curve(cherenkov::Curve::bezier(
+                animation.duration(),
+                f64::from(x1),
+                f64::from(y1),
+                f64::from(x2),
+                f64::from(y2),
+            ))
+        }
+        EasingCurve::Spring { stiffness, damping } => cherenkov::Animation::Spring(
+            cherenkov::Spring::from_physics(f64::from(stiffness), f64::from(damping)),
+        ),
+    }
+}
+
+/// A Cherenkov animation driving a scalar filter parameter.
+struct AnimationInterpolator(cherenkov::Animation);
 
 const SPRING_STEP: f64 = 1.0 / 240.0;
 const SPRING_STEP_NANOS: u128 = 1_000_000_000 / 240;
@@ -296,15 +324,15 @@ impl AnimationInterpolator {
 impl Interpolator for AnimationInterpolator {
     fn duration(&self) -> Duration {
         match &self.0 {
-            Animation::Curve(curve) => curve.duration,
-            Animation::Spring(_) => SPRING_LIMIT,
-            Animation::Decay(_) => Duration::ZERO,
+            cherenkov::Animation::Curve(curve) => curve.duration,
+            cherenkov::Animation::Spring(_) => SPRING_LIMIT,
+            cherenkov::Animation::Decay(_) => Duration::ZERO,
         }
     }
 
     fn interpolate(&self, from: f32, to: f32, elapsed: Duration) -> f32 {
         match &self.0 {
-            Animation::Curve(curve) => {
+            cherenkov::Animation::Curve(curve) => {
                 let t = if curve.duration.is_zero() {
                     1.0
                 } else {
@@ -313,14 +341,16 @@ impl Interpolator for AnimationInterpolator {
                 let k = curve_value(curve, t);
                 (f64::from(to) - f64::from(from)).mul_add(k, f64::from(from)) as f32
             }
-            Animation::Spring(spring) => Self::spring_at(spring, from, to, elapsed).0 as f32,
-            Animation::Decay(_) => to,
+            cherenkov::Animation::Spring(spring) => {
+                Self::spring_at(spring, from, to, elapsed).0 as f32
+            }
+            cherenkov::Animation::Decay(_) => to,
         }
     }
 
     fn is_complete(&self, elapsed: Duration) -> bool {
         match &self.0 {
-            Animation::Spring(spring) => {
+            cherenkov::Animation::Spring(spring) => {
                 elapsed >= SPRING_LIMIT || Self::spring_at(spring, 0.0, 1.0, elapsed).1
             }
             _ => elapsed >= self.duration(),
@@ -1823,9 +1853,13 @@ mod tests {
     #[cfg(feature = "gpu")]
     use super::AnyEffect;
     use super::{
-        ColorStage, FilterParam as _, FilterSignal, FilterViewExt as _, FilteredView, OutputSize,
-        ParamGuards, Placed, SpatialStage, StageCollector,
+        AnimationInterpolator, ColorStage, FilterParam as _, FilterSignal, FilterViewExt as _,
+        FilteredView, OutputSize, ParamGuards, Placed, SPRING_LIMIT, SpatialStage, StageCollector,
+        cherenkov_animation,
     };
+    use core::time::Duration;
+    use filtrate::Interpolator as _;
+    use nami::SignalExt as _;
     #[cfg(feature = "gpu")]
     use std::sync::Arc;
     #[cfg(feature = "gpu")]
@@ -1833,6 +1867,7 @@ mod tests {
     use std::sync::mpsc;
     #[cfg(feature = "gpu")]
     use waterui_core::AnyView;
+    use waterui_core::animation::Animation;
 
     /// Records each stage's kind, name and parameter offset, and checks that
     /// it carries its shader source.
@@ -2087,5 +2122,73 @@ mod tests {
         drop(guards);
         value.set(1.0_f32);
         assert_eq!(parameter.snapshot().to_bits(), 0.75_f32.to_bits());
+    }
+
+    #[test]
+    fn animation_metadata_reaches_param_interpolators() {
+        let value = nami::binding(0.25_f32);
+        let mut guards = ParamGuards::default();
+        let parameter = guards.bind(value.with(Animation::ease_in_out(Duration::from_millis(300))));
+        let (send, receive) = mpsc::channel();
+        let subscription = parameter.watch_animated(Box::new(move |target| {
+            send.send(target).expect("receiver exists");
+        }));
+        value.set(0.5_f32);
+        let target = receive.try_recv().expect("animated update");
+        assert_eq!(target.value.to_bits(), 0.5_f32.to_bits());
+        let interpolator = target.interpolator.expect("metadata interpolator");
+        assert_eq!(interpolator.duration(), Duration::from_millis(300));
+        let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(150));
+        assert!((mid - 0.5).abs() < 1e-3, "symmetric ease-in-out midpoint");
+        assert!(interpolator.is_complete(Duration::from_millis(300)));
+        drop(subscription);
+        drop(guards);
+    }
+
+    #[test]
+    fn animation_default_resolves_documented_ease_in_out() {
+        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::Default));
+        assert_eq!(interpolator.duration(), Duration::from_millis(250));
+        let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(125));
+        assert!(
+            (mid - 0.5).abs() < 1e-3,
+            "Default ease-in-out midpoint, got {mid}"
+        );
+    }
+
+    #[test]
+    fn animation_bezier_preserves_duration_and_shape() {
+        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::bezier(
+            Duration::from_millis(400),
+            0.25,
+            0.1,
+            0.25,
+            1.0,
+        )));
+        assert_eq!(interpolator.duration(), Duration::from_millis(400));
+        let quarter = interpolator.interpolate(0.0, 1.0, Duration::from_millis(100));
+        assert!(
+            quarter > 0.25,
+            "ease curve leads linear early, got {quarter}"
+        );
+        assert_eq!(
+            interpolator
+                .interpolate(0.0, 1.0, Duration::from_millis(400))
+                .to_bits(),
+            1.0_f32.to_bits()
+        );
+    }
+
+    #[test]
+    fn animation_spring_uses_engine_physics() {
+        let interpolator =
+            AnimationInterpolator(cherenkov_animation(&Animation::spring(200.0, 15.0)));
+        assert_eq!(interpolator.duration(), SPRING_LIMIT);
+        let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
+        assert!(
+            early > 0.0 && early < 1.0,
+            "spring progresses without snapping, got {early}"
+        );
+        assert!(!interpolator.is_complete(Duration::from_millis(30)));
     }
 }

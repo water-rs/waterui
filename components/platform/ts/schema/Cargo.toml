@@ -14,6 +14,11 @@ categories = ["gui"]
 serde = { workspace = true, features = ["derive", "std"] }
 thiserror.workspace = true
 const-fnv1a-hash.workspace = true
+# The artifact-channel record shape — `dir_entry` builds each emitted
+# static's `name`, NUL, `payload`, NUL bytes and `dir_records` walks the
+# `.wmeta` section — is the whole channel's contract, so it lives in
+# `waterui-meta`, not in this schema crate.
+waterui-meta.workspace = true
 waterui-macros = { workspace = true, optional = true }
 waterui-core = { workspace = true, optional = true }
 suiteki = { workspace = true, optional = true }
@@ -29,7 +34,6 @@ waterui = ["dep:waterui-core", "dep:suiteki"]
 
 [dev-dependencies]
 object = { version = "0.37", default-features = false, features = ["read", "std"] }
-rustc-demangle = "0.1"
 
 [lints]
 workspace = true

@@ -9,7 +9,8 @@ name: Nightly
 # coverage and the `cargo hack
 # --each-feature` sweep. `ci.yml` is the per-change gate. The backend
 # repositories drive the examples on their platforms in their own nightlies;
-# they do not run this suite, and nothing else does either.
+# the in-tree Apple backend is the exception — its packaged-example suite
+# (`apple-e2e.yml`) is invoked here so the certification covers it.
 #
 # A green run certifies its commit as an immutable `nightly-*` prerelease,
 # which `water channel nightly` resolves and the `Nightly healthy` check in
@@ -53,6 +54,11 @@ jobs:
   test:
     name: Test
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: true
 
@@ -67,6 +73,25 @@ jobs:
   windows:
     name: Windows
     uses: ./.github/workflows/windows.yml
+    # The Windows source writer's cache-retirement step needs actions:write
+    # on its own family; nothing else in the called workflow gains it.
+    permissions:
+      contents: read
+      actions: write
+
+  # The in-tree Apple backend's packaged-example suite — group packaging on
+  # iOS simulator and macOS, the capture shards and the packaged-app/native
+  # device tests — so one run certifies the whole (framework, backends/apple,
+  # lockfile, CLI) combination, not just the framework half.
+  apple-e2e:
+    name: Apple e2e
+    uses: ./.github/workflows/apple-e2e.yml
+    permissions:
+      # The suite's publish-baselines job pushes a branch and opens a PR on
+      # record dispatches; its report job files the failure issue.
+      contents: write
+      pull-requests: write
+      issues: write
 
   # The whole-workspace MSRV sweep: the per-change gate runs this check
   # only when a diff touches a toolchain boundary, so the nightly carries
@@ -97,10 +122,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: llvm-tools-preview
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
         # The instrumented run executes the same GPU-backed snapshot tests as
         # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
@@ -132,7 +158,7 @@ jobs:
       # depend on the feature set and already ran in `test`; an instrumented
       # rebuild of the same fixtures would measure nothing extra (trybuild's
       # own target dir is not instrumented) and cost a cold framework compile.
-      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
+      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
@@ -149,10 +175,11 @@ jobs:
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
       - uses: ./.github/actions/install-tool
         with:
@@ -171,6 +198,58 @@ jobs:
       # `--profile=ci-check` in the `=` form: cargo-hack forwards unknown flags
       # to cargo verbatim, and only `flag=value` survives its parser.
       - run: cargo hack check --locked --each-feature --profile=ci-check
+
+  # The Gradle half of the Android backend (#1429): the host library and the
+  # test application, built once a day. It stays out of the per-change gate
+  # — an AGP + Kotlin + NDK + cargo build costs several minutes and the only
+  # way a diff reaches it is the same path filter the fast clippy leg in
+  # ci.yml already pays for. The arm64-v8a debug APK uploads as a run
+  # artifact so a device check needs no local build.
+  android-backend:
+    name: Android backend (Gradle)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          shared-key: cargo-home-${{ runner.os }}
+          cache-targets: false
+          save-if: false
+          cache-on-failure: true
+      - uses: ./.github/actions/setup-linux-deps
+      # Same NDK prologue the ci.yml Android legs run — this job's graph
+      # also reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
+      - uses: ./.github/actions/setup-android-ndk
+        with:
+          spirv-tools: "true"
+          kotlin: "true"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Read the pinned Gradle version
+        run: |
+          set -euo pipefail
+          props="backends/android/gradle/wrapper/gradle-wrapper.properties"
+          version="$(sed -n 's|^distributionUrl=.*gradle-\([0-9.]*\)-bin\.zip|\1|p' "$props")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9.]+$ ]]; then
+            echo "::error file=$props::cannot read the pinned Gradle version (got '$version')"
+            exit 1
+          fi
+          echo "GRADLE_VERSION=$version" >> "$GITHUB_ENV"
+      # No gradle-wrapper.jar is committed; CI provisions the pinned release.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+      - name: Build the host library and the test application
+        working-directory: backends/android
+        run: gradle :host:assemble :tests:app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waterui-android-test-app-debug-apk
+          path: backends/android/tests/app/build/outputs/apk/debug/app-debug.apk
 
   test-report:
     name: Test Report
@@ -191,7 +270,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, android-backend, apple-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -235,7 +314,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, android-backend, promote, apple-e2e]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

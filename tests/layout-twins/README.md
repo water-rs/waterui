@@ -25,19 +25,17 @@ assumed. Results are committed as JSON under `results/<side>/<os>-s<scale>/<case
   sides and writes `results/`. `SIDES="swiftui"` skips the WaterUI half.
   The harness links every archive in the backend's products directory (the
   `___swift_bridge__` helpers are required, not just `libwaterui_app.a`).
-  It needs an apple-backend checkout: `BACKEND_PATH` env, or a checkout at
-  `<repo>/../apple-backend` / `~/repos/apple-backend` plus a
-  `<repo>/backends/apple` symlink for `water package` (both are local
-  environment, not committed).
+  The backend is in-tree: the harness's SwiftPM dependency is the
+  repository's root `Package.swift`, and `water package` resolves
+  `<waterui_path>/backends/apple` inside the same checkout — no external
+  repo or symlink is needed.
 
 ## Toolchain
 
 Xcode 26.6 (17F113) · Swift 6.3.3 · cargo/rustc 1.98.1 · water 0.4.3 ·
 macOS 26.5.2 (25F84) host · iPhone 17 sim iOS 26.5 (23F73, scale 3) ·
 iPad Pro 11-inch (M5) sim iOS 26.5 (23F77, scale 2) · macOS 26.5.2 (scale 1;
-no scale-2 display on this machine) · apple-backend `3d87740cc` (4 commits
-past the 0.3.0 pin, includes water-rs/apple-backend#259 empty-child
-membership — visible in the A3 bare-`E` member slot)
+no scale-2 display on this machine)
 
 ## Environment notes
 

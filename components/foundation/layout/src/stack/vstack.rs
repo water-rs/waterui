@@ -315,7 +315,7 @@ pub fn vstack<C: TupleViews>(contents: C) -> VStack<(C,)> {
 impl<C, F, V> View for VStack<ForEach<C, F, V>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable,
+    C::Item: Identifiable + Clone,
     F: 'static + Fn(C::Item) -> V,
     V: View,
 {

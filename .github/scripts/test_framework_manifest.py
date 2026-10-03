@@ -61,7 +61,7 @@ def test_stable_scaffolds_every_released_package_by_version():
         assert name not in experimental
 
     # Backend coordinates are not scaffold packages: they stay in the table.
-    assert "apple-backend-url" in scaffold
+    assert "apple-backend-path" in scaffold
     assert "android-backend-revision" in scaffold
     # Host coordinates are not scaffold packages either. The Hydrolysis
     # Android host lives in this repository (#1428): no external pin exists,

@@ -8,12 +8,14 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
-use core::ops::RangeBounds;
+use alloc::rc::Rc;
+use core::marker::PhantomData;
+use core::ops::{Range, RangeBounds};
 use nami::collection::{Collection, CollectionChange};
 use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
-use crate::views::{AnyViews, ForEach, SharedAnyViews, Views, ViewsExt};
+use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views, ViewsExt};
 use waterui_core::id::{Id as RawId, Mapping, SelfId};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
@@ -309,7 +311,7 @@ where
 impl<C, F> List<ForEach<C, F, ListItem>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable,
+    C::Item: Identifiable + Clone,
     F: 'static + Fn(C::Item) -> ListItem,
 {
     /// Creates a lazy list over an identity-keyed reactive collection.
@@ -317,7 +319,7 @@ where
     /// Renderers request only rows in the visible viewport. Programmatic jumps
     /// through [`ScrollController`] therefore do not materialize preceding rows.
     /// Use [`List::content`] instead when rows carry semantic section markers.
-    pub const fn for_each(data: C, generator: F) -> Self {
+    pub fn for_each(data: C, generator: F) -> Self {
         Self {
             contents: ForEach::new(data, generator),
             uses_sections: false,
@@ -351,8 +353,8 @@ impl List<BuiltViews> {
 /// [`ListContent`] tree on demand.
 ///
 /// Each entry stores a cloneable builder that produces a fresh [`ListItem`]
-/// every time `Views::get_view` is called, plus an optional [`ListSection`]
-/// marker attached by [`Section`].
+/// every time the snapshot's `get_view` is called, plus an optional
+/// [`ListSection`] marker attached by [`Section`].
 pub struct BuiltViews {
     entries: alloc::vec::Vec<(AnyViewBuilder<ListItem>, Option<ListSection>)>,
 }
@@ -373,13 +375,36 @@ impl core::fmt::Debug for BuiltViews {
     }
 }
 
-impl Views for BuiltViews {
+/// The immutable snapshot captured by [`BuiltViews`].
+///
+/// Shares the builder entries and their section markers. Each `get_view`
+/// produces a fresh [`ListItem`].
+pub struct BuiltViewsSnapshot {
+    entries: Rc<[(AnyViewBuilder<ListItem>, Option<ListSection>)]>,
+}
+
+impl Clone for BuiltViewsSnapshot {
+    fn clone(&self) -> Self {
+        Self {
+            entries: self.entries.clone(),
+        }
+    }
+}
+
+impl core::fmt::Debug for BuiltViewsSnapshot {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BuiltViewsSnapshot")
+            .field("len", &self.entries.len())
+            .finish()
+    }
+}
+
+impl ViewSnapshot for BuiltViewsSnapshot {
     type Id = SelfId<usize>;
-    type Guard = ();
     type View = ListItem;
 
-    fn len(&self) -> Computed<usize> {
-        Computed::constant(self.entries.len())
+    fn range(&self) -> Range<usize> {
+        0..self.entries.len()
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
@@ -392,11 +417,28 @@ impl Views for BuiltViews {
         item.section = section;
         Some(item)
     }
+}
+
+impl Views for BuiltViews {
+    type Id = SelfId<usize>;
+    type Guard = ();
+    type View = ListItem;
+    type Snapshot = BuiltViewsSnapshot;
+
+    fn len(&self) -> Computed<usize> {
+        Computed::constant(self.entries.len())
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        BuiltViewsSnapshot {
+            entries: Rc::from(self.entries.as_slice()),
+        }
+    }
 
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static,
+        _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
     ) -> Self::Guard {
     }
 }
@@ -451,13 +493,13 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
     let theme_selection = selection.clone();
     let (contents, ids) = AnyViews::new_with_ids(WithId {
         contents: config.contents.clone(),
-        transform: move |id, item| {
+        transform: Rc::new(move |id, item| {
             selection_themed(
                 resolve_item_section(item, &section_env),
                 &theme_selection,
                 id,
             )
-        },
+        }),
     });
     config.contents = SharedAnyViews::from(contents);
     config.selection = selection.erased(&ids);
@@ -476,21 +518,45 @@ fn render_list_config(mut config: ListConfig, env: &Environment) -> impl View {
 /// selected state from the list selection and the row's own id.
 struct WithId<C, F> {
     contents: C,
-    transform: F,
+    transform: Rc<F>,
 }
 
-impl<V, C, F> Views for WithId<C, F>
+/// The immutable snapshot a [`WithId`] captures: the source snapshot plus a
+/// shared handle to the transform, so the id and the view a row reports come
+/// from the same captured source state.
+struct WithIdSnapshot<S, F, V> {
+    contents: S,
+    transform: Rc<F>,
+    _marker: PhantomData<fn() -> V>,
+}
+
+impl<S: Clone, F, V> Clone for WithIdSnapshot<S, F, V> {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            transform: self.transform.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<S, F, V> core::fmt::Debug for WithIdSnapshot<S, F, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(core::any::type_name::<Self>())
+    }
+}
+
+impl<S, F, V> ViewSnapshot for WithIdSnapshot<S, F, V>
 where
+    S: ViewSnapshot,
+    F: Fn(S::Id, S::View) -> V,
     V: View,
-    C: Views,
-    F: 'static + Fn(C::Id, C::View) -> V,
 {
-    type Id = C::Id;
-    type Guard = C::Guard;
+    type Id = S::Id;
     type View = V;
 
-    fn len(&self) -> Computed<usize> {
-        self.contents.len()
+    fn range(&self) -> Range<usize> {
+        self.contents.range()
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
@@ -503,13 +569,45 @@ where
             self.contents.get_view(index)?,
         ))
     }
+}
+
+impl<V, C, F> Views for WithId<C, F>
+where
+    V: View,
+    C: Views,
+    F: 'static + Fn(C::Id, C::View) -> V,
+{
+    type Id = C::Id;
+    type Guard = C::Guard;
+    type View = V;
+    type Snapshot = WithIdSnapshot<C::Snapshot, F, V>;
+
+    fn len(&self) -> Computed<usize> {
+        self.contents.len()
+    }
+
+    fn snapshot(&self) -> Self::Snapshot {
+        WithIdSnapshot {
+            contents: self.contents.snapshot(),
+            transform: self.transform.clone(),
+            _marker: PhantomData,
+        }
+    }
 
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl for<'a> Fn(Context<&'a [Self::Id]>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
     ) -> Self::Guard {
-        self.contents.watch(range, watcher)
+        let transform = self.transform.clone();
+        self.contents.watch(range, move |ctx, change| {
+            let snapshot = ctx.map(|contents| WithIdSnapshot {
+                contents,
+                transform: transform.clone(),
+                _marker: PhantomData,
+            });
+            watcher(snapshot, change);
+        })
     }
 }
 
@@ -924,8 +1022,9 @@ mod tests {
             ),
             &Environment::new(),
         );
-        let first = config.contents.get_view(0).expect("row 0 exists");
-        let second = config.contents.get_view(1).expect("row 1 exists");
+        let contents = config.contents.snapshot();
+        let first = contents.get_view(0).expect("row 0 exists");
+        let second = contents.get_view(1).expect("row 1 exists");
         assert_eq!(first.insets, Some(EdgeInsets::all(4.0)));
         assert_eq!(second.insets, None);
     }

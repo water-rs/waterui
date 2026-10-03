@@ -230,14 +230,19 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
     };
 
     let name = &input.ident;
-    // The metadata symbol the CLI enumerates carries the type's name, not its
+    // The metadata record the CLI enumerates carries the type's name, not its
     // spelling: `r#Type` and `Type` are the same type to the contract.
     let unraw = name.unraw();
     let length = format_ident!("__WATERUI_TS_PROPS_LEN_{}", unraw);
     let encoded = format_ident!("__WATERUI_TS_PROPS_ENCODED_{}", unraw);
+    let record_len = format_ident!("__WATERUI_TS_PROPS_RECORD_LEN_{}", unraw);
     let meta = format_ident!("waterui_meta_tsprops_{}", unraw);
     let meta_doc =
         format!("The encoded props contract of `{unraw}`, read back by the `water` CLI.");
+    // The record names itself: `name`, NUL, `payload`, NUL, so a reader can
+    // walk the section it lives in and match names — a linked image need not
+    // carry a symbol table, and a linked PE carries none.
+    let meta_name = meta.to_string();
 
     quote! {
         #schema
@@ -252,12 +257,23 @@ pub fn derive_ts_props(input: TokenStream) -> TokenStream {
         const #encoded: [u8; #length] =
             #path::encode(&<#name as #path::TsType>::SCHEMA);
 
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const #record_len: usize = #meta_name.len() + #length + 2;
+
+        // The static lives in the metadata directory section every crate's
+        // derives fill, and its bytes name themselves: the artifact reader
+        // walks the section's `name`, NUL, `payload`, NUL records, which needs
+        // no symbol table — a linked MSVC image carries none.
         #[doc = #meta_doc]
         #[cfg(debug_assertions)]
         #[used]
         #[allow(non_upper_case_globals)]
+        #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+        #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
         #[doc(hidden)]
-        pub static #meta: [u8; #length] = #encoded;
+        pub static #meta: [u8; #record_len] =
+            #path::dir_entry::<#record_len>(#meta_name.as_bytes(), &#encoded);
 
         impl #path::TsProps for #name {
             const ENCODED: &'static [u8] = #path::payload(&#encoded);

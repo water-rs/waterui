@@ -1,0 +1,359 @@
+name: Apple E2E Targeted
+
+# Dispatch-only re-test of a named set of examples: a fixed example can be
+# re-verified on one or both platforms without paying for the full 16-shard
+# nightly plus release-metrics. This is deliberately a separate workflow — the
+# release gate reads the Nightly workflow's conclusion, and a partial run must
+# never be able to mark a commit certified. The job shape mirrors nightly's:
+# `prepare` resolves the (framework, CLI) pair once and builds the
+# `water` CLI and validates the example names, then one job per requested
+# example and platform packages, launches and captures that single example
+# through the same shard script with the same artifacts (shots, logs, and —
+# with `record_baselines` — captures uploaded for manual review; nothing here
+# publishes or promotes them). The examples fan out as a matrix so a run's
+# wall clock is one example's build, not the sum of the list.
+
+on:
+  workflow_dispatch:
+    inputs:
+      examples:
+        description: Comma-separated example names (e.g. counter,form)
+        required: true
+        type: string
+      platforms:
+        description: Platforms to run
+        required: true
+        type: choice
+        options:
+          - both
+          - ios
+          - macos
+        default: both
+      cli_ref:
+        description: water-rs/cli branch, tag, or full commit SHA (default dev)
+        required: false
+        type: string
+      record_baselines:
+        description: Upload captures as baseline artifacts instead of comparing them
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Targeted runs are independent by construction — each resolves its own
+# (framework, CLI) pair and names its own examples — so they run
+# side by side, one group per run, and a running job is never cancelled: its
+# value is the complete report on the examples it was asked about.
+concurrency:
+  group: apple-e2e-${{ github.run_id }}
+  cancel-in-progress: false
+
+env:
+  # Same toolchain policy as ci.yml (#328): no compile wrapper on CI — the
+  # sccache hit rate on this suite was 2-8% while the cached artifact grew
+  # the shared 10 GB quota. Native shader/codec wrappers stay off CI too.
+  RUSTC_WRAPPER: ""
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  # `cargo install --path` otherwise builds in a tempdir; framework builds
+  # keep their artifacts in the workspace target dir.
+  CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: macos-26
+    timeout-minutes: 30
+    outputs:
+      waterui_ref: ${{ steps.setup.outputs.waterui_ref }}
+      waterui_sha: ${{ steps.setup.outputs.waterui_sha }}
+      cli_ref: ${{ steps.setup.outputs.cli_ref }}
+      cli_sha: ${{ steps.setup.outputs.cli_sha }}
+      examples: ${{ steps.examples.outputs.examples }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        id: setup
+        env:
+          WATER_CLI_REF: ${{ inputs.cli_ref }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      # A name discovery does not know is a typo; fail the run here, once,
+      # instead of one matrix job per platform.
+      - name: Resolve the requested examples
+        id: examples
+        env:
+          WATERUI_DIR: ${{ github.workspace }}
+          REQUESTED: ${{ inputs.examples }}
+        run: |
+          set -euo pipefail
+          known="$(./.github/scripts/discover-examples.sh "${WATERUI_DIR}" | jq -R . | jq -cs .)"
+          examples="$(jq -cn --arg s "${REQUESTED}" --argjson known "${known}" '
+            $s | split(",") | map(gsub("\\s"; "")) | map(select(length > 0)) | unique
+            | if length == 0 then error("no examples requested") else . end
+            | . as $requested
+            | ($requested - $known) as $unknown
+            | if ($unknown | length) > 0
+              then error("not runnable examples under examples/: " + ($unknown | join(", ")))
+              else $requested end')"
+          echo "examples=${examples}" >> "${GITHUB_OUTPUT}"
+          echo "Examples: ${examples}"
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: stable
+          cache: "false"
+
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes (source packages are toolchain-independent). No save and no
+      # `target` cache in this lane.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+
+      - name: Build the water CLI
+        env:
+          # The CLI's own target directory lives with its checkout in the
+          # job-owned temp area, outside the framework workspace; it shares
+          # nothing with the framework builds the shards perform.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/water-cli-target
+        run: cargo install --path "${WATER_CLI_DIR:?WATER_CLI_DIR is required; run .github/scripts/setup-e2e.sh first}" --locked --root "${{ github.workspace }}/cli-bin"
+
+      - name: Upload the water CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin/water
+          retention-days: 1
+          if-no-files-found: error
+
+  e2e-ios:
+    name: e2e-ios-${{ matrix.example }}
+    if: inputs.platforms == 'ios' || inputs.platforms == 'both'
+    needs: prepare
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        example: ${{ fromJson(needs.prepare.outputs.examples) }}
+    env:
+      # This checkout pins `stable` in rust-toolchain.toml and the
+      # water CLI builds every crate under the toolchain the project selects.
+      # This job builds under the dated stable pinned below (apple-e2e.yml's
+      # header explains why), and rustup ranks this variable above the
+      # project's file, so the pin reaches cargo through the CLI.
+      RUSTUP_TOOLCHAIN: "1.98.1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.98.1"
+          targets: aarch64-apple-ios-sim
+          # run-ios-device-tests.sh verifies the packaged archive's exports
+          # with the llvm-nm shipped by this toolchain.
+          components: llvm-tools-preview
+          cache: "false"
+
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
+
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes. No save and no `target` cache (the old per-leg `target`
+      # writer is gone).
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Boot iOS simulator
+        run: |
+          set -euo pipefail
+          simulator_udid="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [[ -z "${simulator_udid}" ]]; then
+            echo "::error::No available iPhone simulator found."
+            exit 1
+          fi
+          echo "SIMULATOR_UDID=${simulator_udid}" >> "${GITHUB_ENV}"
+          xcrun simctl boot "${simulator_udid}" || true
+          xcrun simctl bootstatus "${simulator_udid}" -b
+          # An iOS capture is the whole display (macOS captures the app's own
+          # window), so a SpringBoard notification banner lands in the frame and
+          # reads as a divergence from the app's own baseline and from the
+          # SwiftUI twin. Booting out the delivery daemon stops every banner for
+          # this boot; the device is created fresh per run, so nothing persists.
+          xcrun simctl spawn "${simulator_udid}" \
+            launchctl bootout system/com.apple.usernotificationsd 2>/dev/null || true
+          # The capture is compared pixel-by-pixel; pin the status bar so the
+          # clock and battery do not diff against the baseline.
+          xcrun simctl status_bar "${simulator_udid}" override \
+            --time "9:41" \
+            --batteryState charged \
+            --batteryLevel 100 \
+            --cellularMode active \
+            --cellularBars 4 \
+            --wifiBars 3
+
+      - name: Run iOS e2e examples
+        env:
+          PLATFORM: ios
+          SHARD_INDEX: 0
+          SHARD_TOTAL: 1
+          EXAMPLES: ${{ matrix.example }}
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          SHOTS_DIR: ${{ github.workspace }}/e2e-shots
+          RECORD_DIR: ${{ github.workspace }}/e2e-baselines
+          RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
+        run: ./.github/scripts/run-e2e-shard.sh
+
+      - name: Upload iOS captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-ios-${{ matrix.example }}
+          path: e2e-shots/
+          retention-days: 14
+
+      - name: Upload iOS startup times
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-times-ios-${{ matrix.example }}
+          path: |
+            e2e-logs/startup-times-*.json
+            e2e-logs/memory-*.json
+            e2e-logs/package-sizes-*.json
+          retention-days: 90
+
+      - name: Upload iOS logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-ios-${{ matrix.example }}
+          path: e2e-logs/
+          retention-days: 14
+
+      - name: Upload recorded iOS baselines
+        if: inputs.record_baselines == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-baselines-ios-${{ matrix.example }}
+          path: e2e-baselines/
+          retention-days: 7
+
+  e2e-macos:
+    name: e2e-macos-${{ matrix.example }}
+    if: inputs.platforms == 'macos' || inputs.platforms == 'both'
+    needs: prepare
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        example: ${{ fromJson(needs.prepare.outputs.examples) }}
+    env:
+      # This checkout pins `stable` in rust-toolchain.toml and the
+      # water CLI builds every crate under the toolchain the project selects.
+      # This job builds under the dated stable pinned below (apple-e2e.yml's
+      # header explains why), and rustup ranks this variable above the
+      # project's file, so the pin reaches cargo through the CLI.
+      RUSTUP_TOOLCHAIN: "1.98.1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare the e2e workspace
+        env:
+          WATER_CLI_SHA: ${{ needs.prepare.outputs.cli_sha }}
+        run: ./.github/scripts/setup-e2e.sh
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: "1.98.1"
+          cache: "false"
+
+      - name: Install the Metal toolchain
+        uses: ./.github/actions/metal-toolchain
+
+      # Sources-only restore — identical paths/key/restore-prefix to the
+      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
+      # and `main` pushes. No save and no `target` cache.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+
+      - name: Install the water CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: water-cli
+          path: cli-bin/bin
+      - run: |
+          chmod +x cli-bin/bin/water
+          echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      - name: Run macOS e2e examples
+        env:
+          PLATFORM: macos
+          SHARD_INDEX: 0
+          SHARD_TOTAL: 1
+          EXAMPLES: ${{ matrix.example }}
+          WATERUI_DIR: ${{ github.workspace }}
+          EXAMPLE_LOG_DIR: ${{ github.workspace }}/e2e-logs
+          SHOTS_DIR: ${{ github.workspace }}/e2e-shots
+          RECORD_DIR: ${{ github.workspace }}/e2e-baselines
+          RECORD: ${{ inputs.record_baselines == true && '1' || '0' }}
+        run: ./.github/scripts/run-e2e-shard.sh
+
+      - name: Upload macOS captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-shots-macos-${{ matrix.example }}
+          path: e2e-shots/
+          retention-days: 14
+
+      - name: Upload macOS startup times
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-times-macos-${{ matrix.example }}
+          path: |
+            e2e-logs/startup-times-*.json
+            e2e-logs/memory-*.json
+            e2e-logs/package-sizes-*.json
+          retention-days: 90
+
+      - name: Upload macOS logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-macos-${{ matrix.example }}
+          path: e2e-logs/
+          retention-days: 14
+
+      - name: Upload recorded macOS baselines
+        if: inputs.record_baselines == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-baselines-macos-${{ matrix.example }}
+          path: e2e-baselines/
+          retention-days: 7

@@ -31,6 +31,8 @@ unparseable = "unparseable"
 
 [default.extend-identifiers]
 NdefFormatable = "NdefFormatable"
+# `mach_timebase_info.numer` is the official SDK field spelling.
+numer = "numer"
 formatable = "formatable"
 thw = "thw"
 trun = "trun"

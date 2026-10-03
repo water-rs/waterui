@@ -7,7 +7,7 @@ use nami::Signal;
 use std::rc::Rc;
 use waterui::views::Views;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize};
-use waterui_core::views::AnyViews;
+use waterui_core::views::{AnyViews, ViewSnapshot};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::container::{FixedContainer, LazyContainer};
 
@@ -18,7 +18,7 @@ fn materialize_all(children: &AnyViews<AnyView>, env: &Environment) -> Vec<AnyVi
     let count = children.len().snapshot();
     let mut views = Vec::with_capacity(count);
     for index in 0..count {
-        let view = children.get_view(index).unwrap_or_else(|| {
+        let view = children.snapshot().get_view(index).unwrap_or_else(|| {
             panic!("LazyContainer failed to materialize child at index {index}")
         });
         views.push(normalize_layout_view(view, env));
@@ -86,7 +86,7 @@ fn lazy_stack_sample_size(
         LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(None, cross),
     };
     let sample = children
-        .get_view(0)
+        .snapshot().get_view(0)
         .map(|view| normalize_layout_view(view, env))
         .map_or_else(
             || panic!("LazyContainer failed to materialize child at index 0"),
@@ -105,7 +105,7 @@ fn lazy_stack_sample_size(
             LazyStackAxisConfig::Horizontal { .. } => ProposalSize::new(Some(0.0), cross),
         };
         children
-            .get_view(0)
+            .snapshot().get_view(0)
             .map(|view| normalize_layout_view(view, env))
             .map_or_else(
                 || panic!("LazyContainer failed to materialize child at index 0"),

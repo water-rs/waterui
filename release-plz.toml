@@ -61,6 +61,10 @@ name = "waterui-watcher-set"
 version_group = "waterui"
 
 [[package]]
+name = "waterui-meta"
+version_group = "waterui"
+
+[[package]]
 name = "waterui-ffi"
 version_group = "waterui"
 git_tag_name = "ffi-v{{ version }}"

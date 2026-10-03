@@ -12,23 +12,24 @@ use std::rc::Rc;
 
 use nami::collection::CollectionChange;
 use waterui_core::animation::Animation;
+use waterui_core::views::ViewSnapshot;
 use waterui_core::layout::Point;
 use waterui_layout::collection_transition::CollectionTransition;
 
 /// Collect into `out` the ids occupying the positions a [`CollectionChange`]
 /// reports as replaced: `change.replaced` names new-snapshot indices, and
-/// `ids` is the notified snapshot slice — index-parallel with the collection.
-/// A producer that knows only a whole-value replacement reports
-/// `everything`, so an empty change means nothing needs re-materializing.
+/// `snapshot` is the notified collection snapshot; its `get_id` addresses
+/// positions in collection-wide index space. A producer that knows only a
+/// whole-value replacement reports `everything`, so an empty change means
+/// nothing needs re-materializing.
 pub fn collect_replaced_ids<Id: Copy + Eq + core::hash::Hash>(
-    ids: &[Id],
+    snapshot: &impl waterui_core::views::ViewSnapshot<Id = Id>,
     change: &CollectionChange,
     out: &mut std::collections::HashSet<Id>,
 ) {
     for range in &change.replaced {
-        let start = range.start.min(ids.len());
-        let end = range.end.min(ids.len());
-        out.extend(ids[start..end].iter().copied());
+        let end = range.end.min(snapshot.range().end);
+        out.extend((range.start..end).filter_map(|index| snapshot.get_id(index)));
     }
 }
 
@@ -631,7 +632,7 @@ impl CollectionNode {
         let ids: Vec<CollectionItemId> = (0..len)
             .map(|index| {
                 self.views
-                    .get_id(index)
+                    .snapshot().get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"))
             })
             .collect();
@@ -680,7 +681,7 @@ impl CollectionNode {
                     // identity and phase; only the node is rebuilt.
                     let view = self
                         .views
-                        .get_view(index)
+                        .snapshot().get_view(index)
                         .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                     previous.node =
                         RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
@@ -689,7 +690,7 @@ impl CollectionNode {
             } else {
                 let view = self
                     .views
-                    .get_view(index)
+                    .snapshot().get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                 CollectionEntry {
                     id,
@@ -800,10 +801,10 @@ impl LazyStackNode {
             let mut cache = self.item_cache.borrow_mut();
             for index in window.start..window.end.min(count) {
                 let id = views
-                    .get_id(index)
+                    .snapshot().get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
                 if cache.get(&id).is_none() {
-                    let view = views.get_view(index).unwrap_or_else(|| {
+                    let view = views.snapshot().get_view(index).unwrap_or_else(|| {
                         panic!("hydrolysis LazyStack failed to materialize item {index}")
                     });
                     // Build now, not at flush: a cached-but-unbuilt entry
@@ -859,7 +860,7 @@ impl LazyStackNode {
     ) -> (Size, StretchAxis) {
         let id = self
             .views
-            .get_id(index)
+            .snapshot().get_id(index)
             .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
         if let Some(item) = self.item_cache.borrow().get(&id)
             && item.is_built()
@@ -872,7 +873,7 @@ impl LazyStackNode {
 
         let view = self
             .views
-            .get_view(index)
+            .snapshot().get_view(index)
             .unwrap_or_else(|| panic!("hydrolysis LazyStack failed to materialize item {index}"));
         let view = normalize_layout_view(view, &self.env);
         state.measurement.begin_transient_measurement();
@@ -966,7 +967,7 @@ impl LazyStackNode {
         for index in visible.start.min(count)..visible.end.min(count) {
             let id = self
                 .views
-                .get_id(index)
+                .snapshot().get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let Some(item) = cache.get(&id) else {
                 continue;
@@ -1096,7 +1097,7 @@ impl LazyStackNode {
         for index in window.start..window.end {
             let id = self
                 .views
-                .get_id(index)
+                .snapshot().get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let proposal = self.item_proposal(cross);
             let (size, stretch) = {
@@ -1105,7 +1106,7 @@ impl LazyStackNode {
                 let mut cache = self.item_cache.borrow_mut();
                 cache
                     .entry(id, || {
-                        let view = views.get_view(index).unwrap_or_else(|| {
+                        let view = views.snapshot().get_view(index).unwrap_or_else(|| {
                             panic!("hydrolysis LazyStack failed to materialize item {index}")
                         });
                         normalize_layout_view(view, env)
@@ -1123,7 +1124,7 @@ impl LazyStackNode {
                 let views = &self.views;
                 let mut cache = self.item_cache.borrow_mut();
                 let subview = cache.entry(id, || {
-                    let view = views.get_view(index).unwrap_or_else(|| {
+                    let view = views.snapshot().get_view(index).unwrap_or_else(|| {
                         panic!("hydrolysis LazyStack failed to materialize item {index}")
                     });
                     normalize_layout_view(view, env)
@@ -1173,7 +1174,7 @@ impl LazyStackNode {
         for index in 0..count {
             let id = self
                 .views
-                .get_id(index)
+                .snapshot().get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let env = &self.env;
             let views = &self.views;

@@ -1,20 +1,25 @@
 //! The channel end to end: derive a props contract, then read it back out of
-//! the symbol table of the binary this test is running from.
+//! the metadata directory section of the binary this test is running from.
 //!
 //! This is the whole point of the crate. The contract has to survive const
-//! evaluation of a deeply nested tree, `#[used]` retention through the linker,
-//! and the CLI's recovery step — cut the static's section data at its first
-//! NUL, because a Mach-O symbol carries no size. The recovery below mirrors
-//! `ArtifactSymbols::static_bytes` in the `water` CLI so a divergence between
-//! the two shows up here rather than in a project build.
+//! evaluation of a deeply nested tree, `#[used]` retention through the
+//! linker, and the CLI's recovery step — walk the `.wmeta` section's
+//! `name`, NUL, `payload`, NUL records and match the name. The section
+//! channel is what every format shares: a linked image need not keep a
+//! symbol table at all — a linked PE carries none — so the record names
+//! itself instead of relying on one. The recovery below mirrors
+//! `ArtifactSymbols::static_bytes` in the `water` CLI so a divergence
+//! between the two shows up here rather than in a project build.
 
 #![cfg(feature = "waterui")]
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
+use object::{Object as _, ObjectSection as _};
 use waterui_core::{AnyView, Binding, Computed};
-use waterui_ts_schema::{TsProps, TsType, TypeSchema, contract_hash, decode, owned, payload};
+use waterui_ts_schema::{
+    DIR_SECTION, TsProps, TsType, TypeSchema, contract_hash, decode, dir_records, owned, payload,
+};
 
 /// A unit-only enum: a union of string literals.
 #[derive(TsType)]
@@ -80,58 +85,38 @@ struct PromoProps {
     note: Option<String>,
 }
 
-/// The leaf segment of a demangled symbol name.
-fn leaf_of(name: &str) -> Option<&str> {
-    name.rsplit("::").next().filter(|leaf| !leaf.is_empty())
+/// Payloads the `.wmeta` (`__wmeta` on Mach-O) metadata directory holds for
+/// `leaf`. The section is the whole channel — it survives into a linked
+/// image on every format, while a symbol table may not exist at all (a
+/// linked PE carries none), so each record names itself.
+fn dir_payloads(file: &object::File<'_>, leaf: &str) -> BTreeSet<Vec<u8>> {
+    let mut payloads = BTreeSet::new();
+    for section in file.sections() {
+        let Ok(name) = section.name() else { continue };
+        if !matches!(name, DIR_SECTION | "__wmeta") {
+            continue;
+        }
+        let Ok(data) = section.data() else { continue };
+        for record in dir_records(data) {
+            if record.name == leaf.as_bytes() {
+                payloads.insert(record.payload.to_vec());
+            }
+        }
+    }
+    payloads
 }
 
-/// Demangle a raw symbol name, dropping the trailing disambiguation hash and
-/// the leading underscore Mach-O adds to unmangled names.
-fn demangled_name(raw: &str) -> String {
-    let demangled = format!("{:#}", rustc_demangle::demangle(raw));
-    demangled
-        .strip_prefix('_')
-        .map_or_else(|| demangled.clone(), str::to_owned)
-}
-
-/// Bytes of the `#[used] static` whose demangled leaf is `leaf`, read from the
-/// running executable exactly the way the CLI reads them from an rlib.
+/// Bytes of the `#[used] static` whose record names `leaf`, read from the
+/// running executable's metadata directory exactly the way the CLI reads
+/// them.
 fn meta_static(leaf: &str) -> Vec<u8> {
     let path = std::env::current_exe().expect("the test binary has a path");
     let data = std::fs::read(&path).expect("the test binary is readable");
     let file = object::File::parse(&*data).expect("the test binary parses as an object file");
-    let mut payloads = BTreeSet::new();
-    for symbol in file.symbols() {
-        let Ok(raw) = symbol.name() else { continue };
-        if leaf_of(&demangled_name(raw)) != Some(leaf) {
-            continue;
-        }
-        let Some(index) = symbol.section_index() else {
-            continue;
-        };
-        let Ok(section) = file.section_by_index(index) else {
-            continue;
-        };
-        let Ok(section_data) = section.data() else {
-            continue;
-        };
-        let Ok(offset) = usize::try_from(symbol.address().wrapping_sub(section.address())) else {
-            continue;
-        };
-        if let Some(bytes) = section_data.get(offset..) {
-            payloads.insert(
-                bytes
-                    .split(|byte| *byte == 0)
-                    .next()
-                    .unwrap_or_default()
-                    .to_vec(),
-            );
-        }
-    }
-    let mut payloads = payloads.into_iter();
+    let mut payloads = dir_payloads(&file, leaf).into_iter();
     let found = payloads
         .next()
-        .unwrap_or_else(|| panic!("no symbol with leaf `{leaf}` carries section data"));
+        .unwrap_or_else(|| panic!("no metadata record named `{leaf}` in the directory section"));
     assert!(
         payloads.next().is_none(),
         "`{leaf}` is defined more than once with different payloads"

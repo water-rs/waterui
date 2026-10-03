@@ -4,6 +4,7 @@ use super::*;
 use crate::engine::WidgetTheme;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
+use waterui_core::views::ViewSnapshot;
 use std::sync::Arc;
 use waterui::navigation::tab::TabIcon;
 use waterui_core::handler::BoxedAction;
@@ -1013,7 +1014,7 @@ pub fn measure_list_intrinsic(
     let editing = list.editing.snapshot();
     let mut first_item = list
         .contents
-        .get_view(0)
+        .snapshot().get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     first_item.content = normalize_layout_view(first_item.content, env);
     let content_size = measure_transient_view_intrinsic(&first_item.content, state, env, theme);
@@ -1038,7 +1039,7 @@ pub fn measure_list_intrinsic(
     let mut section_height = 0.0;
     if list.uses_sections {
         for index in 0..row_count {
-            let Some(section) = list.contents.get_view(index).and_then(|item| item.section) else {
+            let Some(section) = list.contents.snapshot().get_view(index).and_then(|item| item.section) else {
                 continue;
             };
             if section.label.is_some() {
@@ -1065,7 +1066,7 @@ pub fn materialize_list_item(
     env: &Environment,
 ) -> ListItem {
     let mut item = contents
-        .get_view(index)
+        .snapshot().get_view(index)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
     item.content = normalize_layout_view(item.content, env);
     item
@@ -1386,7 +1387,7 @@ pub fn update_table_slot_visible_cell_widths(
     {
         let rows = column.rows();
         for row_index in row_window.start..row_window.end {
-            if let Some(cell) = rows.get_view(row_index) {
+            if let Some(cell) = rows.snapshot().get_view(row_index) {
                 let cell_view = normalize_layout_view(AnyView::new(cell), env);
                 let size = measure_transient_view_intrinsic(&cell_view, state, env, theme);
                 let width = (f64::from(size.width) + metrics.cell_horizontal_padding)

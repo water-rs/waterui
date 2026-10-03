@@ -25,7 +25,7 @@ use accesskit::{
 use nami::Signal;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::Views;
+use waterui_core::views::{Views, ViewSnapshot};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 
@@ -603,7 +603,7 @@ pub fn render_table_parts(
                 row_index,
                 layout_metrics,
             );
-            if let Some(cell) = rows.get_view(row_index) {
+            if let Some(cell) = rows.snapshot().get_view(row_index) {
                 let cell_view = AnyView::new(cell);
                 let inset = inset_rect(
                     cell_rect,

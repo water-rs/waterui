@@ -1,0 +1,1035 @@
+//! Native tests for the Rust `AppKit`/`UIKit` backend — real platform
+//! objects, no visible windows, no application run loop.
+//!
+//! These cases create `NSView`/`NSWindow`/`UIView` objects, which
+//! `MainThreadMarker`-protected APIs only allow on the process's actual
+//! main thread. The stock harness runs cases on worker threads, so this
+//! target is `harness = false`: [`libtest_mimic`] gives it the libtest CLI
+//! that nextest enumerates (`--list`, `--exact`, one process per case), and
+//! `test_threads = 1` makes it run every case on `main`, where
+//! [`MainThreadMarker::new`] answers `Some`.
+//!
+//! Everything here goes through the backend's public typed surfaces —
+//! `dispatch::install`/`dispatch::render`, `windows::bind_root_window`,
+//! `contract::NativeLeaf` — plus the `cocoa-ui` kit API, so the suite
+//! exercises exactly what a host embedding the backend could.
+
+// The suite only exists on the crate's supported targets.
+#![cfg(any(target_os = "macos", target_os = "ios"))]
+
+use cocoa_ui::{MainThreadMarker, PlatformView, Retained};
+use libtest_mimic::{Arguments, Trial};
+
+mod migration;
+
+#[cfg(target_os = "macos")]
+use cocoa_ui::appkit::{HostView, Label};
+#[cfg(target_os = "ios")]
+use cocoa_ui::uikit::{HostView, Label};
+
+fn main() {
+    let mut args = Arguments::from_args();
+    // `AppKit`/`UIKit` objects may only be built on the real main thread;
+    // `run` executes sequentially in the calling thread at one thread.
+    args.test_threads = Some(1);
+    libtest_mimic::run(&args, trials()).exit();
+}
+
+fn trials() -> Vec<Trial> {
+    let tests = vec![
+        Trial::test("leaf::mount_attaches_and_unmount_detaches", || {
+            leaf::mount_attaches_and_unmount_detaches();
+            Ok(())
+        }),
+        Trial::test("leaf::dropping_mounted_detaches_the_view", || {
+            leaf::dropping_mounted_detaches_the_view();
+            Ok(())
+        }),
+        Trial::test("leaf::bind_applies_now_and_on_every_change", || {
+            leaf::bind_applies_now_and_on_every_change();
+            Ok(())
+        }),
+        Trial::test("leaf::mounting_installs_the_intrinsic_measure", || {
+            leaf::mounting_installs_the_intrinsic_measure();
+            Ok(())
+        }),
+        Trial::test("leaf::a_layout_pass_applies_the_handler_frame", || {
+            leaf::a_layout_pass_applies_the_handler_frame();
+            Ok(())
+        }),
+        Trial::test("resolve::unit_view_maps_to_a_hidden_empty_host", || {
+            resolve::unit_view_maps_to_a_hidden_empty_host();
+            Ok(())
+        }),
+        Trial::test("resolve::a_string_maps_to_the_text_leaf", || {
+            resolve::a_string_maps_to_the_text_leaf();
+            Ok(())
+        }),
+        Trial::test("resolve::spacer_maps_to_a_stretching_host", || {
+            resolve::spacer_maps_to_a_stretching_host();
+            Ok(())
+        }),
+        Trial::test("resolve::opacity_metadata_wraps_the_child", || {
+            resolve::opacity_metadata_wraps_the_child();
+            Ok(())
+        }),
+        Trial::test("resolve::an_unclaimed_metadata_view_panics", || {
+            resolve::an_unclaimed_metadata_view_panics();
+            Ok(())
+        }),
+        Trial::test("resolve::ignorable_metadata_renders_its_content", || {
+            resolve::ignorable_metadata_renders_its_content();
+            Ok(())
+        }),
+        Trial::test("resolve::a_native_with_fallback_resolves_to_it", || {
+            resolve::a_native_with_fallback_resolves_to_it();
+            Ok(())
+        }),
+        Trial::test(
+            "resolve::unclaimed_wrappers_panic_while_claimed_render",
+            || {
+                resolve::unclaimed_wrappers_panic_while_claimed_render();
+                Ok(())
+            },
+        ),
+    ];
+    #[cfg(all(target_os = "macos", feature = "native-test"))]
+    let tests = {
+        let mut tests = tests;
+        tests.extend([
+            Trial::test("window::manager_installs_into_the_environment", || {
+                window::manager_installs_into_the_environment(mtm());
+                Ok(())
+            }),
+            Trial::test("window::bind_root_window_wires_a_live_window", || {
+                window::bind_root_window_wires_a_live_window(mtm());
+                Ok(())
+            }),
+        ]);
+        tests
+    };
+    #[cfg(target_os = "ios")]
+    let tests = {
+        let mut tests = tests;
+        tests.extend(tabs::trials());
+        tests
+    };
+    let mut tests = tests;
+    tests.extend(migration::trials());
+    tests
+}
+
+/// The marker the whole suite builds objects under — the real one, on the
+/// thread `main` runs on.
+fn mtm() -> MainThreadMarker {
+    MainThreadMarker::new().expect("the custom harness runs cases on the process's main thread")
+}
+
+/// `NativeLeaf` mount/watch/bind against real views.
+mod leaf {
+    use waterui::reactive::binding;
+    use waterui_apple::contract::NativeLeaf;
+    use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+
+    use super::{HostView, Label, MainThreadMarker, PlatformView, mtm};
+
+    /// A fixed-size leaf: the smallest `SubView` the mount path needs.
+    pub struct TestSubView;
+
+    impl SubView for TestSubView {
+        fn measure(&self, _proposal: ProposalSize) -> ViewDimensions {
+            ViewDimensions::new(Size::new(40.0, 20.0))
+        }
+
+        fn stretch_axis(&self) -> StretchAxis {
+            StretchAxis::None
+        }
+
+        fn priority(&self) -> i32 {
+            0
+        }
+    }
+
+    /// Mounting adds the leaf's view to the parent's subview list, and the
+    /// returned `Mounted`'s `unmount` detaches it again and hands the leaf
+    /// back for reuse.
+    pub fn mount_attaches_and_unmount_detaches() {
+        let mtm = mtm();
+        let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let leaf = NativeLeaf::new(&*child, TestSubView);
+        let mounted = leaf.mount(&parent);
+        assert_eq!(cocoa_ui::view::subviews(&parent).len(), 1);
+        let leaf = mounted.unmount();
+        assert!(cocoa_ui::view::superview(leaf.view()).is_none());
+        assert_eq!(cocoa_ui::view::subviews(&parent).len(), 0);
+    }
+
+    /// Dropping a `Mounted` — how a container releases a replaced child —
+    /// detaches the view from its superview before releasing the leaf.
+    pub fn dropping_mounted_detaches_the_view() {
+        let mtm = mtm();
+        let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let child = Label::new(mtm);
+        let child_view: &PlatformView = &child;
+        let mounted = NativeLeaf::new(child_view, TestSubView).mount(&parent);
+        let view = cocoa_ui::view::retain_base(mounted.view());
+        drop(mounted);
+        assert!(cocoa_ui::view::superview(&view).is_none());
+    }
+
+    /// `bind` applies the current value immediately and every later write —
+    /// the path every reactive property takes into its platform object.
+    pub fn bind_applies_now_and_on_every_change() {
+        let mtm = mtm();
+        let host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mut leaf = NativeLeaf::new(&*host, TestSubView);
+        let target = cocoa_ui::view::retain_base(leaf.view());
+        let flag = binding(false);
+        leaf.bind(&flag, move |value| {
+            cocoa_ui::view::set_hidden(&target, value);
+        });
+        assert!(!cocoa_ui::view::is_hidden(&host));
+        flag.set(true);
+        assert!(cocoa_ui::view::is_hidden(&host));
+    }
+
+    /// A `HostView` leaf mirrors its layout face onto the view's intrinsic
+    /// measure only once mounted — before it, the view answers exactly what
+    /// an unattached kit host answers.
+    pub fn mounting_installs_the_intrinsic_measure() {
+        let mtm = mtm();
+        let parent = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let unattached = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let leaf = NativeLeaf::new(&*child, TestSubView);
+        assert_eq!(
+            cocoa_ui::view::fitting_size(leaf.view()),
+            cocoa_ui::view::fitting_size(&unattached)
+        );
+        let _mounted = leaf.mount(&parent);
+        let fitting = cocoa_ui::view::fitting_size(&child);
+        assert_eq!(fitting, cocoa_ui::geometry::Size::new(40.0, 20.0));
+    }
+
+    /// A host inside a real (never shown) window runs its layout pass, and
+    /// the handler's frames land on the children — the bridge every
+    /// container leans on.
+    pub fn a_layout_pass_applies_the_handler_frame() {
+        let mtm = mtm();
+        let host = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let child = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+        let mounted = NativeLeaf::new(&*child, TestSubView).mount(&host);
+        let child_view = cocoa_ui::view::retain_base(mounted.view());
+        host.set_layout_handler(move |host| {
+            let host_view: &PlatformView = host;
+            cocoa_ui::view::set_frame(&child_view, cocoa_ui::view::bounds(host_view));
+        });
+        let _window = attach(mtm, &host);
+        host.set_needs_layout();
+        host.layout_if_needed();
+        // `set_content_view` resizes the host to the window's content
+        // area, so the expected child frame is the host's real bounds —
+        // the handler must land that frame verbatim.
+        let expected = cocoa_ui::view::bounds(&host);
+        let frame = cocoa_ui::view::frame(mounted.view());
+        assert_eq!(frame.size, expected.size);
+    }
+
+    /// Puts `content` inside a real window that is never ordered in — the
+    /// smallest environment in which the frameworks still run their full
+    /// layout path.
+    #[cfg(target_os = "macos")]
+    fn attach(mtm: MainThreadMarker, content: &PlatformView) -> cocoa_ui::appkit::Window {
+        let window = cocoa_ui::appkit::Window::new(
+            mtm,
+            cocoa_ui::Rect::new(0.0, 0.0, 640.0, 480.0),
+            cocoa_ui::appkit::WindowStyle::TITLED | cocoa_ui::appkit::WindowStyle::CLOSABLE,
+        );
+        window.set_content_view(content);
+        window
+    }
+
+    /// `UIKit` does not need a scene for `layoutSubviews` to run; the
+    /// window exists so `window`-dependent paths see a real one.
+    #[cfg(target_os = "ios")]
+    fn attach(
+        mtm: MainThreadMarker,
+        content: &PlatformView,
+    ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+        use cocoa_ui::objc2_ui_kit::UIWindow;
+        use objc2::{MainThreadOnly, msg_send};
+
+        // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer and
+        // `mtm` proves the main-thread confinement the harness provides.
+        let window: cocoa_ui::Retained<UIWindow> = unsafe {
+            msg_send![
+                UIWindow::alloc(mtm),
+                initWithFrame: objc2_core_foundation::CGRect::new(
+                    objc2_core_foundation::CGPoint::new(0.0, 0.0),
+                    objc2_core_foundation::CGSize::new(390.0, 844.0),
+                )
+            ]
+        };
+        window.addSubview(content);
+        window
+    }
+}
+
+/// View → leaf mapping through `dispatch::render` — the typed entry point
+/// a host reaches. A view nobody claims panics (there is no foreign caller
+/// to hand it back to), so a spurious empty render could not masquerade as
+/// a pass.
+mod resolve {
+    use waterui::filter::Opacity;
+    use waterui::layout::Spacer;
+    use waterui::reactive::{SignalExt, binding};
+    use waterui_apple::contract::NativeLeaf;
+    use waterui_backend_core::{AnyView, Environment, View};
+    use waterui_core::layout::{ProposalSize, Size, StretchAxis};
+    use waterui_core::metadata::MetadataKey;
+    use waterui_core::{IgnorableMetadata, Metadata, Native, NativeView};
+
+    use super::{HostView, Label, Retained, mtm};
+
+    /// A `Metadata` key no handler is registered for — an honest miss,
+    /// never fabricated.
+    struct Unregistered;
+
+    impl MetadataKey for Unregistered {}
+
+    /// A `NativeView` no handler is registered for.
+    struct UnclaimedNative;
+
+    impl NativeView for UnclaimedNative {}
+
+    /// The minimum environment a real render needs: `dispatch::install`
+    /// performs the backend's half of the embedding contract (dispatcher,
+    /// window manager, realizations); the theme slots text resolves
+    /// through are the framework's.
+    pub fn env() -> Environment {
+        use waterui::graphics::color::WorkingColor;
+        use waterui::text::font::{Body, Caption, FontSlot, Subheadline};
+
+        let mut env = Environment::new();
+        waterui_apple::dispatch::install(&mut env);
+        waterui::theme::install_color_scheme(
+            &mut env,
+            binding(waterui::theme::ColorScheme::Light).computed(),
+        );
+        let black = || binding(WorkingColor::BLACK).computed();
+        waterui::theme::install_color_signal::<waterui::theme::color::Foreground>(
+            &mut env,
+            black(),
+        );
+        // The richer fixtures (list rows, stacked text) resolve muted and
+        // accent roles plus the caption/subheadline slots — install them so
+        // a theme miss can't masquerade as a render failure.
+        waterui::theme::install_color_signal::<waterui::theme::color::MutedForeground>(
+            &mut env,
+            black(),
+        );
+        waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
+        waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
+        waterui::theme::install_font_signal::<Caption>(
+            &mut env,
+            binding(Caption::DEFAULT).computed(),
+        );
+        waterui::theme::install_font_signal::<Subheadline>(
+            &mut env,
+            binding(Subheadline::DEFAULT).computed(),
+        );
+        env
+    }
+
+    /// Renders `view` through the typed dispatch entry point, main thread,
+    /// fresh env. Panics when nothing claims the view — the typed
+    /// contract's answer to a miss.
+    pub fn render(view: impl View) -> NativeLeaf {
+        let _mtm = mtm();
+        waterui_apple::dispatch::render(AnyView::new(view), &env())
+    }
+
+    /// Renders `view`, reporting whether `render` panicked instead of
+    /// producing a leaf — for the cases asserting the miss path itself.
+    fn render_or_panic(view: impl View) -> Option<NativeLeaf> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| render(view))).ok()
+    }
+
+    /// `()` lands as a hidden `HostView` that measures zero and answers
+    /// `is_empty` — the leaf a stack ignores.
+    pub fn unit_view_maps_to_a_hidden_empty_host() {
+        let leaf = render(());
+        let view = cocoa_ui::view::retain_base(leaf.view());
+        assert!(view.downcast_ref::<HostView>().is_some());
+        assert!(cocoa_ui::view::is_hidden(&view));
+        assert!(leaf.layout().is_empty());
+        assert_eq!(
+            leaf.layout()
+                .measure(ProposalSize::new(Some(100.0), Some(100.0)))
+                .size,
+            Size::new(0.0, 0.0)
+        );
+    }
+
+    /// A `&'static str` expands `Str` → `Native<Str>` → the text leaf: a
+    /// `HostView` wrapper holding a real kit `Label` with the string's
+    /// attributed text on it — and the layout face still answers measure.
+    pub fn a_string_maps_to_the_text_leaf() {
+        let leaf = render("hello waterui");
+        let view = cocoa_ui::view::retain_base(leaf.view());
+        assert!(view.downcast_ref::<HostView>().is_some());
+        assert!(!cocoa_ui::view::is_hidden(&view));
+        let subviews = cocoa_ui::view::subviews(&view);
+        assert_eq!(subviews.len(), 1);
+        let label = subviews[0]
+            .downcast_ref::<Label>()
+            .expect("the text leaf mounts a kit label");
+        let text = label
+            .source_text()
+            .expect("the label carries attributed text");
+        assert_eq!(text.string().to_string(), "hello waterui");
+        let measured = leaf.layout().measure(ProposalSize::UNSPECIFIED);
+        assert!(measured.size.width > 0.0);
+        assert!(measured.size.height > 0.0);
+    }
+
+    /// `Native<Spacer>` maps to a transparent host whose layout face
+    /// stretches on the enclosing stack's main axis.
+    pub fn spacer_maps_to_a_stretching_host() {
+        let leaf = render(Spacer::new(12.0));
+        let view = cocoa_ui::view::retain_base(leaf.view());
+        assert!(view.downcast_ref::<HostView>().is_some());
+        assert!(!cocoa_ui::view::is_hidden(&view));
+        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::MainAxis);
+        assert_eq!(leaf.layout().priority(), i32::MIN);
+    }
+
+    /// `Metadata<Opacity>` is claimed by its handler: the wrapper is a
+    /// `HostView` at the declared alpha with the content mounted inside.
+    pub fn opacity_metadata_wraps_the_child() {
+        let leaf = render(Metadata::new((), Opacity::new(0.5)));
+        let view = cocoa_ui::view::retain_base(leaf.view());
+        assert_eq!(cocoa_ui::view::alpha(&view).to_bits(), 0.5f64.to_bits());
+        let subviews = cocoa_ui::view::subviews(&view);
+        assert_eq!(subviews.len(), 1);
+        let primary = cocoa_ui::view::primary_content(&view)
+            .expect("the wrapper forwards its primary content");
+        assert_eq!(Retained::as_ptr(&primary), Retained::as_ptr(&subviews[0]));
+    }
+
+    /// A `Metadata` nobody claims panics in `body()` — on the typed
+    /// contract nothing catches it, so the panic propagates out of
+    /// `render` itself.
+    pub fn an_unclaimed_metadata_view_panics() {
+        assert!(render_or_panic(Metadata::new((), Unregistered)).is_none());
+    }
+
+    /// `IgnorableMetadata` is transparent: its `body()` returns the
+    /// content, so an unregistered key renders through to the content's
+    /// leaf.
+    pub fn ignorable_metadata_renders_its_content() {
+        let leaf = render(IgnorableMetadata::new((), Unregistered));
+        let view = cocoa_ui::view::retain_base(leaf.view());
+        assert!(view.downcast_ref::<HostView>().is_some());
+        assert!(cocoa_ui::view::is_hidden(&view));
+    }
+
+    /// `Native::with_fallback` is the honest port of "not claimed here":
+    /// the dispatcher expands to the embedded fallback and resolves it —
+    /// here, to the spacer host — inside the one `render` call.
+    pub fn a_native_with_fallback_resolves_to_it() {
+        let leaf = render(Native::new(UnclaimedNative).with_fallback(Spacer::new(8.0)));
+        let view = cocoa_ui::view::retain_base(leaf.view());
+        assert!(view.downcast_ref::<HostView>().is_some());
+        assert_eq!(leaf.layout().stretch_axis(), StretchAxis::MainAxis);
+    }
+
+    /// The typed unclaimed-view contract: a view whose `body()` panics —
+    /// `Metadata`/`Native` wrappers nobody claims — propagates the panic
+    /// out of `render`; composable views resolve.
+    pub fn unclaimed_wrappers_panic_while_claimed_render() {
+        assert!(render_or_panic(Metadata::new((), Unregistered)).is_none());
+        assert!(render_or_panic(Native::new(UnclaimedNative)).is_none());
+        render(());
+        render(Spacer::new(8.0));
+        render(IgnorableMetadata::new((), Unregistered));
+    }
+}
+
+/// `TabsLayout` chrome the iOS backend owns — the `UITabAccessory` bottom
+/// slot and `tabBarMinimizeBehavior` — against a real `UITabBarController`.
+/// All cases run on the true main thread under the harness and reach the
+/// controller the way a host does: through the view hierarchy's responder
+/// chain.
+#[cfg(target_os = "ios")]
+mod tabs {
+    use cocoa_ui::objc2_ui_kit::{
+        NSDirectionalRectEdge, UIScrollView, UITabBarController, UITabBarMinimizeBehavior,
+    };
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{Label, NavContentController};
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::navigation::{NavigationStack, NavigationView, Tab, TabBarMinimizeBehavior, Tabs};
+    use waterui::prelude::{label, scroll, text, vstack};
+    use waterui::reactive::binding;
+    use waterui_apple::contract::NativeLeaf;
+
+    use super::resolve;
+
+    /// The `tabs::` trials, kept beside their fixtures so the top-level
+    /// registry stays a one-line extension per platform.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test("tabs::pane_scroll_view_associates_for_collapse", || {
+                pane_scroll_view_associates_for_collapse();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::panes_without_surfaces_answer_none", || {
+                panes_without_surfaces_answer_none();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::pane_scroll_view_tracks_nav_pushes", || {
+                pane_scroll_view_tracks_nav_pushes();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::pane_scroll_view_tracks_dynamic_replacement", || {
+                pane_scroll_view_tracks_dynamic_replacement();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test("tabs::bottom_accessory_mounts_into_the_controller", || {
+                bottom_accessory_mounts_into_the_controller();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "tabs::accessory_layout_centers_the_measured_answer",
+                || {
+                    accessory_layout_centers_the_measured_answer();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "tabs::binding_updates_preserve_the_accessory_mount",
+                || {
+                    binding_updates_preserve_the_accessory_mount();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "tabs::tab_selection_does_not_rebuild_the_accessory",
+                || {
+                    tab_selection_does_not_rebuild_the_accessory();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "tabs::dropping_the_leaf_releases_accessory_watchers",
+                || {
+                    dropping_the_leaf_releases_accessory_watchers();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "tabs::each_minimize_behavior_maps_to_the_uikit_property",
+                || {
+                    each_minimize_behavior_maps_to_the_uikit_property();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// Tab identity for the fixtures.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Pane {
+        One,
+        Two,
+    }
+
+    /// The rendered leaf's first subview is the controller's root view; a
+    /// `UIViewController` sits on the responder chain right after its own
+    /// view — the same reach `adopt_controllers` relies on.
+    fn tab_bar_controller(leaf: &NativeLeaf) -> Retained<UITabBarController> {
+        let controller_view = view::subviews(leaf.view())
+            .into_iter()
+            .next()
+            .expect("the tabs host carries the controller's view");
+        owning_controller(&controller_view)
+            .and_then(|responder| responder.downcast::<UITabBarController>().ok())
+            .expect("the tabs leaf mounts a UITabBarController")
+    }
+
+    /// First `Label`'s text in the subtree, depth-first.
+    fn label_text(view: &PlatformView) -> Option<String> {
+        for sub in view::subviews(view) {
+            if let Some(label) = sub.downcast_ref::<Label>()
+                && let Some(attributed) = label.source_text()
+            {
+                return Some(attributed.string().to_string());
+            }
+            if let Some(found) = label_text(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// First `Label` in the subtree, retained for reads after the leaf
+    /// that mounted it is gone.
+    fn first_label(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<Label>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = first_label(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Two plain tabs with `accessory` in the bottom slot.
+    fn tabs(
+        accessory: impl waterui_backend_core::View,
+    ) -> (waterui::reactive::Binding<Pane>, NativeLeaf) {
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(
+            Tabs::new(
+                &pane,
+                vec![
+                    Tab::container(Pane::One, label("One"), || text("pane one")),
+                    Tab::container(Pane::Two, label("Two"), || text("pane two")),
+                ],
+            )
+            .bottom_accessory(accessory),
+        );
+        (pane, leaf)
+    }
+
+    /// The shared `bottom_accessory` view lands in the controller's own
+    /// accessory slot: `UIKit` reports a `UITabAccessory` whose content
+    /// view carries the rendered text at a natural height.
+    pub fn bottom_accessory_mounts_into_the_controller() {
+        let (_pane, leaf) = tabs(text("Now Playing"));
+        let accessory = tab_bar_controller(&leaf)
+            .bottomAccessory()
+            .expect("the shared accessory view installs a UITabAccessory");
+        let content = accessory.contentView();
+        assert_eq!(label_text(&content).as_deref(), Some("Now Playing"));
+        assert!(view::fitting_size(&content).height > 0.0);
+    }
+
+    /// A `Binding` inside the accessory updates the mounted text in place
+    /// — the same `UITabAccessory` keeps serving the capsule.
+    pub fn binding_updates_preserve_the_accessory_mount() {
+        let track = binding(String::from("first"));
+        let (_pane, leaf) = tabs(text!("{track}"));
+        let controller = tab_bar_controller(&leaf);
+        let accessory = controller.bottomAccessory().expect("installed");
+        let content = accessory.contentView();
+        // `text!` wraps interpolations in bidi isolates — match the payload.
+        assert!(label_text(&content).is_some_and(|text| text.contains("first")));
+        track.set(String::from("second"));
+        assert!(label_text(&content).is_some_and(|text| text.contains("second")));
+        let after = controller.bottomAccessory().expect("still installed");
+        assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
+    }
+
+    /// Selecting the other tab switches panes through the existing
+    /// controller — the accessory mount is untouched.
+    pub fn tab_selection_does_not_rebuild_the_accessory() {
+        let (pane, leaf) = tabs(text("Now Playing"));
+        let controller = tab_bar_controller(&leaf);
+        let accessory = controller.bottomAccessory().expect("installed");
+        pane.set(Pane::Two);
+        assert_eq!(controller.selectedIndex(), 1);
+        let after = controller.bottomAccessory().expect("still installed");
+        assert_eq!(Retained::as_ptr(&after), Retained::as_ptr(&accessory));
+    }
+
+    /// Dropping the leaf uninstalls the capsule and releases the mounted
+    /// subtree's watchers — the controller itself is owned by containment,
+    /// not by the leaf, so a retained handle stays valid but must report
+    /// no accessory, and no later write may reach the old label.
+    pub fn dropping_the_leaf_releases_accessory_watchers() {
+        let track = binding(String::from("first"));
+        let (label, controller) = {
+            let (_pane, leaf) = tabs(text!("{track}"));
+            let controller = tab_bar_controller(&leaf);
+            let label = {
+                let content = controller
+                    .bottomAccessory()
+                    .expect("installed")
+                    .contentView();
+                track.set(String::from("second"));
+                first_label(&content).expect("the accessory mounts a label")
+            };
+            drop(leaf);
+            (label, controller)
+        };
+        assert!(controller.bottomAccessory().is_none());
+        track.set(String::from("third"));
+        let text = label
+            .downcast_ref::<Label>()
+            .and_then(Label::source_text)
+            .expect("the retained label");
+        let text = text.string().to_string();
+        assert!(text.contains("second") && !text.contains("third"));
+    }
+
+    /// Every shared minimize-behavior variant maps onto the `UIKit`
+    /// property one-to-one — no translation layer of our own.
+    pub fn each_minimize_behavior_maps_to_the_uikit_property() {
+        for (shared, native) in [
+            (
+                TabBarMinimizeBehavior::Automatic,
+                UITabBarMinimizeBehavior::Automatic,
+            ),
+            (
+                TabBarMinimizeBehavior::Never,
+                UITabBarMinimizeBehavior::Never,
+            ),
+            (
+                TabBarMinimizeBehavior::OnScrollDown,
+                UITabBarMinimizeBehavior::OnScrollDown,
+            ),
+            (
+                TabBarMinimizeBehavior::OnScrollUp,
+                UITabBarMinimizeBehavior::OnScrollUp,
+            ),
+        ] {
+            let pane = binding(Pane::One);
+            let leaf = resolve::render(
+                Tabs::new(
+                    &pane,
+                    vec![Tab::container(Pane::One, label("One"), || text("one"))],
+                )
+                .minimize_behavior(shared),
+            );
+            assert_eq!(tab_bar_controller(&leaf).tabBarMinimizeBehavior(), native);
+        }
+    }
+
+    /// Every `UIScrollView` in the subtree, depth-first — each fixture
+    /// pane mounts exactly one, so the association can only be that
+    /// surface.
+    fn scroll_views_in(view: &PlatformView) -> Vec<Retained<UIScrollView>> {
+        let mut found = Vec::new();
+        for sub in view::subviews(view) {
+            if let Some(scroll) = sub.downcast_ref::<UIScrollView>() {
+                found.push(scroll.into());
+            }
+            found.extend(scroll_views_in(&sub));
+        }
+        found
+    }
+
+    /// `UIKit` only auto-associates a scroll view that is the
+    /// controller's own root, so the leaf associates each pane's declared
+    /// scroll surface for the bottom edge: a scroll mounted as the root,
+    /// or one the pane's container declares as a candidate.
+    pub fn pane_scroll_view_associates_for_collapse() {
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            vec![
+                Tab::container(Pane::One, label("One"), || {
+                    scroll(vstack((text("one"), text("two"), text("three"))))
+                }),
+                Tab::container(Pane::Two, label("Two"), || {
+                    vstack((text("aside"), scroll(text("nested"))))
+                }),
+            ],
+        ));
+        let controllers = tab_bar_controller(&leaf)
+            .viewControllers()
+            .expect("tabs installed");
+        for (index, controller) in controllers.iter().enumerate() {
+            let root = controller.view().expect("the pane's root view");
+            let scrolls = scroll_views_in(&root);
+            assert_eq!(
+                scrolls.len(),
+                1,
+                "pane {index} mounts exactly one scroll surface"
+            );
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the pane's scroll view associates for the bottom edge");
+            assert_eq!(Retained::as_ptr(&associated), Retained::as_ptr(&scrolls[0]));
+        }
+    }
+
+    /// A scroll-free pane answers exactly `None`, and a scrolled pane
+    /// associates nothing for any edge but the bottom one — the tab bar
+    /// only tracks a surface it actually gets.
+    pub fn panes_without_surfaces_answer_none() {
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            vec![
+                Tab::container(Pane::One, label("One"), || scroll(text("scrollable"))),
+                Tab::container(Pane::Two, label("Two"), || text("static")),
+            ],
+        ));
+        let controllers = tab_bar_controller(&leaf)
+            .viewControllers()
+            .expect("tabs installed");
+        let scrolled = controllers.objectAtIndex(0);
+        assert!(
+            scrolled
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_some(),
+            "the scrolled pane associates for the bottom edge"
+        );
+        for edge in [
+            NSDirectionalRectEdge::Top,
+            NSDirectionalRectEdge::Leading,
+            NSDirectionalRectEdge::Trailing,
+        ] {
+            assert!(
+                scrolled.contentScrollViewForEdge(edge).is_none(),
+                "edge {edge:?} associates nothing"
+            );
+        }
+        assert!(
+            controllers
+                .objectAtIndex(1)
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none(),
+            "a scroll-free pane associates nothing"
+        );
+    }
+
+    /// A `Dynamic` pane replacement re-answers through the same declared
+    /// chain: swap in fresh scroll content and the next query reports
+    /// the new surface; swap to scroll-free content and the answer is
+    /// `None` exactly. The replaced scroll deallocates once the pools
+    /// drain — nothing in the tab controller retains it.
+    pub fn pane_scroll_view_tracks_dynamic_replacement() {
+        use cocoa_ui::objc2::rc::{Weak, autoreleasepool};
+        use waterui::component::Dynamic;
+        use waterui_backend_core::AnyView;
+
+        let scrolled = binding(true);
+        let content = scrolled.clone();
+        let pane = binding(Pane::One);
+        // Render inside a bounded pool: the leaf's own `Retained`/`Rc`
+        // ownership survives, while every autoreleased temporary the
+        // mount produced drains now — the weak read later must not meet
+        // a render-time retainer in the harness's outer pool.
+        let leaf = autoreleasepool(|_| {
+            resolve::render(Tabs::new(
+                &pane,
+                vec![Tab::container(Pane::One, label("One"), move || {
+                    Dynamic::watch(content.clone(), |scrolled| {
+                        if scrolled {
+                            AnyView::new(scroll(text("surface")))
+                        } else {
+                            AnyView::new(text("plain"))
+                        }
+                    })
+                })],
+            ))
+        });
+        let controller = autoreleasepool(|_| {
+            tab_bar_controller(&leaf)
+                .viewControllers()
+                .expect("tabs installed")
+                .objectAtIndex(0)
+        });
+        // Every association/query temporary drains before the swap: the
+        // weak read afterwards must not meet an autoreleased retainer.
+        let weak_old = autoreleasepool(|_| {
+            let old_scrolls = scroll_views_in(&controller.view().expect("the pane's root view"));
+            assert_eq!(old_scrolls.len(), 1, "the fixture mounts one scroll");
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the scroll associates for the bottom edge");
+            assert_eq!(
+                Retained::as_ptr(&associated),
+                Retained::as_ptr(&old_scrolls[0])
+            );
+            Weak::from_retained(&old_scrolls[0])
+        });
+
+        // Replacing the pane's content inside a bounded pool keeps UIKit
+        // autorelease temporaries from holding the old surface past the
+        // swap — the weak read happens after the drain.
+        autoreleasepool(|_| {
+            scrolled.set(false);
+        });
+        assert!(
+            autoreleasepool(|_| controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .is_none()),
+            "a scroll-free replacement answers None"
+        );
+        assert!(
+            weak_old.load().is_none(),
+            "the replaced scroll is deallocated — nothing retained it"
+        );
+
+        // Swapping scroll content back in mounts a fresh surface the next
+        // query reports — not the released one.
+        autoreleasepool(|_| {
+            scrolled.set(true);
+            let new_scrolls = scroll_views_in(&controller.view().expect("the pane's root view"));
+            assert_eq!(new_scrolls.len(), 1, "the replacement mounts one scroll");
+            let associated = controller
+                .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+                .expect("the new scroll associates for the bottom edge");
+            assert_eq!(
+                Retained::as_ptr(&associated),
+                Retained::as_ptr(&new_scrolls[0])
+            );
+        });
+    }
+
+    /// The association answers the *current* surface on every `UIKit`
+    /// query, not a pointer captured at install: a native push reports
+    /// the pushed page's scroll and a pop reports the root's again.
+    /// Each known scroll reference comes straight off the page
+    /// controller's root — the fixture never re-walks the declared
+    /// chain.
+    pub fn pane_scroll_view_tracks_nav_pushes() {
+        /// The `UINavigationController` owning a view in the subtree,
+        /// depth-first — either the view's own controller is the nav
+        /// controller, or the page controller answers one.
+        fn nav_controller_in(
+            view: &PlatformView,
+        ) -> Option<Retained<cocoa_ui::objc2_ui_kit::UINavigationController>> {
+            if let Some(controller) = owning_controller(view) {
+                if let Ok(nav) = controller.clone().downcast() {
+                    return Some(nav);
+                }
+                if let Some(nav) = controller.navigationController() {
+                    return Some(nav);
+                }
+            }
+            for sub in view::subviews(view) {
+                if let Some(found) = nav_controller_in(&sub) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let mtm = super::mtm();
+        let pane = binding(Pane::One);
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            vec![Tab::container(Pane::One, label("One"), || {
+                NavigationStack::new(NavigationView::new("Root", scroll(text("root"))))
+            })],
+        ));
+        let controller = tab_bar_controller(&leaf)
+            .viewControllers()
+            .expect("tabs installed")
+            .objectAtIndex(0);
+        let root = controller.view().expect("the pane's root view");
+        let nav = nav_controller_in(&root).expect("the pane mounts a stack");
+        let root_scrolls = scroll_views_in(
+            &nav.topViewController()
+                .expect("the root page")
+                .view()
+                .expect("the root page's view"),
+        );
+        assert_eq!(root_scrolls.len(), 1, "the root page mounts one scroll");
+        let root_scroll = &root_scrolls[0];
+        let associated = controller
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+            .expect("the root scroll associates for the bottom edge");
+        assert_eq!(Retained::as_ptr(&associated), Retained::as_ptr(root_scroll));
+
+        // A native push installs a page whose root view *is* its scroll
+        // surface — the same shape `UITableView` pages take — and the
+        // next query must answer it rather than the root's.
+        let pushed_scroll = UIScrollView::new(mtm);
+        let pushed = NavContentController::new(mtm, &pushed_scroll);
+        nav.pushViewController_animated(&pushed, false);
+        let associated = controller
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+            .expect("the pushed scroll associates for the bottom edge");
+        assert_eq!(
+            Retained::as_ptr(&associated),
+            Retained::as_ptr(&pushed_scroll)
+        );
+
+        // A native pop returns the association to the root's surface.
+        nav.popViewControllerAnimated(false);
+        let associated = controller
+            .contentScrollViewForEdge(NSDirectionalRectEdge::Bottom)
+            .expect("the root scroll associates again");
+        assert_eq!(Retained::as_ptr(&associated), Retained::as_ptr(root_scroll));
+    }
+
+    /// The accessory's child answers the measure itself — the host
+    /// centers that answer inside bounds and never clamps it: wider
+    /// bounds center it, tighter bounds let it overflow centered. A
+    /// stretching child fills the bounds it measured back.
+    pub fn accessory_layout_centers_the_measured_answer() {
+        fn child_frame(
+            content: &PlatformView,
+            size: cocoa_ui::geometry::Size,
+        ) -> cocoa_ui::geometry::Rect {
+            view::set_frame(
+                content,
+                cocoa_ui::geometry::Rect::new(0.0, 0.0, size.width, size.height),
+            );
+            content.setNeedsLayout();
+            content.layoutIfNeeded();
+            view::frame(&view::subviews(content)[0])
+        }
+
+        let (_pane, leaf) = tabs(text("Now Playing"));
+        let accessory = tab_bar_controller(&leaf)
+            .bottomAccessory()
+            .expect("installed");
+        let content = accessory.contentView();
+        let intrinsic = view::fitting_size(&content);
+        assert!(intrinsic.width > 0.0 && intrinsic.height > 0.0);
+
+        // Wider bounds center the answer inside the host — it is not
+        // force-filled. Tighter bounds keep it unclamped: the answer
+        // overflows, still centered, so both a clamp and a fill would
+        // fail the same assertions.
+        let wide = cocoa_ui::geometry::Size::new(intrinsic.width * 2.0, intrinsic.height * 2.0);
+        let wide_frame = child_frame(&content, wide);
+        assert!(wide_frame.size.width < wide.width);
+        assert!((wide_frame.origin.x - (wide.width - wide_frame.size.width) / 2.0).abs() < 0.01);
+        assert!((wide_frame.origin.y - (wide.height - wide_frame.size.height) / 2.0).abs() < 0.01);
+
+        let tight = cocoa_ui::geometry::Size::new(intrinsic.width / 2.0, intrinsic.height / 2.0);
+        let tight_frame = child_frame(&content, tight);
+        assert!(
+            tight_frame.size.width > tight.width || tight_frame.size.height > tight.height,
+            "the measured answer overflows the offered bounds instead of clamping"
+        );
+        assert!((tight_frame.origin.x - (tight.width - tight_frame.size.width) / 2.0).abs() < 0.01);
+        assert!(
+            (tight_frame.origin.y - (tight.height - tight_frame.size.height) / 2.0).abs() < 0.01
+        );
+
+        // A stretching child measures back to the bounds it was offered
+        // and fills the host.
+        let (_pane, leaf) = tabs(scroll(text("stretched")));
+        let accessory = tab_bar_controller(&leaf)
+            .bottomAccessory()
+            .expect("installed");
+        let content = accessory.contentView();
+        let frame = child_frame(&content, wide);
+        assert_eq!(frame.size, wide);
+    }
+}
+
+/// Window lifecycle on a real, never-shown `NSWindow` — only reachable
+/// because the harness runs on the true main thread, which is the only
+/// place `-[NSWindow init]` is legal. The assertion bodies live in the
+/// crate's `native-test` feature, which owns the private reach
+/// into `windows` and `embedding`.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod window {
+    pub use waterui_apple::native_test_support::{
+        bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
+    };
+}

@@ -1,0 +1,13 @@
+{
+  "macos": {
+    "liquid_glass": 0.075,
+    "typography-rtl": 0.015
+  },
+  "ios": {
+    "liquid_glass": 0.03,
+    "navigation": 0.09
+  },
+  "ios@27": {
+    "navigation": 0.12
+  }
+}
