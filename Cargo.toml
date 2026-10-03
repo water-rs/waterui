@@ -276,7 +276,10 @@ waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
 waterui-dew = "0.3.0"
-waterui = { version = "0.5.2", path = "." }
+# default-features lives here, not on members: cargo rejects a member
+# `default-features` override when the workspace entry does not declare
+# one (the MSRV failure in #1551). Members name the features they need.
+waterui = { version = "0.5.2", path = ".", default-features = false }
 waterui-icons-codegen = { version = "0.5.1", path = "components/icon/codegen" }
 # Members opt into `runtime` (links wgpu) and/or `build` (naga, for build scripts).
 shaderloom = { version = "0.1.2", default-features = false }

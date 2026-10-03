@@ -14,7 +14,7 @@ categories.workspace = true
 [dependencies]
 hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 waterui-core.workspace = true
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 wgpu.workspace = true
 kurbo.workspace = true
 accesskit = "0.25"
