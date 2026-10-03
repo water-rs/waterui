@@ -78,6 +78,19 @@ trait HostedView {
     fn ime_caret(&self) -> Option<kurbo::Rect>;
     /// Runs the view's per-frame UI hook before the engine pass.
     fn before_frame(&self);
+    /// Whether the view's declared measurement dependency changed since the
+    /// last invalidation it emitted — the `takeMeasurementInvalidation` hook.
+    ///
+    /// `None` lets the surface keep its proposal/answer baseline check, which
+    /// is all a view whose `measure` is an open function of the proposal can
+    /// express. A view whose measurement depends on an explicit semantic
+    /// input overrides this and answers against that dependency instead: a
+    /// delivered proposal that names every axis keeps the under-proposal
+    /// answer identical on both sides of the input's change, so the
+    /// response-delta baseline can never observe it.
+    fn measurement_dependency_invalidated(&self) -> Option<bool> {
+        None
+    }
     /// Builds the view's engine layer on `context` — the exact generation
     /// the caller is holding for the frame this renderer presents.
     fn renderer(
@@ -976,6 +989,11 @@ fn schedule_on_demand_render(state: &Rc<SurfaceState>, view: &Retained<SurfaceVi
 /// Whether the host laid this surface out with a measurement the renderer no
 /// longer gives — `takeMeasurementInvalidation`.
 fn take_measurement_invalidation(state: &SurfaceState) -> bool {
+    // A hosted view with an explicit measurement dependency owns its own
+    // baseline; it answers before the proposal/answer check does.
+    if let Some(changed) = state.view.borrow().measurement_dependency_invalidated() {
+        return changed;
+    }
     let Some(proposal) = state.last_proposal.get() else {
         return false;
     };
