@@ -74,6 +74,7 @@ fn size(width: usize, height: usize) -> OffscreenSize {
 fn renderer(runtime: &GpuRuntime, view: &ExternalFrameView) -> ExternalFrameRenderer {
     ExternalFrameRenderer::new(
         runtime,
+        runtime.context(),
         &view.stream(),
         size(FRAME.0, FRAME.1),
         RedrawHandle::new(|| {}),
@@ -492,6 +493,83 @@ fn a_rebuilt_host_restarts_the_source_and_retires_the_old_output() {
     );
     drop(second);
     assert!(outputs.borrow()[1].is_retired());
+}
+
+/// A renderer is bound to the context it is handed, not to whatever the
+/// runtime currently publishes: building one on a context from an older
+/// generation reports that generation.
+#[test]
+fn the_renderer_reports_the_generation_of_the_context_it_was_given() {
+    let lost_runtime = runtime();
+    let live_runtime = runtime();
+    lost_runtime
+        .context()
+        .mark_device_lost_for_testing("test device loss");
+    let fresh = pollster::block_on(lost_runtime.context_after(0));
+    assert!(
+        fresh.generation() > live_runtime.context().generation(),
+        "the rebuild advanced the lost runtime past the live one"
+    );
+    let (view, _outputs) = producer_view();
+    let renderer = ExternalFrameRenderer::new(
+        &lost_runtime,
+        live_runtime.context(),
+        &view.stream(),
+        size(FRAME.0, FRAME.1),
+        RedrawHandle::new(|| {}),
+    );
+    assert_eq!(
+        renderer.generation(),
+        live_runtime.context().generation(),
+        "the renderer is bound to the context it was given"
+    );
+}
+
+/// A device lost while the host is idle — no frame pending, no display tick
+/// — is still recovered: the rebuild publishes through `context_after`, and
+/// a renderer built on that fresh context presents on the new device.
+#[test]
+fn an_idle_device_loss_recovers_through_context_publication() {
+    let runtime = runtime();
+    let (view, outputs) = producer_view();
+    let stale_renderer = renderer(&runtime, &view);
+    let stale_generation = stale_renderer.generation();
+    runtime
+        .context()
+        .mark_device_lost_for_testing("test device loss");
+    let fresh = pollster::block_on(runtime.context_after(stale_generation));
+    assert!(fresh.generation() > stale_generation);
+    drop(stale_renderer);
+
+    let device = fresh.device().clone();
+    let mut second = ExternalFrameRenderer::new(
+        &runtime,
+        fresh.clone(),
+        &view.stream(),
+        size(FRAME.0, FRAME.1),
+        RedrawHandle::new(|| {}),
+    );
+    assert_eq!(second.generation(), fresh.generation());
+    let dimensions = (64, 32);
+    let buffer = pixel_buffer(Layout::Nv12, dimensions);
+    fill(&buffer, Layout::Nv12, dimensions, flat(RED));
+    let (red, _planes) = frame(
+        &device,
+        &buffer,
+        Layout::Nv12,
+        dimensions,
+        FrameColor::BT709_VIDEO,
+    );
+    outputs.borrow()[1]
+        .present(red)
+        .expect("the restarted source's output is live");
+    let target = host_target(&device, dimensions);
+    second.present(&target, SDR);
+    let shown = read(&device, fresh.queue(), &target).pixel(32, 16);
+    assert!(
+        shown[0] > 200 && shown[2] < 40,
+        "the rebuilt host presents the red frame, got {shown:?}"
+    );
 }
 
 /// The linear-light colours the gallery frames encode, as linear BT.709:
