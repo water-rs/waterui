@@ -49,6 +49,14 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
+            "appkit::visibility",
+            a_windowed_view_is_presentable_until_clipped_or_hidden
+        ),
+        case!(
+            "appkit::visibility",
+            ancestor_emissions_reach_a_descendants_subscribed_wake
+        ),
+        case!(
             "appkit::window",
             a_window_starts_hidden_with_the_requested_style
         ),
@@ -198,6 +206,155 @@ fn a_factory_label_survives_debug_ivar_checks() {
     label.set_text("world");
     assert!(label.source_text().is_some());
     label.set_line_limit(1);
+}
+
+/// Whether two rects share any area — the same positive-intersection test
+/// `visibility::presentable` composes.
+fn intersects(
+    a: cocoa_ui::objc2_core_foundation::CGRect,
+    b: cocoa_ui::objc2_core_foundation::CGRect,
+) -> bool {
+    let x = a.origin.x.max(b.origin.x);
+    let y = a.origin.y.max(b.origin.y);
+    (a.origin.x + a.size.width).min(b.origin.x + b.size.width) - x > 0.0
+        && (a.origin.y + a.size.height).min(b.origin.y + b.size.height) - y > 0.0
+}
+
+/// `visibility::presentable` is the single gate the GPU and filtered
+/// frame clocks consume: a windowed view answers `true` only while the
+/// window presents, no ancestor hides or zeroes it, and the scroll clip
+/// leaves some of it inside — and it flips back on reveal, reparent and
+/// scroll, with no frame-size change involved. The clip assertions reuse
+/// `observe_scroll_viewport` to prove the same scroll move wakes watchers.
+fn a_windowed_view_is_presentable_until_clipped_or_hidden() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+
+    let scroll = cocoa_ui::appkit::ScrollView::new(mtm, true, false);
+    cocoa_ui::view::set_frame(&scroll, Rect::new(0.0, 0.0, 200.0, 200.0));
+    host.add_subview(&scroll);
+    scroll.set_document_extent(Size::new(200.0, 1000.0));
+    let child = HostView::new(mtm, Rect::new(0.0, 800.0, 100.0, 50.0));
+    let document = scroll
+        .document_view()
+        .expect("the scroll view carries a document");
+    cocoa_ui::view::add_subview(&document, &child);
+
+    // A windowless view — and a view in a hidden window — cannot present:
+    // `window_presentable` gates first.
+    assert!(!cocoa_ui::visibility::presentable(&child));
+    window.order_front();
+    host.layout_if_needed();
+    scroll.layout_if_needed();
+    assert!(
+        scroll.viewport_size().width > 0.0 && scroll.viewport_size().height > 0.0,
+        "clip view never got a viewport — got {:?}",
+        scroll.viewport_size()
+    );
+    // A bare test process never receives `occlusionState == Visible` from
+    // the window server (that needs a bundled application's GUI session),
+    // so `presentable` stays `false` here even ordered front — the same
+    // deferral an occluded real window takes. The geometry half the gate
+    // composes — native `visibleRect` under the real clip chain — is what
+    // the assertions below exercise.
+    assert!(!cocoa_ui::visibility::presentable(&child));
+
+    // Fully clipped below the 200pt viewport — the #1539 defect case.
+    // `visibleRect` is the clip's bounds mapped into the child's space and
+    // does NOT intersect the child's own bounds, so the honest test is the
+    // intersection — the same one `presentable` composes.
+    let visible = child.visibleRect();
+    assert!(
+        !intersects(visible, child.bounds()),
+        "fully clipped child should have no own-bounds area inside the clip: {visible:?}",
+    );
+
+    // The same scroll move wakes a viewport observation — the bridge the
+    // components' `scroll_watch` reuses — with no frame-size change.
+    let scroll_fires = Rc::new(Cell::new(0));
+    let _observation = cocoa_ui::scroll::observe_scroll_viewport(&scroll.clone().into_super(), {
+        let scroll_fires = Rc::clone(&scroll_fires);
+        move || scroll_fires.set(scroll_fires.get() + 1)
+    });
+    scroll.scroll_to(cocoa_ui::Point::new(0.0, 750.0));
+    scroll.layout_if_needed();
+    let visible = child.visibleRect();
+    assert!(
+        intersects(visible, child.bounds()),
+        "scrolled-in child has no own-bounds area inside the clip: {visible:?}",
+    );
+    assert!(
+        scroll_fires.get() >= 1,
+        "clip-view bounds change never fired"
+    );
+
+    // Hidden then detached ancestors empty the visible area again.
+    cocoa_ui::view::set_hidden(&scroll, true);
+    assert!(!cocoa_ui::visibility::presentable(&child));
+    cocoa_ui::view::set_hidden(&scroll, false);
+    cocoa_ui::view::remove_from_superview(&child);
+    assert!(!cocoa_ui::visibility::presentable(&child));
+
+    window.close();
+}
+
+/// The typed-owned wake: `subscribe_visibility_wakes` registers one
+/// closure on every emitting ancestor, deduplicates a repeat subscribe,
+/// and stops delivering once the handler is dropped — no registry, no
+/// polling, and a hidden→visible reparent keeps firing.
+fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
+    let mtm = marker();
+    let window = Window::new(mtm, Rect::new(0.0, 0.0, 400.0, 300.0), WindowStyle::TITLED);
+    let host = HostView::new(mtm, window.content_rect());
+    window.set_content_view(&host);
+    window.order_front();
+
+    let child = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    host.add_subview(&child);
+
+    let fires = Rc::new(Cell::new(0));
+    let wake: Rc<dyn Fn()> = Rc::new({
+        let fires = Rc::clone(&fires);
+        move || fires.set(fires.get() + 1)
+    });
+    // Subscribing the same closure twice keeps one registration — each
+    // distinct event below moves the count by exactly one.
+    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&host, true);
+    assert_eq!(fires.get() - before, 1);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&host, false);
+    assert_eq!(fires.get() - before, 1);
+
+    // A reparent emits its own `didMoveToSuperview`/`didMoveToWindow`
+    // wakes on the child — the resubscribe then lands the closure on the
+    // new ancestor's emitter too, so its transitions still reach it.
+    cocoa_ui::view::remove_from_superview(&child);
+    let other = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    host.add_subview(&other);
+    other.add_subview(&child);
+    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&other, true);
+    assert_eq!(fires.get() - before, 1);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&other, false);
+    assert_eq!(fires.get() - before, 1);
+
+    drop(wake);
+    let before = fires.get();
+    cocoa_ui::view::set_hidden(&host, true);
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "a dead handler kept receiving wakes"
+    );
+
+    window.close();
 }
 
 /// The case the old harness excluded: `-[NSWindow initWithContentRect:]`

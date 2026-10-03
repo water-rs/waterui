@@ -21,11 +21,11 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-/// The section name the metadata directory is parked in on COFF and ELF
-/// targets.
+/// The section name the metadata directory is parked in.
 ///
-/// Mach-O's `__DATA,__wmeta` spelling does not fit one string; the emitter
-/// picks per-target, and readers match either spelling.
+/// Used on COFF and ELF targets. Mach-O's `__DATA,__wmeta` spelling does
+/// not fit one string; the emitter picks per-target, and readers match
+/// either spelling.
 pub const DIR_SECTION: &str = ".wmeta";
 
 /// Builds one directory record — `name`, NUL, `payload`, NUL — in const

@@ -32,8 +32,11 @@ use objc2_ui_kit::{
     UITapGestureRecognizer, UITouch, UITraitCollection, UIView,
 };
 
+use objc2_core_foundation::CGRect;
+
 use crate::callback::guarded;
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
+use crate::visibility::VisibilityEmitter;
 
 /// Receives lifecycle events of the view — layout, attachment.
 type LifecycleHandler = Rc<dyn Fn()>;
@@ -53,6 +56,9 @@ pub struct SurfaceViewIvars {
     presentation_layer: RefCell<Option<Retained<CALayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
     recognizers: RefCell<Vec<Retained<UIGestureRecognizer>>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds or superview state changes.
+    emitter: VisibilityEmitter,
 }
 
 impl fmt::Debug for SurfaceViewIvars {
@@ -263,6 +269,55 @@ define_class!(
             if let Some(handler) = handler {
                 handler();
             }
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+            let handler = self.ivars().on_visibility_changed.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlpha:))]
+        fn set_alpha_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
+            let handler = self.ivars().on_visibility_changed.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+            let handler = self.ivars().on_visibility_changed.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBounds:))]
+        fn set_bounds_override(&self, bounds: CGRect) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
+            let handler = self.ivars().on_visibility_changed.borrow().clone();
+            if let Some(handler) = handler {
+                handler();
+            }
+            self.ivars().emitter.emit();
         }
 
         // SAFETY: see the module safety note.
@@ -462,6 +517,12 @@ impl SurfaceView {
         self.ivars()
             .on_visibility_changed
             .replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
     }
 
     /// Registers `handler` for backing-property changes (screen scale,

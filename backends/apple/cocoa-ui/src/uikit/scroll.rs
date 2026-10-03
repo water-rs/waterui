@@ -33,6 +33,7 @@ use objc2_ui_kit::{
 
 use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Point, Size};
+use crate::visibility::VisibilityEmitter;
 
 /// The handler [`ScrollView`] calls after `UIKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
@@ -44,6 +45,11 @@ type ScrollHandler = Rc<dyn Fn(&ScrollView)>;
 pub struct ScrollViewIvars {
     layout: RefCell<Option<LayoutHandler>>,
     scroll: RefCell<Option<ScrollHandler>>,
+    /// The instance-owned visibility event: fires when this view scrolls
+    /// or its hidden, alpha, frame, bounds, window or superview state
+    /// changes so subscribed descendants re-check presentation
+    /// visibility.
+    emitter: VisibilityEmitter,
 }
 
 impl std::fmt::Debug for ScrollViewIvars {
@@ -71,6 +77,7 @@ define_class!(
                 if let Some(handler) = self.ivars().scroll.borrow().as_ref().cloned() {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
     }
@@ -96,6 +103,54 @@ define_class!(
             // lifetime.
             let no_metric = unsafe { UIViewNoIntrinsicMetric };
             CGSize::new(no_metric, no_metric)
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBounds:))]
+        fn set_bounds_override(&self, bounds: CGRect) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlpha:))]
+        fn set_alpha_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window_override(&self) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(didMoveToSuperview))]
+        fn did_move_to_superview_override(&self) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
+            self.ivars().emitter.emit();
         }
     }
 );
@@ -177,6 +232,12 @@ impl ScrollView {
     /// previous handler.
     pub fn on_scroll(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().scroll.replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
     }
 
     /// Marks the view as needing layout on the next pass.

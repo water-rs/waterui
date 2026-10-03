@@ -29,6 +29,7 @@ use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 
 use crate::callback::guarded;
 use crate::geometry::{Point, Size};
+use crate::visibility::VisibilityEmitter;
 
 /// The handler [`ScrollView`] calls after `AppKit` lays it out.
 type LayoutHandler = Rc<dyn Fn(&ScrollView)>;
@@ -40,6 +41,11 @@ type TileHandler = Rc<dyn Fn(&ScrollView)>;
 pub struct ScrollViewIvars {
     layout: RefCell<Option<LayoutHandler>>,
     tile: RefCell<Option<TileHandler>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility. Clip-view
+    /// bounds moves ride [`crate::scroll::observe_scroll_viewport`].
+    emitter: VisibilityEmitter,
 }
 
 impl std::fmt::Debug for ScrollViewIvars {
@@ -93,6 +99,54 @@ define_class!(
             // lifetime.
             let no_metric = unsafe { NSViewNoIntrinsicMetric };
             NSSize::new(no_metric, no_metric)
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn view_did_move_to_window_override(&self) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(viewDidMoveToSuperview))]
+        fn view_did_move_to_superview_override(&self) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToSuperview] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameOrigin:))]
+        fn set_frame_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size_override(&self, new_size: NSSize) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+            self.ivars().emitter.emit();
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlphaValue:))]
+        fn set_alpha_value_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
+            self.ivars().emitter.emit();
         }
     }
 );
@@ -202,6 +256,12 @@ impl ScrollView {
     /// handler. Use it to spot clip-view resizes `layout` does not cover.
     pub fn set_tile_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().tile.replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
     }
 
     /// Marks the view as needing layout on the next pass.

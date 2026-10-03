@@ -322,6 +322,13 @@ struct SurfaceState {
     /// frame's context reported device loss. Stored so a newer wait
     /// replaces it and dropping the state cancels it.
     context_watch: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
+    /// The single re-evaluation closure every ancestor emitter and the
+    /// scroll-viewport observation share — one `update_display_link_state`
+    /// per wake.
+    visibility_wake: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The enclosing scroll-viewport observation: `(observation, observed
+    /// scroll view)` — rebound when the nearest scroll ancestor changes.
+    scroll_watch: RefCell<Option<(cocoa_ui::scroll::ScrollObservation, usize)>>,
 }
 
 impl core::fmt::Debug for SurfaceState {
@@ -410,6 +417,8 @@ impl SurfaceState {
             last_resolved_size: RefCell::new(None),
             gpu_generation: Cell::new(None),
             context_watch: RefCell::new(None),
+            visibility_wake: RefCell::new(None),
+            scroll_watch: RefCell::new(None),
         }
     }
 
@@ -617,64 +626,21 @@ fn configure_dynamic_range(
 }
 
 /// Whether this surface's window can put a frame in front of someone —
-/// `canPresentNow`.
+/// `canPresentNow`: the window-level gate for buffer allocation and the
+/// force/reveal paths, without the view-level clip and hidden checks a
+/// frame-submission decision needs.
 fn can_present_now(view: &Retained<SurfaceView>) -> bool {
     let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
         return false;
     };
-    #[cfg(target_os = "macos")]
-    {
-        if window.isMiniaturized() {
-            return false;
-        }
-        cocoa_ui::appkit::is_visible(&window)
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = window;
-        cocoa_ui::uikit::application_is_active()
-    }
+    cocoa_ui::visibility::window_presentable(&window)
 }
 
-/// Whether this view and every ancestor is visible — `hasVisibleAncestry`.
-fn has_visible_ancestry(view: &Retained<SurfaceView>) -> bool {
-    let mut node = Some(cocoa_ui::view::retain_base(view));
-    while let Some(current) = node {
-        if cocoa_ui::view::is_hidden(&current) || cocoa_ui::view::alpha(&current) <= 0.0 {
-            return false;
-        }
-        node = cocoa_ui::view::superview(&current);
-    }
-    true
-}
-
-/// Whether the frame clock ticks — `isEffectivelyVisible`: narrower than
-/// `can_present_now` on the states that announce when they clear.
-fn is_effectively_visible(view: &Retained<SurfaceView>) -> bool {
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
-        return false;
-    };
-    if !has_visible_ancestry(view) {
-        return false;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // A window that is on no display cannot present; the frame clock
-        // falls back to the run loop for those, so gating here keeps an
-        // offscreen window from rendering frames nobody sees.
-        if window.screen().is_none() {
-            return false;
-        }
-        if window.isMiniaturized() {
-            return false;
-        }
-        cocoa_ui::appkit::is_visible(&window)
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = window;
-        cocoa_ui::uikit::application_is_active()
-    }
+/// Whether a frame could actually land on screen — the shared
+/// `CocoaUi` visibility primitive (`presentable`): window-level
+/// presentability plus the view's own hidden/alpha/clip geometry.
+fn presentable_now(view: &Retained<SurfaceView>) -> bool {
+    cocoa_ui::visibility::presentable(view.as_platform_view())
 }
 
 /// Positions the presentation layer and tells Core Animation the frames are
@@ -768,6 +734,41 @@ fn detach_if_attached(state: &SurfaceState) {
 
 // MARK: - Frame scheduling (WuiDisplayLinkDriver + WuiRedrawCallback)
 
+/// Rebinds the visibility watches to the surface's current hierarchy —
+/// subscribe the shared wake on every emitting ancestor and re-arm the
+/// enclosing scroll-viewport observation when the nearest scroll view
+/// changed (`updateVisibilityWatches`).
+fn refresh_visibility_watches(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
+    let platform_view = view.as_platform_view();
+    if let Some(wake) = state.visibility_wake.borrow().as_ref() {
+        cocoa_ui::visibility::subscribe_visibility_wakes(platform_view, wake);
+    }
+    let scroll = cocoa_ui::scroll::enclosing_scroll_view(platform_view);
+    let observed = scroll
+        .as_ref()
+        .map_or(0, |scroll| core::ptr::from_ref(&**scroll) as usize);
+    let mut slot = state.scroll_watch.borrow_mut();
+    if slot
+        .as_ref()
+        .is_some_and(|(_, current)| *current == observed)
+    {
+        return;
+    }
+    *slot = scroll.map(|scroll| {
+        let observed = core::ptr::from_ref(&*scroll) as usize;
+        let weak = Rc::downgrade(state);
+        let view = view.clone();
+        (
+            cocoa_ui::scroll::observe_scroll_viewport(&scroll, move || {
+                if let Some(state) = weak.upgrade() {
+                    update_display_link_state(&state, &view);
+                }
+            }),
+            observed,
+        )
+    });
+}
+
 /// Re-runs `initialize_gpu` once a frame could be shown again, then drives
 /// the clock and replays an owed frame — `updateDisplayLinkState`.
 fn update_display_link_state(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
@@ -777,7 +778,7 @@ fn update_display_link_state(state: &Rc<SurfaceState>, view: &Retained<SurfaceVi
     let should_tick = state.keep_redrawing.get()
         && state.external_count.get() == 0
         && state.attached.get()
-        && is_effectively_visible(view);
+        && presentable_now(view);
     if should_tick {
         state.clock.start(view.as_platform_view());
     } else {
@@ -788,7 +789,7 @@ fn update_display_link_state(state: &Rc<SurfaceState>, view: &Retained<SurfaceVi
         && !state.frame_in_flight.get()
         && state.external_count.get() == 0
         && state.attached.get()
-        && can_present_now(view)
+        && presentable_now(view)
     {
         state.frame_owed.set(false);
         schedule_on_demand_render(state, view);
@@ -859,7 +860,7 @@ fn render_frame(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>, force: b
         state.frame_owed.set(true);
         return;
     }
-    if !force && !can_present_now(view) {
+    if !force && !presentable_now(view) {
         state.frame_owed.set(true);
         return;
     }
@@ -1104,6 +1105,16 @@ fn update_window_observers(state: &Rc<SurfaceState>, view: &Retained<SurfaceView
             unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
             // SAFETY: the notification names are system constants.
             unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
+            // SAFETY: the notification names are system constants — the
+            // owning scene's activation transitions, which a multi-scene
+            // session needs beyond the application-level pair (#1327).
+            unsafe { cocoa_ui::objc2_ui_kit::UISceneDidActivateNotification },
+            // SAFETY: the notification names are system constants.
+            unsafe { cocoa_ui::objc2_ui_kit::UISceneWillDeactivateNotification },
+            // SAFETY: the notification names are system constants.
+            unsafe { cocoa_ui::objc2_ui_kit::UISceneWillEnterForegroundNotification },
+            // SAFETY: the notification names are system constants.
+            unsafe { cocoa_ui::objc2_ui_kit::UISceneDidEnterBackgroundNotification },
         ] {
             let name = notification;
             observers.push(cocoa_ui::notification::observe(
@@ -1603,6 +1614,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
                 state.keep_redrawing.set(false);
                 state.clock.stop();
                 state.observers.borrow_mut().clear();
+                state.scroll_watch.borrow_mut().take();
                 return;
             };
             if let Some(scale) = view.backing_scale() {
@@ -1611,6 +1623,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
             let _ = window;
             update_presentation_frame(&state, &view);
             update_window_observers(&state, &view);
+            refresh_visibility_watches(&state, &view);
             update_display_link_state(&state, &view);
         }
     });
@@ -1619,7 +1632,10 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         platform_view.set_visibility_changed_handler({
             let state = state.clone();
             let view = platform_view.clone();
-            move || update_display_link_state(&state, &view)
+            move || {
+                refresh_visibility_watches(&state, &view);
+                update_display_link_state(&state, &view);
+            }
         });
         platform_view.set_backing_changed_handler({
             let state = state.clone();
@@ -1641,7 +1657,10 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         platform_view.set_visibility_changed_handler({
             let state = state.clone();
             let view = platform_view.clone();
-            move || update_display_link_state(&state, &view)
+            move || {
+                refresh_visibility_watches(&state, &view);
+                update_display_link_state(&state, &view);
+            }
         });
         platform_view.set_backing_changed_handler({
             let state = state.clone();
@@ -1652,4 +1671,18 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
             }
         });
     }
+
+    // The single wake every visibility source shares: ancestor emitters
+    // (hidden/alpha/frame/bounds/reparent on `CocoaUi` classes) and the
+    // enclosing scroll-viewport observation all land here.
+    *state.visibility_wake.borrow_mut() = Some(Rc::new({
+        let state = Rc::downgrade(state);
+        let view = platform_view.clone();
+        move || {
+            if let Some(state) = state.upgrade() {
+                update_display_link_state(&state, &view);
+            }
+        }
+    }));
+    refresh_visibility_watches(state, platform_view);
 }

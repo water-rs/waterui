@@ -176,6 +176,13 @@ pub struct FilteredState {
     /// The in-flight effect setup. Stored so dropping the state cancels a
     /// setup parked on `context_after` instead of leaking the future.
     setup_task: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
+    /// The single re-evaluation closure every ancestor emitter and the
+    /// scroll-viewport observation share — one attach+schedule pass per
+    /// wake.
+    visibility_wake: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The enclosing scroll-viewport observation: `(observation, observed
+    /// scroll view)` — rebound when the nearest scroll ancestor changes.
+    scroll_watch: RefCell<Option<(cocoa_ui::scroll::ScrollObservation, usize)>>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -203,22 +210,21 @@ fn output_pixel_format() -> objc2_metal::MTLPixelFormat {
     cocoa_ui::metal::wgpu_to_metal_format(PRESENTATION_FORMAT)
 }
 
-/// `isPresentationOccluded`.
+/// `isPresentationOccluded` — the shared `CocoaUi` visibility primitive:
+/// the view is occluded when `presentable` answers `false`, so a filter
+/// clipped off the window or hidden by an ancestor parks its frame clock
+/// the same way an inactive scene does.
 fn presentation_occluded(view: &PlatformView) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        cocoa_ui::view::window(view).is_none_or(|window| !cocoa_ui::appkit::is_visible(&window))
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = view;
-        !cocoa_ui::uikit::application_is_active()
-    }
+    !cocoa_ui::visibility::presentable(view)
 }
 
-/// `canAttachNow`.
+/// `canAttachNow` — the window-level half: buffers and the capture
+/// texture wait only on a presentable window/scene, not on the view's
+/// clip geometry, so a clipped filter keeps the resources an explicit
+/// offscreen capture may still need.
 fn can_attach_now(view: &PlatformView) -> bool {
-    cocoa_ui::view::window(view).is_some() && !presentation_occluded(view)
+    cocoa_ui::view::window(view)
+        .is_some_and(|window| cocoa_ui::visibility::window_presentable(&window))
 }
 
 /// `configureDynamicRange`.
@@ -964,6 +970,40 @@ fn handle_redraw(state: &Rc<FilteredState>) {
     request_render(state);
 }
 
+/// Rebinds the visibility watches to the host's current hierarchy —
+/// subscribe the shared wake on every emitting ancestor and re-arm the
+/// enclosing scroll-viewport observation when the nearest scroll view
+/// changed.
+fn refresh_visibility_watches(state: &Rc<FilteredState>) {
+    if let Some(wake) = state.visibility_wake.borrow().as_ref() {
+        cocoa_ui::visibility::subscribe_visibility_wakes(&state.view, wake);
+    }
+    let scroll = cocoa_ui::scroll::enclosing_scroll_view(&state.view);
+    let observed = scroll
+        .as_ref()
+        .map_or(0, |scroll| core::ptr::from_ref(&**scroll) as usize);
+    let mut slot = state.scroll_watch.borrow_mut();
+    if slot
+        .as_ref()
+        .is_some_and(|(_, current)| *current == observed)
+    {
+        return;
+    }
+    *slot = scroll.map(|scroll| {
+        let observed = core::ptr::from_ref(&*scroll) as usize;
+        let weak = Rc::downgrade(state);
+        (
+            cocoa_ui::scroll::observe_scroll_viewport(&scroll, move || {
+                if let Some(state) = weak.upgrade() {
+                    initialize_gpu(&state);
+                    schedule_frame_if_needed(&state);
+                }
+            }),
+            observed,
+        )
+    });
+}
+
 /// `handleWindowChange` — leaving the window defers teardown to whichever
 /// half of the frame is still in flight.
 fn handle_window_change(state: &Rc<FilteredState>) {
@@ -973,6 +1013,7 @@ fn handle_window_change(state: &Rc<FilteredState>) {
         state.needs_render.set(false);
         state.pending_dynamic_range.borrow_mut().take();
         complete_ready(state, false);
+        state.scroll_watch.borrow_mut().take();
         if state.render_in_flight.get() || state.frame_presentation_in_flight.get() {
             state.detach_after_capture.set(true);
         } else {
@@ -985,6 +1026,7 @@ fn handle_window_change(state: &Rc<FilteredState>) {
     }
     state.detach_after_capture.set(false);
     update_window_observers(state);
+    refresh_visibility_watches(state);
     initialize_gpu(state);
     request_render(state);
 }
@@ -1021,6 +1063,16 @@ fn update_window_observers(state: &Rc<FilteredState>) {
         unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
         // SAFETY: the notification names are system constants.
         unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
+        // SAFETY: the notification names are system constants — the
+        // owning scene's activation transitions, which a multi-scene
+        // session needs beyond the application-level pair (#1327).
+        unsafe { cocoa_ui::objc2_ui_kit::UISceneDidActivateNotification },
+        // SAFETY: the notification names are system constants.
+        unsafe { cocoa_ui::objc2_ui_kit::UISceneWillDeactivateNotification },
+        // SAFETY: the notification names are system constants.
+        unsafe { cocoa_ui::objc2_ui_kit::UISceneWillEnterForegroundNotification },
+        // SAFETY: the notification names are system constants.
+        unsafe { cocoa_ui::objc2_ui_kit::UISceneDidEnterBackgroundNotification },
     ] {
         observers.push(cocoa_ui::notification::observe(
             mtm,
@@ -1321,6 +1373,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 gpu_generation: Cell::new(Some(gpu_context.generation())),
                 context_watch: RefCell::new(None),
                 setup_task: RefCell::new(None),
+                visibility_wake: RefCell::new(None),
+                scroll_watch: RefCell::new(None),
             }
         });
         *state.effects.borrow_mut() = Some(effects);
@@ -1355,6 +1409,29 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let state = state.clone();
             view.set_window_handler(move |_| handle_window_change(&state));
         }
+        {
+            let state = state.clone();
+            view.set_superview_handler(move |_| {
+                refresh_visibility_watches(&state);
+                initialize_gpu(&state);
+                schedule_frame_if_needed(&state);
+            });
+        }
+
+        // The single wake every visibility source shares: ancestor
+        // emitters (hidden/alpha/frame/bounds/reparent on `CocoaUi`
+        // classes, this `HostView` included) and the enclosing
+        // scroll-viewport observation all land here.
+        *state.visibility_wake.borrow_mut() = Some(Rc::new({
+            let weak = Rc::downgrade(&state);
+            move || {
+                if let Some(state) = weak.upgrade() {
+                    initialize_gpu(&state);
+                    schedule_frame_if_needed(&state);
+                }
+            }
+        }));
+        refresh_visibility_watches(&state);
         #[cfg(target_os = "macos")]
         {
             let state = state.clone();

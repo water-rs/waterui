@@ -27,6 +27,7 @@ use crate::callback::guarded;
 use crate::geometry::{EdgeInsets, Edges, MeasureProposal, Point, Rect, Size};
 use crate::keys::{self, KeyEvent};
 use crate::pointer::{PointerEvent, PointerEvents};
+use crate::visibility::VisibilityEmitter;
 
 /// What a [`HostView`]'s hit-test handler decides for a point.
 #[derive(Debug, Clone)]
@@ -91,6 +92,10 @@ pub struct HostViewIvars {
     /// stays alive.
     hover_recognizer: RefCell<Option<Retained<UIHoverGestureRecognizer>>>,
     key: RefCell<Option<KeyHandler>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes so
+    /// subscribed descendants re-check presentation visibility.
+    emitter: VisibilityEmitter,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -234,6 +239,7 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
             });
         }
 
@@ -247,6 +253,27 @@ define_class!(
                 if let Some(handler) = handler {
                     handler(self);
                 }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setHidden:))]
+        fn set_hidden_override(&self, hidden: bool) {
+            guarded("HostView setHidden:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlpha:))]
+        fn set_alpha_override(&self, alpha: f64) {
+            guarded("HostView setAlpha:", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
+                self.ivars().emitter.emit();
             });
         }
 
@@ -327,6 +354,7 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setFrame: frame] };
                 self.report_size();
+                self.ivars().emitter.emit();
             });
         }
 
@@ -337,6 +365,7 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
                 self.report_size();
+                self.ivars().emitter.emit();
             });
         }
 
@@ -540,6 +569,12 @@ impl HostView {
     /// have changed.
     pub fn set_superview_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().superview.replace(Some(Rc::new(handler)));
+    }
+
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
     }
 
     /// Lets `handler` answer the view's intrinsic measurements,

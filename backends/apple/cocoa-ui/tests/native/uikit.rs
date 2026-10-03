@@ -41,6 +41,14 @@ pub fn trials() -> Vec<Trial> {
             a_host_view_in_a_window_reports_its_window
         ),
         case!(
+            "uikit::visibility",
+            a_windowless_or_sceneless_view_is_not_presentable
+        ),
+        case!(
+            "uikit::visibility",
+            ancestor_emissions_reach_a_descendants_subscribed_wake
+        ),
+        case!(
             "uikit::input_view",
             the_text_input_selectors_register_under_uikits_names
         ),
@@ -147,6 +155,53 @@ fn a_host_view_in_a_window_reports_its_window() {
     assert!(cocoa_ui::view::has_window(&host));
     let reported = cocoa_ui::view::window(&host).expect("a hosted view reports its window");
     assert!(std::ptr::eq(&raw const *reported, &raw const *window));
+}
+
+/// The scene-level gate (#1327): `presentable` follows the owning
+/// `UIWindowScene`'s activation, so a view with no window — and a view in
+/// a `UIWindow` that was never attached to a scene, as this harness
+/// builds it — both answer `false`. Positive geometry paths need a live
+/// foreground scene and are exercised by the component consumers.
+fn a_windowless_or_sceneless_view_is_not_presentable() {
+    let mtm = marker();
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+    let child = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    host.add_subview(&child);
+
+    assert!(!cocoa_ui::visibility::presentable(&child));
+
+    let _window = attach(mtm, &host);
+    // A `UIWindow` with `windowScene == nil` cannot present — the same
+    // answer an unattached or backgrounded scene gives.
+    assert!(!cocoa_ui::visibility::presentable(&child));
+}
+
+/// The typed-owned wake on `UIKit`: one closure subscribes on every
+/// emitting `CocoaUi` ancestor, a repeat subscribe deduplicates, the
+/// hidden→visible transitions keep firing, and a dropped handler stops
+/// receiving — no registry, no polling.
+fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
+    let mtm = marker();
+    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
+    let child = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
+    host.add_subview(&child);
+    let _window = attach(mtm, &host);
+
+    let fires = Rc::new(Cell::new(0));
+    let wake: Rc<dyn Fn()> = Rc::new({
+        let fires = Rc::clone(&fires);
+        move || fires.set(fires.get() + 1)
+    });
+    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    cocoa_ui::visibility::subscribe_visibility_wakes(&child, &wake);
+    cocoa_ui::view::set_hidden(&host, true);
+    assert_eq!(fires.get(), 1);
+    cocoa_ui::view::set_hidden(&host, false);
+    assert_eq!(fires.get(), 2);
+
+    drop(wake);
+    cocoa_ui::view::set_hidden(&host, true);
+    assert_eq!(fires.get(), 2, "a dead handler kept receiving wakes");
 }
 
 /// The `#[unsafe(method(..))]` names must install the `ObjC` selectors
