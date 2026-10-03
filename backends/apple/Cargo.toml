@@ -1,0 +1,256 @@
+[package]
+name = "waterui-apple"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The native WaterUI backend for Apple platforms, with AppKit and UIKit driven from Rust through objc2"
+keywords = ["gui", "appkit", "uikit"]
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+
+[features]
+# Component ports are feature-gated so unused ones leave no code or
+# dependency in the artifact; the default is everything ported so far.
+default = [
+    "anchored_overlay",
+    "applied_filter",
+    "accessibility_identifier",
+    "accessibility_metadata",
+    "badge",
+    "button",
+    "clip_shape",
+    "gpu_surface",
+    "color_picker",
+    "container",
+    "context_menu",
+    "cursor",
+    "date_picker",
+    "draggable",
+    "drop_destination",
+    "dynamic",
+    "dynamic_range",
+    "fixed_container",
+    "focused",
+    "glass_background",
+    "ignore_safe_area",
+    "hittable",
+    "gesture",
+    "image",
+    "layer_transform",
+    "layout_priority",
+    "lifecycle_hook",
+    "material_background",
+    "menu",
+    "offset",
+    "rotation",
+    "scale",
+    "border",
+    "shadow",
+    "opacity",
+    "list",
+    "multi_date_picker",
+    "navigation",
+    "on_event",
+    "on_key_press",
+    "picker",
+    "picture",
+    "progress",
+    "resolved_color",
+    "resolved_gradient",
+    "resolved_shape",
+    "retain",
+    "scroll",
+    "secure",
+    "secure_field",
+    "slider",
+    "spacer",
+    "stepper",
+    "table",
+    "text",
+    "text_field",
+    "toggle",
+    "view_effect",
+    "view_renderer",
+    "env",
+]
+anchored_overlay = []
+accessibility_identifier = []
+applied_filter = ["gpu_surface"]
+accessibility_metadata = []
+badge = []
+border = []
+button = []
+clip_shape = []
+gpu_surface = ["dep:block2", "objc2-metal/block2"]
+color_picker = []
+container = []
+context_menu = []
+cursor = []
+date_picker = []
+draggable = []
+drop_destination = []
+dynamic = []
+dynamic_range = []
+fixed_container = []
+focused = []
+glass_background = []
+ignore_safe_area = []
+hittable = []
+gesture = []
+layout_priority = []
+image = []
+lifecycle_hook = []
+layer_transform = []
+list = []
+# `cocoa-ui/map` brings `MKMapView`, the `MapKit` framework link and the
+# `CoreLocation` types; an app that never uses the leaf gets none of it.
+map = ["dep:waterui-map", "cocoa-ui/map"]
+material_background = []
+menu = []
+offset = []
+opacity = []
+multi_date_picker = []
+navigation = []
+on_event = []
+on_key_press = []
+picker = []
+plain = []
+picture = []
+progress = []
+resolved_color = []
+resolved_gradient = []
+resolved_shape = []
+retain = []
+rotation = ["layer_transform"]
+scale = ["layer_transform"]
+scroll = []
+secure = []
+secure_field = []
+shadow = []
+slider = []
+spacer = []
+stepper = []
+table = []
+text = []
+text_field = []
+toggle = []
+view_effect = ["gpu_surface"]
+view_renderer = []
+webview = ["dep:waterui-webview", "dep:cookie", "cocoa-ui/webview"]
+# `media` is the name the `water` CLI's capability mechanism (`waterui-video`
+# in the app's resolved graph) forwards to this crate; it turns on both
+# leaves the media semantic needs.
+media = ["video", "video_player"]
+# `cocoa-ui/avkit` brings the `AVFoundation`/`AVKit` framework links; an app
+# without media compiles and links none of it.
+video = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
+video_player = ["dep:waterui-video", "dep:waterkit-audio", "cocoa-ui/avkit"]
+env = []
+
+# Harness-only reach for `Tests/native.rs`: compiles the doc(hidden)
+# `native_test_support` module (private windows + embedding internals),
+# never part of a production build.
+native-test = []
+
+
+[dependencies]
+waterui = { workspace = true, features = ["inspector"] }
+waterui-core = { workspace = true }
+waterui-backend-core = { workspace = true, default-features = true, features = [
+    "overlay",
+] }
+waterui-locale = { workspace = true }
+waterui-map = { workspace = true, optional = true }
+# The GPU components the backend owns (`gpu_surface`, `view_effect`,
+# `picture`, `resolved_gradient`) are Rust semantic types here, not FFI
+# pointers: `cpu` is what `picture`'s rasteriser needs beyond `gpu`.
+waterui-graphics = { workspace = true, features = [
+    "gpu",
+    "cpu",
+] }
+# HAL access to the runtime device for native Metal presentation.
+wgpu-hal = { workspace = true }
+# `addCompletedHandler` blocks on the submitted Metal command buffer —
+# `gpu_surface`-gated so no-GPU artifacts link neither it nor the metal
+# block2 feature.
+block2 = { workspace = true, optional = true }
+objc2-metal = { version = "0.3", features = [
+    "MTLCommandBuffer",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLPixelFormat",
+    "MTLResource",
+    "MTLTexture",
+] }
+# The Cocoa bindings live in-tree at backends/apple/cocoa-ui (imported from
+# water-rs/cocoa-ui@03cc55e1 — see that directory's PROVENANCE).
+cocoa-ui = { path = "cocoa-ui" }
+# Optional component dependencies — a port's feature gates them so an app
+# that never uses the component links none of it.
+waterui-webview = { workspace = true, optional = true }
+# The cookie type `waterui-webview`'s handle contract answers with —
+# `time`/`SameSite` rebuild cookies from `NSHTTPCookie` records.
+cookie = { version = "0.18.2", optional = true }
+waterkit-audio = { workspace = true, default-features = true, features = [
+    "media-session",
+], optional = true }
+waterui-video = { workspace = true, optional = true }
+executor-core = { workspace = true }
+async-channel = { workspace = true }
+futures = { workspace = true }
+native-executor = { workspace = true }
+kurbo = { workspace = true }
+dispatch2 = "0.3"
+libc = "0.2"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-panic = { workspace = true }
+
+objc2 = { workspace = true }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "NSAttributedString",
+    "NSDate",
+    "NSValue",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGPath",
+] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+    "std",
+    "CALayer",
+    "CAShapeLayer",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+] }
+
+[dev-dependencies]
+criterion = "0.8.2"
+pollster = { workspace = true }
+libtest-mimic = "0.8"
+serde_json = { workspace = true }
+# The native tests create real `AppKit`/`UIKit` objects, which are only
+# legal on the process's actual main thread — libtest's worker threads can
+# never hold a `MainThreadMarker`. The custom harness pins execution to
+# `main` (`test_threads = 1`); nextest runs each case as its own process,
+# giving every test the whole process's framework state.
+[[test]]
+name = "native"
+path = "Tests/native.rs"
+harness = false
+# The suite links `native_test_support`, which only exists behind the
+# non-default feature; lanes that want it pass it explicitly.
+required-features = ["native-test"]
+
+[[bench]]
+name = "hot_paths"
+harness = false

@@ -1,0 +1,547 @@
+[package]
+name = "cocoa-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/water-rs/waterui"
+readme = "README.md"
+# In-tree workspace crate — platform backend policy publishes nothing from
+# this repository; crates.io resolution stays on the standalone upstream.
+publish = false
+description = "A safe, idiomatic Rust API over AppKit and UIKit, built on objc2"
+keywords = ["appkit", "uikit", "objc2", "macos", "ios"]
+categories = ["gui", "os::macos-apis", "api-bindings"]
+
+[package.metadata.docs.rs]
+targets = ["aarch64-apple-darwin", "aarch64-apple-ios"]
+
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = "warn"
+style = "warn"
+correctness = "warn"
+complexity = "warn"
+suspicious = "warn"
+perf = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+# Every `unsafe` must state why it is sound, in a form the compiler checks.
+undocumented_unsafe_blocks = "warn"
+multiple_crate_versions = { level = "allow", priority = 1 }
+
+[features]
+# The `MapKit` surface (`map` module) carries the `MapKit` framework link
+# through `objc2-map-kit`; opt-in so apps without a map link none of it.
+map = ["dep:objc2-map-kit", "dep:objc2-core-location"]
+# The `AVFoundation`/`AVKit` surface (`avkit` module) carries the media
+# framework links through the `objc2-av-*` family; opt-in so apps without
+# media playback compile and link none of it. `objc2-av-kit` only exists on
+# `macOS` (`AVPlayerView`), where `avkit.rs` uses it.
+avkit = ["dep:objc2-av-foundation", "dep:objc2-core-media", "dep:objc2-av-kit"]
+# The `WebKit` surface (`web_kit` module) carries the `WebKit` and `Security`
+# framework links; opt-in so apps without a web view link neither.
+webview = ["dep:objc2-web-kit", "dep:objc2-security"]
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
+libc = "0.2"
+keyboard-types = { version = "0.8.3", default-features = false }
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFCGTypes",
+    "CFError",
+    "CFString",
+    "CFStringTokenizer",
+    "CFLocale",
+    "CFURL",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGAffineTransform",
+    "CGColor",
+    "CGColorSpace",
+    "CGPath",
+    "CGBitmapContext",
+    "CGContext",
+    "CGDataProvider",
+    "CGImage",
+] }
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std",
+    "IOSurfaceRef",
+    "IOSurfaceTypes",
+    "objc2-core-foundation",
+] }
+objc2-core-text = { version = "0.3", default-features = false, features = [
+    "std",
+    "CTFontManager",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "NSArray",
+    "NSAttributedString",
+    "NSBundle",
+    "NSCalendar",
+    "NSCharacterSet",
+    "NSDate",
+    "NSDateFormatter",
+    "NSFormatter",
+    "NSDateInterval",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSRange",
+    "NSKeyValueObserving",
+    "NSRunLoop",
+    "NSLocale",
+    "NSNotification",
+    "NSValue",
+    "NSObjCRuntime",
+    "NSOperation",
+    "NSProcessInfo",
+    "NSIndexPath",
+    "NSIndexSet",
+    "NSData",
+    "NSError",
+    "NSHTTPCookie",
+    "NSItemProvider",
+    "NSJSONSerialization",
+    "NSProgress",
+    "NSString",
+    "NSURL",
+    "NSURLAuthenticationChallenge",
+    "NSURLCredential",
+    "NSURLProtectionSpace",
+    "NSURLRequest",
+    "NSURLResponse",
+    "NSURLSession",
+] }
+objc2-security = { version = "0.3", default-features = false, features = [
+    "SecTrust",
+    "objc2",
+], optional = true }
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+    "block2",
+    "WKContentWorld",
+    "WKFrameInfo",
+    "WKHTTPCookieStore",
+    "WKNavigation",
+    "WKNavigationAction",
+    "WKNavigationDelegate",
+    "WKNavigationResponse",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKSecurityOrigin",
+    "WKUIDelegate",
+    "WKUserContentController",
+    "WKURLSchemeHandler",
+    "WKURLSchemeTask",
+    "WKUserScript",
+    "WKWebViewConfiguration",
+    "WKWebsiteDataStore",
+    "WKWindowFeatures",
+], optional = true }
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLComputeCommandEncoder",
+    "MTLDevice",
+    "MTLLibrary",
+    "MTLRenderPipeline",
+    "MTLSampler",
+    "MTLTexture",
+    "MTLBlitCommandEncoder",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "MTLBuffer",
+    "MTLAllocation",
+    "MTLResource",
+    "objc2-io-surface",
+    "block2",
+] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+    "std",
+    "CAAnimation",
+    "CABase",
+    "CADisplayLink",
+    "CAEDRMetadata",
+    "CAFrameRateRange",
+    "CAGradientLayer",
+    "CALayer",
+    "CAMediaTiming",
+    "CAShapeLayer",
+    "CARenderer",
+    "CATransaction",
+    "CATransform3D",
+    "CAMediaTimingFunction",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "objc2-core-video",
+    "block2",
+] }
+objc2-core-location = { version = "0.3", default-features = false, features = [
+    "std",
+    "CLLocation",
+], optional = true }
+objc2-map-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "MKAnnotation",
+    "MKCircle",
+    "MKCircleRenderer",
+    "MKFoundation",
+    "MKGeometry",
+    "MKMapView",
+    "MKOverlay",
+    "MKOverlayPathRenderer",
+    "MKOverlayRenderer",
+    "MKPointAnnotation",
+    "MKShape",
+    "MKTypes",
+    "objc2-core-location",
+    "block2",
+], optional = true }
+objc2-av-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "block2",
+    "dispatch2",
+    "objc2-core-media",
+    "objc2-core-foundation",
+    "objc2-quartz-core",
+    "AVAnimation",
+    "AVAsynchronousKeyValueLoading",
+    "AVAsset",
+    "AVAssetVariant",
+    "AVAudioProcessingSettings",
+    "AVError",
+    "AVMediaFormat",
+    "AVMediaSelectionGroup",
+    "AVPlayer",
+    "AVPlayerItem",
+    "AVPlayerLayer",
+    "AVTime",
+], optional = true }
+objc2-core-media = { version = "0.3", default-features = false, features = [
+    "std",
+    "CMTime",
+    "CMTimeRange",
+], optional = true }
+kurbo = { version = "0.12" }
+wgpu = { version = "30.0.1", default-features = false }
+wgpu-hal = { version = "30.0.1", default-features = false, features = [
+    "metal",
+] }
+# `os_log` is a family of C macros; this crate compiles the one-line wrapper
+# that forwards a preformatted `%{public}s` message through them.
+oslog = { version = "0.2", default-features = false }
+tracing = "0.1"
+
+[dev-dependencies]
+libtest-mimic = "0.8"
+
+# The `native` suite (tests/native/main.rs) holds the cases that touch real
+# `AppKit`/`UIKit` objects. `harness = false` makes `main` the process's real
+# main thread — `MainThreadMarker::new()` is a genuine check there, with no
+# forged marker or serialization lock — and under nextest each case is its
+# own process. Cases that need no platform objects stay `#[test]` unit tests.
+[[test]]
+name = "native"
+path = "tests/native/main.rs"
+harness = false
+
+[target.'cfg(target_os = "macos")'.dependencies]
+bitflags = "2"
+mach2 = "0.7"
+# `MKMapView` and `MKOverlayLevel` are `AppKit`-side types in
+# `objc2-map-kit`; `UIKit` gets a hand-declared binding in `map.rs`.
+objc2-map-kit = { version = "0.3", features = ["objc2-app-kit"], optional = true }
+objc2-av-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-app-kit",
+    "objc2-av-foundation",
+    "AVPlayerView",
+], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSAppearance",
+    "NSApplication",
+    "NSAccessibility",
+    "NSAccessibilityConstants",
+    "NSAccessibilityProtocols",
+    "NSActionCell",
+    "NSAttributedString",
+    "block2",
+    "NSButton",
+    "NSButtonCell",
+    "NSCell",
+    "NSColor",
+    "NSColorSpace",
+    "NSEvent",
+    "NSFont",
+    "NSFontDescriptor",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSImage",
+    "NSImageView",
+    "NSAccessibilityProtocols",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSPopUpButton",
+    "NSSegmentedControl",
+    "NSStackView",
+    "NSColorWell",
+    "NSColorPanel",
+    "NSPanel",
+    "NSParagraphStyle",
+    "NSDatePicker",
+    "NSDatePickerCell",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSControl",
+    "NSButton",
+    "NSClipView",
+    "NSCursor",
+    "NSLayoutAnchor",
+    "NSScrollView",
+    "NSSecureTextField",
+    "NSSlider",
+    "NSProgressIndicator",
+    "NSStepper",
+    "NSSwitch",
+    "NSLayoutManager",
+    "NSText",
+    "NSTextContainer",
+    "NSTextField",
+    "NSTextFieldCell",
+    "NSTextStorage",
+    "NSTextView",
+    "NSTableView",
+    "NSTableColumn",
+    "NSTableHeaderView",
+    "NSTableHeaderCell",
+    "NSTableCellView",
+    "NSUserInterfaceItemIdentification",
+    "NSTrackingArea",
+    "NSGestureRecognizer",
+    "NSMagnificationGestureRecognizer",
+    "NSBitmapImageRep",
+    "NSImageRep",
+    "NSTextInputClient",
+    "NSTextInputContext",
+    "NSView",
+    "NSAnimation",
+    "NSAnimationContext",
+    "NSToolbar",
+    "NSToolbarItem",
+    "NSSearchToolbarItem",
+    "NSTrackingSeparatorToolbarItem",
+    "NSTitlebarAccessoryViewController",
+    "NSSplitView",
+    "NSSplitViewController",
+    "NSSplitViewItem",
+    "NSSegmentedControl",
+    "NSTableView",
+    "NSTableColumn",
+    "NSTableCellView",
+    "NSScrollView",
+    "NSSearchField",
+    "NSPopUpButton",
+    "NSVisualEffectView",
+    "NSViewController",
+    "NSScrollView",
+    "NSClipView",
+    "NSTableColumn",
+    "NSTableHeaderView",
+    "NSTableRowView",
+    "NSTableView",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSDragging",
+    "NSWindow",
+    "NSUserInterfaceItemIdentification",
+    "NSClickGestureRecognizer",
+    "NSDragging",
+    "NSDraggingItem",
+    "NSDraggingSession",
+    "NSGestureRecognizer",
+    "NSMagnificationGestureRecognizer",
+    "NSPanGestureRecognizer",
+    "NSPasteboard",
+    "NSPasteboardItem",
+    "NSPressGestureRecognizer",
+    "NSRotationGestureRecognizer",
+    "NSUserInterfaceLayout",
+    "NSVisualEffectView",
+    "NSGlassEffectView",
+    "NSLayoutConstraint",
+    "NSStringDrawing",
+    "objc2-quartz-core",
+    "objc2-core-graphics",
+] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+bitflags = "2"
+objc2-ui-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-quartz-core",
+    "UIApplication",
+    "UIColor",
+    "UIControl",
+    "UIButton",
+    "UISwitch",
+    "NSLayoutAnchor",
+    "NSLayoutConstraint",
+    "UIAccessibilityContentSizeCategoryImageAdjusting",
+    "UIEvent",
+    "UIGeometry",
+    "UIGraphics",
+    "UIInterface",
+    "UIResponder",
+    "UIScene",
+    "UISceneDefinitions",
+    "UIScrollView",
+    "UISceneOptions",
+    "NSAttributedString",
+    "NSLayoutManager",
+    "NSParagraphStyle",
+    "NSTextContainer",
+    "NSTextStorage",
+    "UISceneSession",
+    "UITrait",
+    "UIFont",
+    "UIImage",
+    "UIImageConfiguration",
+    "UIImageSymbolConfiguration",
+    "UIImageView",
+    "UILabel",
+    "UIAccessibility",
+    "UIAccessibilityConstants",
+    "UIAccessibilityIdentification",
+    "UIButton",
+    "UIButtonConfiguration",
+    "UISlider",
+    "UIProgressView",
+    "UIActivityIndicatorView",
+    "UIStepper",
+    "UITextField",
+    "UITextInputTraits",
+    "UIFontDescriptor",
+    "UITraitCollection",
+    "NSText",
+    "NSStringDrawing",
+    "UICalendarSelection",
+    "UICalendarSelectionMultiDate",
+    "UICalendarView",
+    "UICalendarViewDecoration",
+    "UIDatePicker",
+    "UIView",
+    "UIViewController",
+    "UIScrollView",
+    "UIViewAnimating",
+    "UIViewPropertyAnimator",
+    "UITimingCurveProvider",
+    "UITimingParameters",
+    "UIWindow",
+    "UIWindowScene",
+    "objc2-quartz-core",
+    "UISegmentedControl",
+    "UITableView",
+    "UITableViewCell",
+    "UITableViewHeaderFooterView",
+    "UISwipeActionsConfiguration",
+    "UIContentConfiguration",
+    "UIContextualAction",
+    "UIListContentConfiguration",
+    "NSIndexPath_UIKitAdditions",
+    "UIPickerView",
+    "UIColorWell",
+    "UIBarCommon",
+    "UICommand",
+    "UINavigationBar",
+    "UINavigationController",
+    "UINavigationItem",
+    "UIBarItem",
+    "UIBarButtonItem",
+    "UIBarButtonItemGroup",
+    "UIBarAppearance",
+    "UINavigationBarAppearance",
+    "UITabBar",
+    "UITabBarController",
+    "UITabBarItem",
+    "UITab",
+    "UITabAccessory",
+    "UISearchTab",
+        "UITabBarAppearance",
+    "UISplitViewController",
+        "UISearchBar",
+    "UISearchController",
+    "UIMenu",
+    "UIMenuElement",
+    "UIMenuBuilder",
+    "UIMenuSystem",
+    "UIMainMenuSystem",
+    "UIAction",
+    "UIContextMenuConfiguration",
+    "UIContextMenuInteraction",
+    "UIGestureRecognizer",
+    "UIGestureRecognizerSubclass",
+    "UILongPressGestureRecognizer",
+    "UIPanGestureRecognizer",
+    "UIPinchGestureRecognizer",
+    "UIRotationGestureRecognizer",
+    "UITapGestureRecognizer",
+    "UIDragInteraction",
+    "UIDragItem",
+    "UIDragSession",
+    "UIDropInteraction",
+    "UIInteraction",
+    "UIHoverGestureRecognizer",
+    "UIHoverStyle",
+    "UIShape",
+    "UICommand",
+    "UIAccessibilityConstants",
+    "UIKey",
+    "UIKeyConstants",
+    "UIPointerInteraction",
+    "UIPointerRegion",
+    "UIPointerStyle",
+    "UIPress",
+    "UIPressesEvent",
+    "UIPreviewParameters",
+    "UITargetedPreview",
+    "UIScreenEdgePanGestureRecognizer",
+    "UIScreen",
+    "UIVisualEffect",
+    "UIVisualEffectView",
+    "UIBlurEffect",
+    "UIGlassEffect",
+    "UICornerConfiguration",
+    "UICornerRadius",
+    "objc2-core-graphics",
+    "UIKeyConstants",    "UITapGestureRecognizer",
+    "UIPanGestureRecognizer",
+    "UIPinchGestureRecognizer",
+    "UIHoverGestureRecognizer",
+    "UIPressesEvent",
+    "UIScreen",
+    "UIPress",
+    "UIKey",
+    "UITouch",
+    "UITextInput",
+    "objc2-quartz-core",
+    "objc2-core-graphics",
+    "block2",
+] }

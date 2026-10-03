@@ -18,6 +18,11 @@ thiserror.workspace = true
 toml = "1.1"
 walkdir = "2.5"
 waterui-assets-core.workspace = true
+# The artifact-channel record format bundle metadata rides in — a
+# `waterui_meta_*` static's bytes are a `name`, NUL, `payload`, NUL record in
+# the `.wmeta` section, so one record shape serves objects, rlibs, and linked
+# images (a linked PE keeps no symbol table to name a static).
+waterui-meta.workspace = true
 
 [lints]
 workspace = true

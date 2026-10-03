@@ -76,14 +76,10 @@ impl core::fmt::Debug for ContainerState {
     }
 }
 
-/// The lazy path's child set: the collection it materializes through and
-/// the id-keyed mounted children, in the state so the watch — and only the
-/// watch — mutates them.
+/// The lazy path's child set: the id-keyed mounted children, in the state
+/// so the watch — and only the watch — mutates them. The collection
+/// itself lives on the leaf's `KeepAlive`, not here.
 struct LazyState {
-    /// The live collection — owns the row data and the id mapping every
-    /// snapshot shares. `Rc`-shared with the watch registration, which
-    /// must not borrow the state it is about to fill.
-    contents: Rc<AnyViews<AnyView>>,
     /// The render capability `get_view` results are realized through.
     renderer: Renderer,
     /// The container view children mount on.
@@ -448,7 +444,6 @@ fn render_lazy_container(
     let group = new_group(&platform);
     let contents = Rc::new(contents);
     let lazy = LazyState {
-        contents: Rc::clone(&contents),
         renderer: ctx.renderer(),
         host: jvm::retain(&group),
         rendered: HashMap::new(),
@@ -497,6 +492,10 @@ fn render_lazy_container(
 
     let mut leaf = finish_container(&state, group, &platform);
     leaf.keep(watcher);
+    // The `Rc` the watch was registered through: as long as the leaf
+    // lives, the collection and its id mapping stay alive for the
+    // subscriptions the guard holds.
+    leaf.keep(contents);
     leaf
 }
 

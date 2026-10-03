@@ -12,6 +12,12 @@ on:
         type: boolean
         default: false
 
+# Narrow by default: callers may grant actions:write for the lint job's
+# cache retirement, but every other job in this workflow keeps read-only
+# GITHUB_TOKEN scope.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # cargo/rustup retry network failures three times by default; ten
@@ -48,6 +54,12 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Retires superseded generations of only this job's two cache
+      # families (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its
+      # own ref, then saves the replacement archives.
+      actions: write
     timeout-minutes: ${{ inputs.full && 90 || 10 }}
     steps:
       - uses: actions/checkout@v4
@@ -59,10 +71,28 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy, rustfmt
-          shared-key: lint-${{ runner.os }}
-          cache-targets: true
-          cache-workspace-crates: true
-          save-if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+          cache: "false"
+      # Two deliberately separate archives (#328/#458): `cargo-sources` —
+      # only ~/.cargo/registry + ~/.cargo/git keyed on the root lockfile,
+      # shared read-only by every lane on this OS — and `lint-target`, only
+      # `target`, keyed on the ACTUAL rustc fingerprint + OS/arch + the
+      # lockfile so a toolchain roll can never restore a stale object set.
+      # This job is the sole writer of both on integration pushes; every
+      # other lane restores `cargo-sources` read-only and caches no target.
+      - name: Rust toolchain fingerprint
+        id: rustc-fingerprint
+        run: echo "hash=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+      - name: Restore Cargo sources
+        id: cargo-sources
+        uses: ./.github/actions/cargo-sources
+      - name: Restore lint target cache
+        id: lint-target
+        uses: actions/cache/restore@v4
+        with:
+          path: target
+          key: lint-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            lint-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       - name: Format
@@ -73,7 +103,7 @@ jobs:
       # `#[cfg(test)]` module or a `tests/` target that no longer compiles
       # must not wait for the nightly to be noticed.
       - name: Clippy (workspace)
-        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets -- -D warnings
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -90,7 +120,10 @@ jobs:
       # `embedded-simulator` / `espidf`, gtk's `webkitgtk`, or the browsers'
       # engine features at all (#261).
       #
-      # `--workspace --all-features` covers all of those. Three crates cannot
+      # `--workspace --all-features` covers all of those — except
+      # `waterui-apple` (ARM-Apple-only objc2 code plus a `native` suite that
+      # needs provisioned reference metrics; `apple.yml` owns it). Three other
+      # crates cannot
       # join it, because `--all-features` asks for feature sets that are
       # mutually exclusive by construction; each is excluded here and linted
       # below in the shapes it actually has. Every one of the three is still
@@ -102,6 +135,8 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check --workspace --all-targets --all-features \
             --exclude '*-example' \
+            --exclude waterui-apple \
+            --exclude cocoa-ui \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
@@ -138,6 +173,34 @@ jobs:
       - name: Skill snippet compile gate
         if: inputs.full
         run: cargo check --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests
+      - name: Target size
+        run: du -sh target
+      # Retirement runs after every check has passed and BEFORE the saves:
+      # a lockfile bump mints a new key, so the superseded generations of
+      # this job's own two families on this exact ref are deleted first —
+      # otherwise the save itself can evict a live, unrelated cache while
+      # the stale generation sits under quota. Ref-scoped family prefixes
+      # only: pull-request caches, other families, and other workspaces are
+      # never touched; API failures fail the step, they are not swallowed.
+      - name: Retire superseded cache generations
+        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.lint-target.outputs.cache-primary-key }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Save Cargo sources
+        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
+        uses: ./.github/actions/cargo-sources
+        with:
+          operation: save
+          primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+      - name: Save lint target cache
+        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.lint-target.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: target
+          key: ${{ steps.lint-target.outputs.cache-primary-key }}
 
   # The crates whose wasm-only paths nothing else compiles.
   #
@@ -171,10 +234,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32-unknown-unknown
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive written by the `lint`
+      # job in this file; read-only lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # Build scripts and proc macros still compile for the host even when
       # every library target is wasm, and this graph reaches the ones that need
       # native headers.
@@ -216,10 +280,12 @@ jobs:
       # these daily runs keep every test without evicting its check artifacts.
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive — the `lint` job
+      # writes it on Linux, apple.yml's rust job on macOS; read-only
+      # lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # GPU snapshot tests run in this job, so this leg needs the Vulkan ICD
       # loader (mesa-vulkan-drivers/libvulkan1) on top of the base package
       # list — that's what lets llvmpipe/lavapipe stand in for a real GPU on
@@ -247,9 +313,9 @@ jobs:
       # only here — each shells out to a fixture build that does not depend on
       # the outer feature set, so the all-features passes and coverage skip
       # them (see below).
-      - run: cargo nextest run --locked --workspace --exclude '*-example' --profile ci
+      - run: cargo nextest run --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --profile ci
       # nextest cannot run doctests, and this workspace has plenty of them.
-      - run: cargo test --locked --doc --workspace --exclude '*-example'
+      - run: cargo test --locked --doc --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui
       # The pilot's hit/miss evidence (#1145): the shim accumulates per-crate
       # counters in its stats db during the builds above, and `stow status`
       # prints them — it only shows them when the project config exists, so
@@ -302,10 +368,11 @@ jobs:
       # cache budget note in ci.yml).
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive written by the `lint`
+      # job in this file; read-only lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # GPU snapshot tests run under these features too, so this leg needs
       # the Vulkan ICD loader the way `test` does.
       - name: Install native dependencies
@@ -324,6 +391,8 @@ jobs:
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
+            --exclude waterui-apple \
+            --exclude cocoa-ui \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
@@ -364,10 +433,11 @@ jobs:
       # target directory (see the cache budget note in ci.yml).
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive written by the Apple
+      # gate's rust job (apple.yml); read-only lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/install-tool
         with:
           tool: cargo-nextest@0.9.145
@@ -381,6 +451,8 @@ jobs:
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci \
             --exclude '*-example' \
+            --exclude waterui-apple \
+            --exclude cocoa-ui \
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
@@ -423,10 +495,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive written by the Apple
+      # gate's rust job (apple.yml); read-only lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # The same step also lints the FFI crate's compile-only CEF C ABI, which
       # no other leg reaches: the Linux all-features passes exclude
       # `waterui-ffi` for its ABI `compile_error!` and lint the `cef-runtime`
@@ -473,10 +546,12 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: ${{ runner.os == 'Linux' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive — the `lint` job
+      # writes it on Linux, apple.yml's rust job on macOS; read-only
+      # lanes never save.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # Examples carry GPU snapshot tests too, so the Linux leg needs the same
       # Vulkan ICD loader the `test` job installs.
       - name: Install native dependencies

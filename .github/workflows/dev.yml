@@ -15,5 +15,10 @@ concurrency:
 jobs:
   lint:
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: false

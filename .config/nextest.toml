@@ -1,5 +1,8 @@
 # Local runs keep nextest's defaults.
 [profile.default]
+# The AppKit/UIKit-touching native tests share process-wide framework state;
+# report failures at the end of output rather than mid-stream.
+failure-output = "immediate-final"
 # Surface anything pathologically slow rather than letting CI hang on it.
 slow-timeout = { period = "60s", terminate-after = 10 }
 

@@ -1,0 +1,61 @@
+name: Retire superseded Cargo caches
+
+description: >-
+  Deletes every Actions cache entry on the current ref whose key starts
+  with one of the calling job's own family prefixes, except the keys this
+  run is about to save. A lockfile or toolchain bump mints a new key, so
+  the superseded generation must be removed after all checks pass and
+  BEFORE the replacement save — otherwise the save itself can evict a
+  live, unrelated cache while the stale generation sits under quota.
+  Ref-scoped family prefixes only: pull-request caches, other families,
+  and other refs are never touched; API errors fail the step.
+
+inputs:
+  families:
+    description: >-
+      Comma-separated cache key prefixes owned by the calling job
+      (for example "cargo-sources-Linux-,lint-target-Linux-X64-").
+    required: true
+  primary-keys:
+    description: >-
+      Pipe-separated exact keys this run is about to save; they are
+      never deleted.
+    required: true
+  github-token:
+    description: Token with actions:write on the repository.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Retire superseded cache generations
+      uses: actions/github-script@v7
+      env:
+        FAMILY_PREFIXES: ${{ inputs.families }}
+        PRIMARY_KEYS: ${{ inputs.primary-keys }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const families = process.env.FAMILY_PREFIXES.split(',').filter(Boolean);
+          const primaries = new Set(process.env.PRIMARY_KEYS.split('|'));
+          const { owner, repo } = context.repo;
+          // Materialize the whole list first: deleting mid-iteration
+          // would shift page offsets and could skip stale entries.
+          const entries = await github.paginate(
+            github.rest.actions.getActionsCacheList,
+            { owner, repo, per_page: 100 });
+          const stale = entries.filter((e) =>
+            e.ref === context.ref &&
+            families.some((f) => e.key.startsWith(f)) &&
+            !primaries.has(e.key));
+          // Deletes run with bounded concurrency; any API error aborts
+          // the batch and fails the step.
+          const retired = [];
+          for (let i = 0; i < stale.length; i += 4) {
+            await Promise.all(stale.slice(i, i + 4).map(async (e) => {
+              await github.rest.actions.deleteActionsCacheById(
+                { owner, repo, cache_id: e.id });
+              retired.push(`${e.key}#${e.id}`);
+            }));
+          }
+          core.info(`retired ${retired.length} superseded cache entries: ${retired.join(', ') || 'none'}`);

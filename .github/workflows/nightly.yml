@@ -9,7 +9,8 @@ name: Nightly
 # coverage and the `cargo hack
 # --each-feature` sweep. `ci.yml` is the per-change gate. The backend
 # repositories drive the examples on their platforms in their own nightlies;
-# they do not run this suite, and nothing else does either.
+# the in-tree Apple backend is the exception — its packaged-example suite
+# (`apple-e2e.yml`) is invoked here so the certification covers it.
 #
 # A green run certifies its commit as an immutable `nightly-*` prerelease,
 # which `water channel nightly` resolves and the `Nightly healthy` check in
@@ -53,6 +54,11 @@ jobs:
   test:
     name: Test
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: true
 
@@ -67,6 +73,25 @@ jobs:
   windows:
     name: Windows
     uses: ./.github/workflows/windows.yml
+    # The Windows source writer's cache-retirement step needs actions:write
+    # on its own family; nothing else in the called workflow gains it.
+    permissions:
+      contents: read
+      actions: write
+
+  # The in-tree Apple backend's packaged-example suite — group packaging on
+  # iOS simulator and macOS, the capture shards and the packaged-app/native
+  # device tests — so one run certifies the whole (framework, backends/apple,
+  # lockfile, CLI) combination, not just the framework half.
+  apple-e2e:
+    name: Apple e2e
+    uses: ./.github/workflows/apple-e2e.yml
+    permissions:
+      # The suite's publish-baselines job pushes a branch and opens a PR on
+      # record dispatches; its report job files the failure issue.
+      contents: write
+      pull-requests: write
+      issues: write
 
   coverage:
     name: Coverage
@@ -88,10 +113,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           components: llvm-tools-preview
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
         # The instrumented run executes the same GPU-backed snapshot tests as
         # Test / ubuntu-latest, so it needs the same software Vulkan ICD. Without
@@ -119,7 +145,7 @@ jobs:
       # depend on the feature set and already ran in `test`; an instrumented
       # rebuild of the same fixtures would measure nothing extra (trybuild's
       # own target dir is not instrumented) and cost a cold framework compile.
-      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
+      - run: cargo llvm-cov nextest --locked --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --features waterui/all --lcov --output-path lcov.info -E 'not binary(/^trybuild_/)'
         env:
           NEXTEST_PROFILE: ci
       - uses: codecov/codecov-action@v4
@@ -136,10 +162,11 @@ jobs:
       # The single writer of `ci-ubuntu` (see Hygiene above).
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
       - uses: ./.github/actions/install-tool
         with:
@@ -226,7 +253,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report, android-backend]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report, android-backend, apple-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -270,7 +297,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, android-backend, promote]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, android-backend, promote, apple-e2e]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

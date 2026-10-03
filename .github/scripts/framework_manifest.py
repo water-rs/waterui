@@ -53,8 +53,9 @@ def framework_scaffold(framework):
     `scaffold-packages` entry's `[workspace.dependencies]` requirement —
     `{name}-version`, plus `{name}-git` and `{name}-rev` when the requirement
     pins a repository — and every backend coordinate — `{name}-backend-url`,
-    plus the `{name}-backend-version` of a backend pinned by release or the
-    `{name}-backend-revision` of one pinned by commit — and every pinned
+    plus the `{name}-backend-version` of a backend pinned by release, the
+    `{name}-backend-revision` of one pinned by commit, or the
+    `{name}-backend-path` of one living in this tree — and every pinned
     platform host: `{name}-host-url`, `{name}-host-revision` and
     `{name}-host-subdirectory` — from `[package.metadata.waterui]`.
     Identical to `framework_scaffold` in the CLI for the same tree."""
@@ -85,6 +86,7 @@ def framework_scaffold(framework):
                 "-backend-url",
                 "-backend-version",
                 "-backend-revision",
+                "-backend-path",
                 "-host-url",
                 "-host-revision",
                 "-host-subdirectory",

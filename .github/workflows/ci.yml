@@ -57,8 +57,11 @@ env:
   # fast runs write that cache; the full nightly lint is a restore-only reader.
   # Daily test profiles no longer save their multi-GB target archives, which
   # previously occupied the budget while every dev push cold-compiled clippy.
-  # The other jobs share Cargo sources under per-OS cargo-home keys, with one
-  # writer per OS. No test or platform coverage is removed by this allocation.
+  # The other jobs share Cargo sources under per-OS `cargo-sources-<OS>`
+  # archives (only ~/.cargo/registry + ~/.cargo/git, lockfile-keyed), each
+  # with one writer per OS: the fast lint job on Linux, the Apple gate's
+  # rust job on macOS, and the main test job on Windows. No test or platform
+  # coverage is removed by this allocation.
   # The former full set of target archives measured ~27 GB against the cap.
   # Incremental artifacts are per-machine rebuild state, useless to a fresh
   # runner, so they stay disabled rather than bloating the restored cache.
@@ -196,10 +199,11 @@ jobs:
       # the larger graph.
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
@@ -258,10 +262,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: x86_64-pc-windows-msvc
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - name: Compile the DX12 backend against the committed lockfile
         run: cargo check --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
 
@@ -321,7 +326,7 @@ jobs:
       - name: Verify the workspace builds on the declared MSRV
         run: |
           set -o pipefail
-          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example'; then
+          if ! cargo msrv verify -- cargo check --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui; then
             echo "::error::the workspace does not compile on the declared rust-version — either avoid the newer feature, or raise rust-version in [workspace.package] in Cargo.toml in the same pull request"
             exit 1
           fi
@@ -346,10 +351,11 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # `--all-targets` reaches the crate's dev-dependency graph, part of which
       # is built for the host: without this the Linux-only `cros-libva` build
       # script fails on the missing `libva-dev`, long before anything Android
@@ -405,6 +411,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
+    # The lint job's cache-retirement step needs actions:write on its own
+    # families; nothing else in the called workflow gains a broader token.
+    permissions:
+      contents: read
+      actions: write
     with:
       full: false
 
