@@ -14,6 +14,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
     // through the walk into a `body()` panic, which `panic = "abort"` makes fatal.
     crate::components::empty::install(dispatcher);
 
+    // Environment overlay — `Metadata<Environment>` is core env machinery
+    // (every `.env(...)` wraps content in it), not a feature-gated port:
+    // `body()` panics whenever no handler claims it.
+    crate::components::with_env::install(dispatcher);
+
+    // Reactive content — `Dynamic::watch`/`text!`-bound content arrives as
+    // `Native<Dynamic>`; unclaimed it falls into the same `body()` panic.
+    crate::components::dynamic::install(dispatcher);
+
     // The skeleton's wave: text, the stack container, and button.
     #[cfg(feature = "text")]
     crate::components::text::install(dispatcher);

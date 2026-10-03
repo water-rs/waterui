@@ -21,11 +21,13 @@ use core::cell::{Cell, RefCell};
 use jni::objects::JObject;
 use jni::sys::{jint, jlong};
 use nami::watcher::BoxWatcherGuard;
+use waterui::views::{ViewSnapshot, Views};
+use waterui_backend_core::AnyView;
 use waterui_core::layout::{
     Layout, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions, measure_layout,
     with_memoized_children,
 };
-use waterui_layout::container::FixedContainer;
+use waterui_layout::container::{FixedContainer, LazyContainer};
 
 use crate::contract::{Mounted, NativeLeaf, PlatformView};
 use crate::dispatch::Dispatcher;
@@ -203,11 +205,37 @@ impl SubView for ContainerSubView {
     }
 }
 
-/// Claims `Native<FixedContainer>`.
+/// Claims `Native<FixedContainer>` and `Native<LazyContainer>`.
+///
+/// A `vstack`/`hstack` arrives as the lazy form; the skeleton materializes
+/// its snapshot once and renders it through the fixed path — the
+/// incremental add/remove machinery the Apple port keeps for lazy
+/// collections is a later port's surface.
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<FixedContainer>(|container, ctx| {
-        let platform = ctx.platform().clone();
         let (layout, contents) = container.into_inner();
+        render_container(layout, contents.into_iter().collect(), ctx)
+    });
+    dispatcher.register_native::<LazyContainer>(|container, ctx| {
+        let (layout, contents) = container.into_inner();
+        let snapshot = contents.snapshot();
+        let views: Vec<AnyView> = snapshot
+            .range()
+            .filter_map(|index| snapshot.get_view(index))
+            .collect();
+        render_container(layout, views, ctx)
+    });
+}
+
+/// The shared render path: `layout` plus the already-materialized child
+/// views become one `RustViewGroup` leaf.
+fn render_container(
+    layout: Box<dyn Layout>,
+    contents: Vec<AnyView>,
+    ctx: &crate::contract::RenderContext<'_>,
+) -> NativeLeaf {
+    {
+        let platform = ctx.platform().clone();
         let group = jvm::with_env(|env| {
             let group = platform
                 .new_rust_view_group(env)
@@ -299,7 +327,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         );
         leaf.keep(OwnedHandle { group, state_ptr });
         leaf
-    });
+    }
 }
 
 /// Owns the container view plus the raw `ContainerState` pointer the view
