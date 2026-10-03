@@ -271,8 +271,7 @@ impl<V: View> ViewSnapshot for AnyViewsSnapshot<V> {
 
 /// The boxed watcher callback an erased collection registers — it receives
 /// an owning erased snapshot plus the notification's change report.
-type BoxAnyViewsWatcher<V> =
-    Box<dyn Fn(Context<AnyViewsSnapshot<V>>, CollectionChange) + 'static>;
+type BoxAnyViewsWatcher<V> = Box<dyn Fn(Context<AnyViewsSnapshot<V>>, CollectionChange) + 'static>;
 
 trait AnyViewsImpl {
     type View: View;
