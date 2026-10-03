@@ -708,9 +708,8 @@ impl RenderNode {
             Ok(shape) => return RenderNode::build_morph_shape((*shape).into_inner(), env),
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<MapConfig>>() {
-            Ok(_) => unsupported_map(),
-            Err(view) => view,
+        let Err(view) = view.downcast::<Native<MapConfig>>() else {
+            unsupported_map()
         };
         // This backend bridges the platform's own web engine, and it only wins
         // by default: an application that linked a browser engine of its own
@@ -759,10 +758,9 @@ impl RenderNode {
             Ok(spacer) => return RenderNode::build_spacer((*spacer).into_inner(), env),
             Err(view) => view,
         };
-        let view = match view.downcast::<Native<()>>() {
-            // `Native<()>` carries no data — drop the wrapper and build the empty leaf.
-            Ok(_) => return RenderNode::build_empty(env),
-            Err(view) => view,
+        // `Native<()>` carries no data — drop the wrapper and build the empty leaf.
+        let Err(view) = view.downcast::<Native<()>>() else {
+            return RenderNode::build_empty(env);
         };
         // `Divider` and `Str` are registered renderers (not `Native<…>` leaves), so
         // they are downcast as their value type directly and built into persistent

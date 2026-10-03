@@ -110,9 +110,11 @@ pub(crate) fn graphics_image_accessibility(
             renderer.note_suppressed_graphics_leaf(ctx);
             return;
         }
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Image,
+            ));
         if let Some(label) = label {
             node.set_label(label);
         }
@@ -320,9 +322,11 @@ pub(crate) fn str_accessibility(
         if let Some(label) = label
             && !renderer.consume_accessibility_descendant_text(env, &label)
         {
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Label),
-            );
+            let mut node =
+                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                    env,
+                    AccessibilityNodeRole::Label,
+                ));
             node.set_label(label);
             let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
         }

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::cast_possible_wrap,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! Tab item layout tests: the renderer asks the theme's `tabs_item_layout`
 //! hook with the bar's width and item count, and the highlight covers the
 //! whole item when the theme answers `Horizontal`.
@@ -148,13 +153,14 @@ fn horizontal_layout_highlights_the_whole_item() {
 /// content.
 #[test]
 fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
+    const ICON_TEXT: &str = "·";
+
     let env = test_environment();
     let draws = Rc::new(RefCell::new(Vec::new()));
     let mut theme = theme_with_layout(Some(TabItemLayout::Horizontal));
     theme.tabs_highlight_draws = Rc::clone(&draws);
     let mut renderer = test_renderer_with_theme(theme);
 
-    const ICON_TEXT: &str = "·";
     capture_root_window(
         &mut renderer,
         icon_tabs_view(4, ICON_TEXT),

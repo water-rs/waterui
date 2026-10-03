@@ -234,7 +234,7 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a scene segment resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let scene_layers = renderer.render_layer_stats().scene_segment_layers;
+    let scene_layers = renderer.render_layer_stats().scene_segments;
     assert!(
         scene_layers > 0,
         "re-flushing the retained tree must produce a scene segment layer"
@@ -258,7 +258,7 @@ fn widget_reactive_label_stays_live() {
         let n = n.clone();
         AnyViewBuilder::<AnyView>::new(move || {
             let n = n.clone();
-            AnyView::new(button(text!("N={n}", n = n.clone())).action(|| {}))
+            AnyView::new(button(text!("N={n}", n = n)).action(|| {}))
         })
     };
     let env = test_environment();
@@ -304,7 +304,7 @@ fn reactive_size_change_reflows_via_refresh_not_rebuild() {
         AnyViewBuilder::<AnyView>::new(move || {
             let label = label.clone();
             AnyView::new(hstack((
-                text!("{label}", label = label.clone()),
+                text!("{label}", label = label),
                 ().size(40.0, 40.0).background(Color::srgb_hex("#2563EB")),
             )))
         })
@@ -506,7 +506,7 @@ fn body_dispatched_once_then_every_frame_refreshes() {
             let label = label.clone();
             let mode = mode.clone();
             AnyView::new(vstack((
-                text!("N={label}", label = label.clone()),
+                text!("N={label}", label = label),
                 watch(mode, |selected| {
                     if selected {
                         AnyView::new(waterui_text::text("B"))
@@ -609,8 +609,8 @@ fn render_tree_chart_switch_snapshot() {
 
 /// The exact chart case: a `watch`-driven swap between two `Canvas` (`SceneView`)
 /// charts — the effect-slot path where a swap could render the previous scene. On the render-tree path the
-/// switch must visibly take effect (red -> blue scene), proving the SceneView
-/// switch is fixed (the patched node is re-dispatched in isolation).
+/// switch must visibly take effect (red -> blue scene), proving the `SceneView`
+/// `SceneView` fixed (the patched node is re-dispatched in isolation).
 #[test]
 fn render_tree_scene_view_switch_snapshot() {
     use core::time::Duration;
@@ -1194,7 +1194,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush");
     assert_eq!(
-        renderer.render_layer_stats().filtered_layers,
+        renderer.render_layer_stats().filtered_subtrees,
         1,
         "a .blur() view must mount a node-owned filtered layer on the retained tree, \
          not fall through to a dispatch/capture path"
@@ -1205,7 +1205,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush a second time");
     assert_eq!(
-        renderer.render_layer_stats().filtered_layers,
+        renderer.render_layer_stats().filtered_subtrees,
         1,
         "the node-owned filter mount must survive a geometry-static re-flush \
          (the retained FilteredView node keeps owning it across frames)"
@@ -1251,7 +1251,7 @@ fn text_ink_bands(snapshot: &crate::HeadlessSnapshot, rect: accesskit::Rect) -> 
 }
 
 /// The menu picker's field label is drawn: its ink band sits directly above the
-/// selected value's, both inside the picker's field (the ComboBox's bounds).
+/// selected value's, both inside the picker's field (the `ComboBox`'s bounds).
 /// A hidden label draws nothing and takes no space — the value band alone
 /// remains — while the accessibility node keeps the label exactly once.
 #[cfg(feature = "accessibility")]
@@ -1665,7 +1665,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
                     .computed(),
                 ),
                 when(label2.is_some(), move || {
-                    text(leaf.map(|v| v.unwrap_or_default()).computed())
+                    text(leaf.map(Option::unwrap_or_default).computed())
                         .padding()
                         .background(Srgb::new_u8(0x22, 0x22, 0xEE))
                 }),
@@ -1687,7 +1687,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
         let mut ink = 0usize;
         let (pixels, _) = snapshot.rgba8.as_chunks::<4>();
         for px in pixels {
-            let (r, g, b, a) = (px[0], px[1], px[2], px[3]);
+            let (r, g, b, a) = <(u8, u8, u8, u8)>::from(*px);
             if a > 0 && b > 170 && r < 100 && g < 100 {
                 pill += 1;
             } else if a > 0 && r < 90 && g < 90 && b < 100 {

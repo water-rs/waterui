@@ -758,7 +758,9 @@ fn register_section_chrome_node(
         AccessibilityNodeRole::Footer
     };
     let styled = renderer.read_resolved_text_styled(&label, env);
-    let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(env, role));
+    let mut node = AccessibilityNode::new(
+        crate::renderer::SemanticCore::resolve_accessibility_role(env, role),
+    );
     node.set_label(styled.to_string());
     match ctx {
         Some(ctx) => renderer.register_accessibility_child_node_with_key(
@@ -854,9 +856,11 @@ pub(crate) fn list_accessibility(
         } else {
             (0..row_count, 0.0)
         };
-        let mut list_node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::List),
-        );
+        let mut list_node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::List,
+            ));
         let list_label = renderer.resolve_accessibility_label(env, None);
         if let Some(label) = list_label {
             list_node.set_label(label);
@@ -967,9 +971,11 @@ pub(crate) fn list_accessibility(
                 || row_a11y_env
                     .get::<AccessibilityStateSignal>()
                     .is_some_and(|signal| renderer.read_signal(signal.state()).is_hidden());
-            let mut row_node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(&row_a11y_env, AccessibilityNodeRole::ListItem),
-            );
+            let mut row_node =
+                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                    &row_a11y_env,
+                    AccessibilityNodeRole::ListItem,
+                ));
             let default_label =
                 renderer.accessibility_label_from_view(&item.content, &row_a11y_env);
             let label = renderer.resolve_accessibility_label(&row_a11y_env, default_label);
@@ -1227,9 +1233,11 @@ fn register_edit_control_node(
     env: &Environment,
     action: crate::renderer::AccessibilityActivation,
 ) -> Option<AccessibilityNodeId> {
-    let mut node = AccessibilityNode::new(
-        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
-    );
+    let mut node =
+        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::Button,
+        ));
     node.set_label(label);
     node.add_action(AccessibilityAction::Focus);
     node.add_action(AccessibilityAction::Click);
@@ -1586,11 +1594,10 @@ pub(crate) fn render_list_parts(
             .borrow()
             .row_selection
             .as_ref()
-            .map(|selection| {
+            .is_some_and(|selection| {
                 ctx.renderer_mut()
                     .read_signal(&selection.is_selected(row_id))
-            })
-            .unwrap_or(false);
+            });
         // The fill is the theme's own `SelectionContainer` token rather than a
         // `WidgetTheme` entry: the row's content already flips to
         // `SelectionForeground` against it (see `selection_themed` in the list

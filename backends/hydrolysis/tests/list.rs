@@ -1,3 +1,8 @@
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! List widget regressions.
 
 //! <https://github.com/water-rs/hydrolysis/issues/168>: `apply_scroll_request`
@@ -33,6 +38,7 @@ const GROWN_ROW_COUNT: usize = 20;
 
 /// The lazy identity-keyed list from the issue, with its scroll controller
 /// attached and an accessibility label to query it by.
+#[allow(clippy::needless_pass_by_value)]
 fn pending_scroll_list(
     items: ReactiveList<SelfId<usize>>,
     controller: ScrollController<usize>,
@@ -54,7 +60,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_semantic() {
     controller.scroll_to(SCROLL_TARGET);
     let mut app = ui().mount({
         let items = items.clone();
-        let controller = controller.clone();
+        let controller = controller;
         move || pending_scroll_list(items.clone(), controller.clone())
     });
     // Growing the contents past the target makes the pending request
@@ -88,7 +94,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
         .theme(Material3::defaults())
         .mount_offscreen({
             let items = items.clone();
-            let controller = controller.clone();
+            let controller = controller;
             move || pending_scroll_list(items.clone(), controller.clone())
         });
     let _ = items.replace((0..GROWN_ROW_COUNT).map(SelfId::new).collect());

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "the bench harness narrows fragment indices the same way the renderer does"
+)]
+
 //! Re-measure cost of a dense text workload through the real layout path.
 //!
 //! Workload: a 200-row list of mixed-length body text plus one long

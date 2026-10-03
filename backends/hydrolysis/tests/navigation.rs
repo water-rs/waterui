@@ -1,3 +1,8 @@
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! Layout regressions for the native navigation containers.
 //!
 //! <https://github.com/water-rs/hydrolysis/issues/153>: the split measured a

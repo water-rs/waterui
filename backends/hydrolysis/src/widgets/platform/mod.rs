@@ -28,9 +28,10 @@ pub(crate) fn register_web_surface_accessibility(
 
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let renderer = ctx.renderer_mut();
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
-        );
+        let mut node = AccessibilityNode::new(SemanticCore::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::Group,
+        ));
         if let Some(label) = renderer.resolve_accessibility_label(env, None) {
             node.set_label(label);
         }

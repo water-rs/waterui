@@ -506,9 +506,9 @@ pub(crate) fn popup_menu_window(
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, height) = popup_menu_size(&nodes, metrics, &text);
-    let group_for_content = group.clone();
+    let group_for_content = group;
     let state_for_content = state.clone();
-    let nodes_for_content = nodes.clone();
+    let nodes_for_content = nodes;
     let theme = theme.clone();
     let popup_content = move || {
         AnyView::new(animated_popup_panel(
@@ -566,9 +566,9 @@ pub(crate) fn semantic_popup_menu_window(
     depth: usize,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let group_for_content = group.clone();
+    let group_for_content = group;
     let state_for_content = state.clone();
-    let nodes_for_content = nodes.clone();
+    let nodes_for_content = nodes;
     let popup_content = move || {
         let mut rows = Vec::with_capacity(nodes_for_content.len());
         for node in nodes_for_content.clone() {
@@ -637,9 +637,9 @@ pub(crate) fn semantic_picker_menu_window(
     group: PopupMenuStateGroup,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let group_for_content = group.clone();
+    let group_for_content = group;
     let state_for_content = state.clone();
-    let entries_for_content = entries.clone();
+    let entries_for_content = entries;
     let popup_content = move || {
         let mut rows = Vec::with_capacity(entries_for_content.len());
         for entry in entries_for_content.clone() {
@@ -695,8 +695,8 @@ pub(crate) fn picker_menu_window(
     let state = Binding::container(WindowState::Normal);
     let height = row_height * entries.len() as f64;
     let state_for_content = state.clone();
-    let group_for_content = group.clone();
-    let entries_for_content = entries.clone();
+    let group_for_content = group;
+    let entries_for_content = entries;
     let popup_content =
         move || {
             let mut rows = Vec::with_capacity(entries_for_content.len());
@@ -794,7 +794,7 @@ fn color_picker_window_base(
     let (width, _) = color_picker_size(support_alpha, support_hdr);
     let swatch = 40.0;
     let gap = 8.0;
-    let group_for_content = group.clone();
+    let group_for_content = group;
     let state_for_content = state.clone();
     let popup_env = env.clone();
     let popup_content = move || {
@@ -981,7 +981,7 @@ fn date_picker_window_base(
     );
     let range_start = *range.start();
     let range_end = *range.end();
-    let group_for_content = group.clone();
+    let group_for_content = group;
     let state_for_content = state.clone();
     let popup_env = env.clone();
     let popup_content = move || {

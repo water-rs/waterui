@@ -136,9 +136,15 @@ pub(crate) fn picker_accessibility(
                 }
                 let selected_text = option_labels[selected_index].clone();
                 let mut node = AccessibilityNode::new(
-                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
+                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                        env,
+                        AccessibilityNodeRole::ComboBox,
+                    ),
                 );
-                let default_label = renderer.accessibility_label_from_label(&picker.label, env);
+                let default_label = crate::renderer::SemanticCore::accessibility_label_from_label(
+                    &picker.label,
+                    env,
+                );
                 let label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = label {
                     node.set_label(label);
@@ -162,8 +168,10 @@ pub(crate) fn picker_accessibility(
                 });
                 for (index, item) in items.iter().enumerate() {
                     let mut option = AccessibilityNode::new(
-                        renderer
-                            .resolve_accessibility_role(env, AccessibilityNodeRole::ListBoxOption),
+                        crate::renderer::SemanticCore::resolve_accessibility_role(
+                            env,
+                            AccessibilityNodeRole::ListBoxOption,
+                        ),
                     );
                     option.set_label(option_labels[index].as_str().to_owned());
                     let is_selected = item.tag == selected;
@@ -292,9 +300,15 @@ pub(crate) fn picker_accessibility(
             }
             PickerStyle::Radio | PickerStyle::Segmented => {
                 let mut group = AccessibilityNode::new(
-                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
+                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                        env,
+                        AccessibilityNodeRole::Group,
+                    ),
                 );
-                let default_label = renderer.accessibility_label_from_label(&picker.label, env);
+                let default_label = crate::renderer::SemanticCore::accessibility_label_from_label(
+                    &picker.label,
+                    env,
+                );
                 let group_label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = group_label {
                     group.set_label(label);
@@ -365,8 +379,10 @@ pub(crate) fn picker_accessibility(
                         break;
                     }
                     let mut option = AccessibilityNode::new(
-                        renderer
-                            .resolve_accessibility_role(env, AccessibilityNodeRole::RadioButton),
+                        crate::renderer::SemanticCore::resolve_accessibility_role(
+                            env,
+                            AccessibilityNodeRole::RadioButton,
+                        ),
                     );
                     option.set_label(label);
                     let is_selected = item.tag == selected;
@@ -596,8 +612,8 @@ pub(crate) fn render_menu_picker(
             theme.draw_picker_state_layer(&mut draw, bounds, interaction);
         }
         let field_open_state = Rc::clone(&menu_open);
-        let picker_selection = selection.clone();
-        let menu_entries = entries.clone();
+        let picker_selection = selection;
+        let menu_entries = entries;
         let menu_origin =
             waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
         let menu_width = hit_bounds.width();

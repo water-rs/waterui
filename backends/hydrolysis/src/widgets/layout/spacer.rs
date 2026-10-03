@@ -44,6 +44,9 @@ impl HydroNativeView for Native<Spacer> {
 }
 
 /// Measures a retained empty (`()`) leaf: zero intrinsic, matching the dispatch path.
+// impl_widget_behavior dispatches every measure fn with a `&T` borrow,
+// including the Copy ones.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 pub(crate) fn measure_empty_node(
     _empty: &(),
     _proposal: ProposalSize,

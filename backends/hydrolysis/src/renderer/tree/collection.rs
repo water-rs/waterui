@@ -1052,10 +1052,9 @@ impl LazyStackNode {
             .lazy
             .lazy_viewport_stack
             .last()
-            .map(|viewport| {
+            .map_or(ctx.bounds, |viewport| {
                 (ctx.transform.inverse() * viewport.transform).transform_rect_bbox(viewport.bounds)
-            })
-            .unwrap_or(ctx.bounds);
+            });
         let (visible_start, visible_end) = match &self.axis {
             LazyStackAxisConfig::Vertical { .. } => {
                 (visible.y0 - ctx.bounds.y0, visible.y1 - ctx.bounds.y0)

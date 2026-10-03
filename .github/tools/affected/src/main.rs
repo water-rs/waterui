@@ -5,21 +5,57 @@
 //! from stdout:
 //!
 //! ```json
-//! {"merge_base": "…", "workspace": false, "affected": ["waterui-core"]}
+//! {
+//!   "merge_base": "…",
+//!   "workspace": false,
+//!   "affected": ["waterui-core"],
+//!   "owners": {"core/src/lib.rs": "waterui-core"},
+//!   "test_asset_consumers": ["hydrolysis", "waterui-testing"]
+//! }
 //! ```
 //!
 //! `affected` is what the determinator marks — the packages owning a
 //! changed file plus every package whose build could change because a
 //! dependency did — as the `-p` list the gate checks and lints. `workspace`
 //! is true when a changed path either matched a `mark-changed = "all"`
-//! rule in `rules.toml` or matched nothing at all, where enumerating
+//! rule in `rules.toml` or matched no package at all, where enumerating
 //! packages would pretend precision the diff does not have.
+//!
+//! `owners` maps every changed path to the package that owns it by
+//! directory (`null` when a rule consumed it). The comment-only lane in
+//! `affected.py` reads the owners of the `.rs` files it classified: the
+//! layout gate's tree comparison needs the owning crates, and the owning
+//! crate is a fact about the path, not about the diff — so it comes from
+//! this tool's package graph rather than a second, hand-rolled mapper.
+//!
+//! `test_asset_consumers` is the set of workspace members whose
+//! `cargo check -p <pkg> --all-targets` compiles `hydrolysis` with its
+//! `testing` feature — the feature whose `TEST_FONTS` `include_bytes!` the
+//! generated fonts. It is derived from the package graph, not a name list:
+//! any member whose dev-dependency closure reaches `waterui-testing` (the
+//! only enabler of `hydrolysis/testing`) qualifies, plus `waterui-testing`
+//! itself. Dev edges count only at the first hop, matching cargo's rule
+//! that dev-dependencies do not chain.
+//!
+//! The root package (`waterui`, manifest at the repository root) gets one
+//! correction on top of ancestor matching: its package directory is the
+//! repository root, so every unmatched path resolves to it — `Clippy.toml`,
+//! `deny.toml`, `tests/layout-twins/**` and any future top-level file would
+//! select only `waterui` plus its reverse dependencies. A path that
+//! ancestor-matches only the root package counts as package-owned when it
+//! is one of its declared target files (`facade.rs`, `tests/*.rs`) or sits
+//! directly inside a directory holding one (`tests/`); anything else is
+//! reported as unmatched, which selects the whole workspace.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use determinator::{rules::DeterminatorRules, rules::PathMatch, Determinator};
-use guppy::{graph::DependencyDirection, CargoMetadata};
+use guppy::{
+    graph::{DependencyDirection, PackageGraph},
+    CargoMetadata, PackageId,
+};
 
 const RULES_TOML: &str = include_str!("../rules.toml");
 
@@ -96,16 +132,112 @@ impl Drop for BaseWorktree {
 
 fn parse_args() -> (String, String) {
     let mut base = None;
-    let mut head = "HEAD".to_string();
+    let mut head: String = "HEAD".to_string();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        match arg.as_str() {
+        match arg.as_ref() {
             "--base" => base = Some(args.next().expect("--base needs a value")),
-            "--head" => head = args.next().expect("--head needs a value"),
+"--head" => head = args.next().expect("--head needs a value"),
             other => panic!("unknown argument: {other}"),
         }
     }
     (base.expect("--base <rev> is required"), head)
+}
+
+/// What the root package itself can own: its declared target files
+/// (`facade.rs`, `tests/avatar.rs`, …) plus the directories that directly
+/// hold them (`tests/`), matching the depth cargo autodiscovery scans.
+/// `tests/layout-twins/**` fails both — it nests one level deeper.
+struct RootOwnership<'a> {
+    package_id: &'a PackageId,
+    files: BTreeSet<Utf8PathBuf>,
+    dirs: BTreeSet<Utf8PathBuf>,
+}
+
+impl<'a> RootOwnership<'a> {
+    fn new(graph: &'a PackageGraph) -> Self {
+        let workspace_root = graph.workspace().root();
+        let members = graph.query_workspace().resolve();
+        let Some(root_package) = members
+            .packages(DependencyDirection::Forward)
+            .find(|package| package.manifest_path().parent() == Some(workspace_root))
+        else {
+            panic!("no workspace package manifests at the root");
+        };
+        let mut files = BTreeSet::new();
+        let mut dirs = BTreeSet::new();
+        for target in root_package.build_targets() {
+            let relative = target
+                .path()
+                .strip_prefix(workspace_root)
+                .expect("root package target outside the workspace")
+                .to_path_buf();
+            if let Some(parent) = relative.parent() {
+                if !parent.as_str().is_empty() {
+                    dirs.insert(parent.to_path_buf());
+                }
+            }
+            files.insert(relative);
+        }
+        Self {
+            package_id: root_package.id(),
+            files,
+            dirs,
+        }
+    }
+
+    /// Whether the root package's own sources include `path` — a declared
+    /// target file or a sibling sitting directly inside a target directory.
+    fn owns(&self, path: &Utf8Path) -> bool {
+        self.files.contains(path)
+            || path
+                .parent()
+                .is_some_and(|parent| self.dirs.contains(parent))
+    }
+}
+
+/// The workspace members whose `--all-targets` build pulls in
+/// `waterui-testing` — the only crate that enables `hydrolysis/testing`,
+/// whose `TEST_FONTS` `include_bytes!` the generated fonts. A member
+/// qualifies when a dev-dependency of its own reaches `waterui-testing`
+/// through normal/build links; dev edges are first-hop only because cargo
+/// does not make dev-dependencies transitive. `waterui-testing` itself is
+/// a consumer: checking it compiles the dep.
+fn test_asset_consumers(graph: &PackageGraph) -> BTreeSet<String> {
+    let members: Vec<_> = graph
+        .query_workspace()
+        .resolve()
+        .packages(DependencyDirection::Forward)
+        .collect();
+    let Some(testing) = members.iter().find(|p| p.name() == "waterui-testing") else {
+        return BTreeSet::new();
+    };
+    let testing_id = testing.id().clone();
+    let mut consumers = BTreeSet::new();
+    for member in &members {
+        let mut seeds: BTreeSet<&PackageId> = member
+            .direct_links()
+            .filter(|link| link.dev().is_present())
+            .map(|link| link.to().id())
+            .collect();
+        seeds.insert(member.id());
+        // Forward closure over normal and build links only.
+        let mut reached: BTreeSet<&PackageId> = seeds.iter().copied().collect();
+        let mut stack: Vec<&PackageId> = seeds.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            for link in graph.metadata(id).expect("known id").direct_links() {
+                if (link.normal().is_present() || link.build().is_present())
+                    && reached.insert(link.to().id())
+                {
+                    stack.push(link.to().id());
+                }
+            }
+        }
+        if reached.contains(&testing_id) {
+            consumers.insert(member.name().to_string());
+        }
+    }
+    consumers
 }
 
 fn main() {
@@ -139,15 +271,50 @@ fn main() {
         .expect("rules.toml does not resolve against this workspace");
     determinator.add_changed_paths(changed.iter().map(String::as_str));
 
-    // A path that matched nothing and a rule that marks everything mean the
-    // same thing to the gate: the diff can reach anywhere, so report
-    // `workspace` rather than a list that happens to equal it.
-    let workspace = changed.iter().any(|path| {
-        matches!(
-            determinator.match_path(path, |_| {}),
-            PathMatch::RuleMatchedAll | PathMatch::NoMatches
-        )
-    });
+    let root = RootOwnership::new(&new_graph);
+    let test_assets = test_asset_consumers(&new_graph);
+
+    // A path that matched nothing, matched only the root package by
+    // directory without being part of its declared sources, or hit a rule
+    // that marks everything mean the same thing to the gate: the diff can
+    // reach anywhere, so report `workspace` rather than a list that happens
+    // to equal it.
+    let mut workspace = false;
+    let mut owners: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for path in &changed {
+        let mut matched: Vec<&PackageId> = Vec::new();
+        let verdict = determinator.match_path(path.as_str(), |id| matched.push(id));
+        match verdict {
+            PathMatch::RuleMatchedAll | PathMatch::NoMatches => {
+                workspace = true;
+                owners.insert(path.clone(), None);
+            }
+            PathMatch::RuleMatched(_) => {
+                owners.insert(path.clone(), None);
+            }
+            PathMatch::AncestorMatched => {
+                let owned: Vec<&PackageId> = matched
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        **id != *root.package_id
+                            || root.owns(Utf8Path::new(path.as_str()))
+                    })
+                    .collect();
+                if owned.is_empty() {
+                    workspace = true;
+                    owners.insert(path.clone(), None);
+                } else {
+                    let name = new_graph
+                        .metadata(owned[0])
+                        .expect("ancestor match is a known package")
+                        .name()
+                        .to_string();
+                    owners.insert(path.clone(), Some(name));
+                }
+            }
+        }
+    }
 
     let set = determinator.compute();
     let mut affected: Vec<String> = set
@@ -163,6 +330,8 @@ fn main() {
             "workspace": workspace,
             "merge_base": merge_base,
             "affected": affected,
+            "owners": owners,
+            "test_asset_consumers": test_assets,
         })
     );
 }

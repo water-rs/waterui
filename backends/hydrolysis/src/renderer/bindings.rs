@@ -90,7 +90,7 @@ impl SemanticCore {
         self.ime_swallowed_codes.push(code);
     }
 
-    /// True once for a release matching a swallowed press: wl_keyboard (and
+    /// True once for a release matching a swallowed press: `wl_keyboard` (and
     /// X11's filtered-key quirk) still deliver it, but it belongs to the
     /// composition, not to the application.
     pub(crate) fn take_ime_swallowed_release(&mut self, code: keyboard_types::Code) -> bool {

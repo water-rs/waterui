@@ -476,7 +476,7 @@ fn menu_picker_emits_options_and_selects() {
 #[test]
 fn menu_picker_hidden_label_still_names_the_combo() {
     let selection = Binding::container(0i32);
-    let selection_for_view = selection.clone();
+    let selection_for_view = selection;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
             "Size",
@@ -550,7 +550,7 @@ fn radio_picker_emits_group_and_selects() {
 #[test]
 fn radio_picker_hidden_label_still_names_the_group() {
     let selection = Binding::container(0i32);
-    let selection_for_view = selection.clone();
+    let selection_for_view = selection;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
             "Mode",
@@ -722,7 +722,7 @@ fn menu_opens_a_semantic_popup_window_and_commands_fire() {
 #[test]
 fn a_clean_pump_publishes_no_tree_update() {
     let tint = Binding::container(Color::srgb(0, 0, 0));
-    let tint_for_view = tint.clone();
+    let tint_for_view = tint;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((ColorPicker::new("Tint", &tint_for_view),)))
     }));
@@ -1229,7 +1229,7 @@ fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
     let value = Binding::container(Str::default());
     let tapped_for_view = tapped.clone();
     let on_for_view = on.clone();
-    let value_for_view = value.clone();
+    let value_for_view = value;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let tapped = tapped_for_view.clone();
         AnyView::new(vstack((
@@ -1628,7 +1628,7 @@ fn segmented_picker_emits_group_and_click_selects() {
 #[test]
 fn segmented_picker_hidden_label_still_names_the_group() {
     let selection = Binding::container(0i32);
-    let selection_for_view = selection.clone();
+    let selection_for_view = selection;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         AnyView::new(vstack((picker(
             "Mode",
@@ -1758,8 +1758,8 @@ fn focused_binding_moves_ui_focus_and_tree_focus() {
     let name = Binding::container(Str::default());
     let email = Binding::container(Str::default());
     let focus_for_view = focus.clone();
-    let name_for_view = name.clone();
-    let email_for_view = email.clone();
+    let name_for_view = name;
+    let email_for_view = email;
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let focus = focus_for_view.clone();
         AnyView::new(vstack((

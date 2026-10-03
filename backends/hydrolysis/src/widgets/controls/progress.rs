@@ -84,9 +84,11 @@ pub(crate) fn progress_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ProgressIndicator),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::ProgressIndicator,
+            ));
         let resolved = renderer.resolve_accessibility_label(env, default_label);
         if let Some(resolved) = resolved {
             node.set_label(resolved);
@@ -321,7 +323,7 @@ pub(crate) fn render_progress_parts(
                             CIRCULAR_DETERMINATE_ANIMATION_KEY,
                         ),
                         clamped,
-                        motion.circular_determinate.clone(),
+                        motion.circular_determinate,
                     )
                 } else {
                     clamped

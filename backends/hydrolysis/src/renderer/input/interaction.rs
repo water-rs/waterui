@@ -404,9 +404,9 @@ fn press_layer_opacity_animation(pressed: bool, motion: &InteractionMotion) -> A
 
 #[cfg(test)]
 mod tests {
-    use super::super::interaction_layers::{InteractionLayerHandles, WaveLayer};
     use super::{InteractionEngine, InteractionKey, WidgetInteractionInput};
     use crate::animation::{AnimationController, AnimationKey};
+    use crate::renderer::{InteractionLayerHandles, WaveLayer};
     use crate::time::Instant;
     use core::time::Duration;
     use std::rc::Rc;

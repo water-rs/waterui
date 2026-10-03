@@ -1,3 +1,10 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! Regression coverage for water-rs/hydrolysis-m3#85: an empty, unfocused
 //! Material 3 filled text field centres its label vertically in the 56 dp
 //! container, and the label floats to the top only while the field is
@@ -52,7 +59,7 @@ fn text_ink_runs(app: &mut OffscreenApp) -> (Vec<(f64, f64)>, f64) {
         let i = (y * snapshot.width as usize + x) * 4;
         &snapshot.rgba8[i..i + 4]
     };
-    let background = pixel(x1 - 8, (y0 + y1) / 2);
+    let background = pixel(x1 - 8, usize::midpoint(y0, y1));
     let mut runs: Vec<(f64, f64)> = Vec::new();
     let mut run_start = None;
     for y in y0..(y1 - 4) {
@@ -61,7 +68,7 @@ fn text_ink_runs(app: &mut OffscreenApp) -> (Vec<(f64, f64)>, f64) {
             let difference: i32 = pixel(x, y)
                 .iter()
                 .zip(background)
-                .map(|(a, b)| (*a as i32 - *b as i32).abs())
+                .map(|(a, b)| (i32::from(*a) - i32::from(*b)).abs())
                 .sum();
             if difference > 24 {
                 ink += 1;
@@ -105,7 +112,7 @@ fn assert_run_centre_near(
     let run = runs
         .get(index)
         .unwrap_or_else(|| panic!("{context}: missing ink run {index} in {runs:?}"));
-    let measured = (run.0 + run.1) * 0.5;
+    let measured = f64::midpoint(run.0, run.1);
     assert!(
         (measured - centre).abs() <= epsilon,
         "{context}: ink run {run:?} centred at {measured}, expected within {epsilon} px of {centre}"

@@ -326,8 +326,7 @@ fn press_activation_extracts_state_installed_between_view_and_gesture() {
     assert_all_extracted(&fired, "press activation, state-then-handler order");
 }
 
-/// Keyboard: the pointer-down focus handoff (hit_test.rs) then Enter release
-/// fires `(target.action)(self, point, env)` with the captured env.
+/// Keyboard: the pointer-down focus handoff (`hit_test.rs`) then Enter re-fires `(target.action)(self, point, env)` with the captured env.
 #[test]
 fn keyboard_activation_extracts_state_installed_on_an_ancestor() {
     let mut env = test_environment();
@@ -558,7 +557,7 @@ fn semantic_key(runtime: &mut SemanticRuntime, key: KeyCode) {
 
 /// The Tap observer emits a Button node when `AccessibilityRole` is in the
 /// apply-time env; Activate resolves through the same captured env
-/// (emit_gesture_observer_accessibility).
+/// (`emit_gesture_observer_accessibility`).
 #[test]
 fn semantic_activate_extracts_state_installed_on_an_ancestor() {
     let fired = fired_sink();

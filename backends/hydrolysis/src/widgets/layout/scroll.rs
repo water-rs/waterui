@@ -62,9 +62,11 @@ pub(crate) fn register_scroll_accessibility_node(
     metrics: crate::scroll::ScrollMetrics,
     axis: ScrollAxis,
 ) -> Option<AccessibilityNodeId> {
-    let mut node = AccessibilityNode::new(
-        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ScrollView),
-    );
+    let mut node =
+        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::ScrollView,
+        ));
     let label = renderer.resolve_accessibility_label(env, None);
     if let Some(label) = label {
         node.set_label(label);

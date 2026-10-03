@@ -108,8 +108,8 @@ fn bounds_of(runtime: &mut HeadlessRuntime, role: Role, label: &str) -> accesski
 fn click_label(runtime: &mut HeadlessRuntime, role: Role, label: &str, button: PointerButton) {
     let bounds = bounds_of(runtime, role, label);
     let (x, y) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in click(x, y, button) {
         runtime.push_input_event(event);
@@ -173,8 +173,8 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
     // the accessory, so `context_menu_row_frames` over-reports.
     let host = bounds_of(&mut runtime, Role::Button, "host");
     for event in click(
-        ((host.x0 + host.x1) / 2.0) as f32,
-        ((host.y0 + host.y1) / 2.0) as f32,
+        f64::midpoint(host.x0, host.x1) as f32,
+        f64::midpoint(host.y0, host.y1) as f32,
         PointerButton::Secondary,
     ) {
         runtime.push_input_event(event);
@@ -241,7 +241,7 @@ fn menu_shortcut_fires_while_text_field_focused_and_stops_after_unmount() {
     let mounted = Binding::bool(true);
     let view = {
         let hits = hits.clone();
-        let draft = draft.clone();
+        let draft = draft;
         let mounted = mounted.clone();
         AnyViewBuilder::<AnyView>::new(move || {
             let hits = hits.clone();
@@ -249,7 +249,7 @@ fn menu_shortcut_fires_while_text_field_focused_and_stops_after_unmount() {
             let mounted = mounted.clone();
             AnyView::new(vstack((
                 Frame::new(field("Draft", &draft)).width(200.0).height(40.0),
-                when(mounted.clone(), move || {
+                when(mounted, move || {
                     let hits = hits.clone();
                     Menu::new(
                         "Actions",
@@ -331,10 +331,9 @@ fn context_menu_shortcut_fires_only_while_open() {
     // before any key pump discards it.
     let bounds = bounds_of(&mut runtime, Role::Button, "host");
     let (x, y) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
-
     let chord = Modifiers {
         control: true,
         shift: true,
@@ -467,7 +466,7 @@ fn a_mounted_menu_wins_the_app_bars_chord_while_mounted() {
             let mounted = mounted.clone();
             AnyView::new(vstack((
                 button("plain").action(|| {}),
-                when(mounted.clone(), move || {
+                when(mounted, move || {
                     let menu_fired = menu_fired.clone();
                     Menu::new(
                         "Conflicting",

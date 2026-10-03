@@ -137,14 +137,16 @@ pub(crate) fn button_accessibility(
     #[cfg(feature = "accessibility")]
     {
         let button = &state.borrow().config;
-        let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
-            env,
-            match button.style {
-                ButtonStyle::Link => AccessibilityNodeRole::Link,
-                _ => AccessibilityNodeRole::Button,
-            },
-        ));
-        let default_label = renderer.accessibility_label_from_label(&button.label, env);
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                match button.style {
+                    ButtonStyle::Link => AccessibilityNodeRole::Link,
+                    _ => AccessibilityNodeRole::Button,
+                },
+            ));
+        let default_label =
+            crate::renderer::SemanticCore::accessibility_label_from_label(&button.label, env);
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -384,9 +386,11 @@ pub(crate) fn menu_accessibility(
     #[cfg(feature = "accessibility")]
     {
         let accessibility_label = state.borrow().accessibility_label.clone();
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Button,
+            ));
         let default_label = Some(
             renderer
                 .read_signal(&accessibility_label)

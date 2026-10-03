@@ -17,12 +17,12 @@
 //!
 //! - **winit on macOS** — `NSApp.mainMenu` is the system menu bar: the
 //!   menus become real `NSMenu` items via `muda`, commands carrying their
-//!   `shortcut` as the AppKit key equivalent. AppKit matches a key
+//!   `shortcut` as the `AppKit` key equivalent. `AppKit` matches a key
 //!   equivalent in `-[NSApplication sendEvent]` before the event is
 //!   delivered as `keyDown` to the window (winit's view does not override
 //!   `performKeyEquivalent`), so a claimed accelerator never reaches the
 //!   registry. The registry stays armed as the fallback for chords muda
-//!   could not express or AppKit did not claim — the two paths see
+//!   could not express or `AppKit` did not claim — the two paths see
 //!   disjoint keys, so a chord still fires exactly once.
 //! - **winit on Windows** — every window owns a Win32 menu bar: `muda`
 //!   builds the `HMENU` and attaches it to each application window's

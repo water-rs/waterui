@@ -195,6 +195,14 @@ pub struct HeadlessRuntime {
     _gpu_reclaim: ReclaimGpuOnDrop,
 }
 
+// GPU context, executor and window internals carry nothing printable; a
+// name-only non-exhaustive form keeps the impl honest.
+impl std::fmt::Debug for HeadlessRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadlessRuntime").finish_non_exhaustive()
+    }
+}
+
 /// Lets the device release a runtime's GPU resources once the runtime is gone.
 #[cfg(not(target_arch = "wasm32"))]
 struct ReclaimGpuOnDrop(OffscreenGpuContext);
@@ -212,7 +220,7 @@ impl Drop for ReclaimGpuOnDrop {
 /// frame.
 #[cfg(not(target_arch = "wasm32"))]
 fn default_window(content: AnyViewBuilder<AnyView>) -> Window {
-    let content_builder = content.clone();
+    let content_builder = content;
     Window::new(
         "",
         waterui_core::binding(waterui::window::WindowState::Normal),
@@ -273,7 +281,7 @@ impl HeadlessRuntime {
     /// Renders at `scale_factor` physical pixels per logical pixel.
     ///
     /// The layout is unchanged — it stays in logical units — so this only makes
-    /// the captured image sharper. A preview meant to be viewed on a HiDPI
+    /// the captured image sharper. A preview meant to be viewed on a `HiDPI`
     /// display should raise this above 1.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
@@ -281,7 +289,7 @@ impl HeadlessRuntime {
         self
     }
 
-    /// Creates a headless runtime for WaterUI test hosts.
+    /// Creates a headless runtime for `WaterUI` test hosts.
     ///
     /// This constructor allows compute-capable software adapters for CI-only
     /// semantic testing while keeping [`Self::new`] on production adapter
@@ -593,6 +601,10 @@ impl HeadlessRuntime {
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
     /// in which case the next pump re-emits.
+    ///
+    /// # Panics
+    /// Panics when the request targets the node of a popup window that is
+    /// already closed.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
         /// The same id range
@@ -676,6 +688,12 @@ impl HeadlessRuntime {
     /// coordinates a pointer tap pushed to this runtime resolves against.
     /// A shifted id for a closed popup fails with
     /// [`AccessibilityActivationPointError::NoNode`].
+    ///
+    /// # Errors
+    /// Returns [`AccessibilityActivationPointError::NoNode`] when the id
+    /// resolves to a closed popup or a node with no projected region, and
+    /// [`AccessibilityActivationPointError::UnknownNode`] when no window
+    /// holds it.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_activation_point(
         &self,

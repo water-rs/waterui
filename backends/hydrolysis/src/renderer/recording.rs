@@ -67,6 +67,17 @@ pub struct Recording {
     open_layers: u32,
 }
 
+// `Op` payloads are draw commands, not loggable state — the op count is the
+// only meaningful signal.
+impl fmt::Debug for Recording {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Recording")
+            .field("ops", &self.ops.len())
+            .field("open_layers", &self.open_layers)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 enum Op {
     Fill {
@@ -201,7 +212,7 @@ impl fmt::Debug for SceneResources {
         f.debug_struct("SceneResources")
             .field("fonts", &self.fonts.borrow().len())
             .field("images", &self.images.borrow().len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -955,7 +966,7 @@ pub(crate) fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint 
     }
     let scale = {
         let [a, b, c, d, _, _] = transform.as_coeffs();
-        ((a * a + b * b).sqrt() + (c * c + d * d).sqrt()) / 2.0
+        f64::midpoint((a * a + b * b).sqrt(), (c * c + d * d).sqrt())
     };
     match paint {
         Paint::Linear(mut gradient) => {

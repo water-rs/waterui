@@ -9,7 +9,7 @@
 //!
 //! What stays pinned here:
 //!
-//! * a full-window surface draws at HiDPI scale too — the window root
+//! * a full-window surface draws at `HiDPI` scale too — the window root
 //!   transform is `Affine::scale(scale_factor)`, so content sized in logical
 //!   points must still cover the window at scale 2;
 //! * a view sees one attachment format for its whole lifetime, so resizing it

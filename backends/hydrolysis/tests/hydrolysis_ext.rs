@@ -1,3 +1,6 @@
+//! End-to-end checks for the public `hydrolysis` API surface consumed
+//! through the `waterui` facade: GPU content views, environments, and frames.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -379,7 +382,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 }
 
 /// Offscreen rendering at 2x must allocate twice the pixels without touching
-/// the logical layout, so previews are sharp on HiDPI displays.
+/// the logical layout, so previews are sharp on `HiDPI` displays.
 #[test]
 fn offscreen_window_scale_factor_scales_the_surface_only() {
     use hydrolysis::{PlatformWindow as _, SurfaceProvider as _};

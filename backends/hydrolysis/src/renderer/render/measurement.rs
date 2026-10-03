@@ -972,11 +972,7 @@ pub(crate) fn measure_list_intrinsic(
     let mut section_height = 0.0;
     if list.uses_sections {
         for index in 0..row_count {
-            let Some(section) = list
-                .contents
-                .get_view(index)
-                .and_then(|item| item.section.clone())
-            else {
+            let Some(section) = list.contents.get_view(index).and_then(|item| item.section) else {
                 continue;
             };
             if section.label.is_some() {

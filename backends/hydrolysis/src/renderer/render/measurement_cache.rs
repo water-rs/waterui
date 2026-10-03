@@ -143,8 +143,8 @@ impl MemoGate {
     /// low-entropy bit patterns of typical proposals (small integers)
     /// across all 16 lanes.
     fn fingerprint(proposal: ProposalSize) -> u16 {
-        let w = proposal.width.map(f32::to_bits).unwrap_or(0xA5A5_A5A5);
-        let h = proposal.height.map(f32::to_bits).unwrap_or(0x5A5A_5A5A);
+        let w = proposal.width.map_or(0xA5A5_A5A5, f32::to_bits);
+        let h = proposal.height.map_or(0x5A5A_5A5A, f32::to_bits);
         let mixed = w.wrapping_mul(0x9E37_79B1) ^ h.rotate_left(13);
         1 << ((mixed ^ (mixed >> 8) ^ (mixed >> 16) ^ (mixed >> 24)) & 15)
     }

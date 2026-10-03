@@ -2,7 +2,7 @@
 //!
 //! Every fixture in `tests/fixtures/ime` encodes the `InputEvent`s a real
 //! platform's input method produces, in the order its documentation gives
-//! (winit backend sources, IBus/fcitx5, TSF/IMM, AppKit NSTextInputClient).
+//! (winit backend sources, IBus/fcitx5, TSF/IMM, `AppKit` `NSTextInputClient`).
 //! The events are pushed through `HeadlessRuntime::push_input_event` one
 //! platform batch per `[[step]]`, so what the receivers observe is what a
 //! winit window would deliver.
@@ -203,6 +203,10 @@ fn form_runtime() -> (HeadlessRuntime, Binding<Str>, Binding<bool>) {
     let value = Binding::container(Str::default());
     let submitted = Binding::bool(false);
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let value_for_view = value.clone();
         let submitted_for_action = submitted.clone();
         AnyView::new(vstack((
@@ -412,6 +416,10 @@ fn replay_against_text_field(loaded: &LoadedFixture, multiline: bool) {
     let value = Binding::container(Str::default());
     let submitted = Binding::bool(false);
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let value_for_view = value.clone();
         let submitted_for_action = submitted.clone();
         let field_view = field("Name", &value_for_view);
@@ -466,7 +474,7 @@ fn replay_against_text_field(loaded: &LoadedFixture, multiline: bool) {
     );
     assert_eq!(
         selection_of(&runtime),
-        (loaded.fixture.selection[0], loaded.fixture.selection[1]),
+        loaded.fixture.selection.into(),
         "{name} ({receiver}): final selection"
     );
     assert!(
@@ -486,6 +494,10 @@ fn replay_against_secure_field(loaded: &LoadedFixture) {
     let name = loaded.name.as_str();
     let secret = Binding::container(Secure::new(String::new()));
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let secret_for_view = secret.clone();
         AnyView::new(vstack((
             secure("Password", &secret_for_view).size(FIELD_WIDTH, FIELD_HEIGHT),
@@ -523,7 +535,7 @@ fn replay_against_secure_field(loaded: &LoadedFixture) {
     );
     assert_eq!(
         selection_of(&runtime),
-        (loaded.fixture.selection[0], loaded.fixture.selection[1]),
+        loaded.fixture.selection.into(),
         "{name} (SecureField): final selection"
     );
 }
@@ -541,6 +553,9 @@ impl ProbeLog {
 
 /// A caret rect the embedded view reports in its own logical coordinates —
 /// the point `focused_text_input_state` projects into the window.
+// `on_ime_caret`'s query signature is `Fn() -> Option<Rect>` — fixed by the
+// graphics API, so the always-`Some` probe keeps the wrap.
+#[allow(clippy::unnecessary_wraps)]
 fn probe_caret() -> Option<kurbo::Rect> {
     Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0))
 }
@@ -766,7 +781,15 @@ fn focus_move_or_window_unfocus_cancels_the_composition() {
     let first = Binding::container(Str::default());
     let second = Binding::container(Str::default());
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let first_for_view = first.clone();
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let second_for_view = second.clone();
         AnyView::new(vstack((
             field("First", &first_for_view).size(FIELD_WIDTH, FIELD_HEIGHT),
@@ -800,7 +823,7 @@ fn focus_move_or_window_unfocus_cancels_the_composition() {
         runtime.renderer().text_editing.ime_preedit.is_none(),
         "moving focus must cancel the composition, not commit it"
     );
-    assert!(first.snapshot().to_string().is_empty());
+    assert_eq!(first.snapshot().to_string(), "");
 
     // A window unfocus (Ime::Disabled) mid-composition cancels it too.
     runtime.push_input_event(InputEvent::ImePreedit {
@@ -817,7 +840,7 @@ fn focus_move_or_window_unfocus_cancels_the_composition() {
         runtime.renderer().text_editing.ime_preedit.is_none(),
         "window unfocus must cancel the composition"
     );
-    assert!(second.snapshot().to_string().is_empty());
+    assert_eq!(second.snapshot().to_string(), "");
 }
 
 /// A key press immediately followed by a commit is that keystroke delivered
@@ -1286,7 +1309,15 @@ fn tabbing_away_ends_editing_and_shift_tab_restores_the_caret() {
     let focus = Binding::container(None::<Field>);
     let submitted = Binding::bool(false);
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let value_for_view = value.clone();
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let focus_for_view = focus.clone();
         let submitted_for_action = submitted.clone();
         AnyView::new(vstack((
@@ -1448,7 +1479,15 @@ fn hiding_a_subtree_releases_the_focused_field_inside_it() {
     let focus = Binding::container(None::<Field>);
     let shown = Binding::container(true);
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let value_for_view = value.clone();
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let focus_for_view = focus.clone();
         let shown_for_view = shown.clone();
         AnyView::new(
@@ -1523,7 +1562,15 @@ fn tab_skips_hidden_focusables_and_resumes_from_the_released_slot() {
     let first_pressed = Binding::bool(false);
     let last_pressed = Binding::bool(false);
     let view = {
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let value_for_view = value.clone();
+        #[allow(
+            clippy::redundant_clone,
+            reason = "the test keeps its own Binding handle while the view tree moves a clone"
+        )]
         let focus_for_view = focus.clone();
         let shown_for_view = shown.clone();
         let first_for_action = first_pressed.clone();

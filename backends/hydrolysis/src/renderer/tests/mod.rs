@@ -1,3 +1,8 @@
+#![allow(
+    clippy::future_not_send,
+    reason = "the test runtime is single-threaded; its futures are never awaited across threads"
+)]
+
 mod collection_update;
 mod frame_work;
 mod slider_size_indicator;
@@ -422,8 +427,8 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     }
 
     let switch_point = Point::new(
-        (switch_target.bounds.x0 + switch_target.bounds.x1) * 0.5,
-        (switch_target.bounds.y0 + switch_target.bounds.y1) * 0.5,
+        f64::midpoint(switch_target.bounds.x0, switch_target.bounds.x1),
+        f64::midpoint(switch_target.bounds.y0, switch_target.bounds.y1),
     );
     let _ = renderer.handle_pointer_down(
         switch_point.x as f32,
@@ -687,7 +692,7 @@ fn floating_button_measurement_uses_style_tokens() {
         vstack((button(label("Token Sized").icon(()))
             .label_style(LabelDisplayMode::IconOnly)
             .plain()
-            .floating_with(floating_style.clone()),)),
+            .floating_with(floating_style),)),
         &env,
         Rect::new(0.0, 0.0, 160.0, 160.0),
     );
@@ -792,8 +797,8 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
     assert_eq!(buttons.len(), 2);
     let zoom_in = &buttons[0];
     let point = Point::new(
-        (zoom_in.bounds.x0 + zoom_in.bounds.x1) * 0.5,
-        (zoom_in.bounds.y0 + zoom_in.bounds.y1) * 0.5,
+        f64::midpoint(zoom_in.bounds.x0, zoom_in.bounds.x1),
+        f64::midpoint(zoom_in.bounds.y0, zoom_in.bounds.y1),
     );
     let _ =
         renderer.handle_pointer_down(point.x as f32, point.y as f32, PointerButton::Primary, &env);
@@ -961,8 +966,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
     assert_eq!(
         debug_targets.len(),
         2,
-        "expected stacked drag+magnification gesture targets at point, got {:?}",
-        debug_targets
+        "expected stacked drag+magnification gesture targets at point, got {debug_targets:?}",
     );
     assert_eq!(debug_targets[0].2, debug_targets[1].2);
 
@@ -1709,7 +1713,7 @@ fn reactive_hidden_accessibility_group_suppresses_descendants() {
         .find(|(_, node)| node.label() == Some("Hidden group"))
         .expect("reactive hidden group must remain represented");
     assert!(group.is_hidden());
-    assert!(group.children().is_empty());
+    assert_eq!(group.children(), []);
     assert!(
         update
             .nodes
@@ -2231,10 +2235,10 @@ fn modal_scope_traps_keyboard_focus_and_handles_escape() {
 fn inactive_modal_scope_does_not_trap_keyboard_focus() {
     let mut renderer = test_renderer();
     let env = test_environment();
-    let mut dialog_env = env.clone();
+    let mut dialog_env = env;
     let active = Binding::bool(false);
     dialog_env.insert(
-        ModalInteraction::new(false, SharedAction::new(|_: Environment| {})).active(active.clone()),
+        ModalInteraction::new(false, SharedAction::new(|_: Environment| {})).active(active),
     );
     let owner = Rc::new(());
     let key = InteractionKey::for_rc(&owner, 0);
@@ -3008,8 +3012,8 @@ fn caret_point_in_target(target: &TextInputTarget, byte_index: usize) -> Point {
         parley::Cursor::from_byte_index(&target.layout, byte_index, parley::Affinity::Downstream);
     let geometry = cursor.geometry(&target.layout, 1.0);
     Point::new(
-        target.text_bounds.x0 + (geometry.x0 + geometry.x1) * 0.5,
-        target.text_bounds.y0 + (geometry.y0 + geometry.y1) * 0.5,
+        target.text_bounds.x0 + f64::midpoint(geometry.x0, geometry.x1),
+        target.text_bounds.y0 + f64::midpoint(geometry.y0, geometry.y1),
     )
 }
 
@@ -3429,7 +3433,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
         &[Rect::new(0.0, 0.0, 6.0, 6.0)]
     );
 
-    let draws = capture(Badge::new(5, anchor.clone()), &env);
+    let draws = capture(Badge::new(5, anchor), &env);
     assert_eq!(draws.len(), 1, "one badge indicator draw, got {draws:?}");
     assert_eq!(draws[0].x1, 12.0);
     assert_eq!(draws[0].y0, -2.0);
@@ -3480,8 +3484,8 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     );
     // Symmetric padding's envelope and the assigned frame share the window's
     // centre — either anchor gives (80, 80) here.
-    let center_x = (bounds.x0 + bounds.x1) / 2.0;
-    let center_y = (bounds.y0 + bounds.y1) / 2.0;
+    let center_x = f64::midpoint(bounds.x0, bounds.x1);
+    let center_y = f64::midpoint(bounds.y0, bounds.y1);
     assert!(
         (center_x - 80.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
         "the resolved extent must centre on the assigned frame, got centre ({center_x}, {center_y})",
@@ -3537,8 +3541,8 @@ fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() 
     // centred at (90, 80) — the resolved extent must NOT follow it: the
     // padded view's answer centres on the assigned frame (80, 80), and every
     // edge of the reported bounds must stay inside the 160x160 window.
-    let center_x = (bounds.x0 + bounds.x1) / 2.0;
-    let center_y = (bounds.y0 + bounds.y1) / 2.0;
+    let center_x = f64::midpoint(bounds.x0, bounds.x1);
+    let center_y = f64::midpoint(bounds.y0, bounds.y1);
     assert!(
         (center_x - 80.0).abs() < 0.5 && (center_y - 80.0).abs() < 0.5,
         "the resolved extent must centre on the assigned frame (80, 80), got ({center_x}, {center_y})",

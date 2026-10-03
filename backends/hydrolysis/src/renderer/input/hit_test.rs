@@ -195,7 +195,7 @@ pub(crate) struct ScrollTarget {
 /// A native subview the host platform hit-tests for itself, together with the
 /// `WaterUI`-drawn content that has to take clicks away from it.
 ///
-/// A `WKWebView` is an AppKit view, so it answers a click before anything
+/// A `WKWebView` is an `AppKit` view, so it answers a click before anything
 /// Hydrolysis painted over it hears about one: a snackbar, dialog or menu drawn
 /// above a web view rendered correctly and was completely inert. Only the
 /// renderer knows what it drew on top, so every frame it intersects the
@@ -249,6 +249,10 @@ pub(crate) enum KeyboardActivation {
     Semantic,
 }
 
+// The flags track independent input facts (composition in flight, window
+// blur, an armed press); they are orthogonal bits, not states to sequence,
+// so a state-machine refactor would invent transitions that do not exist.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
 pub(crate) struct HitTestState {
     /// Surfaces that own the input landing on them — embedded browsers and
@@ -666,18 +670,20 @@ impl SemanticCore {
             active_drag.hovered_target = current_key;
         }
 
-        let mut changed = previous_key.is_some() || current_key.is_some();
-        if let Some(target) = previous_target {
+        let exit_changed = if let Some(target) = previous_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().exit(&action_env);
-            changed = true;
-        }
+            true
+        } else {
+            previous_key.is_some() || current_key.is_some()
+        };
         if let Some(target) = current_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().enter(&action_env);
-            changed = true;
+            true
+        } else {
+            exit_changed
         }
-        changed
     }
 
     fn begin_or_update_drag(
@@ -709,21 +715,23 @@ impl SemanticCore {
             .hovered_target
             .and_then(|key| self.hit_test.drop_target_with_key(key));
 
-        let mut changed = false;
-        if let Some(target) = drop_target {
+        let delivered = if let Some(target) = drop_target {
             let action_env = Self::drop_target_env(&target, env);
             target
                 .destination
                 .borrow_mut()
-                .deliver(active_drag.payload.clone(), &action_env);
-            changed = true;
-        }
+                .deliver(active_drag.payload, &action_env);
+            true
+        } else {
+            false
+        };
         if let Some(target) = exit_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().exit(&action_env);
-            changed = true;
+            true
+        } else {
+            delivered
         }
-        changed
     }
 
     fn cancel_active_drag(&mut self, env: &Environment) -> bool {
@@ -976,6 +984,11 @@ fn gesture_button(button: PointerButton) -> Option<WuiPointerButton> {
 }
 
 impl HydrolysisRenderer {
+    /// Dispatches a mouse-origin press at (`x`, `y`) and reports whether the
+    /// hit consumed it.
+    ///
+    /// # Panics
+    /// Panics on an internal ordering or arithmetic inconsistency.
     pub fn handle_pointer_down(
         &mut self,
         x: f32,
@@ -986,6 +999,11 @@ impl HydrolysisRenderer {
         self.handle_pointer_down_with_source(0, PointerKind::Mouse, x, y, button, env)
     }
 
+    /// Dispatches a press from an arbitrary pointer source (`pointer_id`,
+    /// `pointer_kind`) and reports whether the hit consumed it.
+    ///
+    /// # Panics
+    /// Panics on an internal ordering or arithmetic inconsistency.
     pub fn handle_pointer_down_with_source(
         &mut self,
         pointer_id: u64,
@@ -1530,6 +1548,9 @@ impl HydrolysisRenderer {
             return true;
         }
         let at = self.frame_instant();
+        // Order matters: the move can arm `pending_pointer_press` for this same
+        // release, so it runs before the pending press is drained.
+        #[allow(clippy::useless_let_if_seq)]
         let mut changed = self.handle_pointer_move_inner(x, y, env, pointer_kind);
         if let Some(pending) = self.hit_test.pending_pointer_press.take() {
             self.hit_test
@@ -2958,7 +2979,7 @@ impl SemanticCore {
                 common_key_handler_scope(self.hit_test.root_key_handlers.take(), chain.clone());
         } else {
             self.hit_test.root_key_chain_seen = true;
-            self.hit_test.root_key_handlers = chain.clone();
+            self.hit_test.root_key_handlers.clone_from(&chain);
         }
         chain
     }
@@ -3364,7 +3385,7 @@ impl HydrolysisRenderer {
             );
         if env
             .get::<ModalInteraction>()
-            .is_some_and(|modal| modal.is_active())
+            .is_some_and(waterui_backend_core::widget::ModalInteraction::is_active)
         {
             press_slot.modal = true;
             self.register_modal_scope(env);

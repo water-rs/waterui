@@ -249,7 +249,7 @@ impl RenderNode {
     /// Build a persistent text-field node: its floating label is pre-built into a
     /// [`RetainedSubview`] (the measure path has only `&mut HydroState`, no renderer
     /// to build on) and re-flushed under the animated label transform each frame; the
-    /// cloneable config's prompt/value/selection_menu are read each frame, with the
+    /// cloneable config's `prompt/value/selection_menu` are read each frame, with the
     /// value `Binding<StyledStr>` read through `read_signal` so typing or a binding
     /// change schedules a frame. The node re-runs the same text-input target
     /// registration each flush, so cursor/focus/IME state is preserved. Stretch is

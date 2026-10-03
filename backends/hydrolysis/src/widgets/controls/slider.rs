@@ -108,10 +108,13 @@ fn slider_accessibility_parts(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Slider),
-        );
-        let default_label = renderer.accessibility_label_from_label(label, env);
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Slider,
+            ));
+        let default_label =
+            crate::renderer::SemanticCore::accessibility_label_from_label(label, env);
         let resolved = renderer.resolve_accessibility_label(env, default_label);
         if let Some(resolved) = resolved {
             node.set_label(resolved);

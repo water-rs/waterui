@@ -339,5 +339,8 @@ web = [
     "dep:web-sys",
 ]
 
+[lints]
+workspace = true
+
 [package.metadata.cargo-machete]
 ignored = ["cfg_aliases"]

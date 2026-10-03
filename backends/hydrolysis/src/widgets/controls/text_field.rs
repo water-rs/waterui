@@ -214,9 +214,8 @@ pub(crate) fn render_text_field_parts(
         )
     };
     #[cfg(feature = "accessibility")]
-    let default_accessibility_label = ctx
-        .renderer_mut()
-        .accessibility_label_from_label(&label, env);
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -237,14 +236,15 @@ pub(crate) fn render_text_field_parts(
         let default_label =
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        let mut node = AccessibilityNode::new(ctx.renderer_mut().resolve_accessibility_role(
-            env,
-            if line_limit == Some(1) {
-                AccessibilityNodeRole::TextInput
-            } else {
-                AccessibilityNodeRole::MultilineTextInput
-            },
-        ));
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ));
         let label = ctx
             .renderer_mut()
             .resolve_accessibility_label(env, default_label);
@@ -588,9 +588,8 @@ pub(crate) fn render_secure_field_parts(
         (secure_field.label.clone(), secure_field.value.clone())
     };
     #[cfg(feature = "accessibility")]
-    let default_accessibility_label = ctx
-        .renderer_mut()
-        .accessibility_label_from_label(&label, env);
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
     #[cfg(not(feature = "accessibility"))]
     let _ = label;
     let label_size = state.label_view.measure_intrinsic(ctx.renderer_mut(), env);
@@ -604,10 +603,11 @@ pub(crate) fn render_secure_field_parts(
             .chars()
             .count();
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-        let mut node = AccessibilityNode::new(
-            ctx.renderer_mut()
-                .resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::PasswordInput,
+            ));
         let label = ctx
             .renderer_mut()
             .resolve_accessibility_label(env, default_accessibility_label);
@@ -1079,21 +1079,23 @@ pub(crate) fn emit_text_field_accessibility(
             text_field.on_submit.clone(),
         )
     };
-    let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
     let line_limit = line_limit_raw.map(NonZeroUsize::get);
     {
         let prompt = renderer.read_signal(&prompt_signal).to_plain().to_string();
         let value = renderer.read_signal(&value_binding).to_plain().to_string();
         let default_label =
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-        let mut node = AccessibilityNode::new(renderer.resolve_accessibility_role(
-            env,
-            if line_limit == Some(1) {
-                AccessibilityNodeRole::TextInput
-            } else {
-                AccessibilityNodeRole::MultilineTextInput
-            },
-        ));
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                if line_limit == Some(1) {
+                    AccessibilityNodeRole::TextInput
+                } else {
+                    AccessibilityNodeRole::MultilineTextInput
+                },
+            ));
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
@@ -1145,7 +1147,7 @@ pub(crate) fn emit_text_field_accessibility(
                     value: value_binding.clone(),
                     line_limit,
                     selection_menu,
-                    on_submit: on_submit.clone(),
+                    on_submit,
                 },
                 selection: Rc::clone(&state.selection_slot),
                 env: env.clone(),
@@ -1182,16 +1184,19 @@ pub(crate) fn emit_secure_field_accessibility(
         let secure_field = &state.config;
         (secure_field.label.clone(), secure_field.value.clone())
     };
-    let default_accessibility_label = renderer.accessibility_label_from_label(&label, env);
+    let default_accessibility_label =
+        crate::renderer::SemanticCore::accessibility_label_from_label(&label, env);
     {
         let secure_len = renderer
             .read_signal(&value_binding)
             .expose()
             .chars()
             .count();
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::PasswordInput),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::PasswordInput,
+            ));
         let label = renderer.resolve_accessibility_label(env, default_accessibility_label);
         if let Some(label) = label {
             node.set_label(label);

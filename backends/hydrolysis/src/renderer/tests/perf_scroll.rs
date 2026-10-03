@@ -301,7 +301,10 @@ fn flow_markdown_blocks_reconnect_after_lazy_eviction() {
                 "# Section {index}\n\nParagraph {index} keeps the document tall enough to recycle blocks.\n\n"
             )
         })
-        .collect::<String>();
+        .fold(String::new(), |mut out, part| {
+            out.push_str(&part);
+            out
+        });
     let controller = ScrollController::new(Point::zero());
     let builder = {
         let controller = controller.clone();
@@ -362,7 +365,10 @@ fn flow_markdown_append_preserves_user_scroll_offset() {
                 "# Section {index}\n\nParagraph {index} keeps the document tall enough to retain a user offset.\n\n"
             )
         })
-        .collect::<String>();
+        .fold(String::new(), |mut out, part| {
+            out.push_str(&part);
+            out
+        });
     let source = Binding::container(Str::from(initial.clone()));
     let builder = {
         let source = source.clone();

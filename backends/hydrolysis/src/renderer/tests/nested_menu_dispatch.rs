@@ -91,8 +91,8 @@ fn popup_bounds_of(runtime: &mut HeadlessRuntime, label: &str) -> accesskit::Rec
 
 fn center(rect: accesskit::Rect) -> (f32, f32) {
     (
-        ((rect.x0 + rect.x1) / 2.0) as f32,
-        ((rect.y0 + rect.y1) / 2.0) as f32,
+        f64::midpoint(rect.x0, rect.x1) as f32,
+        f64::midpoint(rect.y0, rect.y1) as f32,
     )
 }
 
@@ -196,8 +196,8 @@ fn selection_menu_nested_command_dispatches() {
     };
     click(
         &mut runtime,
-        ((submenu_row.x0 + submenu_row.x1) / 2.0) as f32,
-        ((submenu_row.y0 + submenu_row.y1) / 2.0) as f32,
+        f64::midpoint(submenu_row.x0, submenu_row.x1) as f32,
+        f64::midpoint(submenu_row.y0, submenu_row.y1) as f32,
         PointerButton::Primary,
     );
 

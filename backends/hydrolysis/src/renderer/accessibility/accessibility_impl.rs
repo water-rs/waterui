@@ -573,7 +573,7 @@ impl AccessibilityBuilder {
             .expect("hydrolysis accessibility suppression underflow");
     }
 
-    pub(crate) fn apply_state(&self, env: &Environment, node: &mut AccessibilityNode) {
+    pub(crate) fn apply_state(env: &Environment, node: &mut AccessibilityNode) {
         // The tree build stores accessibility state as a live signal (a static
         // state is a constant signal), so a reactive state — e.g. a filter chip's
         // selected binding — is resolved fresh on every emission.
@@ -637,7 +637,7 @@ impl AccessibilityBuilder {
         if let Some(scope) = env.get::<ScopedAccessibilitySemantics>() {
             self.consumed_semantics_scopes.insert(scope.key());
         }
-        self.apply_state(env, &mut node);
+        Self::apply_state(env, &mut node);
         node.set_text_direction(
             if waterui_core::layout::layout_direction(env)
                 .snapshot()
@@ -765,7 +765,7 @@ impl AccessibilityBuilder {
     /// node into that node.
     ///
     /// `.a11y_label(..)` on a view with a single accessibility element means
-    /// "this is that element's name" on every platform — SwiftUI's
+    /// "this is that element's name" on every platform — `SwiftUI`'s
     /// `accessibilityLabel` overrides the element rather than wrapping it — so
     /// a padding or frame between the metadata and a lone text must not turn
     /// the override into a `Group("name")` around a `Label(content)`. The child
@@ -1179,10 +1179,7 @@ impl SemanticCore {
             return match action {
                 AccessibilityAction::Focus => self.set_keyboard_focus_node(None, false),
                 AccessibilityAction::Click => false,
-                _ => panic!(
-                    "hydrolysis accessibility root does not support action {:?}",
-                    action
-                ),
+                _ => panic!("hydrolysis accessibility root does not support action {action:?}"),
             };
         }
         let Some(target) = self.accessibility.actions.get(&target_node).cloned() else {
@@ -1199,8 +1196,7 @@ impl SemanticCore {
                 .find_map(|(id, node)| (*id == target_node).then_some(node))
                 .unwrap_or_else(|| {
                     panic!(
-                        "hydrolysis accessibility action {:?} targets unknown node {:?}",
-                        action, target_node
+                        "hydrolysis accessibility action {action:?} targets unknown node {target_node:?}"
                     )
                 });
             if action == AccessibilityAction::Focus
@@ -1218,10 +1214,9 @@ impl SemanticCore {
             AccessibilityActionTarget::Activate { action: activation } => match action {
                 AccessibilityAction::Click => (activation.borrow_mut())(self, env),
                 AccessibilityAction::Focus => true,
-                _ => panic!(
-                    "hydrolysis accessibility activation does not support action {:?}",
-                    action
-                ),
+                _ => {
+                    panic!("hydrolysis accessibility activation does not support action {action:?}")
+                }
             },
             AccessibilityActionTarget::Toggle { binding } => match action {
                 AccessibilityAction::Click => {
@@ -1230,10 +1225,7 @@ impl SemanticCore {
                     true
                 }
                 AccessibilityAction::Focus => true,
-                _ => panic!(
-                    "hydrolysis accessibility toggle does not support action {:?}",
-                    action
-                ),
+                _ => panic!("hydrolysis accessibility toggle does not support action {action:?}"),
             },
             AccessibilityActionTarget::Slider { value, range, step } => {
                 handle_accessibility_slider_action(
@@ -1305,7 +1297,7 @@ impl SemanticCore {
                 selection,
             } => match action {
                 AccessibilityAction::Focus => {
-                    self.scroll_list_row_into_view(index, &handle, &extents);
+                    Self::scroll_list_row_into_view(index, &handle, &extents);
                     true
                 }
                 AccessibilityAction::Click => {
@@ -1313,20 +1305,19 @@ impl SemanticCore {
                     // centre would, then the Select action writes the binding
                     // like the row's own press slot — plain, toggle and range
                     // semantics ride the held modifiers.
-                    let mut changed = self.click_list_row(target_node, env);
+                    let clicked = self.click_list_row(target_node, env);
+
                     if let Some(selection) = selection {
                         selection.write(index, id, self.hit_test.modifiers);
-                        changed = true;
+                        true
+                    } else {
+                        clicked
                     }
-                    changed
                 }
                 AccessibilityAction::ScrollIntoView => {
-                    self.scroll_list_row_into_view(index, &handle, &extents)
+                    Self::scroll_list_row_into_view(index, &handle, &extents)
                 }
-                _ => panic!(
-                    "hydrolysis accessibility list row does not support action {:?}",
-                    action
-                ),
+                _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
         };
         if changed && focus_action {
@@ -1532,7 +1523,6 @@ impl SemanticCore {
     /// units and rendered lists in pixels. Reports the action handled.
     #[cfg(feature = "accessibility")]
     pub(crate) fn scroll_list_row_into_view(
-        &mut self,
         index: usize,
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
@@ -1677,9 +1667,10 @@ impl SemanticCore {
             return AccessibilityContainerScope::INERT;
         }
 
-        let mut node = AccessibilityNode::new(
-            self.resolve_accessibility_role(env, AccessibilityNodeRole::Group),
-        );
+        let mut node = AccessibilityNode::new(Self::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::Group,
+        ));
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);
         }
@@ -1832,10 +1823,11 @@ impl SemanticCore {
             // stands in for it, so it must stay activatable), and a
             // name-from-contents role collects the text of the leaves it
             // silenced as the container's own name.
-            let mut consumed_text = false;
-            if let Some(naming_scope) = scope.naming_scope {
-                consumed_text = self.drain_scope_donations(&naming_scope, container_id);
-            }
+            let consumed_text = if let Some(naming_scope) = scope.naming_scope {
+                self.drain_scope_donations(&naming_scope, container_id)
+            } else {
+                false
+            };
             // A container that consumed descendant text is a composite — it
             // holds its own name — so it must not dissolve into a surviving
             // control child: the close button would answer as the tab.
@@ -2078,7 +2070,6 @@ impl SemanticCore {
     /// labels still surface their semantic text in the accessibility tree.
     #[cfg(feature = "accessibility")]
     pub(crate) fn accessibility_label_from_label(
-        &self,
         label: &waterui_controls::label::Label,
         env: &Environment,
     ) -> Option<String> {
@@ -2166,8 +2157,10 @@ impl SemanticCore {
         macro_rules! label_from_native_config {
             ($($config:ty),+ $(,)?) => {$(
                 if let Some(native) = view.downcast_ref::<Native<$config>>() {
-                    return self
-                        .accessibility_label_from_label(&native.as_inner().label, &scoped_env);
+                    return Self::accessibility_label_from_label(
+                        &native.as_inner().label,
+                        &scoped_env,
+                    );
                 }
             )+};
         }
@@ -2258,13 +2251,12 @@ impl SemanticCore {
 
     #[cfg(feature = "accessibility")]
     pub(crate) fn resolve_accessibility_role(
-        &self,
         env: &Environment,
         default_role: AccessibilityNodeRole,
     ) -> AccessibilityNodeRole {
-        env.get::<AccessibilityRole>()
-            .map(|role| accessibility_role_to_accesskit_role(role.clone()))
-            .unwrap_or(default_role)
+        env.get::<AccessibilityRole>().map_or(default_role, |role| {
+            accessibility_role_to_accesskit_role(role.clone())
+        })
     }
 
     #[cfg(feature = "accessibility")]
@@ -2398,10 +2390,7 @@ fn handle_accessibility_slider_action(
                 panic!("hydrolysis accessibility slider SetValue requires NumericValue data")
             }
         },
-        _ => panic!(
-            "hydrolysis accessibility slider does not support action {:?}",
-            action
-        ),
+        _ => panic!("hydrolysis accessibility slider does not support action {action:?}"),
     };
     if (next - previous).abs() > f64::EPSILON {
         value.set(next);
@@ -2443,10 +2432,7 @@ fn handle_accessibility_stepper_action(
             }
             _ => panic!("hydrolysis accessibility stepper SetValue requires numeric data"),
         },
-        _ => panic!(
-            "hydrolysis accessibility stepper does not support action {:?}",
-            action
-        ),
+        _ => panic!("hydrolysis accessibility stepper does not support action {action:?}"),
     };
     if next != previous {
         value.set(next);
@@ -2506,10 +2492,7 @@ fn handle_accessibility_date_picker_action(
             }
             true
         }
-        _ => panic!(
-            "hydrolysis accessibility date picker does not support action {:?}",
-            action
-        ),
+        _ => panic!("hydrolysis accessibility date picker does not support action {action:?}"),
     }
 }
 
@@ -2534,8 +2517,7 @@ fn handle_accessibility_text_field_action(
             let normalized = normalized_insert_text(text.as_ref(), line_limit);
             assert!(
                 !(exceeds_line_limit(normalized.as_str(), line_limit)),
-                "hydrolysis accessibility text field SetValue exceeds line_limit {:?}",
-                line_limit
+                "hydrolysis accessibility text field SetValue exceeds line_limit {line_limit:?}"
             );
             value.set(StyledStr::plain(normalized));
             true
@@ -2550,16 +2532,12 @@ fn handle_accessibility_text_field_action(
             let mut plain = value.snapshot().to_plain().to_string();
             assert!(
                 apply_text_insert(&mut plain, normalized.as_str(), line_limit),
-                "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {:?}",
-                line_limit
+                "hydrolysis accessibility text field ReplaceSelectedText exceeds line_limit {line_limit:?}"
             );
             value.set(StyledStr::plain(plain));
             true
         }
-        _ => panic!(
-            "hydrolysis accessibility text field does not support action {:?}",
-            action
-        ),
+        _ => panic!("hydrolysis accessibility text field does not support action {action:?}"),
     }
 }
 
@@ -2602,10 +2580,7 @@ fn handle_accessibility_secure_field_action(
             value.set(next);
             true
         }
-        _ => panic!(
-            "hydrolysis accessibility secure field does not support action {:?}",
-            action
-        ),
+        _ => panic!("hydrolysis accessibility secure field does not support action {action:?}"),
     }
 }
 
@@ -2622,10 +2597,7 @@ fn handle_accessibility_picker_select_action(
             }
             true
         }
-        _ => panic!(
-            "hydrolysis accessibility picker select does not support action {:?}",
-            action
-        ),
+        _ => panic!("hydrolysis accessibility picker select does not support action {action:?}"),
     }
 }
 

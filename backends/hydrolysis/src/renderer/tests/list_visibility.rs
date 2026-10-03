@@ -175,8 +175,8 @@ fn a_focused_row_hidden_and_shown_again_refocuses() {
 
     click(
         &mut runtime,
-        (row1_bounds.x0 + row1_bounds.x1) / 2.0,
-        (row1_bounds.y0 + row1_bounds.y1) / 2.0,
+        f64::midpoint(row1_bounds.x0, row1_bounds.x1),
+        f64::midpoint(row1_bounds.y0, row1_bounds.y1),
     );
     settle(&mut runtime, &mut at, 2);
     assert_eq!(
@@ -200,8 +200,8 @@ fn a_focused_row_hidden_and_shown_again_refocuses() {
 
     click(
         &mut runtime,
-        (row1_bounds.x0 + row1_bounds.x1) / 2.0,
-        (row1_bounds.y0 + row1_bounds.y1) / 2.0,
+        f64::midpoint(row1_bounds.x0, row1_bounds.x1),
+        f64::midpoint(row1_bounds.y0, row1_bounds.y1),
     );
     settle(&mut runtime, &mut at, 2);
     assert_eq!(

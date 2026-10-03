@@ -427,7 +427,10 @@ impl HydrolysisRenderer {
                 && !renderer.accessibility_scope_is_claimed(env)
             {
                 let mut node = AccessibilityNode::new(
-                    renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
+                    crate::renderer::SemanticCore::resolve_accessibility_role(
+                        env,
+                        AccessibilityNodeRole::Button,
+                    ),
                 );
                 if let Some(label) =
                     renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
@@ -627,9 +630,11 @@ impl HydrolysisRenderer {
         }
         if env.get::<AccessibilityRole>().is_some() && !renderer.accessibility_scope_is_claimed(env)
         {
-            let mut node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
-            );
+            let mut node =
+                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                    env,
+                    AccessibilityNodeRole::Button,
+                ));
             if let Some(label) =
                 renderer.resolve_accessibility_label(env, effect.default_a11y_label.clone())
             {

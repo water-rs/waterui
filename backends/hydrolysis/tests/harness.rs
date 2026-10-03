@@ -41,7 +41,7 @@ impl waterui::Plugin for ForegroundSlot {
     }
 }
 
-fn white_foreground() -> ForegroundSlot {
+const fn white_foreground() -> ForegroundSlot {
     ForegroundSlot(WorkingColor::new([1.0, 1.0, 1.0, 1.0]))
 }
 

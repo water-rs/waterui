@@ -17,9 +17,11 @@ use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
-/// What one semantic pump produced: whether the retained tree was (re)built or
-/// re-emitted this pump, the phase timings, and the resulting accessibility
-/// tree update plus focused node when the `accessibility` feature is on.
+/// What one semantic pump produced.
+///
+/// Reports whether the retained tree was (re)built or re-emitted this pump,
+/// the phase timings, and the resulting accessibility tree update plus
+/// focused node when the `accessibility` feature is on.
 #[derive(Debug)]
 pub struct SemanticPumpResult {
     pub rebuilt: bool,
@@ -92,6 +94,12 @@ pub struct SemanticRuntime {
     _executor_teardown: DrainExecutorOnDrop,
 }
 
+impl std::fmt::Debug for SemanticRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticRuntime").finish_non_exhaustive()
+    }
+}
+
 impl SemanticRuntime {
     /// Creates a semantic runtime over `content` mounted in `env`.
     ///
@@ -116,7 +124,7 @@ impl SemanticRuntime {
         Self::on_env(env, content, width, height, |_| parley::FontContext::new())
     }
 
-    /// Creates a semantic runtime for WaterUI test hosts: the same runtime
+    /// Creates a semantic runtime for `WaterUI` test hosts: the same runtime
     /// [`Self::new`] builds, but text shapes with the bundled deterministic
     /// fonts so caret and selection behaviour is identical on every runner.
     #[cfg(any(test, feature = "testing"))]
@@ -183,7 +191,7 @@ impl SemanticRuntime {
             inspector_probe,
         ));
 
-        let content_builder = content.clone();
+        let content_builder = content;
         let window = Window::new(
             "",
             waterui_core::binding(waterui::window::WindowState::Normal),
@@ -232,6 +240,11 @@ impl SemanticRuntime {
     /// request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
+    /// in which case the next pump re-emits.
+    ///
+    /// # Panics
+    /// Panics when the request targets the node of a popup window that is
+    /// already closed.
     /// in which case the next pump re-emits.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
@@ -1034,7 +1047,7 @@ mod tests {
                         inner_for_second.clone(),
                         KeyHandling::Ignored,
                     ))
-                    .on_key_press(counting_handler(outer.clone(), KeyHandling::Handled)),
+                    .on_key_press(counting_handler(outer, KeyHandling::Handled)),
             )
         });
         let (mut runtime, _field) = focused_field_runtime(builder);

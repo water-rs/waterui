@@ -63,7 +63,9 @@ pub(crate) fn install_theme_tokens(env: &mut Environment, style: Option<&dyn cra
 }
 
 /// Installs the framework default tokens underneath whatever `env` already
-/// carries — the `None`-style arm of [`install_theme_tokens`]. External test
+/// carries.
+///
+/// This is the `None`-style arm of [`install_theme_tokens`]. External test
 /// harnesses (`waterui-testing`) call this; the runners go through
 /// [`install_theme_tokens`].
 pub fn install_default_tokens(env: &mut Environment) {

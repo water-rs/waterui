@@ -249,9 +249,11 @@ pub(crate) fn table_accessibility(
                 scroll_metrics.offset_x + viewport.width(),
             );
         }
-        let mut table_node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Table),
-        );
+        let mut table_node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Table,
+            ));
         let table_label = renderer.resolve_accessibility_label(env, None);
         if let Some(label) = table_label {
             table_node.set_label(label);
@@ -281,9 +283,11 @@ pub(crate) fn table_accessibility(
                 table_header_cell_rect(origin_x, origin_y, x_offset, width, m)
             });
             let header_view = AnyView::new(column.label());
-            let mut header_node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ColumnHeader),
-            );
+            let mut header_node =
+                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                    env,
+                    AccessibilityNodeRole::ColumnHeader,
+                ));
             let default_label = renderer.accessibility_label_from_view(&header_view, env);
             let label = renderer.resolve_accessibility_label(env, default_label);
             if let Some(label) = label {
@@ -322,7 +326,10 @@ pub(crate) fn table_accessibility(
                 if let Some(cell) = rows.get_view(row_index) {
                     let cell_view = AnyView::new(cell);
                     let mut cell_node = AccessibilityNode::new(
-                        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Cell),
+                        crate::renderer::SemanticCore::resolve_accessibility_role(
+                            env,
+                            AccessibilityNodeRole::Cell,
+                        ),
                     );
                     let default_label = renderer.accessibility_label_from_view(&cell_view, env);
                     let label = renderer.resolve_accessibility_label(env, default_label);
@@ -367,7 +374,7 @@ pub(crate) fn table_accessibility(
             table_node,
             env,
             Some(AccessibilityActionTarget::Scroll {
-                handle: handle.clone(),
+                handle,
                 axis: ScrollAxis::All,
             }),
         );

@@ -173,8 +173,8 @@ fn secondary_click_label(
 ) -> (accesskit::Rect, TreeUpdate) {
     let bounds = bounds_of(runtime, label);
     let (x, y) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in secondary_click(x, y) {
         runtime.push_input_event(event);
@@ -187,8 +187,8 @@ fn secondary_click_label(
 fn primary_click_label(runtime: &mut HeadlessRuntime, label: &str, update: &TreeUpdate) {
     let bounds = bounds_in(update, label);
     let (x, y) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in primary_click(x, y) {
         runtime.push_input_event(event);
@@ -290,8 +290,8 @@ fn the_source_view_lifts_through_a_hole_in_the_dim_backdrop() {
         .expect("a captured frame");
 
     let (cx, cy) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -332,8 +332,8 @@ fn a_custom_preview_lifts_at_the_source_frame() {
     });
     let bounds = bounds_of(&mut runtime, "host");
     let (cx, cy) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -343,8 +343,8 @@ fn a_custom_preview_lifts_at_the_source_frame() {
     // The preview fills the source's rect; several interior samples land on it.
     for (x, y) in [
         (bounds.x0 + 8.0, bounds.y0 + 8.0),
-        (bounds.x0 + 8.0, (bounds.y0 + bounds.y1) / 2.0 - 8.0),
-        ((bounds.x0 + bounds.x1) / 2.0 - 8.0, bounds.y0 + 8.0),
+        (bounds.x0 + 8.0, f64::midpoint(bounds.y0, bounds.y1) - 8.0),
+        (f64::midpoint(bounds.x0, bounds.x1) - 8.0, bounds.y0 + 8.0),
     ] {
         let px = pixel(&opened, x as u32, y as u32);
         assert!(
@@ -437,8 +437,8 @@ fn a_menu_with_no_preview_or_accessory_stays_a_pure_platform_menu() {
         .snapshot
         .expect("a captured frame");
     let (cx, cy) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -467,8 +467,8 @@ fn a_preview_without_an_accessory_lifts_too() {
         .expect("a captured frame");
 
     let (cx, cy) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -506,8 +506,8 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
         .expect("a captured frame");
     let start = Instant::now();
     let (cx, cy) = (
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
 
     runtime.push_input_event(InputEvent::PointerDown {

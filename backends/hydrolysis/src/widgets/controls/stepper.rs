@@ -70,10 +70,13 @@ pub(crate) fn stepper_accessibility(
 ) {
     #[cfg(feature = "accessibility")]
     {
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::SpinButton),
-        );
-        let default_label = renderer.accessibility_label_from_label(&stepper.label, env);
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::SpinButton,
+            ));
+        let default_label =
+            crate::renderer::SemanticCore::accessibility_label_from_label(&stepper.label, env);
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);

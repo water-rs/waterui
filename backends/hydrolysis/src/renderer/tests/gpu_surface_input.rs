@@ -495,7 +495,7 @@ fn composition_reaches_the_surface_as_a_session() {
 fn the_focused_surface_places_the_input_method_panel() {
     let log = ProbeLog::default();
     let mut runtime = runtime_with(probe_view(
-        log.clone(),
+        log,
         Some(kurbo::Rect::new(10.0, 20.0, 12.0, 38.0)),
     ));
     let start = Instant::now();
@@ -823,8 +823,8 @@ fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
     );
 }
 
-/// `.focused(binding)` — the same `Metadata<Focused>` wiring a TextField
-/// honours — focuses an input-wanting surface without a pointer press,
+/// `.focused(binding)` — the same `Metadata<Focused>` wiring a `TextField`
+/// honours — focuses an input-wanting surface without a `TextField` pointer press,
 /// and a pointer press writes the binding back the way it does for a
 /// field.
 #[test]

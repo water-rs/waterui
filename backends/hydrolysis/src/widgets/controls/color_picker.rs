@@ -92,9 +92,11 @@ pub(crate) fn color_picker_accessibility(
             .to_plain()
             .to_string();
         let value = format!("{:?}", renderer.read_signal(&color_picker.value));
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Button,
+            ));
         node.set_label(label);
         node.set_value(value);
         node.add_action(AccessibilityAction::Focus);
@@ -310,7 +312,7 @@ pub(crate) fn render_color_picker_parts(
         content_bounds.x0,
         content_bounds.y0 + (content_bounds.height() - swatch_size) / 2.0,
         content_bounds.x0 + swatch_size,
-        content_bounds.y0 + (content_bounds.height() + swatch_size) / 2.0,
+        content_bounds.y0 + f64::midpoint(content_bounds.height(), swatch_size),
     );
     // Reading the value through `read_signal` watches it (registers a
     // retained-refresh watcher), so a value change schedules a frame and this

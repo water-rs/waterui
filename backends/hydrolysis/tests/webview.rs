@@ -1,3 +1,8 @@
+#![allow(
+    clippy::future_not_send,
+    reason = "the test webview is a single-threaded mock holding NonNull; nothing awaits it across threads"
+)]
+
 //! Renderer presentation tests for `WebView`: the realized surface's bounds
 //! and single accessibility node on the rendered runtime.
 //!

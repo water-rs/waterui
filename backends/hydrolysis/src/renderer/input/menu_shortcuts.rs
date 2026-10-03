@@ -73,6 +73,8 @@ pub(crate) fn shortcut_hint_text(shortcut: &Shortcut) -> Str {
 
 /// The normalized modifier set of a `Shortcut`: the command modifier is the
 /// platform menu accelerator — super on macOS, control elsewhere.
+// A fixed four-flag mirror of the platform modifier set, not a state machine.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy)]
 struct ChordModifiers {
     control: bool,

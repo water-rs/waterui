@@ -1,3 +1,5 @@
+//! Build-time cfg aliases for the backend's platform and runner gates.
+
 use cfg_aliases::cfg_aliases;
 
 fn main() {

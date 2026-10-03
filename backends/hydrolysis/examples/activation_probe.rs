@@ -1,7 +1,7 @@
 //! Activation-policy probe for water-rs/waterui#1302.
 //!
 //! The window starts [`WindowState::Closed`]; `StayResident` keeps the
-//! process alive with zero windows so another app (TextEdit in the test
+//! process alive with zero windows so another app (`TextEdit` in the test
 //! harness) can be frontmost when the probe finally shows. A timer flips
 //! the presentation state to `Normal` — the same show path a drop-down
 //! terminal's toggle uses — and every re-show mounts a fresh window, so
@@ -10,15 +10,15 @@
 //! land.
 //!
 //! Environment:
-//!   PROBE_ACTIVATION   onshow | onclick | never   (default onshow)
-//!   PROBE_SELECTOR     primary | pointer | focused (default primary)
-//!   PROBE_SHOW_AFTER   seconds until the window opens (default 2.5)
-//!   PROBE_START_OPEN   open the window at launch (initial state Normal
+//!   `PROBE_ACTIVATION`   onshow | onclick | never   (default onshow)
+//!   `PROBE_SELECTOR`     primary | pointer | focused (default primary)
+//!   `PROBE_SHOW_AFTER`   seconds until the window opens (default 2.5)
+//!   `PROBE_START_OPEN`   open the window at launch (initial state Normal
 //!                      instead of Closed) — exercises launch activation
 //!                      with a window mounted at startup
-//!   PROBE_CYCLE        reopen the window every N seconds after the first
+//!   `PROBE_CYCLE`        reopen the window every N seconds after the first
 //!                      show instead of showing once (default unset)
-//!   PROBE_EXIT_AFTER   self-exit after N seconds (default 3600)
+//!   `PROBE_EXIT_AFTER`   self-exit after N seconds (default 3600)
 
 use std::thread;
 use std::time::Duration;
@@ -40,6 +40,7 @@ fn env_secs(name: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn main_view(policy: Activation, echoed: Binding<Str>) -> impl View {
     let label = match policy {
         Activation::OnShow => "activation: on-show (activates on show)",
@@ -101,7 +102,7 @@ fn main() {
     });
 
     let echoed = binding(Str::from(""));
-    let creator_echoed = echoed.clone();
+    let creator_echoed = echoed;
     // The host mounts the view tree that owns `conditional_window`. It
     // carries `Activation::Never` so its own mount — via `orderFront:` on
     // macOS — can never activate the app: every launch/show/keystroke

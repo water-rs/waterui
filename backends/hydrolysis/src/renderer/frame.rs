@@ -19,13 +19,13 @@ pub(crate) struct LayerTransforms {
 pub(crate) struct RenderLayerStats {
     /// Layers the compositor drew, which is every layer unless the window pass
     /// was handed to a GPU surface outright.
-    pub(crate) composited_scene_layers: u32,
+    pub(crate) composited_scene: u32,
     /// Composited layers that were recorded scene segments.
-    pub(crate) scene_segment_layers: u32,
+    pub(crate) scene_segments: u32,
     /// Composited layers that were embedded GPU content mounts.
-    pub(crate) gpu_content_layers: u32,
+    pub(crate) gpu_content: u32,
     /// Composited layers that were filtered subtrees.
-    pub(crate) filtered_layers: u32,
+    pub(crate) filtered_subtrees: u32,
 }
 
 pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
@@ -391,6 +391,12 @@ impl HydrolysisRenderer {
         self.frame_filtered_count = 0;
     }
 
+    /// Ends the rebuild pass, asserting the scene-layer stack drained, and
+    /// flushes the frame's last open layer.
+    ///
+    /// # Panics
+    /// Panics when a frame ends with scene layers still open — the
+    /// tracked-stack invariant the flush asserts.
     pub fn finish_rebuild_frame(&mut self) {
         assert!(
             self.compositor.active_scene_layers.is_empty(),
@@ -641,7 +647,7 @@ impl HydrolysisRenderer {
     pub(crate) fn render_layer_stats(&self) -> RenderLayerStats {
         let scene_layers = u32::try_from(self.compositor.render_layers.len())
             .expect("hydrolysis render layer count exceeds u32");
-        let scene_segment_layers = u32::try_from(
+        let scene_segments = u32::try_from(
             self.compositor
                 .render_layers
                 .iter()
@@ -649,7 +655,7 @@ impl HydrolysisRenderer {
                 .count(),
         )
         .expect("hydrolysis scene segment layer count exceeds u32");
-        let gpu_content_layers = u32::try_from(
+        let gpu_content = u32::try_from(
             self.compositor
                 .render_layers
                 .iter()
@@ -657,7 +663,7 @@ impl HydrolysisRenderer {
                 .count(),
         )
         .expect("hydrolysis GPU content layer count exceeds u32");
-        let filtered_layers = u32::try_from(
+        let filtered_subtrees = u32::try_from(
             self.compositor
                 .render_layers
                 .iter()
@@ -666,10 +672,10 @@ impl HydrolysisRenderer {
         )
         .expect("hydrolysis filtered layer count exceeds u32");
         RenderLayerStats {
-            composited_scene_layers: scene_layers,
-            scene_segment_layers,
-            gpu_content_layers,
-            filtered_layers,
+            composited_scene: scene_layers,
+            scene_segments,
+            gpu_content,
+            filtered_subtrees,
         }
     }
 

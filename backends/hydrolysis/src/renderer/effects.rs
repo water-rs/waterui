@@ -95,7 +95,10 @@ pub(crate) struct EngineEffect {
 }
 
 // SAFETY: `built` is `None` for the whole window in which the value may move
-// across threads; every field set before that is `Send`.
+// across threads; every field set before that is `Send`. The `non_send_fields`
+// allow acknowledges what this block states: `built` is the `!Send` field the
+// safety argument covers.
+#[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl Send for EngineEffect {}
 
 impl EngineEffect {
@@ -119,6 +122,10 @@ impl Effect for EngineEffect {
         }
     }
 
+    // The returned future is `!Send` because the built effect itself is
+    // `!Send` — effect setup runs on the render executor, which is
+    // single-threaded by design.
+    #[allow(clippy::future_not_send)]
     fn setup(&mut self, ctx: &EffectContext) -> impl Future<Output = EffectSetupResult> {
         let mut built = self
             .source

@@ -9,6 +9,8 @@ pub(crate) use mount::{MountSlot, Mounts};
 
 use super::signals::SubscribedSnapshot;
 use super::*;
+#[cfg(test)]
+use crate::renderer::frame::scene_has_content;
 
 impl HydrolysisRenderer {
     #[cfg(test)]

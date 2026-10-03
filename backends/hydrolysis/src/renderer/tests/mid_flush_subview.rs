@@ -126,7 +126,7 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     ));
 
     let builder = {
-        let open = open.clone();
+        let open = open;
         let inner_items = inner_items.clone();
         AnyViewBuilder::<AnyView>::new(move || {
             let open = open.clone();
@@ -173,7 +173,7 @@ fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
                                 }
                             }
                         }),
-                        when(open.clone(), || {
+                        when(open, || {
                             VStack::for_each(
                                 SignalCollection::new(Binding::container(
                                     (1..=2_u64).map(SelfId::new).collect::<Vec<_>>(),

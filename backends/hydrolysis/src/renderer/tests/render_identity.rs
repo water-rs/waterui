@@ -186,15 +186,14 @@ fn collection_reconcile_replaces_only_the_touched_mounts() {
     let _ = list.replace(vec![Shade { id: 0, level: 0 }, Shade { id: 2, level: 3 }]);
     let _ = runtime.pump_at(true, start + Duration::from_millis(32));
     let rebuilt = tree_ids(&runtime);
-    let retired: Vec<_> = after.iter().filter(|id| !rebuilt.contains(id)).collect();
-    let added: Vec<_> = rebuilt.iter().filter(|id| !after.contains(id)).collect();
+    let retired = after.iter().filter(|id| !rebuilt.contains(id)).count();
+    let added = rebuilt.iter().filter(|id| !after.contains(id)).count();
     assert_eq!(
-        retired.len(),
-        added.len(),
+        retired, added,
         "a same-id rebuild must swap the touched subtree's ids one-for-one: {after:?} -> {rebuilt:?}"
     );
     assert!(
-        !retired.is_empty(),
+        retired != 0,
         "the rebuilt item must not keep the stale subtree's ids"
     );
     assert!(

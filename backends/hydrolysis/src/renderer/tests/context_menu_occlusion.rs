@@ -193,8 +193,8 @@ fn drawn_menu_item_press_does_not_fall_through_to_the_row_tap() {
 
     let row = bounds_of(&mut runtime, "Menu row");
     let (row_x, row_y) = (
-        ((row.x0 + row.x1) / 2.0) as f32,
-        ((row.y0 + row.y1) / 2.0) as f32,
+        f64::midpoint(row.x0, row.x1) as f32,
+        f64::midpoint(row.y0, row.y1) as f32,
     );
     for event in secondary_click(row_x, row_y) {
         runtime.push_input_event(event);
@@ -252,7 +252,7 @@ fn popup_window_item_press_does_not_fall_through_to_the_row_tap() {
     // Open at the menu row's bottom edge so the popup's first item lands on
     // the tap row's region beneath it.
     let row = bounds_of(&mut runtime, "Menu row");
-    let (press_x, press_y) = (((row.x0 + row.x1) / 2.0) as f32, (row.y1 - 4.0) as f32);
+    let (press_x, press_y) = (f64::midpoint(row.x0, row.x1) as f32, (row.y1 - 4.0) as f32);
     for event in secondary_click(press_x, press_y) {
         runtime.push_input_event(event);
     }
@@ -272,8 +272,8 @@ fn popup_window_item_press_does_not_fall_through_to_the_row_tap() {
         .and_then(|(_, node)| node.bounds())
         .expect("the popup emits the item's bounds");
     let (x, y) = (
-        frame.x() + ((item.x0 + item.x1) / 2.0) as f32,
-        frame.y() + ((item.y0 + item.y1) / 2.0) as f32,
+        frame.x() + f64::midpoint(item.x0, item.x1) as f32,
+        frame.y() + f64::midpoint(item.y0, item.y1) as f32,
     );
     assert!(
         y > row.y1 as f32,
@@ -317,8 +317,8 @@ fn drawn_menu_item_press_and_hold_does_not_fall_through_to_the_row_long_press() 
 
     let row = bounds_of(&mut runtime, "Menu row");
     let (row_x, row_y) = (
-        ((row.x0 + row.x1) / 2.0) as f32,
-        ((row.y0 + row.y1) / 2.0) as f32,
+        f64::midpoint(row.x0, row.x1) as f32,
+        f64::midpoint(row.y0, row.y1) as f32,
     );
     for event in secondary_click(row_x, row_y) {
         runtime.push_input_event(event);

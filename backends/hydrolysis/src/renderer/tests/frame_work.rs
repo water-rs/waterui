@@ -28,7 +28,7 @@
 //! * GPU content under clips/effects → `gpu_content_under_clips_and_effects`
 //! * native-view interleaving → documented only: `record_native_view_layer`
 //!   exists solely under `hydrolysis_macos_system_webview` (winit + macOS +
-//!   webview-system) and the WKWebView bridge requires a real window — no
+//!   webview-system) and the `WKWebView` bridge requires a real window — no
 //!   headless harness can mount it.
 //! * capture determinism → `repeated_fixed_clock_captures_are_identical`
 
@@ -306,7 +306,7 @@ fn glyph_only_scene_counts() {
 
 /// One text run each on the three colour/vector font technologies the
 /// boundary must keep working: a variable face (wght axis set by `.weight`),
-/// a COLRv0 colour face, and a colour-bitmap emoji face. They run on the
+/// a `COLRv0` colour face, and a colour-bitmap emoji face. They run on the
 /// native font loader because the deterministic collection pins generic
 /// families; named-family resolution is what the fixture needs.
 #[test]
@@ -422,7 +422,7 @@ fn shadow_silhouettes_count() {
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 fn context_menu_holes_render() {
     let copied = Binding::container(false);
-    let copied_for_view = copied.clone();
+    let copied_for_view = copied;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
         AnyView::new(
@@ -479,7 +479,7 @@ fn context_menu_holes_render() {
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 fn popup_opening_counts() {
     let copied = Binding::container(false);
-    let copied_for_view = copied.clone();
+    let copied_for_view = copied;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
         AnyView::new(

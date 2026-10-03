@@ -62,8 +62,7 @@ fn dominant_rgb(rgba8: &[u8]) -> [u8; 3] {
     counts
         .into_iter()
         .max_by_key(|(_, n)| *n)
-        .map(|(rgb, _)| rgb)
-        .unwrap_or([0, 0, 0])
+        .map_or([0, 0, 0], |(rgb, _)| rgb)
 }
 
 fn differs(pixel: &[u8], modal: [u8; 3], tolerance: u8) -> bool {
@@ -89,7 +88,7 @@ fn the_context_menu_popup_presents_its_items_through_a_presentable_window() {
         )
     });
     let mut runtime =
-        HeadlessRuntime::new_for_tests(env.clone(), builder, 160, 160, MinimalTestTheme::default());
+        HeadlessRuntime::new_for_tests(env, builder, 160, 160, MinimalTestTheme::default());
     let _ = runtime.pump_at(false, Instant::now());
     for event in secondary_click(80.0, 80.0) {
         runtime.push_input_event(event);

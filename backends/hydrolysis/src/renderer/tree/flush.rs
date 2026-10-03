@@ -35,7 +35,7 @@ impl RenderNode {
                 // has no surrounding widget to watch it, so the node must do so itself.)
                 let styled = renderer.read_signal(&text.content);
                 let alignment = renderer.read_signal(&text.alignment);
-                text.emit_accessibility(renderer, Some(ctx), &styled, env);
+                TextNode::emit_accessibility(renderer, Some(ctx), &styled, env);
                 renderer.pop_render_owner();
                 let (state, scene) = renderer.state_and_scene_mut();
                 HydrolysisRenderer::render_styled_text_limited(
@@ -516,7 +516,10 @@ impl RenderNode {
                 for layer in &ancestry {
                     layer.push_to_scene(renderer.scene_mut());
                 }
-                renderer.compositor.active_scene_layers = ancestry.clone();
+                renderer
+                    .compositor
+                    .active_scene_layers
+                    .clone_from(&ancestry);
                 renderer
                     .compositor
                     .render_layers
@@ -668,7 +671,7 @@ impl RenderNode {
             RenderNode::Text(text) => {
                 renderer.push_accessibility_owner(&text.accessibility_identity);
                 let styled = renderer.read_signal(&text.content);
-                text.emit_accessibility(renderer, None, &styled, env);
+                TextNode::emit_accessibility(renderer, None, &styled, env);
                 renderer.pop_accessibility_owner();
             }
             RenderNode::Container(container) => {

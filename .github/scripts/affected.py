@@ -7,13 +7,14 @@
 # ///
 """Compute what the PR/push gate must run for a diff.
 
-Reads the diff between the given base revision and `HEAD`, then writes
-`GITHUB_OUTPUT` keys:
+Reads the diff between the given base revision and `HEAD`, runs the
+determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 
 - `packages` — the crates the gate checks and lints: space-separated
   package names, or the literal `workspace` when the diff can reach any
-  crate (an outside-package path the rules do not map selects everything,
-  per `.github/tools/affected/rules.toml`). Empty when nothing can be
+  crate (an outside-package path the rules do not map, or a path that
+  directory-matches only the root package without belonging to it, selects
+  everything — see the tool's module doc). Empty when nothing can be
   affected — a prose-only change still gets `cargo fmt`, nothing more.
 - `package-args` — `packages` rendered as `-p` flags for cargo.
 - `comment-only` — `true` when every changed file is either prose or a
@@ -22,13 +23,15 @@ Reads the diff between the given base revision and `HEAD`, then writes
   layout gate also runs). The gate then lints and builds rustdoc for only
   the crates owning those files — never their reverse dependencies — and
   MSRV stays off unless the diff moves a dependency boundary on its own.
-- `owners` — space-separated package names owning the changed `.rs`
-  files (meaningful when `comment-only` is true).
 - `msrv` — `true` when the diff can move the toolchain floor: a
-  `rust-version` key, any Cargo.toml dependency section, or Cargo.lock.
-- `test-assets` — `true` when hydrolysis or a reverse dependency of it is
-  in scope (their test/dev code compiles the generated fonts), or the
-  whole workspace is.
+  `rust-version` key, any Cargo.toml dependency section (including
+  `target.<cfg>.dependencies`), or Cargo.lock.
+- `test-assets` — `true` when a package whose `--all-targets` build
+  compiles `hydrolysis/testing` (the `TEST_FONTS` `include_bytes!`s) is in
+  scope, or the whole workspace is. The set is the tool's
+  `test_asset_consumers`, derived from the dev-dependency closure, so a
+  crate that merely dev-depends on `waterui-testing` — `waterui-controls`,
+  say — still gets the fonts before its check.
 
 Usage:
 
@@ -52,6 +55,8 @@ from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
 # Cargo.toml tables whose content can move the dependency graph or the
 # toolchain floor. Compared by parsed value, not text, so a comment or
 # formatting edit elsewhere in the manifest does not re-arm MSRV.
+# `[target.<cfg>.dependencies]` sections flatten to ("target", <cfg>,
+# <kind>, <name>) — caught by the `target` + `*dependencies` test below.
 DEPENDENCY_TABLES = (
     "dependencies",
     "dev-dependencies",
@@ -63,13 +68,26 @@ DEPENDENCY_TABLES = (
 
 def is_prose(path):
     """Whether `path` is documentation or repository prose that no compile
-    can read — the same set the `code` path filter treats as 'not code':
-    `!**/*.md`, `!docs/**`, `!LICENSE*`, `!.github/ISSUE_TEMPLATE/**`."""
-    if fnmatch.fnmatch(path, "*.md") or fnmatch.fnmatch(path, "**/*.md"):
+    can read — the same set the `code` path filter treats as 'not code'.
+
+    Scoped to paths *outside* every package: a markdown file inside a
+    package directory is not prose — `include_str!` and
+    `#![doc = include_str!(…)]` compile it into the crate, so the
+    determinator's ancestor matching must still see it. The crate-side
+    examples are `#![doc = include_str!("../README.md")]` in several
+    components and `include_str!("instructions.md")` in the mcp protocol
+    crate."""
+    if "/" not in path and fnmatch.fnmatch(path, "*.md"):
+        return True
+    if "/" not in path and (
+        fnmatch.fnmatch(path, "LICENSE*")
+        or fnmatch.fnmatch(path, "README*")
+        or fnmatch.fnmatch(path, "CONTRIBUTING*")
+        or fnmatch.fnmatch(path, "CODE_OF_CONDUCT*")
+        or fnmatch.fnmatch(path, "SECURITY*")
+    ):
         return True
     if fnmatch.fnmatch(path, "docs/**"):
-        return True
-    if fnmatch.fnmatch(path, "LICENSE*"):
         return True
     return fnmatch.fnmatch(path, ".github/ISSUE_TEMPLATE/**")
 
@@ -95,7 +113,11 @@ def manifest_tables(source):
     relevant = {}
     for section, body in flatten(manifest).items():
         top = section[0]
-        if top in DEPENDENCY_TABLES or section[-1] == "rust-version":
+        is_dependency = top in DEPENDENCY_TABLES or (
+            top == "target"
+            and any(part.endswith("dependencies") for part in section[1:])
+        )
+        if is_dependency or section[-1] == "rust-version":
             relevant[section] = body
     return relevant
 
@@ -118,37 +140,6 @@ def msrv_relevant(base, head, entries):
         if old_tables is None or new_tables is None or old_tables != new_tables:
             return True
     return False
-
-
-def owner_packages(paths):
-    """The workspace package owning each path — the nearest ancestor
-    manifest, from cargo's own metadata rather than a hand-rolled walk."""
-    metadata = json.loads(
-        subprocess.check_output(
-            ["cargo", "metadata", "--format-version", "1", "--no-deps"], text=True
-        )
-    )
-    root = Path(metadata["workspace_root"])
-    members = set(metadata["workspace_members"])
-    manifest_dirs = {
-        package["name"]: str(Path(package["manifest_path"]).parent.relative_to(root))
-        for package in metadata["packages"]
-        if package["id"] in members
-    }
-    owners = set()
-    for path in paths:
-        best = max(
-            (
-                (name, directory)
-                for name, directory in manifest_dirs.items()
-                if path.startswith(directory + "/")
-            ),
-            key=lambda entry: len(entry[1]),
-            default=None,
-        )
-        if best:
-            owners.add(best[0])
-    return owners
 
 
 def emit(outputs):
@@ -175,7 +166,6 @@ def main():
         "packages": "workspace",
         "package-args": "",
         "comment-only": "false",
-        "owners": "",
         "msrv": "true",
         "test-assets": "true",
     }
@@ -212,6 +202,20 @@ def main():
             )
         )
 
+        # The tool always runs: its `owners` map is the only path→crate
+        # mapper (the comment-only lane reads it), and
+        # `test_asset_consumers` drives `test-assets` in both lanes.
+        report = json.loads(
+            subprocess.check_output(
+                [args.tool, "--base", base, "--head", args.head], text=True
+            )
+        ) if entries else None
+
+        consumers = set((report or {}).get("test_asset_consumers", []))
+
+        def assets_for(names):
+            return "true" if consumers & set(names) else "false"
+
         if not entries:
             outputs.update(
                 {
@@ -220,43 +224,43 @@ def main():
                     "test-assets": "false",
                 }
             )
+        elif report["workspace"]:
+            # The diff can reach anywhere — workspace in scope keeps every
+            # signal on, and generated assets must exist for it.
+            outputs.update(
+                {
+                    "packages": "workspace",
+                    "msrv": "true" if msrv else "false",
+                    "test-assets": "true",
+                }
+            )
         elif comment_only:
-            owners = sorted(owner_packages(commentable_paths))
+            owners = sorted(
+                {
+                    report["owners"].get(path)
+                    for path in commentable_paths
+                    if report["owners"].get(path)
+                }
+            )
             outputs.update(
                 {
                     "packages": " ".join(owners),
                     "package-args": " ".join(f"-p {name}" for name in owners),
                     "comment-only": "true",
-                    "owners": " ".join(owners),
                     "msrv": "true" if msrv else "false",
-                    "test-assets": "true" if "hydrolysis" in owners else "false",
+                    "test-assets": assets_for(owners),
                 }
             )
         else:
-            report = json.loads(
-                subprocess.check_output(
-                    [args.tool, "--base", base, "--head", args.head], text=True
-                )
+            affected = report["affected"]
+            outputs.update(
+                {
+                    "packages": " ".join(affected),
+                    "package-args": " ".join(f"-p {name}" for name in affected),
+                    "msrv": "true" if msrv else "false",
+                    "test-assets": assets_for(affected),
+                }
             )
-            if report["workspace"]:
-                outputs["msrv"] = "true" if msrv else "false"
-            else:
-                affected = report["affected"]
-                outputs.update(
-                    {
-                        "packages": " ".join(affected),
-                        "package-args": " ".join(f"-p {name}" for name in affected),
-                        "msrv": "true" if msrv else "false",
-                        "test-assets": "true"
-                        if {
-                            "hydrolysis",
-                            "hydrolysis-android-test-app",
-                            "waterui-testing",
-                        }
-                        & set(affected)
-                        else "false",
-                    }
-                )
     except Exception as error:  # widen on any failure — never scope on a guess
         print(
             f"::warning::affected.py fell back to the whole workspace: {error}",

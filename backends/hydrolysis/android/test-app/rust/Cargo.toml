@@ -19,3 +19,6 @@ hydrolysis-m3.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
+
+[lints]
+workspace = true

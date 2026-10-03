@@ -81,9 +81,11 @@ pub(crate) fn date_picker_accessibility(
                 .clamp(*date_picker.range.start(), *date_picker.range.end()),
         );
         let default_label = Some(value.clone());
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::ComboBox),
-        );
+        let mut node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::ComboBox,
+            ));
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);

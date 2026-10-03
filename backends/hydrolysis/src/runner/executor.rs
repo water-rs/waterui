@@ -124,20 +124,31 @@ impl HeadlessMainThreadExecutor {
         // channel does not yet hold. Bump and notify share one lock hold, so
         // a waiter holding the lock across its check and `wait_timeout` can
         // never miss a signal.
-        let mut queued_count = lock.lock().unwrap();
-        let baseline = *queued_count;
+        // Each loop turn holds the lock for exactly its own check-then-wait:
+        // `wait_timeout` consumes the guard, and the returned post-wait guard
+        // is dropped before the next turn re-locks. A producer that signals
+        // between turns bumps `queued_count` under its own hold, which the
+        // next turn's check still observes — the counter is the edge.
+        let baseline = *lock.lock().unwrap();
         loop {
-            if *queued_count > baseline || self.has_pending() {
-                return true;
-            }
-            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
-                return false;
+            let (guard, result) = {
+                let queued_count = lock.lock().unwrap();
+                if *queued_count > baseline || self.has_pending() {
+                    return true;
+                }
+                let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now())
+                else {
+                    return false;
+                };
+                // `wait_timeout` consumes the guard and hands back the
+                // post-wait hold, so the pre-wait lock is held for exactly the
+                // check-then-enqueue window.
+                queued.wait_timeout(queued_count, remaining).unwrap()
             };
-            let (guard, result) = queued.wait_timeout(queued_count, remaining).unwrap();
-            queued_count = guard;
             if result.timed_out() {
                 return self.has_pending();
             }
+            drop(guard);
         }
     }
 }

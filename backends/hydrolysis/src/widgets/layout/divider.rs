@@ -9,6 +9,9 @@ use waterui_layout::stack::Axis as StackAxis;
 /// Measures a retained divider leaf: a 1×1 minimum, matching the dispatch path's
 /// `measure_view_dimensions` for `Divider`. The divider stretches on its cross
 /// axis during placement; its intrinsic size is the line thickness floor.
+// impl_widget_behavior dispatches every measure fn with a `&T` borrow,
+// including the Copy ones.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 pub(crate) fn measure_divider_node(
     _divider: &Divider,
     _proposal: ProposalSize,

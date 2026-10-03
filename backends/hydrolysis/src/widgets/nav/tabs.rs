@@ -161,17 +161,21 @@ pub(crate) fn tabs_accessibility(
         let metrics = theme.tabs_metrics(layout);
         tabs_bar_and_content_rect(ctx.bounds, style, metrics.bar_height).0
     });
-    let mut tab_list = AccessibilityNode::new(
-        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::TabList),
-    );
+    let mut tab_list =
+        AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::TabList,
+        ));
     let tab_list_label = renderer.resolve_accessibility_label(env, None);
     if let Some(label) = tab_list_label {
         tab_list.set_label(label);
     }
     for (index, (tag, interaction_key, default_label, is_selected)) in labels.iter().enumerate() {
-        let mut tab_node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Tab),
-        );
+        let mut tab_node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Tab,
+            ));
         let label = renderer.resolve_accessibility_label(env, default_label.clone());
         if let Some(label) = label {
             tab_node.set_label(label);
@@ -611,13 +615,13 @@ fn tabs_item_content_rects(
                 Some(kurbo::Rect::new(
                     button_rect.x0 + (button_rect.width() - icon_width) * 0.5,
                     y0,
-                    button_rect.x0 + (button_rect.width() + icon_width) * 0.5,
+                    button_rect.x0 + f64::midpoint(button_rect.width(), icon_width),
                     y0 + icon_height,
                 )),
                 kurbo::Rect::new(
                     button_rect.x0 + (button_rect.width() - label_width) * 0.5,
                     y0 + icon_height + metrics.icon_label_spacing,
-                    button_rect.x0 + (button_rect.width() + label_width) * 0.5,
+                    button_rect.x0 + f64::midpoint(button_rect.width(), label_width),
                     y0 + icon_height + metrics.icon_label_spacing + label_height,
                 ),
             )
@@ -635,13 +639,13 @@ fn tabs_item_content_rects(
                     x0,
                     button_rect.y0 + (button_rect.height() - icon_height) * 0.5,
                     x0 + icon_width,
-                    button_rect.y0 + (button_rect.height() + icon_height) * 0.5,
+                    button_rect.y0 + f64::midpoint(button_rect.height(), icon_height),
                 )),
                 kurbo::Rect::new(
                     x0 + icon_width + metrics.icon_label_spacing,
                     button_rect.y0 + (button_rect.height() - label_height) * 0.5,
                     x0 + icon_width + metrics.icon_label_spacing + label_width,
-                    button_rect.y0 + (button_rect.height() + label_height) * 0.5,
+                    button_rect.y0 + f64::midpoint(button_rect.height(), label_height),
                 ),
             )
         }

@@ -70,7 +70,7 @@ fn nested_when_inside_a_when_payload_materializes() {
     let outer = Binding::container(false);
     let inner = Binding::container(false);
     let view_outer = outer.clone();
-    let view_inner = inner.clone();
+    let view_inner = inner;
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         AnyViewBuilder::<AnyView>::new(move || {
@@ -102,8 +102,8 @@ fn nested_when_inside_a_when_payload_materializes() {
     // The inner flip is driven through the gesture path on the payload row.
     pointer_click(
         &mut runtime,
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     let update = pump_until_settled(&mut runtime).expect("the inner `when` republishes the tree");
     let (_, popup) = find_by_label(&update, Role::Label, "popup row")
@@ -123,7 +123,7 @@ fn button_inside_a_when_payload_receives_pointer_input() {
     let hits = Binding::container(0_i32);
     let probe = hits.clone();
     let view_show = show.clone();
-    let view_hits = hits.clone();
+    let view_hits = hits;
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         AnyViewBuilder::<AnyView>::new(move || {
@@ -151,8 +151,8 @@ fn button_inside_a_when_payload_receives_pointer_input() {
     let bounds = bump.bounds().expect("the button has bounds");
     pointer_click(
         &mut runtime,
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     let _ = pump_until_settled(&mut runtime);
     assert_eq!(
@@ -194,7 +194,7 @@ fn button_inserted_mid_lazy_materialize_receives_pointer_input() {
                         )))
                     }
                 }),
-                when(mid.clone(), move || {
+                when(mid, move || {
                     let hits = hits.clone();
                     button("MidBump").action(move || hits.set(hits.snapshot() + 1))
                 }),
@@ -216,8 +216,8 @@ fn button_inserted_mid_lazy_materialize_receives_pointer_input() {
     let bounds = bump.bounds().expect("the button has bounds");
     pointer_click(
         &mut runtime,
-        ((bounds.x0 + bounds.x1) / 2.0) as f32,
-        ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        f64::midpoint(bounds.x0, bounds.x1) as f32,
+        f64::midpoint(bounds.y0, bounds.y1) as f32,
     );
     let _ = pump_until_settled(&mut runtime);
     assert_eq!(

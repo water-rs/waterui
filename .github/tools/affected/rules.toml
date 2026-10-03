@@ -3,15 +3,46 @@
 # A changed file under a package's directory already belongs to that
 # package — the determinator's ancestor matching, which the gate relies on
 # for every source, host, shader, fixture and asset file a crate carries.
-# These rules only map what lies outside every package: a path no rule
-# matches still selects the whole workspace (the determinator's own
-# fallback for outside files), so an unlisted path widens the gate rather
-# than silently narrowing it.
+# These rules only map what lies outside every package, plus the few kinds
+# of repository-level configuration the determinator's shipped defaults get
+# wrong for this gate:
+#
+# - The defaults mark `clippy.toml` and `rustfmt.toml` as changing nothing.
+#   Lint and format configuration applies to every crate the gate lints, so
+#   the rule below maps them — and their `Clippy.toml` / `.rustfmt.toml`
+#   spellings, which the defaults do not cover at all — to the workspace.
+# - The defaults mark `**/README*`, `**/LICENSE*` &c. as changing nothing —
+#   including inside a package, where crates embed them with
+#   `include_str!` / `#![doc = include_str!(…)]`. The top-level versions
+#   keep the "nothing" verdict; in-package ones fall through to ancestor
+#   matching so the owning package lints.
+# - A path no rule matches that resolves only to the root `waterui` package
+#   by directory (every outside-package path does: its package directory is
+#   the repository root) is treated by the tool as unmatched, which selects
+#   the whole workspace — an unlisted path widens the gate rather than
+#   silently narrowing it.
 
 # The toolchain and cargo-level configuration can change every build the
 # gate might run.
 [[path-rule]]
 globs = ["rust-toolchain.toml", ".cargo/**"]
+mark-changed = "all"
+
+# Lint, format and test-runner configuration that applies to every crate's
+# gate run. Lowercase `clippy.toml`/`rustfmt.toml` override the defaults'
+# mark-nothing; the rest are unmatched top-level files made explicit so the
+# choice is visible here rather than implied by the root-package fallback.
+[[path-rule]]
+globs = [
+    "clippy.toml",
+    "Clippy.toml",
+    "rustfmt.toml",
+    ".rustfmt.toml",
+    "deny.toml",
+    ".typos.toml",
+    ".config/**",
+    "release-plz.toml",
+]
 mark-changed = "all"
 
 # The gate's own machinery — workflows, composite actions, the scripts they
@@ -26,8 +57,20 @@ globs = [
 ]
 mark-changed = "all"
 
-# Prose selects nothing: documentation, issue templates and the
-# repository's markdown files cannot change what compiles.
+# Prose outside every package selects nothing: the docs tree, top-level
+# markdown and license files, and issue templates cannot change what
+# compiles. These globs are deliberately not `**/` — a markdown or README
+# file inside a package is owned by that package because `include_str!`
+# and `#![doc]` may compile it into a crate.
 [[path-rule]]
-globs = ["docs/**", "**/*.md", ".github/ISSUE_TEMPLATE/**"]
+globs = [
+    "docs/**",
+    "*.md",
+    "LICENSE*",
+    "README*",
+    "CONTRIBUTING*",
+    "CODE_OF_CONDUCT*",
+    "SECURITY*",
+    ".github/ISSUE_TEMPLATE/**",
+]
 mark-changed = []

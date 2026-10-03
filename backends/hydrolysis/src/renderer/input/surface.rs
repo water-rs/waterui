@@ -561,7 +561,7 @@ impl SemanticCore {
     /// reportably unfocused — so the holder hears a single `Focus(true)` on
     /// the refocus.
     pub(crate) fn handle_window_focused(&mut self, focused: bool) -> bool {
-        if self.hit_test.window_blurred == !focused {
+        if self.hit_test.window_blurred != focused {
             return false;
         }
         self.hit_test.window_blurred = !focused;

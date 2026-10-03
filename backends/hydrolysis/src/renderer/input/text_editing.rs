@@ -217,6 +217,10 @@ pub(crate) fn common_key_handler_scope(
 ) -> Option<Rc<KeyHandlerNode>> {
     fn depth(mut node: Option<Rc<KeyHandlerNode>>) -> usize {
         let mut depth = 0;
+        // The while-let moves `node` into the pattern each pass, so a fresh
+        // clone is the only way to rebind it — `clone_from` needs a live
+        // target binding, which this loop does not have.
+        #[allow(clippy::assigning_clones)]
         while let Some(link) = node {
             depth += 1;
             node = link.parent.clone();
@@ -241,8 +245,14 @@ pub(crate) fn common_key_handler_scope(
                 if Rc::ptr_eq(&x, &y) {
                     return Some(x);
                 }
-                a = x.parent.clone();
-                b = y.parent.clone();
+                // `a`/`b` are moved into the match pattern, so rebinding
+                // them takes fresh clones — `clone_from` cannot run on a
+                // moved binding.
+                #[allow(clippy::assigning_clones)]
+                {
+                    a = x.parent.clone();
+                    b = y.parent.clone();
+                }
             }
             _ => return None,
         }
@@ -306,7 +316,7 @@ fn text_context_menu_builtin_node(
         }),
         plain_label: label,
         action: SharedAction::new(move |env: Environment| {
-            let _ = execute_text_context_menu_action(&action, &model, &selection, &env);
+            let _ = execute_text_context_menu_action(action, &model, &selection, &env);
         }),
         disabled: nami::Computed::constant(false),
         shortcut: None,
@@ -845,7 +855,7 @@ pub(crate) fn text_context_menu_overlay_bounds(
 }
 
 pub(crate) fn execute_text_context_menu_action(
-    action: &TextContextMenuAction,
+    action: TextContextMenuAction,
     model: &TextInputModel,
     selection: &Rc<RefCell<TextSelectionSlot>>,
     _env: &Environment,
@@ -1046,7 +1056,7 @@ impl SemanticCore {
             "hydrolysis text caret fade cycle duration must be > 0"
         );
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
-        let wave = ((core::f32::consts::TAU * phase).cos() + 1.0) * 0.5;
+        let wave = f32::midpoint((core::f32::consts::TAU * phase).cos(), 1.0);
         motion.min_opacity + (1.0 - motion.min_opacity) * wave
     }
 
@@ -1207,7 +1217,7 @@ impl SemanticCore {
         );
         let focused_something = focused.is_some();
         self.text_editing.store_focused_key(focused);
-        self.text_editing.focused_binding = next_binding.clone();
+        self.text_editing.focused_binding.clone_from(&next_binding);
         if let Some(binding) = next_binding {
             binding.set(true);
         }
@@ -1833,7 +1843,7 @@ impl HydrolysisRenderer {
                     menu_group,
                     dismiss_state,
                     theme: self.theme(),
-                    env: menu_env.clone(),
+                    env: menu_env,
                 },
             });
             self.request_refresh();
@@ -2036,6 +2046,9 @@ impl SemanticCore {
         // `Some(None)`; no resolved target at all falls back to the
         // every-registration chain.
         let mut node = scopes.unwrap_or_else(|| self.hit_test.root_key_handlers.clone());
+        // `node` is moved into the while-let pattern each pass, so a fresh
+        // clone rebinds it — `clone_from` needs a live target binding.
+        #[allow(clippy::assigning_clones)]
         while let Some(link) = node {
             let handler = Rc::clone(&link.scope.handler);
             let env = link.scope.env.extending(press.clone());

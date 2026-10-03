@@ -1,5 +1,5 @@
 //! Reactive inputs: signal watching and animated-value sampling that bind
-//! WaterUI signals to frame triggers and the animation controller.
+//! `WaterUI` signals to frame triggers and the animation controller.
 
 use super::*;
 

@@ -439,7 +439,7 @@ fn gpu_surface_panes_take_their_offered_share() {
         .expect("an hstack must build a container node")
         .placed
         .iter()
-        .map(|frame| frame.width())
+        .map(Rect::width)
         .collect();
     assert_eq!(
         widths,
@@ -464,7 +464,7 @@ fn scene_view_panes_take_their_offered_share() {
         .expect("an hstack must build a container node")
         .placed
         .iter()
-        .map(|frame| frame.width())
+        .map(Rect::width)
         .collect();
     assert_eq!(
         widths,
@@ -489,7 +489,7 @@ fn scene_view_panes_take_their_offered_share() {
 /// own minimum (waterui `distribute.rs`): an intrinsic cached as a minimum.
 /// A lazy stack virtualizes along its main axis — it can report any extent
 /// up to its content's — so a finite offer caps the answer while an open
-/// axis still reads the full extent (spec §5, §6 ScrollView).
+/// axis still reads the full extent (spec §5, §6 `ScrollView`).
 #[test]
 fn lazy_stack_panes_split_the_divider_width() {
     use crate::renderer::{measure_view_dimensions_with_proposal, normalize_layout_view};

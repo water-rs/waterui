@@ -170,7 +170,7 @@ fn value_indicator_only_while_dragging() {
     );
     let bubble = draws[0];
     assert_eq!(
-        (bubble.x0 + bubble.x1) / 2.0,
+        f64::midpoint(bubble.x0, bubble.x1),
         206.0,
         "the indicator is centred on the thumb, got {bubble:?}"
     );
@@ -198,7 +198,7 @@ fn value_indicator_only_while_dragging() {
     );
     let bubble = indicator_draws.borrow()[0];
     assert_eq!(
-        (bubble.x0 + bubble.x1) / 2.0,
+        f64::midpoint(bubble.x0, bubble.x1),
         500.0,
         "the indicator follows the thumb, got {bubble:?}"
     );

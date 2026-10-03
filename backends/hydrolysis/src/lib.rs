@@ -1,5 +1,35 @@
 //! Hydrolysis backend.
 
+// Pedantic opt-outs for the imported backend, mirroring the in-crate
+// `#![allow(..., reason)]` convention used by the workspace's rendering
+// examples: measure/draw code narrows and widens numeric types at every
+// layout boundary and orders fp expressions for stability, not style;
+// `pub` items inside private modules are the upstream re-export idiom;
+// by-value parameters are the public API's chosen signatures; the windowing
+// re-exports predate workspace lints and their docs pass is a follow-up.
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::suboptimal_flops,
+    clippy::imprecise_flops,
+    clippy::redundant_pub_crate,
+    clippy::use_self,
+    clippy::missing_const_for_fn,
+    clippy::too_many_lines,
+    clippy::similar_names,
+    clippy::needless_pass_by_value,
+    clippy::needless_pass_by_ref_mut,
+    clippy::used_underscore_binding,
+    clippy::option_if_let_else,
+    clippy::single_match_else,
+    clippy::float_cmp,
+    clippy::wildcard_imports,
+    missing_docs,
+    reason = "imported backend keeps upstream pedantic choices at the crate boundary"
+)]
+
 mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
@@ -26,9 +56,11 @@ pub use engine::{IconOnlyButtonLabel, WidgetTheme};
 use std::time::Duration;
 use waterui_core::Environment;
 
-/// The frame interval Hydrolysis budgets for: 120 Hz, because current devices
-/// have high-refresh panels. It stands in for the display's own refresh rate
-/// wherever that is not known (headless and offscreen paths, the first frame).
+/// The frame interval Hydrolysis budgets for: 120 Hz.
+///
+/// Budgeted for current high-refresh panels; it stands in for the display's
+/// own refresh rate wherever that is not known (headless and offscreen
+/// paths, the first frame).
 pub const TARGET_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 
 /// A presentation style for the rendered Hydrolysis runtime.

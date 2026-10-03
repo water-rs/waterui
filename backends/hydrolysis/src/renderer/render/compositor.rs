@@ -167,9 +167,12 @@ pub(crate) struct HybridComposition {
 
 /// The attachment a scene renders into: the surface handles, the frame's
 /// presentation texture (or `None` for a readback-only render) and the
-/// colour under the scene's content. The render is transient — mounts and
-/// the engine surface die with the call — and targets an SDR, single-scale
-/// display, the headless contract `waterui-testing` drives.
+/// colour under the scene's content.
+///
+/// The render is transient — mounts and the engine surface die with the
+/// call — and targets an SDR, single-scale display, the headless contract
+/// `waterui-testing` drives.
+#[derive(Debug)]
 pub struct HydrolysisRenderTarget<'a> {
     /// The adapter the frame's device was requested on; the shared engine is
     /// created against what it can actually run.
@@ -464,7 +467,11 @@ impl FrameInstall<'_> {
                         // The mailbox keeps only the newest published frame:
                         // drain it here so one engine pass presents at most
                         // one frame, sampled in place with no copy.
-                        if let Some(frame) = runtime.receiver.as_ref().and_then(|r| r.take()) {
+                        if let Some(frame) = runtime
+                            .receiver
+                            .as_ref()
+                            .and_then(waterui_graphics::gpu::FrameReceiver::take)
+                        {
                             runtime.frame_pixels = Some(external_frame_plane_size(&frame));
                             tx[target].content(self.engine.external_frame(frame));
                         }
@@ -785,7 +792,7 @@ impl HydrolysisRenderer {
             engine: &engine,
             metrics: &self.applied_filter_metrics,
             resources: &window.resources,
-            wake: host_wake.clone(),
+            wake: host_wake,
             device: target.device,
             queue: target.queue,
             rasterize: rasterize_scene_layers,

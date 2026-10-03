@@ -1,3 +1,6 @@
+//! Wayland showcase: a window exercising the runner's widgets and input paths
+//! under a real compositor session.
+
 use std::str::FromStr as _;
 use std::thread;
 use std::time::Duration;
@@ -121,13 +124,11 @@ fn app(env: Environment) -> App {
 }
 
 fn showcase_lifetime() -> Duration {
-    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SECONDS")
-        .map(|value| {
-            value
-                .parse::<u64>()
-                .expect("HYDROLYSIS_WAYLAND_SECONDS must be an unsigned integer")
-        })
-        .unwrap_or(15);
+    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SECONDS").map_or(15, |value| {
+        value
+            .parse::<u64>()
+            .expect("HYDROLYSIS_WAYLAND_SECONDS must be an unsigned integer")
+    });
     Duration::from_secs(seconds)
 }
 

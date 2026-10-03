@@ -25,9 +25,7 @@ pub(crate) fn parse_optional_positive_u64_env(component: &str, name: &str) -> Op
                 .trim()
                 .parse::<u64>()
                 .unwrap_or_else(|error| panic!("{component}: invalid {name} `{raw}`: {error}"));
-            if parsed == 0 {
-                panic!("{component}: {name} must be > 0");
-            }
+            assert!(parsed != 0, "{component}: {name} must be > 0");
             Some(parsed)
         }
         Err(std::env::VarError::NotPresent) => None,

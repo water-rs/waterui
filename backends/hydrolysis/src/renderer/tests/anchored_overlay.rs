@@ -134,7 +134,7 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
     assert!(
         near(
             frame.x0,
-            (anchor.x0 + anchor.x1) / 2.0 - f64::from(OVERLAY.0) / 2.0
+            f64::midpoint(anchor.x0, anchor.x1) - f64::from(OVERLAY.0) / 2.0
         ) && near(frame.y0, anchor.y1 + f64::from(GAP))
             && near(frame.width(), f64::from(OVERLAY.0))
             && near(frame.height(), f64::from(OVERLAY.1)),
@@ -147,7 +147,7 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
 #[test]
 fn an_overlay_too_tall_for_the_top_edge_flips_below() {
     let open = Binding::container(true);
-    let open_for_view = open.clone();
+    let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
@@ -174,7 +174,7 @@ fn an_overlay_too_tall_for_the_top_edge_flips_below() {
 #[test]
 fn a_trailing_edge_overlay_clamps_inside_the_window_margin() {
     let open = Binding::container(true);
-    let open_for_view = open.clone();
+    let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((
@@ -233,8 +233,8 @@ fn an_outside_press_writes_false_and_still_reaches_its_target() {
     let far = bounds_of(&mut runtime, "far");
     let frame = presented_frame(&runtime);
     let (x, y) = (
-        ((far.x0 + far.x1) / 2.0) as f32,
-        ((far.y0 + far.y1) / 2.0) as f32,
+        f64::midpoint(far.x0, far.x1) as f32,
+        f64::midpoint(far.y0, far.y1) as f32,
     );
     assert!(
         !frame.contains(kurbo::Point::new(f64::from(x), f64::from(y))),
@@ -311,7 +311,7 @@ fn a_manual_overlay_ignores_outside_presses() {
 #[test]
 fn a_window_resize_replaces_the_overlay() {
     let open = Binding::container(true);
-    let open_for_view = open.clone();
+    let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((
@@ -357,7 +357,7 @@ fn a_window_resize_replaces_the_overlay() {
 #[test]
 fn a_long_overlay_wraps_inside_the_window() {
     let open = Binding::container(true);
-    let open_for_view = open.clone();
+    let open_for_view = open;
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((
@@ -417,9 +417,7 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
                             scale
                                 .clone()
                                 .with(Animation::linear(Duration::from_millis(1_000))),
-                            scale
-                                .clone()
-                                .with(Animation::linear(Duration::from_millis(1_000))),
+                            scale.with(Animation::linear(Duration::from_millis(1_000))),
                         ),
                     )
                     .width(OVERLAY.0)
@@ -523,9 +521,7 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
                             scale
                                 .clone()
                                 .with(Animation::linear(Duration::from_millis(1_000))),
-                            scale
-                                .clone()
-                                .with(Animation::linear(Duration::from_millis(1_000))),
+                            scale.with(Animation::linear(Duration::from_millis(1_000))),
                         ),
                     )
                     .width(OVERLAY.0)
@@ -554,7 +550,7 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
         .snapshot_path("anchored_overlay_exit", "mid-flight");
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
-    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8.clone())
+    image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8)
         .expect("snapshot dimensions must match the rgba buffer")
         .save(&path)
         .expect("the mid-exit frame must be writable");
@@ -596,9 +592,7 @@ fn input_during_the_exit_reaches_the_content_underneath() {
                                 scale
                                     .clone()
                                     .with(Animation::linear(Duration::from_millis(1_000))),
-                                scale
-                                    .clone()
-                                    .with(Animation::linear(Duration::from_millis(1_000))),
+                                scale.with(Animation::linear(Duration::from_millis(1_000))),
                             ),
                     ),
                 )
@@ -616,7 +610,10 @@ fn input_during_the_exit_reaches_the_content_underneath() {
     let frame = presented_frame(&runtime);
 
     // Presented, a press inside the frame lands on the overlay's own button.
-    let point = kurbo::Point::new((frame.x0 + frame.x1) / 2.0, (frame.y0 + frame.y1) / 2.0);
+    let point = kurbo::Point::new(
+        f64::midpoint(frame.x0, frame.x1),
+        f64::midpoint(frame.y0, frame.y1),
+    );
     assert!(
         under.contains(accesskit::Point::new(point.x, point.y)),
         "the 'under' button must reach into the overlay's frame for this test"
@@ -678,9 +675,7 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
                             scale
                                 .clone()
                                 .with(Animation::linear(Duration::from_millis(1_000))),
-                            scale
-                                .clone()
-                                .with(Animation::linear(Duration::from_millis(1_000))),
+                            scale.with(Animation::linear(Duration::from_millis(1_000))),
                         ),
                     )
                     .width(OVERLAY.0)
@@ -720,7 +715,7 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
 fn placed_edge_reports_the_logical_edge_after_a_flip() {
     let open = Binding::container(true);
     let placed = Binding::container(AnchorEdge::Top);
-    let (open_for_view, placed_for_view) = (open.clone(), placed.clone());
+    let (open_for_view, placed_for_view) = (open, placed.clone());
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         let placed = placed_for_view.clone();
@@ -747,7 +742,7 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
     env.insert(waterui_core::layout::LayoutDirection::RightToLeft);
     let open = Binding::container(true);
     let placed = Binding::container(AnchorEdge::Top);
-    let (open_for_view, placed_for_view) = (open.clone(), placed.clone());
+    let (open_for_view, placed_for_view) = (open, placed.clone());
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         let placed = placed_for_view.clone();

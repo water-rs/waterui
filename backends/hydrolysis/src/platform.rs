@@ -259,6 +259,9 @@ impl KeyCode {
 }
 
 /// Active key modifiers snapshot.
+// The fields mirror `keyboard_types::Modifiers`' fixed four-flag set rather
+// than an evolving state machine, so per-flag bools are the honest shape.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
     pub shift: bool,
@@ -469,6 +472,7 @@ impl core::fmt::Display for SurfaceError {
 impl std::error::Error for SurfaceError {}
 
 /// A frame acquired from a `SurfaceProvider`.
+#[derive(Debug)]
 pub enum SurfaceFrame {
     Offscreen {
         texture: wgpu::Texture,
@@ -606,6 +610,11 @@ pub trait SurfaceProvider {
     fn queue(&self) -> &wgpu::Queue;
     /// Reports this surface's device lost; taken when the device was opened.
     fn device_loss(&self) -> &DeviceLoss;
+    /// Acquires the next frame, or reports why none could be presented into.
+    ///
+    /// # Errors
+    /// Returns [`SurfaceError`] when the surface is lost, the device timed
+    /// out, or the surface is out of date and must be reconfigured.
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
     fn present(&mut self, frame: SurfaceFrame);
     fn size(&self) -> (u32, u32);
@@ -851,12 +860,12 @@ impl OffscreenGpuContext {
         reclaim_device(&self.inner.device);
     }
 
-    /// Requests a context on the adapter WaterUI would render an application on.
+    /// Requests a context on the adapter `WaterUI` would render an application on.
     pub async fn new() -> Self {
         Self::new_with_adapter_selection(AdapterSelection::PRODUCTION).await
     }
 
-    /// Requests a context for WaterUI test hosts.
+    /// Requests a context for `WaterUI` test hosts.
     ///
     /// Unlike a production context, this allows compute-capable software
     /// adapters so CI can run Hydrolysis accessibility tests on llvmpipe
@@ -986,13 +995,13 @@ impl AdapterSelection {
         allow_software_adapter: true,
     };
 
-    fn force_fallback_adapter(self) -> bool {
+    fn force_fallback_adapter() -> bool {
         should_force_fallback_adapter()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn allow_software_adapter(self) -> bool {
-        self.allow_software_adapter || self.force_fallback_adapter()
+        self.allow_software_adapter || Self::force_fallback_adapter()
     }
 }
 
@@ -1239,7 +1248,8 @@ async fn probe_adapters(
                 continue;
             }
 
-            let preference = AdapterPreference::for_info(&info, selection.force_fallback_adapter());
+            let preference =
+                AdapterPreference::for_info(&info, AdapterSelection::force_fallback_adapter());
             match &best_candidate {
                 Some((best_preference, _)) if *best_preference <= preference => {}
                 _ => best_candidate = Some((preference, adapter)),
@@ -1255,12 +1265,11 @@ async fn probe_adapters(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
-    if inspected_adapters.is_empty() {
-        panic!(
-            "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
-Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
-        );
-    }
+    assert!(
+        !inspected_adapters.is_empty(),
+        "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
+    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
+    );
 
     panic!(
         "{context}: this host has no GPU Hydrolysis can use. \
@@ -1289,7 +1298,7 @@ async fn request_instance_and_adapter(
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: None,
-                force_fallback_adapter: selection.force_fallback_adapter(),
+                force_fallback_adapter: AdapterSelection::force_fallback_adapter(),
                 apply_limit_buckets: false,
             })
             .await
@@ -1374,7 +1383,7 @@ impl OffscreenSurface {
         Self::on_context(OffscreenGpuContext::new().await, width, height, format)
     }
 
-    /// Creates an offscreen surface for WaterUI test hosts.
+    /// Creates an offscreen surface for `WaterUI` test hosts.
     ///
     /// Unlike production surfaces, this constructor allows compute-capable
     /// software adapters so CI can run Hydrolysis accessibility tests on
@@ -1578,7 +1587,7 @@ impl core::fmt::Debug for OffscreenSceneSurface {
 
 impl OffscreenSceneSurface {
     crate::engine::cfg_async_fn! {
-        /// Creates the host on the adapter WaterUI would render an
+        /// Creates the host on the adapter `WaterUI` would render an
         /// application on, at `width × height` sRGB pixels.
         ///
         /// # Panics
@@ -1664,6 +1673,10 @@ impl OffscreenSceneSurface {
     ///
     /// Call after `engine.render(..)`; a call before the engine produces its
     /// first texture panics through the surface's presentation contract.
+    ///
+    /// # Panics
+    /// Panics when the offscreen surface fails to hand back a frame or the
+    /// readback copy cannot be mapped.
     #[must_use]
     pub fn readback_rgba8(&mut self) -> Vec<u8> {
         let (width, height) = self.target.size();
@@ -1713,7 +1726,7 @@ impl OffscreenWindow {
         }
     }
 
-    /// Creates an offscreen window for WaterUI test hosts.
+    /// Creates an offscreen window for `WaterUI` test hosts.
     ///
     /// This keeps production adapter selection strict while allowing
     /// `waterui-testing` to run on compute-capable software adapters in CI.
@@ -1753,6 +1766,9 @@ impl OffscreenWindow {
     /// window produces a HiDPI-sharp image of the very same layout.
     /// Sets the physical-pixels-per-logical-pixel ratio, reallocating the
     /// surface to match. See [`Self::with_scale_factor`].
+    ///
+    /// # Panics
+    /// Panics when `scale_factor` is not finite and positive.
     pub fn set_scale_factor(&mut self, scale_factor: f64) {
         assert!(
             scale_factor.is_finite() && scale_factor > 0.0,
@@ -1764,6 +1780,11 @@ impl OffscreenWindow {
         self.resize_to_logical(logical_width, logical_height);
     }
 
+    /// Sets the scale factor, consuming and returning the window. See
+    /// [`Self::set_scale_factor`].
+    ///
+    /// # Panics
+    /// Panics when `scale_factor` is not finite and positive.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
         assert!(

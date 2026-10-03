@@ -12,10 +12,10 @@
 //! plain typing in direct-commit mode) is ordinary input again.
 //!
 //! Ordering alone cannot place the keystroke that *produced* a
-//! composition event, because platforms report it first: wl_keyboard
+//! composition event, because platforms report it first: `wl_keyboard`
 //! forwards the raw key — and IBus/fcitx5 the keysym-derived text — inside
 //! the same flush as the `zwp_text_input_v3` preedit they generated, and
-//! AppKit delivers the `keyDown` before the `insertText` it becomes. So
+//! `AppKit` delivers the `keyDown` before the `insertText` it becomes. So
 //! each IME event additionally claims its producer: walking backwards it
 //! skips key releases, keeps that press's own `TextInput` events, and
 //! claims the single nearest modifier-free press — never an earlier one.
@@ -26,7 +26,7 @@
 //!
 //! - A commit with no live composition is ordinary text, not a composition
 //!   boundary: fcitx5/IBus in direct-commit mode deliver plain characters
-//!   that never mark a preedit, and AppKit routes every unmarked keystroke
+//!   that never mark a preedit, and `AppKit` routes every unmarked keystroke
 //!   through `insertText`. It ends nothing and owns no neighbouring keys —
 //!   except the press that produced it: a press immediately before a
 //!   commit is that keystroke delivered twice (winit reports both the

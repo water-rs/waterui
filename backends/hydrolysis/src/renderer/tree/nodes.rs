@@ -538,7 +538,7 @@ pub(crate) trait WidgetBehavior {
         0
     }
 
-    /// Whether this leaf draws nothing — WaterUI's empty view `()`.
+    /// Whether this leaf draws nothing — `WaterUI`'s empty view `()`.
     ///
     /// This is a semantic answer, not a measured size: a `Spacer` squeezed to
     /// zero still renders and still answers `false`. A stack treats a child
@@ -1061,7 +1061,6 @@ impl TextNode {
     /// scoped environment (label/role resolution reads env).
     #[cfg(feature = "accessibility")]
     pub(super) fn emit_accessibility(
-        &self,
         renderer: &mut crate::renderer::SemanticCore,
         ctx: Option<RenderContext>,
         styled: &StyledStr,
@@ -1081,20 +1080,16 @@ impl TextNode {
         if renderer.consume_accessibility_descendant_text(env, &label) {
             return;
         }
-        let mut node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Label),
-        );
+        let mut node = AccessibilityNode::new(SemanticCore::resolve_accessibility_role(
+            env,
+            AccessibilityNodeRole::Label,
+        ));
         node.set_label(label);
         let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
     }
 
     #[cfg(not(feature = "accessibility"))]
-    #[allow(
-        clippy::unused_self,
-        reason = "parity with the accessibility-enabled signature"
-    )]
     pub(super) fn emit_accessibility(
-        &self,
         _renderer: &mut crate::renderer::SemanticCore,
         _ctx: Option<RenderContext>,
         _styled: &StyledStr,
@@ -1133,9 +1128,10 @@ pub(super) fn emit_graphics_image_accessibility(
     {
         return None;
     }
-    let mut node = AccessibilityNode::new(
-        renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Image),
-    );
+    let mut node = AccessibilityNode::new(SemanticCore::resolve_accessibility_role(
+        env,
+        AccessibilityNodeRole::Image,
+    ));
     if focusable {
         // A surface that takes input is a keyboard-focus target like any
         // other focusable control: assistive `Focus` requests and Tab

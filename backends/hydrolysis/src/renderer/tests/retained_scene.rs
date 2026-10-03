@@ -240,7 +240,7 @@ fn dynamic_size_change_reflows_without_rebuild() {
     // Ground truth: the same composition built statically at the final value.
     let truth_value = Binding::container(1_i32);
     let truth_builder = {
-        let value = truth_value.clone();
+        let value = truth_value;
         AnyViewBuilder::<AnyView>::new(move || dynamic_changing_size_visible(&value))
     };
     let truth_env = test_environment();
@@ -633,7 +633,7 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
     // Ground truth: built fresh with the second item already selected.
     let truth_selected = Binding::container(1_u32);
     let truth_builder = {
-        let selected = truth_selected.clone();
+        let selected = truth_selected;
         AnyViewBuilder::<AnyView>::new(move || reactive_bg_collection(&selected))
     };
     let truth_env = test_environment();
@@ -854,19 +854,19 @@ fn pixel(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) -> [u8; 4] 
         .expect("four channels per pixel")
 }
 
-fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) {
-    let [r, g, b, _] = pixel(snapshot, x, y);
+fn assert_red(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
+    let [red, green, blue, _] = pixel(snapshot, col, row);
     assert!(
-        r > 160 && g < 90 && b < 90,
-        "pixel ({x}, {y}) must be the red box, got rgb({r}, {g}, {b})"
+        red > 160 && green < 90 && blue < 90,
+        "pixel ({col}, {row}) must be the red box, got rgb({red}, {green}, {blue})"
     );
 }
 
-fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, x: u32, y: u32) {
-    let [r, g, b, _] = pixel(snapshot, x, y);
+fn assert_blue(snapshot: &crate::runner::HeadlessSnapshot, col: u32, row: u32) {
+    let [red, green, blue, _] = pixel(snapshot, col, row);
     assert!(
-        b > 160 && r < 90,
-        "pixel ({x}, {y}) must be the blue box, got rgb({r}, {g}, {b})"
+        blue > 160 && red < 90,
+        "pixel ({col}, {row}) must be the blue box, got rgb({red}, {green}, {blue})"
     );
 }
 

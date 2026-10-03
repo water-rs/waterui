@@ -1,3 +1,6 @@
+//! Wayland smoke run: opens a window under a compositor and stays alive long
+//! enough to eyeball that the first frame presents.
+
 use std::thread;
 use std::time::Duration;
 
@@ -50,13 +53,11 @@ fn app(env: Environment) -> App {
 }
 
 fn smoke_lifetime() -> Duration {
-    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SECONDS")
-        .map(|value| {
-            value
-                .parse::<u64>()
-                .expect("HYDROLYSIS_WAYLAND_SECONDS must be an unsigned integer")
-        })
-        .unwrap_or(10);
+    let seconds = std::env::var("HYDROLYSIS_WAYLAND_SECONDS").map_or(10, |value| {
+        value
+            .parse::<u64>()
+            .expect("HYDROLYSIS_WAYLAND_SECONDS must be an unsigned integer")
+    });
     Duration::from_secs(seconds)
 }
 

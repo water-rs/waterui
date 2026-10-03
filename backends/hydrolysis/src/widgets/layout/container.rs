@@ -84,8 +84,10 @@ fn lazy_stack_sample_size(
     let sample = children
         .get_view(0)
         .map(|view| normalize_layout_view(view, env))
-        .map(|view| measure_transient_view_with_proposal(&view, item_proposal, state, env, theme))
-        .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index 0"));
+        .map_or_else(
+            || panic!("LazyContainer failed to materialize child at index 0"),
+            |view| measure_transient_view_with_proposal(&view, item_proposal, state, env, theme),
+        );
     let count = child_count as f64;
     // The sampled extent is the membership's intrinsic ideal; a finite
     // main-axis offer caps it (the stack virtualizes onto the offered
@@ -101,10 +103,10 @@ fn lazy_stack_sample_size(
         children
             .get_view(0)
             .map(|view| normalize_layout_view(view, env))
-            .map(|view| {
-                measure_transient_view_with_proposal(&view, min_proposal, state, env, theme)
-            })
-            .unwrap_or_else(|| panic!("LazyContainer failed to materialize child at index 0"))
+            .map_or_else(
+                || panic!("LazyContainer failed to materialize child at index 0"),
+                |view| measure_transient_view_with_proposal(&view, min_proposal, state, env, theme),
+            )
     });
     let cap = |extent: f64, floor: f64| match finite_main {
         Some(offer) => extent.min(f64::from(offer)).max(floor),

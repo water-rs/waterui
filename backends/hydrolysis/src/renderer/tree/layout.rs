@@ -31,7 +31,7 @@ impl RenderNode {
         }
     }
 
-    /// Whether this subtree draws nothing — WaterUI's empty view `()`, or a
+    /// Whether this subtree draws nothing — `WaterUI`'s empty view `()`, or a
     /// container/wrapper whose every descendant does the same.
     ///
     /// This is a semantic answer, not a measured size: a zero-size `Color` or
@@ -42,9 +42,6 @@ impl RenderNode {
     pub(super) fn is_empty(&self) -> bool {
         match self {
             RenderNode::Widget(node) => node.behavior.renders_nothing(),
-            // A container is always a member: even a frame wrapping `()`
-            // explicitly claims its configured slot, like a `Spacer` does.
-            RenderNode::Container(_) => false,
             RenderNode::Opacity(node) => node.child.is_empty(),
             RenderNode::Scale(node) => node.child.is_empty(),
             RenderNode::Rotation(node) => node.child.is_empty(),
@@ -55,14 +52,21 @@ impl RenderNode {
             RenderNode::Wrapper(node) => node.child.is_empty(),
             // A filter over a child that draws nothing draws nothing itself.
             RenderNode::Filtered(node) => node.child.is_empty(),
+            // A container is always a member — even a frame wrapping `()`
+            // explicitly claims its configured slot, like a `Spacer` does —
+            // and every variant not matched above draws nothing either.
             _ => false,
         }
     }
 
     pub(super) fn stretch(&self) -> StretchAxis {
         match self {
-            RenderNode::Color(_) => StretchAxis::Both,
-            RenderNode::Text(_) => StretchAxis::None,
+            RenderNode::Color(_) | RenderNode::Scroll(_) => StretchAxis::Both,
+            // The same stack laid out eagerly is content-sized on both axes, so a
+            // lazy one has to be too: making a stack virtualizable must not change
+            // how it sizes. Rows that want the full cross axis ask for it
+            // themselves, exactly as they do in the eager path.
+            RenderNode::Text(_) | RenderNode::LazyStack(_) => StretchAxis::None,
             RenderNode::Container(container) => {
                 // The retained children answer for themselves, so a transparent
                 // layout reports what its content currently claims rather than
@@ -92,12 +96,6 @@ impl RenderNode {
                 scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
             }
             RenderNode::Filtered(node) => node.child.stretch(),
-            RenderNode::Scroll(_) => StretchAxis::Both,
-            // The same stack laid out eagerly is content-sized on both axes, so a
-            // lazy one has to be too: making a stack virtualizable must not change
-            // how it sizes. Rows that want the full cross axis ask for it
-            // themselves, exactly as they do in the eager path.
-            RenderNode::LazyStack(_) => StretchAxis::None,
             RenderNode::Collection(node) => {
                 // A collection's membership is reactive; its layout is one of the
                 // content-sized stacks, which ignores the children anyway.
@@ -377,7 +375,7 @@ impl RenderNode {
                 }
             }
             RenderNode::LazyStack(node) => {
-                node.item_cache.borrow_mut().prepare_for_measure(renderer)
+                node.item_cache.borrow_mut().prepare_for_measure(renderer);
             }
             RenderNode::Color(_)
             | RenderNode::Text(_)
@@ -563,7 +561,7 @@ impl RenderNode {
 /// window's `Overlay` places its base over the whole bounds), so the assigned
 /// frame is not the element's own extent; centring the answer on the assigned
 /// frame reports where the view actually sits, matching the centre-anchored
-/// underfill convention the layout contract and SwiftUI share. Anchoring on
+/// underfill convention the layout contract and `SwiftUI` share. Anchoring on
 /// the placed envelope instead would shift the rect by wherever the children
 /// happen to sit — a leading-inset padding pushes it outside the assigned
 /// frame entirely. A non-finite answer axis falls back to the assigned extent

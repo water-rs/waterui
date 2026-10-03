@@ -343,6 +343,7 @@ fn chip_rail_fills_offer_when_row_fits() {
 ///
 /// A scroll rail with a `report_offset` binding and an accessibility label
 /// for the query surface.
+#[allow(clippy::needless_pass_by_value)]
 fn offset_rail(
     offset: Binding<waterui::layout::Point>,
     controller: Option<waterui_layout::scroll::ScrollController<waterui::layout::Point>>,

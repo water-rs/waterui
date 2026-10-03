@@ -155,8 +155,8 @@ fn when_layer_control_press_does_not_fall_through_to_the_row_tap() {
 
     let next_bounds = bounds_of(&mut runtime, Role::Button, "Next");
     let (x, y) = (
-        ((next_bounds.x0 + next_bounds.x1) / 2.0) as f32,
-        ((next_bounds.y0 + next_bounds.y1) / 2.0) as f32,
+        f64::midpoint(next_bounds.x0, next_bounds.x1) as f32,
+        f64::midpoint(next_bounds.y0, next_bounds.y1) as f32,
     );
     assert!(
         y > ROWS as f32 * ROW_H - ROW_H,
@@ -205,8 +205,8 @@ fn when_layer_tap_press_does_not_fall_through_to_the_row_button() {
 
     let button_bounds = bounds_of(&mut runtime, Role::Button, "Row button");
     let (x, y) = (
-        ((button_bounds.x0 + button_bounds.x1) / 2.0) as f32,
-        ((button_bounds.y0 + button_bounds.y1) / 2.0) as f32,
+        f64::midpoint(button_bounds.x0, button_bounds.x1) as f32,
+        f64::midpoint(button_bounds.y0, button_bounds.y1) as f32,
     );
 
     primary_click(&mut runtime, x, y);
@@ -290,10 +290,9 @@ fn zstack_overlay_sibling_press_does_not_fall_through_to_the_row_tap() {
 
     let next_bounds = bounds_of(&mut runtime, Role::Button, "Next");
     let (x, y) = (
-        ((next_bounds.x0 + next_bounds.x1) / 2.0) as f32,
-        ((next_bounds.y0 + next_bounds.y1) / 2.0) as f32,
+        f64::midpoint(next_bounds.x0, next_bounds.x1) as f32,
+        f64::midpoint(next_bounds.y0, next_bounds.y1) as f32,
     );
-
     primary_click(&mut runtime, x, y);
     pump_until_settled(&mut runtime);
 

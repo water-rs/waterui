@@ -1,3 +1,10 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! Renderer presentation tests for controls: pointer routing around disabled
 //! controls and the disabled scope's reactive re-enable.
 //!
@@ -345,7 +352,7 @@ fn a_row_of_icon_only_buttons_lays_out_at_touch_target_width(app: &mut Offscreen
 
     let span = f64::from(xs[4].1 - xs[0].0);
     // 5 × 48dp touch target + 4 × 12dp spacing.
-    assert_close(span, 5.0 * 48.0 + 4.0 * 12.0, 0.5, "row span");
+    assert_close(span, 4.0f64.mul_add(12.0, 5.0 * 48.0), 0.5, "row span");
 }
 
 fn actions_menu_view() -> impl waterui::View {

@@ -1,3 +1,8 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! water-rs/hydrolysis#27 — a control clipped by an ancestor keeps its logical
 //! bounds in the accessibility tree, and activating it dispatches its retained
 //! action instead of a pointer press synthesized at the bounds' centre.
@@ -89,8 +94,10 @@ fn node_id(tree: &accesskit::TreeUpdate, label: &str) -> NodeId {
     tree.nodes
         .iter()
         .find(|(_, node)| node.label() == Some(label))
-        .map(|(id, _)| *id)
-        .unwrap_or_else(|| panic!("no accessibility node labelled {label}"))
+        .map_or_else(
+            || panic!("no accessibility node labelled {label}"),
+            |(id, _)| *id,
+        )
 }
 
 fn node_bounds(tree: &accesskit::TreeUpdate, label: &str) -> AccessibilityRect {
@@ -298,7 +305,7 @@ fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
 #[test]
 fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
     let selection = Binding::container(Option::<i32>::None);
-    let binding = selection.clone();
+    let binding = selection;
     let reactions = Rc::new(Cell::new(0));
     let reactions_for_view = Rc::clone(&reactions);
     let list_view = move || {

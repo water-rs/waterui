@@ -28,7 +28,7 @@ use crate::platform::{InputEvent, PointerButton, PointerKind};
 const WINDOW_SIZE: f32 = 160.0;
 
 /// The platform hold threshold `CONTEXT_MENU_HOLD_DURATION` implements
-/// (hit_test.rs): 500ms on every platform. Kept local so the test compiles
+/// (hit_`hit_test.rs)`0ms on every platform. Kept local so the test compiles
 /// on the pre-fix tree for the fail-before run.
 const HOLD: Duration = Duration::from_millis(500);
 
@@ -110,8 +110,10 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
     let (_, host) = find_by_label(&update, Role::Button, "host")
         .expect("the host button must emit an accessibility node");
     let bounds = host.bounds().expect("the host button has frame bounds");
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
-
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     for event in secondary_click(x as f32, y as f32) {
         runtime.push_input_event(event);
     }
@@ -193,8 +195,10 @@ fn context_menu_item_action_reads_state_inherited_from_the_opening_view() {
     let (_, host) = find_by_label(&update, Role::Button, "host")
         .expect("the host button must emit an accessibility node");
     let bounds = host.bounds().expect("the host button has frame bounds");
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
-
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     for event in secondary_click(x as f32, y as f32) {
         runtime.push_input_event(event);
     }
@@ -265,7 +269,10 @@ fn a_window_with_a_pending_frame_is_not_settled() {
     let (_, host) =
         find_by_label(&update, Role::Button, "host").expect("the host button must still emit");
     let bounds = host.bounds().expect("the host button has frame bounds");
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     for event in secondary_click(x as f32, y as f32) {
         runtime.push_input_event(event);
     }
@@ -302,7 +309,7 @@ fn a_window_with_a_pending_frame_is_not_settled() {
 #[test]
 fn a_popup_only_change_publishes_the_merged_tree() {
     let tint = Binding::container(Color::srgb(0, 0, 0));
-    let tint_for_view = tint.clone();
+    let tint_for_view = tint;
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         AnyViewBuilder::<AnyView>::new(move || {
@@ -390,7 +397,7 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
 #[test]
 fn a_clean_pump_publishes_no_tree_update() {
     let copied = Binding::container(false);
-    let copied_for_view = copied.clone();
+    let copied_for_view = copied;
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         let copied = copied_for_view.clone();
         AnyView::new(
@@ -421,7 +428,10 @@ fn a_clean_pump_publishes_no_tree_update() {
     let (_, host) =
         find_by_label(&update, Role::Button, "host").expect("the host button is missing");
     let bounds = host.bounds().expect("the host button has frame bounds");
-    let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+    let (x, y) = (
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
     for event in secondary_click(x as f32, y as f32) {
         runtime.push_input_event(event);
     }
@@ -523,7 +533,12 @@ fn a_touch_hold_past_the_threshold_mounts_the_menu_at_the_press_point() {
 
     // Just before the threshold nothing opens.
     let update = runtime
-        .pump_at(false, start + HOLD - Duration::from_millis(1))
+        .pump_at(
+            false,
+            (start + HOLD)
+                .checked_sub(Duration::from_millis(1))
+                .unwrap(),
+        )
         .tree_update;
     if let Some(update) = update {
         assert!(

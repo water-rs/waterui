@@ -1,3 +1,6 @@
+//! Probe for the runtime window API: asserts the window handle, scale factor,
+//! and title plumbing through the platform runner.
+
 use std::time::Duration;
 
 use hydrolysis::run;

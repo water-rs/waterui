@@ -267,7 +267,7 @@ pub struct SemanticCore {
     /// a snapshot is a single `Rc` clone rather than a per-target `Vec` copy.
     key_handler_stack: Option<Rc<KeyHandlerNode>>,
     /// Physical codes of key presses the IME consumed while it owned input.
-    /// Their releases must be swallowed too — wl_keyboard delivers the release
+    /// Their releases must be swallowed too — `wl_keyboard` delivers the release
     /// of an IME-consumed press in a later batch, after the commit that ended
     /// the composition.
     ime_swallowed_codes: Vec<keyboard_types::Code>,
@@ -278,6 +278,15 @@ pub struct SemanticCore {
     /// still applies the rendered-runtime rule.
     #[cfg(feature = "accessibility")]
     semantic_walk: bool,
+}
+
+// The state members are engine internals (gesture/hit-test/executor state)
+// with nothing useful to print; a name-only non-exhaustive form keeps the
+// impl honest.
+impl std::fmt::Debug for SemanticCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SemanticCore").finish_non_exhaustive()
+    }
 }
 
 /// Core hydrolysis renderer state: a [`SemanticCore`] plus the GPU-side scene,

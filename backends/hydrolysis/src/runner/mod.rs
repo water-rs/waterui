@@ -81,6 +81,13 @@ pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 use window::*;
+// Names the `#[cfg(test)]` suite pulls through `super::`; kept out of the
+// unconditional import so non-test builds report no unused names.
+#[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
+use window::{
+    FrameMode, acquire_surface_frame, clamp_window_size, pump_window_semantics, reports_ui_idle,
+    schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
+};
 // Frame and tree profiles are published to the inspector endpoint, which exists
 // only where `waterui::inspector` does.
 #[cfg(not(target_arch = "wasm32"))]
@@ -122,7 +129,7 @@ fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> 
 /// Physical pixels per logical pixel for offscreen rendering, from
 /// `WATERUI_HYDROLYSIS_OFFSCREEN_SCALE`.
 ///
-/// Offscreen output is usually viewed on a HiDPI display (a preview image in
+/// Offscreen output is usually viewed on a `HiDPI` display (a preview image in
 /// docs, a snapshot opened on a laptop), where rendering one physical pixel per
 /// logical pixel looks soft. Defaults to 2.
 #[cfg(all(
@@ -194,6 +201,11 @@ fn install_headless_window_managers(
     not(hydrolysis_winit),
     not(target_os = "android")
 ))]
+/// Runs `app` once offscreen and returns — the headless one-shot `run` that
+/// exists only where no platform runner can claim the entry point.
+///
+/// # Panics
+/// Panics when the seeded environment lost its `MenuShortcutRegistry`.
 pub fn run(app: App, style: impl crate::Style) {
     let inspector = init_main_thread_executors();
     let inspector_probe = inspector

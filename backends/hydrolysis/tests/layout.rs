@@ -1,3 +1,9 @@
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
+)]
+
 //! Renderer presentation tests for layout geometry: stack bounds
 //! relationships, layout priority, growing-child heights, snackbar width
 //! bounds, and text line limits.

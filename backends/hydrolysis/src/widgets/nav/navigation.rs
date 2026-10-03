@@ -305,16 +305,20 @@ pub(crate) fn navigation_view_accessibility(
                         subtitle_bounds,
                     )
                 });
-        let mut bar_node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Navigation),
-        );
+        let mut bar_node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Navigation,
+            ));
         let bar_label = renderer.resolve_accessibility_label(env, None);
         if let Some(label) = bar_label {
             bar_node.set_label(label);
         }
-        let mut title_node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Header),
-        );
+        let mut title_node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Header,
+            ));
         let title_label = renderer.resolve_accessibility_label(env, default_title_label);
         if let Some(label) = title_label {
             title_node.set_label(label);
@@ -329,9 +333,11 @@ pub(crate) fn navigation_view_accessibility(
             bar_node.push_child(title_node_id);
         }
         if state.subtitle_present {
-            let mut subtitle_node = AccessibilityNode::new(
-                renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Label),
-            );
+            let mut subtitle_node =
+                AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                    env,
+                    AccessibilityNodeRole::Label,
+                ));
             let subtitle_label = renderer.resolve_accessibility_label(env, default_subtitle_label);
             if let Some(label) = subtitle_label {
                 subtitle_node.set_label(label);
@@ -1053,11 +1059,11 @@ fn split_measure_plan(
 /// selection).
 fn retained_split_column<'a>(
     selected: Option<Id>,
-    column: &'a Option<(Id, bool, RetainedSubview)>,
+    column: Option<&'a (Id, bool, RetainedSubview)>,
     placeholder: &'a RetainedSubview,
 ) -> &'a RetainedSubview {
     if selected.is_some() {
-        column.as_ref().map_or(placeholder, |(_, _, view)| view)
+        column.map_or(placeholder, |(_, _, view)| view)
     } else {
         placeholder
     }
@@ -1202,14 +1208,18 @@ pub(crate) fn measure_navigation_split_node(
     if plan.compact {
         let column = if plan.three_column {
             if detail_selection.is_some() {
-                retained_split_column(detail_selection, &split.detail, &split.placeholder)
+                retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
             } else if primary_selection.is_some() {
-                retained_split_column(primary_selection, &split.content, &split.placeholder)
+                retained_split_column(
+                    primary_selection,
+                    split.content.as_ref(),
+                    &split.placeholder,
+                )
             } else {
                 &split.primary
             }
         } else {
-            retained_split_column(detail_selection, &split.detail, &split.placeholder)
+            retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
         };
         return ViewDimensions::new(
             column.measure_built_with_proposal(state, env, theme, proposal),
@@ -1227,12 +1237,16 @@ pub(crate) fn measure_navigation_split_node(
         height = height.max(f64::from(size.height));
     }
     if plan.three_column {
-        let size = retained_split_column(primary_selection, &split.content, &split.placeholder)
-            .measure_built_with_proposal(state, env, theme, plan.column_proposal);
+        let size = retained_split_column(
+            primary_selection,
+            split.content.as_ref(),
+            &split.placeholder,
+        )
+        .measure_built_with_proposal(state, env, theme, plan.column_proposal);
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
-    let size = retained_split_column(detail_selection, &split.detail, &split.placeholder)
+    let size = retained_split_column(detail_selection, split.detail.as_ref(), &split.placeholder)
         .measure_built_with_proposal(state, env, theme, plan.detail_proposal);
     width += f64::from(size.width);
     height = height.max(f64::from(size.height));
@@ -1685,9 +1699,11 @@ pub(crate) fn navigation_stack_accessibility(
         if depth == 0 {
             return;
         }
-        let mut back_node = AccessibilityNode::new(
-            renderer.resolve_accessibility_role(env, AccessibilityNodeRole::Button),
-        );
+        let mut back_node =
+            AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
+                env,
+                AccessibilityNodeRole::Button,
+            ));
         back_node.set_label(crate::localization::text(env, "back"));
         back_node.add_action(AccessibilityAction::Focus);
         back_node.add_action(AccessibilityAction::Click);
@@ -2022,7 +2038,7 @@ pub(crate) fn render_navigation_stack_parts(
 
     if let Some((progress, completed, cancelled, from_scene, to_scene)) = interactive_frame {
         ctx.draw_navigation_transition(
-            transition_style.clone(),
+            transition_style,
             transition_motion,
             NavigationTransitionDirection::Pop,
             progress,
@@ -2117,7 +2133,7 @@ pub(crate) fn render_navigation_stack_parts(
     );
     let edge_hit_rect = transformed_rect(ctx.hit_transform, edge_rect);
     let inverse_hit_transform = ctx.hit_transform.inverse();
-    let active_scene_for_gesture = active_scene.clone();
+    let active_scene_for_gesture = active_scene;
     let previous_scene_for_gesture = previous_scene;
     let navigation_width = ctx.bounds.width();
     let drag_slot_key = slot_key.clone();
@@ -2501,7 +2517,7 @@ mod tests {
             AnyViewBuilder::new(move || {
                 let path = builder_path.clone();
                 waterui_core::AnyView::new(
-                    NavigationStack::with_path(path.clone(), NavigationView::new("Root", text("")))
+                    NavigationStack::with_path(path, NavigationView::new("Root", text("")))
                         .destination(|route: i64| {
                             NavigationView::new(format!("Page {route}"), text(""))
                         }),

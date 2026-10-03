@@ -16,6 +16,8 @@
 //! measurement shape identical text through one cache.
 
 use super::*;
+#[cfg(test)]
+use crate::renderer::{HydroState, HydrolysisRenderer};
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroUsize;
 use core::ops::Range;

@@ -93,7 +93,7 @@ fn dense_row(i: usize, with_text: bool) -> AnyView {
 fn rebuild_screen(cards: usize, with_text: bool, tick: Binding<u64>) -> AnyView {
     use waterui::prelude::*;
     let mut children: Vec<AnyView> = Vec::with_capacity(cards + 1);
-    children.push(AnyView::new(text!("{tick}", tick = tick.clone())));
+    children.push(AnyView::new(text!("{tick}", tick = tick)));
     for i in 0..cards {
         children.push(dense_row(i, with_text));
     }
@@ -467,7 +467,7 @@ fn proto_color(width: f32, height: f32, rgba: [f32; 4]) -> ProtoNode {
 }
 
 /// One row: leading circle-sized block, a wide middle block, a trailing chip —
-/// three fills laid out by a real `HStackLayout`, mirroring the dense_row shape.
+/// three fills laid out by a real `HStackLayout`, mirroring the `dense_row` shape.
 fn proto_row() -> ProtoNode {
     ProtoNode::Container {
         layout: Box::new(HStackLayout {

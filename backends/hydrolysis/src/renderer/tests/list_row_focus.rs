@@ -112,7 +112,7 @@ fn arrow_down(runtime: &mut HeadlessRuntime) {
 
 /// Clicking the `.on_tap` element nested inside a row's content claims the
 /// row's selection press for the gesture; the row's `ListItem` node must
-/// still take the focus, so the first ArrowDown moves to the next row.
+/// still take the focus, so the first `ArrowDown` moves to the next row.
 #[test]
 fn tap_gesture_inside_row_focuses_the_row_for_arrows() {
     let selection = Binding::container(None::<u64>);
@@ -151,8 +151,8 @@ fn tap_gesture_inside_row_focuses_the_row_for_arrows() {
 
     click(
         &mut runtime,
-        (tap_bounds.x0 + tap_bounds.x1) / 2.0,
-        (tap_bounds.y0 + tap_bounds.y1) / 2.0,
+        f64::midpoint(tap_bounds.x0, tap_bounds.x1),
+        f64::midpoint(tap_bounds.y0, tap_bounds.y1),
     );
     settle(&mut runtime, &mut at, 2);
 
@@ -229,8 +229,8 @@ fn tap_press_target_inside_row_focuses_the_row_for_arrows() {
 
     click(
         &mut runtime,
-        (row2_bounds.x0 + row2_bounds.x1) / 2.0,
-        (row2_bounds.y0 + row2_bounds.y1) / 2.0,
+        f64::midpoint(row2_bounds.x0, row2_bounds.x1),
+        f64::midpoint(row2_bounds.y0, row2_bounds.y1),
     );
     settle(&mut runtime, &mut at, 2);
 

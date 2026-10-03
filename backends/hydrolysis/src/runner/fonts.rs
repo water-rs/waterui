@@ -1,6 +1,6 @@
 //! Resource font registration and locale-aware fallback installation.
 //!
-//! WaterUI ships a known set of resource fonts (Roboto plus script-specific
+//! `WaterUI` ships a known set of resource fonts (Roboto plus script-specific
 //! Noto Sans families). Classification and fallback installation are shared by the
 //! native loader (which scans `resources/fonts` directories) and the web
 //! loader in [`super::web_runner`] (which fetches fonts from a manifest).
@@ -15,7 +15,7 @@
 use parley::fontique::{Collection, FallbackKey, FamilyId, FontInfo, GenericFamily, Script};
 use waterui_text::FontCollection;
 
-/// Font-family buckets recognized from WaterUI's bundled resource fonts.
+/// Font-family buckets recognized from `WaterUI`'s bundled resource fonts.
 #[derive(Default)]
 pub(super) struct ResourceFontFamilies {
     generic: Vec<FamilyId>,
@@ -581,10 +581,10 @@ mod tests {
 
     /// A DejaVu-Sans subset kept to ASCII and the emoji codepoints the
     /// emoji-family test exercises — including the ones that *also* live in a
-    /// colour face. DejaVu covering `U+1F600` at all is the whole point of
+    /// colour face. `DejaVu` covering `U+1F600` at all is the whole point of
     /// <https://github.com/water-rs/hydrolysis/issues/119>: a desktop sans
     /// carries monochrome glyphs for emoji-presentation codepoints, so which
-    /// family answers the cluster decides whether it draws colour or flat
+    /// family answers — a `DejaVu`-style cluster decides whether it draws colour or flat
     /// text.
     const TEXT_WITH_EMOJI_COVERAGE: &[u8] =
         include_bytes!("../../test-fonts/DejaVuSansEmojiCoverage.ttf");

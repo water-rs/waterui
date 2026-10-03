@@ -329,9 +329,9 @@ pub struct FramePhases {
     pub animation: Duration,
     /// Time spent updating the retained scene, including refresh and re-encode work.
     pub rebuild: Duration,
-    /// Time spent building the root WaterUI view value during scene rebuild.
+    /// Time spent building the root `WaterUI` view value during scene rebuild.
     pub build_content: Duration,
-    /// Time spent dispatching WaterUI views into Hydrolysis scene/layout state.
+    /// Time spent dispatching `WaterUI` views into Hydrolysis scene/layout state.
     pub scene_dispatch: Duration,
     /// Time spent finalizing layout, interaction, and accessibility state after dispatch.
     pub scene_finish: Duration,
@@ -1123,10 +1123,10 @@ crate::engine::cfg_async_fn! {
                             rebuild_iterations: u32::from(pump_outcome.built),
                             measurement_cache_hits,
                             measurement_cache_misses,
-                            scene_layers: layer_stats.composited_scene_layers,
-                            scene_segment_layers: layer_stats.scene_segment_layers,
-                            gpu_content_layers: layer_stats.gpu_content_layers,
-                            filtered_layers: layer_stats.filtered_layers,
+                            scene_layers: layer_stats.composited_scene,
+                            scene_segment_layers: layer_stats.scene_segments,
+                            gpu_content_layers: layer_stats.gpu_content,
+                            filtered_layers: layer_stats.filtered_subtrees,
                             clip_layers,
                             max_clip_depth,
                             applied_filter_count,
@@ -1173,10 +1173,10 @@ crate::engine::cfg_async_fn! {
                 rebuild_iterations: u32::from(pump_outcome.built),
                 measurement_cache_hits,
                 measurement_cache_misses,
-                scene_layers: layer_stats.composited_scene_layers,
-                scene_segment_layers: layer_stats.scene_segment_layers,
-                gpu_content_layers: layer_stats.gpu_content_layers,
-                filtered_layers: layer_stats.filtered_layers,
+                scene_layers: layer_stats.composited_scene,
+                scene_segment_layers: layer_stats.scene_segments,
+                gpu_content_layers: layer_stats.gpu_content,
+                filtered_layers: layer_stats.filtered_subtrees,
                 clip_layers,
                 max_clip_depth,
                 applied_filter_count,
@@ -1203,7 +1203,7 @@ crate::engine::cfg_async_fn! {
                     present: present_duration,
                     total: elapsed_or_zero(frame_started_at),
                     rebuild_iterations: u32::from(pump_outcome.built),
-                    filtered_layers: layer_stats.filtered_layers,
+                    filtered_layers: layer_stats.filtered_subtrees,
                     rebuilt: pump_outcome.built,
                 },
             );

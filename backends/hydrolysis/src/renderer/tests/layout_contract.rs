@@ -418,7 +418,7 @@ fn spacer_min_length_is_the_stack_compression_floor() {
         .expect("a vstack must build a container node")
         .placed
         .iter()
-        .map(|frame| frame.height())
+        .map(Rect::height)
         .collect();
     assert_eq!(
         heights[1], 40.0,
