@@ -114,7 +114,6 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
         state.children.len()
     );
     let bounds: Rect = view::bounds(&host);
-    let scale = host.display_scale().unwrap_or(1.0);
     for (index, (child, placement)) in state.children.iter().zip(placements.iter()).enumerate() {
         let mut frame = Rect::new(
             f64::from(placement.frame.x()),
@@ -133,7 +132,7 @@ fn perform_layout(state: &Rc<RefCell<FixedState>>) {
         // that lays out on the frame change already holds its selected
         // proposal, and a proposal change alone still marks it for relayout.
         proposal::deliver(child.view(), placement.proposal);
-        view::set_frame(child.view(), frame.pixel_snapped(scale));
+        view::set_frame(child.view(), frame);
     }
 }
 
