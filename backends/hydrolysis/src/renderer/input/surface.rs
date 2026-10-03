@@ -572,8 +572,8 @@ impl SemanticCore {
     /// (`Focus(true)`) on the refocus, which is what a terminal's focus
     /// reporting (DECSET 1004) needs. Element-focus moves made while the
     /// window is blurred emit no Focus events at all — both surfaces stay
-    /// reportably unfocused — so the holder hears a single `Focus(true)` on
-    /// the refocus.
+    /// unfocused as far as focus reporting is concerned — so the holder
+    /// hears a single `Focus(true)` on the refocus.
     pub(crate) fn handle_window_focused(&mut self, focused: bool) -> bool {
         if self.hit_test.window_blurred != focused {
             return false;
