@@ -294,7 +294,7 @@ fn apply_node(element: &HtmlElement, node: &Node) {
     }
 }
 
-fn aria_role(role: Role) -> Option<&'static str> {
+const fn aria_role(role: Role) -> Option<&'static str> {
     Some(match role {
         Role::Unknown
         | Role::GenericContainer

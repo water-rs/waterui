@@ -1,8 +1,3 @@
-#![allow(
-    clippy::cast_precision_loss,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! Layout regressions for the native navigation containers.
 //!
 //! <https://github.com/water-rs/hydrolysis/issues/153>: the split measured a
@@ -12,6 +7,18 @@
 //! answer the proposal the split hands it, and measurement must read the
 //! retained, mounted column rather than rebuilding it. `docs/layout-spec.md`
 //! §7 is the contract: a column's rect is the proposal for its content.
+
+mod support {
+    /// Widens a `u32` extent to `f32`, rounding to nearest when the value exceeds
+    /// the 24-bit mantissa; the extents involved are small.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "the widened values are pixel extents, far below 2^24"
+    )]
+    pub const fn u32_as_f32(v: u32) -> f32 {
+        v as f32
+    }
+}
 
 use hydrolysis_m3::Material3;
 use waterui::component::list::{List, ListItem};
@@ -82,13 +89,13 @@ fn assert_split_geometry(app: &mut OffscreenApp, context: &str) {
     let messages = list_bounds(app, "messages");
     let composer = label_bounds(app, "composer");
     assert!(
-        composer.y() + composer.height() <= (WINDOW_HEIGHT as f32) + 0.5,
+        composer.y() + composer.height() <= support::u32_as_f32(WINDOW_HEIGHT) + 0.5,
         "{context}: composer escaped the window: {composer:?}"
     );
     // The pane is the detail column's content area: it starts where the list
     // starts and runs to the window bottom, and the bar closes it — so the
     // list's height is the pane minus the bar.
-    let pane_height = (WINDOW_HEIGHT as f32) - messages.y();
+    let pane_height = (support::u32_as_f32(WINDOW_HEIGHT)) - messages.y();
     assert_close(
         f64::from(messages.height()),
         f64::from(pane_height - BAR_HEIGHT),
@@ -203,7 +210,7 @@ fn tabs_content_fits_pane() {
 
     let dock = label_bounds(&mut app, "dock");
     assert!(
-        dock.y() + dock.height() <= (WINDOW_HEIGHT as f32) + 0.5,
+        dock.y() + dock.height() <= support::u32_as_f32(WINDOW_HEIGHT) + 0.5,
         "the vstack's trailing bar escaped the window: {dock:?}"
     );
     let messages = list_bounds(&mut app, "messages");

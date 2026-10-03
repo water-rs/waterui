@@ -50,7 +50,7 @@ use crate::platform::{InputEvent, KeyState};
 /// Whether an event can be a keystroke's product — preedit and commit are
 /// what an IME emits for the keys it consumed; `ImeDisabled` answers the
 /// app's own "IME off" request, so it claims nothing.
-fn is_keystroke_product(event: &InputEvent) -> bool {
+const fn is_keystroke_product(event: &InputEvent) -> bool {
     matches!(
         event,
         InputEvent::ImePreedit { .. } | InputEvent::ImeCommit { .. }
@@ -62,7 +62,7 @@ fn is_keystroke_product(event: &InputEvent) -> bool {
 /// `composing` seeds the walk with the composition the renderer already
 /// holds; the returned flags are meaningful for `InputEvent::Key` and
 /// `InputEvent::TextInput` entries and `false` for everything else.
-pub(crate) fn ime_owned_events(events: &[InputEvent], composing: bool) -> Vec<bool> {
+pub fn ime_owned_events(events: &[InputEvent], composing: bool) -> Vec<bool> {
     // Each IME event claims the single keystroke that produced it: the
     // nearest modifier-free press before it, plus that press's own
     // TextInput events, skipping key releases in between. An earlier press

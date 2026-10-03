@@ -55,7 +55,7 @@ use crate::renderer::{MISSING_MENU_SHORTCUT_REGISTRY, MenuShortcutRegistry};
 /// signal for whichever surface consumes it: the winit runner feeds it to
 /// `NativeMenuBar::install` on macOS and Windows; runners with no menu-bar
 /// surface just arm the chords and drop it.
-pub(crate) fn register_menu_bar(
+pub fn register_menu_bar(
     menu_bar: &Computed<Vec<Menu>>,
     env: &Environment,
 ) -> Computed<Vec<ResolvedMenuItem>> {

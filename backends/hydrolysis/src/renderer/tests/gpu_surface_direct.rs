@@ -242,8 +242,8 @@ fn settled(runtime: &mut HeadlessRuntime, frames: &mut Frames, log: &ProbeLog) {
 
 fn full_window_bindings() -> (Binding<f32>, Binding<f32>) {
     (
-        Binding::f32(WINDOW_WIDTH as f32),
-        Binding::f32(WINDOW_HEIGHT as f32),
+        Binding::f32(crate::num_cast::u32_as_f32(WINDOW_WIDTH)),
+        Binding::f32(crate::num_cast::u32_as_f32(WINDOW_HEIGHT)),
     )
 }
 
@@ -320,8 +320,8 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
     // Inset the surface: the layer's bounds and pixel size change. Nothing
     // structural changed — the same node, the same runtime, the same view —
     // so only the layer's size and transform edits apply.
-    width.set(WINDOW_WIDTH as f32 - 20.0);
-    height.set(WINDOW_HEIGHT as f32 - 20.0);
+    width.set(crate::num_cast::u32_as_f32(WINDOW_WIDTH) - 20.0);
+    height.set(crate::num_cast::u32_as_f32(WINDOW_HEIGHT) - 20.0);
     frames.pump(&mut runtime, 2);
     let counters = frames.render(&mut runtime).counters;
     assert_eq!(counters.gpu_content_layers, 1);
@@ -331,8 +331,8 @@ fn resizing_a_gpu_content_view_never_re_runs_setup() {
         "a resize must not rebuild the view's GPU resources"
     );
 
-    width.set(WINDOW_WIDTH as f32);
-    height.set(WINDOW_HEIGHT as f32);
+    width.set(crate::num_cast::u32_as_f32(WINDOW_WIDTH));
+    height.set(crate::num_cast::u32_as_f32(WINDOW_HEIGHT));
     frames.pump(&mut runtime, 2);
     assert_eq!(
         frames.render(&mut runtime).counters.gpu_content_layers,

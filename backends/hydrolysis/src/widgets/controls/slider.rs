@@ -33,7 +33,7 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// move-only `AnyView`s (they cannot be re-dispatched twice), so the persistent
 /// `Widget` node holds them as [`RetainedSubview`]s built once and re-flushed each
 /// frame; the cloneable `label`/`range`/`value` drive the track and accessibility.
-pub(crate) struct SliderRenderState {
+pub struct SliderRenderState {
     label: Label,
     /// The main label as a retained node sub-view, re-flushed each frame at its
     /// rect (reactive content stays live through the node's own re-flush). The
@@ -97,6 +97,8 @@ impl HydroNativeView for Native<SliderConfig> {
 
 /// Field-level accessibility emission for the [`SliderRenderState`]-based
 /// retained node path.
+// empty when the accessibility feature is off
+#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
 fn slider_accessibility_parts(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
@@ -159,7 +161,7 @@ fn slider_accessibility_parts(
 /// [`measure_slider_intrinsic`] but reading the value-end labels from their
 /// already-built [`RetainedSubview`]s (the measure path has no renderer to build
 /// on, so the labels are pre-built at tree-build time).
-pub(crate) fn measure_slider_node(
+pub fn measure_slider_node(
     render_state: &SliderRenderState,
     _proposal: ProposalSize,
     state: &mut HydroState,
@@ -186,20 +188,23 @@ pub(crate) fn measure_slider_node(
         control_row_height
     };
 
-    let min_width = f64::from(label_size.width).max(
+    let min_width = f64::from(label_size.width).max(metrics.horizontal_inset.mul_add(
+        2.0,
         f64::from(min_label_size.width)
             + metrics.horizontal_spacing
             + metrics.min_track_width
             + metrics.horizontal_spacing
-            + f64::from(max_label_size.width)
-            + metrics.horizontal_inset * 2.0,
-    );
-    ViewDimensions::new(LayoutSize::new(min_width as f32, intrinsic_height as f32))
+            + f64::from(max_label_size.width),
+    ));
+    ViewDimensions::new(LayoutSize::new(
+        crate::num_cast::f64_as_f32(min_width),
+        crate::num_cast::f64_as_f32(intrinsic_height),
+    ))
 }
 
 /// Renders a retained slider leaf every flush: emits a11y (unless hidden) then the
 /// track + thumb + labels + drag target, reading the value signal each frame.
-pub(crate) fn render_slider_node(
+pub fn render_slider_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<SliderRenderState>>,
     env: &Environment,
@@ -223,7 +228,11 @@ pub(crate) fn render_slider_node(
     render_slider_parts(ctx, state, env);
 }
 
-pub(crate) fn render_slider_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_slider_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<SliderRenderState>>,
     env: &Environment,
@@ -384,7 +393,7 @@ pub(crate) fn render_slider_parts(
         .read_signal(&value_binding)
         .clamp(range_start, range_end);
     let progress = (clamped - range_start) / span;
-    let fill_right = track_left + (track_right - track_left) * progress;
+    let fill_right = f64::mul_add(track_right - track_left, progress, track_left);
     let fill_rect = kurbo::Rect::new(
         track_left,
         track_center_y - metrics.track_height / 2.0,
@@ -447,9 +456,13 @@ pub(crate) fn render_slider_parts(
             Some(1),
         )
         .size;
-        let bubble_width = (f64::from(text_size.width) + indicator_metrics.padding_x * 2.0)
+        let bubble_width = indicator_metrics
+            .padding_x
+            .mul_add(2.0, f64::from(text_size.width))
             .max(indicator_metrics.min_width);
-        let bubble_height = (f64::from(text_size.height) + indicator_metrics.padding_y * 2.0)
+        let bubble_height = indicator_metrics
+            .padding_y
+            .mul_add(2.0, f64::from(text_size.height))
             .max(indicator_metrics.min_height);
         let thumb_top = track_center_y - metrics.handle_height / 2.0;
         let bubble_bottom = thumb_top - indicator_metrics.thumb_gap;
@@ -469,7 +482,7 @@ pub(crate) fn render_slider_parts(
         }
         let text_rect = kurbo::Rect::new(
             bubble.x0,
-            bubble.y0 + (bubble.height() - f64::from(text_size.height)) * 0.5,
+            (bubble.height() - f64::from(text_size.height)).mul_add(0.5, bubble.y0),
             bubble.x1,
             bubble.y1,
         );
@@ -510,7 +523,7 @@ pub(crate) fn render_slider_parts(
             let local_point = inverse_transform * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
-            let next = range_start + span * t;
+            let next = span.mul_add(t, range_start);
             if (value_binding.snapshot() - next).abs() <= value_epsilon {
                 return false;
             }
@@ -540,7 +553,7 @@ pub(crate) fn render_slider_parts(
 /// they emit their own nodes here too. The main label flushes visual-only and
 /// emits nothing.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_slider_accessibility(
+pub fn emit_slider_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<SliderRenderState>>,
     env: &Environment,

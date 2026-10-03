@@ -1,9 +1,11 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use core::any::Any;
 use rustc_hash::FxHashMap;
 
 #[derive(Default)]
-pub(crate) struct LifecycleState {
+pub struct LifecycleState {
     pub(crate) current_frame_retain: Vec<Retain>,
     pub(crate) previous_frame_retain: Vec<Retain>,
     pub(crate) signal_watches: SignalWatchRegistry,
@@ -29,7 +31,7 @@ pub(crate) struct LifecycleState {
 /// cross-type collision would silently drop a subscription, so `mark_seen`
 /// fast-fails when the key's recorded signal type does not match.
 #[derive(Default)]
-pub(crate) struct SignalWatchRegistry {
+pub struct SignalWatchRegistry {
     entries: FxHashMap<usize, SignalWatchEntry>,
     generation: u64,
 }
@@ -46,7 +48,7 @@ struct SignalWatchEntry {
 }
 
 impl SignalWatchRegistry {
-    fn begin_frame(&mut self) {
+    const fn begin_frame(&mut self) {
         self.generation = self
             .generation
             .checked_add(1)
@@ -99,7 +101,7 @@ impl SignalWatchRegistry {
     }
 }
 
-pub(crate) struct DeferredLifeCycleHook {
+pub struct DeferredLifeCycleHook {
     pub(crate) env: Environment,
     pub(crate) hook: LifeCycleHook,
 }
@@ -118,7 +120,7 @@ impl LifecycleState {
 }
 
 impl DeferredLifeCycleHook {
-    pub(crate) fn new(hook: LifeCycleHook, env: Environment) -> Self {
+    pub(crate) const fn new(hook: LifeCycleHook, env: Environment) -> Self {
         Self { env, hook }
     }
 

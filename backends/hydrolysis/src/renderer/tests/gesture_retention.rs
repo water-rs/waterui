@@ -82,7 +82,10 @@ fn gesture_recognizer_survives_repaint_mid_drag() {
     let view = {
         let phases = Rc::clone(&phases);
         zstack((
-            ().size(WINDOW as f32, WINDOW as f32),
+            ().size(
+                crate::num_cast::u32_as_f32(WINDOW),
+                crate::num_cast::u32_as_f32(WINDOW),
+            ),
             Text::computed(repaint.clone()),
         ))
         .gesture(DragGesture::new(0.0), move |drag: Use<DragEvent>| {

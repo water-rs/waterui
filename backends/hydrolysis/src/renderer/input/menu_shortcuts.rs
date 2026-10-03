@@ -33,7 +33,7 @@ use crate::widgets::controls::button::MenuRenderState;
 /// The trailing hint a menu row draws for a `Command`'s shortcut — `⌃⌥⇧⌘`
 /// symbols on macOS, `Ctrl+Alt+Shift+` text elsewhere (where the command
 /// modifier is control, the platform's menu accelerator).
-pub(crate) fn shortcut_hint_text(shortcut: &Shortcut) -> Str {
+pub fn shortcut_hint_text(shortcut: &Shortcut) -> Str {
     let modifiers = shortcut.modifiers;
     let key = shortcut.key.to_uppercase();
     #[cfg(target_os = "macos")]
@@ -84,7 +84,7 @@ struct ChordModifiers {
 }
 
 impl ChordModifiers {
-    fn of(shortcut: &Shortcut) -> Self {
+    const fn of(shortcut: &Shortcut) -> Self {
         let modifiers = shortcut.modifiers;
         #[cfg(target_os = "macos")]
         {
@@ -149,7 +149,7 @@ impl MenuShortcut {
 /// The panic text for a renderer resolving menu chords in an environment no
 /// runner prepared: registering and dispatching both name it, so the missing
 /// seed names the runner that skipped it.
-pub(crate) const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the runner to seed a MenuShortcutRegistry into the window's \
+pub const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require the runner to seed a MenuShortcutRegistry into the window's \
      environment — the winit runner, headless run and HeadlessRuntime, SemanticRuntime and \
      the web runner all install one; a renderer built outside a runner seeds its own";
 
@@ -159,7 +159,7 @@ pub(crate) const MISSING_MENU_SHORTCUT_REGISTRY: &str = "menu shortcuts require 
 /// they mounted in. Unlike a pointer address, it cannot drift when the
 /// renderer moves nor alias a recycled allocation (water-rs/hydrolysis#247).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WindowId {
+pub enum WindowId {
     /// A winit window — its native `winit::window::WindowId`.
     #[cfg(hydrolysis_winit)]
     Winit(winit::window::WindowId),
@@ -177,6 +177,10 @@ impl HydrolysisRenderer {
     /// registry, scoped to this renderer's window — the trigger's render
     /// calls it every flush, so a source the flush no longer visits drops
     /// out with its render state.
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn register_menu_shortcuts(
         &mut self,
         menu_state: Weak<RefCell<MenuRenderState>>,
@@ -275,7 +279,7 @@ enum MenuShortcutSource {
 }
 
 impl MenuShortcutSource {
-    fn seq(&self) -> u64 {
+    const fn seq(&self) -> u64 {
         match self {
             Self::Mounted { seq, .. } | Self::Popup { seq, .. } | Self::AppBar { seq, .. } => *seq,
         }
@@ -303,7 +307,7 @@ impl MenuShortcutSource {
 /// that mounted them, and open popup menus — plus the counter that orders
 /// them by registration (water-rs/hydrolysis#247).
 #[derive(Clone, Default)]
-pub(crate) struct MenuShortcutRegistry(Rc<RefCell<MenuShortcutRegistryState>>);
+pub struct MenuShortcutRegistry(Rc<RefCell<MenuShortcutRegistryState>>);
 
 #[derive(Default)]
 struct MenuShortcutRegistryState {
@@ -317,7 +321,7 @@ struct MenuShortcutRegistryState {
 }
 
 impl MenuShortcutRegistryState {
-    fn next_source_seq(&mut self) -> u64 {
+    const fn next_source_seq(&mut self) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
         seq

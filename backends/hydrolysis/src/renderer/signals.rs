@@ -1,6 +1,8 @@
 //! Reactive inputs: signal watching and animated-value sampling that bind
 //! `WaterUI` signals to frame triggers and the animation controller.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 type SignalUpdateHandler<T> = Rc<dyn Fn(nami::watcher::Context<T>)>;
@@ -126,7 +128,7 @@ impl SemanticCore {
         self.signals.set_frame_clock(at);
     }
 
-    pub(crate) fn frame_instant(&self) -> Instant {
+    pub(crate) const fn frame_instant(&self) -> Instant {
         self.frame_instant
     }
 

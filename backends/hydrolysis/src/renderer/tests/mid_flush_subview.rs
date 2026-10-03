@@ -118,6 +118,10 @@ const INNER_ROW_B: [u8; 3] = [0x60, 0x40, 0x60];
 /// honest measure inside a slot it could not fit, pushing a row up over the
 /// setter row — and that each row keeps its measured height.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn mid_flush_dynamic_apply_in_retained_subview_relayouts() {
     let open = Binding::bool(false);
     let inner_items: Binding<Vec<SelfId<u64>>> = Binding::container(vec![SelfId::new(7_u64)]);

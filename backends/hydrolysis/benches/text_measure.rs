@@ -1,8 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    reason = "the bench harness narrows fragment indices the same way the renderer does"
-)]
-
 //! Re-measure cost of a dense text workload through the real layout path.
 //!
 //! Workload: a 200-row list of mixed-length body text plus one long
@@ -12,6 +7,17 @@
 //! since #237.
 //!
 //! Run with `cargo bench --features testing`.
+
+mod support {
+    /// Truncates a `u64` index to `usize`; the values are row indices that fit.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the values are fragment indices that fit usize"
+    )]
+    pub const fn u64_as_usize(v: u64) -> usize {
+        v as usize
+    }
+}
 
 use std::time::{Duration, Instant};
 
@@ -47,10 +53,13 @@ fn row_text(row: u64) -> String {
         "play fully",
         "suggestion row with a somewhat longer label that wraps on narrow widths",
     ];
-    let mut text = String::from(FRAGMENTS[(row as usize) % FRAGMENTS.len()]);
+    let mut text = String::from(FRAGMENTS[(support::u64_as_usize(row)) % FRAGMENTS.len()]);
     for extra in 1..=(row % 3) {
         text.push(' ');
-        text.push_str(FRAGMENTS[(row as usize + extra as usize) % FRAGMENTS.len()]);
+        text.push_str(
+            FRAGMENTS
+                [(support::u64_as_usize(row) + support::u64_as_usize(extra)) % FRAGMENTS.len()],
+        );
     }
     text
 }

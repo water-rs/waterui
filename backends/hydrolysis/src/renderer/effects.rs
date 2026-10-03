@@ -40,7 +40,7 @@ use waterui_graphics::{AnyEffect, ParamGuards};
 /// is no separate capture number to measure: this cell counts the encodes it
 /// can see and their CPU time only.
 #[derive(Debug, Default)]
-pub(crate) struct AppliedFilterMetrics {
+pub struct AppliedFilterMetrics {
     /// `encode_render` calls observed this frame.
     encoded: AtomicU32,
     /// CPU nanoseconds spent inside `encode_render` this frame.
@@ -65,8 +65,10 @@ impl AppliedFilterMetrics {
     /// Records one completed effect encode.
     fn record(&self, elapsed: Duration) {
         self.encoded.fetch_add(1, Ordering::Relaxed);
-        self.effect_nanos
-            .fetch_add(elapsed.as_nanos() as u64, Ordering::Relaxed);
+        self.effect_nanos.fetch_add(
+            crate::num_cast::u128_as_u64(elapsed.as_nanos()),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -81,7 +83,7 @@ impl AppliedFilterMetrics {
 /// is `Send`), `redraw` (an `Arc` callback, also `Send`) and `metrics` (atomics).
 /// `built` is populated inside `setup`, which the engine only calls on its
 /// render thread, and the value never crosses back.
-pub(crate) struct EngineEffect {
+pub struct EngineEffect {
     /// The unbuilt declarative effect, taken when `setup` runs.
     source: Option<AnyEffect>,
     /// The built render-side effect — populated by `setup`, only ever touched
@@ -172,7 +174,7 @@ impl Effect for EngineEffect {
 /// Holding `guards` here — rather than inside the registered effect — keeps
 /// the nami subscriptions feeding the filter's parameter slots alive for as
 /// long as the layer can draw, and tears them down when the node is dropped.
-pub(crate) struct FilteredRuntime {
+pub struct FilteredRuntime {
     source: Option<AnyEffect>,
     filter: Option<Filter>,
     _guards: ParamGuards,
@@ -180,7 +182,7 @@ pub(crate) struct FilteredRuntime {
 
 impl FilteredRuntime {
     /// A runtime holding `view`'s effect source and parameter guards.
-    pub(crate) fn new(effect: AnyEffect, guards: ParamGuards) -> Self {
+    pub(crate) const fn new(effect: AnyEffect, guards: ParamGuards) -> Self {
         Self {
             source: Some(effect),
             filter: None,

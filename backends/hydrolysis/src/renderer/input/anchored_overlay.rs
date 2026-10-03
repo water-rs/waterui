@@ -21,13 +21,15 @@ use waterui::metadata::anchored_overlay::{AnchorEdge, AnchorPlacement, Clamp, Di
 use waterui_core::Environment;
 use waterui_core::layout::layout_direction;
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// What an anchor's flush registered: the anchor frame in hit space plus the
 /// handles the post-flush render pass needs. The content slot lives on the
 /// effect (`Rc`-shared) so the overlay's built node survives both closes and
 /// the anchor's own reconcile.
-pub(crate) struct RegisteredAnchoredOverlay {
+pub struct RegisteredAnchoredOverlay {
     /// The anchor's frame in hit space this frame.
     pub(crate) anchor: kurbo::Rect,
     /// The placement contract from the metadata.
@@ -56,7 +58,7 @@ pub(crate) struct RegisteredAnchoredOverlay {
 /// presented overlay's drawn frame, dismissal mode and binding. An entry the
 /// next frame's flush does not re-register is an anchor that left the tree —
 /// its overlay closes.
-pub(crate) struct PresentedAnchoredOverlay {
+pub struct PresentedAnchoredOverlay {
     /// Identity matching [`RegisteredAnchoredOverlay::marker`].
     pub(crate) marker: Rc<()>,
     /// The frame the overlay drew into, in hit space.
@@ -80,6 +82,10 @@ impl SemanticCore {
     /// The press itself continues to its target, exactly like the
     /// context-menu outside dismissal in `handle_pointer_down_with_source`.
     /// `Manual` overlays are never closed here.
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn dismiss_anchored_overlays_outside(&mut self, point: kurbo::Point) {
         for overlay in &self.popup_menu.presented_anchored_overlays {
             if !overlay.exiting
@@ -108,6 +114,10 @@ impl HydrolysisRenderer {
     /// above all content, at the placement contract's frame. Called after the
     /// tree flush: the registrations it collected during the flush carry the
     /// anchors' live bounds, so the placement follows moves and resizes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn render_anchored_overlays(&mut self, transform: kurbo::Affine) {
         let registered = core::mem::take(&mut self.popup_menu.anchored_overlays);
         let last_presented = core::mem::take(&mut self.popup_menu.presented_anchored_overlays);
@@ -156,15 +166,21 @@ impl HydrolysisRenderer {
                 Clamp::Off => 0.0,
             };
             let proposal = ProposalSize::new(
-                Some((window.width() - margin).max(0.0) as f32),
-                Some((window.height() - margin).max(0.0) as f32),
+                Some(crate::num_cast::f64_as_f32(
+                    (window.width() - margin).max(0.0),
+                )),
+                Some(crate::num_cast::f64_as_f32(
+                    (window.height() - margin).max(0.0),
+                )),
             );
             self.animation_controller.begin_animation_scope(scope);
             let (ideal, _stretch) = content.patch_and_measure(self, &entry.env, proposal);
             self.animation_controller.end_animation_scope();
             let overlay_size = waterui_core::layout::Size::new(
-                ideal.width.min(window.width() as f32),
-                ideal.height.min(window.height() as f32),
+                ideal.width.min(crate::num_cast::f64_as_f32(window.width())),
+                ideal
+                    .height
+                    .min(crate::num_cast::f64_as_f32(window.height())),
             );
             let direction = self.read_signal(&layout_direction(&entry.env));
             let placement = waterui_backend_core::overlay::place_anchored_overlay(
@@ -282,10 +298,16 @@ impl HydrolysisRenderer {
     }
 }
 
-fn kurbo_to_rect(rect: kurbo::Rect) -> waterui_core::layout::Rect {
+const fn kurbo_to_rect(rect: kurbo::Rect) -> waterui_core::layout::Rect {
     waterui_core::layout::Rect::new(
-        waterui_core::layout::Point::new(rect.x0 as f32, rect.y0 as f32),
-        waterui_core::layout::Size::new(rect.width() as f32, rect.height() as f32),
+        waterui_core::layout::Point::new(
+            crate::num_cast::f64_as_f32(rect.x0),
+            crate::num_cast::f64_as_f32(rect.y0),
+        ),
+        waterui_core::layout::Size::new(
+            crate::num_cast::f64_as_f32(rect.width()),
+            crate::num_cast::f64_as_f32(rect.height()),
+        ),
     )
 }
 

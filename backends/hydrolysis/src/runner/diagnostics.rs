@@ -1,5 +1,7 @@
 //! Frame-render diagnostics reporting, configured from `WATERUI_HYDROLYSIS_RENDER_DIAG*`.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 pub(super) const DEFAULT_RENDER_DIAG_INTERVAL_MS: u64 = 1_000;
@@ -88,7 +90,7 @@ impl RenderDiagnostics {
         }
     }
 
-    pub(super) fn enabled(&self) -> bool {
+    pub(super) const fn enabled(&self) -> bool {
         self.config.enabled
     }
 
@@ -103,6 +105,10 @@ impl RenderDiagnostics {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     pub(super) fn record_frame(&mut self, window_title: &str, sample: RenderPhaseSample) {
         if !self.config.enabled {
             return;
@@ -176,7 +182,7 @@ impl RenderDiagnostics {
             return;
         }
 
-        let frame_count = self.totals.frames as f64;
+        let frame_count = crate::num_cast::u64_as_f64(self.totals.frames);
         let avg_total_ms = duration_ms(self.totals.total) / frame_count;
         let avg_rebuild_ms = duration_ms(self.totals.rebuild) / frame_count;
         let avg_build_content_ms = duration_ms(self.totals.build_content) / frame_count;
@@ -185,10 +191,12 @@ impl RenderDiagnostics {
         let avg_acquire_ms = duration_ms(self.totals.acquire) / frame_count;
         let avg_render_ms = duration_ms(self.totals.render) / frame_count;
         let avg_present_ms = duration_ms(self.totals.present) / frame_count;
-        let avg_filtered_layers = self.totals.filtered_layers as f64 / frame_count;
-        let rebuild_ratio = self.totals.rebuild_frames as f64 / frame_count;
-        let avg_rebuild_iterations = self.totals.rebuild_iterations as f64 / frame_count;
-        let fps = self.totals.frames as f64 / elapsed.as_secs_f64();
+        let avg_filtered_layers =
+            crate::num_cast::u64_as_f64(self.totals.filtered_layers) / frame_count;
+        let rebuild_ratio = crate::num_cast::u64_as_f64(self.totals.rebuild_frames) / frame_count;
+        let avg_rebuild_iterations =
+            crate::num_cast::u64_as_f64(self.totals.rebuild_iterations) / frame_count;
+        let fps = crate::num_cast::u64_as_f64(self.totals.frames) / elapsed.as_secs_f64();
 
         tracing::info!(
             target: "waterui::hydrolysis::render",

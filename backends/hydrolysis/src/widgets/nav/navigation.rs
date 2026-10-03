@@ -71,7 +71,7 @@ fn presented_page_env(
 /// reactive appearance signals (`color`/`hidden`) are kept and read through
 /// `read_signal`; the static `display_mode` and the `search` model (cloneable, used
 /// to build a fresh `TextField` each frame) are kept by value.
-pub(crate) struct NavigationViewRenderState {
+pub struct NavigationViewRenderState {
     title: RetainedSubview,
     subtitle: RetainedSubview,
     principal: Vec<RetainedSubview>,
@@ -95,6 +95,10 @@ pub(crate) struct NavigationViewRenderState {
 /// raw view); waterui may also wrap a slot in `Metadata<Environment>`
 /// (`navigation_slot_with_environment`), so the check looks through that wrap
 /// too.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
 fn navigation_slot_is_empty(view: &AnyView) -> bool {
     if view.is::<()>() || view.is::<Native<()>>() {
         return true;
@@ -224,7 +228,11 @@ impl HydroNativeView for Native<NavigationView> {
 /// spoken label each resolved at build time (`default_a11y_label`); both emit
 /// as manual children of the bar node — the title a `Header`, the subtitle a
 /// `Label` — because their draws are suppressed chrome, not sub-view emissions.
-pub(crate) fn navigation_view_accessibility(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn navigation_view_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
@@ -268,7 +276,7 @@ pub(crate) fn navigation_view_accessibility(
                     let title_y0 = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
                         bar_rect.y1 - metrics.large_title_bottom_inset - title_height
                     } else {
-                        bar_rect.y0 + (bar_height - title_height) * 0.5
+                        (bar_height - title_height).mul_add(0.5, bar_rect.y0)
                     };
                     let title_leading = navigation_leading_reserve(env);
                     let title_rect = kurbo::Rect::new(
@@ -376,7 +384,7 @@ pub(crate) fn navigation_view_accessibility(
 /// Fills both axes when a concrete proposal is supplied (matching the dispatch-path
 /// `dimensions`), otherwise falls back to the intrinsic size computed from the
 /// prebuilt bar/content sub-views (mirroring `measure_navigation_view_intrinsic`).
-pub(crate) fn measure_navigation_view_node(
+pub fn measure_navigation_view_node(
     state: &NavigationViewRenderState,
     proposal: ProposalSize,
     hydro: &mut HydroState,
@@ -393,7 +401,9 @@ pub(crate) fn measure_navigation_view_node(
     } else {
         let base = navigation_base_bar_height_for_display_mode(state.display_mode, theme);
         let search_extra = if state.search.is_some() {
-            metrics.search_height + metrics.search_vertical_inset * 2.0
+            metrics
+                .search_vertical_inset
+                .mul_add(2.0, metrics.search_height)
         } else {
             0.0
         };
@@ -428,22 +438,35 @@ pub(crate) fn measure_navigation_view_node(
         });
     let content_size = state.content.measure_built(hydro, env, theme);
     let width = f64::from(content_size.width)
+        .max(metrics.item_spacing.mul_add(
+            2.0,
+            metrics.horizontal_inset.mul_add(
+                2.0,
+                f64::from(leading_size.width)
+                    + f64::from(title_size.width)
+                    + f64::from(trailing_size.width),
+            ),
+        ))
         .max(
-            f64::from(leading_size.width)
-                + f64::from(title_size.width)
-                + f64::from(trailing_size.width)
-                + metrics.horizontal_inset * 2.0
-                + metrics.item_spacing * 2.0,
+            metrics
+                .horizontal_inset
+                .mul_add(2.0, f64::from(search_size.width)),
         )
-        .max(f64::from(search_size.width) + metrics.horizontal_inset * 2.0)
-        .max(f64::from(bottom_size.width) + metrics.horizontal_inset * 2.0);
+        .max(
+            metrics
+                .horizontal_inset
+                .mul_add(2.0, f64::from(bottom_size.width)),
+        );
     let bottom_height = if state.bottom.is_empty() {
         0.0
     } else {
         metrics.inline_bar_height
     };
     let height = f64::from(content_size.height) + bar_height + bottom_height;
-    ViewDimensions::new(LayoutSize::new(width as f32, height as f32))
+    ViewDimensions::new(LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    ))
 }
 
 fn measure_retained_toolbar_group(
@@ -463,12 +486,15 @@ fn measure_retained_toolbar_group(
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
-    LayoutSize::new(width as f32, height as f32)
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
 }
 
 /// Renders a retained navigation view leaf every flush: emits the bar/title a11y
 /// (unless hidden) then the bar chrome + content, reading the bar's live signals.
-pub(crate) fn render_navigation_view_node(
+pub fn render_navigation_view_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationViewRenderState>>,
     env: &Environment,
@@ -496,7 +522,15 @@ pub(crate) fn render_navigation_view_node(
     render_navigation_view_parts(ctx, state, env);
 }
 
-pub(crate) fn render_navigation_view_parts(
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_navigation_view_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationViewRenderState>>,
     env: &Environment,
@@ -518,7 +552,9 @@ pub(crate) fn render_navigation_view_parts(
     } else {
         let base = navigation_base_bar_height_for_display_mode(display_mode, &theme);
         let search_extra = if search.is_some() {
-            metrics.search_height + metrics.search_vertical_inset * 2.0
+            metrics
+                .search_vertical_inset
+                .mul_add(2.0, metrics.search_height)
         } else {
             0.0
         };
@@ -608,7 +644,7 @@ pub(crate) fn render_navigation_view_parts(
         let title_y0 = if matches!(display_mode, NavigationTitleDisplayMode::Large) {
             bar_rect.y0 + base_bar_height - metrics.large_title_bottom_inset - title_height
         } else {
-            bar_rect.y0 + (base_bar_height - title_height) * 0.5
+            (base_bar_height - title_height).mul_add(0.5, bar_rect.y0)
         };
         let effective_leading_width = leading_width.max(navigation_leading_reserve(env));
         let title_x0 = if effective_leading_width > 0.0 {
@@ -742,7 +778,10 @@ fn measure_toolbar_group_intrinsic(
         width += f64::from(size.width);
         height = height.max(f64::from(size.height));
     }
-    LayoutSize::new(width as f32, height as f32)
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
 }
 
 fn flush_toolbar_group(
@@ -760,18 +799,20 @@ fn flush_toolbar_group(
         .iter_mut()
         .map(|item| item.measure_intrinsic(ctx.renderer_mut(), env))
         .collect();
-    let total_width = sizes.iter().map(|size| f64::from(size.width)).sum::<f64>()
-        + metrics.item_spacing * sizes.len().saturating_sub(1) as f64;
+    let total_width = metrics.item_spacing.mul_add(
+        crate::num_cast::usize_as_f64(sizes.len().saturating_sub(1)),
+        sizes.iter().map(|size| f64::from(size.width)).sum::<f64>(),
+    );
     let mut x = match alignment {
         ToolbarAlignment::Leading => bounds.x0,
-        ToolbarAlignment::Center => bounds.x0 + (bounds.width() - total_width) * 0.5,
+        ToolbarAlignment::Center => (bounds.width() - total_width).mul_add(0.5, bounds.x0),
         ToolbarAlignment::Trailing => bounds.x1 - total_width,
     }
     .max(bounds.x0);
     for (item, size) in group.iter_mut().zip(sizes) {
         let width = f64::from(size.width).min((bounds.x1 - x).max(0.0));
         let height = f64::from(size.height).min(bounds.height());
-        let y = bounds.y0 + (bounds.height() - height) * 0.5;
+        let y = (bounds.height() - height).mul_add(0.5, bounds.y0);
         let rect = kurbo::Rect::new(x, y, x + width, y + height);
         if rect.width() > 0.0 && rect.height() > 0.0 {
             let render_ctx = ctx.render_context();
@@ -797,7 +838,7 @@ fn title_and_subtitle_rects(
 ) -> (kurbo::Rect, kurbo::Rect) {
     let total_height =
         (f64::from(title_size.height) + f64::from(subtitle_size.height)).min(bounds.height());
-    let mut y = bounds.y0 + (bounds.height() - total_height) * 0.5;
+    let mut y = (bounds.height() - total_height).mul_add(0.5, bounds.y0);
     let title_height = f64::from(title_size.height).min((bounds.y1 - y).max(0.0));
     let title_rect = kurbo::Rect::new(bounds.x0, y, bounds.x1, y + title_height);
     y += title_height;
@@ -842,7 +883,7 @@ fn flush_title_and_subtitle(
 }
 
 /// Retained adaptive split state for both two- and three-column configurations.
-pub(crate) struct NavigationSplitRenderState {
+pub struct NavigationSplitRenderState {
     primary_selection: nami::Binding<Option<Id>>,
     content_builder: Option<NavigationSplitDetailBuilder>,
     secondary_selection: Option<nami::Binding<Option<Id>>>,
@@ -1046,9 +1087,16 @@ fn split_measure_plan(
         compact,
         show_all,
         three_column,
-        column_proposal: ProposalSize::new(Some(column_width as f32), proposal.height),
+        column_proposal: ProposalSize::new(
+            Some(crate::num_cast::f64_as_f32(column_width)),
+            proposal.height,
+        ),
         detail_proposal: ProposalSize::new(
-            proposal_width.map(|width| (width - column_width * fixed_columns).max(0.0) as f32),
+            proposal_width.map(|width| {
+                crate::num_cast::f64_as_f32(
+                    f64::mul_add(column_width, -fixed_columns, width).max(0.0),
+                )
+            }),
             proposal.height,
         ),
     }
@@ -1069,6 +1117,15 @@ fn retained_split_column<'a>(
     }
 }
 
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+// the split layout's column-size resolution is one continuous pass
+#[expect(
+    clippy::too_many_lines,
+    reason = "the layout resolves pane columns and dividers in a single sweep; the length is the enumeration, not logic"
+)]
 fn measure_navigation_split_layout(
     split: &NavigationSplitLayout,
     proposal: ProposalSize,
@@ -1177,12 +1234,16 @@ fn measure_navigation_split_layout(
     height = height.max(f64::from(size.height));
 
     LayoutSize::new(
-        proposal.width.unwrap_or(width as f32),
-        proposal.height.unwrap_or(height as f32),
+        proposal
+            .width
+            .unwrap_or_else(|| crate::num_cast::f64_as_f32(width)),
+        proposal
+            .height
+            .unwrap_or_else(|| crate::num_cast::f64_as_f32(height)),
     )
 }
 
-pub(crate) fn measure_navigation_split_node(
+pub fn measure_navigation_split_node(
     split: &NavigationSplitRenderState,
     proposal: ProposalSize,
     state: &mut HydroState,
@@ -1252,12 +1313,16 @@ pub(crate) fn measure_navigation_split_node(
     height = height.max(f64::from(size.height));
 
     ViewDimensions::new(LayoutSize::new(
-        proposal.width.unwrap_or(width as f32),
-        proposal.height.unwrap_or(height as f32),
+        proposal
+            .width
+            .unwrap_or_else(|| crate::num_cast::f64_as_f32(width)),
+        proposal
+            .height
+            .unwrap_or_else(|| crate::num_cast::f64_as_f32(height)),
     ))
 }
 
-pub(crate) fn render_navigation_split_node(
+pub fn render_navigation_split_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationSplitRenderState>>,
     env: &Environment,
@@ -1265,7 +1330,7 @@ pub(crate) fn render_navigation_split_node(
     render_navigation_split_parts(ctx, state, env);
 }
 
-pub(crate) fn render_navigation_split_parts(
+pub fn render_navigation_split_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationSplitRenderState>>,
     env: &Environment,
@@ -1528,7 +1593,7 @@ fn render_split_detail(
 /// The retained render state of a `NavigationStack`. Both the root and every pushed
 /// destination own a persistent render node, so inactive pages retain local widget
 /// state and a transition never reconstructs its source or destination subtree.
-pub(crate) struct NavigationStackRenderState {
+pub struct NavigationStackRenderState {
     unresolved_root: Option<AnyView>,
     root: Option<RetainedSubview>,
     background: Option<Computed<WorkingColor>>,
@@ -1565,7 +1630,7 @@ impl NavigationStackRenderState {
         Some(state)
     }
 
-    fn root_mut(&mut self) -> &mut RetainedSubview {
+    const fn root_mut(&mut self) -> &mut RetainedSubview {
         self.root
             .as_mut()
             .expect("Hydrolysis navigation root must be resolved before rendering")
@@ -1684,7 +1749,7 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
 /// `Widget`-node path passes its [`RenderContext`]; the semantic emission walk
 /// passes `None` — the back button's `Click` pops the stack directly, so it
 /// needs no bounds.
-pub(crate) fn navigation_stack_accessibility(
+pub fn navigation_stack_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
@@ -1761,7 +1826,7 @@ pub(crate) fn navigation_stack_accessibility(
 }
 
 /// Measures a navigation stack leaf (zero intrinsic, matching the dispatch path).
-pub(crate) fn measure_navigation_stack_node(
+pub fn measure_navigation_stack_node(
     _state: &NavigationStackRenderState,
     _proposal: ProposalSize,
     _hydro: &mut HydroState,
@@ -1777,7 +1842,7 @@ pub(crate) fn measure_navigation_stack_node(
 /// dispatch wrapper's `accessibility`-then-`render` order); when the stack is
 /// accessibility-hidden it runs that step inside a suppression scope so the entries
 /// are still bound while the a11y nodes are suppressed.
-pub(crate) fn render_navigation_stack_node(
+pub fn render_navigation_stack_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationStackRenderState>>,
     env: &Environment,
@@ -1808,7 +1873,15 @@ pub(crate) fn render_navigation_stack_node(
     render_navigation_stack_parts(ctx, state, env);
 }
 
-pub(crate) fn render_navigation_stack_parts(
+#[expect(
+    clippy::float_cmp,
+    reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_navigation_stack_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<NavigationStackRenderState>>,
     env: &Environment,
@@ -2219,7 +2292,7 @@ pub(crate) fn render_navigation_stack_parts(
 /// subtitle sub-views flush under suppression (their semantics live on the
 /// bar's own nodes), so they emit nothing here.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_navigation_view_accessibility(
+pub fn emit_navigation_view_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<NavigationViewRenderState>>,
     env: &Environment,
@@ -2264,7 +2337,7 @@ pub(crate) fn emit_navigation_view_accessibility(
 /// exactly as the rendered path), and the selected detail or placeholder.
 /// Column visibility is presentation — every retained pane emits.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_navigation_split_accessibility(
+pub fn emit_navigation_split_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<NavigationSplitRenderState>>,
     env: &Environment,
@@ -2313,7 +2386,7 @@ pub(crate) fn emit_navigation_split_accessibility(
 /// when the stack is empty, the topmost pushed destination otherwise.
 /// Transition scenes are presentation and emit nothing.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_navigation_stack_accessibility(
+pub fn emit_navigation_stack_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<NavigationStackRenderState>>,
     env: &Environment,

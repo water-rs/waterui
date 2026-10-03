@@ -1,14 +1,16 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_layout::stack::LazyStackAxis;
 
 #[derive(Default)]
-pub(crate) struct LazyState {
-    pub(crate) lazy_viewport_stack: Vec<LazyViewport>,
+pub struct LazyState {
+    pub lazy_viewport_stack: Vec<LazyViewport>,
 }
 
 /// Viewport geometry with the coordinate transform of its scroll content.
 #[derive(Clone, Copy)]
-pub(crate) struct LazyViewport {
+pub struct LazyViewport {
     pub(crate) bounds: kurbo::Rect,
     pub(crate) transform: kurbo::Affine,
 }
@@ -20,27 +22,27 @@ impl LazyState {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct LazyTableSlot {
+pub struct LazyTableSlot {
     pub(crate) column_widths: Vec<f64>,
-    pub(crate) max_rows: usize,
+    pub max_rows: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct VisibleIndexWindow {
+pub struct VisibleIndexWindow {
     pub(crate) start: usize,
     pub(crate) end: usize,
-    pub(crate) leading_offset: f64,
+    pub leading_offset: f64,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct VisibleColumnWindow {
+pub struct VisibleColumnWindow {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) leading_offset: f64,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum LazyStackAxisConfig {
+pub enum LazyStackAxisConfig {
     Vertical {
         spacing: nami::Computed<f32>,
         alignment: HorizontalAlignment,
@@ -54,7 +56,7 @@ pub(crate) enum LazyStackAxisConfig {
 }
 
 impl LazyStackAxisConfig {
-    pub(crate) fn direction(&self) -> &nami::Computed<waterui_core::layout::LayoutDirection> {
+    pub(crate) const fn direction(&self) -> &nami::Computed<waterui_core::layout::LayoutDirection> {
         match self {
             Self::Vertical { direction, .. } | Self::Horizontal { direction, .. } => direction,
         }
@@ -77,7 +79,7 @@ impl LazyTableSlot {
 /// container (e.g. `AbsoluteLayout`/`ZStackLayout` overlay) is rendered by the
 /// retained per-id collection path, which keeps one cached subtree per item id
 /// and reconciles membership changes incrementally.
-pub(crate) fn lazy_stack_axis_config(
+pub fn lazy_stack_axis_config(
     layout: &dyn Layout,
     direction: nami::Computed<waterui_core::layout::LayoutDirection>,
 ) -> Option<LazyStackAxisConfig> {
@@ -100,7 +102,7 @@ pub(crate) fn lazy_stack_axis_config(
 /// Shared by the immediate-mode `render_lazy_container` handler and the retained
 /// render tree's `LazyStackNode` so the cross-axis sizing/alignment rules live in
 /// exactly one place.
-pub(crate) fn place_lazy_stack_item(
+pub fn place_lazy_stack_item(
     axis_config: &LazyStackAxisConfig,
     stretch_axis: StretchAxis,
     size: waterui_core::layout::Size,
@@ -181,7 +183,7 @@ pub(crate) fn place_lazy_stack_item(
 /// so deep viewport resolution and programmatic item jumps never materialize or
 /// linearly scan preceding rows.
 #[derive(Debug, Default)]
-pub(crate) struct VirtualExtentIndex {
+pub struct VirtualExtentIndex {
     measured: Vec<Option<f64>>,
     fenwick: Vec<f64>,
     estimate: f64,
@@ -206,10 +208,15 @@ impl VirtualExtentIndex {
         self.spacing = spacing;
         let estimated_stride = estimate + spacing;
         for (index, slot) in self.fenwick.iter_mut().enumerate().take(count + 1).skip(1) {
-            *slot = estimated_stride * (index & index.wrapping_neg()) as f64;
+            *slot = estimated_stride * crate::num_cast::usize_as_f64(index & index.wrapping_neg());
         }
     }
 
+    // exact comparison intended — matches() validates an unmodified estimate against itself
+    #[expect(
+        clippy::float_cmp,
+        reason = "compare the unmodified estimate field exactly; approximate equality would accept drifted caches"
+    )]
     pub(crate) fn matches(&self, count: usize, estimate: f64, spacing: f64) -> bool {
         self.measured.len() == count && self.estimate == estimate && self.spacing == spacing
     }
@@ -319,7 +326,7 @@ impl VirtualExtentIndex {
     }
 }
 
-pub(crate) fn resolve_visible_column_window(
+pub fn resolve_visible_column_window(
     widths: &[f64],
     start_offset: f64,
     end_offset: f64,
@@ -357,7 +364,7 @@ pub(crate) fn resolve_visible_column_window(
     }
 }
 
-pub(crate) fn resolve_table_visible_rows(
+pub fn resolve_table_visible_rows(
     offset_y: f64,
     viewport_height: f64,
     max_rows: usize,
@@ -365,23 +372,27 @@ pub(crate) fn resolve_table_visible_rows(
 ) -> VisibleIndexWindow {
     let data_start = (offset_y - metrics.header_height).max(0.0);
     let data_end = (offset_y + viewport_height - metrics.header_height).max(0.0);
-    let start = ((data_start / metrics.row_height).floor() as usize).min(max_rows);
-    let end = ((data_end / metrics.row_height).ceil() as usize).min(max_rows);
+    let start =
+        (crate::num_cast::f64_as_usize((data_start / metrics.row_height).floor())).min(max_rows);
+    let end = (crate::num_cast::f64_as_usize((data_end / metrics.row_height).ceil())).min(max_rows);
     VisibleIndexWindow {
         start,
         end: end.max(start),
-        leading_offset: start as f64 * metrics.row_height,
+        leading_offset: crate::num_cast::usize_as_f64(start) * metrics.row_height,
     }
 }
 
-pub(crate) fn table_metrics_from_slot(
+pub fn table_metrics_from_slot(
     slot: &LazyTableSlot,
     metrics: waterui_backend_core::widget::TableMetrics,
 ) -> MeasuredTableMetrics {
     MeasuredTableMetrics {
         column_widths: slot.column_widths.clone(),
         table_width: slot.column_widths.iter().sum(),
-        table_height: metrics.header_height + metrics.row_height * slot.max_rows as f64,
+        table_height: metrics.row_height.mul_add(
+            crate::num_cast::usize_as_f64(slot.max_rows),
+            metrics.header_height,
+        ),
     }
 }
 

@@ -235,7 +235,7 @@ const TEST_FALLBACK_FONTS: &[(&str, &[u8])] = &[
 /// about the test host. Only a cluster no bundled face maps reaches the
 /// platform — the last resort, as in the shipping runner.
 #[cfg(any(test, feature = "testing"))]
-pub(crate) fn deterministic_test_fonts() -> parley::FontContext {
+pub fn deterministic_test_fonts() -> parley::FontContext {
     use parley::fontique::{Blob, CollectionOptions};
     use std::sync::Arc;
 
@@ -335,7 +335,7 @@ pub(super) fn native_resource_fonts(
 /// which is what lets a test name a bundled family like `Pacifico` and reach
 /// the overhang face on a host (macOS included) that does not carry it.
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "testing")))]
-pub(crate) fn native_test_fonts(resources: &waterui_core::ResourceContext) -> parley::FontContext {
+pub fn native_test_fonts(resources: &waterui_core::ResourceContext) -> parley::FontContext {
     use parley::fontique::Blob;
     use std::sync::Arc;
 
@@ -529,7 +529,7 @@ mod tests {
             }
         }
         impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
-            type Writer = LogBuffer;
+            type Writer = Self;
             fn make_writer(&'a self) -> Self::Writer {
                 self.clone()
             }

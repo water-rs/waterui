@@ -41,8 +41,8 @@ fn runtime_with(view: AnyView) -> HeadlessRuntime {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
-        SIZE as u32,
-        SIZE as u32,
+        crate::num_cast::f32_as_u32(SIZE),
+        crate::num_cast::f32_as_u32(SIZE),
         MinimalTestTheme::default(),
     );
     // Settle the tree so this frame's hit targets are registered.

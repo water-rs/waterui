@@ -20,7 +20,7 @@ const CATALOGS: &[(&str, &str)] = &[
 ];
 
 #[derive(Debug, Clone)]
-pub(crate) struct HydrolysisLocalizations(TranslationCatalog);
+pub struct HydrolysisLocalizations(TranslationCatalog);
 
 impl HydrolysisLocalizations {
     fn new() -> Self {
@@ -34,11 +34,11 @@ impl HydrolysisLocalizations {
     }
 }
 
-pub(crate) fn install(env: &mut Environment) {
+pub fn install(env: &mut Environment) {
     env.insert(HydrolysisLocalizations::new());
 }
 
-pub(crate) fn text(env: &Environment, key: &str) -> String {
+pub fn text(env: &Environment, key: &str) -> String {
     let localizations = env
         .get::<HydrolysisLocalizations>()
         .expect("Hydrolysis runner must install its built-in localizations");

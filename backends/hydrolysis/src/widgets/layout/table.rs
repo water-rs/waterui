@@ -49,7 +49,7 @@ enum TableCellKey {
 /// [`TableCellKey`]. Only the cells in the current visible row/column window are
 /// built and retained (evicted once they scroll out), so the table stays
 /// virtualized — cost is bounded by visible cells.
-pub(crate) struct TableRenderState {
+pub struct TableRenderState {
     pub(crate) config: TableConfig,
     /// Column metrics belong to this semantic table node.
     slot: RefCell<LazyTableSlot>,
@@ -71,6 +71,10 @@ impl TableRenderState {
         }
     }
 
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
     fn bind_scroll(
         &self,
         viewport_width: f64,
@@ -125,7 +129,10 @@ fn measure_table_intrinsic(
         return LayoutSize::zero();
     }
     let metrics = measure_table_metrics(&columns, state, env, theme);
-    LayoutSize::new(metrics.table_width as f32, metrics.table_height as f32)
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(metrics.table_width),
+        crate::num_cast::f64_as_f32(metrics.table_height),
+    )
 }
 
 /// Emits a table's accessibility tree from its node-owned retained state.
@@ -135,7 +142,13 @@ fn measure_table_intrinsic(
 /// emits every column header and every cell with no bounds — a table's cell
 /// contents are already bounded by its data — while the scroll handle tracks
 /// offsets in cell units.
-pub(crate) fn table_accessibility(
+// the names follow the domain vocabulary (header/cell/row groups); renaming would obscure rather than clarify
+#[allow(clippy::similar_names)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn table_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
@@ -176,8 +189,8 @@ pub(crate) fn table_accessibility(
             // window by whole cells without a layout pass.
             None => MeasuredTableMetrics {
                 column_widths: vec![1.0; columns.len()],
-                table_width: columns.len() as f64,
-                table_height: state_ref.slot.borrow().max_rows as f64,
+                table_width: crate::num_cast::usize_as_f64(columns.len()),
+                table_height: crate::num_cast::usize_as_f64(state_ref.slot.borrow().max_rows),
             },
         }
     };
@@ -386,7 +399,7 @@ pub(crate) fn table_accessibility(
 }
 
 /// Measures a table leaf from its config (intrinsic-sized; proposal-independent).
-pub(crate) fn measure_table_node(
+pub fn measure_table_node(
     table: &TableConfig,
     _proposal: ProposalSize,
     state: &mut HydroState,
@@ -397,7 +410,7 @@ pub(crate) fn measure_table_node(
 }
 
 /// Renders a retained table leaf every flush.
-pub(crate) fn render_table_node(
+pub fn render_table_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TableRenderState>>,
     env: &Environment,
@@ -428,7 +441,11 @@ pub(crate) fn render_table_node(
     render_table_parts(ctx, state, env);
 }
 
-pub(crate) fn render_table_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_table_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TableRenderState>>,
     env: &Environment,
@@ -666,7 +683,7 @@ fn flush_cell_subview(
 /// same nodes `table_accessibility` registers, with no bounds and every cell
 /// present.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_table_accessibility(
+pub fn emit_table_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<TableRenderState>>,
     env: &Environment,

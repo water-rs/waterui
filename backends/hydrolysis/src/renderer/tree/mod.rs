@@ -77,10 +77,12 @@ mod nodes;
 mod subview;
 mod window;
 
-pub(crate) use collection::*;
-pub(crate) use nodes::*;
-use subview::*;
+pub use collection::*;
+pub use nodes::*;
+use subview::NodeSubView;
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::lazy::{
     LazyStackAxisConfig, VirtualExtentIndex, lazy_stack_axis_config, place_lazy_stack_item,
@@ -104,7 +106,7 @@ type CollectionItemId = SelfId<RawId>;
 /// A node in the persistent retained render tree. The render-primitive set is
 /// closed by the nature of a self-drawn renderer; the open `HydroDispatcher` maps
 /// the open universe of `View` types onto this closed set.
-pub(crate) enum RenderNode {
+pub enum RenderNode {
     /// A solid fill of the node's bounds.
     Color(ColorNode),
     /// A styled-text leaf holding its reactive content/alignment.

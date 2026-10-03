@@ -1,10 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! Renderer presentation tests for controls: pointer routing around disabled
 //! controls and the disabled scope's reactive re-enable.
 //!
@@ -12,6 +5,24 @@
 //! renderer presentation); every case names its origin file and asserts what
 //! it asserted there, mounted under `Material3::defaults()` on the rendered
 //! runtime.
+
+mod support {
+    /// Converts a `f32` coordinate to `usize` with `as` saturating truncation.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test coordinates are non-negative and within usize range"
+    )]
+    pub const fn f32_as_usize(v: f32) -> usize {
+        v as usize
+    }
+
+    /// Widens a `usize` count to `f64`, rounding to nearest.
+    #[expect(clippy::cast_precision_loss, reason = "test counts are far below 2^53")]
+    pub const fn usize_as_f64(v: usize) -> f64 {
+        v as f64
+    }
+}
 
 use waterui::Binding;
 use waterui::Signal as _;
@@ -250,10 +261,10 @@ fn icon_only_button_draws_the_state_layer_centred_in_its_bounds(app: &mut Offscr
     // The standard icon button carries no container: at rest nothing is
     // drawn inside the black-background touch target.
     let rest = app.snapshot();
-    let rx0 = bounds.x().max(0.0) as usize;
-    let ry0 = bounds.y().max(0.0) as usize;
-    let rx1 = ((bounds.x() + bounds.width()) as usize).min(rest.width as usize);
-    let ry1 = ((bounds.y() + bounds.height()) as usize).min(rest.height as usize);
+    let rx0 = support::f32_as_usize(bounds.x().max(0.0));
+    let ry0 = support::f32_as_usize(bounds.y().max(0.0));
+    let rx1 = (support::f32_as_usize(bounds.x() + bounds.width())).min(rest.width as usize);
+    let ry1 = (support::f32_as_usize(bounds.y() + bounds.height())).min(rest.height as usize);
     let mut painted_at_rest = 0usize;
     for y in ry0..ry1 {
         for x in rx0..rx1 {
@@ -274,10 +285,10 @@ fn icon_only_button_draws_the_state_layer_centred_in_its_bounds(app: &mut Offscr
     app.query().role(Role::BUTTON).label("Search").hover();
     app.pump_for(std::time::Duration::from_millis(120));
     let snapshot = app.snapshot();
-    let x0 = bounds.x().max(0.0) as usize;
-    let y0 = bounds.y().max(0.0) as usize;
-    let x1 = ((bounds.x() + bounds.width()) as usize).min(snapshot.width as usize);
-    let y1 = ((bounds.y() + bounds.height()) as usize).min(snapshot.height as usize);
+    let x0 = support::f32_as_usize(bounds.x().max(0.0));
+    let y0 = support::f32_as_usize(bounds.y().max(0.0));
+    let x1 = (support::f32_as_usize(bounds.x() + bounds.width())).min(snapshot.width as usize);
+    let y1 = (support::f32_as_usize(bounds.y() + bounds.height())).min(snapshot.height as usize);
     let mut min_x = usize::MAX;
     let mut min_y = usize::MAX;
     let mut max_x = 0usize;
@@ -297,18 +308,18 @@ fn icon_only_button_draws_the_state_layer_centred_in_its_bounds(app: &mut Offscr
         min_x <= max_x,
         "the state layer drew no pixels in {bounds:?}"
     );
-    let drawn_w = (max_x - min_x + 1) as f64;
-    let drawn_h = (max_y - min_y + 1) as f64;
+    let drawn_w = support::usize_as_f64(max_x - min_x + 1);
+    let drawn_h = support::usize_as_f64(max_y - min_y + 1);
     assert_close(drawn_w, 40.0, 1.5, "drawn state-layer width");
     assert_close(drawn_h, 40.0, 1.5, "drawn state-layer height");
     assert_close(
-        (min_x + max_x + 1) as f64 / 2.0,
+        support::usize_as_f64(min_x + max_x + 1) / 2.0,
         f64::from(bounds.x() + bounds.width() / 2.0),
         1.0,
         "state-layer horizontal centre",
     );
     assert_close(
-        (min_y + max_y + 1) as f64 / 2.0,
+        support::usize_as_f64(min_y + max_y + 1) / 2.0,
         f64::from(bounds.y() + bounds.height() / 2.0),
         1.0,
         "state-layer vertical centre",

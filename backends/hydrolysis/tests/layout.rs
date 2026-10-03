@@ -1,9 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! Renderer presentation tests for layout geometry: stack bounds
 //! relationships, layout priority, growing-child heights, snackbar width
 //! bounds, and text line limits.
@@ -12,6 +6,18 @@
 //! renderer presentation); every case names its origin file and asserts what
 //! it asserted there, mounted under `Material3::defaults()` on the rendered
 //! runtime.
+
+mod support {
+    /// Converts a `f32` coordinate to `usize` with `as` saturating truncation.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test coordinates are non-negative and within usize range"
+    )]
+    pub const fn f32_as_usize(v: f32) -> usize {
+        v as usize
+    }
+}
 
 use std::time::Duration;
 
@@ -489,10 +495,10 @@ fn a_limited_text_truncates_with_an_ellipsis_beside_its_sibling(app: &mut Offscr
     // carry ink only below the midline; a clipped line instead ends
     // mid-glyph with tall ink at its trailing edge.
     let snapshot = app.snapshot();
-    let x0 = preview.x().max(0.0) as usize;
-    let x1 = ((preview.x() + preview.width()) as usize).min(snapshot.width as usize);
-    let y0 = preview.y().max(0.0) as usize;
-    let y1 = ((preview.y() + preview.height()) as usize).min(snapshot.height as usize);
+    let x0 = support::f32_as_usize(preview.x().max(0.0));
+    let x1 = (support::f32_as_usize(preview.x() + preview.width())).min(snapshot.width as usize);
+    let y0 = support::f32_as_usize(preview.y().max(0.0));
+    let y1 = (support::f32_as_usize(preview.y() + preview.height())).min(snapshot.height as usize);
     let mid = y0 + (y1 - y0) / 2;
     let bg: [u8; 4] = snapshot.rgba8[(y0 * snapshot.width as usize + x0.saturating_sub(6)) * 4..]
         [..4]

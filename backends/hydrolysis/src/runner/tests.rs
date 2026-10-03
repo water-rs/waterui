@@ -537,6 +537,10 @@ fn a_nan_max_size_panics_naming_the_field_and_value() {
 /// A re-measure on a screen change updates the limits only: a user-set size
 /// inside the new limits is left alone.
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn a_remeasure_preserves_the_user_size_inside_the_new_limits() {
     use waterui_core::dynamic::watch;
     use waterui_core::layout::Size;

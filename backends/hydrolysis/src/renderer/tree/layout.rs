@@ -2,7 +2,11 @@
 //! signals, re-measures through [`NodeSubView`], and caches each container's
 //! child frames for the flush pass.
 
+#[cfg(test)]
+use super::ContainerNode;
 use super::window::window_safe_area_insets;
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_graphics::{resolve_scene_proposal, scene_stretch_axis};
 
@@ -14,19 +18,19 @@ impl RenderNode {
     /// the child it wraps, not across a container boundary.
     pub(super) fn priority(&self) -> i32 {
         match self {
-            RenderNode::Wrapper(node) => match &node.effect {
+            Self::Wrapper(node) => match &node.effect {
                 WrapperEffect::LayoutPriority(priority) => priority.get(),
                 _ => node.child.priority(),
             },
-            RenderNode::Opacity(node) => node.child.priority(),
-            RenderNode::Scale(node) => node.child.priority(),
-            RenderNode::Rotation(node) => node.child.priority(),
-            RenderNode::Offset(node) => node.child.priority(),
-            RenderNode::Retain(node) => node.child.priority(),
-            RenderNode::Env(node) => node.child.priority(),
-            RenderNode::Dynamic(node) => node.child.borrow().priority(),
-            RenderNode::Filtered(node) => node.child.priority(),
-            RenderNode::Widget(node) => node.behavior.priority(),
+            Self::Opacity(node) => node.child.priority(),
+            Self::Scale(node) => node.child.priority(),
+            Self::Rotation(node) => node.child.priority(),
+            Self::Offset(node) => node.child.priority(),
+            Self::Retain(node) => node.child.priority(),
+            Self::Env(node) => node.child.priority(),
+            Self::Dynamic(node) => node.child.borrow().priority(),
+            Self::Filtered(node) => node.child.priority(),
+            Self::Widget(node) => node.behavior.priority(),
             _ => 0,
         }
     }
@@ -41,17 +45,17 @@ impl RenderNode {
     /// is a membership change — `layout` re-asks this every pass.
     pub(super) fn is_empty(&self) -> bool {
         match self {
-            RenderNode::Widget(node) => node.behavior.renders_nothing(),
-            RenderNode::Opacity(node) => node.child.is_empty(),
-            RenderNode::Scale(node) => node.child.is_empty(),
-            RenderNode::Rotation(node) => node.child.is_empty(),
-            RenderNode::Offset(node) => node.child.is_empty(),
-            RenderNode::Retain(node) => node.child.is_empty(),
-            RenderNode::Env(node) => node.child.is_empty(),
-            RenderNode::Dynamic(node) => node.child.borrow().is_empty(),
-            RenderNode::Wrapper(node) => node.child.is_empty(),
+            Self::Widget(node) => node.behavior.renders_nothing(),
+            Self::Opacity(node) => node.child.is_empty(),
+            Self::Scale(node) => node.child.is_empty(),
+            Self::Rotation(node) => node.child.is_empty(),
+            Self::Offset(node) => node.child.is_empty(),
+            Self::Retain(node) => node.child.is_empty(),
+            Self::Env(node) => node.child.is_empty(),
+            Self::Dynamic(node) => node.child.borrow().is_empty(),
+            Self::Wrapper(node) => node.child.is_empty(),
             // A filter over a child that draws nothing draws nothing itself.
-            RenderNode::Filtered(node) => node.child.is_empty(),
+            Self::Filtered(node) => node.child.is_empty(),
             // A container is always a member — even a frame wrapping `()`
             // explicitly claims its configured slot, like a `Spacer` does —
             // and every variant not matched above draws nothing either.
@@ -61,48 +65,46 @@ impl RenderNode {
 
     pub(super) fn stretch(&self) -> StretchAxis {
         match self {
-            RenderNode::Color(_) | RenderNode::Scroll(_) => StretchAxis::Both,
+            Self::Color(_) | Self::Scroll(_) => StretchAxis::Both,
             // The same stack laid out eagerly is content-sized on both axes, so a
             // lazy one has to be too: making a stack virtualizable must not change
             // how it sizes. Rows that want the full cross axis ask for it
             // themselves, exactly as they do in the eager path.
-            RenderNode::Text(_) | RenderNode::LazyStack(_) => StretchAxis::None,
-            RenderNode::Container(container) => {
+            Self::Text(_) | Self::LazyStack(_) => StretchAxis::None,
+            Self::Container(container) => {
                 // The retained children answer for themselves, so a transparent
                 // layout reports what its content currently claims rather than
                 // what it claimed when the tree was built.
                 let child_axes: Vec<StretchAxis> =
-                    container.children.iter().map(RenderNode::stretch).collect();
+                    container.children.iter().map(Self::stretch).collect();
                 container.layout.stretch_axis(&child_axes)
             }
-            RenderNode::Opacity(node) => node.child.stretch(),
-            RenderNode::Scale(node) => node.child.stretch(),
-            RenderNode::Rotation(node) => node.child.stretch(),
-            RenderNode::Offset(node) => node.child.stretch(),
-            RenderNode::Retain(node) => node.child.stretch(),
-            RenderNode::Env(node) => node.child.stretch(),
-            RenderNode::Dynamic(node) => node.child.borrow().stretch(),
+            Self::Opacity(node) => node.child.stretch(),
+            Self::Scale(node) => node.child.stretch(),
+            Self::Rotation(node) => node.child.stretch(),
+            Self::Offset(node) => node.child.stretch(),
+            Self::Retain(node) => node.child.stretch(),
+            Self::Env(node) => node.child.stretch(),
+            Self::Dynamic(node) => node.child.borrow().stretch(),
             // Scene content that is naturally a size is content-sized and claims
             // no leftover space; content that has no size of its own fills.
-            RenderNode::SceneView(node) => {
-                scene_stretch_axis(node.content.borrow().intrinsic_size())
-            }
+            Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
             // GPU content fills its proposal; a filtered view is a
             // layout-transparent wrapper delegating to its child.
-            RenderNode::GpuContent(node) => {
+            Self::GpuContent(node) => {
                 scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
             }
-            RenderNode::ExternalFrame(node) => {
+            Self::ExternalFrame(node) => {
                 scene_stretch_axis(node.runtime.borrow().view.intrinsic_size())
             }
-            RenderNode::Filtered(node) => node.child.stretch(),
-            RenderNode::Collection(node) => {
+            Self::Filtered(node) => node.child.stretch(),
+            Self::Collection(node) => {
                 // A collection's membership is reactive; its layout is one of the
                 // content-sized stacks, which ignores the children anyway.
                 node.layout.stretch_axis(&[])
             }
-            RenderNode::Wrapper(node) => node.child.stretch(),
-            RenderNode::Widget(node) => node.stretch,
+            Self::Wrapper(node) => node.child.stretch(),
+            Self::Widget(node) => node.stretch,
         }
     }
 
@@ -132,11 +134,11 @@ impl RenderNode {
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let (memo_gate, memo_slots) = match self {
-            RenderNode::Container(node) => (&node.memo_gate, &node.memo_slots),
-            RenderNode::Scroll(node) => (&node.memo_gate, &node.memo_slots),
-            RenderNode::Collection(node) => (&node.memo_gate, &node.memo_slots),
-            RenderNode::LazyStack(node) => (&node.memo_gate, &node.memo_slots),
-            RenderNode::Text(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Container(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Scroll(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Collection(node) => (&node.memo_gate, &node.memo_slots),
+            Self::LazyStack(node) => (&node.memo_gate, &node.memo_slots),
+            Self::Text(node) => (&node.memo_gate, &node.memo_slots),
             _ => return self.measure_body(state, env, theme, proposal),
         };
         let frame = state.measurement.frame();
@@ -161,6 +163,10 @@ impl RenderNode {
 
     /// The uncached measure [`Self::measure`] memoizes; the recursive match over
     /// the node's payload.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn measure_body(
         &self,
         state: &mut HydroState,
@@ -170,11 +176,11 @@ impl RenderNode {
     ) -> ViewDimensions {
         state.counters.measure_calls += 1;
         match self {
-            RenderNode::Color(_) => ViewDimensions::new(Size::new(
+            Self::Color(_) => ViewDimensions::new(Size::new(
                 proposal.width.unwrap_or(0.0),
                 proposal.height.unwrap_or(0.0),
             )),
-            RenderNode::Text(text) => HydrolysisRenderer::measure_text_dimensions(
+            Self::Text(text) => HydrolysisRenderer::measure_text_dimensions(
                 state,
                 text.content.snapshot(),
                 text.alignment.snapshot(),
@@ -182,7 +188,7 @@ impl RenderNode {
                 proposal.width,
                 text.line_limit,
             ),
-            RenderNode::Container(container) => {
+            Self::Container(container) => {
                 let cell = RefCell::new(state);
                 let subs: Vec<NodeSubView> = container
                     .children
@@ -193,13 +199,13 @@ impl RenderNode {
                 ViewDimensions::new(container.layout.size_that_fits(proposal, &refs))
             }
             // Transform/opacity wrappers are layout-transparent.
-            RenderNode::Opacity(node) => node.child.measure(state, env, theme, proposal),
-            RenderNode::Scale(node) => node.child.measure(state, env, theme, proposal),
-            RenderNode::Rotation(node) => node.child.measure(state, env, theme, proposal),
-            RenderNode::Offset(node) => node.child.measure(state, env, theme, proposal),
-            RenderNode::Retain(node) => node.child.measure(state, env, theme, proposal),
-            RenderNode::Env(node) => node.child.measure(state, &node.env, theme, proposal),
-            RenderNode::Dynamic(node) => {
+            Self::Opacity(node) => node.child.measure(state, env, theme, proposal),
+            Self::Scale(node) => node.child.measure(state, env, theme, proposal),
+            Self::Rotation(node) => node.child.measure(state, env, theme, proposal),
+            Self::Offset(node) => node.child.measure(state, env, theme, proposal),
+            Self::Retain(node) => node.child.measure(state, env, theme, proposal),
+            Self::Env(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Dynamic(node) => {
                 let dimensions = node.child.borrow().measure(state, env, theme, proposal);
                 // The connected node's real per-proposal answers feed the
                 // dispatch measure of the same `Dynamic` (`measure_dynamic`).
@@ -213,7 +219,7 @@ impl RenderNode {
             // Scene content that is naturally a size (an SVG's viewBox, a
             // formula's typeset box) answers with it on whichever axis the
             // container left open; content that is not fills the proposal.
-            RenderNode::SceneView(node) => {
+            Self::SceneView(node) => {
                 let resolved =
                     resolve_scene_proposal(node.content.borrow().intrinsic_size(), proposal);
                 ViewDimensions::new(Size::new(
@@ -223,7 +229,7 @@ impl RenderNode {
             }
             // GPU content answers like a scene: content that is naturally a
             // size is content-sized; content without one fills the proposal.
-            RenderNode::GpuContent(node) => {
+            Self::GpuContent(node) => {
                 let resolved =
                     resolve_scene_proposal(node.runtime.borrow().view.intrinsic_size(), proposal);
                 ViewDimensions::new(Size::new(
@@ -233,11 +239,11 @@ impl RenderNode {
             }
             // External frames measure through their source: a stream with an
             // intrinsic size is content-sized, one without fills the proposal.
-            RenderNode::ExternalFrame(node) => node.runtime.borrow().view.measure(proposal),
+            Self::ExternalFrame(node) => node.runtime.borrow().view.measure(proposal),
             // A filtered view is sized by its content: the engine applies the
             // filter to the mount the child's layers hang from.
-            RenderNode::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
-            RenderNode::Scroll(node) => {
+            Self::Filtered(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Scroll(node) => {
                 // layout-spec.md §6: a scroll claims the whole offer — a
                 // finite proposal on either axis is answered with that
                 // proposal; only a `0` proposal measures the content,
@@ -305,12 +311,12 @@ impl RenderNode {
                 }
                 ViewDimensions::new(size)
             }
-            RenderNode::LazyStack(node) => node.measure(state, theme, proposal),
-            RenderNode::Collection(node) => node.measure(state, theme, proposal),
+            Self::LazyStack(node) => node.measure(state, theme, proposal),
+            Self::Collection(node) => node.measure(state, theme, proposal),
             // Layout-transparent: the wrapper measures its child under the node's
             // scoped environment (effect colors/a11y read env every frame).
-            RenderNode::Wrapper(node) => node.child.measure(state, &node.env, theme, proposal),
-            RenderNode::Widget(node) => node.behavior.measure(state, proposal, &node.env, theme),
+            Self::Wrapper(node) => node.child.measure(state, &node.env, theme, proposal),
+            Self::Widget(node) => node.behavior.measure(state, proposal, &node.env, theme),
         }
     }
 
@@ -322,15 +328,15 @@ impl RenderNode {
         let mut node = self;
         loop {
             match node {
-                RenderNode::Container(container) => return Some(&**container),
-                RenderNode::Env(inner) => node = &inner.child,
-                RenderNode::Wrapper(inner) => node = &inner.child,
-                RenderNode::Retain(inner) => node = &inner.child,
-                RenderNode::Opacity(inner) => node = &inner.child,
-                RenderNode::Scale(inner) => node = &inner.child,
-                RenderNode::Rotation(inner) => node = &inner.child,
-                RenderNode::Offset(inner) => node = &inner.child,
-                RenderNode::Filtered(inner) => node = &inner.child,
+                Self::Container(container) => return Some(&**container),
+                Self::Env(inner) => node = &inner.child,
+                Self::Wrapper(inner) => node = &inner.child,
+                Self::Retain(inner) => node = &inner.child,
+                Self::Opacity(inner) => node = &inner.child,
+                Self::Scale(inner) => node = &inner.child,
+                Self::Rotation(inner) => node = &inner.child,
+                Self::Offset(inner) => node = &inner.child,
+                Self::Filtered(inner) => node = &inner.child,
                 _ => return None,
             }
         }
@@ -353,40 +359,44 @@ impl RenderNode {
     /// runs this pass, so no theme reaches it.
     pub(in crate::renderer) fn prepare_for_measure(&mut self, renderer: &mut HydrolysisRenderer) {
         match self {
-            RenderNode::Widget(node) => node.behavior.prepare(renderer, &node.env),
-            RenderNode::Opacity(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Scale(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Rotation(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Offset(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Retain(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Dynamic(node) => node.child.borrow_mut().prepare_for_measure(renderer),
-            RenderNode::Env(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Wrapper(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Filtered(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Container(node) => {
+            Self::Widget(node) => node.behavior.prepare(renderer, &node.env),
+            Self::Opacity(node) => node.child.prepare_for_measure(renderer),
+            Self::Scale(node) => node.child.prepare_for_measure(renderer),
+            Self::Rotation(node) => node.child.prepare_for_measure(renderer),
+            Self::Offset(node) => node.child.prepare_for_measure(renderer),
+            Self::Retain(node) => node.child.prepare_for_measure(renderer),
+            Self::Dynamic(node) => node.child.borrow_mut().prepare_for_measure(renderer),
+            Self::Env(node) => node.child.prepare_for_measure(renderer),
+            Self::Wrapper(node) => node.child.prepare_for_measure(renderer),
+            Self::Filtered(node) => node.child.prepare_for_measure(renderer),
+            Self::Container(node) => {
                 for child in &mut node.children {
                     child.prepare_for_measure(renderer);
                 }
             }
-            RenderNode::Scroll(node) => node.child.prepare_for_measure(renderer),
-            RenderNode::Collection(node) => {
+            Self::Scroll(node) => node.child.prepare_for_measure(renderer),
+            Self::Collection(node) => {
                 for entry in &mut node.entries {
                     entry.node.prepare_for_measure(renderer);
                 }
             }
-            RenderNode::LazyStack(node) => {
+            Self::LazyStack(node) => {
                 node.item_cache.borrow_mut().prepare_for_measure(renderer);
             }
-            RenderNode::Color(_)
-            | RenderNode::Text(_)
-            | RenderNode::SceneView(_)
-            | RenderNode::GpuContent(_)
-            | RenderNode::ExternalFrame(_) => {}
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::SceneView(_)
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_) => {}
         }
     }
 
     /// Re-measure and re-place this subtree, caching each container's child
     /// frames. Run on build and whenever a geometry-affecting input changes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn layout(
         &mut self,
         renderer: &mut HydrolysisRenderer,
@@ -399,7 +409,7 @@ impl RenderNode {
         // Transparent wrappers preserve both without reconstructing an offer.
         let theme = renderer.theme();
         match self {
-            RenderNode::Container(container) => {
+            Self::Container(container) => {
                 let placements = {
                     let cell = RefCell::new(&mut renderer.state);
                     let subs: Vec<NodeSubView> = container
@@ -432,19 +442,19 @@ impl RenderNode {
             }
             // Transform/opacity wrappers are layout-transparent: the child lays out
             // at the same concrete size as the wrapper.
-            RenderNode::Opacity(node) => node.child.layout(renderer, env, proposal, size),
-            RenderNode::Scale(node) => node.child.layout(renderer, env, proposal, size),
-            RenderNode::Rotation(node) => node.child.layout(renderer, env, proposal, size),
-            RenderNode::Offset(node) => node.child.layout(renderer, env, proposal, size),
-            RenderNode::Retain(node) => node.child.layout(renderer, env, proposal, size),
-            RenderNode::Env(node) => {
+            Self::Opacity(node) => node.child.layout(renderer, env, proposal, size),
+            Self::Scale(node) => node.child.layout(renderer, env, proposal, size),
+            Self::Rotation(node) => node.child.layout(renderer, env, proposal, size),
+            Self::Offset(node) => node.child.layout(renderer, env, proposal, size),
+            Self::Retain(node) => node.child.layout(renderer, env, proposal, size),
+            Self::Env(node) => {
                 let node_env = node.env.clone();
                 node.child.layout(renderer, &node_env, proposal, size);
             }
             // Layout-transparent: the child lays out at the same concrete size,
             // under the wrapper's scoped environment — except `.ignore_safe_area`,
             // which releases the window's safe-area insets on its flagged edges.
-            RenderNode::Wrapper(node) => {
+            Self::Wrapper(node) => {
                 let node_env = node.env.clone();
                 if let WrapperEffect::IgnoreSafeArea(edges) = &node.effect {
                     let insets = window_safe_area_insets(renderer, env);
@@ -472,12 +482,12 @@ impl RenderNode {
                     node.child.layout(renderer, &node_env, proposal, size);
                 }
             }
-            RenderNode::Dynamic(node) => {
+            Self::Dynamic(node) => {
                 node.child
                     .borrow_mut()
                     .layout(renderer, env, proposal, size);
             }
-            RenderNode::Scroll(node) => {
+            Self::Scroll(node) => {
                 let child_proposal = match node.axis {
                     ScrollAxis::Horizontal => ProposalSize::new(None, Some(size.height)),
                     ScrollAxis::Vertical => ProposalSize::new(Some(size.width), None),
@@ -536,21 +546,21 @@ impl RenderNode {
                 node.content_size = content_size;
                 node.viewport = size;
             }
-            RenderNode::Collection(node) => node.layout(renderer, proposal, size),
-            RenderNode::Filtered(node) => {
+            Self::Collection(node) => node.layout(renderer, proposal, size),
+            Self::Filtered(node) => {
                 let node_env = node.env.clone();
                 node.child.layout(renderer, &node_env, proposal, size);
             }
             // A lazy stack places its items lazily at flush (offset-dependent); a
             // widget leaf or GPU content view renders itself at flush from
             // `ctx.bounds`. Nothing to pre-lay-out for any of these.
-            RenderNode::Color(_)
-            | RenderNode::Text(_)
-            | RenderNode::SceneView(_)
-            | RenderNode::GpuContent(_)
-            | RenderNode::ExternalFrame(_)
-            | RenderNode::LazyStack(_)
-            | RenderNode::Widget(_) => {}
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::SceneView(_)
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_)
+            | Self::LazyStack(_)
+            | Self::Widget(_) => {}
         }
     }
 }

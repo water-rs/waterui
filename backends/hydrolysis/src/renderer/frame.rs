@@ -1,6 +1,8 @@
 //! Frame lifecycle: scene reset, rebuild/redraw frame boundaries, layer
 //! stack management, frame triggers, and per-frame statistics.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use kurbo::Shape as _;
 
@@ -9,14 +11,14 @@ use kurbo::Shape as _;
 /// where paint and hit spaces differ (e.g. a filter-atlas capture paints into
 /// slot space but keeps window hit space).
 #[derive(Clone, Copy)]
-pub(crate) struct LayerTransforms {
+pub struct LayerTransforms {
     pub(crate) paint: kurbo::Affine,
-    pub(crate) hit: kurbo::Affine,
+    pub hit: kurbo::Affine,
 }
 
 /// What one frame's window pass was made of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct RenderLayerStats {
+pub struct RenderLayerStats {
     /// Layers the compositor drew, which is every layer unless the window pass
     /// was handed to a GPU surface outright.
     pub(crate) composited_scene: u32,
@@ -25,15 +27,15 @@ pub(crate) struct RenderLayerStats {
     /// Composited layers that were embedded GPU content mounts.
     pub(crate) gpu_content: u32,
     /// Composited layers that were filtered subtrees.
-    pub(crate) filtered_subtrees: u32,
+    pub filtered_subtrees: u32,
 }
 
-pub(crate) fn duration_micros_u64(duration: Duration) -> u64 {
+pub fn duration_micros_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// Whether a recording encodes any visible content.
-pub(crate) fn scene_has_content(scene: &Recording) -> bool {
+pub const fn scene_has_content(scene: &Recording) -> bool {
     !scene.is_empty()
 }
 
@@ -45,16 +47,16 @@ impl SemanticCore {
     /// runner routes any later rebuild request through the refresh pump instead of
     /// re-running `build_content`.
     #[must_use]
-    pub fn has_render_tree(&self) -> bool {
+    pub const fn has_render_tree(&self) -> bool {
         self.render_tree.is_some()
     }
 
     #[must_use]
-    pub fn state(&self) -> &HydroState {
+    pub const fn state(&self) -> &HydroState {
         &self.state
     }
 
-    pub fn state_mut(&mut self) -> &mut HydroState {
+    pub const fn state_mut(&mut self) -> &mut HydroState {
         &mut self.state
     }
 
@@ -277,7 +279,7 @@ impl SemanticCore {
             || self.has_gliding_smooth_scrolls()
     }
 
-    pub(crate) fn measurement_cache_stats(&self) -> (u32, u32) {
+    pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {
         self.state.measurement.stats()
     }
 }
@@ -303,7 +305,7 @@ impl HydrolysisRenderer {
         self.hit_test.window_bounds = bounds;
     }
 
-    pub(crate) fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
+    pub(crate) const fn state_and_scene_mut(&mut self) -> (&mut HydroState, &mut Recording) {
         (&mut self.core.state, &mut self.scene)
     }
 
@@ -311,18 +313,19 @@ impl HydrolysisRenderer {
     /// `HydroState::counters` is private to `crate::renderer`, so callers
     /// outside the renderer reach it through here.
     #[must_use]
-    pub fn frame_work_counters(&self) -> FrameWorkCounters {
+    pub const fn frame_work_counters(&self) -> FrameWorkCounters {
         self.core.state.counters
     }
 
     /// Mutable access for the runner's host-side wakeup and submission
     /// sites (the ones that happen outside a renderer method).
-    pub fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {
+    pub const fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {
         &mut self.core.state.counters
     }
 
     #[must_use]
-    pub fn scene(&self) -> &Recording {
+    /// The frame's recorded scene.
+    pub const fn scene(&self) -> &Recording {
         &self.scene
     }
 
@@ -340,6 +343,7 @@ impl HydrolysisRenderer {
             })
     }
 
+    /// Drops the recorded scene and the hit-test state derived from it.
     pub fn reset_scene(&mut self) {
         self.hit_test.reset_scene();
         self.gesture_engine.clear_targets();
@@ -356,6 +360,7 @@ impl HydrolysisRenderer {
         self.accessibility.reset_scene();
     }
 
+    /// Marks the start of a full rebuild frame.
     pub fn begin_rebuild_frame(&mut self) {
         // A full rebuild re-dispatches every Dynamic node, so any pending isolated
         // reactive patch is subsumed by it.
@@ -432,7 +437,8 @@ impl HydrolysisRenderer {
         self.finalize_accessibility_tree_update();
     }
 
-    pub fn scene_mut(&mut self) -> &mut Recording {
+    /// The frame's recorded scene, mutably.
+    pub const fn scene_mut(&mut self) -> &mut Recording {
         &mut self.scene
     }
 
@@ -640,7 +646,7 @@ impl HydrolysisRenderer {
     /// The engine's scheduling answer from the last presented frame, drained
     /// once so one pump consumes it: `Next::At` asks the host for the frame
     /// an in-flight animation needs, `Next::Idle` parks the display link.
-    pub(crate) fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
+    pub(crate) const fn take_engine_next(&mut self) -> Option<cherenkov::Next> {
         self.engine_next.take()
     }
 
@@ -679,7 +685,7 @@ impl HydrolysisRenderer {
         }
     }
 
-    pub(crate) fn clip_layer_stats(&self) -> (u32, u32) {
+    pub(crate) const fn clip_layer_stats(&self) -> (u32, u32) {
         (self.frame_clip_layers, self.frame_max_clip_depth)
     }
 }

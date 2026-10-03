@@ -32,6 +32,8 @@ macro_rules! engine_await {
     };
 }
 
+// `macro_rules!` items have no visibility beyond the crate without
+// `#[macro_export]` — `pub(crate)` is the maximum legal re-export level.
 pub(crate) use engine_await;
 
 /// Declares one body `async fn` on wasm32 and `fn` on native: the async
@@ -75,6 +77,7 @@ macro_rules! cfg_async_fn {
     ($(#[$meta:meta])*
      $vis:vis fn $name:ident $(<$($gen:ident $(: $bound:ident)?),* $(,)?>)? ($($args:tt)*) $(-> $ret:ty)? $body:block) => {
         #[cfg(not(target_arch = "wasm32"))]
+        /// Generates the function twice: synchronously for native targets and `async` for wasm32.
         $(#[$meta])* $vis fn $name $(<$($gen $(: $bound)?),*>)? ($($args)*) $(-> $ret)? $body
         #[cfg(target_arch = "wasm32")]
         #[allow(clippy::future_not_send, reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread")]
@@ -86,7 +89,7 @@ pub(crate) use cfg_async_fn;
 
 /// The production backend: the concrete wgpu engine, never a second
 /// rendering stack or a runtime-selected one.
-pub(crate) type GpuEngine = cherenkov::Engine<cherenkov_gpu::Gpu>;
+pub type GpuEngine = cherenkov::Engine<cherenkov_gpu::Gpu>;
 
 thread_local! {
     /// Engines alive on this thread, keyed by GPU-context identity. Weak so a
@@ -104,7 +107,7 @@ cfg_async_fn! {
     /// window on the shared context wakes the same event loop.
     ///
     /// Async on wasm32, where `Engine::new` awaits the browser's GPU device.
-    pub(crate) fn shared_engine(
+    pub fn shared_engine(
         context_id: u64,
         adapter: &wgpu::Adapter,
         shared_device: cherenkov_gpu::interop::SharedDevice,
@@ -140,7 +143,7 @@ fn pipeline_cache_path(adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
 /// No persistent pipeline cache exists on targets without a platform cache
 /// directory; the engine accepts `None` the same way.
 #[cfg(not(hydrolysis_pipeline_cache))]
-fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
+const fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
     None
 }
 
@@ -150,7 +153,7 @@ fn pipeline_cache_path(_adapter: &wgpu::Adapter) -> Option<std::path::PathBuf> {
 /// The texture notification channel fires on creation and on every resize;
 /// [`Self::render`] drains it before the presenter samples — sampling
 /// post-resize without draining is the stale-attachment case the plan bans.
-pub(crate) struct CherenkovSurface {
+pub struct CherenkovSurface {
     engine: Rc<GpuEngine>,
     surface: cherenkov::Surface<cherenkov_gpu::Gpu>,
     textures: mpsc::Receiver<wgpu::Texture>,
@@ -173,7 +176,7 @@ impl CherenkovSurface {
     ///
     /// Async on wasm32, where `Engine::surface` awaits the browser device.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn new(
+    pub fn new(
         engine: Rc<GpuEngine>,
         device: &wgpu::Device,
         backend: wgpu::Backend,
@@ -193,7 +196,7 @@ impl CherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn new(
+    pub async fn new(
         engine: Rc<GpuEngine>,
         device: &wgpu::Device,
         backend: wgpu::Backend,
@@ -231,13 +234,13 @@ impl CherenkovSurface {
 
     /// The engine surface behind this output target — mount, edit and
     /// transaction calls route through it.
-    pub(crate) fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+    pub const fn engine_surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
         &self.surface
     }
 
     /// Queues a resize when `size` changed; the next [`Self::render`] drains
     /// the replacement texture notification before the presenter samples.
-    pub(crate) fn resize(&mut self, size: (u32, u32)) {
+    pub fn resize(&mut self, size: (u32, u32)) {
         if self.size == size {
             return;
         }
@@ -250,14 +253,14 @@ impl CherenkovSurface {
     /// The display's properties: `scale` is the logical-to-physical factor
     /// applied exactly once at the surface root, `headroom` the HDR headroom
     /// the display reaches.
-    pub(crate) fn display(&self, scale: f64, headroom: f32) {
+    pub fn display(&self, scale: f64, headroom: f32) {
         self.surface
             .display(cherenkov::Display { scale, headroom })
             .expect("hydrolysis renderer: engine surface display update failed");
     }
 
     /// The colour the surface clears to before content.
-    pub(crate) fn clear_color(&self, color: cherenkov::WorkingColor) {
+    pub fn clear_color(&self, color: cherenkov::WorkingColor) {
         self.surface.clear_color(color);
     }
 
@@ -269,7 +272,7 @@ impl CherenkovSurface {
     ///
     /// Async on wasm32, where `Engine::render` awaits the browser device.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn render(&mut self) -> cherenkov::Next {
+    pub fn render(&mut self) -> cherenkov::Next {
         self.render_inner(
             self.engine
                 .render(cherenkov::FrameTime::now())
@@ -284,7 +287,7 @@ impl CherenkovSurface {
         clippy::future_not_send,
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
-    pub(crate) async fn render(&mut self) -> cherenkov::Next {
+    pub async fn render(&mut self) -> cherenkov::Next {
         let next = self
             .engine
             .render(cherenkov::FrameTime::now())
@@ -310,7 +313,7 @@ impl CherenkovSurface {
     /// presenter — the one presentation path the plan names. The host still
     /// owns acquire and `present`; this writes into the acquired texture
     /// exactly once.
-    pub(crate) fn present_into(
+    pub fn present_into(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,

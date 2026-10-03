@@ -22,7 +22,7 @@ use waterui_graphics::gpu::preferred_surface_format;
 ///
 /// Non-blocking: `PollType::Poll` processes what has already completed and
 /// returns.
-pub(crate) fn reclaim_device(device: &wgpu::Device) {
+pub fn reclaim_device(device: &wgpu::Device) {
     if let Err(error) = poll_device(device, wgpu::PollType::Poll) {
         tracing::warn!("GPU device did not reclaim deferred resources: {error}");
     }
@@ -33,7 +33,7 @@ pub(crate) fn reclaim_device(device: &wgpu::Device) {
 ///
 /// Every type that owns a device to the end of its life calls this from
 /// `Drop`. A device with nothing outstanding returns immediately.
-pub(crate) fn drain_device_before_teardown(device: &wgpu::Device) {
+pub fn drain_device_before_teardown(device: &wgpu::Device) {
     if let Err(error) = poll_device(
         device,
         wgpu::PollType::Wait {
@@ -83,7 +83,7 @@ fn poll_device(
 /// same hard `Engine::new` failure the engine documents. Normalized 16-bit
 /// textures feed HDR media paths wherever the adapter provides them.
 #[must_use]
-pub(crate) fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
+pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
     if cfg!(target_vendor = "apple") {
         assert!(
             adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
@@ -106,7 +106,7 @@ pub(crate) fn required_media_features(adapter_features: wgpu::Features) -> wgpu:
 /// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
 /// chain and its engine-pool identity.
 #[derive(Clone, Debug)]
-pub(crate) struct GpuContextHandle {
+pub struct GpuContextHandle {
     /// Identity of this device creation chain for the engine pool.
     pub(crate) context_id: u64,
     /// The instance/adapter/device/queue of that chain, which the shared
@@ -139,6 +139,10 @@ impl DeviceLoss {
     /// wgpu keeps one lost callback per device, so this belongs to whoever
     /// owns the device and is called once, right after the device is created.
     #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     pub(crate) fn observe(
         shared_device: cherenkov_gpu::interop::SharedDevice,
         context_id: u64,
@@ -199,26 +203,37 @@ impl DeviceLoss {
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerButton {
+    /// The primary button — the left button for right-handed mice.
     Primary,
+    /// The secondary button — the right button for right-handed mice.
     Secondary,
+    /// The middle (wheel) button.
     Middle,
+    /// The back navigation button.
     Back,
+    /// The forward navigation button.
     Forward,
+    /// Another button identified by its platform button number.
     Other(u16),
 }
 
 /// Physical pointer source reported by the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerKind {
+    /// A mouse pointer.
     Mouse,
+    /// A touch contact.
     Touch,
+    /// A pen or stylus.
     Pen,
 }
 
 /// Input key state mapped from a platform keyboard event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
+    /// The button or contact is down.
     Pressed,
+    /// The button or contact is up.
     Released,
 }
 
@@ -230,8 +245,11 @@ pub enum KeyState {
 /// surfaces receive and what the browser engines will move to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyCode {
+    /// A printable character key, as the layout resolved it.
     Character(String),
+    /// A named (non-printable) key, as the layout resolved it.
     Named(String),
+    /// A key the layout could not identify.
     Unidentified,
 }
 
@@ -264,9 +282,13 @@ impl KeyCode {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
+    /// Whether a Shift modifier was held.
     pub shift: bool,
+    /// Whether a Control modifier was held.
     pub control: bool,
+    /// Whether an Alt/Option modifier was held.
     pub alt: bool,
+    /// Whether a platform-command modifier (Super/Windows/Command) was held.
     pub super_key: bool,
 }
 
@@ -295,7 +317,9 @@ impl From<keyboard_types::Modifiers> for Modifiers {
 /// IME purpose for the focused text input target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextInputPurpose {
+    /// Plain single-line text.
     Normal,
+    /// Secret text — the platform may mask or protect it.
     Password,
 }
 
@@ -304,71 +328,123 @@ pub use waterui_backend_core::input::TouchPhase;
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextInputState {
+    /// Left edge of the input field, in logical points.
     pub x: f64,
+    /// Top edge of the input field, in logical points.
     pub y: f64,
+    /// Width of the input field, in logical points.
     pub width: f64,
+    /// Height of the input field, in logical points.
     pub height: f64,
+    /// The field's purpose, which selects the platform's input treatment.
     pub purpose: TextInputPurpose,
 }
 
 /// Input events emitted by a windowing backend.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
+    /// A pointer button pressed or a contact started.
     PointerDown {
+        /// The pointer's stream identifier.
         id: u64,
+        /// The pointer's device kind.
         kind: PointerKind,
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
+        /// The button that changed.
         button: PointerButton,
     },
+    /// A pointer button released or a contact ended.
     PointerUp {
+        /// The pointer's stream identifier.
         id: u64,
+        /// The pointer's device kind.
         kind: PointerKind,
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
+        /// The button that changed.
         button: PointerButton,
     },
+    /// A pointer or contact moved.
     PointerMove {
+        /// The pointer's stream identifier.
         id: u64,
+        /// The pointer's device kind.
         kind: PointerKind,
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
     },
+    /// The platform cancelled the pointer stream.
     PointerCancel {
+        /// The pointer's stream identifier.
         id: u64,
+        /// The pointer's device kind.
         kind: PointerKind,
     },
+    /// The pointer moved while a button was held (drag).
     Moved {
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
     },
+    /// A scroll wheel or scroll gesture step.
     Scroll {
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
+        /// Horizontal scroll delta.
         dx: f32,
+        /// Vertical scroll delta.
         dy: f32,
+        /// Whether the deltas are in lines (`true`) or pixels (`false`).
         is_line_delta: bool,
     },
+    /// A two-finger trackpad pan gesture.
     TrackpadPan {
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
+        /// Horizontal scroll delta.
         dx: f32,
+        /// Vertical scroll delta.
         dy: f32,
+        /// The gesture's touch phase.
         phase: TouchPhase,
     },
+    /// A trackpad pinch magnification gesture.
     Magnification {
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
+        /// The gesture's cumulative delta.
         delta: f32,
+        /// The gesture's touch phase.
         phase: TouchPhase,
     },
+    /// A trackpad rotation gesture.
     Rotation {
+        /// Horizontal position in logical points.
         x: f32,
+        /// Vertical position in logical points.
         y: f32,
+        /// The gesture's cumulative delta.
         delta: f32,
+        /// The gesture's touch phase.
         phase: TouchPhase,
     },
+    /// Text inserted through a non-key input source.
     TextInput {
+        /// The inserted, committed, or composed text.
         text: String,
     },
     /// Text that is the `text` payload of the [`InputEvent::Key`] press
@@ -378,9 +454,12 @@ pub enum InputEvent {
     /// which carries text with no key origin (synthetic pushes, test
     /// drivers) and is never suppressed.
     KeyText {
+        /// The inserted, committed, or composed text.
         text: String,
     },
+    /// A key state changed.
     Key {
+        /// The logical key.
         key: KeyCode,
         /// The logical key in the W3C UI Events vocabulary — what the layout
         /// and modifiers produce. Unlike `key`, this is never suppressed when
@@ -392,7 +471,9 @@ pub enum InputEvent {
         physical_code: keyboard_types::Code,
         /// Whether the platform generated this press by auto-repeat.
         repeat: bool,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: KeyState,
+        /// The modifier state at the moment of the event.
         modifiers: Modifiers,
     },
     /// A focus-change replay released a key that was held: winit resends
@@ -402,18 +483,27 @@ pub enum InputEvent {
     /// come down without firing an action, so a real release arriving later
     /// finds nothing stale left to activate.
     KeyboardCancel,
+    /// The modifier set changed; carries the new [`Modifiers`].
     ModifiersChanged(Modifiers),
+    /// An IME composition is in progress; carries the pre-edit text.
     ImePreedit {
+        /// The inserted, committed, or composed text.
         text: String,
         /// Caret offset within `text`, in bytes, when the platform reports one.
         caret: Option<usize>,
     },
+    /// The IME committed text.
     ImeCommit {
+        /// The inserted, committed, or composed text.
         text: String,
     },
+    /// IME input was disabled for the focused target.
     ImeDisabled,
+    /// The window's logical size changed.
     Resize {
+        /// New logical width, in pixels.
         width: u32,
+        /// New logical height, in pixels.
         height: u32,
     },
     /// The OS window gained (`true`) or lost (`false`) focus.
@@ -428,12 +518,14 @@ pub enum InputEvent {
     /// app-side `Window::state` binding tracks the real window instead of
     /// drifting when the user toggles maximization through the titlebar.
     Maximized(bool),
+    /// The user asked the OS to close the window.
     CloseRequested,
     /// One file of an OS file drag is hovering the window (winit
     /// `WindowEvent::HoveredFile`). winit emits one event per file of the
     /// drag; the runner collects them into the drag's single `Files`
     /// payload.
     FileHovered {
+        /// Path of the dragged or dropped file.
         path: PathBuf,
     },
     /// An OS file drag left the window or ended without a drop (winit
@@ -443,6 +535,7 @@ pub enum InputEvent {
     /// `WindowEvent::DroppedFile`). winit emits one event per file of the
     /// drop.
     FileDropped {
+        /// Path of the dragged or dropped file.
         path: PathBuf,
     },
 }
@@ -450,10 +543,15 @@ pub enum InputEvent {
 /// Errors raised by surface acquisition/presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceError {
+    /// Surface acquisition timed out waiting for the next frame.
     Timeout,
+    /// The surface is fully occluded and produced no frame.
     Occluded,
+    /// The surface configuration is stale and must be reapplied.
     Outdated,
+    /// The surface was lost and must be recreated.
     Lost,
+    /// The surface failed validation against the requested configuration.
     Validation,
 }
 
@@ -474,30 +572,40 @@ impl std::error::Error for SurfaceError {}
 /// A frame acquired from a `SurfaceProvider`.
 #[derive(Debug)]
 pub enum SurfaceFrame {
+    /// An offscreen render target: the frame already lives in a texture.
     Offscreen {
+        /// The texture holding the rendered frame.
         texture: wgpu::Texture,
+        /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
     #[cfg(hydrolysis_winit)]
+    /// A platform surface frame presented through winit.
     Window {
         output: wgpu::SurfaceTexture,
+        /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
     #[cfg(target_os = "android")]
     Android {
         output: wgpu::SurfaceTexture,
+        /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
+    /// A surface frame acquired from a browser canvas (the `web` feature).
     #[cfg(all(target_arch = "wasm32", feature = "web"))]
     Browser {
+        /// The acquired surface texture, handed to the frame's renderer.
         output: wgpu::SurfaceTexture,
+        /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
 }
 
 impl SurfaceFrame {
     #[must_use]
-    pub fn texture(&self) -> &wgpu::Texture {
+    /// The frame's texture, whichever presentation form it took.
+    pub const fn texture(&self) -> &wgpu::Texture {
         match self {
             Self::Offscreen { texture, .. } => texture,
             #[cfg(hydrolysis_winit)]
@@ -510,7 +618,8 @@ impl SurfaceFrame {
     }
 
     #[must_use]
-    pub fn view(&self) -> &wgpu::TextureView {
+    /// A view of the frame's texture.
+    pub const fn view(&self) -> &wgpu::TextureView {
         match self {
             Self::Offscreen { view, .. } => view,
             #[cfg(hydrolysis_winit)]
@@ -528,9 +637,7 @@ impl SurfaceFrame {
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
-pub(crate) fn select_hydrolysis_surface_format(
-    caps: &wgpu::SurfaceCapabilities,
-) -> wgpu::TextureFormat {
+pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
     let preferred = preferred_surface_format(caps, true);
     if supports_hydrolysis_surface_format(preferred) {
         return normalize_surface_format(caps, preferred);
@@ -589,7 +696,7 @@ fn normalize_surface_format(
     all(target_arch = "wasm32", feature = "web"),
     target_os = "android"
 ))]
-pub(crate) fn acquire_surface_texture(
+pub fn acquire_surface_texture(
     surface: &wgpu::Surface<'_>,
 ) -> Result<wgpu::SurfaceTexture, SurfaceError> {
     match surface.get_current_texture() {
@@ -605,8 +712,11 @@ pub(crate) fn acquire_surface_texture(
 
 /// Rendering surface abstraction consumed by hydrolysis runner/renderer.
 pub trait SurfaceProvider {
+    /// The wgpu adapter this surface renders through.
     fn adapter(&self) -> &wgpu::Adapter;
+    /// The wgpu device this surface renders through.
     fn device(&self) -> &wgpu::Device;
+    /// The submission queue this surface renders through.
     fn queue(&self) -> &wgpu::Queue;
     /// Reports this surface's device lost; taken when the device was opened.
     fn device_loss(&self) -> &DeviceLoss;
@@ -616,9 +726,13 @@ pub trait SurfaceProvider {
     /// Returns [`SurfaceError`] when the surface is lost, the device timed
     /// out, or the surface is out of date and must be reconfigured.
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
+    /// Presents an acquired frame to the surface.
     fn present(&mut self, frame: SurfaceFrame);
+    /// The surface's current pixel size `(width, height)`.
     fn size(&self) -> (u32, u32);
+    /// The surface's texture format.
     fn format(&self) -> wgpu::TextureFormat;
+    /// Reconfigures the surface for a new pixel size.
     fn resize(&mut self, width: u32, height: u32);
     /// The identity of the GPU context this surface's device belongs to: the
     /// key that binds one shared Cherenkov engine to one device creation
@@ -660,9 +774,7 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 /// all four fields. The binding is a trust boundary — a NaN or infinite
 /// frame is a programming error, not something the runner silently repairs
 /// deeper in the geometry path.
-pub(crate) fn validated_window_frame(
-    frame: waterui_core::layout::Rect,
-) -> waterui_core::layout::Rect {
+pub fn validated_window_frame(frame: waterui_core::layout::Rect) -> waterui_core::layout::Rect {
     for (field, value) in [
         ("x", frame.x()),
         ("y", frame.y()),
@@ -695,6 +807,7 @@ pub trait PlatformWindow: 'static {
     /// host answers correctly before any surface exists and while it is
     /// between surface generations.
     fn content_size(&self) -> (u32, u32);
+    /// Applies the window's declarative properties to the platform window.
     fn apply_properties(&mut self, window: &WuiWindow);
     /// Applies the window's effective content-size limits (logical units).
     ///
@@ -734,8 +847,11 @@ pub trait PlatformWindow: 'static {
     fn set_transparent(&mut self, transparent: bool) {
         let _ = transparent;
     }
+    /// Drains the input events queued since the last drain.
     fn drain_events(&mut self) -> Vec<InputEvent>;
+    /// Requests that the window be repainted.
     fn request_redraw(&self);
+    /// The window's logical-points-per-pixel scale factor.
     fn scale_factor(&self) -> f64;
     /// The refresh rate (Hz) of the display this window is on, if known.
     ///
@@ -772,7 +888,9 @@ pub trait PlatformWindow: 'static {
     fn is_occluded(&self) -> bool {
         false
     }
+    /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
+    /// Sets the cursor image the window displays.
     fn set_cursor_style(&mut self, style: CursorStyle);
 }
 
@@ -784,6 +902,7 @@ pub trait PlatformWindow: 'static {
 /// attached one. A host implementing only [`PlatformWindow`] has no surface
 /// to give the pump, and the GPU render path is unreachable for it.
 pub trait GpuSurfaceWindow: PlatformWindow {
+    /// The GPU surface this window presents into.
     fn surface(&mut self) -> &mut dyn SurfaceProvider;
     /// Returns a thread-safe wake bridge for nested GPU surfaces.
     ///
@@ -838,7 +957,7 @@ struct OffscreenGpuContextInner {
 /// queues are only shared inside one, so it is also the Cherenkov engine key.
 static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-pub(crate) fn next_gpu_context_id() -> u64 {
+pub fn next_gpu_context_id() -> u64 {
     NEXT_GPU_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -977,7 +1096,9 @@ impl OffscreenGpuContext {
 /// drop wait out the queued work of the other surfaces sharing the device.
 pub struct OffscreenSurface {
     gpu: OffscreenGpuContext,
+    /// New logical width, in pixels.
     width: u32,
+    /// New logical height, in pixels.
     height: u32,
     format: wgpu::TextureFormat,
     last_presented: Option<wgpu::Texture>,
@@ -1032,7 +1153,7 @@ impl AdapterPreference {
     /// `FORCE_FALLBACK_ADAPTER`, so with it set a software adapter must win
     /// over the real GPU beside it, which is the whole point of reproducing a
     /// software-adapter run on a machine that has a GPU.
-    fn for_info(info: &wgpu::AdapterInfo, prefer_software: bool) -> Self {
+    const fn for_info(info: &wgpu::AdapterInfo, prefer_software: bool) -> Self {
         Self {
             backend_rank: backend_rank(info.backend),
             device_type_rank: if prefer_software {
@@ -1106,7 +1227,7 @@ a software adapter that cannot run the renderer's pipelines fails or aborts the 
 mod adapter_selection_tests {
     use super::{AdapterPreference, GPU_REQUIRED_GUIDANCE};
 
-    fn info(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+    const fn info(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
         wgpu::AdapterInfo {
             name: String::new(),
             vendor: 0,
@@ -1179,6 +1300,10 @@ fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
 /// a headless CI box where Mesa llvmpipe supplies GL 4.5 compute shaders —
 /// never alongside a Vulkan adapter it would sit idle next to.
 #[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
 fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
     match wgpu::Backends::from_env() {
         Some(backends) => vec![backends],
@@ -1278,6 +1403,10 @@ async fn probe_adapters(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
     assert!(
         !inspected_adapters.is_empty(),
@@ -1410,6 +1539,7 @@ impl OffscreenSurface {
             reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
         )
     )]
+    /// Creates an offscreen surface synchronously.
     pub async fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self::on_context(OffscreenGpuContext::new().await, width, height, format)
     }
@@ -1450,17 +1580,19 @@ impl OffscreenSurface {
     }
 
     #[must_use]
+    /// Creates an offscreen surface synchronously, polling the async setup to completion.
     pub fn new_blocking(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         pollster::block_on(Self::new(width, height, format))
     }
 
     #[must_use]
-    pub fn last_presented(&self) -> Option<&wgpu::Texture> {
+    /// The last texture this surface presented, if any.
+    pub const fn last_presented(&self) -> Option<&wgpu::Texture> {
         self.last_presented.as_ref()
     }
 }
 
-pub(crate) fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let adapter_limits = adapter.limits();
     let downlevel_caps = adapter.get_downlevel_capabilities();
     let base_limits = if downlevel_caps.is_webgpu_compliant()
@@ -1478,7 +1610,7 @@ pub(crate) fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
         .using_alignment(adapter_limits)
 }
 
-pub(crate) fn ensure_compute_capable_adapter(
+pub fn ensure_compute_capable_adapter(
     adapter: &wgpu::Adapter,
     context: &str,
     no_compute_message: &str,
@@ -1497,14 +1629,17 @@ pub(crate) fn ensure_compute_capable_adapter(
 }
 
 impl SurfaceProvider for OffscreenSurface {
+    /// The wgpu adapter this surface renders through.
     fn adapter(&self) -> &wgpu::Adapter {
         &self.gpu.inner.adapter
     }
 
+    /// The wgpu device this surface renders through.
     fn device(&self) -> &wgpu::Device {
         &self.gpu.inner.device
     }
 
+    /// The submission queue this surface renders through.
     fn queue(&self) -> &wgpu::Queue {
         &self.gpu.inner.queue
     }
@@ -1540,6 +1675,7 @@ impl SurfaceProvider for OffscreenSurface {
         Ok(SurfaceFrame::Offscreen { texture, view })
     }
 
+    /// Presents an acquired frame to the surface.
     fn present(&mut self, frame: SurfaceFrame) {
         match frame {
             SurfaceFrame::Offscreen { texture, .. } => {
@@ -1560,14 +1696,17 @@ impl SurfaceProvider for OffscreenSurface {
         }
     }
 
+    /// The surface's current pixel size `(width, height)`.
     fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
+    /// The surface's texture format.
     fn format(&self) -> wgpu::TextureFormat {
         self.format
     }
 
+    /// Reconfigures the surface for a new pixel size.
     fn resize(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
@@ -1687,14 +1826,14 @@ impl OffscreenSceneSurface {
     /// The engine this host renders with — callers drive
     /// `engine.render(FrameTime)` themselves.
     #[must_use]
-    pub fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
+    pub const fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
         &self.engine
     }
 
     /// The engine surface behind this host — `clear_color`, `update`, layer
     /// mounts and transactions route through it.
     #[must_use]
-    pub fn surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+    pub const fn surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
         self.cherenkov.engine_surface()
     }
 
@@ -1749,6 +1888,7 @@ pub struct OffscreenWindow {
 
 impl OffscreenWindow {
     #[must_use]
+    /// Creates an offscreen surface synchronously.
     pub fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
         Self {
             surface: OffscreenSurface::new_blocking(width, height, format),
@@ -1827,12 +1967,14 @@ impl OffscreenWindow {
     }
 
     fn resize_to_logical(&mut self, width: f64, height: f64) {
-        let physical = |value: f64| (value * self.scale_factor).round().max(1.0) as u32;
+        let physical =
+            |value: f64| crate::num_cast::f64_as_u32((value * self.scale_factor).round().max(1.0));
         self.surface.resize(physical(width), physical(height));
     }
 
     #[must_use]
-    pub fn surface_ref(&self) -> &OffscreenSurface {
+    /// The underlying [`OffscreenSurface`].
+    pub const fn surface_ref(&self) -> &OffscreenSurface {
         &self.surface
     }
 
@@ -1848,7 +1990,7 @@ impl OffscreenWindow {
 
     /// The last (min, max) content-size limits the runner applied, for tests.
     #[must_use]
-    pub fn applied_size_limits(
+    pub const fn applied_size_limits(
         &self,
     ) -> Option<(
         Option<waterui_core::layout::Size>,
@@ -1864,6 +2006,7 @@ impl PlatformWindow for OffscreenWindow {
         self.surface.size()
     }
 
+    /// Applies the window's declarative properties to the platform window.
     fn apply_properties(&mut self, window: &WuiWindow) {
         if window.state.snapshot() == WindowState::Closed {
             return;
@@ -1890,22 +2033,28 @@ impl PlatformWindow for OffscreenWindow {
         true
     }
 
+    /// Drains the input events queued since the last drain.
     fn drain_events(&mut self) -> Vec<InputEvent> {
         Vec::new()
     }
 
+    /// Requests that the window be repainted.
     fn request_redraw(&self) {}
 
+    /// The window's logical-points-per-pixel scale factor.
     fn scale_factor(&self) -> f64 {
         self.scale_factor
     }
 
+    /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
+    /// Sets the cursor image the window displays.
     fn set_cursor_style(&mut self, _style: CursorStyle) {}
 }
 
 impl GpuSurfaceWindow for OffscreenWindow {
+    /// The GPU surface this window presents into.
     fn surface(&mut self) -> &mut dyn SurfaceProvider {
         &mut self.surface
     }
@@ -2141,6 +2290,7 @@ mod winit_impl {
             }
         }
 
+        /// Creates an offscreen surface synchronously.
         pub async fn new(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
@@ -2264,14 +2414,17 @@ mod winit_impl {
     }
 
     impl SurfaceProvider for WinitSurface {
+        /// The wgpu adapter this surface renders through.
         fn adapter(&self) -> &wgpu::Adapter {
             &self.gpu.adapter
         }
 
+        /// The wgpu device this surface renders through.
         fn device(&self) -> &wgpu::Device {
             &self.gpu.device
         }
 
+        /// The submission queue this surface renders through.
         fn queue(&self) -> &wgpu::Queue {
             &self.gpu.queue
         }
@@ -2288,6 +2441,7 @@ mod winit_impl {
             Ok(SurfaceFrame::Window { output, view })
         }
 
+        /// Presents an acquired frame to the surface.
         fn present(&mut self, frame: SurfaceFrame) {
             match frame {
                 SurfaceFrame::Window { output, .. } => {
@@ -2309,14 +2463,17 @@ mod winit_impl {
             }
         }
 
+        /// The surface's current pixel size `(width, height)`.
         fn size(&self) -> (u32, u32) {
             (self.config.width, self.config.height)
         }
 
+        /// The surface's texture format.
         fn format(&self) -> wgpu::TextureFormat {
             self.config.format
         }
 
+        /// Reconfigures the surface for a new pixel size.
         fn resize(&mut self, width: u32, height: u32) {
             self.config.width = width.max(1);
             self.config.height = height.max(1);
@@ -2409,6 +2566,7 @@ mod winit_impl {
 
     #[cfg(hydrolysis_macos_system_webview)]
     impl NativeViewContainer {
+        /// Creates an offscreen surface synchronously.
         fn new(mtm: MainThreadMarker) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(NativeViewContainerIvars {
                 occluded: core::cell::RefCell::new(Vec::new()),
@@ -2432,6 +2590,7 @@ mod winit_impl {
 
     #[cfg(hydrolysis_macos_system_webview)]
     impl MacNativeViewHost {
+        /// Creates an offscreen surface synchronously.
         fn new(web_view: Retained<WKWebView>, root_view: &NSView) -> Self {
             let mtm = MainThreadMarker::new()
                 .expect("Hydrolysis hybrid composition must run on the AppKit main thread");
@@ -2545,6 +2704,7 @@ mod winit_impl {
 
     #[cfg(hydrolysis_macos_system_webview)]
     impl MacHybridCompositor {
+        /// Creates an offscreen surface synchronously.
         fn new(gpu: WinitGpuContext) -> Self {
             Self {
                 gpu,
@@ -2818,9 +2978,13 @@ mod winit_impl {
         Allowed(bool),
         Purpose(TextInputPurpose),
         CursorArea {
+            /// Horizontal position in logical points.
             x: i32,
+            /// Vertical position in logical points.
             y: i32,
+            /// New logical width, in pixels.
             width: u32,
+            /// New logical height, in pixels.
             height: u32,
         },
     }
@@ -2881,6 +3045,7 @@ mod winit_impl {
     struct PendingMappedRequest {
         position: LogicalPosition<f64>,
         size: LogicalSize<f64>,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: WindowState,
     }
 
@@ -2968,6 +3133,7 @@ mod winit_impl {
         title: waterui::Str,
         resizable: bool,
         decorations: bool,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: WindowState,
         frame: waterui_core::layout::Rect,
         level: WindowLevel,
@@ -2986,6 +3152,7 @@ mod winit_impl {
         pending_surface_size: Option<PhysicalSize<u32>>,
         pending_events: Vec<InputEvent>,
         pointer_position: (f32, f32),
+        /// The modifier state at the moment of the event.
         modifiers: Modifiers,
         text_input_sync: TextInputSync,
         current_cursor_style: CursorStyle,
@@ -3050,6 +3217,7 @@ mod winit_impl {
     }
 
     impl WinitWindow {
+        /// Creates an offscreen surface synchronously.
         pub async fn new(window: Arc<NativeWindow>, requires_transparency: bool) -> Self {
             Self::new_with_shared_gpu(window, None, requires_transparency)
                 .await
@@ -3802,6 +3970,7 @@ mod winit_impl {
             self.transparent = transparent;
         }
 
+        /// Applies the window's declarative properties to the platform window.
         fn apply_properties(&mut self, window: &waterui::window::Window) {
             let title = window.display_title().snapshot();
             let decorations = !matches!(
@@ -3918,6 +4087,7 @@ mod winit_impl {
             }
         }
 
+        /// Drains the input events queued since the last drain.
         fn drain_events(&mut self) -> Vec<InputEvent> {
             core::mem::take(&mut self.pending_events)
         }
@@ -3954,6 +4124,7 @@ mod winit_impl {
             self.live_pointer_position().or(Some(self.pointer_position))
         }
 
+        /// Requests that the window be repainted.
         fn request_redraw(&self) {
             self.window.request_redraw();
             // Hold the ProMotion frame-rate demand while frames are being
@@ -3964,6 +4135,7 @@ mod winit_impl {
             }
         }
 
+        /// The window's logical-points-per-pixel scale factor.
         fn scale_factor(&self) -> f64 {
             self.window.scale_factor()
         }
@@ -3975,6 +4147,7 @@ mod winit_impl {
                 .map(|millihertz| f64::from(millihertz) / 1000.0)
         }
 
+        /// Pushes the focused text input's state to the platform IME.
         fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
             let scale_factor = self.window.scale_factor();
             for op in self.text_input_sync.sync(state, scale_factor) {
@@ -4004,6 +4177,7 @@ mod winit_impl {
             }
         }
 
+        /// Sets the cursor image the window displays.
         fn set_cursor_style(&mut self, style: CursorStyle) {
             if self.current_cursor_style == style {
                 return;
@@ -4015,6 +4189,7 @@ mod winit_impl {
     }
 
     impl GpuSurfaceWindow for WinitWindow {
+        /// The GPU surface this window presents into.
         fn surface(&mut self) -> &mut dyn SurfaceProvider {
             if let Some(size) = self.pending_surface_size.take() {
                 self.surface.resize(size.width, size.height);
@@ -4089,8 +4264,10 @@ mod winit_impl {
         /// held key as a synthetic press and `XI_FocusOut` as a synthetic
         /// release): state synchronisation, not a keystroke the user made.
         is_synthetic: bool,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
         state: ElementState,
         repeat: bool,
+        /// The inserted, committed, or composed text.
         text: Option<&'a str>,
         logical_key: &'a Key,
         physical_key: PhysicalKey,

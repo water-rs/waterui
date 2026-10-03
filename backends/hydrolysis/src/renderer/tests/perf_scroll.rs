@@ -78,8 +78,8 @@ fn measure_scroll_cost(rows: usize) -> ScrollCost {
     let mut scroll_misses = 0;
     for frame in 1..=SCROLL_FRAMES {
         runtime.push_input_event(InputEvent::Scroll {
-            x: (WINDOW_WIDTH / 2) as f32,
-            y: (WINDOW_HEIGHT / 2) as f32,
+            x: crate::num_cast::u32_as_f32(WINDOW_WIDTH / 2),
+            y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT / 2),
             dx: 0.0,
             dy: -200.0,
             is_line_delta: false,
@@ -147,7 +147,10 @@ fn coordinate_jump_over_lazy_stack_materializes_only_the_target_window() {
     let _ = runtime.pump_at(false, start);
     let initial_materialized = materialized.load(Ordering::Relaxed);
 
-    controller.scroll_to(Point::new(0.0, TARGET_ROW as f32 * ROW_HEIGHT));
+    controller.scroll_to(Point::new(
+        0.0,
+        crate::num_cast::usize_as_f32(TARGET_ROW) * ROW_HEIGHT,
+    ));
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
     let jump_materialized = materialized.load(Ordering::Relaxed) - initial_materialized;
 
@@ -390,8 +393,8 @@ fn flow_markdown_append_preserves_user_scroll_offset() {
     let _ = runtime.pump_at(false, start);
 
     runtime.push_input_event(InputEvent::Scroll {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -120.0,
         is_line_delta: false,

@@ -1,25 +1,28 @@
 //! Raw view handlers: layout containers, text, icons, colors, gradients
 //! and shapes, plus popup-menu node resolution.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::renderer::recording::transform_paint;
 
-pub(crate) fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
+pub fn slider_value_epsilon(span: f64, track_width: f64) -> f64 {
     (span / track_width).abs().max(f64::EPSILON)
 }
 
-pub(crate) fn call_action_discarding_result<T: 'static>(
-    action: &SharedAction<T>,
-    env: &Environment,
-) {
+pub fn call_action_discarding_result<T: 'static>(action: &SharedAction<T>, env: &Environment) {
     let _ = action.call(env);
 }
 
-pub(crate) fn popup_menu_nodes(items: &[ResolvedMenuItem]) -> Vec<PopupMenuNode> {
+pub fn popup_menu_nodes(items: &[ResolvedMenuItem]) -> Vec<PopupMenuNode> {
     items.iter().cloned().map(popup_menu_node).collect()
 }
 
-pub(crate) fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
     match item {
         ResolvedMenuItem::Command(command) => {
             let mut styled = command.label.content.snapshot();
@@ -97,7 +100,7 @@ pub(crate) fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
 /// presentation, not semantics. Only a resolved label — the environment's
 /// `a11y_label` or the leaf's own default — or an explicit `a11y_role` puts a
 /// graphics leaf in the tree.
-pub(crate) fn graphics_image_accessibility(
+pub fn graphics_image_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     env: &Environment,
@@ -128,7 +131,7 @@ pub(crate) fn graphics_image_accessibility(
 
 /// Graphics leaves (gradient/shape/morph/GPU surface/scene) fill the proposal:
 /// they stretch to whatever bounds the layout proposes (`StretchAxis::Both`).
-pub(crate) fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensions {
+pub fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::new(
         proposal
             .width
@@ -144,7 +147,7 @@ pub(crate) fn graphics_dimensions_from_proposal(proposal: ProposalSize) -> ViewD
 }
 
 /// Measures a retained gradient leaf: a gradient fills the proposed bounds.
-pub(crate) fn measure_gradient_node(
+pub fn measure_gradient_node(
     _gradient: &waterui_graphics::Gradient,
     proposal: ProposalSize,
     _state: &mut HydroState,
@@ -156,7 +159,7 @@ pub(crate) fn measure_gradient_node(
 
 /// Renders a retained gradient leaf every flush: emits a11y (unless hidden) then
 /// fills the gradient. The payload is fully resolved data (no signal), so no watch.
-pub(crate) fn render_gradient_node(
+pub fn render_gradient_node(
     ctx: &mut WidgetRenderContext<'_>,
     gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
     env: &Environment,
@@ -171,7 +174,7 @@ pub(crate) fn render_gradient_node(
     render_gradient_parts(ctx, gradient, env);
 }
 
-pub(crate) fn render_gradient_parts(
+pub fn render_gradient_parts(
     ctx: &mut WidgetRenderContext<'_>,
     gradient: &Rc<RefCell<waterui_graphics::Gradient>>,
     _env: &Environment,
@@ -179,8 +182,10 @@ pub(crate) fn render_gradient_parts(
     let bounds = ctx.bounds;
     // The view's `Paint` is authored in unit space; map it onto the placed
     // box and fill the box with it under the frame's transform.
-    let unit =
-        waterui_graphics::Gradient::transform_to(bounds.width() as f32, bounds.height() as f32);
+    let unit = waterui_graphics::Gradient::transform_to(
+        crate::num_cast::f64_as_f32(bounds.width()),
+        crate::num_cast::f64_as_f32(bounds.height()),
+    );
     let paint = transform_paint(gradient.borrow().paint().clone(), Some(unit));
     let transform = ctx.transform;
     ctx.renderer_mut()
@@ -189,7 +194,7 @@ pub(crate) fn render_gradient_parts(
 }
 
 /// Measures a retained shape leaf: a shape fills the proposed bounds.
-pub(crate) fn measure_shape_node(
+pub fn measure_shape_node(
     _shape: &ResolvedShape,
     proposal: ProposalSize,
     _state: &mut HydroState,
@@ -201,7 +206,7 @@ pub(crate) fn measure_shape_node(
 
 /// Renders a retained shape leaf every flush: emits a11y (unless hidden), tracks
 /// the resolved fill signal, then fills the shape path.
-pub(crate) fn render_shape_node(
+pub fn render_shape_node(
     ctx: &mut WidgetRenderContext<'_>,
     shape: &Rc<RefCell<ResolvedShape>>,
     env: &Environment,
@@ -216,7 +221,7 @@ pub(crate) fn render_shape_node(
     render_shape_parts(ctx, shape, env);
 }
 
-pub(crate) fn render_shape_parts(
+pub fn render_shape_parts(
     ctx: &mut WidgetRenderContext<'_>,
     shape: &Rc<RefCell<ResolvedShape>>,
     _env: &Environment,
@@ -237,7 +242,7 @@ pub(crate) fn render_shape_parts(
 }
 
 /// Measures a retained morph-shape leaf: a morph shape fills the proposed bounds.
-pub(crate) fn measure_morph_shape_node(
+pub fn measure_morph_shape_node(
     _shape: &ResolvedMorphShape,
     proposal: ProposalSize,
     _state: &mut HydroState,
@@ -252,7 +257,7 @@ pub(crate) fn measure_morph_shape_node(
 /// resolved via the animation controller every frame (explicit `progress` signal
 /// watched through `resolve_animated_scalar_with_discriminator`; time-based
 /// animation driven by `sample_morph_progress`), so the morph stays live.
-pub(crate) fn render_morph_shape_node(
+pub fn render_morph_shape_node(
     ctx: &mut WidgetRenderContext<'_>,
     shape: &Rc<RefCell<ResolvedMorphShape>>,
     env: &Environment,
@@ -267,7 +272,7 @@ pub(crate) fn render_morph_shape_node(
     render_morph_shape_parts(ctx, shape, env);
 }
 
-pub(crate) fn render_morph_shape_parts(
+pub fn render_morph_shape_parts(
     ctx: &mut WidgetRenderContext<'_>,
     shape: &Rc<RefCell<ResolvedMorphShape>>,
     _env: &Environment,
@@ -300,7 +305,9 @@ pub(crate) fn render_morph_shape_parts(
 /// Emits a string leaf's accessibility node from its content. Shared by the
 /// dispatch path ([`HydrolysisRenderer::render_str`]) and the retained
 /// `Widget`-node path so both produce the same a11y tree.
-pub(crate) fn str_accessibility(
+// empty when the accessibility feature is off
+#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+pub fn str_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     text: &Str,
@@ -340,7 +347,7 @@ pub(crate) fn str_accessibility(
 /// Measures a retained string leaf from its immutable content, mirroring how
 /// [`measure_view_dimensions_with_proposal`] measures a `Str` (plain styled text,
 /// leading alignment, wrapped at the proposal width).
-pub(crate) fn measure_str_node(
+pub fn measure_str_node(
     text: &Str,
     proposal: ProposalSize,
     state: &mut HydroState,
@@ -360,7 +367,7 @@ pub(crate) fn measure_str_node(
 /// Renders a retained string leaf every flush: emits a11y (unless hidden) then the
 /// plain styled text. The content is an immutable `Str`, so no signal watch is
 /// needed — it never changes for a given node.
-pub(crate) fn render_str_node(
+pub fn render_str_node(
     ctx: &mut WidgetRenderContext<'_>,
     text: &Rc<RefCell<Str>>,
     env: &Environment,
@@ -370,7 +377,7 @@ pub(crate) fn render_str_node(
     render_str_parts(ctx, text, env);
 }
 
-pub(crate) fn render_str_parts(
+pub fn render_str_parts(
     ctx: &mut WidgetRenderContext<'_>,
     text: &Rc<RefCell<Str>>,
     env: &Environment,
@@ -391,7 +398,7 @@ pub(crate) fn render_str_parts(
 /// Emits a retained `Str` leaf's accessibility node for the semantic walk —
 /// the same node `str_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_str_accessibility(
+pub fn emit_str_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     text: &Rc<RefCell<Str>>,
     env: &Environment,
@@ -403,7 +410,7 @@ pub(crate) fn emit_str_accessibility(
 /// walk — the same node `graphics_image_accessibility` registers, with no
 /// bounds.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_graphics_leaf_accessibility<T>(
+pub fn emit_graphics_leaf_accessibility<T>(
     renderer: &mut crate::renderer::SemanticCore,
     _state: &Rc<RefCell<T>>,
     env: &Environment,

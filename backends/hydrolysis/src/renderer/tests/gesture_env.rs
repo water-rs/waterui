@@ -172,6 +172,10 @@ fn handle() -> AnyView {
     AnyView::new(Color::srgb_hex("#3F3F46").width(HANDLE_WIDTH))
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn assert_all_extracted(fired: &Fired, path: &str) {
     let fires = fired.borrow();
     assert!(
@@ -447,6 +451,10 @@ fn hover_exit_delivers_state_installed_on_an_ancestor() {
 /// the first `State<Binding<i32>>` parameter, `.state(&b)` the second — and the
 /// order is identical whether the installs sit inside or outside the handler.
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn repeated_state_binding_order_is_identical_in_both_placements() {
     let first: Binding<i32> = nami::binding(1_i32);
     let second: Binding<i32> = nami::binding(2_i32);

@@ -4,11 +4,21 @@
 #[cfg(feature = "accessibility")]
 use super::layout::kurbo_rect;
 use super::window::window_safe_area_insets;
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 impl RenderNode {
     /// Re-encode this subtree into the renderer's scene using the cached
     /// placements. Runs every frame.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
+    // `_focus_node` is bound only for the accessibility surface-input path; on
+    // builds without the feature the bindings stay dormant, which is why they keep
+    // the underscore marker.
+    #[allow(clippy::used_underscore_binding)]
     pub(crate) fn flush(
         &self,
         renderer: &mut HydrolysisRenderer,
@@ -16,7 +26,7 @@ impl RenderNode {
         env: &Environment,
     ) {
         match self {
-            RenderNode::Color(color) => {
+            Self::Color(color) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 let color = cherenkov::Paint::Solid(renderer.read_signal(&color.color));
                 renderer.scene_mut().fill_paint(
@@ -26,7 +36,7 @@ impl RenderNode {
                     &ctx.bounds,
                 );
             }
-            RenderNode::Text(text) => {
+            Self::Text(text) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&text.accessibility_identity);
                 // Read the content/alignment signals through `read_signal` so a change
@@ -48,7 +58,7 @@ impl RenderNode {
                     text.line_limit.map_or(TailMark::None, TailMark::Ellipsis),
                 );
             }
-            RenderNode::Container(container) => {
+            Self::Container(container) => {
                 renderer.push_render_owner(&container.accessibility_identity);
                 // The claim is resolved against the env the flush actually
                 // sees: an enclosing claim (e.g. a tap gesture's own node)
@@ -89,7 +99,7 @@ impl RenderNode {
                     renderer.pop_accessibility_owner();
                 }
             }
-            RenderNode::Opacity(node) => {
+            Self::Opacity(node) => {
                 let alpha = renderer.resolve_animated_scalar_with_discriminator(
                     &node.value.value,
                     OPACITY_ANIMATION_KEY,
@@ -104,7 +114,7 @@ impl RenderNode {
                     |renderer| node.child.flush(renderer, ctx, env),
                 );
             }
-            RenderNode::Scale(node) => {
+            Self::Scale(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
                 let scale_x = renderer.resolve_animated_scalar_with_discriminator(
                     &node.value.x,
@@ -120,7 +130,7 @@ impl RenderNode {
                 node.child
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
-            RenderNode::Rotation(node) => {
+            Self::Rotation(node) => {
                 let center = anchor_point(ctx.bounds, node.value.anchor);
                 let radians = f64::from(renderer.resolve_animated_scalar_with_discriminator(
                     &node.value.angle,
@@ -133,7 +143,7 @@ impl RenderNode {
                 node.child
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
-            RenderNode::Offset(node) => {
+            Self::Offset(node) => {
                 let offset_x = renderer.resolve_animated_scalar_with_discriminator(
                     &node.value.x,
                     OFFSET_X_ANIMATION_KEY,
@@ -147,7 +157,7 @@ impl RenderNode {
                 node.child
                     .flush(renderer, ctx.child(transform, ctx.bounds), env);
             }
-            RenderNode::Dynamic(node) => {
+            Self::Dynamic(node) => {
                 if node.apply_pending_mid_pass(renderer) {
                     // The parent placed this host before the pending existed,
                     // so the new child has no placements yet: lay it out inside
@@ -165,12 +175,12 @@ impl RenderNode {
                 }
                 node.child.borrow().flush(renderer, ctx, env);
             }
-            RenderNode::Retain(node) => node.child.flush(renderer, ctx, env),
-            RenderNode::Env(node) => {
+            Self::Retain(node) => node.child.flush(renderer, ctx, env),
+            Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
                 node.child.flush(renderer, ctx, &node.env);
             }
-            RenderNode::Wrapper(node) => {
+            Self::Wrapper(node) => {
                 renderer.push_render_owner(&node.accessibility_identity);
                 // Each effect re-applies through the shared `apply_*` helper, with
                 // a closure that flushes the child node under the wrapper's scoped
@@ -353,7 +363,7 @@ impl RenderNode {
                 }
                 renderer.pop_render_owner();
             }
-            RenderNode::SceneView(node) => {
+            Self::SceneView(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 // The drawing's own name and content, read every flush: content
                 // that follows a signal answers with what it currently draws.
@@ -409,7 +419,7 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::GpuContent(node) => {
+            Self::GpuContent(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 // The view's own name and content, read every flush — it is
                 // re-asked after each frame it produces.
@@ -459,7 +469,7 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::ExternalFrame(node) => {
+            Self::ExternalFrame(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 let (content_label, content_value) = {
                     let view = &node.runtime.borrow().view;
@@ -497,7 +507,7 @@ impl RenderNode {
                         active_layers: renderer.compositor.active_scene_layers.clone(),
                     }));
             }
-            RenderNode::Filtered(node) => {
+            Self::Filtered(node) => {
                 // Ancestor clips and opacity belong on the filtered mount
                 // itself — the engine's `Filter` covers the mount's whole
                 // subtree — so the children's scene segments must not bake
@@ -533,7 +543,7 @@ impl RenderNode {
                         active_layers: ancestry,
                     }));
             }
-            RenderNode::Scroll(node) => {
+            Self::Scroll(node) => {
                 let Some(handle) = node.handle.borrow().clone() else {
                     return;
                 };
@@ -629,9 +639,9 @@ impl RenderNode {
                     &handle,
                 );
             }
-            RenderNode::LazyStack(node) => node.flush(renderer, ctx, env),
-            RenderNode::Collection(node) => node.flush(renderer, ctx),
-            RenderNode::Widget(node) => {
+            Self::LazyStack(node) => node.flush(renderer, ctx, env),
+            Self::Collection(node) => node.flush(renderer, ctx),
+            Self::Widget(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
                 renderer.push_render_owner(&node.accessibility_identity);
                 // Re-render the leaf widget from its retained config so its handler
@@ -664,17 +674,25 @@ impl RenderNode {
     /// produce, and every registration goes through the no-bounds semantic
     /// path.
     #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn emit_accessibility(&self, renderer: &mut SemanticCore, env: &Environment) {
         match self {
             // A color fill carries no semantics.
-            RenderNode::Color(_) => {}
-            RenderNode::Text(text) => {
+            Self::Color(_) => {}
+            Self::Text(text) => {
                 renderer.push_accessibility_owner(&text.accessibility_identity);
                 let styled = renderer.read_signal(&text.content);
                 TextNode::emit_accessibility(renderer, None, &styled, env);
                 renderer.pop_accessibility_owner();
             }
-            RenderNode::Container(container) => {
+            Self::Container(container) => {
                 renderer.push_accessibility_owner(&container.accessibility_identity);
                 // As in `flush`: the claim is resolved on the env this walk
                 // actually sees — an enclosing claim strips the naming
@@ -693,20 +711,20 @@ impl RenderNode {
                 }
             }
             // Transforms are presentation: the semantic tree keeps the child.
-            RenderNode::Opacity(node) => node.child.emit_accessibility(renderer, env),
-            RenderNode::Scale(node) => node.child.emit_accessibility(renderer, env),
-            RenderNode::Rotation(node) => node.child.emit_accessibility(renderer, env),
-            RenderNode::Offset(node) => node.child.emit_accessibility(renderer, env),
-            RenderNode::Dynamic(node) => {
+            Self::Opacity(node) => node.child.emit_accessibility(renderer, env),
+            Self::Scale(node) => node.child.emit_accessibility(renderer, env),
+            Self::Rotation(node) => node.child.emit_accessibility(renderer, env),
+            Self::Offset(node) => node.child.emit_accessibility(renderer, env),
+            Self::Dynamic(node) => {
                 node.apply_pending_mid_pass(renderer);
                 node.child.borrow().emit_accessibility(renderer, env);
             }
-            RenderNode::Retain(node) => node.child.emit_accessibility(renderer, env),
-            RenderNode::Env(node) => {
+            Self::Retain(node) => node.child.emit_accessibility(renderer, env),
+            Self::Env(node) => {
                 renderer.register_modal_scope(&node.env);
                 node.child.emit_accessibility(renderer, &node.env);
             }
-            RenderNode::Wrapper(node) => {
+            Self::Wrapper(node) => {
                 renderer.push_accessibility_owner(&node.accessibility_identity);
                 let child_env = &node.env;
                 match &node.effect {
@@ -768,7 +786,7 @@ impl RenderNode {
                 }
                 renderer.pop_accessibility_owner();
             }
-            RenderNode::SceneView(node) => {
+            Self::SceneView(node) => {
                 let (content_label, content_value, wants_input) = {
                     let content = node.content.borrow();
                     (
@@ -800,7 +818,7 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::GpuContent(node) => {
+            Self::GpuContent(node) => {
                 let (content_label, content_value, wants_input) = {
                     let view = &node.runtime.borrow().view;
                     (
@@ -828,7 +846,7 @@ impl RenderNode {
                     );
                 }
             }
-            RenderNode::ExternalFrame(node) => {
+            Self::ExternalFrame(node) => {
                 let (content_label, content_value) = {
                     let view = &node.runtime.borrow().view;
                     (
@@ -849,10 +867,10 @@ impl RenderNode {
             }
             // The filter is a paint concern: the semantic tree keeps the
             // child exactly as it emits on its own.
-            RenderNode::Filtered(node) => {
+            Self::Filtered(node) => {
                 node.child.emit_accessibility(renderer, &node.env);
             }
-            RenderNode::Scroll(node) => {
+            Self::Scroll(node) => {
                 // The semantic scroll domain is unbounded — there is no layout
                 // to measure content against — so scroll actions move the
                 // bound offset freely and `scroll_y_max` reports infinity.
@@ -896,9 +914,9 @@ impl RenderNode {
                     renderer.pop_accessibility_parent();
                 }
             }
-            RenderNode::LazyStack(node) => node.emit_accessibility(renderer),
-            RenderNode::Collection(node) => node.emit_accessibility(renderer),
-            RenderNode::Widget(node) => {
+            Self::LazyStack(node) => node.emit_accessibility(renderer),
+            Self::Collection(node) => node.emit_accessibility(renderer),
+            Self::Widget(node) => {
                 renderer.push_accessibility_owner(&node.accessibility_identity);
                 let merged;
                 let env = if node.env.identity() == env.identity() {

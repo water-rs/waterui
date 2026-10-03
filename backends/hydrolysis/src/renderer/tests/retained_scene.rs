@@ -219,7 +219,7 @@ fn dynamic_content_change_patches_without_rebuild() {
 /// long list of visible rows, so a reflow is observable in pixels.
 fn dynamic_changing_size_visible(value: &Binding<i32>) -> AnyView {
     let watched = watch(value.clone(), |v| {
-        Color::srgb(200, 90, 160).size(80.0, 40.0 + (v as f32) * 30.0)
+        Color::srgb(200, 90, 160).size(80.0, (crate::num_cast::i32_as_f32(v)).mul_add(30.0, 40.0))
     });
     let rows = (0..40).map(SelfId::new).collect::<Vec<_>>();
     let list = VStack::for_each(rows, |item: SelfId<u64>| {
@@ -610,7 +610,7 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
     let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
     let sel = selected.clone();
     let collection = VStack::for_each(list, move |item: SelfId<u64>| {
-        let id = *item as u32;
+        let id = crate::num_cast::u64_as_u32(*item);
         let is_selected = sel.clone().map(move |current| current == id).computed();
         let background = is_selected
             .select(Color::srgb(200, 90, 160), Color::srgb(228, 224, 236))
@@ -618,7 +618,9 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
         AnyView::new(().size(120.0, 40.0).background(signal_color(background)))
     });
     let collection = collection_transition(collection, Animation::linear(Duration::from_millis(1)));
-    let height = selected.clone().map(|s| 40.0 + s as f32 * 30.0);
+    let height = selected
+        .clone()
+        .map(|s| crate::num_cast::u32_as_f32(s).mul_add(30.0, 40.0));
     let sizer = Frame::new(()).width(80.0).height(height);
     AnyView::new(vstack((sizer, collection)))
 }

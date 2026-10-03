@@ -3,11 +3,6 @@
 // Compiles only into wasm32 + `web`: the fetch/frame futures hold `Rc`,
 // `Closure` and JS-object handles that are `!Send` by design on the
 // single-threaded target, and every one is driven by `spawn_local`.
-#![allow(
-    clippy::future_not_send,
-    reason = "wasm32 is single-threaded; the runner's Rc and JS handles never cross a thread"
-)]
-
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
@@ -58,6 +53,10 @@ struct WebFontManifestEntry {
     file_name: String,
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+)]
 async fn fetch_response(path: &str) -> Response {
     let window = web_sys::window().expect("hydrolysis web font loader requires browser window");
     let response = JsFuture::from(window.fetch_with_str(path))
@@ -74,6 +73,10 @@ async fn fetch_response(path: &str) -> Response {
     response
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+)]
 async fn fetch_bytes(path: &str) -> Vec<u8> {
     let response = fetch_response(path).await;
     let array_buffer = JsFuture::from(response.array_buffer().unwrap_or_else(|error| {
@@ -89,6 +92,10 @@ async fn fetch_bytes(path: &str) -> Vec<u8> {
     data
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+)]
 async fn fetch_text(path: &str) -> String {
     String::from_utf8(fetch_bytes(path).await).unwrap_or_else(|error| {
         panic!("hydrolysis web font manifest `{path}` is not valid UTF-8: {error}")
@@ -99,6 +106,10 @@ async fn fetch_text(path: &str) -> String {
 ///
 /// Built once for the application: the runner installs the result as the shared
 /// [`FontCollection`] and seeds the window's renderer from it.
+#[expect(
+    clippy::future_not_send,
+    reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+)]
 async fn load_web_fonts() -> parley::FontContext {
     let manifest_text = fetch_text(WEB_FONT_MANIFEST_PATH).await;
     let manifest: WebFontManifest = serde_json::from_str(&manifest_text).unwrap_or_else(|error| {
@@ -199,6 +210,10 @@ impl BrowserRunner {
     /// Async because the engine render inside awaits the browser's GPU
     /// device; the caller drives it through `spawn_local` — wasm32 only ever
     /// runs this path.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+    )]
     async fn frame(&mut self) -> bool {
         let _ = self.drain_local_executor_queue();
         // The page's occlusion report drives the pump state each frame — a
@@ -315,6 +330,10 @@ impl BrowserRunnerHandle {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the runner wires every browser subsystem once at startup; the length is the enumeration, not logic"
+)]
 pub fn run(app: App, style: impl crate::Style) {
     wasm_bindgen_futures::spawn_local(async move {
         let schedule_frame_ref: ScheduleFrameSlot = Rc::new(RefCell::new(None));

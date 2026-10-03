@@ -5,6 +5,8 @@
 use super::layout::kurbo_rect;
 #[cfg(feature = "accessibility")]
 use super::layout::resolved_content_rect;
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use std::rc::Rc;
 
@@ -18,7 +20,7 @@ use waterui_layout::collection_transition::CollectionTransition;
 /// `ids` is the notified snapshot slice — index-parallel with the collection.
 /// A producer that knows only a whole-value replacement reports
 /// `everything`, so an empty change means nothing needs re-materializing.
-pub(crate) fn collect_replaced_ids<Id: Copy + Eq + core::hash::Hash>(
+pub fn collect_replaced_ids<Id: Copy + Eq + core::hash::Hash>(
     ids: &[Id],
     change: &CollectionChange,
     out: &mut std::collections::HashSet<Id>,
@@ -111,7 +113,7 @@ pub(super) struct CollectionEntry {
 impl CollectionEntry {
     /// An at-rest entry: full presence, no transition. The initial membership
     /// of a collection is built from these.
-    pub(super) fn stable(id: CollectionItemId, node: RenderNode) -> Self {
+    pub(super) const fn stable(id: CollectionItemId, node: RenderNode) -> Self {
         Self {
             id,
             node,
@@ -153,7 +155,7 @@ pub(super) fn collection_transition_runtime(
 /// The phase a reused live entry should carry after a reconcile: `Stable`
 /// without a transition, a fresh enter when it was leaving, otherwise its
 /// current phase (so an in-flight enter keeps running).
-fn next_live_phase(
+const fn next_live_phase(
     transition: Option<&CollectionTransitionRuntime>,
     previous: EntryPhase,
     now: Instant,
@@ -165,7 +167,7 @@ fn next_live_phase(
     }
 }
 
-pub(crate) struct CollectionNode {
+pub struct CollectionNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -228,7 +230,7 @@ pub(crate) struct CollectionNode {
     pub(super) _layout_guards: Vec<BoxWatcherGuard>,
 }
 
-pub(crate) struct LazyStackNode {
+pub struct LazyStackNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -395,12 +397,12 @@ impl CollectionNode {
                 )
             };
             if !first_visible {
-                main += axis.spacing * factor;
-                floor += axis.spacing * factor;
+                main = axis.spacing.mul_add(factor, main);
+                floor = axis.spacing.mul_add(factor, floor);
             }
             first_visible = false;
-            main += item_main * factor;
-            floor += min_main * factor;
+            main = f64::mul_add(item_main, factor, main);
+            floor = f64::mul_add(min_main, factor, floor);
             cross = cross.max(item_cross);
         }
         // As in `LazyStackNode::measure`: the blended total is the stack's
@@ -466,7 +468,7 @@ impl CollectionNode {
                 }
                 #[allow(clippy::cast_possible_truncation)]
                 if !first_visible {
-                    cursor += axis.spacing as f32 * factor;
+                    cursor = (axis.spacing as f32).mul_add(factor, cursor);
                 }
                 first_visible = false;
                 *rect = place_on_axis(*rect, axis, cursor);
@@ -475,7 +477,7 @@ impl CollectionNode {
                 } else {
                     rect.width()
                 };
-                cursor += extent * factor;
+                cursor = f32::mul_add(extent, factor, cursor);
             }
         }
         for (entry, placement) in self.entries.iter_mut().zip(&placements) {
@@ -670,36 +672,34 @@ impl CollectionNode {
         next.extend(head_dead.into_iter().map(begin_exit));
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
         for (index, id) in ids.into_iter().enumerate() {
-            let entry = match reuse_by_id.remove(&id) {
-                Some(mut previous) => {
-                    previous.phase = next_live_phase(self.transition.as_ref(), previous.phase, now);
-                    if replaced.contains(&id) {
-                        // Same id, changed content: re-materialize this row's
-                        // node from the current item. The entry keeps its
-                        // identity and phase; only the node is rebuilt.
-                        let view = self.views.get_view(index).unwrap_or_else(|| {
-                            panic!("hydrolysis collection: item {index} missing")
-                        });
-                        previous.node =
-                            RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
-                    }
-                    previous
-                }
-                None => {
+            let entry = if let Some(mut previous) = reuse_by_id.remove(&id) {
+                previous.phase = next_live_phase(self.transition.as_ref(), previous.phase, now);
+                if replaced.contains(&id) {
+                    // Same id, changed content: re-materialize this row's
+                    // node from the current item. The entry keeps its
+                    // identity and phase; only the node is rebuilt.
                     let view = self
                         .views
                         .get_view(index)
                         .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
-                    CollectionEntry {
-                        id,
-                        node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
-                        phase: if animated {
-                            EntryPhase::Entering(now)
-                        } else {
-                            EntryPhase::Stable
-                        },
-                        factor: if animated { 0.0 } else { 1.0 },
-                    }
+                    previous.node =
+                        RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                }
+                previous
+            } else {
+                let view = self
+                    .views
+                    .get_view(index)
+                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+                CollectionEntry {
+                    id,
+                    node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
+                    phase: if animated {
+                        EntryPhase::Entering(now)
+                    } else {
+                        EntryPhase::Stable
+                    },
+                    factor: if animated { 0.0 } else { 1.0 },
                 }
             };
             next.push(entry);
@@ -719,6 +719,10 @@ impl CollectionNode {
     /// `Stable`, and while anything is still mid-flight a refresh is requested
     /// so frames keep coming until the collection settles. Returns whether the
     /// tree changed shape or is still animating (both need a fresh layout).
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(super) fn advance_transitions(&mut self, renderer: &mut SemanticCore) -> bool {
         let Some(runtime) = &self.transition else {
             return false;
@@ -748,7 +752,7 @@ impl CollectionNode {
 
 /// Moves `rect` to `main_position` along the transition axis, keeping its
 /// cross-axis placement and full extent.
-fn place_on_axis(rect: Rect, axis: TransitionAxis, main_position: f32) -> Rect {
+const fn place_on_axis(rect: Rect, axis: TransitionAxis, main_position: f32) -> Rect {
     let origin = if axis.vertical {
         Point::new(rect.x(), main_position)
     } else {
@@ -1000,8 +1004,10 @@ impl LazyStackNode {
         // that cannot shrink keeps its extent, as the eager stack's
         // `minima_overflow` answer does.
         let extent = self.extent_index.borrow().total_extent();
-        let floor = self.ensure_floor(state, theme, cross) * count as f64
-            + self.spacing() * (count - 1) as f64;
+        let floor = self.spacing().mul_add(
+            crate::num_cast::usize_as_f64(count - 1),
+            self.ensure_floor(state, theme, cross) * crate::num_cast::usize_as_f64(count),
+        );
         let main = match offered {
             Some(offer) if offer.is_finite() => extent.min(f64::from(offer)).max(floor),
             _ => extent,
@@ -1015,6 +1021,10 @@ impl LazyStackNode {
 
     /// Resolves the visible window from the enclosing scroll's pushed viewport and
     /// re-dispatches only those items at their placed rects. Bounded by visible rows.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(super) fn flush(
         &self,
         renderer: &mut HydrolysisRenderer,
@@ -1040,8 +1050,12 @@ impl LazyStackNode {
             scope
         });
         let cross = match &self.axis {
-            LazyStackAxisConfig::Vertical { .. } => Some(ctx.bounds.width() as f32),
-            LazyStackAxisConfig::Horizontal { .. } => Some(ctx.bounds.height() as f32),
+            LazyStackAxisConfig::Vertical { .. } => {
+                Some(crate::num_cast::f64_as_f32(ctx.bounds.width()))
+            }
+            LazyStackAxisConfig::Horizontal { .. } => {
+                Some(crate::num_cast::f64_as_f32(ctx.bounds.height()))
+            }
         };
         let theme = renderer.theme();
         self.ensure_estimate(&mut renderer.state, &theme, cross);

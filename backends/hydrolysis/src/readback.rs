@@ -9,7 +9,7 @@
 /// wgpu's `COPY_BYTES_PER_ROW_ALIGNMENT`: texture-copy rows pad to 256 bytes.
 const COPY_BYTES_PER_ROW_ALIGNMENT: u64 = 256;
 
-pub(crate) fn readback_texture_rgba8(
+pub fn readback_texture_rgba8(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -66,10 +66,11 @@ pub(crate) fn readback_texture_rgba8(
     let mapped = slice
         .get_mapped_range()
         .expect("hydrolysis failed to read the mapped readback buffer");
-    let mut pixels = Vec::with_capacity((row_bytes * u64::from(height)) as usize);
+    let mut pixels =
+        Vec::with_capacity(crate::num_cast::u64_as_usize(row_bytes * u64::from(height)));
     for row in 0..u64::from(height) {
-        let start = (row * padded_row_bytes) as usize;
-        pixels.extend_from_slice(&mapped[start..start + row_bytes as usize]);
+        let start = crate::num_cast::u64_as_usize(row * padded_row_bytes);
+        pixels.extend_from_slice(&mapped[start..start + crate::num_cast::u64_as_usize(row_bytes)]);
     }
     drop(mapped);
     readback.unmap();

@@ -39,7 +39,7 @@ struct TabRenderState {
 
 /// The retained render state of a `TabsLayout` container. The selection `Binding` and tab
 /// native style are kept by value; each tab is a [`TabRenderState`].
-pub(crate) struct TabsRenderState {
+pub struct TabsRenderState {
     selection: Binding<Id>,
     style: NativeTabStyle,
     tabs: Vec<TabRenderState>,
@@ -141,7 +141,7 @@ impl HydroNativeView for Native<TabsLayout> {
 /// retained `Widget`-node path (which extracts each default label from its
 /// tab's [`RetainedSubview`]).
 #[cfg(feature = "accessibility")]
-pub(crate) fn tabs_accessibility(
+pub fn tabs_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
@@ -230,7 +230,7 @@ pub(crate) fn tabs_accessibility(
 /// retained content answers the proposal its rendered content rect hands it —
 /// the pane minus the tab bar (see [`tabs_content_proposal`]) — mirroring
 /// `measure_tabs_layout`.
-pub(crate) fn measure_tabs_node(
+pub fn measure_tabs_node(
     state: &TabsRenderState,
     proposal: ProposalSize,
     hydro: &mut HydroState,
@@ -278,18 +278,23 @@ pub(crate) fn measure_tabs_node(
         ),
         NativeTabStyle::Sidebar => (
             max_content_width + metrics.bar_height,
-            max_content_height.max(metrics.button_min_width * state.tabs.len() as f64),
+            max_content_height
+                .max(metrics.button_min_width * crate::num_cast::usize_as_f64(state.tabs.len())),
         ),
     };
     ViewDimensions::new(LayoutSize::new(
-        proposal.width.unwrap_or(width as f32),
-        proposal.height.unwrap_or(height as f32),
+        proposal
+            .width
+            .unwrap_or_else(|| crate::num_cast::f64_as_f32(width)),
+        proposal
+            .height
+            .unwrap_or_else(|| crate::num_cast::f64_as_f32(height)),
     ))
 }
 
 /// Renders a retained tabs leaf every flush: emits the tab-list a11y (unless
 /// hidden) then the bar + selected content, reading the selection signal live.
-pub(crate) fn render_tabs_node(
+pub fn render_tabs_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TabsRenderState>>,
     env: &Environment,
@@ -313,7 +318,7 @@ pub(crate) fn render_tabs_node(
                             tab.tag,
                             crate::renderer::InteractionKey::for_rc(
                                 state,
-                                i32::from(tab.tag) as u32 as usize,
+                                crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                             ),
                             tab.label.default_a11y_label(),
                             index == selected_index,
@@ -338,7 +343,11 @@ pub(crate) fn render_tabs_node(
     render_tabs_parts(ctx, state, env);
 }
 
-pub(crate) fn render_tabs_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_tabs_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TabsRenderState>>,
     env: &Environment,
@@ -373,8 +382,10 @@ pub(crate) fn render_tabs_parts(
     for index in 0..tab_count {
         let button_rect = tabs_button_rect(bar_rect, tab_count, index, style);
         let tab_id = state.borrow().tabs[index].tag;
-        let interaction_key =
-            crate::renderer::InteractionKey::for_rc(state, i32::from(tab_id) as u32 as usize);
+        let interaction_key = crate::renderer::InteractionKey::for_rc(
+            state,
+            crate::num_cast::i32_as_u32(i32::from(tab_id)) as usize,
+        );
         // The label and icon sub-views are prebuilt (node path:
         // `prebuild_labels`; dispatch path: `render` calls `prebuild_labels`),
         // so measure them directly for placement.
@@ -526,7 +537,7 @@ fn tab_label_env(env: &Environment) -> Environment {
 /// when the container is `container_width` wide: a bottom bar's extent is the
 /// container's width; a sidebar strip reports its own thickness — the
 /// vertical metrics' `bar_height` — which never widens into the pane.
-pub(crate) fn tabs_bar_item_extent(
+pub fn tabs_bar_item_extent(
     container_width: f64,
     style: NativeTabStyle,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
@@ -541,7 +552,11 @@ pub(crate) fn tabs_bar_item_extent(
 /// theme answers `tabs_item_layout` from the bar's own extent (see
 /// [`tabs_bar_item_extent`]) computed from `item_sizes`, so the bar this pass
 /// measures and the one the render pass draws under the same bounds agree.
-pub(crate) fn tabs_decide_layout(
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+pub fn tabs_decide_layout(
     theme: &Rc<dyn crate::engine::WidgetTheme>,
     style: NativeTabStyle,
     proposed_width: Option<f64>,
@@ -549,9 +564,10 @@ pub(crate) fn tabs_decide_layout(
 ) -> (TabItemLayout, waterui_backend_core::widget::TabsMetrics) {
     let extent = match proposed_width {
         Some(width) => tabs_bar_item_extent(width, style, theme),
-        None => match style {
-            NativeTabStyle::Sidebar => tabs_bar_item_extent(0.0, style, theme),
-            _ => {
+        None => {
+            if style == NativeTabStyle::Sidebar {
+                tabs_bar_item_extent(0.0, style, theme)
+            } else {
                 let vertical_metrics = theme.tabs_metrics(TabItemLayout::Vertical);
                 item_sizes
                     .iter()
@@ -565,7 +581,7 @@ pub(crate) fn tabs_decide_layout(
                     })
                     .sum()
             }
-        },
+        }
     };
     let layout = theme.tabs_item_layout(extent, item_sizes.len());
     (layout, theme.tabs_metrics(layout))
@@ -573,7 +589,7 @@ pub(crate) fn tabs_decide_layout(
 
 /// A tab item's natural width for the bar's item layout: icon above the label
 /// takes the wider of the two; icon beside the label adds them.
-pub(crate) fn tabs_item_natural_width(
+pub fn tabs_item_natural_width(
     label_size: LayoutSize,
     icon_size: Option<LayoutSize>,
     metrics: &waterui_backend_core::widget::TabsMetrics,
@@ -586,7 +602,10 @@ pub(crate) fn tabs_item_natural_width(
         (_, Some(icon_size)) => f64::from(label_size.width).max(f64::from(icon_size.width)),
         (_, None) => f64::from(label_size.width),
     };
-    (content_width + metrics.button_horizontal_inset * 2.0).max(metrics.button_min_width)
+    metrics
+        .button_horizontal_inset
+        .mul_add(2.0, content_width)
+        .max(metrics.button_min_width)
 }
 
 /// Places a tab item's icon and label inside its button rect. Vertical stacks
@@ -601,7 +620,10 @@ fn tabs_item_content_rects(
     let Some(icon_size) = icon_size else {
         return (None, tabs_label_rect(button_rect, label_size, metrics));
     };
-    let max_width = (button_rect.width() - metrics.button_horizontal_inset * 2.0).max(0.0);
+    let max_width = metrics
+        .button_horizontal_inset
+        .mul_add(-2.0, button_rect.width())
+        .max(0.0);
     match layout {
         TabItemLayout::Vertical => {
             let icon_width = f64::from(icon_size.width).min(max_width);
@@ -610,16 +632,18 @@ fn tabs_item_content_rects(
             let label_height = f64::from(label_size.height)
                 .min((button_rect.height() - icon_height - metrics.icon_label_spacing).max(0.0));
             let total_height = icon_height + metrics.icon_label_spacing + label_height;
-            let y0 = button_rect.y0 + (button_rect.height() - total_height).max(0.0) * 0.5;
+            let y0 = (button_rect.height() - total_height)
+                .max(0.0)
+                .mul_add(0.5, button_rect.y0);
             (
                 Some(kurbo::Rect::new(
-                    button_rect.x0 + (button_rect.width() - icon_width) * 0.5,
+                    (button_rect.width() - icon_width).mul_add(0.5, button_rect.x0),
                     y0,
                     button_rect.x0 + f64::midpoint(button_rect.width(), icon_width),
                     y0 + icon_height,
                 )),
                 kurbo::Rect::new(
-                    button_rect.x0 + (button_rect.width() - label_width) * 0.5,
+                    (button_rect.width() - label_width).mul_add(0.5, button_rect.x0),
                     y0 + icon_height + metrics.icon_label_spacing,
                     button_rect.x0 + f64::midpoint(button_rect.width(), label_width),
                     y0 + icon_height + metrics.icon_label_spacing + label_height,
@@ -633,17 +657,19 @@ fn tabs_item_content_rects(
             let icon_height = f64::from(icon_size.height).min(button_rect.height());
             let label_height = f64::from(label_size.height).min(button_rect.height());
             let total_width = icon_width + metrics.icon_label_spacing + label_width;
-            let x0 = button_rect.x0 + (button_rect.width() - total_width).max(0.0) * 0.5;
+            let x0 = (button_rect.width() - total_width)
+                .max(0.0)
+                .mul_add(0.5, button_rect.x0);
             (
                 Some(kurbo::Rect::new(
                     x0,
-                    button_rect.y0 + (button_rect.height() - icon_height) * 0.5,
+                    (button_rect.height() - icon_height).mul_add(0.5, button_rect.y0),
                     x0 + icon_width,
                     button_rect.y0 + f64::midpoint(button_rect.height(), icon_height),
                 )),
                 kurbo::Rect::new(
                     x0 + icon_width + metrics.icon_label_spacing,
-                    button_rect.y0 + (button_rect.height() - label_height) * 0.5,
+                    (button_rect.height() - label_height).mul_add(0.5, button_rect.y0),
                     x0 + icon_width + metrics.icon_label_spacing + label_width,
                     button_rect.y0 + f64::midpoint(button_rect.height(), label_height),
                 ),
@@ -657,11 +683,14 @@ fn tabs_label_rect(
     label_size: waterui_core::layout::Size,
     metrics: &waterui_backend_core::widget::TabsMetrics,
 ) -> kurbo::Rect {
-    let max_width = (button_rect.width() - metrics.button_horizontal_inset * 2.0).max(0.0);
+    let max_width = metrics
+        .button_horizontal_inset
+        .mul_add(-2.0, button_rect.width())
+        .max(0.0);
     let width = f64::from(label_size.width).min(max_width);
     let height = f64::from(label_size.height).min(button_rect.height());
-    let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;
-    let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
+    let x0 = (button_rect.width() - width).mul_add(0.5, button_rect.x0);
+    let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
@@ -676,13 +705,13 @@ fn tabs_highlight_rect(
     // the indicator's thickness centered on the item.
     if matches!(layout, TabItemLayout::Horizontal) {
         let height = thickness.min(button_rect.height());
-        let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
+        let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
         return kurbo::Rect::new(button_rect.x0, y0, button_rect.x1, y0 + height);
     }
     match style {
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => {
             let width = label_extent.clamp(0.0, button_rect.width());
-            let x0 = button_rect.x0 + (button_rect.width() - width) * 0.5;
+            let x0 = (button_rect.width() - width).mul_add(0.5, button_rect.x0);
             let x1 = x0 + width;
             kurbo::Rect::new(
                 x0,
@@ -693,7 +722,7 @@ fn tabs_highlight_rect(
         }
         NativeTabStyle::Sidebar => {
             let height = label_extent.clamp(0.0, button_rect.height());
-            let y0 = button_rect.y0 + (button_rect.height() - height) * 0.5;
+            let y0 = (button_rect.height() - height).mul_add(0.5, button_rect.y0);
             kurbo::Rect::new(
                 (button_rect.x1 - thickness).max(button_rect.x0),
                 y0,
@@ -710,7 +739,7 @@ fn tabs_highlight_rect(
 /// the selected tab's content subtree — it flushes unsuppressed in the
 /// rendered path, so it emits its own nodes here too.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_tabs_accessibility(
+pub fn emit_tabs_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<TabsRenderState>>,
     env: &Environment,
@@ -729,7 +758,7 @@ pub(crate) fn emit_tabs_accessibility(
                     tab.tag,
                     crate::renderer::InteractionKey::for_rc(
                         owner,
-                        i32::from(tab.tag) as u32 as usize,
+                        crate::num_cast::i32_as_u32(i32::from(tab.tag)) as usize,
                     ),
                     tab.label.default_a11y_label(),
                     index == selected_index,

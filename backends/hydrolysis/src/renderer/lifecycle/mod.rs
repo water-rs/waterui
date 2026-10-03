@@ -1,7 +1,9 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
-pub(crate) mod lazy;
+pub mod lazy;
 mod lifecycle_impl;
 
-pub(crate) use lazy::*;
-pub(crate) use lifecycle_impl::*;
+pub use lazy::*;
+pub use lifecycle_impl::*;

@@ -1,14 +1,16 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_core::Computed;
 use waterui_core::interaction::Selected;
 use waterui_core::layout::LayoutPriority;
 use waterui_core::metadata::MetadataKey;
 
-pub(crate) fn gesture_group_identity(view: &AnyView) -> usize {
+pub fn gesture_group_identity(view: &AnyView) -> usize {
     gesture_group_identity_with_budget(view, 64)
 }
 
-pub(crate) fn flatten_environment_metadata_ref<'a>(
+pub fn flatten_environment_metadata_ref<'a>(
     mut view: &'a AnyView,
     env: &Environment,
 ) -> (&'a AnyView, Environment) {
@@ -20,7 +22,7 @@ pub(crate) fn flatten_environment_metadata_ref<'a>(
     (view, scoped_env)
 }
 
-pub(crate) fn flatten_environment_metadata_owned(
+pub fn flatten_environment_metadata_owned(
     mut view: AnyView,
     env: &Environment,
 ) -> (AnyView, Environment) {
@@ -43,7 +45,7 @@ pub(crate) fn flatten_environment_metadata_owned(
 /// the same scoped environment the build-time `Env` node installs — otherwise
 /// the snapshot, which replaces the environment wholesale when flattened,
 /// silently drops the accessibility scoping above it.
-pub(crate) fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
+pub fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
     env: &Environment,
     value: &T,
 ) -> Environment {
@@ -61,7 +63,7 @@ pub(crate) fn a11y_scoped_env<T: MetadataKey + Clone + 'static>(
 /// usual `.a11y_label(..).a11y_role(..)` pair) is harmless: only the innermost is
 /// visible below, and it is the one every consumer resolves against.
 #[cfg(feature = "accessibility")]
-pub(crate) fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
+pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
     env: &Environment,
     value: &T,
 ) -> Environment {
@@ -73,7 +75,7 @@ pub(crate) fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
 /// Without an accessibility tree there is no naming scope to grow, so naming
 /// metadata scopes the environment like every other value.
 #[cfg(not(feature = "accessibility"))]
-pub(crate) fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
+pub fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
     env: &Environment,
     value: &T,
 ) -> Environment {
@@ -103,10 +105,7 @@ pub(crate) fn a11y_naming_scoped_env<T: MetadataKey + Clone + 'static>(
 /// Only what the snapshot does not already carry is restored, so a snapshot
 /// taken *below* a naming scope still speaks for itself.
 #[cfg(feature = "accessibility")]
-pub(crate) fn restore_a11y_naming_scope(
-    outer: &Environment,
-    mut snapshot: Environment,
-) -> Environment {
+pub fn restore_a11y_naming_scope(outer: &Environment, mut snapshot: Environment) -> Environment {
     macro_rules! restore {
         ($($ty:ty),+ $(,)?) => {
             $(
@@ -137,10 +136,7 @@ pub(crate) fn restore_a11y_naming_scope(
 
 /// Without an accessibility tree there is no naming scope to carry.
 #[cfg(not(feature = "accessibility"))]
-pub(crate) const fn restore_a11y_naming_scope(
-    _outer: &Environment,
-    snapshot: Environment,
-) -> Environment {
+pub const fn restore_a11y_naming_scope(_outer: &Environment, snapshot: Environment) -> Environment {
     snapshot
 }
 
@@ -148,10 +144,7 @@ pub(crate) const fn restore_a11y_naming_scope(
 /// suppresses the whole subtree's emission (a constant can never un-hide), and
 /// the state is stored as a constant [`AccessibilityStateSignal`] so emission
 /// resolves one code path for static and reactive state alike.
-pub(crate) fn a11y_scoped_env_for_state(
-    env: &Environment,
-    value: &AccessibilityState,
-) -> Environment {
+pub fn a11y_scoped_env_for_state(env: &Environment, value: &AccessibilityState) -> Environment {
     let mut scoped = env.clone();
     if value.is_hidden() {
         scoped.insert(AccessibilityHidden::new(true));
@@ -183,7 +176,7 @@ fn a11y_scoped_identifier_env(env: &Environment, _value: &AccessibilityIdentifie
 /// build's `Env` arms and the List-row hoist both peel through this, so
 /// registering a new accessibility scope touches one place. `Err` hands the
 /// view back untouched when the outer wrapper is not one of these scopes.
-pub(crate) fn a11y_scoped_env_for_view(
+pub fn a11y_scoped_env_for_view(
     view: AnyView,
     env: &Environment,
 ) -> Result<(AnyView, Environment), AnyView> {
@@ -231,10 +224,7 @@ pub(crate) fn a11y_scoped_env_for_view(
 /// the modifier and the named view) still belongs to the subtree's own build,
 /// so hoisting stops at one.
 #[cfg(feature = "accessibility")]
-pub(crate) fn hoist_accessibility_metadata(
-    view: AnyView,
-    env: &Environment,
-) -> (AnyView, Environment) {
+pub fn hoist_accessibility_metadata(view: AnyView, env: &Environment) -> (AnyView, Environment) {
     let mut scoped = env.clone();
     let view = hoist_accessibility_metadata_inner(view, &mut scoped);
     (view, scoped)
@@ -274,7 +264,7 @@ fn gesture_group_identity_with_budget(view: &AnyView, remaining: usize) -> usize
     view.stable_ptr() as usize
 }
 
-pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
+pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     macro_rules! passthrough_metadata_content {
         ($($ty:ty),+ $(,)?) => {
             $(
@@ -341,7 +331,7 @@ pub(crate) fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
     None
 }
 
-pub(crate) fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
+pub fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
     if let Some(content) = passthrough_content(view) {
         return effective_stretch_axis(content);
     }
@@ -362,7 +352,7 @@ pub(crate) fn effective_stretch_axis(view: &AnyView) -> StretchAxis {
 /// renders and still answers `false`, and so does a structured container
 /// like `().size(w, h)` — it explicitly claims a slot. A stack treats a
 /// child answering `true` as a non-member (§4.4: no slot, no spacing).
-pub(crate) fn view_renders_nothing(view: &AnyView) -> bool {
+pub fn view_renders_nothing(view: &AnyView) -> bool {
     if let Some(content) = passthrough_content(view) {
         return view_renders_nothing(content);
     }
@@ -390,14 +380,18 @@ fn is_layout_terminal(view: &AnyView) -> bool {
     super::is_hydro_native_view(view)
 }
 
-pub(crate) fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
+pub fn normalize_view_for_render(view: AnyView, env: &Environment) -> AnyView {
     normalize_layout_view(view, env)
 }
 
-pub(crate) fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {
+pub fn normalize_layout_view(view: AnyView, env: &Environment) -> AnyView {
     normalize_layout_view_with_budget(view, env, 64)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn normalize_layout_view_with_budget(
     view: AnyView,
     env: &Environment,
@@ -603,7 +597,7 @@ fn normalize_layout_view_with_budget(
     normalize_layout_view_with_budget(view, env, next_remaining)
 }
 
-pub(crate) fn estimate_layout_intrinsic<'a>(
+pub fn estimate_layout_intrinsic<'a>(
     layout: &dyn Layout,
     children: impl IntoIterator<Item = &'a AnyView>,
     state: &mut HydroState,
@@ -625,7 +619,7 @@ pub(crate) fn estimate_layout_intrinsic<'a>(
 /// its inner edge sits `offset` points out — the stroked box and the resolved
 /// radii both grow by `offset + width / 2` — in the ring's color. The caller
 /// strokes it on the draw context it opens after resolving.
-pub(crate) fn interaction_focus_ring(
+pub fn interaction_focus_ring(
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
     layer_bounds: kurbo::Rect,
@@ -663,17 +657,17 @@ pub(crate) fn interaction_focus_ring(
 /// non-uniformly instead (the `CustomPath` fallback) stretches corner arcs
 /// into ellipse segments on wide containers, which violates the Material
 /// corner shape (e.g. a 4dp snackbar radius smeared across a 1500px bar).
-pub(crate) fn resolved_shape_to_path(shape: &ResolvedShape, bounds: kurbo::Rect) -> kurbo::BezPath {
+pub fn resolved_shape_to_path(shape: &ResolvedShape, bounds: kurbo::Rect) -> kurbo::BezPath {
     shape_kind_path(shape.kind, bounds)
         .unwrap_or_else(|| path_commands_to_path(&shape.commands, bounds))
 }
 
 /// Bounds-aware path for the structured shape kinds; `None` for custom paths,
 /// which only exist as unit-space commands.
-pub(crate) fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::BezPath> {
+pub fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<kurbo::BezPath> {
     use kurbo::Shape as _;
     const PATH_TOLERANCE: f64 = 0.05;
-    let min_side = bounds.width().min(bounds.height()).max(0.0) as f32;
+    let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
     match kind {
         ShapeKind::Rect
         | ShapeKind::RoundedRect { .. }
@@ -690,12 +684,12 @@ pub(crate) fn shape_kind_path(kind: ShapeKind, bounds: kurbo::Rect) -> Option<ku
     }
 }
 
-pub(crate) fn resolved_morph_shape_to_path(
+pub fn resolved_morph_shape_to_path(
     shape: &ResolvedMorphShape,
     progress: f32,
     bounds: kurbo::Rect,
 ) -> kurbo::BezPath {
-    let min_side = bounds.width().min(bounds.height()).max(0.0) as f32;
+    let min_side = crate::num_cast::f64_as_f32(bounds.width().min(bounds.height()).max(0.0));
     let from = shape_kind_radii(shape.from, min_side);
     let to = shape_kind_radii(shape.to, min_side);
     let progress = progress.clamp(0.0, 1.0);
@@ -808,29 +802,29 @@ fn append_corner(
         return;
     }
     let start_point = kurbo::Point::new(
-        center.x + radius * start.cos(),
-        center.y + radius * start.sin(),
+        radius.mul_add(start.cos(), center.x),
+        radius.mul_add(start.sin(), center.y),
     );
-    let end_point = kurbo::Point::new(center.x + radius * end.cos(), center.y + radius * end.sin());
+    let end_point = kurbo::Point::new(
+        radius.mul_add(end.cos(), center.x),
+        radius.mul_add(end.sin(), center.y),
+    );
     let c1 = kurbo::Point::new(
-        start_point.x - radius * kappa * start.sin(),
-        start_point.y + radius * kappa * start.cos(),
+        (radius * kappa).mul_add(-start.sin(), start_point.x),
+        (radius * kappa).mul_add(start.cos(), start_point.y),
     );
     let c2 = kurbo::Point::new(
-        end_point.x + radius * kappa * end.sin(),
-        end_point.y - radius * kappa * end.cos(),
+        (radius * kappa).mul_add(end.sin(), end_point.x),
+        (radius * kappa).mul_add(-end.cos(), end_point.y),
     );
     path.curve_to(c1, c2, end_point);
 }
 
 fn lerp(from: f32, to: f32, progress: f32) -> f32 {
-    from + (to - from) * progress
+    (to - from).mul_add(progress, from)
 }
 
-pub(crate) fn path_commands_to_path(
-    commands: &[PathCommand],
-    bounds: kurbo::Rect,
-) -> kurbo::BezPath {
+pub fn path_commands_to_path(commands: &[PathCommand], bounds: kurbo::Rect) -> kurbo::BezPath {
     let width = bounds.width();
     let height = bounds.height();
     let mut path = kurbo::BezPath::new();
@@ -899,8 +893,8 @@ pub(crate) fn path_commands_to_path(
                 let step = f64::from(*sweep) / 32.0;
 
                 let start_point = kurbo::Point::new(
-                    center_x + radius_x * start.cos(),
-                    center_y + radius_y * start.sin(),
+                    radius_x.mul_add(start.cos(), center_x),
+                    radius_y.mul_add(start.sin(), center_y),
                 );
                 if has_current {
                     path.line_to(start_point);
@@ -913,8 +907,8 @@ pub(crate) fn path_commands_to_path(
                 for _ in 0..32 {
                     angle += step;
                     path.line_to(kurbo::Point::new(
-                        center_x + radius_x * angle.cos(),
-                        center_y + radius_y * angle.sin(),
+                        radius_x.mul_add(angle.cos(), center_x),
+                        radius_y.mul_add(angle.sin(), center_y),
                     ));
                 }
             }
@@ -928,26 +922,26 @@ pub(crate) fn path_commands_to_path(
     path
 }
 
-pub(crate) fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurbo::Point {
+pub fn anchor_point(bounds: kurbo::Rect, anchor: waterui::style::Anchor) -> kurbo::Point {
     kurbo::Point::new(
-        bounds.x0 + bounds.width() * f64::from(anchor.x),
-        bounds.y0 + bounds.height() * f64::from(anchor.y),
+        bounds.width().mul_add(f64::from(anchor.x), bounds.x0),
+        bounds.height().mul_add(f64::from(anchor.y), bounds.y0),
     )
 }
 
 /// The sRGB8 encoding of a resolved working colour — the form parley's text
 /// layout takes for its brush.
-pub(crate) fn working_color_to_rgba8(color: cherenkov::WorkingColor) -> [u8; 4] {
+pub fn working_color_to_rgba8(color: cherenkov::WorkingColor) -> [u8; 4] {
     let srgb = waterui_graphics::color::working::to_srgb(color);
     [
-        (srgb.red.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (srgb.green.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (srgb.blue.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (color.components[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+        crate::num_cast::f32_as_u8((srgb.red.clamp(0.0, 1.0) * 255.0).round()),
+        crate::num_cast::f32_as_u8((srgb.green.clamp(0.0, 1.0) * 255.0).round()),
+        crate::num_cast::f32_as_u8((srgb.blue.clamp(0.0, 1.0) * 255.0).round()),
+        crate::num_cast::f32_as_u8((color.components[3].clamp(0.0, 1.0) * 255.0).round()),
     ]
 }
 
-pub(crate) fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
+pub fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
     peniko::Color::new([
         f32::from(color[0]) / 255.0,
         f32::from(color[1]) / 255.0,
@@ -956,7 +950,7 @@ pub(crate) fn rgba8_to_peniko(color: [u8; 4]) -> peniko::Color {
     ])
 }
 
-pub(crate) fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
+pub const fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
     let value = match weight {
         TextFontWeight::Thin => 100.0,
         TextFontWeight::UltraLight => 200.0,
@@ -971,10 +965,7 @@ pub(crate) fn parley_font_weight(weight: TextFontWeight) -> parley::FontWeight {
     parley::FontWeight::new(value)
 }
 
-pub(crate) fn parley_alignment(
-    alignment: HorizontalAlignment,
-    right_to_left: bool,
-) -> parley::Alignment {
+pub fn parley_alignment(alignment: HorizontalAlignment, right_to_left: bool) -> parley::Alignment {
     if alignment == HorizontalAlignment::Leading && right_to_left
         || alignment == HorizontalAlignment::Trailing && !right_to_left
     {
@@ -988,7 +979,7 @@ pub(crate) fn parley_alignment(
     }
 }
 
-pub(crate) fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::Rect {
+pub fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> kurbo::Rect {
     let points = [
         transform * kurbo::Point::new(rect.x0, rect.y0),
         transform * kurbo::Point::new(rect.x1, rect.y0),
@@ -1010,7 +1001,7 @@ pub(crate) fn transformed_rect(transform: kurbo::Affine, rect: kurbo::Rect) -> k
     kurbo::Rect::new(min_x, min_y, max_x, max_y)
 }
 
-pub(crate) fn circle_arc_path(
+pub fn circle_arc_path(
     center: kurbo::Point,
     radius: f64,
     start_angle: f64,
@@ -1021,17 +1012,17 @@ pub(crate) fn circle_arc_path(
         return path;
     }
     let segments = 64usize;
-    let step = sweep / segments as f64;
+    let step = sweep / crate::num_cast::usize_as_f64(segments);
     let mut angle = start_angle;
     path.move_to(kurbo::Point::new(
-        center.x + radius * angle.cos(),
-        center.y + radius * angle.sin(),
+        radius.mul_add(angle.cos(), center.x),
+        radius.mul_add(angle.sin(), center.y),
     ));
     for _ in 0..segments {
         angle += step;
         path.line_to(kurbo::Point::new(
-            center.x + radius * angle.cos(),
-            center.y + radius * angle.sin(),
+            radius.mul_add(angle.cos(), center.x),
+            radius.mul_add(angle.sin(), center.y),
         ));
     }
     path

@@ -1,6 +1,8 @@
 //! Metadata view handlers: styling, transforms, interaction, lifecycle
 //! and accessibility metadata wrappers around content views.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use cherenkov::Draw as _;
 
@@ -9,10 +11,10 @@ impl HydrolysisRenderer {
     /// dispatch handler and the retained `Wrapper` node so the clip effect lives
     /// in exactly one place.
     pub(super) fn apply_clip_shape(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         value: &ClipShape,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         // Resolve from the structured kind, exactly as a fill of the same shape
         // does, and fall back to the unit-space commands only for a custom path.
@@ -55,11 +57,11 @@ impl HydrolysisRenderer {
     /// handler and the retained `Wrapper` node. The border color resolves against
     /// `env`, so it is threaded through.
     pub(super) fn apply_border(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         border: &Border,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         render_content(renderer);
 
@@ -130,11 +132,11 @@ impl HydrolysisRenderer {
     /// historical order). Shared by the dispatch handler and the retained
     /// `Wrapper` node. The shadow color resolves against `env`.
     pub(super) fn apply_shadow(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         shadow: &Shadow,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let blur = f64::from(shadow.radius.max(0.0));
         let offset_x = f64::from(shadow.offset.x);
@@ -183,7 +185,7 @@ impl HydrolysisRenderer {
     /// custom path). The engine rasterizes and caches the blur; Hydrolysis
     /// keeps no pixmap cache of its own.
     fn draw_blurred_silhouette(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         transform: kurbo::Affine,
         silhouette: &ClipShape,
         rect: kurbo::Rect,
@@ -229,9 +231,9 @@ impl HydrolysisRenderer {
     /// `draw_text_context_menu_panel`. The window leaves the panel's shadow
     /// room inside its own bounds via `POPUP_MENU_PANEL_MARGIN`.
     pub(super) fn apply_popup_menu_surface(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         {
             let theme = renderer.theme();
@@ -250,9 +252,9 @@ impl HydrolysisRenderer {
     /// the target bookkeeping counts targets registered during the content render, so
     /// it works identically whether the content is dispatched or node-flushed.
     pub(super) fn apply_focused(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         value: &Focused,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let should_focus = renderer.read_signal(&value.0);
         let text_start = renderer.text_editing.text_input_targets.len();
@@ -284,9 +286,9 @@ impl HydrolysisRenderer {
     /// registered during the content render, so it works identically whether the
     /// content is dispatched or node-flushed.
     pub(super) fn apply_hittable(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         value: &Hittable,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let enabled = renderer.read_signal(&value.enabled);
         let pointer_start = renderer.hit_test.pointer_targets.len();
@@ -358,10 +360,10 @@ impl HydrolysisRenderer {
     /// Register the cursor hit-target, then render the given content. Shared by
     /// the dispatch handler and the retained `Wrapper` node.
     pub(super) fn apply_cursor(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         value: &Cursor,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let style = renderer.read_signal(&value.style);
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
@@ -399,12 +401,16 @@ impl HydrolysisRenderer {
     /// flush). Everything else is re-resolved against `env` each call (role/label
     /// overrides, suppression), matching the dispatch path. The action is shared
     /// so the node can re-register the same action every flush.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(super) fn apply_gesture_observer(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         effect: &GestureObserverEffect,
-        render_content: impl FnOnce(&mut HydrolysisRenderer, &Environment),
+        render_content: impl FnOnce(&mut Self, &Environment),
     ) {
         // The action environment contract (water-rs/hydrolysis#177,
         // water-rs/waterui#1292): the handler resolves against `env` as seen
@@ -583,11 +589,11 @@ impl HydrolysisRenderer {
     }
 
     fn render_gesture_content(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         env: &Environment,
         content_env: &Environment,
         scope_claimed: bool,
-        render_content: impl FnOnce(&mut HydrolysisRenderer, &Environment),
+        render_content: impl FnOnce(&mut Self, &Environment),
     ) {
         #[cfg(not(feature = "accessibility"))]
         let _ = (env, content_env, scope_claimed);
@@ -675,11 +681,11 @@ impl HydrolysisRenderer {
     /// owned value once. The registered closure resolves the action environment
     /// against `env` exactly as before.
     pub(super) fn apply_on_event(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         handler: Rc<RefCell<OnEvent>>,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let event = handler.borrow().event();
         let interaction_key = InteractionKey::for_rc(&handler, 0);
@@ -697,8 +703,10 @@ impl HydrolysisRenderer {
                 let captured_env = env.clone();
                 renderer.register_hover_move_target(interaction_key, bounds, move |point, env| {
                     let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
-                        point.x as f32 - bounds.x0 as f32,
-                        point.y as f32 - bounds.y0 as f32,
+                        crate::num_cast::f64_as_f32(point.x)
+                            - crate::num_cast::f64_as_f32(bounds.x0),
+                        crate::num_cast::f64_as_f32(point.y)
+                            - crate::num_cast::f64_as_f32(bounds.y0),
                     ));
                     let hover_env = captured_env.layered_on(&env.extending(hover_event));
                     handler.borrow_mut().handle(&hover_env);
@@ -725,11 +733,11 @@ impl HydrolysisRenderer {
     /// the open presentation to mount. The node's environment travels with the
     /// target so the popup opens inside it (water-rs/hydrolysis#140).
     pub(super) fn apply_context_menu(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         value: &ContextMenuEffect,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.register_context_menu_target(
@@ -751,11 +759,11 @@ impl HydrolysisRenderer {
     /// every frame is also what lets the render pass follow an anchor that
     /// moved or detect one that left the tree.
     pub(super) fn apply_anchored_overlay(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         value: &AnchoredOverlayEffect,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let presented = renderer.read_signal(&value.is_presented);
@@ -781,10 +789,10 @@ impl HydrolysisRenderer {
     /// [`Draggable`] in an `Rc`, so the registration clones the handle and the
     /// payload reads live at the moment the drag begins.
     pub(super) fn apply_draggable(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         value: &Rc<Draggable>,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.register_draggable_target(bounds, Rc::clone(value));
@@ -796,11 +804,11 @@ impl HydrolysisRenderer {
     /// retained `Wrapper` node (which holds the handles by value and re-registers
     /// the same `Rc`s every flush).
     pub(super) fn apply_drop_destination(
-        renderer: &mut HydrolysisRenderer,
+        renderer: &mut Self,
         ctx: RenderContext,
         env: &Environment,
         handles: &DropDestinationHandles,
-        render_content: impl FnOnce(&mut HydrolysisRenderer),
+        render_content: impl FnOnce(&mut Self),
     ) {
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         renderer.register_drop_destination_handles(bounds, handles, env);
@@ -822,6 +830,10 @@ enum RegularClipShape {
 ///
 /// A normalized radius resolves against the shorter side, so corners stay
 /// circular and a fully-rounded shape is a stadium rather than an ellipse.
+#[expect(
+    clippy::float_cmp,
+    reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
+)]
 fn kind_clip_shape(kind: ShapeKind, bounds: kurbo::Rect) -> Option<RegularClipShape> {
     let min_side = bounds.width().min(bounds.height()).max(0.0);
     let rounded = |corner: f64| {
@@ -989,6 +1001,10 @@ fn regular_rect(commands: &[PathCommand], bounds: kurbo::Rect) -> Option<Regular
 }
 
 #[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn regular_rounded_rect(commands: &[PathCommand], bounds: kurbo::Rect) -> Option<RegularClipShape> {
     let [
         PathCommand::MoveTo { x: start_x, y: y0 },
@@ -1150,7 +1166,7 @@ mod regular_clip_tests {
         };
         let min_side = BOUNDS.width().min(BOUNDS.height());
         assert_eq!(rect, BOUNDS);
-        assert!((corner_width - 0.1 * min_side).abs() < 1.0e-5);
+        assert!(0.1f64.mul_add(-min_side, corner_width).abs() < 1.0e-5);
         assert!(
             (corner_width - corner_height).abs() < 1.0e-5,
             "a uniform rounded rectangle must clip with circular corners, got \

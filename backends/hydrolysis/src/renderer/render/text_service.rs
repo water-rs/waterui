@@ -15,6 +15,8 @@
 //! The service owns the loaded fonts plus that layout cache, so the render path and
 //! measurement shape identical text through one cache.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(test)]
 use crate::renderer::{HydroState, HydrolysisRenderer};
@@ -57,7 +59,7 @@ const GLYPH_INK_BOUNDS_CACHE_CAPACITY: usize = 16384;
 /// Thread-safe text shaping service shared by the render path and layout
 /// measurement. Cheaply cloneable shaping scratch is pooled so each worker
 /// reuses a [`parley::FontContext`] carrying the registered resource fonts.
-pub(crate) struct TextMeasureService {
+pub struct TextMeasureService {
     /// Fonts registered at startup; the clone source for shaping scratch.
     /// Mutated only during single-threaded font registration via
     /// [`Self::fonts_mut`], read-only afterward.
@@ -384,7 +386,7 @@ impl core::fmt::Debug for TextMeasureService {
 /// Every reactive input (signal values, [`Str`]-backed font families) has been
 /// read out and projected into owned data, so shaping this input is a pure
 /// function of it — which is what makes the content-keyed cache correct.
-pub(crate) struct ResolvedTextLayoutInput {
+pub struct ResolvedTextLayoutInput {
     plain: String,
     spans: Vec<(Range<usize>, ResolvedTextStyleSpec)>,
     default_font: ResolvedFontSpec,
@@ -479,7 +481,7 @@ struct ResolvedTextStyleSpec {
 ///
 /// Reads the environment and reactive signals, so it must run on the main
 /// thread. The returned value can then be shaped on any thread.
-pub(crate) fn resolve_text_layout_input(
+pub fn resolve_text_layout_input(
     styled: &StyledStr,
     alignment: HorizontalAlignment,
     env: &Environment,
@@ -773,7 +775,7 @@ const TAIL_ELLIPSIS: char = '\u{2026}';
 
 /// How a drawn text treats the tail that a line limit cuts off.
 #[derive(Clone, Copy)]
-pub(crate) enum TailMark {
+pub enum TailMark {
     /// No line limit — every laid-out line draws.
     None,
     /// At most the given lines draw; the rest are clipped.
@@ -922,7 +924,7 @@ fn truncate_spans(
 ///
 /// Returns `None` when no drawn glyph carries a scalable outline (a run that
 /// resolves to bitmap- or paint-only glyphs contributes nothing here).
-pub(crate) fn layout_ink_extent(
+pub fn layout_ink_extent(
     service: &TextMeasureService,
     layout: &Arc<parley::Layout<[u8; 4]>>,
     max_lines: Option<usize>,
@@ -1002,7 +1004,7 @@ fn layout_ink_extent_uncached(
 
 /// Compute view dimensions (size plus first/last baselines) from a shaped
 /// layout. Pure; safe to call on any thread.
-pub(crate) fn text_dimensions_from_layout(
+pub fn text_dimensions_from_layout(
     service: &TextMeasureService,
     layout: &Arc<parley::Layout<[u8; 4]>>,
     max_lines: Option<usize>,
@@ -1152,7 +1154,7 @@ struct TextLayoutCacheKey {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct TextLayoutSpanCacheKey {
+pub struct TextLayoutSpanCacheKey {
     pub(crate) start: usize,
     pub(crate) end: usize,
     pub(crate) font: TextLayoutFontCacheKey,
@@ -1164,8 +1166,8 @@ pub(crate) struct TextLayoutSpanCacheKey {
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) struct TextLayoutFontCacheKey {
-    pub(crate) size: u32,
+pub struct TextLayoutFontCacheKey {
+    pub size: u32,
     pub(crate) weight: u16,
     pub(crate) line_height: Option<u32>,
     pub(crate) letter_spacing: u32,

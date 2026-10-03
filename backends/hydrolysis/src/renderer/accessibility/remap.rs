@@ -1,10 +1,10 @@
 //! Conversion of kurbo rects into the accesskit rect type used when emitting
 //! accessibility node bounds.
 
-use super::*;
+use super::AccessibilityRect;
 
 #[cfg(feature = "accessibility")]
-pub(crate) fn kurbo_rect_to_accesskit_rect(rect: kurbo::Rect) -> AccessibilityRect {
+pub const fn kurbo_rect_to_accesskit_rect(rect: kurbo::Rect) -> AccessibilityRect {
     AccessibilityRect {
         x0: rect.x0,
         y0: rect.y0,

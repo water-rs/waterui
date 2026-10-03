@@ -42,6 +42,10 @@ fn row_long_wrap() -> AnyView {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
+)]
 fn lazy_view_path_answers_what_its_item_answers() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());

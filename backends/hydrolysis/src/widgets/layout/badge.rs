@@ -21,7 +21,7 @@ use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 /// `Widget` node holds it as a [`RetainedSubview`] built once and re-flushed each
 /// frame; the `value` is read through `read_signal` so a change schedules a frame
 /// and the indicator re-renders.
-pub(crate) struct BadgeRenderState {
+pub struct BadgeRenderState {
     value: Computed<i32>,
     content: RetainedSubview,
 }
@@ -86,7 +86,7 @@ impl HydroNativeView for Native<BadgeConfig> {
 
 /// Measures a retained badge leaf from its [`BadgeRenderState`]: the badge sizes
 /// itself to its wrapped content, mirroring the dispatch path's `dimensions`.
-pub(crate) fn measure_badge_node(
+pub fn measure_badge_node(
     state: &BadgeRenderState,
     _proposal: ProposalSize,
     hydro: &mut HydroState,
@@ -99,7 +99,7 @@ pub(crate) fn measure_badge_node(
 /// Renders a retained badge leaf every flush: flushes the content sub-view (whose
 /// own dispatch drives accessibility — badge a11y is render-driven) then draws the
 /// indicator overlay from the live `value` signal.
-pub(crate) fn render_badge_node(
+pub fn render_badge_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<BadgeRenderState>>,
     env: &Environment,
@@ -107,7 +107,7 @@ pub(crate) fn render_badge_node(
     render_badge_parts(ctx, state, env);
 }
 
-pub(crate) fn render_badge_parts(
+pub fn render_badge_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<BadgeRenderState>>,
     env: &Environment,
@@ -158,7 +158,9 @@ pub(crate) fn render_badge_parts(
             metrics.small_offset_y,
         ),
         Some((_, text_size)) => (
-            (f64::from(text_size.width) + metrics.large_horizontal_padding * 2.0)
+            metrics
+                .large_horizontal_padding
+                .mul_add(2.0, f64::from(text_size.width))
                 .max(metrics.large_size),
             metrics.large_size,
             metrics.large_offset_x,
@@ -202,7 +204,7 @@ pub(crate) fn render_badge_parts(
     let text_height = f64::from(text_size.height);
     let text_rect = kurbo::Rect::new(
         rect.x0,
-        rect.y0 + (rect.height() - text_height) * 0.5,
+        (rect.height() - text_height).mul_add(0.5, rect.y0),
         rect.x1,
         rect.y1,
     );
@@ -227,7 +229,7 @@ pub(crate) fn render_badge_parts(
 /// count indicator's `Label` node — a vector-drawn badge value is otherwise
 /// invisible to assistive technology.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_badge_accessibility(
+pub fn emit_badge_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<BadgeRenderState>>,
     env: &Environment,

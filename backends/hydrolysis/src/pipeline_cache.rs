@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// The file the engine's pipeline cache for `adapter` persists to, or `None`
 /// where no writable cache directory exists. The filename carries wgpu's
 /// adapter key so a driver change or a different GPU reads no stale blob.
-pub(crate) fn path(adapter: &wgpu::Adapter) -> Option<PathBuf> {
+pub fn path(adapter: &wgpu::Adapter) -> Option<PathBuf> {
     let key = wgpu::util::pipeline_cache_key(&adapter.get_info())?;
     let base = std::env::var_os("HYDROLYSIS_CACHE_DIR")
         .map(PathBuf::from)

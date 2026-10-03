@@ -47,7 +47,7 @@ impl HydroNativeView for Native<Spacer> {
 // impl_widget_behavior dispatches every measure fn with a `&T` borrow,
 // including the Copy ones.
 #[allow(clippy::trivially_copy_pass_by_ref)]
-pub(crate) fn measure_empty_node(
+pub fn measure_empty_node(
     _empty: &(),
     _proposal: ProposalSize,
     _state: &mut HydroState,
@@ -59,7 +59,7 @@ pub(crate) fn measure_empty_node(
 
 /// Renders a retained empty (`()`) leaf every flush: a no-op (it draws nothing and
 /// has no accessibility), mirroring the dispatch path.
-pub(crate) fn render_empty_node(
+pub const fn render_empty_node(
     ctx: &mut WidgetRenderContext<'_>,
     empty: &Rc<RefCell<()>>,
     env: &Environment,
@@ -67,7 +67,7 @@ pub(crate) fn render_empty_node(
     render_empty_parts(ctx, empty, env);
 }
 
-pub(crate) fn render_empty_parts(
+pub const fn render_empty_parts(
     _ctx: &mut WidgetRenderContext<'_>,
     _empty: &Rc<RefCell<()>>,
     _env: &Environment,
@@ -78,7 +78,7 @@ pub(crate) fn render_empty_parts(
 /// stack's main axis whatever the proposal (the answer is the floor the
 /// stack keeps under compression, expansion happens at placement),
 /// matching the dispatch path.
-pub(crate) fn measure_spacer_node(
+pub fn measure_spacer_node(
     spacer: &Spacer,
     _proposal: ProposalSize,
     _state: &mut HydroState,
@@ -90,7 +90,7 @@ pub(crate) fn measure_spacer_node(
 
 /// Renders a retained spacer leaf every flush: a no-op (it draws nothing and has
 /// no accessibility), mirroring the dispatch path.
-pub(crate) fn render_spacer_node(
+pub const fn render_spacer_node(
     ctx: &mut WidgetRenderContext<'_>,
     spacer: &Rc<RefCell<Spacer>>,
     env: &Environment,
@@ -98,7 +98,7 @@ pub(crate) fn render_spacer_node(
     render_spacer_parts(ctx, spacer, env);
 }
 
-pub(crate) fn render_spacer_parts(
+pub const fn render_spacer_parts(
     _ctx: &mut WidgetRenderContext<'_>,
     _spacer: &Rc<RefCell<Spacer>>,
     _env: &Environment,

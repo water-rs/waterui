@@ -102,8 +102,8 @@ fn nested_when_inside_a_when_payload_materializes() {
     // The inner flip is driven through the gesture path on the payload row.
     pointer_click(
         &mut runtime,
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     let update = pump_until_settled(&mut runtime).expect("the inner `when` republishes the tree");
     let (_, popup) = find_by_label(&update, Role::Label, "popup row")
@@ -151,8 +151,8 @@ fn button_inside_a_when_payload_receives_pointer_input() {
     let bounds = bump.bounds().expect("the button has bounds");
     pointer_click(
         &mut runtime,
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     let _ = pump_until_settled(&mut runtime);
     assert_eq!(
@@ -207,7 +207,7 @@ fn button_inserted_mid_lazy_materialize_receives_pointer_input() {
 
     assert!(pump_until_settled(&mut runtime).is_some());
     let mut next = items.snapshot();
-    next.push(SelfId::new(next.len() as u32));
+    next.push(SelfId::new(crate::num_cast::usize_as_u32(next.len())));
     items.set(next);
     let update = pump_until_settled(&mut runtime).expect("the insertion republishes the tree");
     let (_, bump) = find_by_label(&update, Role::Button, "MidBump")
@@ -216,8 +216,8 @@ fn button_inserted_mid_lazy_materialize_receives_pointer_input() {
     let bounds = bump.bounds().expect("the button has bounds");
     pointer_click(
         &mut runtime,
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     let _ = pump_until_settled(&mut runtime);
     assert_eq!(

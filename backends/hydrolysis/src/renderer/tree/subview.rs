@@ -2,6 +2,8 @@
 //! measure retained child [`RenderNode`]s on demand, with the resolved-text
 //! shaping fast path.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::WidgetTheme;
 use std::rc::Rc;
@@ -101,7 +103,7 @@ impl<'a> NodeSubView<'a> {
 
     /// Apply this child's stretch axis to a measured size against the proposal,
     /// matching [`HydroSubview::apply_stretch`] so both paths agree.
-    fn apply_stretch(
+    const fn apply_stretch(
         &self,
         mut dimensions: ViewDimensions,
         proposal: ProposalSize,

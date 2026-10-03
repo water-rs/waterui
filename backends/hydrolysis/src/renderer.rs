@@ -38,41 +38,44 @@ mod retained;
 
 mod signals;
 #[cfg(test)]
-pub(crate) mod tests;
+pub mod tests;
 mod tree;
 mod views;
 
-pub(crate) use effects::*;
-pub(crate) use frame::*;
+pub use effects::*;
+pub use frame::*;
 pub use frame_work::FrameWorkCounters;
 #[cfg(feature = "frame-profile")]
 pub(crate) use gpu_profile::GpuFrameProfiler;
 #[cfg(feature = "frame-profile")]
 pub use gpu_profile::{FrameStageTimes, GpuIdentity};
-pub(crate) use identity::*;
-pub(crate) use native_measure::*;
+pub use identity::*;
+pub use native_measure::*;
 #[cfg(test)]
-pub(crate) use recording::assert_well_formed_image;
-pub(crate) use recording::{Glyph, GlyphRun, Recording, SceneDrawContext, working_color};
-pub(crate) use retained::*;
-pub(crate) use tree::*;
-pub(crate) use views::*;
-pub(crate) use waterui_backend_core::frame_signals::FrameSignals;
+pub use recording::assert_well_formed_image;
+pub use recording::{Glyph, GlyphRun, Recording, SceneDrawContext, working_color};
+pub use retained::*;
+pub use tree::*;
+pub use views::*;
+pub use waterui_backend_core::frame_signals::FrameSignals;
 
 #[cfg(feature = "accessibility")]
-use accessibility::*;
+use accessibility::{
+    ACCESSIBILITY_ROOT_NODE_ID, AccessibilityBuilder, AccessibilityNameFromContents,
+    ScopedAccessibilityIdentifier,
+};
 use core::num::NonZeroUsize;
 use core::time::Duration;
-pub(crate) use input::*;
-pub(crate) use interaction_layers::*;
-pub(crate) use lifecycle::lazy;
-pub(crate) use lifecycle::*;
-pub(crate) use navigation::*;
-pub(crate) use render::FrameRenderTarget;
+pub use input::*;
+pub use interaction_layers::*;
+pub use lifecycle::lazy;
+pub use lifecycle::*;
+pub use navigation::*;
+pub use render::FrameRenderTarget;
 pub use render::HydrolysisRenderTarget;
-pub(crate) use render::WidgetRenderContext;
-pub(crate) use render::*;
-pub(crate) use render::{
+pub use render::WidgetRenderContext;
+pub use render::*;
+pub use render::{
     anchor_point, circle_arc_path, estimate_layout_intrinsic, gesture_group_identity,
     normalize_layout_view, normalize_view_for_render, path_commands_to_path,
     resolved_morph_shape_to_path, resolved_shape_to_path, transformed_rect,
@@ -197,11 +200,11 @@ const OFFSET_Y_ANIMATION_KEY: usize = 0x0100_0006;
 const MORPH_PROGRESS_ANIMATION_KEY: usize = 0x0100_0007;
 
 #[cfg(feature = "accessibility")]
-pub(crate) use accessibility::{
+pub use accessibility::{
     AccessibilityActionTarget, AccessibilityActivation, NodePlacement,
     ScopedAccessibilitySemantics, accessibility_container_child_environment, slider_step_for_range,
 };
-pub(crate) use input::{
+pub use input::{
     TextInputModel, TextInputTargetRegistration, TextSelectionSlot, clamp_to_char_boundary,
     text_editing,
 };
@@ -371,7 +374,7 @@ impl SemanticCore {
     /// Assigns the identity the runner minted for the window this core
     /// renders — called once when the runner creates the window
     /// (water-rs/hydrolysis#247).
-    pub(crate) fn set_window_id(&mut self, window_id: WindowId) {
+    pub(crate) const fn set_window_id(&mut self, window_id: WindowId) {
         self.window_id = window_id;
     }
 
@@ -443,7 +446,7 @@ impl SemanticCore {
     /// The modifier snapshot the window last reported — pointer targets read
     /// it at commit time because pointer events carry no modifier state of
     /// their own (toggle and Shift range selection).
-    pub(crate) fn modifiers(&self) -> Modifiers {
+    pub(crate) const fn modifiers(&self) -> Modifiers {
         self.hit_test.modifiers
     }
 
@@ -533,4 +536,4 @@ impl HydrolysisRenderer {
 pub use render::HydroState;
 use render::HydroSubview;
 pub use render::RenderContext;
-pub(crate) use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
+pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};

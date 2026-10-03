@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use std::collections::BTreeSet;
 use waterui::navigation::{
@@ -7,16 +9,16 @@ use waterui::navigation::{
 use waterui_backend_core::widget::NavigationMotion;
 use waterui_core::id::Id;
 
-pub(crate) const ROOT_NAVIGATION_IDENTITY: u64 = 0;
+pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 
 #[derive(Clone)]
-pub(crate) struct NavigationMatchedElement {
+pub struct NavigationMatchedElement {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) scene: Recording,
+    pub scene: Recording,
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct NavigationCapturedScene {
+pub struct NavigationCapturedScene {
     pub(crate) scene: Recording,
     pub(crate) sources: BTreeMap<Id, NavigationMatchedElement>,
     pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement>,
@@ -52,13 +54,13 @@ impl NavigationCapturedScene {
 }
 
 #[derive(Default)]
-pub(crate) struct NavigationSceneCapture {
+pub struct NavigationSceneCapture {
     sources: BTreeMap<Id, NavigationMatchedElement>,
     destinations: BTreeMap<Id, NavigationMatchedElement>,
     capturing_element: bool,
 }
 
-pub(crate) struct HydroNavigationEntry {
+pub struct HydroNavigationEntry {
     pub(crate) identity: u64,
     pub(crate) content: RetainedSubview,
     pub(crate) state: NavigationDestinationState,
@@ -92,19 +94,19 @@ impl HydroNavigationEntry {
     }
 }
 
-pub(crate) struct HydroNavigationEvent {
+pub struct HydroNavigationEvent {
     pub(crate) transaction_id: NavigationTransactionId,
     pub(crate) previous_identity: u64,
     pub(crate) current_identity: u64,
-    pub(crate) removed: Vec<HydroNavigationEntry>,
+    pub removed: Vec<HydroNavigationEntry>,
 }
 
-pub(crate) type NavigationEntries = Rc<RefCell<Vec<HydroNavigationEntry>>>;
-pub(crate) type NavigationEvents = Rc<RefCell<Vec<HydroNavigationEvent>>>;
+pub type NavigationEntries = Rc<RefCell<Vec<HydroNavigationEntry>>>;
+pub type NavigationEvents = Rc<RefCell<Vec<HydroNavigationEvent>>>;
 
 #[derive(Default)]
-pub(crate) struct NavigationState {
-    pub(crate) slots: BTreeMap<NavigationKey, NavigationSlot>,
+pub struct NavigationState {
+    pub slots: BTreeMap<NavigationKey, NavigationSlot>,
     /// Addresses bound this frame. Held as plain addresses rather than keys so
     /// the slot map holds the only strong lease on each retained stack, which
     /// is what [`NavigationKey::is_retained_elsewhere`] measures.
@@ -113,14 +115,14 @@ pub(crate) struct NavigationState {
 
 /// Stable identity of one retained navigation stack.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct NavigationKey(RetainedIdentity);
+pub struct NavigationKey(RetainedIdentity);
 
 impl NavigationKey {
     pub(crate) fn for_rc<T: 'static>(owner: &Rc<T>) -> Self {
         Self(RetainedIdentity::for_rc(owner))
     }
 
-    pub(crate) fn address(&self) -> usize {
+    pub(crate) const fn address(&self) -> usize {
         self.0.address()
     }
 
@@ -131,8 +133,8 @@ impl NavigationKey {
     }
 }
 
-pub(crate) struct NavigationSlot {
-    pub(crate) entries: NavigationEntries,
+pub struct NavigationSlot {
+    pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
     pub(crate) controller: NavigationController,
     pub(crate) last_depth: usize,
@@ -154,8 +156,8 @@ pub(crate) struct NavigationSlot {
 }
 
 #[derive(Clone)]
-pub(crate) struct NavigationTransitionState {
-    pub(crate) style: AnyNavigationTransition,
+pub struct NavigationTransitionState {
+    pub style: AnyNavigationTransition,
     pub(crate) direction: NavigationTransitionDirection,
     pub(crate) from_scene: NavigationCapturedScene,
     pub(crate) to_scene: NavigationCapturedScene,
@@ -163,15 +165,15 @@ pub(crate) struct NavigationTransitionState {
     pub(crate) duration: Duration,
 }
 
-pub(crate) struct HydroNavigationController {
-    pub(crate) entries: NavigationEntries,
+pub struct HydroNavigationController {
+    pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
     pub(crate) next_entry_identity: u64,
     pub(crate) signals: FrameSignals,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum NavigationInteractivePopPhase {
+pub enum NavigationInteractivePopPhase {
     Dragging,
     Completing {
         started_at: Instant,
@@ -183,9 +185,9 @@ pub(crate) enum NavigationInteractivePopPhase {
     },
 }
 
-pub(crate) struct NavigationInteractivePop {
+pub struct NavigationInteractivePop {
     pub(crate) start_x: f64,
-    pub(crate) width: f64,
+    pub width: f64,
     pub(crate) progress: f64,
     pub(crate) phase: NavigationInteractivePopPhase,
     pub(crate) from_scene: NavigationCapturedScene,
@@ -296,7 +298,8 @@ impl NavigationInteractivePop {
                 let elapsed = now.saturating_duration_since(started_at).as_secs_f64();
                 let span = (motion.transition_duration.as_secs_f64() * remaining).max(f64::EPSILON);
                 let cycle = (elapsed / span).clamp(0.0, 1.0);
-                self.progress = initial_progress + remaining * eased_progress(cycle, motion);
+                self.progress =
+                    f64::mul_add(remaining, eased_progress(cycle, motion), initial_progress);
                 (self.progress, self.progress >= 1.0, false)
             }
             NavigationInteractivePopPhase::Cancelling {
@@ -319,7 +322,7 @@ impl NavigationInteractivePop {
 }
 
 impl NavigationTransitionState {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         style: AnyNavigationTransition,
         direction: NavigationTransitionDirection,
         from_scene: NavigationCapturedScene,

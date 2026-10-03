@@ -37,7 +37,7 @@ use waterui_graphics::HeldResources;
 
 /// One slot in the surface root's desired child order for a presented frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MountSlot {
+pub enum MountSlot {
     /// Positional scene-segment mount.
     Segment(usize),
     /// Identity-bearing mount for one [`RenderKey`].
@@ -50,7 +50,7 @@ pub(crate) enum MountSlot {
 ///
 /// `clip` is the scope's shape already mapped into root-surface
 /// coordinates; `opacity` is the scope's alpha.
-pub(crate) struct AncestryScope {
+pub struct AncestryScope {
     /// The scope's clip shape in root coordinates, when it clips.
     pub(crate) clip: Option<cherenkov::ShapeData>,
     /// The scope's alpha.
@@ -110,7 +110,7 @@ impl KeyedMount {
 /// Handles are `Layer`s: dropping one removes it and its descendants at the
 /// next commit, so pruning an absent keyed mount is a map removal and
 /// nothing else.
-pub(crate) struct Mounts {
+pub struct Mounts {
     /// Positional segment layers, grown to the frame's segment count and
     /// shrunk — truncated — when it falls. Segment layers never carry
     /// children, so truncation destroys no mount state.
@@ -163,7 +163,7 @@ impl Mounts {
 
     /// The layer create/remove counts since the last call, consumed by the
     /// frame's work counters.
-    pub(crate) fn take_frame_stats(&mut self) -> (u64, u64) {
+    pub(crate) const fn take_frame_stats(&mut self) -> (u64, u64) {
         let stats = (self.frame_created, self.frame_removed);
         self.frame_created = 0;
         self.frame_removed = 0;

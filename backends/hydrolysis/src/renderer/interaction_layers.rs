@@ -7,13 +7,15 @@
 //! handles) instead of re-dispatching the view tree, which keeps hover/press
 //! feedback on the cheap window-refresh path.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
 
 /// One press ripple wave slot: every press spawns its own wave (Material/the M3 reference
 /// semantics), so rapid re-presses overlap while older waves fade out.
 #[derive(Debug)]
-pub(crate) struct WaveLayer {
+pub struct WaveLayer {
     alpha: AnimatedScalarHandle,
     progress: AnimatedScalarHandle,
     /// Origin of this wave's press in WINDOW coordinates (the raw pointer-down
@@ -82,7 +84,7 @@ impl WaveLayer {
 /// subtrees), so input events occurring between structural rebuilds can apply
 /// new animation targets directly without re-running `bind_widget_state`.
 #[derive(Debug)]
-pub(crate) struct InteractionLayerHandles {
+pub struct InteractionLayerHandles {
     hover_alpha: AnimatedScalarHandle,
     waves: [WaveLayer; MAX_PRESS_WAVES],
     /// Next press sequence number handed to a spawned wave.
@@ -95,7 +97,7 @@ pub(crate) struct InteractionLayerHandles {
 }
 
 impl InteractionLayerHandles {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         hover_alpha: AnimatedScalarHandle,
         waves: [WaveLayer; MAX_PRESS_WAVES],
         motion: InteractionMotion,
@@ -120,11 +122,11 @@ impl InteractionLayerHandles {
         self.chrome_state_dependent.set(true);
     }
 
-    pub(crate) fn chrome_state_dependent(&self) -> bool {
+    pub(crate) const fn chrome_state_dependent(&self) -> bool {
         self.chrome_state_dependent.get()
     }
 
-    pub(crate) fn hovering(&self) -> bool {
+    pub(crate) const fn hovering(&self) -> bool {
         self.hovering.get()
     }
 

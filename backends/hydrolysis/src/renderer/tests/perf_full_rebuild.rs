@@ -90,6 +90,10 @@ fn dense_row(i: usize, with_text: bool) -> AnyView {
 
 /// A full screen of `cards` dense rows in a fixed container, plus one reactive
 /// `text!` driven by `tick`; this tree is used for fresh-runtime initial builds.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn rebuild_screen(cards: usize, with_text: bool, tick: Binding<u64>) -> AnyView {
     use waterui::prelude::*;
     let mut children: Vec<AnyView> = Vec::with_capacity(cards + 1);
@@ -184,8 +188,8 @@ fn measure_replay(gpu: &OffscreenGpuContext, cards: usize, with_text: bool) -> (
     let start = Instant::now();
     let _ = rt.pump_at(false, start); // initial rebuild establishes the retained frame
     let scroll = |dy: f32| InputEvent::Scroll {
-        x: (WINDOW_W / 2) as f32,
-        y: (WINDOW_H / 2) as f32,
+        x: crate::num_cast::u32_as_f32(WINDOW_W / 2),
+        y: crate::num_cast::u32_as_f32(WINDOW_H / 2),
         dx: 0.0,
         dy,
         is_line_delta: false,
@@ -236,7 +240,7 @@ fn pure_recording_encode_floor() {
             scene.reset();
             let started = Instant::now();
             for i in 0..rows {
-                let y = (i as f64) * 56.0;
+                let y = (crate::num_cast::usize_as_f64(i)) * 56.0;
                 scene.fill(
                     Fill::NonZero,
                     Affine::IDENTITY,
@@ -380,7 +384,7 @@ enum ProtoNode {
     },
     Container {
         layout: Box<dyn Layout>,
-        children: Vec<ProtoNode>,
+        children: Vec<Self>,
         /// Child frames cached by `layout()`. `flush()` reuses them, so a
         /// geometry-static frame pays only re-encode — the 120fps common case
         /// (color/opacity/transform animation, scroll offset, re-present). This
@@ -395,11 +399,11 @@ impl ProtoNode {
     /// Measure this node under a proposal (recursive; reuses the real `Layout`).
     fn measured(&self, proposal: ProposalSize) -> MeasuredSub {
         match self {
-            ProtoNode::Color { size, .. } => MeasuredSub {
+            Self::Color { size, .. } => MeasuredSub {
                 size: *size,
                 stretch: StretchAxis::None,
             },
-            ProtoNode::Container {
+            Self::Container {
                 layout, children, ..
             } => {
                 let subs: Vec<MeasuredSub> =
@@ -417,7 +421,7 @@ impl ProtoNode {
     /// geometry-affecting inputs change (the rare, incremental case in the real
     /// tree — here it always relays out the whole tree as the worst case).
     fn layout(&mut self, proposal: ProposalSize, size: Size) {
-        if let ProtoNode::Container {
+        if let Self::Container {
             layout,
             children,
             placed,
@@ -441,12 +445,12 @@ impl ProtoNode {
     /// per-frame cost of a geometry-static frame.
     fn flush(&self, scene: &mut Recording, transform: Affine, size: Size) {
         match self {
-            ProtoNode::Color { brush, .. } => {
+            Self::Color { brush, .. } => {
                 let rect =
                     kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
                 scene.fill(Fill::NonZero, transform, brush, None, &rect);
             }
-            ProtoNode::Container {
+            Self::Container {
                 children, placed, ..
             } => {
                 for (child, rect) in children.iter().zip(placed.iter()) {

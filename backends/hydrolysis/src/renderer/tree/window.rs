@@ -2,6 +2,8 @@
 //! ([`HydrolysisRenderer::capture_window_tree`]) and the per-frame pass
 //! ([`HydrolysisRenderer::flush_window_tree`]), plus [`RenderNode::patch`].
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform::WindowSafeArea;
 use waterui_layout::padding::EdgeInsets;
@@ -59,28 +61,28 @@ impl RenderNode {
         // environment (`Dynamic`/`Collection`/`Env` carry it), so the walk only needs
         // the renderer.
         match self {
-            RenderNode::Dynamic(node) => {
+            Self::Dynamic(node) => {
                 if node.apply_pending(renderer) {
                     true
                 } else {
                     node.child.borrow_mut().patch(renderer)
                 }
             }
-            RenderNode::Container(container) => {
+            Self::Container(container) => {
                 let mut changed = false;
                 for child in &mut container.children {
                     changed |= child.patch(renderer);
                 }
                 changed
             }
-            RenderNode::Opacity(node) => node.child.patch(renderer),
-            RenderNode::Scale(node) => node.child.patch(renderer),
-            RenderNode::Rotation(node) => node.child.patch(renderer),
-            RenderNode::Offset(node) => node.child.patch(renderer),
-            RenderNode::Retain(node) => node.child.patch(renderer),
-            RenderNode::Env(node) => node.child.patch(renderer),
-            RenderNode::Wrapper(node) => node.child.patch(renderer),
-            RenderNode::Collection(node) => {
+            Self::Opacity(node) => node.child.patch(renderer),
+            Self::Scale(node) => node.child.patch(renderer),
+            Self::Rotation(node) => node.child.patch(renderer),
+            Self::Offset(node) => node.child.patch(renderer),
+            Self::Retain(node) => node.child.patch(renderer),
+            Self::Env(node) => node.child.patch(renderer),
+            Self::Wrapper(node) => node.child.patch(renderer),
+            Self::Collection(node) => {
                 // Reconcile membership first (keeps surviving items' nodes and,
                 // with a transition, starts enters/exits), then advance the
                 // transition clock — settling finished phases and resolving this
@@ -97,7 +99,7 @@ impl RenderNode {
                 }
                 changed
             }
-            RenderNode::Scroll(node) => {
+            Self::Scroll(node) => {
                 // A patched subtree may measure differently: drop the cached
                 // `0`-probe floor so the next window-minimum pass re-measures
                 // it on a frame that already does structural work.
@@ -110,21 +112,21 @@ impl RenderNode {
             // A filtered view wraps a child render node whose reactive
             // descendants must keep patching, so the walk recurses into it
             // (the filter itself owns its runtime, with no structural patch).
-            RenderNode::Filtered(node) => node.child.patch(renderer),
-            RenderNode::Color(_)
-            | RenderNode::Text(_)
-            | RenderNode::SceneView(_)
+            Self::Filtered(node) => node.child.patch(renderer),
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::SceneView(_)
             // GPU content owns its runtime and produces every frame; like a
             // self-drawn scene it has no structural patch.
-            | RenderNode::GpuContent(_)
-            | RenderNode::ExternalFrame(_)
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_)
             // A widget leaf re-dispatches from its live config every flush, so it
             // needs no structural patch.
-            | RenderNode::Widget(_) => false,
+            | Self::Widget(_) => false,
             // A lazy stack keeps only visible item subtrees. Patch those retained
             // items before parent layout so a Dynamic row-height change updates the
             // scroll extent in the same refresh instead of one frame later.
-            RenderNode::LazyStack(node) => node.patch_visible(renderer),
+            Self::LazyStack(node) => node.patch_visible(renderer),
         }
     }
 
@@ -141,36 +143,36 @@ impl RenderNode {
 
     pub(super) fn collect_dynamic_identities_into(&self, out: &mut FxHashSet<usize>) {
         match self {
-            RenderNode::Dynamic(node) => {
+            Self::Dynamic(node) => {
                 out.insert(node.source.identity());
                 node.child.borrow().collect_dynamic_identities_into(out);
             }
-            RenderNode::Container(container) => {
+            Self::Container(container) => {
                 for child in &container.children {
                     child.collect_dynamic_identities_into(out);
                 }
             }
-            RenderNode::Opacity(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Scale(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Rotation(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Offset(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Retain(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Env(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Wrapper(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Collection(node) => {
+            Self::Opacity(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Scale(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Rotation(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Offset(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Retain(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Env(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Wrapper(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Collection(node) => {
                 for entry in &node.entries {
                     entry.node.collect_dynamic_identities_into(out);
                 }
             }
-            RenderNode::Scroll(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Filtered(node) => node.child.collect_dynamic_identities_into(out),
-            RenderNode::Color(_)
-            | RenderNode::Text(_)
-            | RenderNode::SceneView(_)
-            | RenderNode::GpuContent(_)
-            | RenderNode::ExternalFrame(_)
-            | RenderNode::Widget(_) => {}
-            RenderNode::LazyStack(node) => node
+            Self::Scroll(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Filtered(node) => node.child.collect_dynamic_identities_into(out),
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::SceneView(_)
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_)
+            | Self::Widget(_) => {}
+            Self::LazyStack(node) => node
                 .item_cache
                 .borrow()
                 .collect_dynamic_identities_into(out),
@@ -185,41 +187,41 @@ impl RenderNode {
     /// visited mark is cleared, so a stale mark cannot force a second relayout.
     pub(super) fn take_layout_dirty(&mut self) -> bool {
         match self {
-            RenderNode::Container(node) => {
+            Self::Container(node) => {
                 let own = node.layout_dirty.replace(false);
                 node.children
                     .iter_mut()
                     .fold(own, |dirty, child| child.take_layout_dirty() | dirty)
             }
-            RenderNode::Opacity(node) => node.child.take_layout_dirty(),
-            RenderNode::Scale(node) => node.child.take_layout_dirty(),
-            RenderNode::Rotation(node) => node.child.take_layout_dirty(),
-            RenderNode::Offset(node) => node.child.take_layout_dirty(),
-            RenderNode::Retain(node) => node.child.take_layout_dirty(),
-            RenderNode::Env(node) => node.child.take_layout_dirty(),
-            RenderNode::Wrapper(node) => node.child.take_layout_dirty(),
-            RenderNode::Dynamic(node) => {
+            Self::Opacity(node) => node.child.take_layout_dirty(),
+            Self::Scale(node) => node.child.take_layout_dirty(),
+            Self::Rotation(node) => node.child.take_layout_dirty(),
+            Self::Offset(node) => node.child.take_layout_dirty(),
+            Self::Retain(node) => node.child.take_layout_dirty(),
+            Self::Env(node) => node.child.take_layout_dirty(),
+            Self::Wrapper(node) => node.child.take_layout_dirty(),
+            Self::Dynamic(node) => {
                 node.layout_dirty.replace(false) | node.child.borrow_mut().take_layout_dirty()
             }
-            RenderNode::Scroll(node) => {
+            Self::Scroll(node) => {
                 let dirty = node.child.take_layout_dirty();
                 if dirty {
                     node.non_scrolling_minimum.set(None);
                 }
                 dirty
             }
-            RenderNode::Filtered(node) => node.child.take_layout_dirty(),
-            RenderNode::Collection(node) => node
+            Self::Filtered(node) => node.child.take_layout_dirty(),
+            Self::Collection(node) => node
                 .entries
                 .iter_mut()
                 .fold(false, |dirty, entry| entry.node.take_layout_dirty() | dirty),
-            RenderNode::LazyStack(node) => node.item_cache.borrow_mut().take_layout_dirty(),
-            RenderNode::Color(_)
-            | RenderNode::Text(_)
-            | RenderNode::SceneView(_)
-            | RenderNode::GpuContent(_)
-            | RenderNode::ExternalFrame(_)
-            | RenderNode::Widget(_) => false,
+            Self::LazyStack(node) => node.item_cache.borrow_mut().take_layout_dirty(),
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::SceneView(_)
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_)
+            | Self::Widget(_) => false,
         }
     }
 }
@@ -356,6 +358,9 @@ impl SemanticCore {
     /// generation), so patching is the only structural path here: a rebuild
     /// request would be a programmer error — re-dispatching `body()` is the
     /// one-time build's job.
+    // `_env` is consumed only by the accessibility emit path; the signature must
+    // match `capture_window_semantics` regardless of feature selection.
+    #[allow(clippy::used_underscore_binding)]
     pub(crate) fn flush_window_semantics(&mut self, _env: &Environment) -> bool {
         let Some(mut tree) = self.render_tree.take() else {
             return false;
@@ -408,7 +413,10 @@ impl HydrolysisRenderer {
         let _flush_span = tracing::debug_span!("hydrolysis_capture_window_tree").entered();
         let insets = window_safe_area_insets(self, env);
         let content_rect = window_content_rect(bounds, &insets);
-        let size = Size::new(content_rect.width() as f32, content_rect.height() as f32);
+        let size = Size::new(
+            crate::num_cast::f64_as_f32(content_rect.width()),
+            crate::num_cast::f64_as_f32(content_rect.height()),
+        );
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         // The viewport is recorded here rather than by each caller: every host
         // that builds a window tree — the runner, and a `HydrolysisGpuView`
@@ -495,7 +503,7 @@ impl HydrolysisRenderer {
         // effect-rect checks and the direct-to-target test read it.
         #[cfg(feature = "frame-profile")]
         let update_started_at = Instant::now();
-        let _update_span = tracing::debug_span!("hydrolysis_frame_update").entered();
+        let update_span = tracing::debug_span!("hydrolysis_frame_update").entered();
         self.set_window_viewport(bounds, transform);
         // Roll over this frame's Retain watcher guards exactly like the build path:
         // every re-encode re-reads and re-subscribes reactive visual inputs.
@@ -512,12 +520,12 @@ impl HydrolysisRenderer {
         if structural_change {
             self.animation_controller.begin_rebuild_frame();
         }
-        drop(_update_span);
+        drop(update_span);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.update += update_started_at.elapsed();
         }
-        let _layout_span = tracing::debug_span!("hydrolysis_frame_layout").entered();
+        let layout_span = tracing::debug_span!("hydrolysis_frame_layout").entered();
         #[cfg(feature = "frame-profile")]
         let layout_started_at = Instant::now();
         self.reset_scene();
@@ -526,17 +534,20 @@ impl HydrolysisRenderer {
         // scene encoded right after it.
         let insets = window_safe_area_insets(self, env);
         let content_rect = window_content_rect(bounds, &insets);
-        let size = Size::new(content_rect.width() as f32, content_rect.height() as f32);
+        let size = Size::new(
+            crate::num_cast::f64_as_f32(content_rect.width()),
+            crate::num_cast::f64_as_f32(content_rect.height()),
+        );
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         tree.prepare_for_measure(self);
         tree.layout(self, env, proposal, size);
-        drop(_layout_span);
+        drop(layout_span);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.layout += layout_started_at.elapsed();
             self.last_layout_signature = Some(tree.placed_signature(Rect::from_size(size)));
         }
-        let _encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
+        let encode_span = tracing::debug_span!("hydrolysis_scene_encode").entered();
         #[cfg(feature = "frame-profile")]
         let encode_started_at = Instant::now();
         let ctx = safe_area_context(content_rect, transform, hit_transform);
@@ -554,7 +565,7 @@ impl HydrolysisRenderer {
         // contract re-runs per frame and the overlay follows moves/resizes.
         self.render_anchored_overlays(transform);
         self.flush_scene_layer();
-        drop(_encode_span);
+        drop(encode_span);
         #[cfg(feature = "frame-profile")]
         {
             self.frame_stage_times.encode += encode_started_at.elapsed();

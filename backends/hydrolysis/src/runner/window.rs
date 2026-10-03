@@ -25,14 +25,14 @@ pub(super) enum FrameMode {
 
 impl FrameMode {
     pub(super) const fn is_pending(self) -> bool {
-        !matches!(self, FrameMode::Idle)
+        !matches!(self, Self::Idle)
     }
 
     /// Whether the scheduled frame exists to apply an unapplied semantic
     /// change. `Animate` is scheduled continuation work, not staleness.
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) const fn is_unapplied_change(self) -> bool {
-        matches!(self, FrameMode::Refresh)
+        matches!(self, Self::Refresh)
     }
 }
 
@@ -97,11 +97,11 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
 impl<P: PlatformWindow> RuntimeWindow<P> {
     /// Schedules a refresh of the retained window tree on the next pump (the first
     /// pump builds the tree).
-    pub(super) fn request_refresh(&mut self) {
+    pub(super) const fn request_refresh(&mut self) {
         self.mode = FrameMode::Refresh;
     }
 
-    pub(super) fn clear_frame_mode(&mut self) {
+    pub(super) const fn clear_frame_mode(&mut self) {
         self.mode = FrameMode::Idle;
     }
 
@@ -111,7 +111,7 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     /// Exercised by the web and Android runners, which gate their frame
     /// loops on it; feature-gated builds without them keep it for them.
     #[allow(dead_code)]
-    pub(super) fn is_hidden(&self) -> bool {
+    pub(super) const fn is_hidden(&self) -> bool {
         self.hidden
     }
 
@@ -176,7 +176,11 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
 /// pump presents nothing, and a present-named readiness line emitted there
 /// reads as a frame presented while hidden.
 #[allow(dead_code)] // see RuntimeWindow::is_hidden
-pub(super) fn reports_ui_idle(presented_once: bool, wants_next_frame: bool, hidden: bool) -> bool {
+pub(super) const fn reports_ui_idle(
+    presented_once: bool,
+    wants_next_frame: bool,
+    hidden: bool,
+) -> bool {
     presented_once && !wants_next_frame && !hidden
 }
 
@@ -284,7 +288,7 @@ fn clamp_axis(value: f32, min: Option<f32>, max: Option<f32>) -> f32 {
     value.clamp(lo, max.unwrap_or(f32::INFINITY).max(lo))
 }
 
-pub(super) fn schedule_animation_update<P: PlatformWindow>(
+pub(super) const fn schedule_animation_update<P: PlatformWindow>(
     runtime: &mut RuntimeWindow<P>,
     animations_active: bool,
 ) {
@@ -302,9 +306,13 @@ pub(super) fn schedule_animation_update<P: PlatformWindow>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// A captured headless frame: raw pixels plus dimensions.
 pub struct HeadlessSnapshot {
+    /// Snapshot width in pixels.
     pub width: u32,
+    /// Snapshot height in pixels.
     pub height: u32,
+    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin.
     pub rgba8: Vec<u8>,
 }
 
@@ -397,7 +405,7 @@ pub struct FrameProfile {
 }
 
 impl FrameProfile {
-    pub(super) fn with_total(mut self, total: Duration) -> Self {
+    pub(super) const fn with_total(mut self, total: Duration) -> Self {
         self.total = total;
         self
     }
@@ -905,6 +913,8 @@ impl FrameReader {
 }
 
 crate::engine::cfg_async_fn! {
+    // the capture variant renders, encodes and delivers in one pass; the sequence is the feature
+    #[allow(clippy::too_many_lines)]
     /// Async on wasm32, where the surface render inside awaits the browser
     /// device.
     pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
@@ -1261,7 +1271,7 @@ pub(super) fn physical_to_logical_dimension(value: u32, scale_factor: f64) -> f3
         scale_factor.is_finite() && scale_factor > 0.0,
         "hydrolysis runner: invalid scale factor {scale_factor}"
     );
-    (f64::from(value) / scale_factor) as f32
+    crate::num_cast::f64_as_f32(f64::from(value) / scale_factor)
 }
 
 pub(super) fn handle_input_events<P: GpuSurfaceWindow>(
@@ -1341,6 +1351,10 @@ fn sync_os_pointer_position<P: GpuSurfaceWindow>(runtime: &mut RuntimeWindow<P>)
     runtime.renderer.note_pointer_position(x, y);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 pub(super) fn handle_input_events_with<P, F>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,

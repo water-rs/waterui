@@ -155,11 +155,11 @@ fn when_layer_control_press_does_not_fall_through_to_the_row_tap() {
 
     let next_bounds = bounds_of(&mut runtime, Role::Button, "Next");
     let (x, y) = (
-        f64::midpoint(next_bounds.x0, next_bounds.x1) as f32,
-        f64::midpoint(next_bounds.y0, next_bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(next_bounds.x0, next_bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(next_bounds.y0, next_bounds.y1)),
     );
     assert!(
-        y > ROWS as f32 * ROW_H - ROW_H,
+        y > crate::num_cast::usize_as_f32(ROWS).mul_add(ROW_H, -ROW_H),
         "the layer's control must sit over the tail row's tap region"
     );
 
@@ -205,8 +205,8 @@ fn when_layer_tap_press_does_not_fall_through_to_the_row_button() {
 
     let button_bounds = bounds_of(&mut runtime, Role::Button, "Row button");
     let (x, y) = (
-        f64::midpoint(button_bounds.x0, button_bounds.x1) as f32,
-        f64::midpoint(button_bounds.y0, button_bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(button_bounds.x0, button_bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(button_bounds.y0, button_bounds.y1)),
     );
 
     primary_click(&mut runtime, x, y);
@@ -253,7 +253,10 @@ fn when_layer_tap_press_does_not_fall_through_to_the_row_tap() {
 
     // A point on the viewer with no control of its own: the tail row's tap
     // region underneath must still not take it.
-    let (x, y) = (WINDOW.0 as f32 / 2.0, WINDOW.1 as f32 / 2.0);
+    let (x, y) = (
+        crate::num_cast::u32_as_f32(WINDOW.0) / 2.0,
+        crate::num_cast::u32_as_f32(WINDOW.1) / 2.0,
+    );
     primary_click(&mut runtime, x, y);
     pump_until_settled(&mut runtime);
 
@@ -290,8 +293,8 @@ fn zstack_overlay_sibling_press_does_not_fall_through_to_the_row_tap() {
 
     let next_bounds = bounds_of(&mut runtime, Role::Button, "Next");
     let (x, y) = (
-        f64::midpoint(next_bounds.x0, next_bounds.x1) as f32,
-        f64::midpoint(next_bounds.y0, next_bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(next_bounds.x0, next_bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(next_bounds.y0, next_bounds.y1)),
     );
     primary_click(&mut runtime, x, y);
     pump_until_settled(&mut runtime);

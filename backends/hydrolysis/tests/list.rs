@@ -1,8 +1,3 @@
-#![allow(
-    clippy::cast_precision_loss,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! List widget regressions.
 
 //! <https://github.com/water-rs/hydrolysis/issues/168>: `apply_scroll_request`
@@ -13,6 +8,14 @@
 //! the previous contents' target is still pending. A scroll request names a
 //! row that may not exist yet: it stays pending until the contents contain the
 //! index, and a newer generation supersedes it.
+
+mod support {
+    /// Widens a `usize` count to `f64`, rounding to nearest.
+    #[expect(clippy::cast_precision_loss, reason = "test counts are far below 2^53")]
+    pub const fn usize_as_f64(v: usize) -> f64 {
+        v as f64
+    }
+}
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -76,7 +79,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_semantic() {
         .scroll_y()
         .expect("the list reports a scroll offset");
     assert!(
-        (scroll_y - SCROLL_TARGET as f64).abs() < 0.5,
+        (scroll_y - support::usize_as_f64(SCROLL_TARGET)).abs() < 0.5,
         "pending scroll should land on row {SCROLL_TARGET} once the contents reach it: scroll_y={scroll_y}"
     );
 }
@@ -107,7 +110,7 @@ fn pending_scroll_target_above_row_count_waits_for_contents_offscreen() {
         .node()
         .scroll_y()
         .expect("the list reports a scroll offset");
-    let expected = SCROLL_TARGET as f64 * ROW_HEIGHT;
+    let expected = support::usize_as_f64(SCROLL_TARGET) * ROW_HEIGHT;
     assert!(
         (scroll_y - expected).abs() < 1.0,
         "pending scroll should land on row {SCROLL_TARGET}: expected scroll_y≈{expected}, got {scroll_y}"

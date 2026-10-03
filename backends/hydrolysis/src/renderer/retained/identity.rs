@@ -18,17 +18,17 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Lifetime of one visual node in the retained render tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(crate) struct RenderId(u64);
+pub struct RenderId(u64);
 
 /// One placement of a visual node: its ordinary content placement or an
 /// additional presentation instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct PresentationId(u64);
+pub struct PresentationId(u64);
 
 /// The engine mount key: which visual node, presented in which placement.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct RenderKey {
+pub struct RenderKey {
     /// The visual node the mount belongs to.
     pub(crate) render: RenderId,
     /// The presentation instance the mount belongs to.

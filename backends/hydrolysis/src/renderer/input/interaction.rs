@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::animation::AnimationKey;
 use nami::Signal as _;
@@ -16,7 +18,7 @@ const INTERACTION_KEYS_PER_IDENTITY: usize =
     INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * MAX_PRESS_WAVES;
 
 #[derive(Debug, Default)]
-pub(crate) struct InteractionEngine {
+pub struct InteractionEngine {
     states: BTreeMap<InteractionKey, WidgetInteractionEntry>,
     active: BTreeSet<InteractionKey>,
     /// The full reported [`InteractionState`] each active control sampled at
@@ -43,7 +45,7 @@ pub(crate) struct InteractionEngine {
 /// multiple controls owned by that node (for example a stepper's minus/plus
 /// buttons). Identity never depends on render order or body call position.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct InteractionKey {
+pub struct InteractionKey {
     owner: RetainedIdentity,
     discriminator: usize,
 }
@@ -71,11 +73,11 @@ struct WidgetInteractionEntry {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct InteractionFocus {
-    pub(crate) visible: bool,
+pub struct InteractionFocus {
+    pub visible: bool,
 }
 
-pub(crate) struct WidgetInteractionInput {
+pub struct WidgetInteractionInput {
     pub(crate) bounds: kurbo::Rect,
     pub(crate) hovered: bool,
     pub(crate) focus: Option<InteractionFocus>,
@@ -177,6 +179,10 @@ impl InteractionEngine {
             .hovering
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn begin_press(&mut self, slot: &PressSlot, origin: kurbo::Point, now: Instant) {
         if let Some(handles) = self
             .states
@@ -187,6 +193,10 @@ impl InteractionEngine {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn clear_all_presses(&mut self, now: Instant) -> PressClear {
         let mut clear = PressClear::default();
         for state in self.states.values() {
@@ -206,6 +216,14 @@ impl InteractionEngine {
             .and_then(|state| state.handles.clone())
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn bind_widget_state(
         &mut self,
         key: &InteractionKey,
@@ -356,7 +374,7 @@ impl InteractionEngine {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PressSlot {
+pub struct PressSlot {
     pub(crate) key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) focus_binding: Option<Binding<bool>>,
@@ -367,17 +385,17 @@ pub(crate) struct PressSlot {
 /// layers, `chrome_changed` means a pressed widget's chrome samples
 /// interaction state and must re-render.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct PressClear {
-    pub(crate) visual_changed: bool,
+pub struct PressClear {
+    pub visual_changed: bool,
     pub(crate) chrome_changed: bool,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct HoverSlot {
-    pub(crate) key: InteractionKey,
+pub struct HoverSlot {
+    pub key: InteractionKey,
 }
 
-pub(crate) fn local_interaction_state(
+pub fn local_interaction_state(
     mut state: WidgetInteractionState,
     hit_transform: kurbo::Affine,
 ) -> WidgetInteractionState {

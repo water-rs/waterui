@@ -1,9 +1,9 @@
 #[path = "engine/cherenkov_backend.rs"]
-pub(crate) mod cherenkov;
+pub mod cherenkov;
 
-pub(crate) use cherenkov::{
-    CherenkovSurface, GpuEngine, cfg_async_fn, engine_await, shared_engine,
-};
+pub use cherenkov::{CherenkovSurface, GpuEngine, shared_engine};
+// `macro_rules!` re-exports cap at `pub(crate)` — see cherenkov_backend.
+pub(crate) use cherenkov::{cfg_async_fn, engine_await};
 
 pub use waterui_backend_core::widget::{
     RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics, WidgetTheme,

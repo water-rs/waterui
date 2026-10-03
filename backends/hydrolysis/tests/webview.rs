@@ -1,8 +1,3 @@
-#![allow(
-    clippy::future_not_send,
-    reason = "the test webview is a single-threaded mock holding NonNull; nothing awaits it across threads"
-)]
-
 //! Renderer presentation tests for `WebView`: the realized surface's bounds
 //! and single accessibility node on the rendered runtime.
 //!
@@ -128,6 +123,10 @@ impl WebViewHandle for TestHandle {
     }
 
     /// Fails rather than answering, because there is no page to answer for.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
+    )]
     fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
         ready(Err(Str::from_static(
             "the test web view has no page to run JavaScript in",
@@ -136,6 +135,10 @@ impl WebViewHandle for TestHandle {
 
     /// Fails for the same reason as [`Self::run_javascript`]: an async call's
     /// result has no truthful empty value either.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
+    )]
     fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
         ready(Err(Str::from_static(
             "the test web view has no page to call JavaScript in",

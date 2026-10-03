@@ -50,9 +50,9 @@ mod executor;
 mod fonts;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
-pub(crate) mod ime;
+pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
-pub(crate) mod menu_bar;
+pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
 pub(crate) mod placement;
 mod semantic;
@@ -71,16 +71,21 @@ mod winit_runner;
 #[cfg(hydrolysis_wayland_platform)]
 mod x11_state_watch;
 
-use diagnostics::*;
+use diagnostics::{RenderDiagnostics, RenderDiagnosticsConfig, RenderPhaseSample, elapsed_or_zero};
 #[cfg(not(target_arch = "wasm32"))]
-use executor::*;
-use fonts::*;
+use executor::{DrainExecutorOnDrop, HeadlessMainThreadExecutor};
+#[cfg(not(target_arch = "wasm32"))]
+use fonts::native_resource_fonts;
+use fonts::seed_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
-use window::*;
+use window::{RuntimeWindow, advance_runtime, handle_input_events, render_window};
+// Only the native headless/capture paths read frames back; the browser surface presents directly.
+#[cfg(not(target_arch = "wasm32"))]
+use window::{FrameReader, render_window_with_capture, runtime_window_origin};
 // Names the `#[cfg(test)]` suite pulls through `super::`; kept out of the
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
@@ -271,8 +276,8 @@ pub fn run(app: App, style: impl crate::Style) {
     let mut pending_windows = VecDeque::from(windows);
     while let Some(window) = pending_windows.pop_front() {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
-        let width = frame.width().max(1.0) as u32;
-        let height = frame.height().max(1.0) as u32;
+        let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
+        let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
@@ -288,6 +293,9 @@ pub fn run(app: App, style: impl crate::Style) {
     }
 }
 
+/// Runs the application in the browser, drawing onto the page's canvas.
+///
+/// Available only when compiling hydrolysis for wasm32 with the `web` feature.
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub fn run(app: App, style: impl crate::Style) {
     init_global_executor();

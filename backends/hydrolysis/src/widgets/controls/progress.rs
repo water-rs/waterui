@@ -23,7 +23,7 @@ const CIRCULAR_DETERMINATE_ANIMATION_KEY: usize = 2;
 /// are move-only `AnyView`s (they cannot be re-dispatched twice), so the
 /// persistent `Widget` node holds them as [`RetainedSubview`]s built once and
 /// re-flushed each frame; the `value` signal is read through `read_signal`.
-pub(crate) struct ProgressRenderState {
+pub struct ProgressRenderState {
     label: RetainedSubview,
     value_label: RetainedSubview,
     value: Computed<f64>,
@@ -75,7 +75,7 @@ impl HydroNativeView for Native<ProgressConfig> {
 /// Emits a progress indicator's accessibility node. Shared by the dispatch path
 /// (passing the config label's extracted default text) and the retained node path
 /// (passing the [`RetainedSubview`]'s build-time default text).
-pub(crate) fn progress_accessibility(
+pub fn progress_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     default_label: Option<String>,
@@ -110,7 +110,7 @@ pub(crate) fn progress_accessibility(
 /// Measures a retained progress leaf from its [`ProgressRenderState`]. Mirrors
 /// [`measure_progress_intrinsic`] (which does not measure the label view — it uses
 /// the default font height — so the retained labels are not needed here).
-pub(crate) fn measure_progress_node(
+pub fn measure_progress_node(
     render_state: &ProgressRenderState,
     _proposal: ProposalSize,
     _state: &mut HydroState,
@@ -132,10 +132,15 @@ pub(crate) fn measure_progress_node(
             } else {
                 0.0
             };
-            let width = metrics.min_track_width + metrics.bar_horizontal_inset * 2.0;
+            let width = metrics
+                .bar_horizontal_inset
+                .mul_add(2.0, metrics.min_track_width);
             let height =
                 label_height + metrics.bar_top_offset + metrics.bar_height + value_label_height;
-            LayoutSize::new(width as f32, height as f32)
+            LayoutSize::new(
+                crate::num_cast::f64_as_f32(width),
+                crate::num_cast::f64_as_f32(height),
+            )
         }
         ProgressStyle::Circular | ProgressStyle::Loading => {
             let style = if matches!(render_state.style, ProgressStyle::Loading) {
@@ -145,8 +150,8 @@ pub(crate) fn measure_progress_node(
             };
             let metrics = theme.progress_metrics(style);
             LayoutSize::new(
-                metrics.circular_diameter as f32,
-                metrics.circular_diameter as f32,
+                crate::num_cast::f64_as_f32(metrics.circular_diameter),
+                crate::num_cast::f64_as_f32(metrics.circular_diameter),
             )
         }
         _ => panic!("hydrolysis ProgressStyle variant is not implemented"),
@@ -156,7 +161,7 @@ pub(crate) fn measure_progress_node(
 
 /// Renders a retained progress leaf every flush: emits a11y (unless hidden) then
 /// the track/spinner + labels, reading the `value` signal each frame.
-pub(crate) fn render_progress_node(
+pub fn render_progress_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ProgressRenderState>>,
     env: &Environment,
@@ -181,7 +186,11 @@ pub(crate) fn render_progress_node(
     render_progress_parts(ctx, state, env);
 }
 
-pub(crate) fn render_progress_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_progress_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ProgressRenderState>>,
     env: &Environment,
@@ -197,7 +206,7 @@ pub(crate) fn render_progress_parts(
     let value_identity = value_signal.identity();
     let value = ctx.renderer_mut().read_signal(&value_signal);
     let finite = value.is_finite();
-    let clamped = value.clamp(0.0, 1.0) as f32;
+    let clamped = crate::num_cast::f64_as_f32(value.clamp(0.0, 1.0));
 
     match style {
         ProgressStyle::Linear => {
@@ -257,7 +266,9 @@ pub(crate) fn render_progress_parts(
                 kurbo::Rect::new(
                     bar_rect.x0,
                     bar_rect.y0,
-                    bar_rect.x0 + bar_rect.width() * f64::from(animated.clamp(0.0, 1.0)),
+                    bar_rect
+                        .width()
+                        .mul_add(f64::from(animated.clamp(0.0, 1.0)), bar_rect.x0),
                     bar_rect.y1,
                 )
             });
@@ -376,7 +387,7 @@ pub(crate) fn render_progress_parts(
 /// The label and value-label sub-views flush visual-only, so there is nothing
 /// else to emit.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_progress_accessibility(
+pub fn emit_progress_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<ProgressRenderState>>,
     env: &Environment,

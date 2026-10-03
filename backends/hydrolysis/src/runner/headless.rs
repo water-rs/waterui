@@ -65,7 +65,7 @@ impl HeadlessPlatformWindow {
         !self.pending_events.is_empty()
     }
 
-    pub(super) fn take_redraw_request(&self) -> bool {
+    pub(super) const fn take_redraw_request(&self) -> bool {
         self.redraw_requested.replace(false)
     }
 }
@@ -137,7 +137,7 @@ impl HeadlessPlatformWindow {
     }
 
     /// The last (min, max) content-size limits the runner applied, for tests.
-    pub(super) fn applied_size_limits(
+    pub(super) const fn applied_size_limits(
         &self,
     ) -> Option<(
         Option<waterui_core::layout::Size>,
@@ -149,21 +149,28 @@ impl HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
+/// The outcome of one headless frame pump.
 pub struct HeadlessPumpResult {
+    /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,
+    /// The frame's CPU/GPU stage profile.
     pub profile: FrameProfile,
     /// The frame's CPU/GPU stage split under `frame-profile`: GPU stages stay
     /// `None` on a device without `TIMESTAMP_QUERY`.
     #[cfg(feature = "frame-profile")]
     pub stages: crate::renderer::FrameStageTimes,
     #[cfg(feature = "accessibility")]
+    /// The accessibility tree update the frame produced.
     pub tree_update: Option<AccessibilityTreeUpdate>,
+    /// The captured frame snapshot, when capture was requested.
     pub snapshot: Option<HeadlessSnapshot>,
     #[cfg(feature = "accessibility")]
+    /// The accessibility node holding UI focus.
     pub ui_focus: Option<accesskit::NodeId>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// A headless hydrolysis runtime for tests and tooling.
 pub struct HeadlessRuntime {
     env: Environment,
     runtime: RuntimeWindow<HeadlessPlatformWindow>,
@@ -231,6 +238,7 @@ fn default_window(content: AnyViewBuilder<AnyView>) -> Window {
 #[cfg(not(target_arch = "wasm32"))]
 impl HeadlessRuntime {
     #[must_use]
+    /// Creates a headless runtime with `env` and the root view builder.
     pub fn new(
         env: Environment,
         content: AnyViewBuilder<AnyView>,
@@ -401,6 +409,10 @@ impl HeadlessRuntime {
         )
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     fn on_gpu_context(
         gpu: OffscreenGpuContext,
         env: Environment,
@@ -450,7 +462,10 @@ impl HeadlessRuntime {
 
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
-            waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),
+            waterui_core::layout::Size::new(
+                crate::num_cast::u32_as_f32(width.max(1)),
+                crate::num_cast::u32_as_f32(height.max(1)),
+            ),
         ));
 
         let mut platform = HeadlessPlatformWindow::on_context(
@@ -496,8 +511,8 @@ impl HeadlessRuntime {
 
     fn create_popup_runtime(&self, window: Window) -> RuntimeWindow<HeadlessPlatformWindow> {
         let frame = crate::platform::validated_window_frame(window.frame.snapshot());
-        let width = frame.width().max(1.0) as u32;
-        let height = frame.height().max(1.0) as u32;
+        let width = crate::num_cast::f32_as_u32(frame.width().max(1.0));
+        let height = crate::num_cast::f32_as_u32(frame.height().max(1.0));
         let mut platform = HeadlessPlatformWindow::on_context(
             self.gpu.clone(),
             width,
@@ -570,10 +585,11 @@ impl HeadlessRuntime {
     /// cursor events while the drag owns the pointer; this models a host
     /// that still knows where the pointer is, so the runner's platform query
     /// has an answer.
-    pub fn set_pointer_position(&mut self, position: Option<(f32, f32)>) {
+    pub const fn set_pointer_position(&mut self, position: Option<(f32, f32)>) {
         self.runtime.platform.pointer_position = position;
     }
 
+    /// Requests a repaint on the headless window.
     pub fn request_redraw(&mut self) {
         self.runtime.request_redraw();
         self.runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -617,7 +633,7 @@ impl HeadlessRuntime {
             let index = target / WINDOW_ID_STRIDE - 1;
             let popup = self
                 .popup_windows
-                .get_mut(index as usize)
+                .get_mut(crate::num_cast::u64_as_usize(index))
                 .unwrap_or_else(|| {
                     panic!(
                         "hydrolysis headless runtime: accessibility action {:?} targets closed popup \
@@ -709,7 +725,7 @@ impl HeadlessRuntime {
         let target = node_id.0;
         if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
-            let Some(popup) = self.popup_windows.get(index as usize) else {
+            let Some(popup) = self.popup_windows.get(crate::num_cast::u64_as_usize(index)) else {
                 return Err(AccessibilityActivationPointError::NoNode);
             };
             let point = popup.renderer.accessibility_activation_point(
@@ -741,6 +757,7 @@ impl HeadlessRuntime {
     }
 
     #[cfg(feature = "accessibility")]
+    /// Clears UI focus; returns whether focus changed.
     pub fn clear_ui_focus(&mut self) -> bool {
         let changed = self.runtime.renderer.clear_ui_focus();
         if changed {
@@ -753,6 +770,7 @@ impl HeadlessRuntime {
 
     #[cfg(feature = "accessibility")]
     #[must_use]
+    /// The accessibility node holding UI focus, if any.
     pub fn focused_ui_node(&self) -> Option<accesskit::NodeId> {
         self.runtime.renderer.focused_ui_node()
     }
@@ -801,21 +819,24 @@ impl HeadlessRuntime {
             })
     }
 
+    /// Pumps one frame, capturing a snapshot when `capture_snapshot` is set.
     pub fn pump(&mut self, capture_snapshot: bool) -> HeadlessPumpResult {
         self.pump_at(capture_snapshot, Instant::now())
     }
 
+    /// Pumps one frame without a snapshot.
     pub fn pump_offscreen(&mut self) -> HeadlessPumpResult {
         self.pump_at(false, Instant::now())
     }
 
+    /// Pumps one frame and captures a snapshot.
     pub fn pump_snapshot(&mut self) -> HeadlessPumpResult {
         self.pump_at(true, Instant::now())
     }
 
     /// The main window's renderer, for tests that assert on frame internals.
     #[cfg(test)]
-    pub(crate) fn renderer(&self) -> &HydrolysisRenderer {
+    pub(crate) const fn renderer(&self) -> &HydrolysisRenderer {
         &self.runtime.renderer
     }
 
@@ -892,6 +913,11 @@ impl HeadlessRuntime {
         self.runtime.renderer.layout_signature()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
+    /// Pumps one frame with the frame instant pinned to `at`.
     pub fn pump_at(&mut self, capture_snapshot: bool, at: Instant) -> HeadlessPumpResult {
         let frame_started_at = Instant::now();
         self.runtime.renderer.set_frame_instant(at);
@@ -1032,8 +1058,8 @@ fn composite_popup_snapshot(
     source: &HeadlessSnapshot,
     frame: waterui_core::layout::Rect,
 ) {
-    let offset_x = frame.x().round() as i32;
-    let offset_y = frame.y().round() as i32;
+    let offset_x = crate::num_cast::f32_as_i32(frame.x().round());
+    let offset_y = crate::num_cast::f32_as_i32(frame.y().round());
     for source_y in 0..source.height {
         let target_y = offset_y + i32::try_from(source_y).expect("source y should fit i32");
         if target_y < 0 || target_y >= i32::try_from(target.height).expect("height should fit i32")
@@ -1066,20 +1092,22 @@ fn composite_pixel(target: &mut [u8], source: &[u8]) {
         return;
     }
     let target_alpha = f32::from(target[3]) / 255.0;
-    let out_alpha = source_alpha + target_alpha * (1.0 - source_alpha);
+    let out_alpha = f32::mul_add(target_alpha, 1.0 - source_alpha, source_alpha);
     for channel in 0..3 {
         let source_channel = f32::from(source[channel]) / 255.0;
         let target_channel = f32::from(target[channel]) / 255.0;
-        let out = (source_channel * source_alpha
-            + target_channel * target_alpha * (1.0 - source_alpha))
-            / out_alpha;
-        target[channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+        let out = f32::mul_add(
+            target_channel * target_alpha,
+            1.0 - source_alpha,
+            source_channel * source_alpha,
+        ) / out_alpha;
+        target[channel] = crate::num_cast::f32_as_u8((out * 255.0).round().clamp(0.0, 255.0));
     }
-    target[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+    target[3] = crate::num_cast::f32_as_u8((out_alpha * 255.0).round().clamp(0.0, 255.0));
 }
 
 /// The window-local point a positional event carries, if it is one.
-fn event_position(event: &InputEvent) -> Option<(f32, f32)> {
+const fn event_position(event: &InputEvent) -> Option<(f32, f32)> {
     match event {
         InputEvent::PointerDown { x, y, .. }
         | InputEvent::PointerUp { x, y, .. }

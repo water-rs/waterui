@@ -75,15 +75,15 @@ fn click(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
         InputEvent::PointerDown {
             id: POINTER_ID,
             kind: PointerKind::Mouse,
-            x: x as f32,
-            y: y as f32,
+            x: crate::num_cast::f64_as_f32(x),
+            y: crate::num_cast::f64_as_f32(y),
             button: PointerButton::Primary,
         },
         InputEvent::PointerUp {
             id: POINTER_ID,
             kind: PointerKind::Mouse,
-            x: x as f32,
-            y: y as f32,
+            x: crate::num_cast::f64_as_f32(x),
+            y: crate::num_cast::f64_as_f32(y),
             button: PointerButton::Primary,
         },
     ] {

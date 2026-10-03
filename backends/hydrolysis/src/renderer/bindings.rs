@@ -1,10 +1,12 @@
 //! Interaction bindings: hit-test/gesture/text-input registration, scroll
 //! handle binding, and pointer/IME/focus queries used by the runner.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 impl SemanticCore {
-    pub(super) fn target_hit_priority(
+    pub(super) const fn target_hit_priority(
         depth: usize,
         order: usize,
         index: usize,
@@ -80,7 +82,7 @@ impl SemanticCore {
 
     /// Whether an IME composition currently owns keyboard input — either a
     /// widget field holding marked text or an embedded surface's session.
-    pub(crate) fn ime_composition_active(&self) -> bool {
+    pub(crate) const fn ime_composition_active(&self) -> bool {
         self.text_editing.ime_preedit.is_some() || self.hit_test.embedded_composing
     }
 
@@ -282,7 +284,7 @@ impl SemanticCore {
         self.gesture_engine.register_existing_target(target);
     }
 
-    pub(crate) fn allocate_gesture_group_id(&mut self) -> usize {
+    pub(crate) const fn allocate_gesture_group_id(&mut self) -> usize {
         let group_id = self.next_gesture_group_id;
         self.next_gesture_group_id = self
             .next_gesture_group_id

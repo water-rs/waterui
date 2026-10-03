@@ -143,8 +143,8 @@ fn list_row_remeasures_when_async_image_decode_lands() {
     let photo =
         node_bounds(&updates, Role::Image, "photo").expect("the decoded image must publish bounds");
     assert!(
-        grown.height() >= IMAGE_HEIGHT as f64 + 16.0
-            && grown.height() <= IMAGE_HEIGHT as f64 + 16.0 + CAPTION_SLACK,
+        grown.height() >= f64::from(IMAGE_HEIGHT) + 16.0
+            && grown.height() <= f64::from(IMAGE_HEIGHT) + 16.0 + CAPTION_SLACK,
         "the row must re-measure to the caption plus the image's height plus \
          the row's insets (got {:.1})",
         grown.height()

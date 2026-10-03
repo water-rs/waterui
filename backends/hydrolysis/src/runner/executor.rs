@@ -19,7 +19,7 @@ use executor_core::LocalExecutor;
 use executor_core::async_task::{AsyncTask, Runnable};
 
 #[derive(Clone, Debug)]
-pub(crate) struct HeadlessMainThreadExecutor {
+pub struct HeadlessMainThreadExecutor {
     runnable_tx: mpsc::Sender<Runnable>,
     runnable_rx: Rc<mpsc::Receiver<Runnable>>,
     /// Queued-but-not-yet-run runnable count. Incremented before send and

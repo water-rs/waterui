@@ -25,6 +25,7 @@ impl core::fmt::Debug for HydrolysisViewRenderer {
 
 impl HydrolysisViewRenderer {
     #[must_use]
+    /// Creates a renderer drawing with `theme`.
     pub fn new(theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
         Self {
             surface: Rc::new(RefCell::new(None)),
@@ -34,6 +35,7 @@ impl HydrolysisViewRenderer {
     }
 
     #[must_use]
+    /// Creates a renderer whose environment is first configured by `configure_environment`.
     pub fn with_environment(
         theme: Rc<dyn crate::engine::WidgetTheme>,
         configure_environment: impl Fn(&mut Environment) + 'static,

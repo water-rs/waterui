@@ -24,11 +24,15 @@ use std::sync::Arc;
 /// focused node when the `accessibility` feature is on.
 #[derive(Debug)]
 pub struct SemanticPumpResult {
+    /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,
+    /// The frame's CPU/GPU stage profile.
     pub profile: FrameProfile,
     #[cfg(feature = "accessibility")]
+    /// The accessibility tree update the frame produced.
     pub tree_update: Option<AccessibilityTreeUpdate>,
     #[cfg(feature = "accessibility")]
+    /// The accessibility node holding UI focus.
     pub ui_focus: Option<accesskit::NodeId>,
 }
 
@@ -140,6 +144,10 @@ impl SemanticRuntime {
         })
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     fn on_env(
         env: Environment,
         content: AnyViewBuilder<AnyView>,
@@ -199,7 +207,10 @@ impl SemanticRuntime {
         );
         window.frame.set(waterui_core::layout::Rect::new(
             waterui_core::layout::Point::zero(),
-            waterui_core::layout::Size::new(width.max(1) as f32, height.max(1) as f32),
+            waterui_core::layout::Size::new(
+                crate::num_cast::u32_as_f32(width.max(1)),
+                crate::num_cast::u32_as_f32(height.max(1)),
+            ),
         ));
 
         let window_id = env
@@ -229,7 +240,7 @@ impl SemanticRuntime {
 
     /// Requests a re-emit on the next pump, as a platform's redraw request
     /// would.
-    pub fn request_redraw(&mut self) {
+    pub const fn request_redraw(&mut self) {
         self.window.refresh_requested = true;
     }
 
@@ -257,7 +268,7 @@ impl SemanticRuntime {
             let index = target / WINDOW_ID_STRIDE - 1;
             let popup = self
                 .popup_windows
-                .get_mut(index as usize)
+                .get_mut(crate::num_cast::u64_as_usize(index))
                 .unwrap_or_else(|| {
                     panic!(
                         "hydrolysis semantic runtime: accessibility action {:?} targets closed popup \
@@ -455,6 +466,10 @@ fn semantic_window_origin(window: &SemanticWindow) -> HydrolysisWindowOrigin {
 /// Applies one window's queued input events. Keyboard and IME events dispatch
 /// to the focused node through the core's key/text paths; geometry-routed
 /// events have no semantic target and are dropped.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) -> bool {
     let mut should_close = window.window.state.snapshot() == waterui::window::WindowState::Closed;
     let events: Vec<InputEvent> = window.pending_events.drain(..).collect();
@@ -489,7 +504,10 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                 let frame = window.window.frame.snapshot();
                 window.window.frame.set(waterui_core::layout::Rect::new(
                     frame.origin(),
-                    waterui_core::layout::Size::new(width as f32, height as f32),
+                    waterui_core::layout::Size::new(
+                        crate::num_cast::u32_as_f32(width),
+                        crate::num_cast::u32_as_f32(height),
+                    ),
                 ));
                 false
             }

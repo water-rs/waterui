@@ -58,6 +58,10 @@ impl HydroNativeView for Native<FixedContainer> {
 /// at their intrinsic main extent. `main` is the offered main-axis extent:
 /// a finite offer caps the reported extent (the stack virtualizes — it fits
 /// by showing fewer items), while an open axis reads the full extent.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
 fn lazy_stack_sample_size(
     state: &mut HydroState,
     view: &Native<LazyContainer>,
@@ -88,7 +92,7 @@ fn lazy_stack_sample_size(
             || panic!("LazyContainer failed to materialize child at index 0"),
             |view| measure_transient_view_with_proposal(&view, item_proposal, state, env, theme),
         );
-    let count = child_count as f64;
+    let count = crate::num_cast::usize_as_f64(child_count);
     // The sampled extent is the membership's intrinsic ideal; a finite
     // main-axis offer caps it (the stack virtualizes onto the offered
     // viewport) while an open axis reads the full extent — but never below
@@ -115,17 +119,25 @@ fn lazy_stack_sample_size(
     match axis {
         LazyStackAxisConfig::Vertical { spacing, .. } => {
             let gaps = f64::from(spacing.snapshot()) * (count - 1.0).max(0.0);
-            let floor = min_sample.map_or(0.0, |min| f64::from(min.height) * count + gaps);
+            let floor =
+                min_sample.map_or(0.0, |min| f64::mul_add(f64::from(min.height), count, gaps));
             let width = f64::from(sample.width);
-            let height = cap(f64::from(sample.height) * count + gaps, floor);
-            LayoutSize::new(width as f32, height as f32)
+            let height = cap(f64::mul_add(f64::from(sample.height), count, gaps), floor);
+            LayoutSize::new(
+                crate::num_cast::f64_as_f32(width),
+                crate::num_cast::f64_as_f32(height),
+            )
         }
         LazyStackAxisConfig::Horizontal { spacing, .. } => {
             let gaps = f64::from(spacing.snapshot()) * (count - 1.0).max(0.0);
-            let floor = min_sample.map_or(0.0, |min| f64::from(min.width) * count + gaps);
-            let width = cap(f64::from(sample.width) * count + gaps, floor);
+            let floor =
+                min_sample.map_or(0.0, |min| f64::mul_add(f64::from(min.width), count, gaps));
+            let width = cap(f64::mul_add(f64::from(sample.width), count, gaps), floor);
             let height = f64::from(sample.height);
-            LayoutSize::new(width as f32, height as f32)
+            LayoutSize::new(
+                crate::num_cast::f64_as_f32(width),
+                crate::num_cast::f64_as_f32(height),
+            )
         }
     }
 }

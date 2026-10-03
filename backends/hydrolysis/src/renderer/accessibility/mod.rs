@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 mod accessibility_impl;
@@ -35,6 +37,6 @@ impl core::fmt::Display for AccessibilityActivationPointError {
 #[cfg(feature = "accessibility")]
 impl std::error::Error for AccessibilityActivationPointError {}
 
-pub(crate) use accessibility_impl::*;
+pub use accessibility_impl::*;
 #[cfg(feature = "accessibility")]
-pub(crate) use remap::*;
+pub use remap::*;

@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use unicode_segmentation::UnicodeSegmentation;
 use waterui_graphics::cherenkov::Draw as _;
@@ -12,7 +14,7 @@ use waterui_graphics::cherenkov::Draw as _;
 /// key+text pair, exactly as `SurfaceInputEvent` documents, and decides
 /// internally what the press meant.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum KeyPressOutcome {
+pub enum KeyPressOutcome {
     /// No handler, editor, or surface accepted the press.
     Ignored,
     /// A handler consumed the press — editing action, focus traversal, or
@@ -24,7 +26,7 @@ pub(crate) enum KeyPressOutcome {
 }
 
 #[derive(Clone)]
-pub(crate) enum TextInputModel {
+pub enum TextInputModel {
     TextField {
         value: nami::Binding<StyledStr>,
         line_limit: Option<usize>,
@@ -51,7 +53,7 @@ pub(crate) enum TextInputModel {
 /// changes (a row inserted above a focused field, a `when(...)` revealing an
 /// earlier one).
 #[derive(Default)]
-pub(crate) struct TextEditingState {
+pub struct TextEditingState {
     pub(crate) text_input_targets: Vec<TextInputTarget>,
     pub(crate) active_text_selection_drag: Option<ActiveTextSelectionDrag>,
     pub(crate) last_text_selection_click: Option<TextSelectionClickState>,
@@ -125,21 +127,21 @@ impl TextEditingState {
     }
 
     /// Drops the stored composition, keeping its caret consistent.
-    fn take_ime_preedit(&mut self) -> Option<Str> {
+    const fn take_ime_preedit(&mut self) -> Option<Str> {
         self.ime_preedit_caret = None;
         self.ime_preedit.take()
     }
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct TextSelectionSlot {
+pub struct TextSelectionSlot {
     pub(crate) anchor: usize,
     pub(crate) focus: usize,
-    pub(crate) initialized: bool,
+    pub initialized: bool,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct TextSelectionClickState {
+pub struct TextSelectionClickState {
     pub(crate) target: InteractionKey,
     pub(crate) point: kurbo::Point,
     pub(crate) at: Instant,
@@ -153,7 +155,7 @@ pub(crate) struct TextSelectionClickState {
 /// moves extend by whole units instead of collapsing the gesture back to a
 /// caret.
 #[derive(Debug, Clone)]
-pub(crate) struct ActiveTextSelectionDrag {
+pub struct ActiveTextSelectionDrag {
     pub(crate) target: InteractionKey,
     /// The click streak that armed this drag: 1 = caret, 2 = word, 3+ = line.
     pub(crate) click_count: u8,
@@ -163,7 +165,7 @@ pub(crate) struct ActiveTextSelectionDrag {
 }
 
 #[derive(Clone)]
-pub(crate) struct TextInputTarget {
+pub struct TextInputTarget {
     pub(crate) interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
@@ -193,7 +195,7 @@ pub(crate) struct TextInputTarget {
 /// into. The scope stack is pushed while the retained tree flushes the
 /// `OnKeyPress` wrapper (outermost first), and a target snapshotting it keeps
 /// the whole chain even after the frame that produced it is gone.
-pub(crate) struct KeyHandlerScope {
+pub struct KeyHandlerScope {
     /// The environment the `.on_key_press` view was built under — the handler
     /// resolves `State`/`Use` extractors against it, extended with the press.
     pub(crate) env: Environment,
@@ -204,14 +206,14 @@ pub(crate) struct KeyHandlerScope {
 /// registration point plus the rest of its ancestors. Pushing a scope
 /// allocates a single node, and a target's snapshot of the chain is a single
 /// `Rc` clone, so neither the walk nor the snapshot allocates per frame.
-pub(crate) struct KeyHandlerNode {
-    pub(crate) scope: KeyHandlerScope,
-    pub(crate) parent: Option<Rc<KeyHandlerNode>>,
+pub struct KeyHandlerNode {
+    pub scope: KeyHandlerScope,
+    pub(crate) parent: Option<Rc<Self>>,
 }
 
 /// The innermost chain node shared by `a` and `b` — the scopes enclosing
 /// every registration the two chains were snapped from.
-pub(crate) fn common_key_handler_scope(
+pub fn common_key_handler_scope(
     a: Option<Rc<KeyHandlerNode>>,
     b: Option<Rc<KeyHandlerNode>>,
 ) -> Option<Rc<KeyHandlerNode>> {
@@ -259,8 +261,8 @@ pub(crate) fn common_key_handler_scope(
     }
 }
 
-pub(crate) struct TextInputTargetRegistration {
-    pub(crate) interaction_key: InteractionKey,
+pub struct TextInputTargetRegistration {
+    pub interaction_key: InteractionKey,
     pub(crate) modal: bool,
     pub(crate) bounds: kurbo::Rect,
     pub(crate) cursor_area: kurbo::Rect,
@@ -276,8 +278,8 @@ pub(crate) struct TextInputTargetRegistration {
     pub(crate) env: Environment,
 }
 
-pub(crate) struct TextInputTargetData {
-    pub(crate) target: TextInputTargetRegistration,
+pub struct TextInputTargetData {
+    pub target: TextInputTargetRegistration,
     pub(crate) depth: usize,
     pub(crate) focus_binding: Option<Binding<bool>>,
     #[cfg(feature = "accessibility")]
@@ -285,7 +287,7 @@ pub(crate) struct TextInputTargetData {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum TextContextMenuAction {
+pub enum TextContextMenuAction {
     Copy,
     Cut,
     Paste,
@@ -325,15 +327,15 @@ fn text_context_menu_builtin_node(
 }
 
 #[derive(Clone)]
-pub(crate) struct TextContextMenuOverlayRow {
+pub struct TextContextMenuOverlayRow {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) node: PopupMenuNode,
+    pub node: PopupMenuNode,
 }
 
 #[derive(Clone)]
-pub(crate) struct TextContextMenuOverlay {
+pub struct TextContextMenuOverlay {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) rows: Vec<TextContextMenuOverlayRow>,
+    pub rows: Vec<TextContextMenuOverlayRow>,
     /// Open/closed handles for the submenu popup windows this overlay opens.
     /// Dismissal closes the whole chain.
     pub(crate) menu_group: PopupMenuStateGroup,
@@ -350,7 +352,7 @@ pub(crate) struct TextContextMenuOverlay {
 }
 
 #[derive(Clone)]
-pub(crate) enum ActiveTextContextMenu {
+pub enum ActiveTextContextMenu {
     Overlay {
         target: InteractionKey,
         overlay: TextContextMenuOverlay,
@@ -380,14 +382,14 @@ impl TextInputModel {
         }
     }
 
-    pub(crate) fn line_limit(&self) -> Option<usize> {
+    pub(crate) const fn line_limit(&self) -> Option<usize> {
         match self {
             Self::TextField { line_limit, .. } => *line_limit,
             Self::SecureField { .. } => Some(1),
         }
     }
 
-    pub(crate) fn is_secure(&self) -> bool {
+    pub(crate) const fn is_secure(&self) -> bool {
         matches!(self, Self::SecureField { .. })
     }
 
@@ -432,7 +434,7 @@ impl TextInputModel {
     }
 }
 
-pub(crate) fn normalized_insert_text(inserted: &str, max_lines: Option<usize>) -> String {
+pub fn normalized_insert_text(inserted: &str, max_lines: Option<usize>) -> String {
     if max_lines == Some(1) {
         inserted
             .chars()
@@ -443,22 +445,18 @@ pub(crate) fn normalized_insert_text(inserted: &str, max_lines: Option<usize>) -
     }
 }
 
-pub(crate) fn line_count(value: &str) -> usize {
+pub fn line_count(value: &str) -> usize {
     value.chars().filter(|ch| *ch == '\n').count() + 1
 }
 
-pub(crate) fn exceeds_line_limit(value: &str, max_lines: Option<usize>) -> bool {
+pub fn exceeds_line_limit(value: &str, max_lines: Option<usize>) -> bool {
     max_lines.is_some_and(|max| line_count(value) > max)
 }
 
 /// Appends `inserted` to `buffer` (normalized, line-limit enforced); used by the
 /// accessibility text-input action handlers.
 #[cfg(feature = "accessibility")]
-pub(crate) fn apply_text_insert(
-    buffer: &mut String,
-    inserted: &str,
-    max_lines: Option<usize>,
-) -> bool {
+pub fn apply_text_insert(buffer: &mut String, inserted: &str, max_lines: Option<usize>) -> bool {
     let normalized = normalized_insert_text(inserted, max_lines);
     if normalized.is_empty() {
         return false;
@@ -472,7 +470,7 @@ pub(crate) fn apply_text_insert(
     true
 }
 
-pub(crate) fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
+pub const fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
     if index > text.len() {
         index = text.len();
     }
@@ -482,7 +480,7 @@ pub(crate) fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
     index
 }
 
-pub(crate) fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
+pub fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     if clamped == 0 {
         return 0;
@@ -493,7 +491,7 @@ pub(crate) fn previous_grapheme_boundary(text: &str, index: usize) -> usize {
         .map_or(0, |(value, _)| value)
 }
 
-pub(crate) fn next_grapheme_boundary(text: &str, index: usize) -> usize {
+pub fn next_grapheme_boundary(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     if clamped >= text.len() {
         return text.len();
@@ -504,12 +502,12 @@ pub(crate) fn next_grapheme_boundary(text: &str, index: usize) -> usize {
     clamped + grapheme.len()
 }
 
-pub(crate) fn byte_index_to_char_offset(text: &str, index: usize) -> usize {
+pub fn byte_index_to_char_offset(text: &str, index: usize) -> usize {
     let clamped = clamp_to_char_boundary(text, index);
     text[..clamped].chars().count()
 }
 
-pub(crate) fn char_offset_to_byte_index(text: &str, char_offset: usize) -> usize {
+pub fn char_offset_to_byte_index(text: &str, char_offset: usize) -> usize {
     if char_offset == 0 {
         return 0;
     }
@@ -525,11 +523,11 @@ pub(crate) fn char_offset_to_byte_index(text: &str, char_offset: usize) -> usize
     text.len()
 }
 
-pub(crate) fn normalized_selection_range(anchor: usize, focus: usize) -> std::ops::Range<usize> {
+pub fn normalized_selection_range(anchor: usize, focus: usize) -> std::ops::Range<usize> {
     anchor.min(focus)..anchor.max(focus)
 }
 
-pub(crate) fn replace_text_selection(
+pub fn replace_text_selection(
     text: &mut String,
     anchor: &mut usize,
     focus: &mut usize,
@@ -554,7 +552,7 @@ pub(crate) fn replace_text_selection(
     true
 }
 
-pub(crate) fn delete_backward_in_selection(
+pub fn delete_backward_in_selection(
     text: &mut String,
     anchor: &mut usize,
     focus: &mut usize,
@@ -577,7 +575,7 @@ pub(crate) fn delete_backward_in_selection(
     true
 }
 
-pub(crate) fn delete_forward_in_selection(
+pub fn delete_forward_in_selection(
     text: &mut String,
     anchor: &mut usize,
     focus: &mut usize,
@@ -600,7 +598,7 @@ pub(crate) fn delete_forward_in_selection(
     true
 }
 
-pub(crate) fn selection_slot_range_for_text(
+pub fn selection_slot_range_for_text(
     slot: &TextSelectionSlot,
     text: &str,
 ) -> std::ops::Range<usize> {
@@ -609,10 +607,7 @@ pub(crate) fn selection_slot_range_for_text(
     normalized_selection_range(anchor, focus)
 }
 
-pub(crate) fn selected_text_for_model(
-    model: &TextInputModel,
-    slot: &TextSelectionSlot,
-) -> Option<String> {
+pub fn selected_text_for_model(model: &TextInputModel, slot: &TextSelectionSlot) -> Option<String> {
     let text = model.plain_text();
     let range = selection_slot_range_for_text(slot, text.as_str());
     if range.is_empty() {
@@ -621,7 +616,7 @@ pub(crate) fn selected_text_for_model(
     text.as_str().get(range).map(str::to_owned)
 }
 
-pub(crate) fn replace_model_selection(
+pub fn replace_model_selection(
     model: &TextInputModel,
     slot: &mut TextSelectionSlot,
     inserted: &str,
@@ -648,7 +643,7 @@ pub(crate) fn replace_model_selection(
     true
 }
 
-pub(crate) fn delete_model_selection(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+pub fn delete_model_selection(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
     let mut text = model.plain_text();
     let anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -664,7 +659,7 @@ pub(crate) fn delete_model_selection(model: &TextInputModel, slot: &mut TextSele
     true
 }
 
-pub(crate) fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+pub fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
     let mut text = model.plain_text();
     let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -678,7 +673,7 @@ pub(crate) fn delete_model_backward(model: &TextInputModel, slot: &mut TextSelec
     true
 }
 
-pub(crate) fn delete_model_forward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+pub fn delete_model_forward(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
     let mut text = model.plain_text();
     let mut anchor = clamp_to_char_boundary(text.as_str(), slot.anchor);
     let mut focus = clamp_to_char_boundary(text.as_str(), slot.focus);
@@ -692,7 +687,7 @@ pub(crate) fn delete_model_forward(model: &TextInputModel, slot: &mut TextSelect
     true
 }
 
-pub(crate) fn set_model_caret_position(
+pub fn set_model_caret_position(
     model: &TextInputModel,
     slot: &mut TextSelectionSlot,
     index: usize,
@@ -713,7 +708,7 @@ pub(crate) fn set_model_caret_position(
         reason = "wasm32 is single-threaded; the browser Clipboard handle is a JS object and `!Send` by design"
     )
 )]
-pub(crate) async fn read_clipboard_text_async() -> Option<String> {
+pub async fn read_clipboard_text_async() -> Option<String> {
     let clipboard = match Clipboard::new() {
         Ok(value) => value,
         Err(error) => {
@@ -738,7 +733,7 @@ pub(crate) async fn read_clipboard_text_async() -> Option<String> {
     }
 }
 
-pub(crate) fn spawn_clipboard_paste_task(
+pub fn spawn_clipboard_paste_task(
     model: TextInputModel,
     selection: Rc<RefCell<TextSelectionSlot>>,
 ) {
@@ -755,7 +750,7 @@ pub(crate) fn spawn_clipboard_paste_task(
     .detach();
 }
 
-pub(crate) fn select_all_model_text(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
+pub fn select_all_model_text(model: &TextInputModel, slot: &mut TextSelectionSlot) -> bool {
     let text = model.plain_text();
     if text.is_empty() {
         let changed = slot.anchor != 0 || slot.focus != 0 || !slot.initialized;
@@ -771,7 +766,7 @@ pub(crate) fn select_all_model_text(model: &TextInputModel, slot: &mut TextSelec
     changed
 }
 
-pub(crate) fn write_clipboard_text(text: &str) -> bool {
+pub fn write_clipboard_text(text: &str) -> bool {
     let mut clipboard: Clipboard = match Clipboard::new() {
         Ok(value) => value,
         Err(error) => {
@@ -794,7 +789,7 @@ pub(crate) fn write_clipboard_text(text: &str) -> bool {
     true
 }
 
-pub(crate) fn selection_range_contains_index(
+pub fn selection_range_contains_index(
     model: &TextInputModel,
     slot: &TextSelectionSlot,
     index: usize,
@@ -804,26 +799,30 @@ pub(crate) fn selection_range_contains_index(
     !range.is_empty() && range.contains(&index)
 }
 
-pub(crate) fn text_context_menu_size(
+pub fn text_context_menu_size(
     nodes: &[PopupMenuNode],
     metrics: TextContextMenuMetrics,
 ) -> (f64, f64) {
-    let max_label_chars = nodes
-        .iter()
-        .filter_map(|node| match node {
-            PopupMenuNode::Command { plain_label, .. }
-            | PopupMenuNode::Menu { plain_label, .. } => Some(plain_label.chars().count()),
-            PopupMenuNode::Divider => None,
-        })
-        .max()
-        .unwrap_or(0) as f64;
-    let width = (metrics.horizontal_padding * 2.0 + max_label_chars * metrics.width_per_char)
+    let max_label_chars = crate::num_cast::usize_as_f64(
+        nodes
+            .iter()
+            .filter_map(|node| match node {
+                PopupMenuNode::Command { plain_label, .. }
+                | PopupMenuNode::Menu { plain_label, .. } => Some(plain_label.chars().count()),
+                PopupMenuNode::Divider => None,
+            })
+            .max()
+            .unwrap_or(0),
+    );
+    let width = max_label_chars
+        .mul_add(metrics.width_per_char, metrics.horizontal_padding * 2.0)
         .clamp(metrics.min_width, metrics.max_width);
-    let height = (nodes.len() as f64 * metrics.row_height).max(metrics.row_height);
+    let height =
+        (crate::num_cast::usize_as_f64(nodes.len()) * metrics.row_height).max(metrics.row_height);
     (width, height)
 }
 
-pub(crate) fn text_context_menu_overlay_bounds(
+pub fn text_context_menu_overlay_bounds(
     anchor: kurbo::Point,
     nodes: &[PopupMenuNode],
     window_bounds: kurbo::Rect,
@@ -861,7 +860,7 @@ pub(crate) fn text_context_menu_overlay_bounds(
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
-pub(crate) fn execute_text_context_menu_action(
+pub fn execute_text_context_menu_action(
     action: TextContextMenuAction,
     model: &TextInputModel,
     selection: &Rc<RefCell<TextSelectionSlot>>,
@@ -935,11 +934,11 @@ fn refreshed_target_selection(target: &TextInputTarget) -> parley::Selection {
 }
 
 impl SemanticCore {
-    pub(crate) fn set_text_caret_motion(&mut self, motion: TextCaretMotion) {
+    pub(crate) const fn set_text_caret_motion(&mut self, motion: TextCaretMotion) {
         self.text_editing.text_caret_motion = Some(motion);
     }
 
-    fn text_caret_motion(&self) -> TextCaretMotion {
+    const fn text_caret_motion(&self) -> TextCaretMotion {
         self.text_editing
             .text_caret_motion
             .expect("hydrolysis text input render must install text caret motion before focus")
@@ -962,7 +961,7 @@ impl SemanticCore {
         );
     }
 
-    pub(crate) fn clear_text_caret_animation(&mut self) {
+    pub(crate) const fn clear_text_caret_animation(&mut self) {
         self.text_editing.text_caret_fade_started_at = None;
         self.text_editing.text_caret_next_frame_at = None;
     }
@@ -1064,7 +1063,7 @@ impl SemanticCore {
         );
         let phase = (elapsed.as_secs_f32() / cycle_secs).fract();
         let wave = f32::midpoint((core::f32::consts::TAU * phase).cos(), 1.0);
-        motion.min_opacity + (1.0 - motion.min_opacity) * wave
+        (1.0 - motion.min_opacity).mul_add(wave, motion.min_opacity)
     }
 
     /// Move focus to this frame's text input at `focused`, or clear it with
@@ -1359,12 +1358,13 @@ impl HydrolysisRenderer {
                 PopupMenuNode::Divider => {
                     let separator = kurbo::Rect::new(
                         row.bounds.x0 + metrics.separator_horizontal_inset,
-                        row.bounds.y0 + row.bounds.height() * 0.5
-                            - metrics.separator_thickness * 0.5,
+                        metrics
+                            .separator_thickness
+                            .mul_add(-0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
                         row.bounds.x1 - metrics.separator_horizontal_inset,
-                        row.bounds.y0
-                            + row.bounds.height() * 0.5
-                            + metrics.separator_thickness * 0.5,
+                        metrics
+                            .separator_thickness
+                            .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
                     );
                     let mut draw =
                         SceneDrawContext::with_root_transform(&mut self.scene, transform);
@@ -1437,7 +1437,10 @@ impl SemanticCore {
         let metrics = theme.text_context_menu_metrics();
         let text = self.popup_menu_text_metrics(&items, metrics, env, &theme);
         let origin = popup_window_origin(
-            LayoutPoint::new(row_bounds.x1 as f32, row_bounds.y0 as f32),
+            LayoutPoint::new(
+                crate::num_cast::f64_as_f32(row_bounds.x1),
+                crate::num_cast::f64_as_f32(row_bounds.y0),
+            ),
             env,
         );
         let group = overlay.menu_group.clone();
@@ -1469,8 +1472,8 @@ impl SemanticCore {
         target: &TextInputTarget,
         point: kurbo::Point,
     ) -> usize {
-        let local_x = (point.x - target.text_bounds.x0) as f32;
-        let local_y = (point.y - target.text_bounds.y0) as f32;
+        let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
+        let local_y = crate::num_cast::f64_as_f32(point.y - target.text_bounds.y0);
         let selection =
             parley::Selection::from_point(&target.layout, local_x, local_y).refresh(&target.layout);
         target
@@ -1483,8 +1486,8 @@ impl SemanticCore {
         point: kurbo::Point,
         click_count: u8,
     ) -> (usize, usize) {
-        let local_x = (point.x - target.text_bounds.x0) as f32;
-        let local_y = (point.y - target.text_bounds.y0) as f32;
+        let local_x = crate::num_cast::f64_as_f32(point.x - target.text_bounds.x0);
+        let local_y = crate::num_cast::f64_as_f32(point.y - target.text_bounds.y0);
         let selection = match click_count {
             2 => parley::Selection::word_from_point(&target.layout, local_x, local_y),
             3.. => parley::Selection::line_from_point(&target.layout, local_x, local_y),
@@ -1831,7 +1834,9 @@ impl HydrolysisRenderer {
                 text_context_menu_overlay_bounds(point, &nodes, self.window_bounds, metrics);
             let mut rows = Vec::with_capacity(nodes.len());
             for (index, node) in nodes.into_iter().enumerate() {
-                let y0 = bounds.y0 + metrics.row_height * index as f64;
+                let y0 = metrics
+                    .row_height
+                    .mul_add(crate::num_cast::usize_as_f64(index), bounds.y0);
                 let row_bounds =
                     kurbo::Rect::new(bounds.x0, y0, bounds.x1, y0 + metrics.row_height);
                 rows.push(TextContextMenuOverlayRow {
@@ -1865,7 +1870,10 @@ impl HydrolysisRenderer {
         let theme = self.theme();
         self.show_popup_menu_nodes(
             nodes,
-            LayoutPoint::new(point.x as f32, point.y as f32),
+            LayoutPoint::new(
+                crate::num_cast::f64_as_f32(point.x),
+                crate::num_cast::f64_as_f32(point.y),
+            ),
             metrics,
             &menu_env,
             &theme,
@@ -2103,6 +2111,10 @@ impl SemanticCore {
         self.handle_keyboard_key_up(key, env)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
         if !self.text_editing.has_focus() {
             return false;

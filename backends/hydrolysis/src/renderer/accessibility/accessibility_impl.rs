@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 #[cfg(feature = "accessibility")]
@@ -13,7 +15,7 @@ use waterui_form::picker::date::{DatePickerType, DateTime};
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
-pub(crate) struct ScopedAccessibilityIdentifier {
+pub struct ScopedAccessibilityIdentifier {
     identifier: AccessibilityIdentifier,
     identity: Rc<()>,
 }
@@ -34,7 +36,7 @@ impl ScopedAccessibilityIdentifier {
         Rc::as_ptr(&self.identity) as usize
     }
 
-    fn value(&self) -> &AccessibilityIdentifier {
+    const fn value(&self) -> &AccessibilityIdentifier {
         &self.identifier
     }
 }
@@ -51,7 +53,7 @@ impl ScopedAccessibilityIdentifier {
 /// already was.
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
-pub(crate) struct ScopedAccessibilitySemantics {
+pub struct ScopedAccessibilitySemantics {
     identity: Rc<()>,
     /// The `Activate` a representative silenced by this scope's claim delegates
     /// to the claiming node, with the interaction owner's hit region it was
@@ -145,7 +147,7 @@ impl ScopedAccessibilitySemantics {
 /// the marker, so consumption always belongs to the nearest claiming element.
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
-pub(crate) struct AccessibilityNameFromContents;
+pub struct AccessibilityNameFromContents;
 
 #[cfg(feature = "accessibility")]
 impl MetadataKey for AccessibilityNameFromContents {}
@@ -155,7 +157,7 @@ impl MetadataKey for AccessibilityNameFromContents {}
 /// text descendants; containers whose role names the grouping itself (a tab
 /// list, a navigation landmark) leave them emitting `Label` nodes as before.
 #[cfg(feature = "accessibility")]
-fn accessibility_role_names_from_contents(role: &AccessibilityRole) -> bool {
+const fn accessibility_role_names_from_contents(role: &AccessibilityRole) -> bool {
     matches!(
         role,
         AccessibilityRole::Button
@@ -183,11 +185,11 @@ fn accessibility_role_names_from_contents(role: &AccessibilityRole) -> bool {
 /// unreachable as an empty fragment (water-rs/hydrolysis#27).
 #[cfg(feature = "accessibility")]
 fn f32_interior_range(lo: f64, hi: f64) -> Option<(f32, f32)> {
-    let lo = match lo as f32 {
+    let lo = match crate::num_cast::f64_as_f32(lo) {
         narrowed if f64::from(narrowed) >= lo => narrowed,
         narrowed => narrowed.next_up(),
     };
-    let hi = match hi as f32 {
+    let hi = match crate::num_cast::f64_as_f32(hi) {
         narrowed if f64::from(narrowed) < hi => narrowed,
         narrowed => narrowed.next_down(),
     };
@@ -195,9 +197,9 @@ fn f32_interior_range(lo: f64, hi: f64) -> Option<(f32, f32)> {
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
+pub const ACCESSIBILITY_ROOT_NODE_ID: AccessibilityNodeId = AccessibilityNodeId(0);
 #[cfg(feature = "accessibility")]
-pub(crate) const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
+pub const ACCESSIBILITY_FIRST_NODE_ID: u64 = 1;
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -216,8 +218,7 @@ enum AccessibilityLocalNodeKey {
 /// A semantic activation handler: the closure a widget's accessibility node
 /// runs for `Click`, independent of geometry or pointer input.
 #[cfg(feature = "accessibility")]
-pub(crate) type AccessibilityActivation =
-    Rc<RefCell<dyn FnMut(&mut SemanticCore, &Environment) -> bool>>;
+pub type AccessibilityActivation = Rc<RefCell<dyn FnMut(&mut SemanticCore, &Environment) -> bool>>;
 
 /// Where an emitted accessibility node sits in window hit-test space: its
 /// logical bounds — the rectangle the tree reports — and the effective clip
@@ -229,7 +230,7 @@ pub(crate) type AccessibilityActivation =
 /// rectangle into the fragment a pointer can actually reach.
 #[cfg(feature = "accessibility")]
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct NodePlacement {
+pub struct NodePlacement {
     pub(crate) bounds: kurbo::Rect,
     pub(crate) clip: Option<kurbo::Rect>,
 }
@@ -246,7 +247,7 @@ pub(crate) struct NodePlacement {
 /// clipped, and only the region projection tells those apart
 /// (water-rs/hydrolysis#27).
 #[cfg(feature = "accessibility")]
-pub(crate) struct DelegatedActivation {
+pub struct DelegatedActivation {
     pub(crate) activation: AccessibilityActivation,
     /// The donating gesture's hit region and effective clip, in window
     /// hit-test space. `None` on the semantic walk — it carries no geometry,
@@ -256,7 +257,7 @@ pub(crate) struct DelegatedActivation {
 
 #[cfg(feature = "accessibility")]
 #[derive(Clone)]
-pub(crate) enum AccessibilityActionTarget {
+pub enum AccessibilityActionTarget {
     /// Direct semantic activation: `Click` invokes the widget's own activation
     /// handler, no pointer and no coordinates.
     Activate {
@@ -326,8 +327,8 @@ pub(crate) enum AccessibilityActionTarget {
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) struct AccessibilityBuilder {
-    pub(crate) nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
+pub struct AccessibilityBuilder {
+    pub nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
     pub(crate) root_children: Vec<AccessibilityNodeId>,
     pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
     /// The [`InteractionFocusBinding`] a node was emitted under, keyed by node
@@ -504,7 +505,7 @@ impl AccessibilityBuilder {
         self.node_at_point_where(point, |_| true)
     }
 
-    pub(crate) fn next_node_id(&mut self) -> AccessibilityNodeId {
+    pub(crate) const fn next_node_id(&mut self) -> AccessibilityNodeId {
         let node_id = AccessibilityNodeId(self.next_node_id);
         self.next_node_id = self
             .next_node_id
@@ -559,14 +560,14 @@ impl AccessibilityBuilder {
         self.pending_text_input_nodes.pop_front()
     }
 
-    pub(crate) fn push_suppression(&mut self) {
+    pub(crate) const fn push_suppression(&mut self) {
         self.suppression_depth = self
             .suppression_depth
             .checked_add(1)
             .expect("hydrolysis accessibility suppression depth overflow");
     }
 
-    pub(crate) fn pop_suppression(&mut self) {
+    pub(crate) const fn pop_suppression(&mut self) {
         self.suppression_depth = self
             .suppression_depth
             .checked_sub(1)
@@ -928,7 +929,7 @@ impl AccessibilityBuilder {
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) struct AccessibilityContainerScope {
+pub struct AccessibilityContainerScope {
     parent_pushed: bool,
     suppression_pushed: bool,
     /// The node this scope synthesized for the container, when it did.
@@ -966,7 +967,7 @@ impl AccessibilityContainerScope {
 /// every tab under it and the tree announced "Navigation" once per tab instead of
 /// once for the bar.
 #[cfg(feature = "accessibility")]
-pub(crate) fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
+pub fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
     // A role or a label names the container. Identifier/hidden/state metadata are
     // subtree-scoped and name nothing on their own, so they never make a bare
     // container into a semantic node.
@@ -1008,7 +1009,7 @@ impl SemanticCore {
 
     #[cfg(feature = "accessibility")]
     #[must_use]
-    pub fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
+    pub const fn take_accessibility_tree_update(&mut self) -> Option<AccessibilityTreeUpdate> {
         self.accessibility.pending_tree_update.take()
     }
 
@@ -1044,7 +1045,7 @@ impl SemanticCore {
     #[must_use]
     pub fn take_merged_accessibility_tree_update<'a>(
         &mut self,
-        popups: impl IntoIterator<Item = &'a mut SemanticCore>,
+        popups: impl IntoIterator<Item = &'a mut Self>,
     ) -> Option<AccessibilityTreeUpdate> {
         self.merged_accessibility_tree_update(popups, false, |core| {
             core.take_accessibility_tree_update()
@@ -1062,7 +1063,7 @@ impl SemanticCore {
     #[must_use]
     pub fn accessibility_tree<'a>(
         &mut self,
-        popups: impl IntoIterator<Item = &'a mut SemanticCore>,
+        popups: impl IntoIterator<Item = &'a mut Self>,
     ) -> Option<AccessibilityTreeUpdate> {
         self.merged_accessibility_tree_update(popups, true, |core| {
             core.peek_accessibility_tree_update().cloned()
@@ -1078,9 +1079,9 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     fn merged_accessibility_tree_update<'a>(
         &mut self,
-        popups: impl IntoIterator<Item = &'a mut SemanticCore>,
+        popups: impl IntoIterator<Item = &'a mut Self>,
         when_quiet: bool,
-        mut pending: impl FnMut(&mut SemanticCore) -> Option<AccessibilityTreeUpdate>,
+        mut pending: impl FnMut(&mut Self) -> Option<AccessibilityTreeUpdate>,
     ) -> Option<AccessibilityTreeUpdate> {
         use accesskit::NodeId as AccessibilityNodeId;
 
@@ -1091,7 +1092,7 @@ impl SemanticCore {
         const ROOT: AccessibilityNodeId = AccessibilityNodeId(0);
 
         let main_pending = pending(self);
-        let popups: Vec<(&mut SemanticCore, Option<AccessibilityTreeUpdate>)> = popups
+        let popups: Vec<(&mut Self, Option<AccessibilityTreeUpdate>)> = popups
             .into_iter()
             .map(|popup| {
                 let update = pending(popup);
@@ -1158,11 +1159,15 @@ impl SemanticCore {
     /// observer such as the inspector must not take it out from under them.
     #[cfg(feature = "accessibility")]
     #[must_use]
-    pub fn peek_accessibility_tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
+    pub const fn peek_accessibility_tree_update(&self) -> Option<&AccessibilityTreeUpdate> {
         self.accessibility.pending_tree_update.as_ref()
     }
 
     #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub fn handle_accessibility_action(
         &mut self,
         request: AccessibilityActionRequest,
@@ -1469,24 +1474,23 @@ impl SemanticCore {
         // sliver can outlive the silenced `on_tap` strip that answers for it
         // (water-rs/waterui#1323 §5). Otherwise the node's own placement
         // stands in: the tree it registered is what a pointer sees.
-        let (bounds, clip) = match self
+        let (bounds, clip) = if let Some(placement) = self
             .accessibility
             .delegated_activations
             .get(&node_id)
             .and_then(|donation| donation.interaction)
         {
-            Some(placement) => (placement.bounds, placement.clip),
-            None => {
-                let Some(bounds) = node.bounds() else {
-                    // The semantic walk emits nodes with no geometry at all —
-                    // there is no rectangle to project.
-                    return Err(AccessibilityActivationPointError::NoBounds);
-                };
-                (
-                    kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
-                    self.accessibility.node_clips.get(&node_id).copied(),
-                )
-            }
+            (placement.bounds, placement.clip)
+        } else {
+            let Some(bounds) = node.bounds() else {
+                // The semantic walk emits nodes with no geometry at all —
+                // there is no rectangle to project.
+                return Err(AccessibilityActivationPointError::NoBounds);
+            };
+            (
+                kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+                self.accessibility.node_clips.get(&node_id).copied(),
+            )
         };
         let mut fragment = bounds;
         if let Some(clip) = clip {
@@ -1507,12 +1511,12 @@ impl SemanticCore {
             return Err(AccessibilityActivationPointError::EmptyFragment);
         };
         let requested = kurbo::Point::new(
-            bounds.x0 + bounds.width() * x_fraction,
-            bounds.y0 + bounds.height() * y_fraction,
+            f64::mul_add(bounds.width(), x_fraction, bounds.x0),
+            f64::mul_add(bounds.height(), y_fraction, bounds.y0),
         );
         Ok(kurbo::Point::new(
-            f64::from((requested.x as f32).clamp(x0, x1)),
-            f64::from((requested.y as f32).clamp(y0, y1)),
+            f64::from((crate::num_cast::f64_as_f32(requested.x)).clamp(x0, x1)),
+            f64::from((crate::num_cast::f64_as_f32(requested.y)).clamp(y0, y1)),
         ))
     }
 
@@ -1559,7 +1563,7 @@ impl SemanticCore {
     }
 
     #[cfg(feature = "accessibility")]
-    pub(crate) fn push_accessibility_suppression(&mut self) {
+    pub(crate) const fn push_accessibility_suppression(&mut self) {
         self.accessibility.push_suppression();
     }
 
@@ -1592,7 +1596,7 @@ impl SemanticCore {
     }
 
     #[cfg(feature = "accessibility")]
-    pub(crate) fn pop_accessibility_suppression(&mut self) {
+    pub(crate) const fn pop_accessibility_suppression(&mut self) {
         self.accessibility.pop_suppression();
     }
 
@@ -1806,6 +1810,10 @@ impl SemanticCore {
     }
 
     #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
     pub(crate) fn end_accessibility_container(&mut self, scope: AccessibilityContainerScope) {
         if scope.suppression_pushed {
             self.pop_accessibility_suppression();
@@ -2089,6 +2097,10 @@ impl SemanticCore {
     }
 
     #[cfg(feature = "accessibility")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     fn accessibility_label_from_view_with_budget(
         &mut self,
         view: &AnyView,
@@ -2266,6 +2278,10 @@ impl SemanticCore {
 }
 
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> AccessibilityNodeRole {
     match role {
         AccessibilityRole::Button => AccessibilityNodeRole::Button,
@@ -2307,7 +2323,7 @@ fn accessibility_role_to_accesskit_role(role: AccessibilityRole) -> Accessibilit
 /// path) instead of gliding through the smoothed-wheel animation, so the
 /// result is deterministic for the caller.
 #[cfg(feature = "accessibility")]
-const ACCESSIBILITY_SCROLL_STEP: f32 = crate::scroll::SCROLL_LINE_STEP as f32;
+const ACCESSIBILITY_SCROLL_STEP: f32 = crate::num_cast::f64_as_f32(crate::scroll::SCROLL_LINE_STEP);
 
 #[cfg(feature = "accessibility")]
 fn handle_accessibility_scroll_action(
@@ -2353,7 +2369,7 @@ fn handle_accessibility_scroll_action(
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
+pub fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
     let start = *range.start();
     let end = *range.end();
     let span = end - start;
@@ -2365,6 +2381,10 @@ pub(crate) fn slider_step_for_range(range: RangeInclusive<f64>) -> f64 {
 }
 
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn handle_accessibility_slider_action(
     value: &nami::Binding<f64>,
     start: f64,
@@ -2399,6 +2419,10 @@ fn handle_accessibility_slider_action(
 }
 
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn handle_accessibility_stepper_action(
     value: &nami::Binding<i32>,
     step: &nami::Computed<i32>,
@@ -2421,7 +2445,7 @@ fn handle_accessibility_stepper_action(
         AccessibilityAction::Decrement => previous.saturating_sub(step_value).max(start),
         AccessibilityAction::SetValue => match data {
             Some(AccessibilityActionData::NumericValue(target)) => {
-                let rounded = target.round() as i32;
+                let rounded = crate::num_cast::f64_as_i32(target.round());
                 rounded.clamp(start, end)
             }
             Some(AccessibilityActionData::Value(ref text)) => {
@@ -2603,6 +2627,8 @@ fn handle_accessibility_picker_select_action(
 
 #[cfg(all(test, feature = "accessibility"))]
 mod inspect_tests {
+    // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+    #[allow(clippy::wildcard_imports)]
     use super::*;
     use kurbo::{Point, Rect};
 

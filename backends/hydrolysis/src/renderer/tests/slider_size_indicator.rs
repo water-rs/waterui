@@ -110,7 +110,7 @@ fn slider_size_reaches_theme_metrics() {
             "the renderer must consult slider_metrics"
         );
         let track = tracks.borrow()[0];
-        let expected_height = 6.0 + 4.0 * (size as u8 as f64);
+        let expected_height = 4.0f64.mul_add(f64::from(size as u8), 6.0);
         assert_eq!(
             track.height(),
             expected_height,

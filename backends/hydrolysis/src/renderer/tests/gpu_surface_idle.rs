@@ -131,7 +131,8 @@ fn runtime_with_probe_view(
             .take()
             .expect("the probe window is built once");
         AnyView::new(vstack((
-            GpuContentView::new(CountingView(driver)).size(WINDOW_WIDTH as f32, DRIVER_HEIGHT),
+            GpuContentView::new(CountingView(driver))
+                .size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), DRIVER_HEIGHT),
             Frame::new(probe_view)
                 .width(probe_width)
                 .height(PROBE_HEIGHT),
@@ -196,12 +197,16 @@ fn move_pointer(runtime: &mut HeadlessRuntime, x: f64, y: f64) {
     runtime.push_input_event(InputEvent::PointerMove {
         id: POINTER_ID,
         kind: PointerKind::Mouse,
-        x: x as f32,
-        y: y as f32,
+        x: crate::num_cast::f64_as_f32(x),
+        y: crate::num_cast::f64_as_f32(y),
     });
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn an_idle_surface_reuses_its_texture_while_the_window_keeps_drawing() {
     let driver = RenderCounter::animating();
     let probe = RenderCounter::default();

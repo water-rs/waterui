@@ -10,8 +10,8 @@ use super::HydrolysisRenderer;
 /// collection removes one retained node and allocates its replacement during
 /// the same refresh.
 #[derive(Clone)]
-pub(crate) struct RetainedIdentity {
-    _owner: Rc<dyn Any>,
+pub struct RetainedIdentity {
+    owner: Rc<dyn Any>,
     address: usize,
 }
 
@@ -19,10 +19,7 @@ impl RetainedIdentity {
     pub(crate) fn for_rc<T: 'static>(owner: &Rc<T>) -> Self {
         let address = Rc::as_ptr(owner) as usize;
         let owner: Rc<dyn Any> = owner.clone();
-        Self {
-            _owner: owner,
-            address,
-        }
+        Self { owner, address }
     }
 
     pub(crate) const fn address(&self) -> usize {
@@ -42,7 +39,7 @@ impl RetainedIdentity {
     /// This requires that the renderer hold no strong reference to the object
     /// beyond the single lease stored in the map.
     pub(crate) fn is_retained_elsewhere(&self) -> bool {
-        Rc::strong_count(&self._owner) > 1
+        Rc::strong_count(&self.owner) > 1
     }
 }
 

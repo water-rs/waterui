@@ -1,4 +1,4 @@
-pub(crate) mod webview;
+pub mod webview;
 
 #[cfg(hydrolysis_macos_system_webview)]
 use waterui_core::Environment;

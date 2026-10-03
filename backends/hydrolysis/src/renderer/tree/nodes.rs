@@ -3,6 +3,8 @@
 
 #[cfg(feature = "frame-profile")]
 use super::layout::{SignatureHasher, hash_size};
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use waterui_layout::safe_area::EdgeSet;
 
@@ -13,7 +15,7 @@ use waterui_layout::safe_area::EdgeSet;
 /// (going through the same dispatcher path as everything else, so a reactive label
 /// inside it reaches its dedicated `Dynamic`/`Text` node and stays live), then
 /// laid out and flushed at the label's rect each frame.
-pub(crate) struct RetainedSubview {
+pub struct RetainedSubview {
     /// The source view, taken on first build (`AnyView` is move-only).
     source: Option<AnyView>,
     /// This host's presentation instance: a subview is an additional placement
@@ -86,13 +88,13 @@ impl RetainedSubview {
     }
 
     /// Whether the sub-view's node has been built.
-    pub(crate) fn is_built(&self) -> bool {
+    pub(crate) const fn is_built(&self) -> bool {
         self.node.is_some()
     }
 
     /// The built child node, for render-identity probes.
     #[cfg(test)]
-    pub(crate) fn node(&self) -> Option<&RenderNode> {
+    pub(crate) const fn node(&self) -> Option<&RenderNode> {
         self.node.as_ref()
     }
 
@@ -414,7 +416,7 @@ impl RetainedSubview {
 /// they leave the visible set — matching virtualization, where scrolled-away item
 /// state is intentionally not preserved. While an item stays visible its node is reused,
 /// so its reactive content stays live through the node's own per-frame re-flush.
-pub(crate) struct VisibleSubviewCache<K: Eq + core::hash::Hash + Clone> {
+pub struct VisibleSubviewCache<K: Eq + core::hash::Hash + Clone> {
     entries: std::collections::HashMap<K, RetainedSubview>,
     /// Keys touched during the in-progress frame; [`Self::end_frame`] evicts the rest.
     touched: std::collections::HashSet<K>,
@@ -521,7 +523,7 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// A transparent metadata wrapper node: it carries the effect to re-apply each
 /// flush, the environment its subtree was built under (effect colors and a11y
 /// read env every frame), and the child node it recurses into.
-pub(crate) struct WrapperNode {
+pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
@@ -532,7 +534,7 @@ pub(crate) struct WrapperNode {
 }
 
 /// The type-erased behavior of one retained native widget state allocation.
-pub(crate) trait WidgetBehavior {
+pub trait WidgetBehavior {
     /// The default layout priority of this native leaf.
     fn priority(&self) -> i32 {
         0
@@ -585,7 +587,7 @@ pub(crate) trait WidgetBehavior {
 /// The behavior reuses the widget's existing render and measure functions, which
 /// re-read live signals and re-emit interaction targets and accessibility at the
 /// current bounds. No bake, no capture-once freeze.
-pub(crate) struct WidgetNode {
+pub struct WidgetNode {
     pub(super) accessibility_identity: Rc<()>,
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
@@ -682,7 +684,7 @@ impl WrapperEffect {
 /// The node-owned state of an `.anchored_overlay(...)` wrapper. The content
 /// slot is `Rc`-shared because the post-flush render pass — not this node —
 /// measures and flushes it, and the node keeps it built across closes.
-pub(crate) struct AnchoredOverlayEffect {
+pub struct AnchoredOverlayEffect {
     /// The overlay content, lazily built on first open.
     pub(crate) content: Rc<RefCell<Option<RetainedSubview>>>,
     /// The presentation binding: read every flush (subscribing the frame to
@@ -712,7 +714,7 @@ pub(crate) struct AnchoredOverlayEffect {
 /// across the rest of the tree's lifetime exactly like a widget's label
 /// sub-view — built lazily at the first open, patched and re-flushed per frame
 /// while presented.
-pub(crate) struct ContextMenuEffect {
+pub struct ContextMenuEffect {
     /// The resolved menu items the popup is built from.
     pub(crate) items: nami::Computed<Vec<ResolvedMenuItem>>,
     /// Counter of the accessory's dismiss requests; every change closes the
@@ -732,7 +734,7 @@ pub(crate) struct ContextMenuEffect {
 /// An appear hook is consumed after the child's first flush; a disappear hook is
 /// fired exactly once when the node is dropped, so structural presence/removal —
 /// not a frame-diff slot cursor — drives lifecycle events.
-pub(crate) struct LifeCycleEffect {
+pub struct LifeCycleEffect {
     pub(super) appear: Cell<Option<DeferredLifeCycleHook>>,
     pub(super) disappear: Option<DeferredLifeCycleHook>,
 }
@@ -752,8 +754,8 @@ impl Drop for LifeCycleEffect {
 /// via `accessibility_label_from_view`) and `gesture_group_identity` (via
 /// `gesture_group_identity`). The action is shared (`Rc<RefCell<…>>`) so the node
 /// can re-register the same action every flush.
-pub(crate) struct GestureObserverEffect {
-    pub(crate) gesture: Gesture,
+pub struct GestureObserverEffect {
+    pub gesture: Gesture,
     pub(crate) action: Rc<RefCell<BoxedAction<()>>>,
     #[cfg(feature = "accessibility")]
     pub(crate) default_a11y_label: Option<String>,
@@ -768,14 +770,14 @@ pub(crate) struct GestureObserverEffect {
     pub(crate) gesture_target: Cell<Option<crate::gesture::GestureTarget>>,
 }
 
-pub(crate) struct ColorNode {
+pub struct ColorNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
     pub(crate) color: Computed<cherenkov::WorkingColor>,
 }
 
-pub(crate) struct TextNode {
+pub struct TextNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -794,7 +796,7 @@ pub(crate) struct TextNode {
     pub(crate) line_limit: Option<usize>,
 }
 
-pub(crate) struct ContainerNode {
+pub struct ContainerNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -834,7 +836,7 @@ pub(crate) struct ContainerNode {
 /// An animated-opacity wrapper: re-samples its alpha each flush and pushes a
 /// layer around the child. Layout-transparent (the child measures/places as if
 /// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
-pub(crate) struct OpacityNode {
+pub struct OpacityNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
@@ -842,7 +844,7 @@ pub(crate) struct OpacityNode {
     pub(crate) child: RenderNode,
 }
 
-pub(crate) struct ScaleNode {
+pub struct ScaleNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
@@ -850,7 +852,7 @@ pub(crate) struct ScaleNode {
     pub(crate) child: RenderNode,
 }
 
-pub(crate) struct RotationNode {
+pub struct RotationNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
@@ -858,7 +860,7 @@ pub(crate) struct RotationNode {
     pub(crate) child: RenderNode,
 }
 
-pub(crate) struct OffsetNode {
+pub struct OffsetNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
     pub(crate) render_id: RenderId,
@@ -866,7 +868,7 @@ pub(crate) struct OffsetNode {
     pub(crate) child: RenderNode,
 }
 
-pub(crate) struct ScrollNode {
+pub struct ScrollNode {
     /// Per-frame measure memo gate: records whether this node's body was
     /// re-probed within a frame, gating `memo_slots` so a node measured
     /// once per frame pays a `Cell` update instead of a `RefCell` borrow.
@@ -906,25 +908,25 @@ pub(crate) struct ScrollNode {
     pub(super) env: Environment,
 }
 
-pub(crate) struct RetainNode {
+pub struct RetainNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub render_id: RenderId,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode,
 }
 
-pub(crate) struct EnvNode {
+pub struct EnvNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub render_id: RenderId,
     /// The scoped environment this subtree was built under, used to override the
     /// inherited environment at every measure/layout/flush.
     pub(super) env: Environment,
     pub(super) child: RenderNode,
 }
 
-pub(crate) struct SceneViewNode {
+pub struct SceneViewNode {
     pub(super) accessibility_identity: Rc<()>,
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
@@ -942,7 +944,7 @@ pub(crate) struct SceneViewNode {
 /// install), while a per-frame re-flush re-binds the *same* runtime via an
 /// `Rc`-carrying compositor layer, so there is no cursor-ordered slot to
 /// desync.
-pub(crate) struct GpuContentNode {
+pub struct GpuContentNode {
     pub(super) accessibility_identity: Rc<()>,
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
@@ -955,7 +957,7 @@ pub(crate) struct GpuContentNode {
 /// reached through the retained tree. The compositor mounts it as its own
 /// engine layer and starts the stream's source on first install; each frame
 /// the layer drains the receiver's mailbox and presents the newest frame.
-pub(crate) struct ExternalFrameNode {
+pub struct ExternalFrameNode {
     pub(super) accessibility_identity: Rc<()>,
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
@@ -970,19 +972,19 @@ pub(crate) struct ExternalFrameNode {
 /// and patches the child exactly as the child would on its own. Each flush
 /// presents the child's layers inside a keyed filtered mount — the engine
 /// applies the filter across the whole group.
-pub(crate) struct FilteredNode {
+pub struct FilteredNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub render_id: RenderId,
     pub(super) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
     pub(super) child: RenderNode,
     pub(super) env: Environment,
 }
 
-pub(crate) struct DynamicHostNode {
+pub struct DynamicHostNode {
     /// Consumed by the retained-update mount path in H3.
     #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub render_id: RenderId,
     /// The source `Dynamic`, kept alive so its identity cannot be reused while
     /// this node lives — otherwise a freed identity could be reallocated to a
     /// different `Dynamic` and confused for this one. Also read by
@@ -1089,6 +1091,8 @@ impl TextNode {
     }
 
     #[cfg(not(feature = "accessibility"))]
+    // empty where the accessibility feature is off
+    #[allow(clippy::missing_const_for_fn)]
     pub(super) fn emit_accessibility(
         _renderer: &mut crate::renderer::SemanticCore,
         _ctx: Option<RenderContext>,

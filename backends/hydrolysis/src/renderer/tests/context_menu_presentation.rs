@@ -173,8 +173,8 @@ fn secondary_click_label(
 ) -> (accesskit::Rect, TreeUpdate) {
     let bounds = bounds_of(runtime, label);
     let (x, y) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in secondary_click(x, y) {
         runtime.push_input_event(event);
@@ -187,8 +187,8 @@ fn secondary_click_label(
 fn primary_click_label(runtime: &mut HeadlessRuntime, label: &str, update: &TreeUpdate) {
     let bounds = bounds_in(update, label);
     let (x, y) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in primary_click(x, y) {
         runtime.push_input_event(event);
@@ -290,8 +290,8 @@ fn the_source_view_lifts_through_a_hole_in_the_dim_backdrop() {
         .expect("a captured frame");
 
     let (cx, cy) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -300,7 +300,10 @@ fn the_source_view_lifts_through_a_hole_in_the_dim_backdrop() {
 
     // A sample inside the source's top-left interior — clear of the menu,
     // which opens at the press point and grows right and down.
-    let (inside_x, inside_y) = ((bounds.x0 + 8.0) as u32, (bounds.y0 + 8.0) as u32);
+    let (inside_x, inside_y) = (
+        crate::num_cast::f64_as_u32(bounds.x0 + 8.0),
+        crate::num_cast::f64_as_u32(bounds.y0 + 8.0),
+    );
     assert!(
         near(
             pixel(&opened, inside_x, inside_y),
@@ -332,8 +335,8 @@ fn a_custom_preview_lifts_at_the_source_frame() {
     });
     let bounds = bounds_of(&mut runtime, "host");
     let (cx, cy) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -346,7 +349,11 @@ fn a_custom_preview_lifts_at_the_source_frame() {
         (bounds.x0 + 8.0, f64::midpoint(bounds.y0, bounds.y1) - 8.0),
         (f64::midpoint(bounds.x0, bounds.x1) - 8.0, bounds.y0 + 8.0),
     ] {
-        let px = pixel(&opened, x as u32, y as u32);
+        let px = pixel(
+            &opened,
+            crate::num_cast::f64_as_u32(x),
+            crate::num_cast::f64_as_u32(y),
+        );
         assert!(
             px[0] > 150 && px[1] < 100 && px[2] < 100,
             "the custom preview draws at the source's frame, got {px:?} at {x},{y}"
@@ -385,8 +392,14 @@ fn destructive_draws_in_error_colour_and_subtitle_grows_its_row() {
     // The drawn menu renders inside the main window's frame — read its rows
     // off the captured snapshot under `menu_frame`.
     let opened = capture_until_settled(&mut runtime);
-    let (x0, y0) = (menu_frame.x0 as u32, menu_frame.y0 as u32);
-    let (x1, y1) = (menu_frame.x1 as u32, menu_frame.y1 as u32);
+    let (x0, y0) = (
+        crate::num_cast::f64_as_u32(menu_frame.x0),
+        crate::num_cast::f64_as_u32(menu_frame.y0),
+    );
+    let (x1, y1) = (
+        crate::num_cast::f64_as_u32(menu_frame.x1),
+        crate::num_cast::f64_as_u32(menu_frame.y1),
+    );
     let menu_pixel = |x: u32, y: u32| pixel(&opened, x0 + x, y0 + y);
 
     let mut error_colored = 0_u32;
@@ -437,8 +450,8 @@ fn a_menu_with_no_preview_or_accessory_stays_a_pure_platform_menu() {
         .snapshot
         .expect("a captured frame");
     let (cx, cy) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -467,8 +480,8 @@ fn a_preview_without_an_accessory_lifts_too() {
         .expect("a captured frame");
 
     let (cx, cy) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in secondary_click(cx, cy) {
         runtime.push_input_event(event);
@@ -479,7 +492,11 @@ fn a_preview_without_an_accessory_lifts_too() {
         "the drawn menu mounts"
     );
 
-    let px = pixel(&opened, (bounds.x0 + 8.0) as u32, (bounds.y0 + 8.0) as u32);
+    let px = pixel(
+        &opened,
+        crate::num_cast::f64_as_u32(bounds.x0 + 8.0),
+        crate::num_cast::f64_as_u32(bounds.y0 + 8.0),
+    );
     assert!(
         px[0] > 150 && px[1] < 100 && px[2] < 100,
         "the preview lifts at the source's frame without an accessory, got {px:?}"
@@ -506,8 +523,8 @@ fn a_touch_hold_lifts_and_mounts_the_menu_beside_the_source() {
         .expect("a captured frame");
     let start = Instant::now();
     let (cx, cy) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
 
     runtime.push_input_event(InputEvent::PointerDown {
@@ -626,8 +643,8 @@ fn every_rows_label_shares_one_leading_x() {
     let mut leading_xs = Vec::new();
     for row in &rows {
         let mut found = None;
-        'row: for x in row.x0 as u32..row.x1 as u32 {
-            for y in row.y0 as u32..row.y1 as u32 {
+        'row: for x in crate::num_cast::f64_as_u32(row.x0)..crate::num_cast::f64_as_u32(row.x1) {
+            for y in crate::num_cast::f64_as_u32(row.y0)..crate::num_cast::f64_as_u32(row.y1) {
                 if is_ink(pixel(&opened, x, y)) {
                     found = Some(x);
                     break 'row;
@@ -690,25 +707,37 @@ fn the_panels_corners_show_the_scrim_and_their_shadow_lands_on_it() {
     let accessory = accessory.expect("the accessory mounts");
     let opened = capture_until_settled(&mut runtime);
 
-    let luma = |px: [u8; 4]| (px[0] as i32 + px[1] as i32 + px[2] as i32) / 3;
+    let luma = |px: [u8; 4]| (i32::from(px[0]) + i32::from(px[1]) + i32::from(px[2])) / 3;
     // The bare scrim: dimmed page, sampled clear of every panel and shadow.
     let scrim = pixel(&opened, 6, 550);
     for frame in [menu, accessory] {
         // The panel's interior beside its top-left corner is the surface.
-        let surface = pixel(&opened, frame.x0 as u32 + 8, frame.y0 as u32 + 2);
+        let surface = pixel(
+            &opened,
+            crate::num_cast::f64_as_u32(frame.x0) + 8,
+            crate::num_cast::f64_as_u32(frame.y0) + 2,
+        );
         // The corner-most pixel of the frame's rect sits past the rounded
         // corner's arc — inside the cut-off region — so the scrim shows
         // through there, never the surface. The neighbouring pixel is the
         // arc's AA fringe, whose surface coverage differs between
         // rasterizers, so the assertion stays on the cut-off's own pixel.
-        let wedge = pixel(&opened, frame.x0 as u32, frame.y0 as u32);
+        let wedge = pixel(
+            &opened,
+            crate::num_cast::f64_as_u32(frame.x0),
+            crate::num_cast::f64_as_u32(frame.y0),
+        );
         assert!(
             !near(wedge, surface, 40) && luma(wedge) <= luma(scrim) + 20,
             "the corner cut-off shows the scrim, not the surface — wedge {wedge:?}, scrim {scrim:?}, surface {surface:?}"
         );
         // Just under the panel's bottom edge its elevation shadow deepens the
         // scrim — a level-2 shadow exists and lands on the dim.
-        let below = pixel(&opened, (frame.x0 + 24.0) as u32, frame.y1 as u32 + 3);
+        let below = pixel(
+            &opened,
+            crate::num_cast::f64_as_u32(frame.x0 + 24.0),
+            crate::num_cast::f64_as_u32(frame.y1) + 3,
+        );
         assert!(
             luma(below) < luma(scrim) - 8,
             "the panel's shadow darkens the scrim below it — below {below:?}, scrim {scrim:?}"
@@ -818,8 +847,8 @@ fn a_divider_row_takes_the_themes_divider_spacing() {
         } else {
             0.0
         };
-    let expected =
-        rows + menu_metrics.vertical_padding * 2.0 + crate::renderer::POPUP_MENU_PANEL_MARGIN * 2.0;
+    let expected = crate::renderer::POPUP_MENU_PANEL_MARGIN
+        .mul_add(2.0, f64::mul_add(menu_metrics.vertical_padding, 2.0, rows));
     assert!(
         (f64::from(frame.height()) - expected).abs() < 1.0,
         "the divider takes the theme's divider spacing, height {} vs {expected}",
@@ -838,7 +867,7 @@ fn the_plain_popup_draws_the_theme_panel() {
     let _ = secondary_click_label(&mut runtime, "host");
     let pop = runtime.popup_frame(0).expect("the popup mounts");
 
-    let m = crate::renderer::POPUP_MENU_PANEL_MARGIN as u32;
+    let m = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
     // The window's transparent ring: well outside the panel.
     assert!(
         pixel(&pop, 1, 1)[3] < 16,
@@ -894,22 +923,25 @@ fn a_disabled_command_draws_its_label_dimmed_and_stays_inert() {
     // Rows lay out under the panel margin: first the disabled `Copy`, then
     // `Paste` — each `row_height` tall inside `vertical_padding`.
     let metrics = MinimalTestTheme::default().text_context_menu_metrics();
-    let margin = crate::renderer::POPUP_MENU_PANEL_MARGIN as u32;
-    let row_top = margin + metrics.vertical_padding as u32;
-    let row_bottom = row_top + metrics.row_height as u32;
+    let margin = crate::num_cast::f64_as_u32(crate::renderer::POPUP_MENU_PANEL_MARGIN);
+    let row_top = margin + crate::num_cast::f64_as_u32(metrics.vertical_padding);
+    let row_bottom = row_top + crate::num_cast::f64_as_u32(metrics.row_height);
     let (x0, x1) = (margin + 2, pop.width - margin - 2);
     let darkest_ink = |y0: u32, y1: u32| -> u32 {
         let mut darkest = u32::MAX;
         for y in y0..y1 {
             for x in x0..x1 {
                 let px = pixel(&pop, x, y);
-                darkest = darkest.min((px[0] as u32 + px[1] as u32 + px[2] as u32) / 3);
+                darkest = darkest.min((u32::from(px[0]) + u32::from(px[1]) + u32::from(px[2])) / 3);
             }
         }
         darkest
     };
     let disabled_ink = darkest_ink(row_top, row_bottom);
-    let enabled_ink = darkest_ink(row_bottom, row_bottom + metrics.row_height as u32);
+    let enabled_ink = darkest_ink(
+        row_bottom,
+        row_bottom + crate::num_cast::f64_as_u32(metrics.row_height),
+    );
 
     assert!(
         enabled_ink < 80,

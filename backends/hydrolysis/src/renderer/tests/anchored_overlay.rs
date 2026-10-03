@@ -180,7 +180,7 @@ fn a_trailing_edge_overlay_clamps_inside_the_window_margin() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             Frame::new(text("anchor"))
-                .width(WINDOW.0 as f32)
+                .width(crate::num_cast::u32_as_f32(WINDOW.0))
                 .height(20.0)
                 .anchored_overlay(
                     AnchoredOverlay::new(&open, overlay_content())
@@ -233,8 +233,8 @@ fn an_outside_press_writes_false_and_still_reaches_its_target() {
     let far = bounds_of(&mut runtime, "far");
     let frame = presented_frame(&runtime);
     let (x, y) = (
-        f64::midpoint(far.x0, far.x1) as f32,
-        f64::midpoint(far.y0, far.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(far.x0, far.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(far.y0, far.y1)),
     );
     assert!(
         !frame.contains(kurbo::Point::new(f64::from(x), f64::from(y))),
@@ -317,7 +317,7 @@ fn a_window_resize_replaces_the_overlay() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             Frame::new(text("anchor"))
-                .width(WINDOW.0 as f32)
+                .width(crate::num_cast::u32_as_f32(WINDOW.0))
                 .height(20.0)
                 .anchored_overlay(
                     AnchoredOverlay::new(&open, overlay_content())
@@ -618,7 +618,10 @@ fn input_during_the_exit_reaches_the_content_underneath() {
         under.contains(accesskit::Point::new(point.x, point.y)),
         "the 'under' button must reach into the overlay's frame for this test"
     );
-    for event in primary_click(point.x as f32, point.y as f32) {
+    for event in primary_click(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+    ) {
         runtime.push_input_event(event);
     }
     pump_until_settled(&mut runtime);
@@ -645,7 +648,10 @@ fn input_during_the_exit_reaches_the_content_underneath() {
         "the exiting overlay is still drawn"
     );
 
-    for event in primary_click(point.x as f32, point.y as f32) {
+    for event in primary_click(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+    ) {
         runtime.push_input_event(event);
     }
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));

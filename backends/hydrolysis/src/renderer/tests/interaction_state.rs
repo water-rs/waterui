@@ -318,7 +318,7 @@ fn label_color_resolves_disabled() {
     };
     let to_srgb = waterui_graphics::color::working::to_srgb;
 
-    let channel8 = |v: f32| (v * 255.0).round() as u8;
+    let channel8 = |v: f32| crate::num_cast::f32_as_u8((v * 255.0).round());
     let enabled = to_srgb(resolve(InteractionState::empty()));
     assert_eq!(
         (
@@ -368,7 +368,7 @@ fn retained_label_color_resolves_hovered() {
     )
     .expect("the style overrides the label color");
     let resolved = color.resolve(&env);
-    let channel8 = |v: f32| (v * 255.0).round() as u8;
+    let channel8 = |v: f32| crate::num_cast::f32_as_u8((v * 255.0).round());
     let rgb = |color: cherenkov::WorkingColor| {
         let srgb = waterui_graphics::color::working::to_srgb(color);
         (

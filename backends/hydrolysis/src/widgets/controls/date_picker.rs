@@ -27,7 +27,7 @@ use crate::widgets::util::widget_disabled;
 /// drives the field + accessibility, and its main label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
-pub(crate) struct DatePickerRenderState {
+pub struct DatePickerRenderState {
     config: DatePickerConfig,
     label_view: RetainedSubview,
 }
@@ -65,7 +65,9 @@ impl HydroNativeView for Native<DatePickerConfig> {
 /// Emits a date picker's accessibility node from its config. Shared by the dispatch
 /// path ([`Native<DatePickerConfig>::accessibility`]) and the retained `Widget`-node
 /// path so both produce the same a11y tree.
-pub(crate) fn date_picker_accessibility(
+// empty when the accessibility feature is off
+#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+pub fn date_picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     date_picker: &DatePickerConfig,
@@ -100,7 +102,10 @@ pub(crate) fn date_picker_accessibility(
         }
         let origin = ctx.map(|ctx| {
             let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            waterui_core::layout::Point::new(bounds.x0 as f32, bounds.y1 as f32)
+            waterui_core::layout::Point::new(
+                crate::num_cast::f64_as_f32(bounds.x0),
+                crate::num_cast::f64_as_f32(bounds.y1),
+            )
         });
         if let Some(node_id) = renderer.register_accessibility_leaf(
             ctx,
@@ -130,7 +135,7 @@ pub(crate) fn date_picker_accessibility(
 /// Measures a retained date-picker leaf from its [`DatePickerRenderState`],
 /// mirroring [`measure_date_picker_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and render agree.
-pub(crate) fn measure_date_picker_node(
+pub fn measure_date_picker_node(
     render_state: &DatePickerRenderState,
     _proposal: ProposalSize,
     state: &mut HydroState,
@@ -167,19 +172,26 @@ pub(crate) fn measure_date_picker_node(
         field_text_width = field_text_width.max(f64::from(size.width));
         field_text_height = field_text_height.max(f64::from(size.height));
     }
-    let field_width =
-        (field_text_width + input_metrics.horizontal_inset * 2.0 + metrics.indicator_space)
-            .max(input_metrics.min_width);
-    let field_height =
-        (field_text_height + input_metrics.vertical_inset * 2.0).max(input_metrics.min_height);
+    let field_width = (input_metrics
+        .horizontal_inset
+        .mul_add(2.0, field_text_width)
+        + metrics.indicator_space)
+        .max(input_metrics.min_width);
+    let field_height = input_metrics
+        .vertical_inset
+        .mul_add(2.0, field_text_height)
+        .max(input_metrics.min_height);
     let width = f64::from(label_size.width).max(field_width);
     let height = label_height + field_height;
-    ViewDimensions::new(LayoutSize::new(width as f32, height as f32))
+    ViewDimensions::new(LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    ))
 }
 
 /// Renders a retained date-picker leaf every flush: emits a11y (unless hidden)
 /// then the field chrome + value + tap target, reading the value signal each frame.
-pub(crate) fn render_date_picker_node(
+pub fn render_date_picker_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<DatePickerRenderState>>,
     env: &Environment,
@@ -200,7 +212,7 @@ pub(crate) fn render_date_picker_node(
     render_date_picker_parts(ctx, state, env);
 }
 
-pub(crate) fn render_date_picker_parts(
+pub fn render_date_picker_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<DatePickerRenderState>>,
     env: &Environment,
@@ -292,7 +304,10 @@ pub(crate) fn render_date_picker_parts(
         text_bounds,
     );
 
-    let origin = waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+    let origin = waterui_core::layout::Point::new(
+        crate::num_cast::f64_as_f32(hit_bounds.x0),
+        crate::num_cast::f64_as_f32(hit_bounds.y1),
+    );
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();
@@ -311,7 +326,7 @@ pub(crate) fn render_date_picker_parts(
 /// sub-view — it flushes unsuppressed in the rendered path, so it emits its
 /// own nodes here too.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_date_picker_accessibility(
+pub fn emit_date_picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<DatePickerRenderState>>,
     env: &Environment,

@@ -2,6 +2,8 @@
 //! type list, and the measure-path entry points the layout system uses to size
 //! arbitrary sub-views.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::WidgetTheme;
 use std::rc::Rc;
@@ -9,7 +11,7 @@ use std::rc::Rc;
 /// The measure half of a native leaf view. Rendering is owned by the retained
 /// [`RenderNode`](crate::renderer::tree::RenderNode) tree; this trait only sizes a
 /// leaf so the layout system can measure arbitrary sub-views through it.
-pub(crate) trait HydroNativeView: View + Sized + 'static {
+pub trait HydroNativeView: View + Sized + 'static {
     fn intrinsic(
         state: &mut HydroState,
         view: &Self,
@@ -27,7 +29,7 @@ pub(crate) trait HydroNativeView: View + Sized + 'static {
     }
 }
 
-pub(crate) fn unsupported_system_icon(icon: &SystemIcon) -> ! {
+pub fn unsupported_system_icon(icon: &SystemIcon) -> ! {
     panic!(
         "SystemIcon `{}` is unsupported on Hydrolysis because self-drawn backends have no \
          OS-supplied icon catalog; use a packaged WaterUI icon crate",
@@ -49,7 +51,7 @@ impl HydroNativeView for Native<SystemIcon> {
 /// Reaching `Native<MapConfig>` means `Map::body` found no `Hook<MapConfig>` —
 /// no map realization was installed — and this backend ships no map engine of
 /// its own.
-pub(crate) fn unsupported_map() -> ! {
+pub fn unsupported_map() -> ! {
     panic!(
         "Map is unsupported on Hydrolysis because the backend has no map engine; install a \
          map realization such as `waterui_map_gpu::install` before rendering a `Map`"
@@ -71,7 +73,7 @@ impl HydroNativeView for Native<MapConfig> {
 /// means neither a `Hook<WebView>` engine realization nor the platform bridge
 /// is present — the backend has nothing to draw a page with.
 #[cfg(not(hydrolysis_macos_system_webview))]
-pub(crate) fn unsupported_webview() -> ! {
+pub fn unsupported_webview() -> ! {
     panic!(
         "WebView is unsupported on this Hydrolysis build because no web engine is bridged; \
          link a browser engine crate (`waterui-browser-cef`, `waterui-browser-wpe`) or enable \
@@ -79,7 +81,7 @@ pub(crate) fn unsupported_webview() -> ! {
     )
 }
 
-pub(crate) fn dimensions_for_native<V: HydroNativeView>(
+pub fn dimensions_for_native<V: HydroNativeView>(
     view: &AnyView,
     proposal: ProposalSize,
     state: &mut HydroState,
@@ -131,7 +133,7 @@ macro_rules! hydro_native_view_types {
     };
 }
 
-pub(crate) fn is_hydro_native_view(view: &AnyView) -> bool {
+pub fn is_hydro_native_view(view: &AnyView) -> bool {
     macro_rules! check_native_view {
         ($ty:ty) => {
             if view.downcast_ref::<$ty>().is_some() {
@@ -143,7 +145,7 @@ pub(crate) fn is_hydro_native_view(view: &AnyView) -> bool {
     false
 }
 
-pub(crate) fn dimensions_for_known_native_views(
+pub fn dimensions_for_known_native_views(
     view: &AnyView,
     proposal: ProposalSize,
     state: &mut HydroState,

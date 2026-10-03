@@ -37,7 +37,7 @@ fn runtime(taps: Rc<RefCell<Vec<usize>>>) -> HeadlessRuntime {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
         let taps = taps.clone();
         AnyView::new(vstack((
-            vstack((text("chrome"),)).size(WINDOW_WIDTH as f32, BAND_HEIGHT),
+            vstack((text("chrome"),)).size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), BAND_HEIGHT),
             scroll(VStack::for_each(rows, move |row| {
                 let index = row.into_inner();
                 let taps = taps.clone();

@@ -91,8 +91,8 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
-        WINDOW_SIZE as u32,
-        WINDOW_SIZE as u32,
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
         MinimalTestTheme::default(),
     );
 
@@ -114,7 +114,10 @@ fn secondary_click_merges_the_context_menu_popup_into_the_tree() {
         f64::midpoint(bounds.x0, bounds.x1),
         f64::midpoint(bounds.y0, bounds.y1),
     );
-    for event in secondary_click(x as f32, y as f32) {
+    for event in secondary_click(
+        crate::num_cast::f64_as_f32(x),
+        crate::num_cast::f64_as_f32(y),
+    ) {
         runtime.push_input_event(event);
     }
     let update = runtime
@@ -183,8 +186,8 @@ fn context_menu_item_action_reads_state_inherited_from_the_opening_view() {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
-        WINDOW_SIZE as u32,
-        WINDOW_SIZE as u32,
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
         MinimalTestTheme::default(),
     );
 
@@ -199,7 +202,10 @@ fn context_menu_item_action_reads_state_inherited_from_the_opening_view() {
         f64::midpoint(bounds.x0, bounds.x1),
         f64::midpoint(bounds.y0, bounds.y1),
     );
-    for event in secondary_click(x as f32, y as f32) {
+    for event in secondary_click(
+        crate::num_cast::f64_as_f32(x),
+        crate::num_cast::f64_as_f32(y),
+    ) {
         runtime.push_input_event(event);
     }
     let update = runtime
@@ -233,8 +239,8 @@ fn a_window_with_a_pending_frame_is_not_settled() {
                     .context_menu(vec!["Copy".action(|| {})]),
             )
         }),
-        WINDOW_SIZE as u32,
-        WINDOW_SIZE as u32,
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
         MinimalTestTheme::default(),
     );
 
@@ -273,7 +279,10 @@ fn a_window_with_a_pending_frame_is_not_settled() {
         f64::midpoint(bounds.x0, bounds.x1),
         f64::midpoint(bounds.y0, bounds.y1),
     );
-    for event in secondary_click(x as f32, y as f32) {
+    for event in secondary_click(
+        crate::num_cast::f64_as_f32(x),
+        crate::num_cast::f64_as_f32(y),
+    ) {
         runtime.push_input_event(event);
     }
     let update = runtime
@@ -410,8 +419,8 @@ fn a_clean_pump_publishes_no_tree_update() {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
-        WINDOW_SIZE as u32,
-        WINDOW_SIZE as u32,
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
         MinimalTestTheme::default(),
     );
 
@@ -432,7 +441,10 @@ fn a_clean_pump_publishes_no_tree_update() {
         f64::midpoint(bounds.x0, bounds.x1),
         f64::midpoint(bounds.y0, bounds.y1),
     );
-    for event in secondary_click(x as f32, y as f32) {
+    for event in secondary_click(
+        crate::num_cast::f64_as_f32(x),
+        crate::num_cast::f64_as_f32(y),
+    ) {
         runtime.push_input_event(event);
     }
     let update =
@@ -504,8 +516,8 @@ fn menu_runtime(activations: &Binding<u32>) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         test_environment(),
         menu_host_view(activations),
-        WINDOW_SIZE as u32,
-        WINDOW_SIZE as u32,
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
+        crate::num_cast::f32_as_u32(WINDOW_SIZE),
         MinimalTestTheme::default(),
     )
 }

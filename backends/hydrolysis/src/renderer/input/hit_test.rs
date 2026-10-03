@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use nami::Signal as _;
 use std::path::PathBuf;
@@ -12,13 +14,13 @@ use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::ScrollUnit;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DropTargetKey {
+pub struct DropTargetKey {
     depth: usize,
     order: usize,
 }
 
 #[derive(Clone)]
-pub(crate) struct DropTarget {
+pub struct DropTarget {
     pub(crate) bounds: kurbo::Rect,
     pub(crate) key: DropTargetKey,
     pub(crate) env: Environment,
@@ -30,7 +32,7 @@ pub(crate) struct DropTarget {
 /// `Wrapper` node can hold it by value and re-register the same handle on
 /// every flush.
 #[derive(Clone)]
-pub(crate) struct DropDestinationHandles {
+pub struct DropDestinationHandles {
     destination: Rc<RefCell<DropDestination>>,
 }
 
@@ -42,7 +44,7 @@ impl DropDestinationHandles {
     }
 }
 
-pub(crate) struct ActiveDrag {
+pub struct ActiveDrag {
     pub(crate) payload: DragPayload,
     pub(crate) hovered_target: Option<DropTargetKey>,
 }
@@ -52,7 +54,7 @@ pub(crate) struct ActiveDrag {
 /// `DroppedFile` event at a time, and nothing guarantees they all arrive in
 /// one batch, so the list must survive the lifetime of the drag — from the
 /// first `HoveredFile` until the drop is delivered or the hover cancelled.
-pub(crate) struct OsFileDrag {
+pub struct OsFileDrag {
     /// Every path winit has reported for this drag.
     pub(crate) paths: Vec<PathBuf>,
     /// Where the drag is in its lifetime — see [`OsFileDragPhase`].
@@ -62,7 +64,7 @@ pub(crate) struct OsFileDrag {
 /// How far an [`OsFileDrag`] has progressed. Once a `DroppedFile` arrives the
 /// drag can only be `Dropping`, so the impossible "collected a file while not
 /// dropping" state is unwritable.
-pub(crate) enum OsFileDragPhase {
+pub enum OsFileDragPhase {
     /// Only `HoveredFile`s have arrived; no drop has begun.
     Hovering,
     /// A `DroppedFile` arrived and the drop is collecting its files.
@@ -77,7 +79,7 @@ pub(crate) enum OsFileDragPhase {
 /// engine's target list: the press path weighs a press candidate against the
 /// gesture regions that outrank it, and the engine does not hand its bounds
 /// back out.
-pub(crate) struct GestureRegion {
+pub struct GestureRegion {
     /// Hit-test rectangle in window coordinates.
     pub(crate) bounds: kurbo::Rect,
     /// The shared hit-test order taken at registration — comparable to a
@@ -92,8 +94,8 @@ pub(crate) struct GestureRegion {
 }
 
 #[derive(Clone)]
-pub(crate) struct PointerTarget {
-    pub(crate) bounds: kurbo::Rect,
+pub struct PointerTarget {
+    pub bounds: kurbo::Rect,
     pub(crate) captures_drag: bool,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -126,14 +128,14 @@ pub(crate) struct PointerTarget {
 /// pixels along the scroll axis. Held on [`HitTestState`] rather than in the
 /// drag closure so a mid-drag re-registration continues seamlessly.
 #[derive(Clone, Copy)]
-pub(crate) struct ScrollbarDrag {
-    pub(crate) key: usize,
+pub struct ScrollbarDrag {
+    pub key: usize,
     pub(crate) grab: f64,
 }
 
 #[derive(Clone)]
-pub(crate) struct PendingPointerPress {
-    pub(crate) slot: PressSlot,
+pub struct PendingPointerPress {
+    pub slot: PressSlot,
     pub(crate) origin: kurbo::Point,
     pub(crate) starts_at: Instant,
     pub(crate) chrome_state_dependent: bool,
@@ -149,7 +151,7 @@ pub(crate) struct PendingPointerPress {
 /// slop constant, and the same start-instant-plus-duration deadline; the
 /// detector itself is private to that crate.
 #[derive(Clone, Copy)]
-pub(crate) struct PendingContextMenuHold {
+pub struct PendingContextMenuHold {
     /// The press origin in window hit-test space — the menu anchors there.
     pub(crate) point: kurbo::Point,
     /// The press's start instant in frame time.
@@ -158,18 +160,18 @@ pub(crate) struct PendingContextMenuHold {
 
 /// How long a touch or pen press must hold to earn the gesture — the
 /// hold threshold Android, iOS, GTK and Windows all share.
-pub(crate) const CONTEXT_MENU_HOLD_DURATION: Duration = Duration::from_millis(500);
+pub const CONTEXT_MENU_HOLD_DURATION: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
-pub(crate) struct CursorTarget {
+pub struct CursorTarget {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) style: CursorStyle,
+    pub style: CursorStyle,
 }
 
 #[derive(Clone)]
-pub(crate) struct HoverTarget {
+pub struct HoverTarget {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) slot: HoverSlot,
+    pub slot: HoverSlot,
     /// Replayable state-layer handles for the widget owning this target, so
     /// hover feedback animates without a structural rebuild.
     pub(crate) handles: Option<Rc<InteractionLayerHandles>>,
@@ -179,9 +181,9 @@ pub(crate) struct HoverTarget {
 }
 
 #[derive(Clone)]
-pub(crate) struct ScrollTarget {
+pub struct ScrollTarget {
     pub(crate) bounds: kurbo::Rect,
-    pub(crate) action: ScrollAction,
+    pub action: ScrollAction,
     /// The scroll view's offset handle, ticked per frame while a smoothed
     /// wheel scroll glides toward its target.
     pub(crate) handle: crate::scroll::ScrollHandle,
@@ -207,9 +209,9 @@ pub(crate) struct ScrollTarget {
 /// inputs and other embedded browsers. Scroll and trackpad-pan targets are
 /// registered without one, so their position relative to the subview cannot be
 /// decided here.
-pub(crate) struct NativeViewOcclusion {
+pub struct NativeViewOcclusion {
     /// The subview's rect in window hit-test space.
-    pub(crate) bounds: kurbo::Rect,
+    pub bounds: kurbo::Rect,
     /// The hit-test order the subview was flushed at. Anything registered later
     /// paints above it.
     pub(crate) order: usize,
@@ -223,23 +225,23 @@ pub(crate) struct NativeViewOcclusion {
 /// replays it); `handler_changed` means a user hover handler reported a state
 /// change (schedules a retained-tree refresh like any other action).
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct HoverSync {
+pub struct HoverSync {
     pub(crate) visual_changed: bool,
-    pub(crate) handler_changed: bool,
+    pub handler_changed: bool,
 }
 
-pub(crate) type PointerAction =
+pub type PointerAction =
     Rc<RefCell<dyn FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool>>;
-pub(crate) type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
-pub(crate) type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
-pub(crate) type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
-pub(crate) type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
+pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
+pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
+pub type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
+pub type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 
 /// How Enter/Space activates a keyboard-focused control — a per-runtime
 /// contract, not a feature one.
 #[cfg(feature = "accessibility")]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum KeyboardActivation {
+pub enum KeyboardActivation {
     /// Press on key-down and activate on key-up — the rendered contract, with
     /// the pressed affordance held between the two.
     #[default]
@@ -254,7 +256,7 @@ pub(crate) enum KeyboardActivation {
 // so a state-machine refactor would invent transitions that do not exist.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Default)]
-pub(crate) struct HitTestState {
+pub struct HitTestState {
     /// Surfaces that own the input landing on them — embedded browsers and
     /// `GpuSurface`s whose view asked for input. Re-emitted every frame.
     pub(crate) embedded_input_targets: Vec<EmbeddedInputTarget>,
@@ -549,7 +551,7 @@ impl HitTestState {
         }
     }
 
-    pub(crate) fn next_hit_test_order(&mut self) -> usize {
+    pub(crate) const fn next_hit_test_order(&mut self) -> usize {
         let order = self.hit_test_order;
         self.hit_test_order = self
             .hit_test_order
@@ -972,7 +974,7 @@ impl SemanticCore {
 /// The gesture engine's button vocabulary is a subset of the platform's:
 /// `Other(u16)` has no counterpart and stays unrouted
 /// (water-rs/waterui#1290).
-fn gesture_button(button: PointerButton) -> Option<WuiPointerButton> {
+const fn gesture_button(button: PointerButton) -> Option<WuiPointerButton> {
     Some(match button {
         PointerButton::Primary => WuiPointerButton::Primary,
         PointerButton::Secondary => WuiPointerButton::Secondary,
@@ -1004,6 +1006,10 @@ impl HydrolysisRenderer {
     ///
     /// # Panics
     /// Panics on an internal ordering or arithmetic inconsistency.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub fn handle_pointer_down_with_source(
         &mut self,
         pointer_id: u64,
@@ -1211,7 +1217,10 @@ impl HydrolysisRenderer {
                         self.show_context_menu(
                             items,
                             Some(&menu_target),
-                            LayoutPoint::new(point.x as f32, point.y as f32),
+                            LayoutPoint::new(
+                                crate::num_cast::f64_as_f32(point.x),
+                                crate::num_cast::f64_as_f32(point.y),
+                            ),
                             metrics,
                             &menu_env,
                             false,
@@ -1315,7 +1324,10 @@ impl HydrolysisRenderer {
                     let changed = self.show_context_menu(
                         items,
                         menu_target.as_ref(),
-                        LayoutPoint::new(point.x as f32, point.y as f32),
+                        LayoutPoint::new(
+                            crate::num_cast::f64_as_f32(point.x),
+                            crate::num_cast::f64_as_f32(point.y),
+                        ),
                         metrics,
                         &menu_env,
                         false,
@@ -1516,6 +1528,7 @@ impl HydrolysisRenderer {
             .is_some_and(|owner| press.owners.contains(owner))
     }
 
+    /// Handles a pointer release at `(x, y)`; returns whether anything consumed it.
     pub fn handle_pointer_up(
         &mut self,
         x: f32,
@@ -1526,6 +1539,7 @@ impl HydrolysisRenderer {
         self.handle_pointer_up_with_source(0, PointerKind::Mouse, x, y, button, env)
     }
 
+    /// Handles a pointer release with the pointer's id, kind and button.
     pub fn handle_pointer_up_with_source(
         &mut self,
         pointer_id: u64,
@@ -1612,10 +1626,12 @@ impl HydrolysisRenderer {
         changed
     }
 
+    /// Handles a pointer move to `(x, y)`; returns whether anything consumed it.
     pub fn handle_pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         self.handle_pointer_move_with_source(0, PointerKind::Mouse, x, y, env)
     }
 
+    /// Handles a pointer move with the pointer's id and kind.
     pub fn handle_pointer_move_with_source(
         &mut self,
         pointer_id: u64,
@@ -1723,6 +1739,7 @@ impl HydrolysisRenderer {
         refresh_requested || hover.visual_changed
     }
 
+    /// Re-runs hover for the pointer's current position; returns whether hover state changed.
     pub fn sync_pointer_hover_state(&mut self, x: f32, y: f32, env: &Environment) -> bool {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
@@ -1918,7 +1935,7 @@ impl SemanticCore {
     /// semantic runtime's keyboard contract. Rendered runtimes keep the
     /// [`KeyboardActivation::PressRelease`] default.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn use_semantic_keyboard_activation(&mut self) {
+    pub(crate) const fn use_semantic_keyboard_activation(&mut self) {
         self.hit_test.keyboard_activation = KeyboardActivation::Semantic;
     }
 
@@ -1928,7 +1945,7 @@ impl SemanticCore {
     /// no target is dead even when a frame happens to emit no pointer
     /// targets at all.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn use_semantic_walk(&mut self) {
+    pub(crate) const fn use_semantic_walk(&mut self) {
         self.semantic_walk = true;
     }
 
@@ -1939,6 +1956,8 @@ impl SemanticCore {
     /// focuses the row's `ListItem` node, so the arrow navigation
     /// `list_row_context` drives has a row to start from
     /// (water-rs/hydrolysis#220).
+    // the parameter is a small Copy value taken by value for a uniform call-site signature
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn set_keyboard_focus_for_press(
         &mut self,
         key: Option<InteractionKey>,
@@ -2410,6 +2429,10 @@ impl SemanticCore {
         self.set_keyboard_focus_node(Some(dest), true)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn handle_keyboard_key_down(
         &mut self,
         key: &KeyCode,
@@ -2794,13 +2817,17 @@ impl HydrolysisRenderer {
         self.show_context_menu(
             items,
             menu_target.as_ref(),
-            LayoutPoint::new(point.x as f32, point.y as f32),
+            LayoutPoint::new(
+                crate::num_cast::f64_as_f32(point.x),
+                crate::num_cast::f64_as_f32(point.y),
+            ),
             metrics,
             &menu_env,
             true,
         )
     }
 
+    /// Handles a cancelled pointer stream; returns whether anything consumed it.
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
         let Some((pointer_id, pointer_kind)) = self.hit_test.active_pointer else {
             return false;
@@ -2808,6 +2835,7 @@ impl HydrolysisRenderer {
         self.handle_pointer_cancel_with_source(pointer_id, pointer_kind, env)
     }
 
+    /// Handles a cancelled pointer stream with the pointer's id and kind.
     pub fn handle_pointer_cancel_with_source(
         &mut self,
         pointer_id: u64,
@@ -2868,6 +2896,7 @@ impl HydrolysisRenderer {
         refresh_requested || hover_visual_changed
     }
 
+    /// Handles a scroll event at `(x, y)` with deltas `(dx, dy)`; `is_line_delta` selects line vs pixel units.
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let unit = if is_line_delta {
@@ -2935,6 +2964,7 @@ impl HydrolysisRenderer {
             .map(|target| target.handle.metrics())
     }
 
+    /// Handles a trackpad pan at `(x, y)` with deltas and a touch phase.
     pub fn handle_trackpad_pan(
         &mut self,
         x: f32,
@@ -2986,7 +3016,7 @@ impl SemanticCore {
 
     pub(crate) fn register_pointer_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
-        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
         self.register_pointer_target_action(
             bounds,
@@ -2999,7 +3029,7 @@ impl SemanticCore {
 
     pub(crate) fn register_pointer_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
-        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
         self.register_pointer_target_action(
             bounds,
@@ -3103,7 +3133,7 @@ impl SemanticCore {
             owners: self.owner_stack.clone(),
             interaction: None,
             action: Rc::new(RefCell::new(
-                |_: &mut SemanticCore, _: kurbo::Point, _: &Environment| true,
+                |_: &mut Self, _: kurbo::Point, _: &Environment| true,
             )),
             keyboard_step: None,
             keyboard_focusable: false,
@@ -3193,7 +3223,7 @@ impl SemanticCore {
     /// they schedule a re-encode instead of a layout refresh.
     pub(crate) fn register_scrollbar_drag_target<F>(&mut self, bounds: kurbo::Rect, action: F)
     where
-        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -3226,7 +3256,7 @@ impl SemanticCore {
     }
 
     /// Records the start of a scrollbar-thumb drag for the scroll slot `key`.
-    pub(crate) fn begin_scrollbar_drag(&mut self, key: usize, grab: f64) {
+    pub(crate) const fn begin_scrollbar_drag(&mut self, key: usize, grab: f64) {
         self.hit_test.active_scrollbar_drag = Some(ScrollbarDrag { key, grab });
     }
 
@@ -3251,7 +3281,7 @@ impl SemanticCore {
             true,
             None,
             Rc::new(RefCell::new(
-                move |renderer: &mut SemanticCore, point: kurbo::Point, env: &Environment| {
+                move |renderer: &mut Self, point: kurbo::Point, env: &Environment| {
                     renderer.begin_or_update_drag(draggable.payload(), point, env)
                 },
             )),
@@ -3339,6 +3369,10 @@ impl HydrolysisRenderer {
         )
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     fn bind_interaction_target_with_focus(
         &mut self,
         key: InteractionKey,
@@ -3519,7 +3553,7 @@ impl SemanticCore {
         press_slot: PressSlot,
         action: F,
     ) where
-        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
         self.register_interactive_pointer_target_with_keyboard(bounds, press_slot, true, action);
     }
@@ -3531,7 +3565,7 @@ impl SemanticCore {
         keyboard_focusable: bool,
         action: F,
     ) where
-        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
             return;
@@ -3564,7 +3598,7 @@ impl SemanticCore {
         action: F,
         keyboard_step: K,
     ) where
-        F: 'static + FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool,
+        F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
         K: 'static + FnMut(bool) -> bool,
     {
         if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
@@ -3640,6 +3674,10 @@ impl SemanticCore {
         self.register_hover_target_with_handles(key, bounds, None, on_enter, on_move, on_exit);
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     pub(crate) fn register_hover_target_with_handles(
         &mut self,
         key: InteractionKey,
@@ -3721,6 +3759,10 @@ impl SemanticCore {
 
     /// Advances every scroll view's smoothed wheel scroll and reports whether
     /// more animation frames are needed.
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn tick_smooth_scrolls(&mut self, now: Instant) -> bool {
         let mut active = false;
         for target in &self.hit_test.scroll_targets {

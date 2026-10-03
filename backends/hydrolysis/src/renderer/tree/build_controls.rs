@@ -2,6 +2,8 @@
 //! progress, menu, pickers, text fields, badge): each retains the config's
 //! live signals in a [`WidgetNode`] re-dispatched every flush.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 impl_widget_behavior!(
@@ -81,15 +83,11 @@ impl_widget_behavior!(
 
 impl RenderNode {
     /// Build a `Widget` node around its single shared state allocation.
-    pub(super) fn build_widget<S>(
-        state: Rc<S>,
-        stretch: StretchAxis,
-        env: &Environment,
-    ) -> RenderNode
+    pub(super) fn build_widget<S>(state: Rc<S>, stretch: StretchAxis, env: &Environment) -> Self
     where
         S: WidgetBehavior + 'static,
     {
-        RenderNode::Widget(WidgetNode {
+        Self::Widget(WidgetNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
             behavior: state,
@@ -101,7 +99,7 @@ impl RenderNode {
     /// Build a persistent button node: retain the config behind an `Rc<RefCell<…>>`
     /// (its `Label` carries the live content signal; its action is invoked through the
     /// shared cell), and re-render it every flush so a reactive label stays live.
-    pub(super) fn build_button(config: ButtonConfig, env: &Environment) -> RenderNode {
+    pub(super) fn build_button(config: ButtonConfig, env: &Environment) -> Self {
         use crate::widgets::controls::button::ButtonRenderState;
         let mut state = ButtonRenderState::from_config(config);
         // Create the general label sub-view unstyled; the layout-time prepare
@@ -119,7 +117,7 @@ impl RenderNode {
         config: ToggleConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::toggle::ToggleRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ToggleRenderState::from_config(config);
@@ -136,7 +134,7 @@ impl RenderNode {
         config: SliderConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::slider::SliderRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = SliderRenderState::from_config(config);
@@ -153,7 +151,7 @@ impl RenderNode {
         config: StepperConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::stepper::StepperRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = StepperRenderState::from_config(config);
@@ -170,7 +168,7 @@ impl RenderNode {
         config: ProgressConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::progress::ProgressRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ProgressRenderState::from_config(config);
@@ -182,7 +180,7 @@ impl RenderNode {
     /// Build a persistent menu node: its trigger label is a move-only `AnyView`
     /// pre-built into a [`RetainedSubview`]; its `accessibility_label` and `items`
     /// signals are read through `read_signal` so a change schedules a frame.
-    pub(super) fn build_menu(menu: ResolvedMenu, env: &Environment) -> RenderNode {
+    pub(super) fn build_menu(menu: ResolvedMenu, env: &Environment) -> Self {
         use crate::widgets::controls::button::MenuRenderState;
         let stretch = <ResolvedMenu as waterui_core::NativeView>::stretch_axis(&menu);
         // The label sub-view (created by `from_resolved`) is painted with the
@@ -200,7 +198,7 @@ impl RenderNode {
         config: DatePickerConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::date_picker::DatePickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = DatePickerRenderState::from_config(config);
@@ -218,7 +216,7 @@ impl RenderNode {
         config: ColorPickerConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::color_picker::ColorPickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = ColorPickerRenderState::from_config(config);
@@ -237,7 +235,7 @@ impl RenderNode {
         config: PickerConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::picker::PickerRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = PickerRenderState::from_config(config);
@@ -258,7 +256,7 @@ impl RenderNode {
         config: ResolvedTextFieldConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::text_field::TextFieldRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = TextFieldRenderState::from_config(config);
@@ -278,7 +276,7 @@ impl RenderNode {
         config: SecureFieldConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::controls::text_field::SecureFieldRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = SecureFieldRenderState::from_config(config);
@@ -295,7 +293,7 @@ impl RenderNode {
         config: BadgeConfig,
         env: &Environment,
         renderer: &mut SemanticCore,
-    ) -> RenderNode {
+    ) -> Self {
         use crate::widgets::layout::badge::BadgeRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
         let mut state = BadgeRenderState::from_config(config);

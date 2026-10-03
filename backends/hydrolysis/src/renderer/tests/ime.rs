@@ -273,7 +273,11 @@ fn press_text_input(runtime: &mut HeadlessRuntime, index: usize) {
     let center = runtime.renderer().text_editing.text_input_targets[index]
         .bounds
         .center();
-    press(runtime, center.x as f32, center.y as f32);
+    press(
+        runtime,
+        crate::num_cast::f64_as_f32(center.x),
+        crate::num_cast::f64_as_f32(center.y),
+    );
 }
 
 /// The observable state of a text-input receiver while a fixture runs.
@@ -323,6 +327,10 @@ impl<'a> TextReplay<'a> {
 
 /// Samples the reported caret rect after one pumped step and checks the live
 /// composition state. `secure` receivers must never hold a pre-edit at all.
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+)]
 fn observe_step(
     replay: &mut TextReplay<'_>,
     runtime: &mut HeadlessRuntime,
@@ -609,7 +617,7 @@ fn surface_view(scene: bool, log: ProbeLog) -> AnyView {
         )
     };
     AnyView::new(vstack((
-        vstack((text("header"),)).size(WINDOW_WIDTH as f32, HEADER_HEIGHT),
+        vstack((text("header"),)).size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), HEADER_HEIGHT),
         surface.size(SURFACE_WIDTH, SURFACE_HEIGHT),
     )))
 }
@@ -714,8 +722,8 @@ fn replay_against_surface(loaded: &LoadedFixture, scene: bool) {
 
     press(
         &mut runtime,
-        (SURFACE_ORIGIN_X + 20.0) as f32,
-        (SURFACE_ORIGIN_Y + 20.0) as f32,
+        crate::num_cast::f64_as_f32(SURFACE_ORIGIN_X + 20.0),
+        crate::num_cast::f64_as_f32(SURFACE_ORIGIN_Y + 20.0),
     );
     let mut now = start + Duration::from_millis(100);
     let _ = runtime.pump_at(false, now);
@@ -958,8 +966,8 @@ fn a_shortcut_after_a_commit_reaches_the_application() {
     let _ = log.drain();
     press(
         &mut runtime,
-        (SURFACE_ORIGIN_X + 20.0) as f32,
-        (SURFACE_ORIGIN_Y + 20.0) as f32,
+        crate::num_cast::f64_as_f32(SURFACE_ORIGIN_X + 20.0),
+        crate::num_cast::f64_as_f32(SURFACE_ORIGIN_Y + 20.0),
     );
     let mut now = start + Duration::from_millis(100);
     let _ = runtime.pump_at(false, now);
@@ -1300,6 +1308,10 @@ fn a_tab_beside_ime_disabled_still_moves_focus() {
 /// away, and typing lands nowhere. Shift-Tab back restores editing at the
 /// caret it left, and Space activates the button keyboard focus moved to.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn tabbing_away_ends_editing_and_shift_tab_restores_the_caret() {
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Field {

@@ -72,8 +72,8 @@ fn trackpad_pan_presents_the_new_offset_without_re_measuring() {
     let _ = runtime.pump_at(false, start);
 
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -120.0,
         phase: TouchPhase::Moved,
@@ -107,8 +107,8 @@ fn wheel_ticks_glide_without_re_measuring() {
     let _ = runtime.pump_at(false, start);
 
     runtime.push_input_event(InputEvent::Scroll {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -2.0,
         is_line_delta: true,
@@ -160,8 +160,8 @@ fn pan_over_lazy_content_materializes_entering_rows() {
     // Pan 50 rows deep in one gesture; the reencode flush must resolve the new
     // visible window and materialize the entering rows.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -(ROW_HEIGHT * 50.0),
         phase: TouchPhase::Moved,
@@ -209,12 +209,12 @@ fn scrollbar_gutter_drag_maps_track_position_to_offset() {
 
     // Press deep in the scrollbar track: the thumb jumps to the pointer, which
     // clamps to the end of the scrollable range.
-    let gutter_x = WINDOW_WIDTH as f32 - 4.0;
+    let gutter_x = crate::num_cast::u32_as_f32(WINDOW_WIDTH) - 4.0;
     runtime.push_input_event(InputEvent::PointerDown {
         id: 1,
         kind: PointerKind::Mouse,
         x: gutter_x,
-        y: WINDOW_HEIGHT as f32 - 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) - 2.0,
         button: PointerButton::Primary,
     });
     let pressed = runtime.pump_at(false, start + Duration::from_millis(16));
@@ -280,8 +280,8 @@ fn momentum_tail_presents_every_consumed_delta() {
         velocity *= 0.95;
         let dy = velocity.max(0.05);
         runtime.push_input_event(InputEvent::TrackpadPan {
-            x: WINDOW_WIDTH as f32 / 2.0,
-            y: WINDOW_HEIGHT as f32 / 2.0,
+            x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+            y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
             dx: 0.0,
             dy: -dy,
             phase: TouchPhase::Moved,
@@ -389,6 +389,10 @@ fn labeled_scroll_max(result: &crate::HeadlessPumpResult, label: &str) -> Option
 }
 
 #[test]
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn wheel_and_pan_deltas_clamp_the_offset_at_both_ends() {
     let mut runtime = runtime();
     let start = Instant::now();
@@ -396,8 +400,8 @@ fn wheel_and_pan_deltas_clamp_the_offset_at_both_ends() {
 
     // A pixel delta far past the bottom clamps at the scrollable extent.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -10_000.0,
         phase: TouchPhase::Moved,
@@ -413,8 +417,8 @@ fn wheel_and_pan_deltas_clamp_the_offset_at_both_ends() {
 
     // Pushing further changes nothing: the offset is already the end.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -10.0,
         phase: TouchPhase::Moved,
@@ -428,8 +432,8 @@ fn wheel_and_pan_deltas_clamp_the_offset_at_both_ends() {
 
     // Back past the top clamps at zero the same way.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: 10_000.0,
         phase: TouchPhase::Moved,
@@ -443,8 +447,8 @@ fn wheel_and_pan_deltas_clamp_the_offset_at_both_ends() {
 
     // Line deltas take the same clamps through the smooth-scroll target.
     runtime.push_input_event(InputEvent::Scroll {
-        x: WINDOW_WIDTH as f32 / 2.0,
-        y: WINDOW_HEIGHT as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
+        y: crate::num_cast::u32_as_f32(WINDOW_HEIGHT) / 2.0,
         dx: 0.0,
         dy: -1_000.0,
         is_line_delta: true,
@@ -506,7 +510,7 @@ fn a_nested_scroll_consumes_the_delta_until_it_hits_its_edge() {
 
     // A pan over the inner viewport moves the inner scroll only.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: -80.0,
@@ -529,7 +533,7 @@ fn a_nested_scroll_consumes_the_delta_until_it_hits_its_edge() {
     // Driving the inner far past its end clamps it; the delta that reached the
     // edge is still consumed whole — nothing spills into the outer mid-gesture.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: -4_000.0,
@@ -551,7 +555,7 @@ fn a_nested_scroll_consumes_the_delta_until_it_hits_its_edge() {
     // At its edge the inner cannot consume: the next delta falls through to
     // the enclosing scroll — nested scrolling, not a dead zone.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: -60.0,
@@ -571,7 +575,7 @@ fn a_nested_scroll_consumes_the_delta_until_it_hits_its_edge() {
 
     // Scrolling back up resumes with the inner: the outer keeps its offset.
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: 50.0,
@@ -624,7 +628,7 @@ fn a_list_inside_a_scroll_consumes_the_delta_until_its_edge() {
     let _ = runtime.pump_at(false, start);
 
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: -80.0,
@@ -645,7 +649,7 @@ fn a_list_inside_a_scroll_consumes_the_delta_until_its_edge() {
     );
 
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: -4_000.0,
@@ -653,7 +657,7 @@ fn a_list_inside_a_scroll_consumes_the_delta_until_its_edge() {
     });
     let _ = runtime.pump_at(false, start + Duration::from_millis(32));
     runtime.push_input_event(InputEvent::TrackpadPan {
-        x: WINDOW_WIDTH as f32 / 2.0,
+        x: crate::num_cast::u32_as_f32(WINDOW_WIDTH) / 2.0,
         y: 100.0,
         dx: 0.0,
         dy: -60.0,

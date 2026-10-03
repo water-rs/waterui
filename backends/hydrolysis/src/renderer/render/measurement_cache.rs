@@ -70,7 +70,7 @@ const NODE_PROPOSAL_SLOTS: usize = 8;
 /// once per frame (the common case — there is nothing to reuse) never
 /// touches the `RefCell` at all.
 #[derive(Default)]
-pub(crate) struct NodeMeasureEntry {
+pub struct NodeMeasureEntry {
     /// Frame the entry was filled in: [`MeasurementCaches::frame`] at write
     /// time. `0` (the default) precedes every frame — the counter starts at
     /// `1`, so a fresh entry never answers.
@@ -104,7 +104,7 @@ pub(crate) struct NodeMeasureEntry {
 /// distinct proposals — harmless, it only stores answers the ring then
 /// serves exactly.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct MemoGate {
+pub struct MemoGate {
     /// Frame `seen_mask` was recorded in.
     frame: u64,
     /// Bitmask of proposal fingerprints probed this frame: bit `f(p)` is
@@ -152,7 +152,7 @@ impl MemoGate {
 
 impl NodeMeasureEntry {
     /// True when the entry answers for this frame.
-    fn current(&self, frame: u64) -> bool {
+    const fn current(&self, frame: u64) -> bool {
         self.frame == frame
     }
 
@@ -208,7 +208,7 @@ impl NodeMeasureEntry {
 }
 
 #[derive(Default)]
-pub(crate) struct MeasurementCaches {
+pub struct MeasurementCaches {
     view_dimensions: FxHashMap<ViewMeasurementKey, ViewDimensions>,
     dynamic_intrinsic: FxHashMap<usize, ViewDimensions>,
     dynamic_proposal: FxHashMap<(usize, ProposalKey), ViewDimensions>,
@@ -232,7 +232,7 @@ pub(crate) struct MeasurementCaches {
 
 impl MeasurementCaches {
     /// The frame stamp node memos validate against.
-    pub(crate) fn frame(&self) -> u64 {
+    pub(crate) const fn frame(&self) -> u64 {
         self.frame
     }
 
@@ -302,12 +302,12 @@ impl MeasurementCaches {
     /// it always belongs to the view that is still holding it. The scope covers
     /// the whole subtree because a view materialized here owns its children:
     /// their addresses die with it.
-    pub(crate) fn begin_transient_measurement(&mut self) {
+    pub(crate) const fn begin_transient_measurement(&mut self) {
         self.transient_depth += 1;
     }
 
     /// Closes a scope opened by [`Self::begin_transient_measurement`].
-    pub(crate) fn end_transient_measurement(&mut self) {
+    pub(crate) const fn end_transient_measurement(&mut self) {
         self.transient_depth = self
             .transient_depth
             .checked_sub(1)
@@ -439,13 +439,13 @@ impl MeasurementCaches {
             .retain(|_, weak| weak.upgrade().is_some());
     }
 
-    pub(crate) fn reset_counters(&mut self) {
+    pub(crate) const fn reset_counters(&mut self) {
         self.hits = 0;
         self.misses = 0;
     }
 
     /// Per-frame (hits, misses) of the view-dimension cache.
-    pub(crate) fn stats(&self) -> (u32, u32) {
+    pub(crate) const fn stats(&self) -> (u32, u32) {
         (self.hits, self.misses)
     }
 }

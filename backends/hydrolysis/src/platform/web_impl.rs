@@ -2,11 +2,6 @@
 // awaits handles that are JS objects — DOM elements, the Clipboard, wgpu
 // WebGPU devices — which are `!Send` by design on the single-threaded
 // target, and none of these functions promise `Send` futures.
-#![allow(
-    clippy::future_not_send,
-    reason = "wasm32 is single-threaded; the browser handles these futures hold are !Send by design"
-)]
-
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -54,6 +49,10 @@ impl core::fmt::Debug for BrowserSurface {
 }
 
 impl BrowserSurface {
+    #[expect(
+        clippy::future_not_send,
+        reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+    )]
     pub async fn new(canvas: HtmlCanvasElement, width: u32, height: u32) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance
@@ -180,6 +179,8 @@ impl SurfaceProvider for BrowserSurface {
     }
 }
 
+/// The browser window: the page's canvas element plus the document, input and
+/// pointer plumbing attached to it.
 pub struct BrowserWindow {
     host_window: BrowserHostWindow,
     document: Document,
@@ -223,6 +224,10 @@ impl BrowserWindow {
     /// When the page exposes no window, document, canvas or input element
     /// the host cannot function, so the constructor panics naming the
     /// missing object rather than failing the first paint later.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+    )]
     pub async fn new(schedule_frame: Rc<dyn Fn()>, occlusion_wake: Rc<dyn Fn()>) -> Self {
         let browser_window =
             web_sys::window().expect("hydrolysis web platform: browser window unavailable");
@@ -319,6 +324,7 @@ impl BrowserWindow {
             .expect("hydrolysis web platform: failed to dispatch the first-frame event");
     }
 
+    /// Consumes the pending redraw request, reporting whether one was set.
     pub fn take_redraw_request(&self) -> bool {
         self.redraw_requested.replace(false)
     }
@@ -398,32 +404,29 @@ impl PlatformWindow for BrowserWindow {
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
-        match state {
-            Some(state) => {
-                self.ime_input.set_type(match state.purpose {
-                    TextInputPurpose::Normal => "text",
-                    TextInputPurpose::Password => "password",
-                });
-                let style = self.ime_input.style();
-                style
-                    .set_property("left", &format!("{}px", state.x))
-                    .expect("hydrolysis web platform: failed to place IME input");
-                style
-                    .set_property("top", &format!("{}px", state.y))
-                    .expect("hydrolysis web platform: failed to place IME input");
-                style
-                    .set_property("width", &format!("{}px", state.width.max(1.0)))
-                    .expect("hydrolysis web platform: failed to size IME input width");
-                style
-                    .set_property("height", &format!("{}px", state.height.max(1.0)))
-                    .expect("hydrolysis web platform: failed to size IME input height");
-                let _ = self.ime_input.focus();
-            }
-            None => {
-                self.ime_input.set_value("");
-                let _ = self.ime_input.blur();
-                let _ = self.canvas.focus();
-            }
+        if let Some(state) = state {
+            self.ime_input.set_type(match state.purpose {
+                TextInputPurpose::Normal => "text",
+                TextInputPurpose::Password => "password",
+            });
+            let style = self.ime_input.style();
+            style
+                .set_property("left", &format!("{}px", state.x))
+                .expect("hydrolysis web platform: failed to place IME input");
+            style
+                .set_property("top", &format!("{}px", state.y))
+                .expect("hydrolysis web platform: failed to place IME input");
+            style
+                .set_property("width", &format!("{}px", state.width.max(1.0)))
+                .expect("hydrolysis web platform: failed to size IME input width");
+            style
+                .set_property("height", &format!("{}px", state.height.max(1.0)))
+                .expect("hydrolysis web platform: failed to size IME input height");
+            let _ = self.ime_input.focus();
+        } else {
+            self.ime_input.set_value("");
+            let _ = self.ime_input.blur();
+            let _ = self.canvas.focus();
         }
     }
 
@@ -555,8 +558,8 @@ fn measure_canvas(browser_window: &BrowserHostWindow, canvas: &HtmlCanvasElement
     }
 
     PendingResize {
-        width: (logical_width.max(1.0) * scale_factor).round() as u32,
-        height: (logical_height.max(1.0) * scale_factor).round() as u32,
+        width: crate::num_cast::f64_as_u32((logical_width.max(1.0) * scale_factor).round()),
+        height: crate::num_cast::f64_as_u32((logical_height.max(1.0) * scale_factor).round()),
         scale_factor,
     }
 }
@@ -567,6 +570,14 @@ fn apply_canvas_resize(canvas: &HtmlCanvasElement, resize: PendingResize) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the listener registration enumerates every DOM event hook once; the length is the enumeration, not logic"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the shared Rc state is moved into listener closures; borrowing would fight the closure 'static bounds"
+)]
 fn register_listeners(
     browser_window: &BrowserHostWindow,
     canvas: &HtmlCanvasElement,
@@ -795,8 +806,8 @@ fn register_listeners(
             pending_events.borrow_mut().push(InputEvent::Scroll {
                 x,
                 y,
-                dx: event.delta_x() as f32,
-                dy: event.delta_y() as f32,
+                dx: crate::num_cast::f64_as_f32(event.delta_x()),
+                dy: crate::num_cast::f64_as_f32(event.delta_y()),
                 is_line_delta: event.delta_mode() != WheelEvent::DOM_DELTA_PIXEL,
             });
             redraw_requested.set(true);
@@ -978,6 +989,11 @@ fn register_listeners(
     listeners
 }
 
+// web_sys hands ownership of the event; only the borrowed payload is read
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the web-sys event is delivered by value and only its data string is read"
+)]
 fn composition_text(event: CompositionEvent) -> String {
     event.data().unwrap_or_default()
 }
@@ -999,8 +1015,8 @@ fn add_event_listener(
 fn event_position(canvas: &HtmlCanvasElement, client_x: f64, client_y: f64) -> (f32, f32) {
     let rect = canvas.get_bounding_client_rect();
     (
-        (client_x - rect.left()) as f32,
-        (client_y - rect.top()) as f32,
+        crate::num_cast::f64_as_f32(client_x - rect.left()),
+        crate::num_cast::f64_as_f32(client_y - rect.top()),
     )
 }
 
@@ -1039,14 +1055,14 @@ fn map_keyboard_key(event: &KeyboardEvent) -> KeyCode {
     }
 }
 
-fn map_pointer_button(button: i16) -> PointerButton {
+const fn map_pointer_button(button: i16) -> PointerButton {
     match button {
         0 => PointerButton::Primary,
         1 => PointerButton::Middle,
         2 => PointerButton::Secondary,
         3 => PointerButton::Back,
         4 => PointerButton::Forward,
-        other if other >= 0 => PointerButton::Other(other as u16),
+        other if other >= 0 => PointerButton::Other(crate::num_cast::i16_as_u16(other)),
         _ => PointerButton::Other(u16::MAX),
     }
 }

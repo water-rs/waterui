@@ -1,16 +1,27 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! Regression coverage for water-rs/hydrolysis-m3#85: an empty, unfocused
 //! Material 3 filled text field centres its label vertically in the 56 dp
 //! container, and the label floats to the top only while the field is
 //! focused or carries content. A field that hides its label view draws the
 //! prompt in the label slot under the same resting/floating geometry, and a
 //! single-line field with no inside label at all centres its input text.
+
+mod support {
+    /// Converts a `f32` coordinate to `usize` with `as` saturating truncation.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test coordinates are non-negative and within usize range"
+    )]
+    pub const fn f32_as_usize(v: f32) -> usize {
+        v as usize
+    }
+
+    /// Widens a `usize` count to `f64`, rounding to nearest.
+    #[expect(clippy::cast_precision_loss, reason = "test counts are far below 2^53")]
+    pub const fn usize_as_f64(v: usize) -> f64 {
+        v as f64
+    }
+}
 
 use core::time::Duration;
 
@@ -51,10 +62,10 @@ fn label_less_field() -> impl View {
 fn text_ink_runs(app: &mut OffscreenApp) -> (Vec<(f64, f64)>, f64) {
     let bounds = app.query().role(Role::TEXT_INPUT).single().bounds();
     let snapshot = app.snapshot();
-    let x0 = bounds.x() as usize;
-    let y0 = bounds.y() as usize;
-    let x1 = (bounds.x() + bounds.width()) as usize;
-    let y1 = (bounds.y() + bounds.height()) as usize;
+    let x0 = support::f32_as_usize(bounds.x());
+    let y0 = support::f32_as_usize(bounds.y());
+    let x1 = support::f32_as_usize(bounds.x() + bounds.width());
+    let y1 = support::f32_as_usize(bounds.y() + bounds.height());
     let pixel = |x: usize, y: usize| {
         let i = (y * snapshot.width as usize + x) * 4;
         &snapshot.rgba8[i..i + 4]
@@ -78,14 +89,17 @@ fn text_ink_runs(app: &mut OffscreenApp) -> (Vec<(f64, f64)>, f64) {
         match (is_text, run_start) {
             (true, None) => run_start = Some(y - y0),
             (false, Some(start)) => {
-                runs.push((start as f64, (y - y0) as f64));
+                runs.push((support::usize_as_f64(start), support::usize_as_f64(y - y0)));
                 run_start = None;
             }
             _ => {}
         }
     }
     if let Some(start) = run_start {
-        runs.push((start as f64, (y1 - 4 - y0) as f64));
+        runs.push((
+            support::usize_as_f64(start),
+            support::usize_as_f64(y1 - 4 - y0),
+        ));
     }
     // Antialiased stroke edges can drop under the ink threshold for a row or
     // two inside one line of text; merge runs separated by that much.
@@ -99,7 +113,7 @@ fn text_ink_runs(app: &mut OffscreenApp) -> (Vec<(f64, f64)>, f64) {
         }
         merged.push(run);
     }
-    (merged, (y1 - y0) as f64)
+    (merged, support::usize_as_f64(y1 - y0))
 }
 
 fn assert_run_centre_near(

@@ -142,7 +142,9 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
             SignalCollection::new(Binding::container(
                 (0..texts.len() as u64).map(SelfId::new).collect::<Vec<_>>(),
             )),
-            move |id: SelfId<u64>| text(texts[id.into_inner() as usize]).body(),
+            move |id: SelfId<u64>| {
+                text(texts[crate::num_cast::u64_as_usize(id.into_inner())]).body()
+            },
         )
         .spacing(0.0)
         .padding_with((4.0, 0.0))
@@ -155,7 +157,9 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
             SignalCollection::new(Binding::container(
                 (0..texts.len() as u64).map(SelfId::new).collect::<Vec<_>>(),
             )),
-            move |id: SelfId<u64>| text(texts[id.into_inner() as usize]).body(),
+            move |id: SelfId<u64>| {
+                text(texts[crate::num_cast::u64_as_usize(id.into_inner())]).body()
+            },
         )
         .spacing(0.0)
         .padding_with((4.0, 0.0))

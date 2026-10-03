@@ -1218,10 +1218,10 @@ fn applied_filter_renders_through_retained_tree() {
 /// (the dot of an 'i') cannot split its own text line into two bands.
 fn text_ink_bands(snapshot: &crate::HeadlessSnapshot, rect: accesskit::Rect) -> Vec<(f64, f64)> {
     use std::collections::HashMap;
-    let x0 = rect.x0.floor().max(0.0) as usize;
-    let x1 = (rect.x1.ceil() as usize).min(snapshot.width as usize);
-    let y0 = rect.y0.floor().max(0.0) as usize;
-    let y1 = (rect.y1.ceil() as usize).min(snapshot.height as usize);
+    let x0 = crate::num_cast::f64_as_usize(rect.x0.floor().max(0.0));
+    let x1 = (crate::num_cast::f64_as_usize(rect.x1.ceil())).min(snapshot.width as usize);
+    let y0 = crate::num_cast::f64_as_usize(rect.y0.floor().max(0.0));
+    let y1 = (crate::num_cast::f64_as_usize(rect.y1.ceil())).min(snapshot.height as usize);
     let pixel = |x: usize, y: usize| {
         let i = (y * snapshot.width as usize + x) * 4;
         &snapshot.rgba8[i..i + 4]
@@ -1243,8 +1243,13 @@ fn text_ink_bands(snapshot: &crate::HeadlessSnapshot, rect: accesskit::Rect) -> 
             continue;
         }
         match bands.last_mut() {
-            Some((_, end)) if y as f64 - *end < 6.0 => *end = y as f64 + 1.0,
-            _ => bands.push((y as f64, y as f64 + 1.0)),
+            Some((_, end)) if crate::num_cast::usize_as_f64(y) - *end < 6.0 => {
+                *end = crate::num_cast::usize_as_f64(y) + 1.0;
+            }
+            _ => bands.push((
+                crate::num_cast::usize_as_f64(y),
+                crate::num_cast::usize_as_f64(y) + 1.0,
+            )),
         }
     }
     bands
@@ -1348,6 +1353,10 @@ fn menu_picker_draws_its_label_above_the_value() {
 /// keeps the label exactly once.
 #[cfg(feature = "accessibility")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn radio_picker_draws_its_label_above_the_option_rows() {
     use accesskit::Role;
     use std::time::Instant;
@@ -1466,6 +1475,10 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
 /// node keeps the label exactly once.
 #[cfg(feature = "accessibility")]
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn segmented_picker_draws_its_label_above_the_segment_row() {
     use accesskit::Role;
     use std::time::Instant;
@@ -1626,6 +1639,10 @@ impl nami::Signal for MidFlushWrite {
 /// frame must be internally consistent: the subtree is either absent or shows
 /// the leaf's current content.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     use core::time::Duration;
     use std::time::Instant;
@@ -1709,7 +1726,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     // Some -> None through an ordinary between-pump `set()`.
     label.set(None);
     for i in 0..3u32 {
-        let outcome = rt.pump_at(true, start + Duration::from_millis(16 * (i as u64 + 1)));
+        let outcome = rt.pump_at(true, start + Duration::from_millis(16 * (u64::from(i) + 1)));
         if let Some(snapshot) = outcome.snapshot {
             let (pill, ink) = classify(&snapshot);
             eprintln!("plain None frame {i}: pill={pill} ink={ink}");
@@ -1723,7 +1740,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     armed.set(1);
     drive.set(1u32);
     for i in 0..3u32 {
-        let outcome = rt.pump_at(true, start + Duration::from_millis(80 + 16 * i as u64));
+        let outcome = rt.pump_at(true, start + Duration::from_millis(80 + 16 * u64::from(i)));
         if let Some(snapshot) = outcome.snapshot {
             let (pill, ink) = classify(&snapshot);
             eprintln!("midflush None frame {i}: pill={pill} ink={ink}");
@@ -1733,7 +1750,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     armed.set(2);
     drive.set(2u32);
     for i in 0..3u32 {
-        let outcome = rt.pump_at(true, start + Duration::from_millis(128 + 16 * i as u64));
+        let outcome = rt.pump_at(true, start + Duration::from_millis(128 + 16 * u64::from(i)));
         if let Some(snapshot) = outcome.snapshot {
             let (pill, ink) = classify(&snapshot);
             eprintln!("midflush Some frame {i}: pill={pill} ink={ink}");

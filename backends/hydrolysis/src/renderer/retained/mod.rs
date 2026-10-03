@@ -2,19 +2,21 @@
 //! tree. These re-sample animated transform/opacity/morph signals every flush so
 //! the node tree's transform/opacity/morph nodes stay live without re-dispatching.
 
-pub(crate) mod identity;
-pub(crate) mod mount;
-pub(crate) use identity::{PresentationId, RenderId, RenderKey};
-pub(crate) use mount::{MountSlot, Mounts};
+pub mod identity;
+pub mod mount;
+pub use identity::{PresentationId, RenderId, RenderKey};
+pub use mount::{MountSlot, Mounts};
 
 use super::signals::SubscribedSnapshot;
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 #[cfg(test)]
 use crate::renderer::frame::scene_has_content;
 
 impl HydrolysisRenderer {
     #[cfg(test)]
-    pub(crate) fn scene_is_empty(&self) -> bool {
+    pub(crate) const fn scene_is_empty(&self) -> bool {
         !scene_has_content(&self.scene)
     }
 }
@@ -74,7 +76,7 @@ impl SemanticCore {
                 raw.is_finite() && raw >= 0.0,
                 "morph animation cycle index must be finite and non-negative"
             );
-            let index = raw.floor() as u64;
+            let index = crate::num_cast::f32_as_u64(raw.floor());
             if animation.autoreverse && index % 2 == 1 {
                 1.0 - base
             } else {

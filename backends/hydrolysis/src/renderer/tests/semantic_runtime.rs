@@ -1223,6 +1223,10 @@ fn press(runtime: &mut SemanticRuntime, key: KeyCode, modifiers: Modifiers) {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
     let tapped = Binding::container(false);
     let on = Binding::container(false);

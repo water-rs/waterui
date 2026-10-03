@@ -1,8 +1,3 @@
-#![allow(
-    clippy::cast_possible_wrap,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! Tab item layout tests: the renderer asks the theme's `tabs_item_layout`
 //! hook with the bar's width and item count, and the highlight covers the
 //! whole item when the theme answers `Horizontal`.
@@ -17,7 +12,7 @@ fn tabs_view(count: usize) -> TabsLayout {
     let selection = Binding::container(Id::try_from(1).expect("non-zero tab id"));
     let tabs = (1..=count)
         .map(|i| {
-            let id = Id::try_from(i as i32).expect("non-zero tab id");
+            let id = Id::try_from(crate::num_cast::usize_as_i32(i)).expect("non-zero tab id");
             Tab::new(id, format!("Tab {i}"), move || {
                 NavigationView::new(format!("Pane {i}"), text!("pane"))
             })
@@ -33,7 +28,7 @@ fn icon_tabs_view(count: usize, icon: &str) -> TabsLayout {
     let icon = icon.to_owned();
     let tabs = (1..=count)
         .map(|i| {
-            let id = Id::try_from(i as i32).expect("non-zero tab id");
+            let id = Id::try_from(crate::num_cast::usize_as_i32(i)).expect("non-zero tab id");
             Tab::new(
                 id,
                 label(format!("Tab {i}")).icon(text(icon.clone())),
@@ -179,10 +174,11 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
     let metrics = MinimalTestTheme::default().tabs_metrics(TabItemLayout::Horizontal);
     let icon_width = measure_plain(&mut renderer, &env, ICON_TEXT);
     let label_width = measure_plain(&mut renderer, &env, "Tab 1");
-    let expected = icon_width
-        + metrics.icon_label_spacing
-        + label_width
-        + metrics.button_horizontal_inset * 2.0;
+    let expected = f64::mul_add(
+        metrics.button_horizontal_inset,
+        2.0,
+        icon_width + metrics.icon_label_spacing + label_width,
+    );
     assert!(
         (bounds.width() - expected).abs() < 0.5,
         "highlight must hug icon + spacing + label + 2×inset ({expected}), got {}",
@@ -200,6 +196,10 @@ fn horizontal_highlight_hugs_icon_spacing_label_not_the_button() {
 /// would answer `Horizontal` for a wide window and break the strip's items
 /// and highlight.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the comparison is exact by design — the value originates from a literal fixture, not accumulated arithmetic"
+)]
 fn sidebar_tabs_query_the_layout_hook_with_their_strip_extent() {
     let env = test_environment();
     let queries = Rc::new(RefCell::new(Vec::new()));

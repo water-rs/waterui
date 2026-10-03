@@ -46,7 +46,7 @@ impl HydroNativeView for Native<PickerConfig> {
 /// cloneable [`PickerConfig`] drives the field chrome + accessibility, and its
 /// label is held as a [`RetainedSubview`] built once and re-flushed each frame
 /// so reactive label content stays live.
-pub(crate) struct PickerRenderState {
+pub struct PickerRenderState {
     pub(crate) config: PickerConfig,
     label_view: RetainedSubview,
     menu_open: Rc<Cell<bool>>,
@@ -78,7 +78,7 @@ impl PickerRenderState {
 /// named size or colour. A hidden label keeps its zero-size body: it draws
 /// nothing and takes no space. A custom-content label owns its own styling, so
 /// only the colour token is applied to it.
-pub(crate) fn menu_picker_label_view(label: &Label) -> AnyView {
+pub fn menu_picker_label_view(label: &Label) -> AnyView {
     let styled = if label.has_custom_content() {
         label.clone()
     } else {
@@ -92,7 +92,11 @@ pub(crate) fn menu_picker_label_view(label: &Label) -> AnyView {
 /// bounds); the semantic emission walk passes `None` for both — every action
 /// target is semantic (selection bindings, direct menu activation), so no
 /// geometry or style is needed.
-pub(crate) fn picker_accessibility(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
@@ -233,7 +237,10 @@ pub(crate) fn picker_accessibility(
                         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
                         let metrics = theme.picker_metrics(PickerStyle::Menu);
                         (
-                            waterui_core::layout::Point::new(bounds.x0 as f32, bounds.y1 as f32),
+                            waterui_core::layout::Point::new(
+                                crate::num_cast::f64_as_f32(bounds.x0),
+                                crate::num_cast::f64_as_f32(bounds.y1),
+                            ),
                             bounds.width(),
                             menu_picker_row_height(max_item_text_height, metrics),
                             metrics,
@@ -350,8 +357,10 @@ pub(crate) fn picker_accessibility(
                     );
                     let row_rect = geometry.map(|(ctx, metrics)| {
                         if picker.style == PickerStyle::Segmented {
-                            let segment_width = ctx.bounds.width() / items.len() as f64;
-                            let x0 = ctx.bounds.x0 + segment_width * index as f64;
+                            let segment_width =
+                                ctx.bounds.width() / crate::num_cast::usize_as_f64(items.len());
+                            let x0 = segment_width
+                                .mul_add(crate::num_cast::usize_as_f64(index), ctx.bounds.x0);
                             let top = ctx.bounds.y0
                                 + if group_label_height > 0.0 {
                                     group_label_height + metrics.label_spacing
@@ -420,7 +429,8 @@ pub(crate) fn picker_accessibility(
                     };
                     if let Some(child_id) = child_id {
                         group.push_child(child_id);
-                        let discriminator = i32::from(item.tag) as u32 as usize;
+                        let discriminator =
+                            crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
                         renderer.register_accessibility_focus_link(
                             &crate::renderer::InteractionKey::for_rc(owner, discriminator),
                             child_id,
@@ -450,7 +460,7 @@ pub(crate) fn picker_accessibility(
 /// Measures a retained picker leaf from its [`PickerRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and the
 /// in-field label render agree (mirrors [`measure_picker_intrinsic`]).
-pub(crate) fn measure_picker_node(
+pub fn measure_picker_node(
     state: &PickerRenderState,
     _proposal: ProposalSize,
     hydro: &mut HydroState,
@@ -469,7 +479,7 @@ pub(crate) fn measure_picker_node(
 
 /// Renders a retained picker leaf every flush: emits a11y (unless hidden) then the
 /// style-specific chrome + options, reading the items/selection signals each frame.
-pub(crate) fn render_picker_node(
+pub fn render_picker_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,
@@ -491,7 +501,7 @@ pub(crate) fn render_picker_node(
     render_picker_parts(ctx, state, env);
 }
 
-pub(crate) fn render_picker_parts(
+pub fn render_picker_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,
@@ -525,35 +535,39 @@ pub(crate) fn render_picker_parts(
     }
 }
 
-pub(crate) fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerMetrics) -> f64 {
+pub const fn menu_picker_row_height(max_item_text_height: f64, metrics: PickerMetrics) -> f64 {
     metrics
         .popup_row_height
-        .max(max_item_text_height + metrics.vertical_inset * 2.0)
+        .max(metrics.vertical_inset.mul_add(2.0, max_item_text_height))
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) fn menu_picker_popup_rect(
+pub fn menu_picker_popup_rect(
     field_bounds: kurbo::Rect,
     row_height: f64,
     item_count: usize,
     metrics: PickerMetrics,
 ) -> kurbo::Rect {
     let y0 = field_bounds.y1 + metrics.popup_top_spacing;
-    let y1 = y0 + row_height * item_count as f64;
+    let y1 = row_height.mul_add(crate::num_cast::usize_as_f64(item_count), y0);
     kurbo::Rect::new(field_bounds.x0, y0, field_bounds.x1, y1)
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) fn menu_picker_option_rect(
+pub fn menu_picker_option_rect(
     popup_rect: kurbo::Rect,
     row_height: f64,
     index: usize,
 ) -> kurbo::Rect {
-    let y0 = popup_rect.y0 + row_height * index as f64;
+    let y0 = row_height.mul_add(crate::num_cast::usize_as_f64(index), popup_rect.y0);
     kurbo::Rect::new(popup_rect.x0, y0, popup_rect.x1, y0 + row_height)
 }
 
-pub(crate) fn render_menu_picker(
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+pub fn render_menu_picker(
     ctx: &mut WidgetRenderContext<'_>,
     owner: &Rc<RefCell<PickerRenderState>>,
     selection: Binding<Id>,
@@ -614,8 +628,10 @@ pub(crate) fn render_menu_picker(
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection;
         let menu_entries = entries;
-        let menu_origin =
-            waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+        let menu_origin = waterui_core::layout::Point::new(
+            crate::num_cast::f64_as_f32(hit_bounds.x0),
+            crate::num_cast::f64_as_f32(hit_bounds.y1),
+        );
         let menu_width = hit_bounds.width();
         // The popup opens in the picker's environment layered over the
         // dispatch's (water-rs/hydrolysis#140).
@@ -671,7 +687,7 @@ pub(crate) fn render_menu_picker(
 /// of the dropdown indicator, with the theme's label spacing between them.
 /// A label that measures empty (a hidden or content-free label) draws nothing
 /// and takes no space — the value keeps its full-height inset.
-pub(crate) fn menu_picker_content_rects(
+pub fn menu_picker_content_rects(
     bounds: kurbo::Rect,
     metrics: PickerMetrics,
     label_height: f64,
@@ -712,7 +728,7 @@ pub(crate) fn menu_picker_content_rects(
 /// The label is present iff its measured height is nonzero — the same rule the
 /// measure path uses. A label measuring zero height (a hidden one) draws
 /// nothing and takes no space: the rows begin at `content_y_without_label`.
-pub(crate) fn radio_group_label_area(
+pub fn radio_group_label_area(
     bounds: kurbo::Rect,
     metrics: PickerMetrics,
     label_height: f64,
@@ -737,7 +753,7 @@ pub(crate) fn radio_group_label_area(
 /// height in the space below the heading and the metrics' label spacing. Same
 /// presence rule: a label measuring zero height (a hidden one) draws nothing
 /// and takes no space — the row keeps the full bounds.
-pub(crate) fn segmented_label_area(
+pub fn segmented_label_area(
     bounds: kurbo::Rect,
     metrics: PickerMetrics,
     label_height: f64,
@@ -775,7 +791,19 @@ fn flush_picker_label(
         });
 }
 
-pub(crate) fn render_radio_picker(
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_radio_picker(
     ctx: &mut WidgetRenderContext<'_>,
     owner: &Rc<RefCell<PickerRenderState>>,
     selection: Binding<Id>,
@@ -844,7 +872,7 @@ pub(crate) fn render_radio_picker(
             }
         };
         let hit_rect = transformed_rect(ctx.hit_transform, row_rect);
-        let discriminator = i32::from(item.tag) as u32 as usize;
+        let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
         let (interaction, press_slot, _) =
             ctx.renderer_mut()
@@ -897,7 +925,11 @@ pub(crate) fn render_radio_picker(
     }
 }
 
-pub(crate) fn render_segmented_picker(
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+pub fn render_segmented_picker(
     ctx: &mut WidgetRenderContext<'_>,
     owner: &Rc<RefCell<PickerRenderState>>,
     selection: Binding<Id>,
@@ -920,14 +952,14 @@ pub(crate) fn render_segmented_picker(
     if let Some(heading) = heading {
         flush_picker_label(ctx, owner, env, heading);
     }
-    let segment_width = row_bounds.width() / item_count as f64;
+    let segment_width = row_bounds.width() / crate::num_cast::usize_as_f64(item_count);
 
     for (index, item) in items.into_iter().enumerate() {
-        let x0 = row_bounds.x0 + segment_width * index as f64;
+        let x0 = segment_width.mul_add(crate::num_cast::usize_as_f64(index), row_bounds.x0);
         let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
         let is_selected = item.tag == selected;
         let hit_rect = transformed_rect(ctx.hit_transform, segment_rect);
-        let discriminator = i32::from(item.tag) as u32 as usize;
+        let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
         let (interaction, press_slot, _) =
             ctx.renderer_mut()
@@ -991,11 +1023,14 @@ fn segmented_label_rect(
     label_size: waterui_core::layout::Size,
     metrics: PickerMetrics,
 ) -> kurbo::Rect {
-    let max_width = (segment_rect.width() - metrics.horizontal_inset * 2.0).max(0.0);
+    let max_width = metrics
+        .horizontal_inset
+        .mul_add(-2.0, segment_rect.width())
+        .max(0.0);
     let width = f64::from(label_size.width).min(max_width);
     let height = f64::from(label_size.height).min(segment_rect.height());
-    let x0 = segment_rect.x0 + (segment_rect.width() - width) * 0.5;
-    let y0 = segment_rect.y0 + (segment_rect.height() - height) * 0.5;
+    let x0 = (segment_rect.width() - width).mul_add(0.5, segment_rect.x0);
+    let y0 = (segment_rect.height() - height).mul_add(0.5, segment_rect.y0);
     kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
 }
 use crate::animation::AnimationKey;
@@ -1003,7 +1038,7 @@ use crate::animation::AnimationKey;
 /// Emits a retained picker's accessibility tree for the semantic walk — the
 /// same nodes `picker_accessibility` registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_picker_accessibility(
+pub fn emit_picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,

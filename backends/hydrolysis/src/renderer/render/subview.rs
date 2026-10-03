@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::engine::WidgetTheme;
 use std::cell::RefCell;
@@ -12,7 +14,7 @@ use waterui_core::MainThreadBound;
 /// content-keyed [`TextMeasureService`] directly. That shortcut skips the general
 /// path, which measures by recursing into arbitrary (possibly reactive) bodies and
 /// so has to borrow the renderer's `HydroState` and `Environment`.
-pub(crate) struct HydroSubview<'a> {
+pub struct HydroSubview<'a> {
     view: MainThreadBound<&'a AnyView>,
     state: MainThreadBound<&'a RefCell<&'a mut HydroState>>,
     env: MainThreadBound<Environment>,
@@ -74,7 +76,7 @@ impl<'a> HydroSubview<'a> {
     /// Apply this child's stretch axis to a measured size against the proposal.
     /// Shared by the worker-safe text path and the main-thread recursion path so
     /// both produce identical dimensions.
-    fn apply_stretch(
+    const fn apply_stretch(
         &self,
         mut dimensions: ViewDimensions,
         proposal: ProposalSize,

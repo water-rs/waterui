@@ -54,7 +54,7 @@ impl HydroNativeView for Native<ScrollView> {
 }
 
 #[cfg(feature = "accessibility")]
-pub(crate) fn register_scroll_accessibility_node(
+pub fn register_scroll_accessibility_node(
     renderer: &mut crate::renderer::SemanticCore,
     env: &Environment,
     bounds: Option<kurbo::Rect>,
@@ -124,7 +124,7 @@ pub(crate) fn register_scroll_accessibility_node(
 /// nested inside this one — registered by the children below — hit-tests
 /// ahead of it and consumes the delta until it hits its own edge, where the
 /// delta falls through to the next enclosing region.
-pub(crate) fn register_scroll_wheel_target(
+pub fn register_scroll_wheel_target(
     renderer: &mut crate::renderer::SemanticCore,
     hit_transform: kurbo::Affine,
     viewport: kurbo::Rect,
@@ -172,7 +172,11 @@ fn indicator_geometry(
 /// draggable scrollbar targets: pressing the thumb drags it, pressing the track
 /// jumps the thumb to the pointer and keeps dragging. The thumb draws widened
 /// while it owns a drag; a drag schedules re-encode frames only, never layout.
-pub(crate) fn draw_scroll_indicators(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn draw_scroll_indicators(
     ctx: &mut WidgetRenderContext<'_>,
     _env: &Environment,
     viewport: kurbo::Rect,

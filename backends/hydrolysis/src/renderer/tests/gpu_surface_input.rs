@@ -101,7 +101,8 @@ fn runtime_with(surface: impl View) -> HeadlessRuntime {
             .take()
             .expect("the probe view is built once");
         AnyView::new(vstack((
-            vstack((text("header"),)).size(WINDOW_WIDTH as f32, HEADER_HEIGHT),
+            vstack((text("header"),))
+                .size(crate::num_cast::u32_as_f32(WINDOW_WIDTH), HEADER_HEIGHT),
             surface.size(SURFACE_WIDTH, SURFACE_HEIGHT),
         )))
     });
@@ -125,8 +126,8 @@ fn settled(runtime: &mut HeadlessRuntime, start: Instant) {
 /// A window point inside the surface, given surface-local coordinates.
 fn window_point(local_x: f64, local_y: f64) -> (f32, f32) {
     (
-        (SURFACE_ORIGIN_X + local_x) as f32,
-        (SURFACE_ORIGIN_Y + local_y) as f32,
+        crate::num_cast::f64_as_f32(SURFACE_ORIGIN_X + local_x),
+        crate::num_cast::f64_as_f32(SURFACE_ORIGIN_Y + local_y),
     )
 }
 
@@ -683,6 +684,10 @@ fn scene_content_that_wants_input_is_routed_like_a_surface() {
 /// Ctrl+Shift+Tab move focus out again. The pointer press that used to be
 /// the only way in lands in the same slot traversal owns.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn tab_focuses_the_surface_and_ctrl_tab_leaves_it() {
     let log = ProbeLog::default();
     let view = vstack((

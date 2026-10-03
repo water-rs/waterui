@@ -17,6 +17,8 @@
 //! browser engines are ordinary GPU surfaces now — the CEF and WPE crates own
 //! their own input ABIs — so the renderer knows nothing about any of them.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::gpu_view::GpuContentRuntime;
 use waterui_graphics::SceneContent;
@@ -25,19 +27,19 @@ use waterui_graphics::input::{
 };
 
 /// One key transition, in the W3C UI Events vocabulary.
-pub(crate) struct KeyDelivery<'a> {
+pub struct KeyDelivery<'a> {
     pub(crate) pressed: bool,
     pub(crate) logical: &'a Key,
     pub(crate) code: Code,
     pub(crate) repeat: bool,
-    pub(crate) modifiers: Modifiers,
+    pub modifiers: Modifiers,
 }
 
 /// Backend-owned input sink for one embedded surface.
 ///
 /// Positions are logical and surface-local: the surface's own top-left is
 /// `(0, 0)`.
-pub(crate) trait EmbeddedInputSink {
+pub trait EmbeddedInputSink {
     /// A pointer that identifies the *owner* of this sink, stable across
     /// frames.
     ///
@@ -72,7 +74,7 @@ pub(crate) trait EmbeddedInputSink {
 }
 
 #[derive(Clone)]
-pub(crate) struct EmbeddedInputTarget {
+pub struct EmbeddedInputTarget {
     /// The surface owner's interaction identity — what keyboard focus and a
     /// `.focused(binding)` write address the surface by.
     pub(crate) interaction_key: InteractionKey,
@@ -129,7 +131,7 @@ impl EmbeddedInputTarget {
 
 /// An embedded surface that took a bubbled key press — the matching release
 /// belongs to it, not to whichever sink holds keyboard focus.
-pub(crate) struct BubbledKeySink {
+pub struct BubbledKeySink {
     pub(crate) logical: Key,
     pub(crate) code: Code,
     pub(crate) modifiers: Modifiers,
@@ -139,7 +141,7 @@ pub(crate) struct BubbledKeySink {
 /// Something that consumes the neutral [`SurfaceInputEvent`] vocabulary: the
 /// runtime of an embedded [`GpuContentView`](waterui_graphics::GpuContentView),
 /// or the content of a self-drawn [`SceneView`](waterui_graphics::SceneView).
-pub(crate) trait SurfaceInputReceiver {
+pub trait SurfaceInputReceiver {
     fn input(&mut self, event: &SurfaceInputEvent);
     /// The receiver's text caret, in logical surface-local coordinates.
     fn ime_caret(&self) -> Option<kurbo::Rect>;
@@ -172,7 +174,7 @@ impl SurfaceInputReceiver for Box<dyn SceneContent> {
 ///
 /// Constructed fresh on every registration; [`Self::identity`] reports the
 /// receiver it drives, which outlives the frame.
-pub(crate) struct SurfaceInputSink<R> {
+pub struct SurfaceInputSink<R> {
     receiver: Rc<RefCell<R>>,
 }
 
@@ -189,7 +191,7 @@ impl<R: SurfaceInputReceiver> SurfaceInputSink<R> {
 /// The W3C UI Events button vocabulary has no room for a platform's extra
 /// buttons, so an unmapped button is dropped rather than reported as one the
 /// view would act on.
-fn surface_pointer_button(button: PointerButton) -> Option<SurfacePointerButton> {
+const fn surface_pointer_button(button: PointerButton) -> Option<SurfacePointerButton> {
     match button {
         PointerButton::Primary => Some(SurfacePointerButton::Primary),
         PointerButton::Secondary => Some(SurfacePointerButton::Secondary),
@@ -290,6 +292,10 @@ impl<R: SurfaceInputReceiver> EmbeddedInputSink for SurfaceInputSink<R> {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+)]
 impl SemanticCore {
     /// Registers an embedded input target at a laid-out surface's bounds.
     ///
@@ -407,6 +413,10 @@ impl SemanticCore {
         Some((index, target.clone(), position))
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn handle_embedded_pointer_move(&mut self, point: kurbo::Point) -> bool {
         if let Some(target) = self.hit_test.active_embedded_target.as_ref() {
             target
@@ -465,6 +475,10 @@ impl SemanticCore {
         true
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
+    )]
     pub(crate) fn handle_embedded_key(&mut self, delivery: &KeyDelivery<'_>) -> bool {
         // GTK's text-view convention: while a surface holds keyboard focus,
         // Tab and Shift-Tab are surface input like any other key — a
@@ -605,6 +619,10 @@ impl SemanticCore {
     /// rule a pointer press on the surface follows. Releasing it drops
     /// semantic focus only while it still rests on that surface, then sends
     /// `Focus(false)`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
     pub(crate) fn set_focused_embedded_key(&mut self, focused: Option<InteractionKey>) -> bool {
         let previous = self.hit_test.focused_embedded_key.clone();
         if previous == focused {
@@ -614,32 +632,29 @@ impl SemanticCore {
             .as_ref()
             .and_then(|key| self.embedded_index_for_key(key));
         let mut changed = false;
-        match focused.as_ref() {
-            Some(key) => {
+        if let Some(key) = focused.as_ref() {
+            #[cfg(feature = "accessibility")]
+            let node = self.focus_node_for_key(key);
+            changed |= self.set_keyboard_focus_impl(
+                Some(key.clone()),
                 #[cfg(feature = "accessibility")]
-                let node = self.focus_node_for_key(key);
+                node,
+                self.hit_test.keyboard_focus_visible,
+            );
+            changed |= self.hit_test.set_embedded_focus_index(index);
+            // Landing on a surface ends text editing exactly as a
+            // pointer press on one does (#95's rule).
+            changed |= self.set_focused_text_input(None);
+        } else {
+            if self.hit_test.keyboard_focus == previous {
                 changed |= self.set_keyboard_focus_impl(
-                    Some(key.clone()),
+                    None,
                     #[cfg(feature = "accessibility")]
-                    node,
-                    self.hit_test.keyboard_focus_visible,
+                    None,
+                    false,
                 );
-                changed |= self.hit_test.set_embedded_focus_index(index);
-                // Landing on a surface ends text editing exactly as a
-                // pointer press on one does (#95's rule).
-                changed |= self.set_focused_text_input(None);
             }
-            None => {
-                if self.hit_test.keyboard_focus == previous {
-                    changed |= self.set_keyboard_focus_impl(
-                        None,
-                        #[cfg(feature = "accessibility")]
-                        None,
-                        false,
-                    );
-                }
-                changed |= self.hit_test.set_embedded_focus_index(None);
-            }
+            changed |= self.hit_test.set_embedded_focus_index(None);
         }
         changed
     }

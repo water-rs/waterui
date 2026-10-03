@@ -43,7 +43,7 @@ use waterui_graphics::cherenkov::Draw as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
-pub(crate) type ListItemId = SelfId<RawId>;
+pub type ListItemId = SelfId<RawId>;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {
@@ -112,7 +112,7 @@ impl RowBinding {
 /// `ListSelection` binding under the same rules: a plain click selects, the
 /// toggle modifier toggles the clicked row in multi mode, and Shift extends a
 /// range from the anchor the last non-Shift write set (water-rs/waterui#1226).
-pub(crate) struct ListRowSelection {
+pub struct ListRowSelection {
     /// The erased selection `ListConfig` carries — keyed by the same row ids
     /// `contents.get_id` reports.
     selection: ListSelection<ListItemId>,
@@ -238,7 +238,7 @@ struct RowReorder {
 /// cache of the visible rows' content sub-views, keyed by stable row id. Only the
 /// rows in the current visible window are built and retained (evicted once they
 /// scroll out), so the list stays virtualized — cost is bounded by visible rows.
-pub(crate) struct ListRenderState {
+pub struct ListRenderState {
     pub(crate) config: ListConfig,
     /// Estimated/measured row extents belong to this list, not to its render
     /// position in a backend-global slot array. Shared with each row's
@@ -340,7 +340,7 @@ struct RowSectionChrome {
 }
 
 impl RowSectionChrome {
-    fn header_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    const fn header_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
         if self.header.is_some() {
             metrics.section_header_height
         } else {
@@ -348,7 +348,7 @@ impl RowSectionChrome {
         }
     }
 
-    fn footer_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    const fn footer_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
         if self.footer.is_some() {
             metrics.section_footer_height
         } else {
@@ -555,6 +555,10 @@ impl ListRenderState {
         }
     }
 
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
     fn bind_scroll(
         &self,
         viewport_width: f64,
@@ -743,6 +747,10 @@ fn row_a11y_key_base(row_id: ListItemId) -> i64 {
 /// the first row's label. The label is read through the renderer so a title
 /// driven by a signal re-flushes the tree when it changes.
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn register_section_chrome_node(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
@@ -787,7 +795,11 @@ fn register_section_chrome_node(
 /// viewport, and a row not emitted does not exist to assistive technology.
 /// Scroll offsets then read as row indices: the scroll domain is measured in
 /// rows, since the semantic path has no pixels to measure in.
-pub(crate) fn list_accessibility(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn list_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
@@ -832,7 +844,7 @@ pub(crate) fn list_accessibility(
             extent_index.reset(row_count, 1.0, 0.0);
         }
     }
-    let _rendered = ctx.is_some();
+    let is_rendered = ctx.is_some();
     let viewport = ctx.map_or(kurbo::Rect::ZERO, |ctx| ctx.bounds);
     // The rendered scroll domain is the measured extent; the semantic one is
     // the row count — with a zero viewport every row is scrollable to.
@@ -843,11 +855,11 @@ pub(crate) fn list_accessibility(
         .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
     state.apply_membership_anchor(&handle);
-    state.apply_scroll_request(renderer, &handle, row_count, _rendered);
+    state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
-        let (emit_range, leading_offset) = if _rendered {
+        let (emit_range, leading_offset) = if is_rendered {
             let window = state
                 .extent_index
                 .borrow()
@@ -887,7 +899,7 @@ pub(crate) fn list_accessibility(
             let chrome = state.section_chrome(index);
             // Semantic rows have no layout extent — the slot is only measured
             // when the rendered path needs it to place the row.
-            let slot_height = if _rendered {
+            let slot_height = if is_rendered {
                 let cached_extent = state.extent_index.borrow().measured(index);
                 if let Some(extent) = cached_extent {
                     extent
@@ -916,7 +928,7 @@ pub(crate) fn list_accessibility(
             };
             let slot_rect = kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
             y += slot_height;
-            if _rendered && (slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1) {
+            if is_rendered && (slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1) {
                 continue;
             }
             let header_height = list_metrics.map_or(0.0, |m| chrome.header_height(&m));
@@ -1028,7 +1040,8 @@ pub(crate) fn list_accessibility(
                 // resolves the row node through to parent its content under.
                 // Each press slot links to the node that control emits below,
                 // so a pointer press lands keyboard focus on it.
-                let row_interaction_base = (i32::from(*row_id) as u32 as usize)
+                let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(*row_id))
+                    as usize)
                     .checked_mul(5)
                     .expect("hydrolysis List interaction identity overflow");
                 renderer.register_accessibility_focus_link(
@@ -1265,7 +1278,7 @@ fn register_edit_control_node(
 }
 
 /// Measures the scrollable viewport, using content size only for ideal queries.
-pub(crate) fn measure_list_node(
+pub fn measure_list_node(
     list: &ListConfig,
     proposal: ProposalSize,
     state: &mut HydroState,
@@ -1280,7 +1293,7 @@ pub(crate) fn measure_list_node(
 }
 
 /// Renders a retained list leaf every flush.
-pub(crate) fn render_list_node(
+pub fn render_list_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,
@@ -1311,7 +1324,11 @@ pub(crate) fn render_list_node(
     render_list_parts(ctx, state, env);
 }
 
-pub(crate) fn render_list_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_list_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,
@@ -1543,7 +1560,7 @@ pub(crate) fn render_list_parts(
         // press slots, 2 the delete control's, 3 the row's own selection
         // press, 4 the row's anchor — the key `list_accessibility` links the
         // row node to and this pass resolves it through below.
-        let row_interaction_base = (i32::from(*row_id) as u32 as usize)
+        let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(*row_id)) as usize)
             .checked_mul(5)
             .expect("hydrolysis List interaction identity overflow");
         let chrome = state.borrow().section_chrome(index);
@@ -2043,7 +2060,9 @@ fn row_edit_controls(
     if move_enabled {
         let control_width = metrics.move_control_width;
         let vertical_inset = metrics.trailing_control_vertical_inset;
-        let control_height = (slot_height - vertical_inset * 2.0).max(vertical_inset * 2.0);
+        let control_height = vertical_inset
+            .mul_add(-2.0, slot_height)
+            .max(vertical_inset * 2.0);
         let control_rect = kurbo::Rect::new(
             trailing_x - control_width,
             row_rect.y0 + vertical_inset,
@@ -2390,14 +2409,14 @@ fn list_content_rect(
     let x1 = row_rect.x1 - right_inset;
     let available_height = (row_rect.height() - vertical_insets).max(0.0);
     let height = f64::from(content_size.height).min(available_height);
-    let y0 = row_rect.y0 + (row_rect.height() - height) * 0.5;
+    let y0 = (row_rect.height() - height).mul_add(0.5, row_rect.y0);
     kurbo::Rect::new(x0, y0, x1, y0 + height)
 }
 
 /// Emits a retained list's accessibility tree for the semantic walk — the same
 /// nodes `list_accessibility` registers, with no bounds and every row present.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_list_accessibility(
+pub fn emit_list_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,

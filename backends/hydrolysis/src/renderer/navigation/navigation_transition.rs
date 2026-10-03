@@ -8,7 +8,7 @@ use waterui_backend_core::widget::NavigationMotion;
 use super::{NavigationCapturedScene, NavigationMatchedElement};
 use crate::renderer::Recording;
 
-pub(crate) struct NavigationTransitionFrame<'a> {
+pub struct NavigationTransitionFrame<'a> {
     pub(crate) scene: &'a mut Recording,
     pub(crate) transform: kurbo::Affine,
     pub(crate) bounds: kurbo::Rect,
@@ -17,10 +17,10 @@ pub(crate) struct NavigationTransitionFrame<'a> {
     pub(crate) direction: NavigationTransitionDirection,
     pub(crate) progress: f64,
     pub(crate) from_scene: &'a NavigationCapturedScene,
-    pub(crate) to_scene: &'a NavigationCapturedScene,
+    pub to_scene: &'a NavigationCapturedScene,
 }
 
-pub(crate) fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
+pub fn draw_navigation_transition(frame: NavigationTransitionFrame<'_>) {
     // Dispatch on the retained capability, never on the native projection: a
     // custom transition may report a platform-native projection for Apple and
     // Android while still resolving its own frames here.
@@ -74,7 +74,7 @@ fn material_shared_axis_x_frame(
         (0.0..1.0).contains(&fade_through_threshold),
         "navigation fade-through threshold must be in 0.0..1.0"
     );
-    let slide_fraction = (slide_distance / viewport_width) as f32;
+    let slide_fraction = crate::num_cast::f64_as_f32(slide_distance / viewport_width);
     let direction = match direction {
         NavigationTransitionDirection::Push => -1.0,
         NavigationTransitionDirection::Pop => 1.0,
@@ -97,6 +97,10 @@ fn material_shared_axis_x_frame(
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
 fn draw_matched_navigation_transition(
     frame: NavigationTransitionFrame<'_>,
     id: waterui_core::id::Id,
@@ -136,14 +140,14 @@ fn draw_matched_navigation_transition(
         frame.transform,
         frame.bounds,
         &from_page,
-        1.0 - frame.progress as f32,
+        1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_scene_with_opacity(
         frame.scene,
         frame.transform,
         frame.bounds,
         &to_page,
-        frame.progress as f32,
+        crate::num_cast::f64_as_f32(frame.progress),
     );
 
     let bounds = interpolate_rect(from_element.bounds, to_element.bounds, frame.progress);
@@ -152,19 +156,19 @@ fn draw_matched_navigation_transition(
         frame.transform,
         from_element,
         bounds,
-        1.0 - frame.progress as f32,
+        1.0 - crate::num_cast::f64_as_f32(frame.progress),
     );
     append_matched_element(
         frame.scene,
         frame.transform,
         to_element,
         bounds,
-        frame.progress as f32,
+        crate::num_cast::f64_as_f32(frame.progress),
     );
 }
 
 fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo::Rect {
-    let interpolate = |from: f64, to: f64| from + (to - from) * progress;
+    let interpolate = |from: f64, to: f64| (to - from).mul_add(progress, from);
     kurbo::Rect::new(
         interpolate(from.x0, to.x0),
         interpolate(from.y0, to.y0),

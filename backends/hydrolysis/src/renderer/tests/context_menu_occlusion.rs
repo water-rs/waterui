@@ -193,8 +193,8 @@ fn drawn_menu_item_press_does_not_fall_through_to_the_row_tap() {
 
     let row = bounds_of(&mut runtime, "Menu row");
     let (row_x, row_y) = (
-        f64::midpoint(row.x0, row.x1) as f32,
-        f64::midpoint(row.y0, row.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(row.x0, row.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(row.y0, row.y1)),
     );
     for event in secondary_click(row_x, row_y) {
         runtime.push_input_event(event);
@@ -217,7 +217,10 @@ fn drawn_menu_item_press_does_not_fall_through_to_the_row_tap() {
         "the menu item must sit over the tap row beneath the menu row, got {item:?}"
     );
 
-    for event in primary_click(item.center().x as f32, item.center().y as f32) {
+    for event in primary_click(
+        crate::num_cast::f64_as_f32(item.center().x),
+        crate::num_cast::f64_as_f32(item.center().y),
+    ) {
         runtime.push_input_event(event);
     }
     pump_until_settled(&mut runtime);
@@ -252,7 +255,10 @@ fn popup_window_item_press_does_not_fall_through_to_the_row_tap() {
     // Open at the menu row's bottom edge so the popup's first item lands on
     // the tap row's region beneath it.
     let row = bounds_of(&mut runtime, "Menu row");
-    let (press_x, press_y) = (f64::midpoint(row.x0, row.x1) as f32, (row.y1 - 4.0) as f32);
+    let (press_x, press_y) = (
+        crate::num_cast::f64_as_f32(f64::midpoint(row.x0, row.x1)),
+        crate::num_cast::f64_as_f32(row.y1 - 4.0),
+    );
     for event in secondary_click(press_x, press_y) {
         runtime.push_input_event(event);
     }
@@ -272,11 +278,11 @@ fn popup_window_item_press_does_not_fall_through_to_the_row_tap() {
         .and_then(|(_, node)| node.bounds())
         .expect("the popup emits the item's bounds");
     let (x, y) = (
-        frame.x() + f64::midpoint(item.x0, item.x1) as f32,
-        frame.y() + f64::midpoint(item.y0, item.y1) as f32,
+        frame.x() + crate::num_cast::f64_as_f32(f64::midpoint(item.x0, item.x1)),
+        frame.y() + crate::num_cast::f64_as_f32(f64::midpoint(item.y0, item.y1)),
     );
     assert!(
-        y > row.y1 as f32,
+        y > crate::num_cast::f64_as_f32(row.y1),
         "the popup item must sit over the tap row's region, got y={y} vs row bottom {}",
         row.y1
     );
@@ -317,8 +323,8 @@ fn drawn_menu_item_press_and_hold_does_not_fall_through_to_the_row_long_press() 
 
     let row = bounds_of(&mut runtime, "Menu row");
     let (row_x, row_y) = (
-        f64::midpoint(row.x0, row.x1) as f32,
-        f64::midpoint(row.y0, row.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(row.x0, row.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(row.y0, row.y1)),
     );
     for event in secondary_click(row_x, row_y) {
         runtime.push_input_event(event);
@@ -333,7 +339,10 @@ fn drawn_menu_item_press_and_hold_does_not_fall_through_to_the_row_long_press() 
     // Down on the item, then ticks past the long-press deadline while the
     // press is still held — the gesture engine's `handle_tick` is what a
     // long press fires on.
-    let (x, y) = (item.center().x as f32, item.center().y as f32);
+    let (x, y) = (
+        crate::num_cast::f64_as_f32(item.center().x),
+        crate::num_cast::f64_as_f32(item.center().y),
+    );
     let start = Instant::now();
     runtime.push_input_event(InputEvent::PointerDown {
         id: 2,

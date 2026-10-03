@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use kurbo::Shape;
 #[cfg(hydrolysis_macos_system_webview)]
@@ -9,13 +11,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[derive(Default)]
-pub(crate) struct Compositor {
+pub struct Compositor {
     pub(crate) render_layers: Vec<RenderLayer>,
-    pub(crate) active_scene_layers: Vec<ActiveSceneLayer>,
+    pub active_scene_layers: Vec<ActiveSceneLayer>,
 }
 
 #[derive(Clone)]
-pub(crate) enum LayerShape {
+pub enum LayerShape {
     Rect(kurbo::Rect),
     RoundedRect {
         path: kurbo::BezPath,
@@ -48,7 +50,7 @@ pub(crate) enum LayerShape {
 }
 
 #[derive(Clone)]
-pub(crate) struct ActiveSceneLayer {
+pub struct ActiveSceneLayer {
     pub(crate) alpha: f32,
     pub(crate) transform: kurbo::Affine,
     pub(crate) shape: LayerShape,
@@ -57,7 +59,7 @@ pub(crate) struct ActiveSceneLayer {
 /// A `SceneView` leaf presenting this frame: the retained content is
 /// re-recorded onto its keyed layer every frame inside
 /// [`waterui_graphics::SceneContent::build_scene`].
-pub(crate) struct SceneContentLayer {
+pub struct SceneContentLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
     /// The node-owned content — shared so the compositor can borrow it while
@@ -74,7 +76,7 @@ pub(crate) struct SceneContentLayer {
 
 /// A `GpuContentView` leaf presenting this frame: install-once engine content
 /// sized per frame on a keyed layer.
-pub(crate) struct GpuContentLayer {
+pub struct GpuContentLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
     /// The node-owned view state — the `GpuContentView` and its one-shot
@@ -91,7 +93,7 @@ pub(crate) struct GpuContentLayer {
 /// An `ExternalFrameView` leaf presenting this frame: a keyed layer that
 /// drains the stream's mailbox each pass and hands the newest published
 /// frame to the engine as its layer content.
-pub(crate) struct ExternalFrameLayer {
+pub struct ExternalFrameLayer {
     /// The mount identity: which visual node presents this content.
     pub(crate) key: crate::renderer::retained::RenderKey,
     /// The node-owned view state — the `ExternalFrameView` and its stream's
@@ -107,7 +109,7 @@ pub(crate) struct ExternalFrameLayer {
 
 /// A `FilteredView` wrapper presenting this frame: a keyed layer carrying the
 /// registered `Filter`, whose children mount under it as group layers.
-pub(crate) struct FilteredLayer {
+pub struct FilteredLayer {
     /// The mount identity: which visual node owns this filter.
     pub(crate) key: crate::renderer::retained::RenderKey,
     /// The node-owned filter runtime — unbuilt source until registration,
@@ -135,7 +137,7 @@ pub(crate) struct NativeViewLayer {
     pub(crate) occlusion: Rc<RefCell<Vec<kurbo::Rect>>>,
 }
 
-pub(crate) enum RenderLayer {
+pub enum RenderLayer {
     /// Positional recorded content: a contiguous run of scene ops drained by
     /// `flush_scene_layer` shows on the segment layer at that stack position.
     Scene(Recording),
@@ -177,7 +179,9 @@ pub struct HydrolysisRenderTarget<'a> {
     /// The adapter the frame's device was requested on; the shared engine is
     /// created against what it can actually run.
     pub adapter: &'a wgpu::Adapter,
+    /// The device the surface presents through.
     pub device: &'a wgpu::Device,
+    /// The submission queue the surface presents through.
     pub queue: &'a wgpu::Queue,
     /// Reports this device lost; taken when the device was opened. Carries
     /// the device-creation chain the engine pool keys on.
@@ -190,6 +194,7 @@ pub struct HydrolysisRenderTarget<'a> {
     pub format: wgpu::TextureFormat,
     /// Attachment size in device pixels.
     pub width: u32,
+    /// The render target's height in pixels.
     pub height: u32,
     /// The colour under the scene's content.
     pub base_color: cherenkov::WorkingColor,
@@ -200,7 +205,7 @@ pub struct HydrolysisRenderTarget<'a> {
 /// host sets — the display's scale and HDR headroom, whether the window's
 /// mounts and engine surface persist past the call, and the device-creation
 /// chain the engine pool keys on.
-pub(crate) struct FrameRenderTarget<'a> {
+pub struct FrameRenderTarget<'a> {
     pub adapter: &'a wgpu::Adapter,
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -295,7 +300,7 @@ impl InstallScope {
     /// The filtered group's key in group scope, `None` at the root — the
     /// mount scope a layer's [`HeldResources`](waterui_graphics::HeldResources)
     /// stores under.
-    fn parent_key(self) -> Option<crate::renderer::retained::RenderKey> {
+    const fn parent_key(self) -> Option<crate::renderer::retained::RenderKey> {
         match self {
             Self::Root => None,
             Self::Group(key) => Some(key),
@@ -347,6 +352,10 @@ struct FrameInstall<'a> {
 impl FrameInstall<'_> {
     /// Installs `layers` in bottom-to-top order under `scope`, returning the
     /// mount slots in the order the scope should commit them.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     fn install_scope(
         &mut self,
         tx: &mut cherenkov::Transaction<'_, cherenkov_gpu::Gpu>,
@@ -547,8 +556,8 @@ fn gpu_content_pixels(
     display_scale: f64,
 ) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
-    let x_scale = (a * a + b * b).sqrt() * display_scale;
-    let y_scale = (c * c + d * d).sqrt() * display_scale;
+    let x_scale = a.hypot(b) * display_scale;
+    let y_scale = c.hypot(d) * display_scale;
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let size = (
         (bounds.width() * x_scale).round().max(1.0) as u32,
@@ -559,6 +568,10 @@ fn gpu_content_pixels(
 
 impl HydrolysisRenderer {
     crate::engine::cfg_async_fn! {
+        /// Renders the frame into `target`'s texture.
+        ///
+        /// Async on wasm32, where the surface render inside awaits the browser
+        /// device.
         pub fn render_scene_to_texture(&mut self, target: HydrolysisRenderTarget<'_>) {
             crate::engine::engine_await!(
                 self.render_scene_to_surface_with_alpha_mode(
@@ -569,6 +582,10 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
+        /// Renders the frame into `target`'s presentation surface.
+        ///
+        /// Async on wasm32, where the surface render inside awaits the browser
+        /// device.
         pub fn render_scene_to_surface(&mut self, target: HydrolysisRenderTarget<'_>) {
             crate::engine::engine_await!(
                 self.render_scene_to_surface_with_alpha_mode(
@@ -684,6 +701,8 @@ impl HydrolysisRenderer {
     }
 
     crate::engine::cfg_async_fn! {
+        // one continuous frame-build sequence; splitting it would only mirror the pipeline stages artificially
+        #[allow(clippy::too_many_lines)]
         /// [`Self::render_scene_to_surface`] with the target's composite alpha
         /// convention made explicit: `premultiply_alpha` selects the alpha
         /// mode the presenter writes into the acquired frame — premultiplied
@@ -871,8 +890,8 @@ impl HydrolysisRenderer {
 /// One window surface's engine-side state: the `TextureTarget` surface, the
 /// stable mounts the frame's `RenderLayer`s show through, and the resource
 /// registrations recorded content names.
-pub(crate) struct CherenkovWindow {
-    pub(crate) surface: crate::engine::CherenkovSurface,
+pub struct CherenkovWindow {
+    pub surface: crate::engine::CherenkovSurface,
     pub(crate) mounts: crate::renderer::retained::Mounts,
     pub(crate) resources: crate::renderer::recording::SceneResources,
     /// The device-loss token taken when this window's context was opened; a

@@ -23,7 +23,7 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// The retained render state of a stepper: the cloneable [`StepperConfig`] drives the
 /// +/- buttons + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
-pub(crate) struct StepperRenderState {
+pub struct StepperRenderState {
     config: StepperConfig,
     label_view: RetainedSubview,
 }
@@ -61,7 +61,9 @@ impl HydroNativeView for Native<StepperConfig> {
 /// Emits a stepper's accessibility node from its config. Shared by the dispatch
 /// path ([`Native<StepperConfig>::accessibility`]) and the retained `Widget`-node
 /// path so both produce the same a11y tree.
-pub(crate) fn stepper_accessibility(
+// empty when the accessibility feature is off
+#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+pub fn stepper_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     stepper: &StepperConfig,
@@ -127,7 +129,7 @@ pub(crate) fn stepper_accessibility(
 
 /// Measures a retained stepper leaf from its [`StepperRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and render agree.
-pub(crate) fn measure_stepper_node(
+pub fn measure_stepper_node(
     render_state: &StepperRenderState,
     _proposal: ProposalSize,
     state: &mut HydroState,
@@ -136,7 +138,9 @@ pub(crate) fn measure_stepper_node(
 ) -> ViewDimensions {
     let metrics = theme.stepper_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
-    let controls_width = metrics.button_intrinsic_size * 2.0 + metrics.button_spacing;
+    let controls_width = metrics
+        .button_intrinsic_size
+        .mul_add(2.0, metrics.button_spacing);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
         label_width + metrics.label_spacing + controls_width
@@ -144,13 +148,16 @@ pub(crate) fn measure_stepper_node(
         controls_width
     };
     let height = f64::from(label_size.height).max(metrics.button_intrinsic_size);
-    ViewDimensions::new(LayoutSize::new(width as f32, height as f32))
+    ViewDimensions::new(LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    ))
 }
 
 /// Renders a retained stepper leaf every flush: emits a11y (unless hidden) then
 /// the label + +/- buttons + tap targets, watching the value/step signals so a
 /// change schedules a frame.
-pub(crate) fn render_stepper_node(
+pub fn render_stepper_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<StepperRenderState>>,
     env: &Environment,
@@ -174,7 +181,11 @@ pub(crate) fn render_stepper_node(
     render_stepper_parts(ctx, state, env);
 }
 
-pub(crate) fn render_stepper_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_stepper_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<StepperRenderState>>,
     env: &Environment,
@@ -338,7 +349,7 @@ pub(crate) fn render_stepper_parts(
     );
 }
 
-pub(crate) fn measure_stepper_intrinsic(
+pub fn measure_stepper_intrinsic(
     stepper: &StepperConfig,
     state: &mut HydroState,
     env: &Environment,
@@ -346,7 +357,9 @@ pub(crate) fn measure_stepper_intrinsic(
 ) -> LayoutSize {
     let metrics = theme.stepper_metrics();
     let label_size = measure_label_intrinsic(&stepper.label, state, env, theme);
-    let controls_width = metrics.button_intrinsic_size * 2.0 + metrics.button_spacing;
+    let controls_width = metrics
+        .button_intrinsic_size
+        .mul_add(2.0, metrics.button_spacing);
     let label_width = f64::from(label_size.width);
     let width = if label_width > 0.0 {
         label_width + metrics.label_spacing + controls_width
@@ -354,14 +367,17 @@ pub(crate) fn measure_stepper_intrinsic(
         controls_width
     };
     let height = f64::from(label_size.height).max(metrics.button_intrinsic_size);
-    LayoutSize::new(width as f32, height as f32)
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
 }
 
 /// Emits a retained stepper's accessibility node for the semantic walk — the
 /// same node `stepper_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_stepper_accessibility(
+pub fn emit_stepper_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<StepperRenderState>>,
     env: &Environment,
@@ -389,7 +405,7 @@ fn stepper_control_and_label_bounds(
     let button_size = bounds
         .height()
         .clamp(metrics.button_min_size, metrics.button_max_size);
-    let controls_width = button_size * 2.0 + metrics.button_spacing;
+    let controls_width = button_size.mul_add(2.0, metrics.button_spacing);
     let controls_x0 = (bounds.x1 - controls_width).max(bounds.x0);
     let button_y0 = bounds.y0 + ((bounds.height() - button_size) / 2.0).max(0.0);
     let controls = kurbo::Rect::new(

@@ -91,8 +91,8 @@ fn popup_bounds_of(runtime: &mut HeadlessRuntime, label: &str) -> accesskit::Rec
 
 fn center(rect: accesskit::Rect) -> (f32, f32) {
     (
-        f64::midpoint(rect.x0, rect.x1) as f32,
-        f64::midpoint(rect.y0, rect.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(rect.x0, rect.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(rect.y0, rect.y1)),
     )
 }
 
@@ -149,8 +149,8 @@ fn selection_menu_nested_command_dispatches() {
     let field_center = field_bounds.center();
     click(
         &mut runtime,
-        field_center.x as f32,
-        field_center.y as f32,
+        crate::num_cast::f64_as_f32(field_center.x),
+        crate::num_cast::f64_as_f32(field_center.y),
         PointerButton::Primary,
     );
     runtime.push_input_event(InputEvent::Key {
@@ -170,8 +170,8 @@ fn selection_menu_nested_command_dispatches() {
     // it collapses the range before the menu builds, hiding the custom items.
     click(
         &mut runtime,
-        (field_bounds.x0 + 8.0) as f32,
-        field_center.y as f32,
+        crate::num_cast::f64_as_f32(field_bounds.x0 + 8.0),
+        crate::num_cast::f64_as_f32(field_center.y),
         PointerButton::Secondary,
     );
 
@@ -196,8 +196,8 @@ fn selection_menu_nested_command_dispatches() {
     };
     click(
         &mut runtime,
-        f64::midpoint(submenu_row.x0, submenu_row.x1) as f32,
-        f64::midpoint(submenu_row.y0, submenu_row.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(submenu_row.x0, submenu_row.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(submenu_row.y0, submenu_row.y1)),
         PointerButton::Primary,
     );
 

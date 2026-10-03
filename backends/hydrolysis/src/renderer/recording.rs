@@ -27,18 +27,18 @@ use waterui_graphics::{HeldResources, RecordingResources};
 /// One positioned glyph in a shaped run — the currency text shaping hands
 /// the recording.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Glyph {
+pub struct Glyph {
     /// Glyph identifier within its font.
     pub(crate) id: u32,
     /// X offset within the run.
     pub(crate) x: f32,
     /// Y offset within the run.
-    pub(crate) y: f32,
+    pub y: f32,
 }
 
 /// A run of glyphs from one font that share every drawing attribute.
 #[derive(Debug)]
-pub(crate) struct GlyphRun<'a> {
+pub struct GlyphRun<'a> {
     /// The font these glyphs are indexed in.
     pub(crate) font: &'a FontData,
     /// Em size in pixels.
@@ -146,7 +146,7 @@ enum Op {
 /// enforces. Checked at this boundary — the first hydrolysis-owned point —
 /// so a malformed `peniko::ImageData` fails fast with the expected and
 /// actual byte counts instead of surfacing deep inside the engine.
-pub(crate) fn assert_well_formed_image(image: &peniko::ImageData) {
+pub fn assert_well_formed_image(image: &peniko::ImageData) {
     let actual = image.data.len();
     let Some(expected) = image.format.size_in_bytes(image.width, image.height) else {
         panic!(
@@ -177,7 +177,7 @@ pub(crate) fn assert_well_formed_image(image: &peniko::ImageData) {
 /// can show the recording that names them. The table alone already dedups by
 /// content hash — the identity key here keeps that hash, and the engine
 /// upload behind a cache miss, out of the per-frame lowering path.
-pub(crate) struct SceneResources {
+pub struct SceneResources {
     /// The `SceneContent::build_scene` resource table, shared with every scene
     /// view this engine draws.
     inner: waterui_graphics::SceneResources,
@@ -241,7 +241,7 @@ impl SceneResources {
     }
 
     /// The table `SceneContent::build_scene` calls register through.
-    pub(crate) fn waterui(&self) -> &waterui_graphics::SceneResources {
+    pub(crate) const fn waterui(&self) -> &waterui_graphics::SceneResources {
         &self.inner
     }
 
@@ -364,7 +364,7 @@ impl Recording {
     ///
     /// Layer scopes alone emit clip geometry in the lowered content, matching
     /// what the old encoder counted as non-empty.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub(crate) const fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }
 
@@ -522,7 +522,7 @@ impl Recording {
     }
 
     /// Appends `other` under `placement`.
-    pub(crate) fn append(&mut self, other: &Recording, placement: Affine) {
+    pub(crate) fn append(&mut self, other: &Self, placement: Affine) {
         self.ops
             .extend(other.ops.iter().cloned().map(|op| match op {
                 Op::Fill {
@@ -624,7 +624,7 @@ impl Recording {
 
     /// Push scopes still open, for the tracked-stack invariant the flush
     /// asserts.
-    pub(crate) fn open_clip_count(&self) -> u32 {
+    pub(crate) const fn open_clip_count(&self) -> u32 {
         self.open_layers
     }
 
@@ -683,6 +683,10 @@ impl Recording {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn lower(
     ops: &[Op],
     index: &mut usize,
@@ -834,7 +838,7 @@ fn shape_data<S: Shape + 'static>(rule: Fill, shape: &S) -> ShapeData {
 }
 
 /// The working colour of a peniko sRGB colour.
-pub(crate) fn working_color(color: peniko::Color) -> WorkingColor {
+pub fn working_color(color: peniko::Color) -> WorkingColor {
     WorkingColor::new(color.convert::<cherenkov::LinearDisplayP3>().components)
 }
 
@@ -897,7 +901,7 @@ fn interpolation(cs: peniko::color::ColorSpaceTag) -> Interpolation {
     }
 }
 
-fn extend(extend: peniko::Extend) -> Extend {
+const fn extend(extend: peniko::Extend) -> Extend {
     match extend {
         peniko::Extend::Pad => Extend::Pad,
         peniko::Extend::Repeat => Extend::Repeat,
@@ -905,7 +909,7 @@ fn extend(extend: peniko::Extend) -> Extend {
     }
 }
 
-fn sampling(quality: peniko::ImageQuality) -> Sampling {
+const fn sampling(quality: peniko::ImageQuality) -> Sampling {
     match quality {
         peniko::ImageQuality::Low => Sampling::Nearest,
         peniko::ImageQuality::Medium | peniko::ImageQuality::High => Sampling::Linear,
@@ -957,7 +961,7 @@ fn blend_mode(mode: BlendMode) -> cherenkov::BlendMode {
 /// space; image patterns carry their transform themselves; gradient geometry
 /// is moved point by point, so a non-uniform scale on a radial gradient keeps
 /// its centre and scales its radii by the transform's mean scale.
-pub(crate) fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint {
+pub fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint {
     let Some(transform) = transform else {
         return paint;
     };
@@ -966,7 +970,7 @@ pub(crate) fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint 
     }
     let scale = {
         let [a, b, c, d, _, _] = transform.as_coeffs();
-        f64::midpoint((a * a + b * b).sqrt(), (c * c + d * d).sqrt())
+        f64::midpoint(a.hypot(b), c.hypot(d))
     };
     match paint {
         Paint::Linear(mut gradient) => {

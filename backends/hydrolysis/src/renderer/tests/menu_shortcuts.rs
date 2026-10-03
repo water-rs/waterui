@@ -108,8 +108,8 @@ fn bounds_of(runtime: &mut HeadlessRuntime, role: Role, label: &str) -> accesski
 fn click_label(runtime: &mut HeadlessRuntime, role: Role, label: &str, button: PointerButton) {
     let bounds = bounds_of(runtime, role, label);
     let (x, y) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     for event in click(x, y, button) {
         runtime.push_input_event(event);
@@ -123,10 +123,10 @@ fn is_ink(px: [u8; 4]) -> bool {
 
 /// The rightmost ink column inside `row` in the captured frame, if any.
 fn rightmost_ink(snapshot: &crate::HeadlessSnapshot, row: kurbo::Rect) -> Option<u32> {
-    let x0 = row.x0.max(0.0) as u32;
-    let x1 = (row.x1 as u32).min(snapshot.width - 1);
-    let y0 = row.y0.max(0.0) as u32;
-    let y1 = (row.y1 as u32).min(snapshot.height - 1);
+    let x0 = crate::num_cast::f64_as_u32(row.x0.max(0.0));
+    let x1 = (crate::num_cast::f64_as_u32(row.x1)).min(snapshot.width - 1);
+    let y0 = crate::num_cast::f64_as_u32(row.y0.max(0.0));
+    let y1 = (crate::num_cast::f64_as_u32(row.y1)).min(snapshot.height - 1);
     (x0..=x1).rev().find(|x| {
         (y0..=y1).any(|y| {
             let index = ((y * snapshot.width + *x) * 4) as usize;
@@ -173,8 +173,8 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
     // the accessory, so `context_menu_row_frames` over-reports.
     let host = bounds_of(&mut runtime, Role::Button, "host");
     for event in click(
-        f64::midpoint(host.x0, host.x1) as f32,
-        f64::midpoint(host.y0, host.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(host.x0, host.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(host.y0, host.y1)),
         PointerButton::Secondary,
     ) {
         runtime.push_input_event(event);
@@ -219,7 +219,7 @@ fn command_shortcut_renders_a_trailing_aligned_hint() {
         (trailing[0].abs_diff(trailing[1])) <= 2,
         "shortcut hints share one trailing edge: {trailing:?}"
     );
-    let hint_edge = (menu_frame.x1 - row_inset) as u32;
+    let hint_edge = crate::num_cast::f64_as_u32(menu_frame.x1 - row_inset);
     assert!(
         trailing[0].abs_diff(hint_edge) <= 2,
         "hint hugs the row's trailing inset: ink {trailing:?} edge {hint_edge}"
@@ -331,8 +331,8 @@ fn context_menu_shortcut_fires_only_while_open() {
     // before any key pump discards it.
     let bounds = bounds_of(&mut runtime, Role::Button, "host");
     let (x, y) = (
-        f64::midpoint(bounds.x0, bounds.x1) as f32,
-        f64::midpoint(bounds.y0, bounds.y1) as f32,
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.x0, bounds.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(bounds.y0, bounds.y1)),
     );
     let chord = Modifiers {
         control: true,

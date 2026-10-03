@@ -14,24 +14,27 @@ use waterui_text::styled::StyledStr;
 /// Render context passed to handlers.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
+    /// The transform placing the widget in the scene.
     pub transform: kurbo::Affine,
+    /// The transform used to resolve hit tests inside the widget.
     pub hit_transform: kurbo::Affine,
+    /// The widget's bounds in scene coordinates.
     pub bounds: kurbo::Rect,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HydrolysisWindowOrigin {
+pub struct HydrolysisWindowOrigin {
     pub x: f32,
     pub y: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HydrolysisTextContextMenuMode {
+pub enum HydrolysisTextContextMenuMode {
     Overlay,
     NativeWindow,
 }
 
-pub(crate) struct WidgetRenderContext<'a> {
+pub struct WidgetRenderContext<'a> {
     renderer: &'a mut HydrolysisRenderer,
     pub transform: kurbo::Affine,
     pub hit_transform: kurbo::Affine,
@@ -40,7 +43,7 @@ pub(crate) struct WidgetRenderContext<'a> {
 
 /// An explicit offer from a native widget-owned content region.
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn bounded_proposal(bounds: kurbo::Rect) -> waterui_core::layout::ProposalSize {
+pub fn bounded_proposal(bounds: kurbo::Rect) -> waterui_core::layout::ProposalSize {
     waterui_core::layout::ProposalSize::new(
         Some(bounds.width() as f32),
         Some(bounds.height() as f32),
@@ -48,7 +51,7 @@ pub(crate) fn bounded_proposal(bounds: kurbo::Rect) -> waterui_core::layout::Pro
 }
 
 impl RenderContext {
-    pub(crate) fn with_transforms(
+    pub(crate) const fn with_transforms(
         bounds: kurbo::Rect,
         transform: kurbo::Affine,
         hit_transform: kurbo::Affine,
@@ -61,6 +64,7 @@ impl RenderContext {
     }
 
     #[must_use]
+    /// The context for a child widget at `transform`/`bounds`, composed with this one.
     pub fn child(&self, transform: kurbo::Affine, bounds: kurbo::Rect) -> Self {
         Self {
             transform: self.transform * transform,
@@ -71,7 +75,7 @@ impl RenderContext {
 }
 
 impl<'a> WidgetRenderContext<'a> {
-    pub(crate) fn new(renderer: &'a mut HydrolysisRenderer, ctx: RenderContext) -> Self {
+    pub(crate) const fn new(renderer: &'a mut HydrolysisRenderer, ctx: RenderContext) -> Self {
         Self {
             renderer,
             transform: ctx.transform,
@@ -80,7 +84,7 @@ impl<'a> WidgetRenderContext<'a> {
         }
     }
 
-    pub(crate) fn render_context(&self) -> RenderContext {
+    pub(crate) const fn render_context(&self) -> RenderContext {
         RenderContext::with_transforms(self.bounds, self.transform, self.hit_transform)
     }
 
@@ -94,7 +98,7 @@ impl<'a> WidgetRenderContext<'a> {
         self.render_context().child(transform, bounds)
     }
 
-    pub(crate) fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
+    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
         self.renderer
     }
 

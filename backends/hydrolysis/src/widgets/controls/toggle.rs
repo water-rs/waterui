@@ -23,7 +23,7 @@ use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 /// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
 /// control + accessibility, and its main label is held as a [`RetainedSubview`]
 /// built once and re-flushed each frame so reactive label content stays live.
-pub(crate) struct ToggleRenderState {
+pub struct ToggleRenderState {
     config: ToggleConfig,
     label_view: RetainedSubview,
 }
@@ -61,7 +61,9 @@ impl HydroNativeView for Native<ToggleConfig> {
 /// Emits a toggle's accessibility node from its config. Shared by the rendered
 /// `Widget`-node flush (which passes its [`RenderContext`]) and the semantic
 /// emission walk (which passes `None` — a semantic node carries no bounds).
-pub(crate) fn toggle_accessibility(
+// empty when the accessibility feature is off
+#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+pub fn toggle_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     toggle: &ToggleConfig,
@@ -114,7 +116,7 @@ pub(crate) fn toggle_accessibility(
 
 /// Measures a retained toggle leaf from its [`ToggleRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and render agree.
-pub(crate) fn measure_toggle_node(
+pub fn measure_toggle_node(
     render_state: &ToggleRenderState,
     _proposal: ProposalSize,
     state: &mut HydroState,
@@ -130,12 +132,15 @@ pub(crate) fn measure_toggle_node(
         metrics.width
     };
     let height = f64::from(label_size.height).max(metrics.height);
-    ViewDimensions::new(LayoutSize::new(width as f32, height as f32))
+    ViewDimensions::new(LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    ))
 }
 
 /// Renders a retained toggle leaf every flush: emits a11y (unless hidden) then the
 /// control + label + tap target, reading the config's live signals each frame.
-pub(crate) fn render_toggle_node(
+pub fn render_toggle_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ToggleRenderState>>,
     env: &Environment,
@@ -156,7 +161,7 @@ pub(crate) fn render_toggle_node(
     render_toggle_parts(ctx, state, env);
 }
 
-pub(crate) fn render_toggle_parts(
+pub fn render_toggle_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ToggleRenderState>>,
     env: &Environment,
@@ -298,7 +303,7 @@ fn toggle_binding_action(
     }
 }
 
-pub(crate) fn measure_toggle_intrinsic(
+pub fn measure_toggle_intrinsic(
     toggle: &ToggleConfig,
     state: &mut HydroState,
     env: &Environment,
@@ -313,9 +318,16 @@ pub(crate) fn measure_toggle_intrinsic(
         metrics.width
     };
     let height = f64::from(label_size.height).max(metrics.height);
-    LayoutSize::new(width as f32, height as f32)
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(width),
+        crate::num_cast::f64_as_f32(height),
+    )
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn toggle_control_and_label_bounds(
     bounds: kurbo::Rect,
     style: ToggleStyle,
@@ -380,7 +392,7 @@ fn toggle_control_and_label_bounds(
 /// same node `toggle_accessibility` registers, with no bounds. The label
 /// sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_toggle_accessibility(
+pub fn emit_toggle_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<ToggleRenderState>>,
     env: &Environment,

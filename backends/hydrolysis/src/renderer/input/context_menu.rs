@@ -10,10 +10,12 @@
 //! lent to the presentation on open and handed back on close, so their state
 //! and identity survive repeated presentations.
 
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 
 /// Gap between the lifted preview and its accessory, in logical points.
-pub(crate) const CONTEXT_MENU_ACCESSORY_GAP: f64 = 8.0;
+pub const CONTEXT_MENU_ACCESSORY_GAP: f64 = 8.0;
 /// Corner radius of the lift shadow, in logical points.
 const CONTEXT_MENU_LIFT_RADIUS: f64 = 12.0;
 /// Blur radius of the lift shadow, in logical points.
@@ -27,7 +29,7 @@ const CONTEXT_MENU_SHADOW_OPACITY: f32 = 0.35;
 /// [`PopupMenuState`] for the same lifetime as the menu window; when the menu
 /// closes — by item choice, outside press, or `dismiss_requests` — the
 /// presentation drops and the sub-views return to their owning node's slots.
-pub(crate) struct ContextMenuPresentation {
+pub struct ContextMenuPresentation {
     /// The context-menu target's rect in hit space: where the preview is
     /// lifted and what the accessory anchors to.
     pub(crate) source_bounds: kurbo::Rect,
@@ -113,6 +115,10 @@ struct ContextMenuLayout {
 /// remains after the accessory and the menu. A lift that cannot move (the
 /// source stays lit through the dim) instead packs accessory and menu
 /// contiguously on the roomier side, the accessory closest to the source.
+#[expect(
+    clippy::similar_names,
+    reason = "the names follow the fixture domain vocabulary; renaming would obscure rather than clarify"
+)]
 fn context_menu_presentation_layout(
     source: kurbo::Rect,
     lift_movable: bool,
@@ -345,7 +351,10 @@ impl HydrolysisRenderer {
                 self.window_bounds,
             )
             .menu;
-            LayoutPoint::new(origin.x0 as f32, origin.y0 as f32)
+            LayoutPoint::new(
+                crate::num_cast::f64_as_f32(origin.x0),
+                crate::num_cast::f64_as_f32(origin.y0),
+            )
         } else {
             origin
         };
@@ -474,6 +483,14 @@ impl HydrolysisRenderer {
     /// `transform` is the window's encode transform; the sub-views flush under
     /// an identity hit transform because their frames are already in hit
     /// space, the convention the text context menu overlay follows.
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+    )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+    )]
     pub(crate) fn render_context_menu_presentation(&mut self, transform: kurbo::Affine) {
         let Some(mut presentation) = self.popup_menu.context_menu_presentation.take() else {
             return;
@@ -511,8 +528,12 @@ impl HydrolysisRenderer {
             let (size, _stretch) =
                 accessory.patch_and_measure(self, &presentation_env, ProposalSize::UNSPECIFIED);
             Some((
-                f64::from(size.width) + metrics.horizontal_padding * 2.0,
-                f64::from(size.height) + metrics.vertical_padding * 2.0,
+                metrics
+                    .horizontal_padding
+                    .mul_add(2.0, f64::from(size.width)),
+                metrics
+                    .vertical_padding
+                    .mul_add(2.0, f64::from(size.height)),
             ))
         } else {
             None

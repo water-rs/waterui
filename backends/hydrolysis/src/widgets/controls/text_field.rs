@@ -23,7 +23,7 @@ use waterui_text::styled::StyledStr;
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
-pub(crate) struct TextFieldRenderState {
+pub struct TextFieldRenderState {
     config: ResolvedTextFieldConfig,
     label_view: RetainedSubview,
     /// The caret/selection anchor+focus for this field, owned by the node so it
@@ -56,7 +56,7 @@ impl TextFieldRenderState {
 /// drives the input model + accessibility, and its floating label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame under the animated
 /// label transform so reactive label content stays live.
-pub(crate) struct SecureFieldRenderState {
+pub struct SecureFieldRenderState {
     config: SecureFieldConfig,
     label_view: RetainedSubview,
     /// Node-owned caret/selection state; see [`TextFieldRenderState::selection_slot`].
@@ -158,7 +158,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
 /// render-driven a11y, so the inline a11y is emitted by `render_text_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
-pub(crate) fn render_text_field_node(
+pub fn render_text_field_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TextFieldRenderState>>,
     env: &Environment,
@@ -178,7 +178,11 @@ pub(crate) fn render_text_field_node(
     }
 }
 
-pub(crate) fn render_text_field_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_text_field_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<TextFieldRenderState>>,
     env: &Environment,
@@ -413,14 +417,14 @@ pub(crate) fn render_text_field_parts(
         StyledStr::plain(value.clone()),
         HorizontalAlignment::Leading,
         env,
-        Some(text_bounds.width() as f32),
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
     );
     let display_layout = HydrolysisRenderer::build_text_layout(
         ctx.state_mut(),
         display_styled.clone(),
         HorizontalAlignment::Leading,
         env,
-        Some(text_bounds.width() as f32),
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
     );
     let display_layout_height = display_layout.height();
     // A single-line field carrying no inside label — neither a label view
@@ -544,7 +548,7 @@ pub(crate) fn render_text_field_parts(
 /// render-driven a11y, so the inline a11y is emitted by `render_secure_field_parts`
 /// itself; this node suppresses it when the field is accessibility-hidden (the
 /// dispatch path's render-driven suppression contract).
-pub(crate) fn render_secure_field_node(
+pub fn render_secure_field_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<SecureFieldRenderState>>,
     env: &Environment,
@@ -564,7 +568,11 @@ pub(crate) fn render_secure_field_node(
     }
 }
 
-pub(crate) fn render_secure_field_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_secure_field_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<SecureFieldRenderState>>,
     env: &Environment,
@@ -715,7 +723,7 @@ pub(crate) fn render_secure_field_parts(
         StyledStr::plain(masked),
         HorizontalAlignment::Leading,
         env,
-        Some(text_bounds.width() as f32),
+        Some(crate::num_cast::f64_as_f32(text_bounds.width())),
     );
     // Secure fields are single-line; with no inside label the masked text
     // centres vertically in the container (#85).
@@ -822,7 +830,7 @@ pub(crate) fn render_secure_field_parts(
 /// Measures a retained text-field leaf from its [`TextFieldRenderState`], mirroring
 /// [`measure_text_field_intrinsic`] but reading the label size from its already-built
 /// [`RetainedSubview`] so layout and the floating-label render agree.
-pub(crate) fn measure_text_field_node(
+pub fn measure_text_field_node(
     render_state: &TextFieldRenderState,
     proposal: ProposalSize,
     state: &mut HydroState,
@@ -843,7 +851,7 @@ pub(crate) fn measure_text_field_node(
 /// Measures a retained secure-field leaf from its [`SecureFieldRenderState`],
 /// mirroring [`measure_secure_field_intrinsic`] but reading the label size from its
 /// already-built [`RetainedSubview`] so layout and the floating-label render agree.
-pub(crate) fn measure_secure_field_node(
+pub fn measure_secure_field_node(
     render_state: &SecureFieldRenderState,
     proposal: ProposalSize,
     state: &mut HydroState,
@@ -913,9 +921,9 @@ fn flush_material_label(
     let progress = f64::from(progress.clamp(0.0, 1.0));
     let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
-    let scale = 1.0 + (FLOATING_LABEL_SCALE - 1.0) * progress;
-    let x = resting.x0 + (floating.x0 - resting.x0) * progress;
-    let y = resting.y0 + (floating.y0 - resting.y0) * progress;
+    let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
+    let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
+    let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
     let width = floating.width() / scale;
     let height = label_height / scale;
     let transform = kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale);
@@ -954,9 +962,9 @@ fn flush_material_prompt_label(
     let progress = f64::from(progress.clamp(0.0, 1.0));
     let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
-    let scale = 1.0 + (FLOATING_LABEL_SCALE - 1.0) * progress;
-    let x = resting.x0 + (floating.x0 - resting.x0) * progress;
-    let y = resting.y0 + (floating.y0 - resting.y0) * progress;
+    let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
+    let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
+    let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
     let width = floating.width() / scale;
     let child = ctx.child(
         kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale),
@@ -1051,7 +1059,7 @@ fn material_input_cursor_rect(
 /// keyboard events reaching the focused field edit against a live selection,
 /// and zero rects where the rendered path takes its layout's.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_text_field_accessibility(
+pub fn emit_text_field_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<TextFieldRenderState>>,
     env: &Environment,
@@ -1163,7 +1171,7 @@ pub(crate) fn emit_text_field_accessibility(
 /// for the semantic walk — the same node `render_secure_field_parts`
 /// registers, with no bounds.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_secure_field_accessibility(
+pub fn emit_secure_field_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<SecureFieldRenderState>>,
     env: &Environment,
@@ -1272,7 +1280,7 @@ mod tests {
         assert_eq!(
             material_input_content_alpha(
                 true,
-                CONTENT_ENTER_DELAY_PORTION + (CONTENT_VISIBLE_PORTION * 0.5),
+                CONTENT_VISIBLE_PORTION.mul_add(0.5, CONTENT_ENTER_DELAY_PORTION),
             ),
             0.5
         );

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::future_not_send,
-    reason = "the test runtime is single-threaded; its futures are never awaited across threads"
-)]
-
 mod collection_update;
 mod frame_work;
 mod slider_size_indicator;
@@ -215,7 +210,7 @@ impl LocalExecutor for TestLocalExecutor {
     }
 }
 
-pub(crate) fn test_environment() -> Environment {
+pub fn test_environment() -> Environment {
     let (parked_tx, parked_rx) = mpsc::channel();
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
         TestLocalExecutor { parked_tx },
@@ -237,7 +232,7 @@ pub(crate) fn test_environment() -> Environment {
 /// runtime that would install a real executor exists, so a test that needs
 /// spawned work to actually *run* — a `GpuView`'s async `setup`, which never
 /// completes on the parking [`TestLocalExecutor`] — has to leave the slot open.
-pub(crate) fn pumped_test_environment() -> Environment {
+pub fn pumped_test_environment() -> Environment {
     themed_test_environment()
 }
 
@@ -256,7 +251,7 @@ fn themed_test_environment() -> Environment {
 /// Every badge indicator rect the test theme was asked to draw, in window
 /// coordinates. Tests read it back via `env.get::<BadgeDrawLog>()`.
 #[derive(Clone, Default)]
-pub(crate) struct BadgeDrawLog(pub Rc<RefCell<Vec<Rect>>>);
+pub struct BadgeDrawLog(pub Rc<RefCell<Vec<Rect>>>);
 
 #[derive(Clone, Copy)]
 struct RecursivelyErasedView;
@@ -402,8 +397,8 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
     assert!(!switch_target.bounds.contains(label_point));
     for expected in [true, false, true, false] {
         let _ = renderer.handle_pointer_down(
-            label_point.x as f32,
-            label_point.y as f32,
+            crate::num_cast::f64_as_f32(label_point.x),
+            crate::num_cast::f64_as_f32(label_point.y),
             PointerButton::Primary,
             &env,
         );
@@ -418,8 +413,8 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
             "label press must not spawn a switch ripple"
         );
         let _ = renderer.handle_pointer_up(
-            label_point.x as f32,
-            label_point.y as f32,
+            crate::num_cast::f64_as_f32(label_point.x),
+            crate::num_cast::f64_as_f32(label_point.y),
             PointerButton::Primary,
             &env,
         );
@@ -431,8 +426,8 @@ fn labeled_toggle_keeps_label_activation_out_of_switch_visual_interaction() {
         f64::midpoint(switch_target.bounds.y0, switch_target.bounds.y1),
     );
     let _ = renderer.handle_pointer_down(
-        switch_point.x as f32,
-        switch_point.y as f32,
+        crate::num_cast::f64_as_f32(switch_point.x),
+        crate::num_cast::f64_as_f32(switch_point.y),
         PointerButton::Primary,
         &env,
     );
@@ -800,8 +795,12 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         f64::midpoint(zoom_in.bounds.x0, zoom_in.bounds.x1),
         f64::midpoint(zoom_in.bounds.y0, zoom_in.bounds.y1),
     );
-    let _ =
-        renderer.handle_pointer_down(point.x as f32, point.y as f32, PointerButton::Primary, &env);
+    let _ = renderer.handle_pointer_down(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+        PointerButton::Primary,
+        &env,
+    );
     assert!(
         renderer.flush_window_tree(
             &env,
@@ -812,8 +811,8 @@ fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
         "pressed controls must survive a retained redraw before pointer release"
     );
     assert!(renderer.handle_pointer_up(
-        point.x as f32,
-        point.y as f32,
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
         PointerButton::Primary,
         &env,
     ));
@@ -1532,9 +1531,17 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
         fn get_cookies(&self) -> impl Future<Output = Vec<Cookie<'static>>> {
             ready(Vec::new())
         }
+        #[expect(
+            clippy::future_not_send,
+            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
+        )]
         fn run_javascript(&self, _script: &str) -> impl Future<Output = Result<Str, Str>> {
             ready(Err(Str::from_static("no page")))
         }
+        #[expect(
+            clippy::future_not_send,
+            reason = "the returned future runs on the engine's single-threaded executor; the mock captures !Send test state that never crosses a thread"
+        )]
         fn call_async_javascript(&self, _body: &str) -> impl Future<Output = Result<Str, Str>> {
             ready(Err(Str::from_static("no page")))
         }
@@ -2261,7 +2268,7 @@ fn inactive_modal_scope_does_not_trap_keyboard_focus() {
 }
 
 #[derive(Default)]
-pub(crate) struct MinimalTestTheme {
+pub struct MinimalTestTheme {
     badge_draws: Rc<RefCell<Vec<Rect>>>,
     /// Forces the tab item layout the theme reports; `None` defaults to
     /// `Vertical` like [`WidgetTheme::tabs_item_layout`]'s default.
@@ -2556,7 +2563,7 @@ impl WidgetTheme for MinimalTestTheme {
             min_track_width: 72.0,
             // A 6pt track for the ExtraSmall default, four points deeper per
             // size — the per-size tests read this back off the drawn track.
-            track_height: 6.0 + 4.0 * size as u8 as f64,
+            track_height: 4.0f64.mul_add(f64::from(size as u8), 6.0),
             handle_width: 4.0,
             handle_height: 44.0,
         }
@@ -3031,16 +3038,36 @@ fn double_click_word_selection_survives_pointer_release() {
     let point = caret_point_in_target(&target, 8);
     renderer.text_editing.text_input_targets.push(target);
 
-    renderer.handle_pointer_down(point.x as f32, point.y as f32, PointerButton::Primary, &env);
-    renderer.handle_pointer_up(point.x as f32, point.y as f32, PointerButton::Primary, &env);
-    renderer.handle_pointer_down(point.x as f32, point.y as f32, PointerButton::Primary, &env);
+    renderer.handle_pointer_down(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+        PointerButton::Primary,
+        &env,
+    );
+    renderer.handle_pointer_up(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+        PointerButton::Primary,
+        &env,
+    );
+    renderer.handle_pointer_down(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+        PointerButton::Primary,
+        &env,
+    );
     assert_eq!(
         normalized_selection_range(selection.borrow().anchor, selection.borrow().focus),
         6..11,
         "double-click must select the whole word under the pointer"
     );
 
-    renderer.handle_pointer_up(point.x as f32, point.y as f32, PointerButton::Primary, &env);
+    renderer.handle_pointer_up(
+        crate::num_cast::f64_as_f32(point.x),
+        crate::num_cast::f64_as_f32(point.y),
+        PointerButton::Primary,
+        &env,
+    );
     assert_eq!(
         normalized_selection_range(selection.borrow().anchor, selection.borrow().focus),
         6..11,
@@ -3063,21 +3090,21 @@ fn double_click_drag_extends_selection_by_words() {
     renderer.text_editing.text_input_targets.push(target);
 
     renderer.handle_pointer_down(
-        world_point.x as f32,
-        world_point.y as f32,
+        crate::num_cast::f64_as_f32(world_point.x),
+        crate::num_cast::f64_as_f32(world_point.y),
         PointerButton::Primary,
         &env,
     );
     renderer.handle_pointer_up(
-        world_point.x as f32,
-        world_point.y as f32,
+        crate::num_cast::f64_as_f32(world_point.x),
+        crate::num_cast::f64_as_f32(world_point.y),
         PointerButton::Primary,
         &env,
     );
     // Second click stays held: this is a double-click-drag, not a third click.
     renderer.handle_pointer_down(
-        world_point.x as f32,
-        world_point.y as f32,
+        crate::num_cast::f64_as_f32(world_point.x),
+        crate::num_cast::f64_as_f32(world_point.y),
         PointerButton::Primary,
         &env,
     );
@@ -3088,15 +3115,19 @@ fn double_click_drag_extends_selection_by_words() {
 
     // Still holding the second click's button, drag back across "hello": the
     // selection grows to cover both whole words, not a caret at the pointer.
-    renderer.handle_pointer_move(hello_point.x as f32, hello_point.y as f32, &env);
+    renderer.handle_pointer_move(
+        crate::num_cast::f64_as_f32(hello_point.x),
+        crate::num_cast::f64_as_f32(hello_point.y),
+        &env,
+    );
     assert_eq!(
         normalized_selection_range(selection.borrow().anchor, selection.borrow().focus),
         0..11,
         "double-click drag must extend the selection word by word"
     );
     renderer.handle_pointer_up(
-        hello_point.x as f32,
-        hello_point.y as f32,
+        crate::num_cast::f64_as_f32(hello_point.x),
+        crate::num_cast::f64_as_f32(hello_point.y),
         PointerButton::Primary,
         &env,
     );

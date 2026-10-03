@@ -23,7 +23,7 @@ use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 /// reaches a persistent window's install pass — never on a transient target,
 /// which would spend the view's single install on a surface that dies with
 /// the call.
-pub(crate) struct GpuContentRuntime {
+pub struct GpuContentRuntime {
     pub(crate) view: GpuContentView,
     /// `true` once `take_engine_content` has run; the producer is on the
     /// engine from then on and only `gpu_content_size`/transform edits apply.
@@ -31,7 +31,7 @@ pub(crate) struct GpuContentRuntime {
 }
 
 impl GpuContentRuntime {
-    pub(crate) fn new(view: GpuContentView) -> Self {
+    pub(crate) const fn new(view: GpuContentView) -> Self {
         Self {
             view,
             installed: false,
@@ -47,7 +47,7 @@ impl GpuContentRuntime {
 /// device or a reborn mount starts the source again with the new output.
 /// `receiver` is `Some` once the first `ExternalFrameLayer` carrying this
 /// runtime has started the source on the window's device.
-pub(crate) struct ExternalFrameRuntime {
+pub struct ExternalFrameRuntime {
     pub(crate) view: ExternalFrameView,
     /// The mailbox drain end, installed by the compositor's install pass.
     pub(crate) receiver: Option<FrameReceiver>,
@@ -56,7 +56,7 @@ pub(crate) struct ExternalFrameRuntime {
 }
 
 impl ExternalFrameRuntime {
-    pub(crate) fn new(view: ExternalFrameView) -> Self {
+    pub(crate) const fn new(view: ExternalFrameView) -> Self {
         Self {
             view,
             receiver: None,

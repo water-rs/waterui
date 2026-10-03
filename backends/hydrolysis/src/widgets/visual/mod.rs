@@ -1,1 +1,1 @@
-pub(crate) mod graphics;
+pub mod graphics;

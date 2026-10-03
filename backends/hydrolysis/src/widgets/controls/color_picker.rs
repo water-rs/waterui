@@ -35,7 +35,7 @@ const COLOR_PICKER_MIN_WIDTH: f32 = 160.0;
 /// drives the swatch + accessibility, and its main label is held as a
 /// [`RetainedSubview`] built once and re-flushed each frame so reactive label
 /// content stays live.
-pub(crate) struct ColorPickerRenderState {
+pub struct ColorPickerRenderState {
     config: ColorPickerConfig,
     label_view: RetainedSubview,
 }
@@ -73,7 +73,9 @@ impl HydroNativeView for Native<ColorPickerConfig> {
 /// Emits a color picker's accessibility node from its config. Shared by the
 /// dispatch path ([`Native<ColorPickerConfig>::accessibility`]) and the retained
 /// `Widget`-node path so both produce the same a11y tree.
-pub(crate) fn color_picker_accessibility(
+// empty when the accessibility feature is off
+#[cfg_attr(not(feature = "accessibility"), allow(clippy::missing_const_for_fn))]
+pub fn color_picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     color_picker: &ColorPickerConfig,
@@ -111,7 +113,10 @@ pub(crate) fn color_picker_accessibility(
         // same window with no placement at all.
         let origin = ctx.map(|ctx| {
             let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
-            LayoutPoint::new(bounds.x0 as f32, bounds.y1 as f32)
+            LayoutPoint::new(
+                crate::num_cast::f64_as_f32(bounds.x0),
+                crate::num_cast::f64_as_f32(bounds.y1),
+            )
         });
         let action_target = (!disabled).then(|| {
             let value = color_picker.value.clone();
@@ -170,7 +175,7 @@ pub(crate) fn color_picker_accessibility(
 /// Measures a retained color-picker leaf from its [`ColorPickerRenderState`],
 /// reading the label size from its already-built [`RetainedSubview`] so layout and
 /// render agree.
-pub(crate) fn measure_color_picker_node(
+pub fn measure_color_picker_node(
     render_state: &ColorPickerRenderState,
     _proposal: ProposalSize,
     state: &mut HydroState,
@@ -186,14 +191,14 @@ pub(crate) fn measure_color_picker_node(
     };
     ViewDimensions::new(LayoutSize::new(
         COLOR_PICKER_MIN_WIDTH,
-        (label_height + input_metrics.min_height) as f32,
+        crate::num_cast::f64_as_f32(label_height + input_metrics.min_height),
     ))
 }
 
 /// Renders a retained color-picker leaf every flush: emits a11y (unless hidden)
 /// then the field chrome + swatch + suffix + tap target, reading the value signal
 /// each frame.
-pub(crate) fn render_color_picker_node(
+pub fn render_color_picker_node(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ColorPickerRenderState>>,
     env: &Environment,
@@ -229,11 +234,15 @@ fn measure_color_picker_intrinsic(
     };
     LayoutSize::new(
         COLOR_PICKER_MIN_WIDTH,
-        (label_height + input_metrics.min_height) as f32,
+        crate::num_cast::f64_as_f32(label_height + input_metrics.min_height),
     )
 }
 
-pub(crate) fn render_color_picker_parts(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn render_color_picker_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ColorPickerRenderState>>,
     env: &Environment,
@@ -354,7 +363,10 @@ pub(crate) fn render_color_picker_parts(
         );
     }
 
-    let origin = waterui_core::layout::Point::new(hit_bounds.x0 as f32, hit_bounds.y1 as f32);
+    let origin = waterui_core::layout::Point::new(
+        crate::num_cast::f64_as_f32(hit_bounds.x0),
+        crate::num_cast::f64_as_f32(hit_bounds.y1),
+    );
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();
@@ -378,7 +390,7 @@ pub(crate) fn render_color_picker_parts(
 /// the same node `color_picker_accessibility` registers, with no bounds. The
 /// label sub-view flushes visual-only, so there is nothing else to emit.
 #[cfg(feature = "accessibility")]
-pub(crate) fn emit_color_picker_accessibility(
+pub fn emit_color_picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<ColorPickerRenderState>>,
     env: &Environment,

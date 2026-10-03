@@ -1,8 +1,3 @@
-#![allow(
-    clippy::cast_possible_truncation,
-    reason = "the test harness narrows and wraps layout/pixel coordinates the same way the renderer does"
-)]
-
 //! water-rs/hydrolysis#27 — a control clipped by an ancestor keeps its logical
 //! bounds in the accessibility tree, and activating it dispatches its retained
 //! action instead of a pointer press synthesized at the bounds' centre.
@@ -13,6 +8,17 @@
 //! and the window bounds, so the callers that must produce a real point — a
 //! testing `tap_at`, an automation `pointer tap` — land inside what the user
 //! can see, and a control clipped away entirely fails the query loudly.
+
+mod support {
+    /// Narrows a finite `f64` coordinate to `f32`, rounding to nearest.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "test layout coordinates are finite and well inside f32 range"
+    )]
+    pub const fn f64_as_f32(v: f64) -> f32 {
+        v as f32
+    }
+}
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -125,15 +131,15 @@ fn pointer_tap(runtime: &mut HeadlessRuntime, at: &mut Instant, x: f64, y: f64) 
         InputEvent::PointerDown {
             id: 1,
             kind: PointerKind::Touch,
-            x: x as f32,
-            y: y as f32,
+            x: support::f64_as_f32(x),
+            y: support::f64_as_f32(y),
             button: PointerButton::Primary,
         },
         InputEvent::PointerUp {
             id: 1,
             kind: PointerKind::Touch,
-            x: x as f32,
-            y: y as f32,
+            x: support::f64_as_f32(x),
+            y: support::f64_as_f32(y),
             button: PointerButton::Primary,
         },
     ] {

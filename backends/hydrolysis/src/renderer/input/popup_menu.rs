@@ -1,3 +1,5 @@
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::widgets::controls::button::ListRowChrome;
 use core::ops::RangeInclusive;
@@ -27,7 +29,7 @@ use waterui_text::text;
 /// the desktop runner mount menus without activating them while ordinary
 /// application windows retain their normal focus behavior.
 #[derive(Clone)]
-pub(crate) struct PopupWindowManager(Rc<dyn Fn(Window)>);
+pub struct PopupWindowManager(Rc<dyn Fn(Window)>);
 
 impl PopupWindowManager {
     pub(crate) fn new(show: impl Fn(Window) + 'static) -> Self {
@@ -52,7 +54,7 @@ impl PopupWindowManager {
 /// frame origin becomes the subtree's `HydrolysisWindowOrigin`, the same
 /// value the input dispatcher installs for a root window, so a nested popup
 /// opened from this window anchors to it.
-pub(crate) fn window_in_opening_environment(mut window: Window, env: &Environment) -> Window {
+pub fn window_in_opening_environment(mut window: Window, env: &Environment) -> Window {
     let frame = window.frame.snapshot();
     let content_env = env.extending(HydrolysisWindowOrigin {
         x: frame.x(),
@@ -66,7 +68,7 @@ pub(crate) fn window_in_opening_environment(mut window: Window, env: &Environmen
 }
 
 #[derive(Clone)]
-pub(crate) struct ContextMenuTarget {
+pub struct ContextMenuTarget {
     pub(crate) bounds: kurbo::Rect,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -83,11 +85,11 @@ pub(crate) struct ContextMenuTarget {
     pub(crate) preview: Rc<RefCell<Option<RetainedSubview>>>,
     /// The interactive accessory the owning node lends the open presentation
     /// to anchor to the lifted preview. Returned to the slot on close.
-    pub(crate) accessory: Rc<RefCell<Option<RetainedSubview>>>,
+    pub accessory: Rc<RefCell<Option<RetainedSubview>>>,
 }
 
 #[derive(Clone)]
-pub(crate) enum PopupMenuNode {
+pub enum PopupMenuNode {
     Command {
         label: SemanticLabel,
         plain_label: String,
@@ -107,16 +109,16 @@ pub(crate) enum PopupMenuNode {
     Menu {
         label: SemanticLabel,
         plain_label: String,
-        items: Vec<PopupMenuNode>,
+        items: Vec<Self>,
     },
 }
 
 #[derive(Clone)]
-pub(crate) struct PopupMenuStateGroup(pub(crate) Rc<RefCell<Vec<Binding<WindowState>>>>);
+pub struct PopupMenuStateGroup(pub Rc<RefCell<Vec<Binding<WindowState>>>>);
 
 #[derive(Default)]
-pub(crate) struct PopupMenuState {
-    pub(crate) active_popup_menu_group: Option<PopupMenuStateGroup>,
+pub struct PopupMenuState {
+    pub active_popup_menu_group: Option<PopupMenuStateGroup>,
     /// The drawn presentation around an open `.context_menu` popup — dimmed
     /// backdrop, lifted preview and anchored accessory. `None` when the active
     /// menu was not opened from a context-menu target or carries no preview.
@@ -137,13 +139,13 @@ pub(crate) struct PopupMenuState {
 }
 
 #[derive(Clone)]
-pub(crate) struct PickerMenuEntry {
-    pub(crate) label: String,
+pub struct PickerMenuEntry {
+    pub label: String,
     pub(crate) tag: Id,
 }
 
-pub(crate) struct PickerMenuRequest {
-    pub(crate) entries: Vec<PickerMenuEntry>,
+pub struct PickerMenuRequest {
+    pub entries: Vec<PickerMenuEntry>,
     pub(crate) selection: Binding<Id>,
     pub(crate) open: Rc<Cell<bool>>,
     pub(crate) origin: LayoutPoint,
@@ -201,7 +203,7 @@ impl PopupMenuStateGroup {
 
 impl_extractor!(PopupMenuStateGroup);
 
-pub(crate) fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> LayoutPoint {
+pub fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> LayoutPoint {
     let window_origin = env
         .get::<HydrolysisWindowOrigin>()
         .copied()
@@ -209,7 +211,7 @@ pub(crate) fn popup_window_origin(origin: LayoutPoint, env: &Environment) -> Lay
     LayoutPoint::new(window_origin.x + origin.x, window_origin.y + origin.y)
 }
 
-fn popup_enter_animation() -> Animation {
+const fn popup_enter_animation() -> Animation {
     Animation::bezier(Duration::from_millis(120), 0.2, 0.0, 0.0, 1.0)
 }
 
@@ -236,19 +238,21 @@ fn animated_popup_panel(content: impl View, group: PopupMenuStateGroup) -> impl 
 /// to the drawn `.context_menu` presentation in dark and light
 /// (water-rs/hydrolysis#200). The window leaves `POPUP_MENU_PANEL_MARGIN` of
 /// transparent room on every side for the panel's elevation shadow.
-pub(crate) struct PopupMenuSurface;
+pub struct PopupMenuSurface;
 impl MetadataKey for PopupMenuSurface {}
 
 /// Transparent margin a `PopupWindowManager` menu window leaves around its
 /// panel, in logical points — the room the panel's elevation shadow draws
 /// into inside the window's own surface.
-pub(crate) const POPUP_MENU_PANEL_MARGIN: f64 = 14.0;
+pub const POPUP_MENU_PANEL_MARGIN: f64 = 14.0;
 
 /// A divider row's height: the theme's separator line
 /// (`md.comp.menu.divider.height`, 1 dp) inside the menu's vertical padding
 /// (`md.comp.menu.container.top-space`/`bottom-space`, 8 dp each side).
-pub(crate) fn popup_menu_divider_height(metrics: TextContextMenuMetrics) -> f64 {
-    metrics.separator_thickness + metrics.vertical_padding * 2.0
+pub const fn popup_menu_divider_height(metrics: TextContextMenuMetrics) -> f64 {
+    metrics
+        .vertical_padding
+        .mul_add(2.0, metrics.separator_thickness)
 }
 
 /// The horizontal gap between a row's label and its shortcut hint.
@@ -259,7 +263,7 @@ const MENU_SHORTCUT_HINT_GAP: f64 = 12.0;
 /// intrinsic height, and the row's horizontal label inset — the theme's
 /// menu-item inset, which every row's leading edge shares.
 #[derive(Clone, Copy)]
-pub(crate) struct PopupMenuTextMetrics {
+pub struct PopupMenuTextMetrics {
     /// The height a supporting (caption) line adds to a subtitled row.
     pub(crate) subtitle_height: f64,
     /// The widest label or supporting line across the menu, measured
@@ -270,10 +274,10 @@ pub(crate) struct PopupMenuTextMetrics {
     pub(crate) max_hint_width: f64,
     /// The horizontal inset between a row's edge and its label —
     /// `md.comp.menu.list-item.leading-space`/`trailing-space` (12 dp in M3).
-    pub(crate) row_inset: f64,
+    pub row_inset: f64,
 }
 
-pub(crate) fn popup_menu_size(
+pub fn popup_menu_size(
     nodes: &[PopupMenuNode],
     metrics: TextContextMenuMetrics,
     text: &PopupMenuTextMetrics,
@@ -285,23 +289,25 @@ pub(crate) fn popup_menu_size(
     } else {
         0.0
     };
-    let width = (text.row_inset * 2.0 + text.max_row_text_width + hint_width)
+    let width = (text.row_inset.mul_add(2.0, text.max_row_text_width) + hint_width)
         .clamp(metrics.min_width, metrics.max_width);
     // `md.comp.menu.list-item.container.height` (48 dp) per row — a
     // subtitled row grows by its supporting line — plus the container's
     // `top-space`/`bottom-space`.
-    let height = nodes
-        .iter()
-        .map(|node| match node {
-            PopupMenuNode::Command {
-                subtitle: Some(_), ..
-            } => metrics.row_height + text.subtitle_height,
-            PopupMenuNode::Divider => popup_menu_divider_height(metrics),
-            _ => metrics.row_height,
-        })
-        .sum::<f64>()
-        .max(metrics.row_height)
-        + metrics.vertical_padding * 2.0;
+    let height = metrics.vertical_padding.mul_add(
+        2.0,
+        nodes
+            .iter()
+            .map(|node| match node {
+                PopupMenuNode::Command {
+                    subtitle: Some(_), ..
+                } => metrics.row_height + text.subtitle_height,
+                PopupMenuNode::Divider => popup_menu_divider_height(metrics),
+                _ => metrics.row_height,
+            })
+            .sum::<f64>()
+            .max(metrics.row_height),
+    );
     (width, height)
 }
 
@@ -364,7 +370,11 @@ fn shortcut_hint_styled(
 /// dividers and submenu items — padded by the theme's vertical padding. The
 /// chrome around it (the borderless window's rounded `Surface` background,
 /// the drawn presentation's theme panel) is the caller's.
-pub(crate) fn popup_menu_content(
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+pub fn popup_menu_content(
     nodes: Vec<PopupMenuNode>,
     depth: usize,
     metrics: TextContextMenuMetrics,
@@ -406,7 +416,7 @@ pub(crate) fn popup_menu_content(
                                     0.0,
                                     0.0,
                                     0.0,
-                                    metrics.horizontal_padding as f32,
+                                    crate::num_cast::f64_as_f32(metrics.horizontal_padding),
                                 )),
                         ))
                         .spacing(0.0),
@@ -418,22 +428,22 @@ pub(crate) fn popup_menu_content(
                 // x regardless of kind.
                 rows.push(AnyView::new(
                     Frame::new(row_content)
-                        .height(row_height as f32)
+                        .height(crate::num_cast::f64_as_f32(row_height))
                         .max_width(f32::INFINITY)
                         .alignment(waterui_layout::alignment::Leading),
                 ));
             }
             PopupMenuNode::Divider => rows.push(AnyView::new(
                 Frame::new(Divider)
-                    .height(row_height as f32)
+                    .height(crate::num_cast::f64_as_f32(row_height))
                     .max_width(f32::INFINITY)
                     .alignment(waterui_layout::alignment::Leading),
             )),
             PopupMenuNode::Menu { label, items, .. } => {
                 let next_depth = depth + 1;
                 let child_origin = LayoutPoint::new(
-                    popup_origin.x + width as f32,
-                    popup_origin.y + row_top as f32,
+                    popup_origin.x + crate::num_cast::f64_as_f32(width),
+                    popup_origin.y + crate::num_cast::f64_as_f32(row_top),
                 );
                 let button = Button::new(label).style(ButtonStyle::Borderless).action({
                     let theme = theme.clone();
@@ -464,7 +474,7 @@ pub(crate) fn popup_menu_content(
                 // row's label shares one leading x regardless of kind.
                 rows.push(AnyView::new(
                     Frame::new(button)
-                        .height(row_height as f32)
+                        .height(crate::num_cast::f64_as_f32(row_height))
                         .max_width(f32::INFINITY)
                         .alignment(waterui_layout::alignment::Leading),
                 ));
@@ -477,7 +487,10 @@ pub(crate) fn popup_menu_content(
         menu_content
             .alignment(HorizontalAlignment::Leading)
             .spacing(0.0)
-            .padding_with(EdgeInsets::symmetric(metrics.vertical_padding as f32, 0.0))
+            .padding_with(EdgeInsets::symmetric(
+                crate::num_cast::f64_as_f32(metrics.vertical_padding),
+                0.0,
+            ))
             // A menu row's label is body text that happens to be tappable,
             // not button chrome: it draws in the foreground colour, with the
             // destructive role's explicit error colour still winning.
@@ -495,7 +508,7 @@ pub(crate) fn popup_menu_content(
     )
 }
 
-pub(crate) fn popup_menu_window(
+pub fn popup_menu_window(
     nodes: Vec<PopupMenuNode>,
     origin: LayoutPoint,
     group: PopupMenuStateGroup,
@@ -524,7 +537,7 @@ pub(crate) fn popup_menu_window(
                 ),
                 PopupMenuSurface,
             )
-            .padding_with(POPUP_MENU_PANEL_MARGIN as f32),
+            .padding_with(crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN)),
             group_for_content.clone(),
         ))
     };
@@ -543,12 +556,12 @@ pub(crate) fn popup_menu_window(
     // being clipped at the frame.
     popup.frame.set(LayoutRect::new(
         LayoutPoint::new(
-            origin.x - POPUP_MENU_PANEL_MARGIN as f32,
-            origin.y - POPUP_MENU_PANEL_MARGIN as f32,
+            origin.x - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
+            origin.y - crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN),
         ),
         LayoutSize::new(
-            (width + POPUP_MENU_PANEL_MARGIN * 2.0) as f32,
-            (height + POPUP_MENU_PANEL_MARGIN * 2.0) as f32,
+            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, width)),
+            crate::num_cast::f64_as_f32(POPUP_MENU_PANEL_MARGIN.mul_add(2.0, height)),
         ),
     ));
     (popup, state)
@@ -560,7 +573,7 @@ pub(crate) fn popup_menu_window(
 /// has no frame to size and no corner chrome to round, so none is built; the
 /// emitted accessibility tree is identical to the rendered popup's.
 #[cfg(feature = "accessibility")]
-pub(crate) fn semantic_popup_menu_window(
+pub fn semantic_popup_menu_window(
     nodes: Vec<PopupMenuNode>,
     group: PopupMenuStateGroup,
     depth: usize,
@@ -630,7 +643,7 @@ pub(crate) fn semantic_popup_menu_window(
 /// rows — borderless `Button`s that write the binding and close the menu —
 /// without the frame sizing or panel chrome.
 #[cfg(feature = "accessibility")]
-pub(crate) fn semantic_picker_menu_window(
+pub fn semantic_picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,
     open: Rc<Cell<bool>>,
@@ -681,7 +694,7 @@ pub(crate) fn semantic_picker_menu_window(
     clippy::too_many_arguments,
     reason = "fully specifies a popup-menu window layout; grouping into a struct would not improve clarity"
 )]
-pub(crate) fn picker_menu_window(
+pub fn picker_menu_window(
     entries: Vec<PickerMenuEntry>,
     selection: Binding<Id>,
     open: Rc<Cell<bool>>,
@@ -693,7 +706,7 @@ pub(crate) fn picker_menu_window(
     metrics: PickerMetrics,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
-    let height = row_height * entries.len() as f64;
+    let height = row_height * crate::num_cast::usize_as_f64(entries.len());
     let state_for_content = state.clone();
     let group_for_content = group;
     let entries_for_content = entries;
@@ -715,8 +728,8 @@ pub(crate) fn picker_menu_window(
                         row_group.close_all();
                     },
                 ))
-                .width(width as f32)
-                .height(row_height as f32);
+                .width(crate::num_cast::f64_as_f32(width))
+                .height(crate::num_cast::f64_as_f32(row_height));
                 if target == selected {
                     rows.push(AnyView::new(row.background(
                         RoundedRectangle::new(0.0).fill(Color::new(Surface).with_opacity(0.84)),
@@ -731,8 +744,10 @@ pub(crate) fn picker_menu_window(
                 .alignment(HorizontalAlignment::Leading)
                 .spacing(0.0)
                 .background(
-                    FixedRoundedRectangle::new(metrics.popup_corner_radius as f32)
-                        .fill(Color::new(Surface).with_opacity(0.96)),
+                    FixedRoundedRectangle::new(crate::num_cast::f64_as_f32(
+                        metrics.popup_corner_radius,
+                    ))
+                    .fill(Color::new(Surface).with_opacity(0.96)),
                 );
             AnyView::new(animated_popup_panel(panel, group_for_content.clone()))
         };
@@ -743,7 +758,10 @@ pub(crate) fn picker_menu_window(
     popup.closable = false;
     popup.frame.set(LayoutRect::new(
         origin,
-        LayoutSize::new(width as f32, height as f32),
+        LayoutSize::new(
+            crate::num_cast::f64_as_f32(width),
+            crate::num_cast::f64_as_f32(height),
+        ),
     ));
     (popup, state)
 }
@@ -775,7 +793,10 @@ fn color_picker_size(support_alpha: bool, support_hdr: bool) -> (f64, f64) {
     let rows = 3.0;
     let alpha_row_height = if support_alpha { 48.0 } else { 0.0 };
     let hdr_row_height = if support_hdr { 48.0 } else { 0.0 };
-    let height = 16.0 + rows * swatch + 2.0 * gap + alpha_row_height + hdr_row_height + 16.0;
+    let height = 2.0f64.mul_add(gap, f64::mul_add(rows, swatch, 16.0))
+        + alpha_row_height
+        + hdr_row_height
+        + 16.0;
     (width, height)
 }
 
@@ -820,8 +841,8 @@ fn color_picker_window_base(
                             .install(LabelDisplayMode::Hidden)
                             .background(RoundedRectangle::new(0.2).fill(swatch_color)),
                     )
-                    .width(swatch as f32)
-                    .height(swatch as f32),
+                    .width(crate::num_cast::f64_as_f32(swatch))
+                    .height(crate::num_cast::f64_as_f32(swatch)),
                 ));
             }
             let row: waterui_layout::stack::HStack<(Vec<AnyView>,)> =
@@ -842,7 +863,7 @@ fn color_picker_window_base(
                             group.close_all();
                         }),
                 )
-                .width((width - 32.0) as f32)
+                .width(crate::num_cast::f64_as_f32(width - 32.0))
                 .height(40.0),
             ));
         }
@@ -860,7 +881,7 @@ fn color_picker_window_base(
                             group.close_all();
                         }),
                 )
-                .width((width - 32.0) as f32)
+                .width(crate::num_cast::f64_as_f32(width - 32.0))
                 .height(40.0),
             ));
         }
@@ -885,7 +906,7 @@ fn color_picker_window_base(
 /// The rendered popup path: the shared color-picker window anchored at the
 /// trigger's resolved origin. The semantic activation path mounts
 /// [`color_picker_window_base`] directly and sets no frame.
-pub(crate) fn color_picker_window(
+pub fn color_picker_window(
     value: Binding<Color>,
     support_alpha: bool,
     support_hdr: bool,
@@ -897,7 +918,10 @@ pub(crate) fn color_picker_window(
     let (width, height) = color_picker_size(support_alpha, support_hdr);
     popup.frame.set(LayoutRect::new(
         origin,
-        LayoutSize::new(width as f32, height as f32),
+        LayoutSize::new(
+            crate::num_cast::f64_as_f32(width),
+            crate::num_cast::f64_as_f32(height),
+        ),
     ));
     (popup, state)
 }
@@ -930,7 +954,7 @@ fn apply_staged_date_time(
 /// The date-picker panel's rendered extent from the picker's field
 /// configuration — date calendar plus optional time rows. Placement is a
 /// rendered-frame concern; the semantic window carries no origin.
-fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
+const fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
     let uses_date = matches!(
         ty,
         DatePickerType::Date
@@ -953,6 +977,10 @@ fn date_picker_size(ty: DatePickerType) -> (f64, f64) {
 /// the cancel/apply bar. Shared by the rendered popup path (which then sets a
 /// frame) and the semantic activation path (which mounts the window with no
 /// placement at all).
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
 fn date_picker_window_base(
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
@@ -1081,7 +1109,7 @@ fn date_picker_window_base(
 /// The rendered popup path: the shared date-picker window anchored at the
 /// trigger's resolved origin. The semantic activation path mounts
 /// [`date_picker_window_base`] directly and sets no frame.
-pub(crate) fn date_picker_window(
+pub fn date_picker_window(
     value: Binding<DateTime>,
     range: RangeInclusive<DateTime>,
     ty: DatePickerType,
@@ -1093,13 +1121,16 @@ pub(crate) fn date_picker_window(
     let (width, height) = date_picker_size(ty);
     popup.frame.set(LayoutRect::new(
         origin,
-        LayoutSize::new(width as f32, height as f32),
+        LayoutSize::new(
+            crate::num_cast::f64_as_f32(width),
+            crate::num_cast::f64_as_f32(height),
+        ),
     ));
     (popup, state)
 }
 
 impl SemanticCore {
-    pub(crate) fn active_popup_menu_visible(&self) -> bool {
+    pub(crate) const fn active_popup_menu_visible(&self) -> bool {
         self.popup_menu.active_popup_menu_group.is_some()
     }
 
@@ -1162,6 +1193,8 @@ impl SemanticCore {
     /// build without that tree has no name to send — and a browser page has no
     /// inspector endpoint to send it to.
     #[cfg(any(not(feature = "accessibility"), target_arch = "wasm32"))]
+    // always an empty stub where it compiles — const would lie about the real variant
+    #[allow(clippy::missing_const_for_fn)]
     pub(crate) fn append_inspect_element_item(
         &self,
         _items: &mut Vec<PopupMenuNode>,
