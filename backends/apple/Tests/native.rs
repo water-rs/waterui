@@ -611,9 +611,9 @@ mod tabs {
     }
 
     /// Dropping the leaf uninstalls the capsule and releases the mounted
-    /// subtree's watchers — the controller itself is owned by containment,
-    /// not by the leaf, so a retained handle stays valid but must report
-    /// no accessory, and no later write may reach the old label.
+    /// subtree's watchers. This test retains a controller handle after
+    /// the leaf releases its ownership; the handle must report no
+    /// accessory, and no later write may reach the old label.
     pub fn dropping_the_leaf_releases_accessory_watchers() {
         let track = binding(String::from("first"));
         let (label, controller) = {
