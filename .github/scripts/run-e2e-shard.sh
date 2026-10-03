@@ -190,6 +190,30 @@ if [[ "${platform}" == "macos" ]]; then
   fi
 fi
 
+# Record native-command latency separately from application settling.
+# The settle deadline is checked between calls; these markers identify
+# time spent inside each external command and its actual exit status.
+# Markers write to fd 9 — a duplicate of the script's stderr, i.e. the job
+# log — so command substitutions capture only the wrapped command's stdout
+# and `2>/dev/null` call sites keep their evidence. External commands only:
+# wrapping a shell function would put its body inside the `||` arm and mask
+# its internal `set -e` failures. Diagnostics only — no behavior, timeout,
+# or budget changes.
+exec 9>&2
+phase() {
+  printf '[capture-timing] %s %s\n' "$1" "$2" >&9
+}
+timed_call() {
+  local label="$1" start end status
+  shift
+  start=${SECONDS}
+  phase "${label}" "begin t=${start}"
+  "$@" && status=0 || status=$?
+  end=${SECONDS}
+  phase "${label}" "end t=${end} elapsed=$((end - start))s exit=${status}"
+  return "${status}"
+}
+
 # One frame from the current platform target. macOS captures need the pid that
 # owns the window; the running example is the default, the SwiftUI reference
 # host passes its own.
@@ -197,11 +221,11 @@ capture_frame() {
   local target="$1"
   local pid="${2:-${app_pid}}"
   if [[ "${platform}" == "ios" ]]; then
-    xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
+    timed_call "screenshot" xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
   else
     local window_id
-    window_id="$("${swift_tools_dir}/window-id" "${pid}")"
-    screencapture -x -o -l"${window_id}" "${target}"
+    window_id="$(timed_call "window-id" "${swift_tools_dir}/window-id" "${pid}")"
+    timed_call "screencapture" screencapture -x -o -l"${window_id}" "${target}"
   fi
 }
 
@@ -228,14 +252,17 @@ capture_settled() {
   local anchor="${shots_dir}/.settle-anchor.png"
   local window_start=0
   local deadline=$((SECONDS + 90))
+  local settle_start=${SECONDS}
+  phase "settle" "begin t=${settle_start} budget=90s window=${SETTLE_WINDOW_S}s"
   rm -f "${anchor}"
   while (( SECONDS < deadline )); do
     if capture_frame "${target}" ${pid:+"${pid}"} && [[ -f "${target}" ]]; then
       if [[ -f "${anchor}" ]] && \
-         DIFF_BUDGET=0.01 "${swift_tools_dir}/compare-screenshots" \
+         DIFF_BUDGET=0.01 timed_call "settle-compare" "${swift_tools_dir}/compare-screenshots" \
            compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" >/dev/null 2>&1; then
         if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
           rm -f "${anchor}"
+          phase "settle" "settled t=${SECONDS} elapsed=$((SECONDS - settle_start))s"
           return 0
         fi
       else
@@ -248,8 +275,10 @@ capture_settled() {
   done
   rm -f "${anchor}"
   if [[ ! -f "${target}" ]]; then
+    phase "settle" "failed t=${SECONDS} elapsed=$((SECONDS - settle_start))s"
     return 1
   fi
+  phase "settle" "deadline t=${SECONDS} elapsed=$((SECONDS - settle_start))s"
   echo "::warning::${example} never settled to a stable frame; using the last capture."
 }
 
@@ -355,7 +384,7 @@ capture_reference() {
       rc=1
     fi
     kill "${ref_stream_pid}" 2>/dev/null || true
-    xcrun simctl terminate "${SIMULATOR_UDID}" dev.waterui.E2EReference >/dev/null 2>&1 || true
+    timed_call "reference-terminate" xcrun simctl terminate "${SIMULATOR_UDID}" dev.waterui.E2EReference >/dev/null 2>&1 || true
     return ${rc}
   else
     log stream --predicate 'subsystem == "dev.waterui"' --style compact \
@@ -660,8 +689,8 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     echo "::error::Could not capture a screenshot for ${example}."
     kill "${stream_pid}" 2>/dev/null || true
     if [[ "${platform}" == "ios" ]]; then
-      xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
-      xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+      timed_call "terminate" xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+      timed_call "uninstall" xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
     else
       kill "${app_pid}" 2>/dev/null || true
     fi
@@ -678,8 +707,8 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   if (( no_first_paint )); then
     kill "${stream_pid}" 2>/dev/null || true
     if [[ "${platform}" == "ios" ]]; then
-      xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
-      xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+      timed_call "terminate" xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+      timed_call "uninstall" xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
     else
       kill "${app_pid}" 2>/dev/null || true
     fi
@@ -710,13 +739,13 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
 
   kill "${stream_pid}" 2>/dev/null || true
   if [[ "${platform}" == "ios" ]]; then
-    xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
-    xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+    timed_call "terminate" xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+    timed_call "uninstall" xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
   else
     kill "${app_pid}" 2>/dev/null || true
   fi
 
-  if ! "${swift_tools_dir}/compare-screenshots" content "${shot}"; then
+  if ! timed_call "content-check" "${swift_tools_dir}/compare-screenshots" content "${shot}"; then
     echo "::error::Captured screenshot for ${example} is blank."
     failures+=("${example}: blank")
     report+=("| \`${example}\` | blank capture | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
@@ -739,7 +768,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     report+=("| \`${example}\` | launched (no baseline yet) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   else
     diff_image="${shots_dir}/${platform}-${example}-diff.png"
-    if compare_out="$("${swift_tools_dir}/compare-screenshots" \
+    if compare_out="$(timed_call "compare" "${swift_tools_dir}/compare-screenshots" \
         compare "${baseline}" "${shot}" "${diff_image}")"; then
       report+=("| \`${example}\` | baseline match | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
@@ -764,7 +793,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       echo "::error::Could not capture the SwiftUI reference for ${example}."
       failures+=("${example}: reference capture")
       report+=("| \`${example}\` (parity) | reference failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif ! "${swift_tools_dir}/compare-screenshots" \
+    elif ! timed_call "content-check" "${swift_tools_dir}/compare-screenshots" \
         content "${ref_shot}" >/dev/null 2>&1; then
       echo "::error::SwiftUI reference for ${example} captured blank."
       failures+=("${example}: reference blank")
@@ -775,7 +804,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       # pixel-compared.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     elif parity_out="$(DIFF_BUDGET="${budget}" \
-        "${swift_tools_dir}/compare-screenshots" \
+        timed_call "parity-compare" "${swift_tools_dir}/compare-screenshots" \
         compare "${ref_shot}" "${shot}" "${parity_diff}" 2>&1)"; then
       parity_fraction="${parity_out#compare: }"
       parity_fraction="${parity_fraction%% *}"
