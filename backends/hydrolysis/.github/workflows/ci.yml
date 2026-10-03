@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        # The Noto faces are not headers: the renderer shapes a script Roboto
+        # does not cover through the platform's own font fallback, and the
+        # coverage tests assert that a Han, Arabic, Hebrew, Thai or Devanagari
+        # sample shapes to real glyphs rather than to `.notdef`. A runner with
+        # no such face installed fails them for want of a font.
+        run: |
+          sudo apt-get update -o Dir::Etc::SourceList=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::SourceParts=/dev/null
+          sudo apt-get install -y libfontconfig1-dev libva-dev libpipewire-0.3-dev libegl-dev libgbm-dev libwayland-dev libxkbcommon-dev libvulkan-dev libasound2-dev fonts-noto-core fonts-noto-cjk spirv-tools
+      - name: Install DirectX Shader Compiler
+        if: runner.os == 'Windows'
+        uses: tracel-ai/github-actions/install-dxc@295f2fdbae5271f4f8ad56d634e4ff6a95daafc8
+      - name: Install SPIRV-Tools
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: mingw-w64-ucrt-x86_64-spirv-tools
+      - name: Put SPIRV-Tools on the PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin"
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # The crate must also build bare: call sites a feature gates out
+      # silently rot under `--no-default-features` because every other leg
+      # compiles the full feature set — the input owner stack did exactly
+      # that, and only `cargo check --lib` with nothing enabled caught it.
+      - run: cargo check --locked --no-default-features --lib
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --locked --features accessibility,inspector-signals,testing,web,winit
+      - run: cargo test --locked --doc --features accessibility,inspector-signals,testing,web,winit
+      # The macOS WKWebView bridge. `webview-system` is the one feature the
+      # sweep above cannot carry — it compiles only where WKWebView exists —
+      # so without this step nothing pointed a compiler at it, which is how a
+      # `compile_error!` that made the crate impossible to document reached a
+      # release run. The suite is `harness = false` (WKWebView is
+      # MainThreadOnly and libtest runs tests on worker threads), so `cargo
+      # test` runs the binary on the real process main thread.
+      - if: runner.os == 'macOS'
+        run: cargo test --locked --features webview-system,winit --test real_engine_macos
+
+  wasm:
+    name: Check / wasm32
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
+      - run: cargo clippy --locked --target wasm32-unknown-unknown --features web -- -D warnings
+
+  android:
+    name: Check / aarch64-linux-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The Android host (`runner::android`) compiles only for Android, so the
+      # host-target legs above never lint it. Both feature extremes: the full
+      # sweep proves `winit` stays inert there, and the bare build catches
+      # call sites a feature gates out.
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with spirv-opt.
+      - name: Install SPIRV-Tools
+        run: sudo apt-get update && sudo apt-get install -y spirv-tools
+      - run: cargo clippy --locked --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      - run: cargo clippy --locked --target aarch64-linux-android --no-default-features -- -D warnings
+
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The floor is whatever `Cargo.toml` declares, read here rather than
+      # written twice: a hardcoded version in CI drifts from the manifest and
+      # then gates a number nobody declared.
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "::error::Cargo.toml declares no rust-version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Installing a toolchain is not building with it: the action only
+          # sets the rustup default, and this repository's
+          # `rust-toolchain.toml` overrides the default for every cargo
+          # invocation inside the checkout. `RUSTUP_TOOLCHAIN` is the one
+          # override that beats the file.
+          echo "RUSTUP_TOOLCHAIN=$version" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update -o Dir::Etc::SourceList=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::SourceParts=/dev/null
+          sudo apt-get install -y libfontconfig1-dev libva-dev libpipewire-0.3-dev libegl-dev libgbm-dev libwayland-dev libxkbcommon-dev libvulkan-dev libasound2-dev fonts-noto-core fonts-noto-cjk spirv-tools
+      - uses: Swatinem/rust-cache@v2
+      # Proof in the log that the floor is what compiled, so a later change to
+      # the pin or the action cannot quietly make this a second stable run.
+      - name: Show the toolchain this job builds with
+        run: rustc --version && cargo --version
+      # The shipped artifact is what MSRV bounds: dev-dependencies may
+      # legitimately require newer, so check the package targets only. The
+      # feature set is the same one the Linux check leg sweeps;
+      # `webview-system` stays off because it compiles only where WKWebView
+      # exists.
+      - run: cargo check --locked --features accessibility,inspector-signals,testing,web,winit

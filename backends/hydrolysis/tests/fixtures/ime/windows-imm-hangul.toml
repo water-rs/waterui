@@ -1,0 +1,61 @@
+# Event order source: Windows IMM Hangul as documented in winit-0.30
+# src/platform_impl/windows/event_loop.rs. Each syllable is its own
+# composition: typing the first jamo of the next syllable sends
+# WM_IME_ENDCOMPOSITION, which emits `Ime::Preedit("")`,
+# `Ime::Commit(syllable)`, and `Ime::Disabled`; the next syllable's
+# WM_IME_STARTCOMPOSITION then starts a fresh composition. Keys never reach
+# the application.
+# Order derived from the documented IMM message flow above; not an
+# observed platform trace.
+final_text = "한글"
+# Byte-offset selection: "한글" is two 3-byte jamo-syllable characters.
+selection = [6, 6]
+committing_key_swallowed = true
+
+# "한" builds jamo by jamo inside one composition.
+[[step]]
+events = [
+    { preedit = { text = "ㅎ", caret = 3 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "하", caret = 3 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "한", caret = 3 } },
+]
+
+# Typing ㄱ ends the syllable's composition: the syllable commits and the
+# session disables in the middle of the overall input.
+[[step]]
+events = [
+    { preedit = { text = "" } },
+    { commit = "한" },
+    { disabled = true },
+]
+
+# The next syllable is a new composition.
+[[step]]
+events = [
+    { preedit = { text = "ㄱ", caret = 3 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "그", caret = 3 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "글", caret = 3 } },
+]
+
+[[step]]
+events = [
+    { preedit = { text = "" } },
+    { commit = "글" },
+    { disabled = true },
+]

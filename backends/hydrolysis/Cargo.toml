@@ -1,0 +1,482 @@
+[workspace]
+resolver = "2"
+members = ["android/test-app/rust"]
+
+[package]
+name = "hydrolysis"
+version = "0.3.1"
+edition = "2024"
+authors = ["Lexo Liu"]
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/water-rs/hydrolysis"
+description = "GPU-required self-drawn backend for WaterUI"
+keywords = ["ui", "graphics", "gpu", "waterui", "cherenkov"]
+categories = ["gui", "graphics"]
+
+[dependencies]
+waterui-core = "0.5.0"
+waterui-assets = "0.5.0"
+# Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
+png = "0.18"
+waterui = { version = "0.5.0", default-features = false, features = ["gpu", "inspector"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+nami = "=0.11.1"
+waterui-graphics = { version = "0.5.0", default-features = false, features = ["gpu"] }
+# `font-collection` for the one `parley` collection this runner builds and
+# installs into the environment; the faces come from the resource loader and
+# the system source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { version = "0.5.0", features = ["font-collection"] }
+waterui-icon = "0.5.0"
+waterui-shape = { version = "0.5.0", default-features = false }
+waterui-map = "0.5.0"
+waterui-webview = "0.5.0"
+waterui-layout = "0.5.0"
+waterui-controls = "0.5.0"
+waterui-form = "0.5.0"
+waterui-backend-core = { version = "0.5.0", default-features = false, features = ["widgets", "gestures", "overlay"] }
+waterkit-clipboard = "0.1.1"
+waterui-locale = "0.5.0"
+# `std` for `Url::from_file_path`, the OS file-drop path.
+waterui-url = { version = "0.5.1", features = ["std"] }
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+kurbo = "0.13"
+peniko = "0.6"
+# `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
+# Southeast-Asian scripts) inside the one parley build: this runner owns the
+# `LayoutContext`, and without them its word segmenter logs `No segmentation
+# model for complex script` per CJK run on every layout pass.
+parley = { version = "0.11", default-features = false, features = ["system", "complex-scripts"] }
+# Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
+# parley's advance metrics stop at the pen advance, so the measure path reads
+# the real outline extents through the same font stack version parley uses.
+skrifa = "0.44"
+# `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
+# route through the `emoji` generic family first.
+icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+wgpu = "30.0.1"
+lru = "0.18"
+pollster = "1.0"
+executor-core = { version = "0.7.1", features = ["std"] }
+rustc-hash = "2.1.3"
+unicode-segmentation = "1.13"
+async-task = "4.7"
+native-executor = "0.8.0"
+keyboard-types = { version = "0.8.3", default-features = false }
+# `serde` lets the Android host push the merged accesskit tree to its
+# accessibility provider as JSON (src/runner/android/accessibility.rs).
+accesskit = { version = "0.25", optional = true, features = ["serde"] }
+waterui-inspector-protocol = "0.5.0"
+
+# The winit runner and its companion crates: desktop only. Android's
+# Activity belongs to the Kotlin host, and winit's `android-activity` can
+# only build once an application picks an activity backend — nothing in
+# this library may — so the dependency edge does not exist for the Android
+# target at all. The `winit` feature still exists there and means nothing.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+winit = { version = "0.30", optional = true }
+ui-events-winit = { version = "0.3.0", optional = true }
+accesskit_winit = { version = "0.34.0", optional = true }
+
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
+# Termination signals for the windowed desktop runner. No windowing system
+# delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
+# so the runner installs its own handler on every desktop target it builds for.
+[target.'cfg(all(any(unix, windows), not(target_os = "android")))'.dependencies]
+ctrlc = { version = "3.5", features = ["termination"], optional = true }
+
+# Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
+# window's NSView declares the 120Hz frame-rate demand (see
+# platform/macos_display_link.rs). All of these are already in winit's own
+# dependency graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { version = "0.6", optional = true }
+cookie = { version = "0.18", optional = true }
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSAnimation",
+    "NSEvent",
+    "NSGraphics",
+    "NSResponder",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "objc2-quartz-core",
+] }
+objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSArray",
+    "NSBundle",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSHTTPCookie",
+    "NSJSONSerialization",
+    "NSObject",
+    "NSProcessInfo",
+    "NSRunLoop",
+    "NSString",
+    "NSURL",
+    "NSURLError",
+    "NSURLRequest",
+    "NSURLResponse",
+] }
+objc2-quartz-core = { version = "0.3", optional = true, features = [
+    "CALayer",
+    "CADisplayLink",
+    "CAFrameRateRange",
+    "CAMetalLayer",
+    "CAShapeLayer",
+    "objc2-core-graphics",
+] }
+objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "WKBackForwardList",
+    "WKContentWorld",
+    "WKFrameInfo",
+    "WKSecurityOrigin",
+    "WKHTTPCookieStore",
+    "WKNavigation",
+    "WKNavigationAction",
+    "WKNavigationDelegate",
+    "WKNavigationResponse",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKURLSchemeHandler",
+    "WKURLSchemeTask",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKWebsiteDataStore",
+] }
+serde_json = { version = "1", optional = true }
+
+# The native app menu-bar surface (`App::menu_bar`): muda builds the real
+# NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
+# (Windows). See src/platform/native_menu_bar.rs.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+muda = { version = "0.20", optional = true, default-features = false }
+
+# Window placement (water-rs/waterui#1302): X11 reads the pointer position and
+# `_NET_WORKAREA` over the connection winit already holds — borrowed through
+# the raw display handle, never a second connection. `x11-dl`'s `xlib_xcb`
+# module turns the Xlib backend's `Display*` into its `xcb_connection_t`.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
+x11-dl = { version = "2.21", optional = true }
+x11rb = { version = "0.13", optional = true }
+
+# `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
+# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
+# version tracks the `windows-sys` release winit 0.30 already builds against.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# The Android host's JNI boundary (see src/runner/android/): `ndk` is pinned to
+# the API-31 NDK symbols it calls (Surface frame-rate and MotionEvent-from-Java
+# are runtime-gated by Build.VERSION.SDK_INT), `libc` carries the eventfd the
+# main-Looper executor wakes on, and `android_logger` + `tracing-log` route
+# `tracing` into logcat.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
+raw-window-handle = "0.6"
+libc = "0.2"
+android_logger = "0.15"
+log = "0.4"
+tracing-log = "0.2"
+# The accessibility tree publish and the platform-view placement set cross JNI
+# as JSON.
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = "1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The web runner fetches its fonts while the GPU device comes up; `join!` and
+# `join_all` are the whole of what it needs from futures.
+futures = { version = "0.3", default-features = false, features = ["std", "async-await"], optional = true }
+js-sys = "0.3"
+serde = { version = "1.0", default-features = false, features = ["alloc", "derive"] }
+serde_json = "1"
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Response",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "CustomEvent",
+    "CustomEventInit",
+    "Document",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "KeyboardEvent",
+    "Node",
+    "PointerEvent",
+    "WheelEvent",
+    "Window",
+] }
+
+[dev-dependencies]
+# The renderer itself knows nothing about `Canvas`: it resolves to a
+# `SceneView` before it reaches layout. The tests still author canvases, which
+# is what keeps that resolution honest.
+waterui-canvas = "0.2.0"
+# The wayland examples need a widget theme; m3 is independently maintained.
+hydrolysis-m3 = "0.3.0"
+waterui-testing = "0.5.0"
+waterui-navigation = "0.5.0"
+# The presentation tests received from waterui exercise these component crates
+# directly: live photos (media), the MCP session harness (mcp, aither-mcp,
+# futures-lite, serde_json).
+waterui-media = "0.5.0"
+# The #210 regression test drives a real `ReactiveImage`: its handle's `set`
+# is the same call the decode pipeline makes when an image lands.
+waterui-image = "0.5.0"
+waterui-mcp = "0.5.0"
+aither-mcp = { version = "0.4", default-features = false, features = ["server"] }
+futures-lite = "2.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+jiff = { version = "0.2", features = ["serde"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+waterui = { version = "0.5.0", default-features = false, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
+base64 = "0.22"
+executor-core = { version = "0.7.1", features = ["std", "async-executor"] }
+tiny_http = "0.12"
+# Two crates that only exist to let the segmentation test see what it asserts
+# about: `icu_provider/logging` routes ICU4X data warnings through `log`
+# instead of the `eprintln` shim debug builds get otherwise, and `tracing-log`
+# bridges those records into the `tracing` subscriber the test captures. With
+# `complex-scripts` on the parley dep, no warning may be emitted at all.
+icu_provider = { version = "2.3", features = ["logging"] }
+tracing-log = "0.2"
+# The frame-profile example renders a packaged icon set and a chart through
+# the real pipeline.
+waterui-icons-lucide = "0.5.1"
+waterui-chart = "0.3.0"
+# Drives the text-measure bench (`benches/text_measure.rs`).
+criterion = "0.8"
+# The text-measure bench rides the real layout path; `harness = false` hands
+# the binary's `main` to criterion.
+[[bench]]
+name = "text_measure"
+harness = false
+required-features = ["testing"]
+
+# `WKWebView` is `MainThreadOnly` and libtest runs tests on worker threads, so
+# the macOS real-engine suite owns its `main` and pumps the main run loop.
+[[test]]
+name = "real_engine_macos"
+harness = false
+required-features = ["webview-system", "winit"]
+
+# The headless frame-pipeline profiler: representative scenes rendered
+# offscreen through the real pipeline, one JSON document per scene.
+[[example]]
+name = "frame_profile"
+required-features = ["frame-profile"]
+
+[features]
+default = []
+accessibility = ["dep:accesskit"]
+testing = []
+# Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
+# layer-content and compositor submits plus the CPU stage split the window
+# pump measures. The `testing` adapter selection is what lets the profiler
+# exercise a software adapter for bring-up on a host without a GPU.
+frame-profile = ["testing"]
+inspector-signals = ["waterui/inspector-signals"]
+# The platform's own web engine, bridged as a native subview. Every other engine
+# is a crate the application links and installs; this backend never names one.
+webview-system = [
+    "dep:block2",
+    "dep:cookie",
+    "dep:futures",
+    "dep:objc2-web-kit",
+    "dep:serde_json",
+]
+winit = [
+    "accessibility",
+    "dep:winit",
+    "dep:ui-events-winit",
+    "dep:accesskit_winit",
+    "dep:ctrlc",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-graphics",
+    "dep:objc2-foundation",
+    "dep:objc2-quartz-core",
+    "dep:muda",
+    "dep:x11-dl",
+    "dep:x11rb",
+    "dep:windows-sys",
+]
+web = [
+    "accessibility",
+    "dep:futures",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+]
+
+[package.metadata.cargo-machete]
+ignored = ["cfg_aliases"]
+
+# Third-party forks the framework itself patches; a registry dependency does
+# not carry its own patch table, so they are repeated here so this graph
+# resolves the same sources as water-rs/waterui `dev`.
+[patch.crates-io]
+xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
+# The Cherenkov pin (water-rs/hydrolysis#205): every consumer in the graph —
+# this crate included — must see the same revision so `Engine<Gpu>` types line
+# up. This is the revision waterui's `feat/cherenkov-cutover-w` root pins
+# (water-rs/waterui#1246); its filtrate members are the filter library the
+# `.filter(F)`/`.effect(E)` builders and the engine agree on, so every
+# filtrate in the graph must come from this same revision or a filter type
+# built on one side is a different type on the other.
+cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+
+# wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
+# instead of their value and crashes in CGColorSpaceCreateWithName whenever a
+# surface negotiates Extended Display P3 or BT.2100 (gfx-rs/wgpu#10175, fixed on
+# trunk, not yet released for v30). Mirrored from cherenkov's own workspace
+# patch (water-rs/cherenkov#229): `[patch]` in a dependency's manifest does not
+# apply downstream, so without these entries this graph resolves the crashing
+# crates.io build while cherenkov resolves the fork. Drop them once wgpu-hal
+# 30.0.2 ships the backport.
+naga = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+naga-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-core-deps-wasm = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
+
+# `waterui-testing` depends on this backend at the 0.5.0-wave requirement
+# `0.3.0`, which is this package; a registry copy would be pre-freeze code
+# that no longer builds against the revision below. Drop the entry once
+# hydrolysis 0.3.0 ships.
+hydrolysis = { path = "." }
+
+# The framework revision that lets `SceneContent` receive input
+# (water-rs/waterui#1189), takes the executor's refresh rate from the host
+# (water-rs/waterui#1201), carries `SubView::is_empty` — the §4.4
+# membership answer this backend implements (water-rs/waterui#1209) — and
+# defines the framework-owned `ListSelection` this backend renders
+# (water-rs/waterui#1226). Every framework crate in the graph comes from
+# the same revision so the graph holds one copy of each; drop these
+# entries once a waterui release carries those changes. All waterui and
+# waterkit crates are pinned by the migration block at the bottom of
+# this table.
+
+# The Material 3 theme must implement the five-argument
+# `WidgetTheme::draw_button_chrome` contract added for
+# water-rs/hydrolysis#115.
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "355c69066d2dd10c0f5153953f4316eb3ede45ee" }
+
+
+# Framework crates pinned to the waterui revision that makes the window
+# style reactive (water-rs/waterui#1299), all from one revision so the graph
+# resolves a single nami Signal trait; waterkit rides the same-wave
+# migration head for its VA-API gating.
+nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
+nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
+waterui-assets = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-assets-core = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-assets-macros = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-assets-planner = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-backend-core = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-controls = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-core = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-dylib = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-form = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-graphics = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-icon = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-icons-codegen = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-icons-lucide = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-inspector-protocol = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-internal = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-layout = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-locale = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-macros = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-map = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-mcp = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-mcp-protocol = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-media = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-navigation = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-preview-protocol = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-shape = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-testing = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-text = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-url = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-video = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-watcher-set = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-webview = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+
+waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "ac4737d276bcf4e7c498938c0842ab1f5848cf9a" }
+waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-clipboard = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-video = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-video-container = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterui-image = { git = "https://github.com/water-rs/image", rev = "27ab17cad98e8b08f50d9df5a66d9ec11529a69f" }
+waterui = { git = "https://github.com/water-rs/waterui", rev = "3fd396804cd19bfccd38529d73618b522855849e" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "49486aedd4b5a0b38ae27d7a4021b7efb217ca89" }
+waterui-chart = { git = "https://github.com/water-rs/chart", rev = "ff481c3d319b7d025a1fa0c1dcdb283f92be9689" }
+waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "4c530503f6e3277f44511f327db463a195482abd" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "13e199d255a11637e03341e0a947447851eff85e" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "e27ae84666ee58c2ff4adae16d9227baf7efc3f2" }
+# Every crate below is pinned to the revision waterui's
+# `refs/staging/w3-r9` root (e4be3c42) uses, so this graph resolves the
+# same sources as the cutover set instead of the pre-migration registry
+# releases, which still name the retired `Scene2D`/`DrawContext` interfaces.
+waterui-svg = { git = "https://github.com/water-rs/svg", rev = "d53a94b03236718c9ee506bd9f5b4b1d2f247a8b" }
+waterui-math = { git = "https://github.com/water-rs/math", rev = "f59cc09fd27f2000d36225e72662a653b5751182" }
+waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-camera = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-dialog = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-fs = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-haptic = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
+# codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
+# 0.1.2 registry release; this is the rev waterkit@d266ae57 pins itself.
+shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }

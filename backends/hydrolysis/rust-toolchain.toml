@@ -1,0 +1,10 @@
+# The toolchain is a property of this repository, not of whoever checked it out.
+#
+# CI lints and tests on `dtolnay/rust-toolchain@stable`, and clippy's findings
+# differ between channels in both directions. Without this file, a contributor
+# whose rustup default is nightly gets a result that does not match CI: the
+# `Send`-solver recursion diagnostic on `wgpu`'s types fails a local
+# `cargo clippy -- -D warnings` here while CI is green.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]
