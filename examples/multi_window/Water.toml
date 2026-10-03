@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Multi-Window Gallery"
-bundle_identifier = "com.waterui.example.multi_window"
+bundle_identifier = "com.waterui.example.multiwindow"

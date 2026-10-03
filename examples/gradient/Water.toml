@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Gradient Example"
-bundle_identifier = "com.waterui.gradient_example"
+bundle_identifier = "com.waterui.gradientexample"

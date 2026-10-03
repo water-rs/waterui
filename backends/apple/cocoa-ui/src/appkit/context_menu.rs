@@ -1,56 +1,32 @@
-//! Contextual menus: an [`NSMenu`] popped at the pointer plus the
-//! borderless accessory panel that may float above it.
+//! Contextual menus: an [`NSMenu`] popped at the pointer, optionally
+//! carrying an accessory as a custom-view row at its top.
 //!
 //! [`ContextMenu`] builds a menu from [`MenuTreeNode`]s and opens it under
 //! the pointer for a `rightMouseDown` event; its `open`/`close` handlers
-//! run on `menuWillOpen`/`menuDidClose`. [`AccessoryPanel`] is the
-//! non-activating floating panel a menu presents above the source view.
+//! run on `menuWillOpen`/`menuDidClose`. [`ContextMenu::set_accessory`]
+//! inserts a custom [`NSMenuItem`] view inside the menu.
 //!
 //! # Safety
 //!
 //! The `unsafe` here defines the delegate class `AppKit` calls and creates
-//! the panel; `NSMenu` delegates are weak, so the [`ContextMenu`] value owns
-//! the delegate for as long as the menu can be tracked.
+//! the accessory item; `NSMenu` delegates are weak, so the [`ContextMenu`]
+//! value owns the delegate for as long as the menu can be tracked.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{
-    NSEvent, NSMenu, NSMenuDelegate, NSPanel, NSPopUpMenuWindowLevel, NSScreen, NSWindowStyleMask,
-};
-use objc2_foundation::{NSObjectProtocol, NSRect};
+use objc2_app_kit::{NSEvent, NSMenu, NSMenuDelegate, NSMenuItem, NSView};
+use objc2_foundation::{NSObjectProtocol, NSString};
 
 use crate::appkit::host_view::HostView;
 use crate::appkit::menu::Menu;
 use crate::callback::guarded;
-use crate::geometry::{Rect, Size, anchored_screen_frame};
+use crate::geometry::{Rect, Size};
 use crate::menu::MenuTreeNode;
-use objc2_app_kit::{NSBackingStoreType, NSColor, NSView};
-
-/// The air around an accessory, between it and the preview or the screen
-/// edge.
-const GAP: f64 = 8.0;
-const EDGE_MARGIN: f64 = 8.0;
-
-/// The screen frame of an accessory anchored to `source`'s frame.
-fn accessory_screen_frame(source: &NSView, size: Size) -> Rect {
-    let Some(window) = source.window() else {
-        return Rect::ZERO;
-    };
-    let preview: Rect = window
-        .convertRectToScreen(source.convertRect_toView(source.bounds(), None))
-        .into();
-    let screen_bounds: Rect = window
-        .screen()
-        .or_else(|| NSScreen::mainScreen(MainThreadMarker::from(source)))
-        .map_or(NSRect::ZERO, |screen| screen.visibleFrame())
-        .into();
-    anchored_screen_frame(preview, size, screen_bounds, GAP, EDGE_MARGIN)
-}
 
 /// The closures a [`ContextMenuDelegate`] runs.
 pub struct ContextMenuDelegateIvars {
@@ -155,84 +131,36 @@ impl ContextMenu {
     pub fn cancel(&self) {
         self.menu.menu().cancelTracking();
     }
-}
 
-/// The borderless, non-activating panel a context menu presents above its
-/// source view: floating at the menu's level, clear-backed, shadowed.
-///
-/// The accessory inside is re-measured on every layout pass; when its ideal
-/// size changes the panel re-anchors itself to the source view.
-#[derive(Debug)]
-pub struct AccessoryPanel {
-    panel: Retained<NSPanel>,
-    _container: Retained<HostView>,
-}
-
-impl AccessoryPanel {
-    /// A panel holding `accessory`, anchored to `source` when presented.
+    /// Inserts `accessory` as a custom-view row at the top of the menu,
+    /// sized to `ideal_size`.
     ///
-    /// `ideal_size` measures the accessory when it is laid out.
-    #[must_use]
-    pub fn new(
-        mtm: MainThreadMarker,
-        source: &NSView,
-        accessory: &NSView,
-        ideal_size: impl Fn() -> Size + 'static,
-    ) -> Self {
-        // SAFETY: the style mask describes a borderless non-activating
-        // panel.
-        let panel = {
-            NSPanel::initWithContentRect_styleMask_backing_defer(
-                NSPanel::alloc(mtm),
-                NSRect::ZERO,
-                NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-                NSBackingStoreType::Buffered,
-                false,
+    /// `AppKit` delivers mouse events to a menu item's view, so interactive
+    /// children (buttons) work; the view gets no keyboard input and the
+    /// row's size is fixed for the tracking session, so `ideal_size` is
+    /// read once at insertion. The menu retains the item, which retains
+    /// the container view, for the menu's life.
+    pub fn set_accessory(&self, accessory: &NSView, size: Size) {
+        let mtm = self.menu.menu().mtm();
+        let container = HostView::new(mtm, Rect::ZERO);
+        container.set_layout_handler({
+            let accessory: Retained<NSView> = Retained::from(accessory);
+            move |view| accessory.setFrame(view.bounds())
+        });
+        container.setFrame(Rect::new(0.0, 0.0, size.width, size.height).into());
+        crate::view::add_subview(&container, accessory);
+        // SAFETY: an empty title, no action and no key equivalent make the
+        // item a plain view row.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::new(),
+                None,
+                &NSString::new(),
             )
         };
-        panel.setFloatingPanel(true);
-        panel.setLevel(NSPopUpMenuWindowLevel);
-        panel.setOpaque(false);
-        panel.setBackgroundColor(Some(&NSColor::clearColor()));
-        panel.setHasShadow(true);
-        // SAFETY: the panel is owned by this value and released when it
-        // drops, not when `orderOut` runs.
-        unsafe { panel.setReleasedWhenClosed(false) };
-
-        let container = HostView::new(mtm, Rect::ZERO);
-        let measured = Cell::new(Size::ZERO);
-        let source: Retained<NSView> = Retained::from(source);
-        let ideal_size = Rc::new(ideal_size);
-        container.set_layout_handler({
-            let panel = panel.clone();
-            let source = source.clone();
-            let accessory: Retained<NSView> = Retained::from(accessory);
-            let ideal_size = ideal_size.clone();
-            move |view| {
-                accessory.setFrame(view.bounds());
-                let size = ideal_size();
-                if size != measured.get() {
-                    measured.set(size);
-                    panel.setFrame_display(accessory_screen_frame(&source, size).into(), true);
-                }
-            }
-        });
-        crate::view::add_subview(&container, accessory);
-        panel.setContentView(Some(&container));
-        panel.setFrame_display(accessory_screen_frame(&source, ideal_size()).into(), false);
-        Self {
-            panel,
-            _container: container,
-        }
-    }
-
-    /// Brings the panel to the front.
-    pub fn order_front(&self) {
-        self.panel.orderFront(None);
-    }
-
-    /// Takes the panel off screen.
-    pub fn order_out(&self) {
-        self.panel.orderOut(None);
+        item.setView(Some(&container));
+        item.setEnabled(true);
+        self.menu.menu().insertItem_atIndex(&item, 0);
     }
 }

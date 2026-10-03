@@ -2,7 +2,7 @@ waterui_path = "../.."
 
 [package]
 name = "Waterkit Camera Filters"
-bundle_identifier = "com.waterui.example.waterkit_camera_filters"
+bundle_identifier = "com.waterui.example.waterkitcamerafilters"
 
 [permissions.camera]
 enable = true

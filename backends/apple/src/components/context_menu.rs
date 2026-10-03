@@ -2,10 +2,9 @@
 //! around a child.
 //!
 //! Mirrors `WuiContextMenu`. On `AppKit` `rightMouseDown` pops up an
-//! `NSMenu` whose `menuWillOpen` shows the accessory in a floating
-//! non-activating panel anchored above the source's screen frame, and
-//! `menuDidClose` tears it down (deferred a tick, so the closing click
-//! can still land on the accessory). On `UIKit` a
+//! `NSMenu` whose top row is a custom-view item carrying the accessory —
+//! `AppKit` gives a menu item's view mouse events, so interactive
+//! children work inside the tracking loop. On `UIKit` a
 //! `UIContextMenuInteraction` builds the `UIMenu` per presentation,
 //! lifts `preview` as the targeted preview, and shows the accessory in
 //! an overlay window one level above the menu's — hits outside the
@@ -56,9 +55,6 @@ struct ContextMenuState {
     /// (`menuDidClose` borrows it mid-call).
     #[cfg(target_os = "macos")]
     open_menu: RefCell<Option<Rc<appkit::ContextMenu>>>,
-    /// The floating accessory panel — `accessoryPanel`.
-    #[cfg(target_os = "macos")]
-    panel: RefCell<Option<appkit::AccessoryPanel>>,
     /// The overlay showing the accessory — `accessoryWindow`.
     #[cfg(target_os = "ios")]
     overlay: RefCell<Option<uikit::AccessoryOverlay>>,
@@ -129,9 +125,6 @@ fn dismiss_presented(state: &Rc<RefCell<ContextMenuState>>) {
         if let Some(menu) = state.open_menu.borrow_mut().take() {
             menu.cancel();
         }
-        if let Some(panel) = state.panel.borrow_mut().take() {
-            panel.order_out();
-        }
     }
 }
 
@@ -186,26 +179,18 @@ fn present_accessory(state: &Rc<RefCell<ContextMenuState>>, host: &cocoa_ui::Pla
     }
 }
 
-/// `presentAccessoryPanel` (`AppKit`): the floating panel above the
-/// source for the tracking session; the accessory re-measures each
-/// layout, so a view that grows re-anchors the panel.
+/// `setAccessory` (`AppKit`): inserts the accessory leaf as the menu's
+/// top row, a custom-view item sized to its ideal measure. The row's
+/// size is fixed for the tracking session — `AppKit` does not resize
+/// item views mid-track.
 #[cfg(target_os = "macos")]
-fn present_accessory_panel(state: &Rc<RefCell<ContextMenuState>>, host: &cocoa_ui::PlatformView) {
+fn set_accessory_item(state: &Rc<RefCell<ContextMenuState>>, menu: &appkit::ContextMenu) {
     let state = state.borrow();
-    if state.panel.borrow().is_some() {
-        return;
-    }
     let Some(accessory) = &state.accessory else {
         return;
     };
     let accessory_view = view::retain_base(accessory.view());
-    let sizing = Rc::clone(accessory);
-    let panel = appkit::AccessoryPanel::new(state.mtm, host, &accessory_view, {
-        // The container re-measures the accessory every layout pass.
-        move || ideal_size(&sizing)
-    });
-    panel.order_front();
-    *state.panel.borrow_mut() = Some(panel);
+    menu.set_accessory(&accessory_view, ideal_size(accessory));
 }
 
 /// Installs the `context_menu` handler on the dispatcher.
@@ -246,8 +231,6 @@ pub fn install(dispatcher: &mut Dispatcher) {
             accessory,
             #[cfg(target_os = "macos")]
             open_menu: RefCell::new(None),
-            #[cfg(target_os = "macos")]
-            panel: RefCell::new(None),
             #[cfg(target_os = "ios")]
             overlay: RefCell::new(None),
             #[cfg(target_os = "ios")]
@@ -334,33 +317,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         let state = state.borrow();
                         menu_items::tree_nodes(&state.items.snapshot(), &state.env)
                     };
-                    Rc::new(appkit::ContextMenu::new(
-                        mtm,
-                        &nodes,
-                        {
-                            let state = Rc::clone(&state);
-                            let host_view = view::retain_base(host_view);
-                            move || present_accessory_panel(&state, &host_view)
-                        },
-                        {
-                            let state = Rc::clone(&state);
-                            move || {
-                                state.borrow().open_menu.borrow_mut().take();
-                                // Deferred: the click that closed the menu
-                                // may be addressed to the accessory — a
-                                // panel ordered out in the same tick would
-                                // eat it.
-                                let state = Rc::clone(&state);
-                                let mtm = state.borrow().mtm;
-                                cocoa_ui::main_queue::enqueue_local(mtm, move |_| {
-                                    if let Some(panel) = state.borrow().panel.borrow_mut().take() {
-                                        panel.order_out();
-                                    }
-                                });
-                            }
-                        },
-                    ))
+                    Rc::new(appkit::ContextMenu::new(mtm, &nodes, || {}, {
+                        let state = Rc::clone(&state);
+                        move || {
+                            state.borrow().open_menu.borrow_mut().take();
+                        }
+                    }))
                 };
+                set_accessory_item(&state, &menu);
                 state
                     .borrow()
                     .open_menu

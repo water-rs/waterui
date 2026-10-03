@@ -2,4 +2,4 @@ waterui_path = "../.."
 
 [package]
 name = "Gesture Example"
-bundle_identifier = "com.waterui.gesture_example"
+bundle_identifier = "com.waterui.gestureexample"

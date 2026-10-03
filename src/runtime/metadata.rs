@@ -18,14 +18,25 @@ pub mod context_menu {
     use waterui_core::{AnyView, Environment, Metadata, View, env::with, metadata::MetadataKey};
 
     /// A context menu: the menu itself, plus an optional lifted preview of
-    /// the view it acts on and an optional interactive accessory anchored to
-    /// that preview.
+    /// the view it acts on and an optional interactive accessory presented
+    /// alongside the menu.
     ///
     /// The menu appears when the user long-presses (iOS, Android, touch and
     /// pen elsewhere) or secondary-clicks (macOS, desktop pointers). Menu rows
     /// stay within what every platform's own menu can render; custom content
-    /// belongs in the [`accessory`](Self::accessory), which each backend
-    /// presents next to the preview, outside the menu.
+    /// belongs in the [`accessory`](Self::accessory). Placement is
+    /// platform-specific: macOS presents the accessory as a native
+    /// `NSMenuItem` view inside the menu, while iOS anchors it to the
+    /// lifted preview outside the menu.
+    ///
+    /// The two placements are not interchangeable capabilities. In a
+    /// tracked `NSMenu` the accessory is pointer-interactive only — text
+    /// entry and other keyboard input are unsupported — its row
+    /// dimensions are fixed while the menu tracks, and a changed
+    /// intrinsic size is applied on the next open. `Binding`-driven
+    /// updates inside the accessory still render in place while it is
+    /// open. On iOS the accessory keeps the full external-preview
+    /// contract.
     ///
     /// # Example
     ///
@@ -50,8 +61,9 @@ pub mod context_menu {
         /// The view lifted while the menu is open. `None` lifts the source
         /// view itself.
         pub preview: Option<AnyView>,
-        /// An interactive view anchored to the lifted preview, presented
-        /// outside the menu.
+        /// An interactive view presented alongside the menu — a
+        /// pointer-interactive `NSMenuItem` view row on macOS, anchored
+        /// to the lifted preview outside the menu on iOS.
         pub accessory: Option<AnyView>,
     }
 
@@ -76,7 +88,13 @@ pub mod context_menu {
             self
         }
 
-        /// Anchors an interactive `accessory` to the lifted preview.
+        /// Presents an interactive `accessory` alongside the menu — as a
+        /// native row inside the `NSMenu` on macOS, anchored to the
+        /// lifted preview outside the menu on iOS.
+        ///
+        /// Inside a tracked `NSMenu` the accessory is pointer-interactive
+        /// only: keyboard input is unsupported, and its dimensions are
+        /// fixed until the menu reopens.
         ///
         /// Choosing a menu item dismisses the menu; acting inside the
         /// accessory does not. The accessory's environment carries a
@@ -136,7 +154,7 @@ pub mod context_menu {
         /// The view to lift while the menu is open; `None` lifts the source
         /// view.
         pub preview: Option<AnyView>,
-        /// The accessory to anchor to the lifted preview, with
+        /// The accessory presented alongside the menu, with
         /// [`DismissContextMenu`] installed in its environment.
         pub accessory: Option<AnyView>,
         /// Counts the accessory's dismiss requests, wrapping on overflow.
