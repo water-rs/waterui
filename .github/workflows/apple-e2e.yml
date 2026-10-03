@@ -728,10 +728,10 @@ jobs:
     needs: [prepare, build-ios, build-macos, e2e-ios, e2e-macos]
     runs-on: ubuntu-latest
     steps:
-      - name: Note the certified inputs
+      - name: Note the resolved inputs
         run: |
           {
-            echo "### Certified inputs"
+            echo "### Resolved inputs"
             echo "- framework + backends/apple: \`${{ needs.prepare.outputs.waterui_sha }}\` (${{ needs.prepare.outputs.waterui_ref }})"
             echo "- water CLI: \`${{ needs.prepare.outputs.cli_sha }}\` (${{ needs.prepare.outputs.cli_ref }})"
           } >> "${GITHUB_STEP_SUMMARY}"
