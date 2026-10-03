@@ -78,13 +78,12 @@ LOGS = ROOT / "logs"
 STATE_PATH = ROOT / "state.json"
 MAX_STEP_S = 1800  # the <=30-minute bound applies to every step
 
-# Tail of every launch-leg stream argv. The observer (observer.py, macOS) and
-# `xcrun simctl spawn` (iOS) run this same tail; NDJSON is unfiltered on the
-# wire — PID/subsystem filtering is owned once by StructuredLogStream below,
-# because an idle stream emits no events under the production predicate and
-# would deadlock attach-before-spawn. observer.py duplicates this literal; keep
-# them identical (asserted in test_protocol.py).
-LOG_STREAM_TAIL = ["log", "stream", "--level", "info", "--style", "ndjson"]
+# Shared launch-leg stream argv tail (stream_args.py): the observer
+# (observer.py, macOS) and `xcrun simctl spawn` (iOS) run this same tail.
+# NDJSON is unfiltered on the wire — PID/subsystem filtering is owned once by
+# StructuredLogStream below, because an idle stream emits no dev.waterui
+# events and a wire-level predicate would deadlock attach-before-spawn.
+from stream_args import LOG_STREAM_TAIL
 
 
 class BenchError(RuntimeError):
@@ -1392,6 +1391,7 @@ def leg_launch(manifest, ctx, side, subject_name, platform, sample):
             prefix = ["xcrun", "simctl", "spawn", udid]
 
         stream_argv = [*prefix, *LOG_STREAM_TAIL]
+        LOGS.mkdir(parents=True, exist_ok=True)
         stream = None
         if platform == "macos":
             # `log stream` needs an admin account; the privileged observer

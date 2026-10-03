@@ -171,7 +171,8 @@ Disk is allocated bytes; app and executable package sizes are logical bytes.
 ## Event and ownership protocol
 
 1. Install the release simulator bundle when applicable.
-2. Start a live `log stream --style ndjson --level info` with no wire-level
+2. Start a live `log stream --style ndjson --level info` (the shared argv
+   tail in `stream_args.py`, used by both legs) with no wire-level
    predicate — PID/subsystem filtering is owned once by the driver's
    StructuredLogStream. An idle stream emits no `dev.waterui` events, so a
    subsystem predicate would deadlock attach-before-spawn.
