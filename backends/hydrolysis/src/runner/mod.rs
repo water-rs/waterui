@@ -139,14 +139,14 @@ pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::platform::GpuSurfaceWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
-use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome};
+use crate::renderer::{
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
+};
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
 use crate::time::Instant;
 
@@ -315,10 +315,8 @@ pub fn run(app: App, style: impl crate::Style) {
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&theme))
-        };
+        let mut renderer =
+            HydrolysisRenderer::new(Rc::clone(&theme), FontFamilyResolution::Lenient);
         seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);

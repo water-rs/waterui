@@ -14,6 +14,7 @@ testing = []
 [dependencies]
 arc-swap = "1"
 cherenkov-record = { path = "record", features = ["serde"] }
+crossbeam-channel.workspace = true
 web-time = "1"
 filtrate-core = { path = "../filtrate/core" }
 kurbo = { version = "0.13.1", features = ["serde"] }

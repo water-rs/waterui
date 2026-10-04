@@ -763,7 +763,9 @@ mod imp {
     use alloc::vec::Vec;
     use core::cell::{Cell, RefCell};
 
-    use cocoa_ui::uikit::{ColorSchemeObservation, HostView, ViewController, WindowScene};
+    use cocoa_ui::uikit::{
+        ColorSchemeObservation, HostView, ViewController, WindowScene, window_root,
+    };
     use cocoa_ui::{MainThreadMarker, Retained};
     use waterui::Signal;
     use waterui::window::Window;
@@ -868,7 +870,7 @@ mod imp {
     ) -> cocoa_ui::uikit::Window {
         let mtm = scene.main_thread();
         let window = cocoa_ui::uikit::Window::new(scene);
-        let controller = ViewController::new(mtm);
+        let controller = ViewController::new(mtm, window_root(mtm));
         window.set_root_view_controller(&controller);
         window.make_key_and_visible();
 
@@ -901,7 +903,7 @@ mod imp {
             cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
             scene,
         );
-        let controller = ViewController::new(mtm);
+        let controller = ViewController::new(mtm, window_root(mtm));
         window.setRootViewController(Some(&controller));
         let mut env = scenes
             .env

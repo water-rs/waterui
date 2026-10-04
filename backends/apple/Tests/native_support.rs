@@ -44,7 +44,7 @@ pub fn mount_uikit(
     frame: cocoa_ui::Rect,
 ) -> UIKitMount {
     use objc2::{MainThreadOnly, Message};
-    let controller = cocoa_ui::uikit::ViewController::new(mtm);
+    let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     let host = controller.host_view().retain();
     let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithFrame(
         cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),

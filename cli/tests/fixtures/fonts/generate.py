@@ -20,7 +20,7 @@ rule); `tests/fixtures/fonts/*.ttf` is gitignored.
 
 `Roboto-Regular.ttf` is the unmodified member of the googlefonts/roboto
 v2.138 `roboto-android.zip` release — the same pinned source Hydrolysis's
-`test-fonts/generate.py` draws its Roboto faces from — under the Apache 2.0
+`test-fonts/install.py` draws its Roboto faces from — under the Apache 2.0
 licence kept beside it as `LICENSE`.
 """
 

@@ -35,11 +35,12 @@ scoped to the measured PID — no cross-process log fallback.
 
 Input architecture: the old side keeps its standalone apple-backend checkout
 plus the harness-owned `waterui/backends/apple` link. The new side has no
-separate backend at all: the Apple backend returned into the framework
-repository as the tracked `backends/apple` workspace member, so the waterui
-checkout's single HEAD owns framework and backend together — there is no
-new-side backend pin, clone, link or env SHA. The driver validates that the
-member is a real tracked directory whose package is `waterui-apple`, listed
+separate backend or CLI at all: the Apple backend returned into the
+framework repository as the tracked `backends/apple` workspace member and
+the CLI as the tracked `cli` member, so the waterui checkout's single HEAD
+owns framework, backend and tool source together — there is no new-side
+backend or CLI pin, clone, link or env SHA. The driver validates that each
+member is a real tracked directory with its declared Cargo package, listed
 as a workspace member, beside the root Swift package.
 """
 
@@ -260,13 +261,14 @@ def waterui_dir(side):
     return ROOT / "checkouts" / side / "waterui"
 
 
-# Checkout folder per pin name; the new side has no apple_backend pin.
+# Checkout folder per pin name; the new side has no apple_backend or cli
+# pin — the CLI is the tracked cli member of the waterui checkout.
 CHECKOUT_FOLDERS = {"apple_backend": "apple-backend", "waterui": "waterui", "cli": "cli"}
 
 
 def pin_names(manifest, side):
     """A side's checkout pins are the entries that carry a repo URL; layout
-    descriptors such as backend_layout are not pins."""
+    descriptors such as backend_layout or cli_layout are not pins."""
     return tuple(name for name, cfg in manifest["sides"][side].items()
                  if isinstance(cfg, dict) and "repo" in cfg)
 
@@ -277,6 +279,22 @@ def backend_dir(manifest, side):
     if side == "old":
         return ROOT / "checkouts" / side / "apple-backend"
     return waterui_dir(side) / manifest["sides"][side]["backend_layout"]["path"]
+
+
+def cli_source_dir(manifest, side):
+    """Old: the standalone cli checkout. New: the tracked `cli` member inside
+    the waterui checkout — same repository, same HEAD."""
+    if side == "old":
+        return ROOT / "checkouts" / side / CHECKOUT_FOLDERS["cli"]
+    return waterui_dir(side) / manifest["sides"][side]["cli_layout"]["path"]
+
+
+def cli_source_sha(side, pins):
+    """The commit a side's CLI receipt must certify, by explicit role: the
+    old side's own `cli` pin; the new side's framework pin — the cli member
+    shares the waterui checkout's HEAD. A missing pin is a defect, not a
+    receipt candidate."""
+    return pins["cli" if side == "old" else "waterui"]
 
 
 def project_dir(manifest, side, subject_name):
@@ -492,7 +510,8 @@ def require_finalized(manifest, state):
         raise BenchError("requested pins differ from immutable finalized run inputs")
     for side in manifest["sides"]:
         receipt = state.get("tools", {}).get(side, {})
-        if receipt.get("source_sha") != state["resolved_pins"][side]["cli"]:
+        if receipt.get("source_sha") != cli_source_sha(
+                side, state["resolved_pins"][side]):
             raise BenchError(f"{side}: finalized CLI provenance is missing")
         if file_sha256(water_bin(side)) != receipt.get("binary_sha256"):
             raise BenchError(f"{side}: installed CLI changed after finalization")
@@ -530,6 +549,40 @@ def require_clean_checkout(path, backend=None):
         raise BenchError(f"{path}: dirty checkout (tracked changes or untracked inputs); refusing source provenance")
 
 
+def validate_tracked_member(manifest, side, layout):
+    """A real tracked directory inside the side's waterui checkout — never a
+    link, nested repository or foreign path — whose Cargo package is the
+    declared workspace member. The waterui HEAD being the verified pin then
+    owns the member's exact source."""
+    waterui = waterui_dir(side)
+    member = waterui / layout["path"]
+    if member.is_symlink() or not member.is_dir():
+        raise BenchError(
+            f"{member}: member must be a tracked directory inside the "
+            "waterui checkout — not a link or missing member")
+    if (member / ".git").exists():
+        raise BenchError(
+            f"{member}: nested repository — the member shares the waterui "
+            "checkout's HEAD, it is not its own clone")
+    if not checked_output(["git", "-C", str(waterui), "ls-files", "--", layout["path"]]):
+        raise BenchError(f"{member}: member directory is not tracked by the waterui checkout")
+    pkg = member / "Cargo.toml"
+    if not pkg.is_file():
+        raise BenchError(f"{pkg}: member manifest missing")
+    name = tomllib.loads(pkg.read_text()).get("package", {}).get("name")
+    if name != layout["package"]:
+        raise BenchError(f"{pkg}: expected package {layout['package']}, found {name!r}")
+    root_manifest = waterui / "Cargo.toml"
+    if not root_manifest.is_file():
+        raise BenchError(f"{root_manifest}: waterui checkout root manifest missing")
+    members = tomllib.loads(root_manifest.read_text()).get("workspace", {}).get("members")
+    covered = {match for pattern in (members if isinstance(members, list) else [])
+               for match in glob.glob(pattern, root_dir=waterui)}
+    if layout["path"] not in covered:
+        raise BenchError(
+            f"{member}: not a workspace member of {root_manifest}")
+
+
 def validate_backend_member(manifest, side):
     """The side's exact backend binding, inside the waterui checkout.
 
@@ -547,34 +600,19 @@ def validate_backend_member(manifest, side):
             raise BenchError(f"{link}: expected the harness-owned backend link")
         return
     layout = manifest["sides"][side]["backend_layout"]
-    member = waterui / layout["path"]
-    if member.is_symlink() or not member.is_dir():
-        raise BenchError(
-            f"{member}: new-side backend must be a tracked directory inside "
-            "the waterui checkout — not a link or missing member")
-    if (member / ".git").exists():
-        raise BenchError(
-            f"{member}: nested repository — the new-side backend shares the "
-            "waterui checkout's HEAD, it is not its own clone")
-    if not checked_output(["git", "-C", str(waterui), "ls-files", "--", layout["path"]]):
-        raise BenchError(f"{member}: backend directory is not tracked by the waterui checkout")
-    pkg = member / "Cargo.toml"
-    if not pkg.is_file():
-        raise BenchError(f"{pkg}: backend manifest missing")
-    name = tomllib.loads(pkg.read_text()).get("package", {}).get("name")
-    if name != layout["package"]:
-        raise BenchError(f"{pkg}: expected package {layout['package']}, found {name!r}")
-    root_manifest = waterui / "Cargo.toml"
-    if not root_manifest.is_file():
-        raise BenchError(f"{root_manifest}: waterui checkout root manifest missing")
-    members = tomllib.loads(root_manifest.read_text()).get("workspace", {}).get("members")
-    covered = {match for pattern in (members if isinstance(members, list) else [])
-               for match in glob.glob(pattern, root_dir=waterui)}
-    if layout["path"] not in covered:
-        raise BenchError(
-            f"{member}: not a workspace member of {root_manifest}")
+    validate_tracked_member(manifest, side, layout)
     if not (waterui / layout["swift_package"]).is_file():
         raise BenchError(f"{waterui / layout['swift_package']}: root Swift package missing")
+
+
+def validate_source_members(manifest, side):
+    """Every source member the side's waterui checkout is asked to own: the
+    backend binding plus, on the new side, the tracked `cli` member — the
+    CLI's source shares the same framework HEAD."""
+    validate_backend_member(manifest, side)
+    if side == "new":
+        validate_tracked_member(manifest, side,
+                                manifest["sides"][side]["cli_layout"])
 
 
 def owned_checkout(ctx, path, url, backend=None):
@@ -628,7 +666,7 @@ def cli_receipt(ctx, state, side, sha, supplied, finalize):
         if not finalize or side != "new" or run_started(state):
             raise BenchError(f"{side}: CLI receipt replacement requires unstarted new-side finalization")
     if stored and stored.get("source_sha") != sha and explicit is None:
-        raise BenchError(f"{side}: new CLI pin requires an explicit coordinator receipt")
+        raise BenchError(f"{side}: CLI source change requires an explicit coordinator receipt")
     binary = water_bin(side)
     if binary.exists():
         assert_owned(ctx, binary)
@@ -645,6 +683,18 @@ def preflight_inputs(manifest, ctx, state, requested, finalize, supplied):
     previous = state.get("prepared_pins") or state.get("resolved_pins", {})
     for side, pins in previous.items():
         for name, sha in pins.items():
+            if name not in requested.get(side, {}):
+                # The one legitimate retirement is the independent new-side
+                # cli pin dropped by the source-ownership fix — and only at
+                # explicit unstarted finalization (run_started already failed
+                # above). input_history preserves it; it is never consumed as
+                # a current source. Any other unexpected persisted name —
+                # old-side or new — is corruption, not history.
+                if not (side == "new" and name == "cli" and finalize):
+                    raise BenchError(
+                        f"{side}/{name}: persisted pin {name!r} is not a "
+                        "requested input")
+                continue
             if sha != requested[side][name] and (side != "new" or not finalize):
                 raise BenchError(f"{side}/{name}: prepared pin change requires new-side finalization")
     checkouts = []
@@ -668,14 +718,17 @@ def preflight_inputs(manifest, ctx, state, requested, finalize, supplied):
                     if not finalize or side != "new":
                         raise BenchError(f"{side}/{name}: checkout pin change requires new-side finalization")
                 elif name == "waterui" and side == "new":
-                    # An already-pinned waterui checkout proves its backend
-                    # binding now; a pending replace revalidates after fetch.
-                    validate_backend_member(manifest, side)
+                    # An already-pinned waterui checkout proves its member
+                    # bindings now; a pending replace revalidates after fetch.
+                    validate_source_members(manifest, side)
             checkouts.append(PreparedCheckout(side, name, path, pins[name]["repo"], head,
                                               requested[side][name], backend))
-    tools = tuple(PreparedCLI(side, requested[side]["cli"],
-                             cli_receipt(ctx, state, side, requested[side]["cli"], supplied, finalize))
-                  for side in manifest["sides"])
+    tools = tuple(PreparedCLI(
+        side, cli_source_sha(side, requested[side]),
+        cli_receipt(ctx, state, side,
+                    cli_source_sha(side, requested[side]),
+                    supplied, finalize))
+        for side in manifest["sides"])
     return PreparedInputs(tuple(checkouts), tools)
 
 
@@ -702,16 +755,16 @@ def prepare_checkouts(manifest, ctx, state, requested, plan):
             else:
                 link.symlink_to(backend_dir(manifest, side), target_is_directory=True)
         else:
-            # The backend arrived with the waterui checkout itself — never
-            # create or accept a link/foreign path for it.
-            validate_backend_member(manifest, side)
+            # The backend and the CLI source arrived with the waterui
+            # checkout itself — never create or accept a link/foreign path.
+            validate_source_members(manifest, side)
     state["prepared_pins"] = requested
     save_state(state)
 
 
 def prepare_cli(manifest, ctx, state, side, sha, supplied, finalize=False):
     binary = water_bin(side)
-    source = ROOT / "checkouts" / side / "cli"
+    source = cli_source_dir(manifest, side)
     if checked_output(["git", "-C", str(source), "rev-parse", "HEAD"]) != sha:
         raise BenchError(f"{side}: CLI source SHA mismatch")
     require_clean_checkout(source)
@@ -1062,7 +1115,7 @@ def verify_checkouts(manifest, state, side):
             raise BenchError(f"{path}: checkout no longer matches resolved pin")
         backend = backend_dir(manifest, side) if name == "waterui" and side == "old" else None
         require_clean_checkout(path, backend)
-    validate_backend_member(manifest, side)
+    validate_source_members(manifest, side)
 
 
 def source_fingerprint(manifest, side, subject):
@@ -1615,7 +1668,9 @@ def inputs_locked(manifest, state):
     sources_ok = all(re.fullmatch(r"[0-9a-f]{64}", state.get("source_sha256", {}).get(f"{side}/{subject}", ""))
                      for side in manifest["sides"] for subject in manifest["subjects"])
     tools_ok = all(
-        state.get("tools", {}).get(side, {}).get("source_sha") == rp.get(side, {}).get("cli")
+        ("cli" if side == "old" else "waterui") in rp.get(side, {})
+        and state.get("tools", {}).get(side, {}).get("source_sha")
+        == cli_source_sha(side, rp[side])
         and bool(re.fullmatch(r"[0-9a-f]{64}", state.get("tools", {}).get(side, {}).get("binary_sha256", "")))
         for side in manifest["sides"])
     return {"inputs_finalized": state.get("inputs_finalized") is True,

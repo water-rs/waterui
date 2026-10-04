@@ -42,7 +42,7 @@
         "repo": "https://github.com/water-rs/waterui.git",
         "sha": null,
         "sha_env": "BENCH282_NEW_WATERUI_SHA",
-        "pending": "The coordinator supplies the frozen, merged and reviewed new-side framework commit — the Apple backend has returned into this repository as the tracked backends/apple member, so this single commit owns framework and backend together. No speculative SHA is recorded; there is no independent backend pin to supply."
+        "pending": "The coordinator supplies the frozen, merged and reviewed new-side framework commit — the Apple backend and the CLI have both returned into this repository as the tracked backends/apple and cli members, so this single commit owns framework, backend and CLI source together. No speculative SHA is recorded; there is no independent backend or CLI pin to supply."
       },
       "backend_layout": {
         "path": "backends/apple",
@@ -50,13 +50,12 @@
         "swift_package": "Package.swift",
         "note": "The new-side Apple backend is a tracked Cargo workspace member inside the waterui checkout — the same HEAD owns both. It is never a separate clone, symlink or pin; the driver validates the member's trackedness, package name, workspace membership and the root Swift package at every input gate."
       },
-      "cli": {
-        "repo": "https://github.com/water-rs/cli.git",
-        "sha": null,
-        "sha_env": "BENCH282_NEW_CLI_SHA",
-        "pending": "The coordinator supplies the frozen new-side CLI commit (the entry-owning CLI line). No speculative SHA is recorded; setup fails until the exact commit is supplied via manifest or BENCH282_NEW_CLI_SHA (40-hex), then fetches and HEAD-verifies it."
+      "cli_layout": {
+        "path": "cli",
+        "package": "waterui-cli",
+        "note": "The new-side CLI is the tracked cli/ Cargo workspace member inside the same waterui checkout — the framework pin's HEAD is its source, and `cargo install --locked --path <checkout>/cli` builds it. It is never a separate repository, pin, clone, link or env SHA; the driver validates the member's trackedness, package name and workspace membership at every input gate."
       },
-      "provenance": "Old side is the certified Nightly E2E pairing. Both new-side exact commits — waterui (owning backends/apple in-tree) and cli — are required coordinator inputs, verified at explicit finalization before scaffold or measurement.",
+      "provenance": "Old side is the certified Nightly E2E pairing. The new side's single required input is the exact framework commit — supplied via manifest or BENCH282_NEW_WATERUI_SHA (40-hex) and verified at explicit finalization before scaffold or measurement — whose HEAD owns framework, the tracked backends/apple member and the tracked cli member together.",
       "create_extra_args": [],
       "build_scope": "rust library + managed native backend host project — the new CLI generates and builds the WaterUIApp host inside the managed build cache during `water build`, and its entry-owning packaging produces the app binary directly."
     }
@@ -331,5 +330,5 @@
     "default_leg": 900
   },
   "timeouts_comment": "No single step may exceed 30 minutes; every leg and setup step is individually bounded and records timed_out on expiry.",
-  "protocol_version": 5
+  "protocol_version": 6
 }

@@ -56,6 +56,30 @@ const LAYOUT_INK_EXTENT_CACHE_CAPACITY: usize = 1024;
 /// dense screen, the bound keeps long-tail documents from growing it forever.
 const GLYPH_INK_BOUNDS_CACHE_CAPACITY: usize = 16384;
 
+/// How a named font family the collection cannot resolve is treated.
+///
+/// An application resolves leniently: a named family that is not installed is
+/// skipped for the rest of its CSS list and the generic family answers, the
+/// way a browser resolves `font-family` against whatever the host happens to
+/// carry. A test host resolves strictly: the style package a test mounts
+/// names the families its design assumes, so a missing one means the host
+/// never ran the package's font install script — the shape panics naming the
+/// family instead of silently measuring a substitute face.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FontFamilyResolution {
+    /// An unresolved named family falls through to the next list entry.
+    #[default]
+    Lenient,
+    /// An unresolved named family panics, naming the family.
+    Strict,
+}
+
+impl FontFamilyResolution {
+    const fn is_strict(self) -> bool {
+        matches!(self, Self::Strict)
+    }
+}
+
 /// Thread-safe text shaping service shared by the render path and layout
 /// measurement. Cheaply cloneable shaping scratch is pooled so each worker
 /// reuses a [`parley::FontContext`] carrying the registered resource fonts.
@@ -90,6 +114,9 @@ pub struct TextMeasureService {
     /// under the frame's transform, so a scrolled or animated frame pays one
     /// encoding copy per text instead of a full glyph-run walk.
     scene_cache: Mutex<LruCache<TextSceneCacheKey, Arc<Recording>>>,
+    /// Whether a named family the collection cannot resolve fails the shape.
+    /// See [`FontFamilyResolution`].
+    family_resolution: FontFamilyResolution,
 }
 
 /// Cache identity for an encoded glyph scene: the shaped layout it draws plus
@@ -146,9 +173,10 @@ struct TextShapingScratch {
 }
 
 impl TextMeasureService {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(family_resolution: FontFamilyResolution) -> Self {
         Self {
             fonts: parley::FontContext::new(),
+            family_resolution,
             cache: Mutex::new(LruCache::new(
                 NonZeroUsize::new(TEXT_LAYOUT_CACHE_CAPACITY)
                     .expect("text layout cache capacity must be non-zero"),
@@ -219,7 +247,12 @@ impl TextMeasureService {
         }
 
         let mut scratch = self.checkout_scratch();
-        let layout = Arc::new(build_parley_layout(&mut scratch, input, max_width));
+        let layout = Arc::new(build_parley_layout(
+            &mut scratch,
+            input,
+            max_width,
+            self.family_resolution,
+        ));
         self.return_scratch(scratch);
 
         self.cache
@@ -581,7 +614,15 @@ fn build_parley_layout(
     scratch: &mut TextShapingScratch,
     input: &ResolvedTextLayoutInput,
     max_width: Option<f32>,
+    family_resolution: FontFamilyResolution,
 ) -> parley::Layout<[u8; 4]> {
+    if family_resolution.is_strict() {
+        let collection = &mut scratch.font_cx.collection;
+        assert_family_list_installed(collection, input.default_font.family.as_deref());
+        for (_, style) in &input.spans {
+            assert_family_list_installed(collection, style.font.family.as_deref());
+        }
+    }
     let mut builder =
         scratch
             .layout_cx
@@ -694,6 +735,34 @@ fn push_text_style(
     );
     if let Some(color) = style.foreground {
         builder.push(parley::StyleProperty::Brush(color), range);
+    }
+}
+
+/// The [`FontFamilyResolution::Strict`] gate on one CSS `font-family` list:
+/// every *named* entry must resolve in the collection — generic families
+/// always resolve, so they are skipped, as is the generic fallback a missing
+/// family list defaults to. A named family the host does not carry means the
+/// style package's fonts were never installed; panic naming it rather than
+/// measuring a substitute face.
+fn assert_family_list_installed(
+    collection: &mut parley::fontique::Collection,
+    family: Option<&str>,
+) {
+    let Some(family) = family else {
+        return;
+    };
+    for name in parley::FontFamilyName::parse_css_list(family) {
+        let name = name.unwrap_or_else(|error| {
+            panic!("font family {family:?} is not a CSS family list: {error:?}")
+        });
+        if let parley::FontFamilyName::Named(name) = name
+            && collection.family_by_name(&name).is_none()
+        {
+            panic!(
+                "font family `{name}` is not installed; install the style package's \
+                 fonts with its font install script"
+            );
+        }
     }
 }
 
@@ -1232,7 +1301,7 @@ mod truncation_tests {
     #[test]
     fn a_truncated_line_ends_in_an_ellipsis_inside_its_bound() {
         let env = test_environment();
-        let service = TextMeasureService::new();
+        let service = TextMeasureService::new(FontFamilyResolution::Strict);
         let input = test_input(
             &env,
             "a preview long enough that a single line cannot hold it",
@@ -1260,7 +1329,7 @@ mod truncation_tests {
     #[test]
     fn a_multiline_limit_carries_the_ellipsis_on_the_last_line() {
         let env = test_environment();
-        let service = TextMeasureService::new();
+        let service = TextMeasureService::new(FontFamilyResolution::Strict);
         let input = test_input(
             &env,
             "a preview long enough that it wraps well past the two lines it may show",
@@ -1287,7 +1356,7 @@ mod truncation_tests {
     #[test]
     fn a_text_that_fits_its_limit_is_not_truncated() {
         let env = test_environment();
-        let service = TextMeasureService::new();
+        let service = TextMeasureService::new(FontFamilyResolution::Strict);
         let input = test_input(&env, "short");
 
         let layout = service.shape_limited(&input, Some(200.0), Some(1));
@@ -1303,7 +1372,7 @@ mod truncation_tests {
     #[test]
     fn a_truncated_leaf_reports_the_drawn_line() {
         let env = test_environment();
-        let mut state = HydroState::default();
+        let mut state = HydroState::new(FontFamilyResolution::Strict);
         let styled = StyledStr::plain("aaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
 
         let dimensions = HydrolysisRenderer::measure_text_dimensions(
@@ -1330,7 +1399,7 @@ mod truncation_tests {
     #[test]
     fn a_line_count_truncation_reports_the_drawn_extent() {
         let env = test_environment();
-        let mut state = HydroState::default();
+        let mut state = HydroState::new(FontFamilyResolution::Strict);
         let styled = StyledStr::plain("a\nb\nc");
 
         let dimensions = HydrolysisRenderer::measure_text_dimensions(

@@ -824,7 +824,7 @@ crate::engine::cfg_async_fn! {
         // The timestamp resolve blocks until the frame's submits finish — the
         // headless frame's "present wait", kept separate from the CPU submit
         // time `render` measures.
-        renderer.finish_gpu_frame_profile(surface.device(), surface.queue());
+        renderer.finish_gpu_frame_profile(context.context_id, surface.device(), surface.queue());
     }
     #[cfg(not(target_arch = "wasm32"))]
     let snapshot = {
