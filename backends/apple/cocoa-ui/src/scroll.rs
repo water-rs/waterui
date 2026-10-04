@@ -34,9 +34,9 @@ pub type ScrollView = PlatformScrollView;
 /// The [`ScrollView`] ancestors of `view`, lazily walked nearest-first.
 ///
 /// One shared chain both the nearest-only query and the all-ancestors
-/// subscription consume, so asking for the nearest scroll view costs a
-/// single ancestor hop while a visibility watch can still collect the
-/// whole chain.
+/// subscription consume: the nearest query stops at the first scroll
+/// view it finds instead of collecting the remaining ancestors, while a
+/// visibility watch can still collect the whole chain.
 fn scroll_ancestors(view: &PlatformView) -> impl Iterator<Item = Retained<ScrollView>> {
     std::iter::successors(crate::view::superview(view), |candidate| {
         crate::view::superview(candidate)
