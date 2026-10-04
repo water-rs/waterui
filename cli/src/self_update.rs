@@ -541,7 +541,7 @@ mod tests {
             "provider": { "source": "cargo-dist", "version": "0.30.2" },
             "source": {
                 "app_name": "waterui-cli",
-                "name": "waterui",
+                "name": "cli",
                 "owner": "water-rs",
                 "release_type": "github",
             },
