@@ -9,7 +9,7 @@ edition = "2024"
 
 [package.metadata.waterui]
 minimum-cli-version = "0.1.0"
-android-min-api-level = 26
+android-min-api-level = 31
 # The native Apple backend is the workspace member at this path inside the
 # framework tree; the CLI resolves `waterui-apple` from the framework's own
 # repository and revision on every channel.

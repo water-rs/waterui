@@ -185,16 +185,13 @@ windows-sys = { version = "0.52", optional = true, features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# The Android host's JNI boundary (see src/runner/android/): `ndk` binds only
-# the NDK symbols of the framework's API floor, `ndk-sys` and `libloading`
-# resolve the newer ones at run time, `libc` carries the eventfd the
-# main-Looper executor wakes on, and `android_logger` + `tracing-log` route
-# `tracing` into logcat.
+# The Android host's JNI boundary (see src/runner/android/): `ndk` with
+# `api-level-31` binds the NDK symbols of the framework's API floor, `libc`
+# carries the eventfd the main-Looper executor wakes on, and `android_logger`
+# + `tracing-log` route `tracing` into logcat.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"
-ndk = { version = "0.9.0", features = ["nativewindow"] }
-ndk-sys = "0.6.0"
-libloading = "0.9"
+ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
 # The application `Context` for service crates that resolve it through
 # `ndk_context::android_context` — waterkit-clipboard's Android backend
 # panics without it; published once in `nativeCreateSession`.
