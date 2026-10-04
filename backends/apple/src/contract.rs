@@ -129,6 +129,15 @@ impl NativeLeaf {
         &*self.layout
     }
 
+    /// The leaf's measure handle itself — a caller that measures the
+    /// leaf apart from `HostView`'s intrinsic forwarding (the iOS
+    /// context-menu panel is one) clones this and queries it directly.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
+        Rc::clone(&self.layout)
+    }
+
     /// Mirrors the leaf's layout face onto the view's intrinsic measure,
     /// so an Auto Layout parent — the toggle's row is one — can size the
     /// mounted child. Without it a `HostView` leaf reports no intrinsic
@@ -136,20 +145,7 @@ impl NativeLeaf {
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
             let layout = Rc::clone(layout);
-            host.set_measure_handler(move |_host, proposal| {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "the layout contract is f32; measured points always fit"
-                )]
-                let measured = layout.measure(waterui_core::layout::ProposalSize::new(
-                    proposal.width.map(|width| width as f32),
-                    proposal.height.map(|height| height as f32),
-                ));
-                cocoa_ui::geometry::Size::new(
-                    f64::from(measured.size.width),
-                    f64::from(measured.size.height),
-                )
-            });
+            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
         }
     }
 
@@ -213,6 +209,38 @@ impl NativeLeaf {
     }
 }
 
+/// Measures `layout` under a cocoa-ui `MeasureProposal` — the one
+/// conversion every measure of a leaf's `SubView` goes through: `None`
+/// axes reach the layout truly unbounded and the measured `f32` size
+/// widens to points. `HostView` intrinsic forwarding and the iOS
+/// panel's per-slot callback both call it.
+fn measure_layout(
+    layout: &Rc<dyn SubView>,
+    proposal: cocoa_ui::geometry::MeasureProposal,
+) -> cocoa_ui::geometry::Size {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the layout contract is f32; measured points always fit"
+    )]
+    let measured = layout.measure(waterui_core::layout::ProposalSize::new(
+        proposal.width.map(|width| width as f32),
+        proposal.height.map(|height| height as f32),
+    ));
+    cocoa_ui::geometry::Size::new(
+        f64::from(measured.size.width),
+        f64::from(measured.size.height),
+    )
+}
+
+/// A leaf's own measure as a retained `MeasureProposal` callback — the
+/// panel's per-slot measure, alive independently of the leaf's owner.
+#[cfg(target_os = "ios")]
+pub(crate) fn measure_callback(
+    layout: Rc<dyn SubView>,
+) -> Rc<dyn Fn(cocoa_ui::geometry::MeasureProposal) -> cocoa_ui::geometry::Size> {
+    Rc::new(move |proposal| measure_layout(&layout, proposal))
+}
+
 /// A child leaf attached to a parent view. Dropping it detaches the view
 /// from its superview, then drops the leaf: this is how a container
 /// releases a child it replaces or removes.
@@ -229,6 +257,18 @@ impl Mounted {
     #[must_use]
     pub fn view(&self) -> &PlatformView {
         self.0.as_ref().expect("a live Mounted").view()
+    }
+
+    /// The child's measure handle — the query its `SubView` layout face
+    /// answers, cloned for measuring apart from the view.
+    ///
+    /// # Panics
+    ///
+    /// When called on a `Mounted` that is already unmounting.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
+        self.0.as_ref().expect("a live Mounted").layout_handle()
     }
 
     /// The child's layout face.

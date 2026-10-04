@@ -14,7 +14,7 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-icons-material-icon.workspace = true
 
 [dev-dependencies]

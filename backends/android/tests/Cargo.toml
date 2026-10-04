@@ -15,5 +15,5 @@ workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-android = { path = "..", features = ["text", "container", "button"] }

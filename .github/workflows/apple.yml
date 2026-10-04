@@ -353,6 +353,10 @@ jobs:
         with:
           families: cargo-sources-${{ runner.os }}-,apple-target-${{ runner.os }}-${{ runner.arch }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.apple-target.outputs.cache-primary-key }}
+          # One live entry per cache purpose on this ref — the shared sweep
+          # covers families no single job owns (install-tool pins, the
+          # SwiftPM archives this workflow writes) (#1441).
+          sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       # The sources archive is writable from both integration branches:
       # caches are only visible to the ref that wrote them (plus its base

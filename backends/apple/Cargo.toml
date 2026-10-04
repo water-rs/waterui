@@ -161,7 +161,7 @@ native-test = ["cocoa-ui/native-test"]
 
 
 [dependencies]
-waterui = { workspace = true, features = ["inspector"] }
+waterui = { workspace = true, features = ["inspector", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-core = { workspace = true }
 waterui-backend-core = { workspace = true, default-features = true, features = [
     "overlay",

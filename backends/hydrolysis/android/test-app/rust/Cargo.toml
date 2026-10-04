@@ -1,0 +1,22 @@
+[package]
+name = "hydrolysis-android-test-app"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+description = "Debug app exercising the Hydrolysis Android host on an emulator or device"
+
+[lib]
+crate-type = ["cdylib"]
+name = "hydrolysis_test_app"
+
+[dependencies]
+hydrolysis = { workspace = true, features = ["accessibility"] }
+waterui = { workspace = true, features = ["gpu"] }
+hydrolysis-m3.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+
+[lints]
+workspace = true

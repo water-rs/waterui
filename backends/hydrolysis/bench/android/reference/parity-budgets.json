@@ -1,0 +1,11 @@
+{
+  "$schema-comment": "Compose MD3 parity budgets per twinned example. An example listed here must have a twin registered in e2e/reference (twinFor); the nightly renders the twin on the same emulator and pixel-compares it against the WaterUI capture. 'default' is the strict fallback fraction; recorded budgets are measured divergence plus headroom, blessed under issue #50 — they encode the current WaterUI-vs-MD3 type-scale/text-metric gap and must shrink as the backend aligns, never grow.",
+  "default": 0.02,
+  "examples": {
+    "form": 0.20,
+    "gesture": 0.10,
+    "hover": 0.28,
+    "list": 0.20,
+    "typography-rtl": 0.33
+  }
+}

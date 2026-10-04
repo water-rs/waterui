@@ -53,8 +53,8 @@ pub fn trials() -> Vec<Trial> {
             the_text_input_selectors_register_under_uikits_names
         ),
         case!(
-            "uikit::context_menu",
-            an_overlay_rooted_on_the_platter_claims_only_accessory_hits
+            "uikit::menu_panel",
+            an_unpresented_panel_tracks_its_rows_pages_and_focus
         ),
         case!("view", display_immediately_targets_the_layer_not_the_view),
     ])
@@ -253,91 +253,118 @@ fn the_text_input_selectors_register_under_uikits_names() {
     }
 }
 
-/// The accessory overlay's window must claim hits only inside the
-/// accessory: `hitTest` returns nil outside it (letting the host window's
-/// menu and backdrop see the touch) and the real accessory descendant
-/// inside it. `AccessoryOverlay::present` needs a `UIWindowScene` this
-/// standalone suite lacks, so the case builds the real overlay window
-/// through the `native-test` factory — the private
-/// `AccessoryOverlayWindow` keeps no public construction API — and
-/// asserts the window hit test on the tree `present` builds, plus the
-/// pre-fix shape (a plain root `UIView` containing the platter) which
-/// re-claims those points.
-fn an_overlay_rooted_on_the_platter_claims_only_accessory_hits() {
-    use cocoa_ui::objc2_ui_kit::{UIEvent, UIViewController};
-    use cocoa_ui::uikit::{HitTest, accessory_overlay_window_for_test};
+/// The popover panel's command surface — unpresented here, so only its
+/// composition is covered: rows build from the menu tree —
+/// separators stay non-activatable, focus moves across enabled buttons
+/// and skips them — a submenu row pushes a page with a back row, Left
+/// pops it, and activating a command runs its action.
+fn an_unpresented_panel_tracks_its_rows_pages_and_focus() {
+    use cocoa_ui::menu::{Command, MenuTreeNode};
+    use cocoa_ui::objc2::rc::Weak;
+    use cocoa_ui::objc2_ui_kit::UIColor;
+    use cocoa_ui::uikit::{ContextMenuPopover, PanelPalette};
 
     let mtm = marker();
-    // The actual overlay window class, through the harness-only entry
-    // point rather than a construction API or runtime name lookup.
-    let window = accessory_overlay_window_for_test(
-        CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(390.0, 844.0)),
-        mtm,
-    );
-    let controller = UIViewController::new(mtm);
-    window.setRootViewController(Some(&controller));
+    let palette = PanelPalette {
+        label: UIColor::labelColor(),
+        muted: UIColor::secondaryLabelColor(),
+        destructive: UIColor::systemRedColor(),
+        separator: UIColor::separatorColor(),
+        focus_fill: UIColor::tertiarySystemFillColor(),
+        surface: UIColor::systemBackgroundColor(),
+    };
+    let popover = ContextMenuPopover::new(mtm, &palette);
+    let picked = Rc::new(Cell::new(0));
+    let nodes = vec![
+        MenuTreeNode::Command(
+            Command {
+                label: String::from("Copy"),
+                enabled: true,
+                ..Command::default()
+            },
+            {
+                let picked = Rc::clone(&picked);
+                Rc::new(move || picked.set(picked.get() + 1))
+            },
+        ),
+        MenuTreeNode::Command(
+            Command {
+                label: String::from("Share"),
+                subtitle: Some(String::from("Sends a link")),
+                enabled: true,
+                ..Command::default()
+            },
+            Rc::new(|| {}),
+        ),
+        MenuTreeNode::Divider,
+        MenuTreeNode::Submenu(
+            Command {
+                label: String::from("More"),
+                enabled: true,
+                ..Command::default()
+            },
+            vec![MenuTreeNode::Command(
+                Command {
+                    label: String::from("Delete"),
+                    destructive: true,
+                    enabled: true,
+                    ..Command::default()
+                },
+                {
+                    let picked = Rc::clone(&picked);
+                    Rc::new(move || picked.set(picked.get() + 1))
+                },
+            )],
+        ),
+    ];
+    popover.set_commands(&nodes);
 
-    let platter = HostView::new(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-    platter.set_hit_test_handler(|_view, _point| HitTest::PassIfSelf);
-    let accessory = HostView::new(mtm, Rect::new(100.0, 100.0, 120.0, 40.0));
-    let child = HostView::new(mtm, Rect::new(0.0, 0.0, 60.0, 40.0));
-    accessory.add_subview(&child);
-    platter.add_subview(&accessory);
-    controller.setView(Some(&platter));
-    // `UIWindow` only attaches the root controller's view once the window
-    // is unhidden — `AccessoryOverlay::present` does the same.
-    window.setHidden(false);
+    let (depth, rows, focused) = popover.page_probe_for_test();
+    assert_eq!(depth, 1);
+    assert_eq!(
+        rows.iter()
+            .map(|(label, activatable)| (label.as_str(), *activatable))
+            .collect::<Vec<_>>(),
+        [("Copy", true), ("Share", true), ("", false), ("More", true)]
+    );
+    assert_eq!(focused, None);
 
-    // SAFETY: `hitTest:` takes a nil event on the main thread.
-    let outside: Option<Retained<UIView>> = unsafe {
-        msg_send![&*window, hitTest: CGPoint::new(20.0, 20.0), withEvent: std::ptr::null::<UIEvent>()]
-    };
-    // No content claims the point: the window maps its own self-hit to nil
-    // so the scene passes the touch to the host window below.
-    assert!(
-        outside.is_none(),
-        "a hit outside the accessory must not be claimed: {outside:?}"
-    );
-    // SAFETY: `hitTest:` takes a nil event on the main thread.
-    let inside: Option<Retained<UIView>> = unsafe {
-        msg_send![&*window, hitTest: CGPoint::new(110.0, 110.0), withEvent: std::ptr::null::<UIEvent>()]
-    };
-    assert!(
-        inside
-            .as_deref()
-            .is_some_and(|hit| std::ptr::eq(hit, &raw const **child)),
-        "a hit inside the accessory must resolve to its real descendant"
-    );
+    // Focus walks the enabled rows and the separator never lands.
+    popover.press_key_for_test("down");
+    assert_eq!(popover.page_probe_for_test().2, Some(0));
+    popover.press_key_for_test("down");
+    assert_eq!(popover.page_probe_for_test().2, Some(1));
+    popover.press_key_for_test("down");
+    assert_eq!(popover.page_probe_for_test().2, Some(2));
 
-    // The pre-fix shape — a plain `UIWindow` whose root view is a plain
-    // `UIView` containing the platter — claims the same point: the old
-    // overlay swallowed every touch outside the accessory.
-    // SAFETY: `alloc`/`initWithFrame:` are `UIWindow`'s plain
-    // initializers on the real main thread.
-    let old_window: Retained<UIWindow> = unsafe {
-        msg_send![
-            UIWindow::alloc(mtm),
-            initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(390.0, 844.0))
-        ]
-    };
-    let old_controller = UIViewController::new(mtm);
-    old_window.setRootViewController(Some(&old_controller));
-    // SAFETY: `alloc`/`initWithFrame:` are `UIView`'s plain initializers.
-    let plain_root: Retained<UIView> =
-        unsafe { msg_send![UIView::alloc(mtm), initWithFrame: old_window.bounds()] };
-    let plain_platter = HostView::new(mtm, Rect::new(0.0, 0.0, 390.0, 844.0));
-    plain_platter.set_hit_test_handler(|_view, _point| HitTest::PassIfSelf);
-    plain_root.addSubview(&plain_platter);
-    old_controller.setView(Some(&plain_root));
-    old_window.setHidden(false);
-    // SAFETY: `hitTest:` takes a nil event on the main thread.
-    let swallowed: Option<Retained<UIView>> = unsafe {
-        msg_send![&*old_window, hitTest: CGPoint::new(20.0, 20.0), withEvent: std::ptr::null::<UIEvent>()]
-    };
-    assert!(
-        swallowed.is_some(),
-        "a plain window and root view claim pass-through hits"
-    );
+    // Activating the submenu row pushes its page under a back row titled
+    // by the parent.
+    popover.press_key_for_test("return");
+    let (depth, rows, _) = popover.page_probe_for_test();
+    assert_eq!(depth, 2);
+    assert_eq!(rows[0].0, "More");
+    assert_eq!(rows[1].0, "Delete");
+
+    // Focus lands on the back row, then Delete; activation runs the
+    // action — a command also dismisses when presented.
+    popover.press_key_for_test("down");
+    popover.press_key_for_test("down");
+    popover.press_key_for_test("return");
+    assert_eq!(picked.get(), 1);
+
+    // Left returns to the root page; Escape dismisses harmlessly even
+    // unpresented.
+    popover.press_key_for_test("left");
+    assert_eq!(popover.page_probe_for_test().0, 1);
+    popover.press_key_for_test("escape");
+
+    // Dropping the popover releases its controller — nothing else retains
+    // it, so an unpresented panel tears the whole native tree down. The
+    // mount-target view lives in the controller's ivars, so it is the
+    // witness for the controller itself.
+    let weak = Weak::new(&*popover.mount_target());
+    drop(popover);
+    assert!(weak.load().is_none());
 }
 
 /// Regression test for the `displayIfNeeded` defect: `UIView` has no
