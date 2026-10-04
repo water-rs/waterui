@@ -1,5 +1,5 @@
 waterui_path = "../.."
 
 [package]
-name = "Canvas Bench"
-bundle_identifier = "dev.waterui.canvas_bench"
+name = "CanvasBench"
+bundle_identifier = "dev.cherenkov.bench"

@@ -37,7 +37,9 @@ use cocoa_ui::objc2_core_foundation::{
     CFRunLoopObserver, CFRunLoopObserverContext, CFRunLoopTimer, CFRunLoopTimerContext,
     kCFRunLoopCommonModes,
 };
-use cocoa_ui::objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState, NSRunLoop};
+use cocoa_ui::objc2_foundation::{
+    NSBundle, NSProcessInfo, NSProcessInfoThermalState, NSRunLoop,
+};
 use cocoa_ui::objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice};
 use cocoa_ui::objc2_quartz_core::{CADisplayLink, CAFrameRateRange, CACurrentMediaTime};
 use serde::Serialize;
@@ -691,7 +693,10 @@ fn result_json(inner: &Inner, config: &BenchConfig, status: &str) -> String {
         variant: config.variant.clone(),
         n: config.n,
         commit: config.commit.clone(),
-        bundle_id: "dev.waterui.canvas_bench".into(),
+        bundle_id: NSBundle::mainBundle()
+            .bundleIdentifier()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unknown".into()),
         argv: std::env::args().collect(),
         thermal_state_start: inner.thermal_state_start.clone(),
         thermal_state_end: thermal_state_name(),
