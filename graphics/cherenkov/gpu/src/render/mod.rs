@@ -6,6 +6,8 @@ mod colr;
 #[cfg(target_vendor = "apple")]
 mod composite;
 pub mod diag;
+#[cfg(target_os = "linux")]
+pub mod dmabuf_export;
 pub mod external;
 pub mod filter;
 mod glyph;
@@ -45,11 +47,17 @@ use cherenkov::{
     Readback, Redraw, RenderError, Renderer, ResourceError, ResourceId, SurfaceError, SurfaceFrame,
     SurfaceId, SurfaceInfo, Visibility,
 };
+/// The export pool's platform type: the bounded dma-buf pool on Linux
+/// (#1687), uninhabited elsewhere — the `planes::Platform` precedent.
+#[cfg(target_os = "linux")]
+use dmabuf_export::Pool as ExportPool;
 use glyph::{Atlas, FontData, PendingRaster, PreparedFont};
 use lower::{
     BackdropGroupInfo, ContentData, Frame as LoweredFrame, GlyphContext, Lowered, Lowering,
     PipelineKind, ShaderVariant, Source, Target,
 };
+#[cfg(not(target_os = "linux"))]
+use planes::NoPlanes as ExportPool;
 use shaders::backdrop_effect_text;
 
 /// The pipeline bound for a pass range: engine pipelines and the external
@@ -730,9 +738,21 @@ pub struct GpuRenderer {
     native_error: Option<String>,
     /// Serializes "stage queue waits → submit" so an unrelated submission
     /// cannot consume a staged producer semaphore wait (#166); shared with
-    /// the plane realizations, which submit with their own waits.
+    /// the plane realizations and the dma-buf pools, which submit with
+    /// their own waits.
     #[cfg(all(unix, not(target_vendor = "apple")))]
     submit_lock: std::sync::Arc<std::sync::Mutex<()>>,
+    /// The bounded export pool behind every `DmabufTarget` surface —
+    /// the Linux counterpart of `planes` (#1687). Empty on every other
+    /// platform, where no exportable pool type exists.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            clippy::zero_sized_map_values,
+            reason = "no export pool exists on this platform, so the map stays empty"
+        )
+    )]
+    exports: FxHashMap<SurfaceId, ExportPool>,
     surfaces: FxHashMap<SurfaceId, SurfaceState>,
     /// Every live [`GpuProducer`](cherenkov::GpuProducer) by its
     /// `ProducerId`: renderer-scoped, shared by bindings on any surface.
@@ -2106,6 +2126,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             native_error: None,
             #[cfg(all(unix, not(target_vendor = "apple")))]
             submit_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            exports: FxHashMap::default(),
             bound_atlas: 0,
             bound_instance_size: 272 * 16,
             bound_stop_size: 32 * 16,
@@ -2412,6 +2433,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         dummy_uint_view,
         ext_layout: None,
         external_pipes: [None, None],
+        exports: FxHashMap::default(),
         bound_atlas: 0,
         bound_instance_size: 272 * 16,
         bound_stop_size: 32 * 16,
@@ -2588,6 +2610,8 @@ impl Renderer for GpuRenderer {
             GpuTarget::SurfaceControl(target) => {
                 (None, None, self.surface_control(id, target)?, true)
             }
+            #[cfg(target_os = "linux")]
+            GpuTarget::Dmabuf(target) => (None, None, self.dmabuf_export(id, target)?, true),
             GpuTarget::Window(window) => {
                 let refresh = window.refresh.clone();
                 #[cfg(target_vendor = "apple")]
@@ -2761,6 +2785,10 @@ impl Renderer for GpuRenderer {
         if let Some(system) = self.planes.get_mut(&id) {
             planes::SystemPlanes::resize(system, size);
         }
+        #[cfg(target_os = "linux")]
+        if let Some(export) = self.exports.get_mut(&id) {
+            export.resize(size);
+        }
         state.coverage_depth = None;
         state.scratch.clear();
         #[cfg(target_vendor = "apple")]
@@ -2838,6 +2866,7 @@ impl Renderer for GpuRenderer {
         // consumes.
         self.surfaces.remove(&id);
         self.planes.remove(&id);
+        self.exports.remove(&id);
         self.update_filter_activity();
         self.update_producer_gates();
     }
@@ -3718,6 +3747,8 @@ impl GpuRenderer {
             GpuTarget::Texture(texture) => texture.size,
             #[cfg(target_os = "android")]
             GpuTarget::SurfaceControl(target) => target.size(),
+            #[cfg(target_os = "linux")]
+            GpuTarget::Dmabuf(target) => target.size(),
         };
         if size.0 == 0 || size.1 == 0 {
             return Err(SurfaceError::ZeroSize);
@@ -3757,6 +3788,36 @@ impl GpuRenderer {
             &target,
         )?;
         self.planes.insert(id, system);
+        self.presenter
+            .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
+        Ok(target.refresh)
+    }
+
+    /// Realizes surface `id`'s bounded pool of exportable dma-buf images
+    /// and returns its refresh range (#1687).
+    #[cfg(target_os = "linux")]
+    fn dmabuf_export(
+        &mut self,
+        id: SurfaceId,
+        target: crate::interop::dmabuf::DmabufTarget,
+    ) -> Result<cherenkov::RefreshRange, SurfaceError> {
+        // The native context is built on first need (#170); the pool
+        // allocates images and exports their memory through it.
+        self.ensure_native();
+        let native = self.native.as_ref().ok_or_else(|| {
+            SurfaceError::UnsupportedTarget(format!(
+                "dma-buf export: {}",
+                self.native_error
+                    .as_deref()
+                    .unwrap_or("the device has no Vulkan external-memory support")
+            ))
+        })?;
+        let pool = dmabuf_export::Pool::new(
+            &native.shared,
+            std::sync::Arc::clone(&self.submit_lock),
+            &target,
+        )?;
+        self.exports.insert(id, pool);
         self.presenter
             .get_or_insert_with(|| present::Presenter::new(&self.device, self.shader_delivery));
         Ok(target.refresh)
@@ -3897,7 +3958,9 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
-                surface.present_pending = surface.window.is_some() || surface.promotes;
+                surface.present_pending = surface.window.is_some()
+                    || surface.promotes
+                    || self.exports.contains_key(&sf.id);
             }
             self.evict_projective();
             stats.phases.encode_seconds = t.elapsed().as_secs_f64();
@@ -4046,7 +4109,9 @@ impl GpuRenderer {
                 }
                 self.finish_projective(sf.id);
                 let surface = self.surfaces.get_mut(&sf.id).expect("rendered surface");
-                surface.present_pending = surface.window.is_some() || surface.promotes;
+                surface.present_pending = surface.window.is_some()
+                    || surface.promotes
+                    || self.exports.contains_key(&sf.id);
             }
             self.evict_projective();
             stats.phases.encode_seconds = t.elapsed().as_secs_f64();
@@ -5096,6 +5161,7 @@ impl GpuRenderer {
             if surface.present_pending {
                 let presentation = Self::present_surface(
                     self.planes.get_mut(&sf.id),
+                    self.exports.get_mut(&sf.id),
                     self.plane_only.contains(&sf.id),
                     (
                         &self.device,
@@ -5166,10 +5232,11 @@ impl GpuRenderer {
 
     /// Presents `sf`'s surface: through its plane system when it has one —
     /// the frame-swap refresh when this render admitted frames only, a
-    /// full compose otherwise — and through the window presenter when it
-    /// has none.
+    /// full compose otherwise — through its dma-buf export pool when it
+    /// has one, and through the window presenter when it has none.
     fn present_surface(
         system: Option<&mut planes::Platform>,
+        export: Option<&mut ExportPool>,
         frames_only: bool,
         present: (&wgpu::Device, &wgpu::Queue, &mut present::Presenter),
         surface: &SurfaceState,
@@ -5177,6 +5244,15 @@ impl GpuRenderer {
         currents: &FxHashMap<ProducerId, &external::Slot>,
     ) -> Result<planes::Presentation, RenderError> {
         let (device, queue, presenter) = present;
+        // A dma-buf surface presents a fresh pool image per presented
+        // frame; `Retry` keeps `present_pending` for the next frame
+        // (#1687).
+        #[cfg(target_os = "linux")]
+        if let Some(export) = export {
+            return export.present(device, queue, presenter, &surface.view, sf.display.headroom);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = export;
         match system {
             Some(system) => {
                 // The frame's own `plane_frames` carries the update set —

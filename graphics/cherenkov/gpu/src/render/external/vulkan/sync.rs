@@ -814,7 +814,6 @@ impl Generation {
 /// # Errors
 /// [`NativeError::Unsupported`] when sync-fd import is absent;
 /// [`NativeError`] from semaphore creation or the driver's import.
-#[cfg(target_os = "android")]
 pub fn import_sync_fd(shared: &Shared, fd: OwnedFd) -> Result<vk::Semaphore, NativeError> {
     let Some(loader) = shared.vk.external_semaphore_fd.as_ref() else {
         return Err(NativeError::Unsupported("SYNC_FD semaphore import"));
