@@ -70,6 +70,7 @@ pub struct HostViewIvars {
     hidden: RefCell<Option<HiddenHandler>>,
     mouse_down: RefCell<Option<MouseHandler>>,
     mouse_dragged: RefCell<Option<MouseHandler>>,
+    mouse_up: RefCell<Option<MouseHandler>>,
     drop: RefCell<Option<Rc<DropHandlers>>>,
     pointer: RefCell<Option<PointerHandler>>,
     /// Which pointer events the pointer handler wants.
@@ -109,6 +110,7 @@ impl fmt::Debug for HostViewIvars {
             .field("hidden", &self.hidden.borrow().is_some())
             .field("mouse_down", &self.mouse_down.borrow().is_some())
             .field("mouse_dragged", &self.mouse_dragged.borrow().is_some())
+            .field("mouse_up", &self.mouse_up.borrow().is_some())
             .field("drop", &self.drop.borrow().is_some())
             .field("backing_changed", &self.backing_changed.borrow().is_some())
             .field("last_auto_layout_width", &self.last_auto_layout_width.get())
@@ -307,6 +309,20 @@ define_class!(
                 } else {
                     // SAFETY: see the module safety note.
                     let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up_override(&self, event: &NSEvent) {
+            guarded("HostView mouseUp:", || {
+                let handler = self.ivars().mouse_up.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self, event);
+                } else {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), mouseUp: event] };
                 }
             });
         }
@@ -686,6 +702,12 @@ impl HostView {
     /// Without a handler the event goes to `NSView`'s implementation.
     pub fn set_mouse_dragged_handler(&self, handler: impl Fn(&Self, &NSEvent) + 'static) {
         self.ivars().mouse_dragged.replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` on `mouseUp`, replacing any handler set before.
+    /// Without a handler the event goes to `NSView`'s implementation.
+    pub fn set_mouse_up_handler(&self, handler: impl Fn(&Self, &NSEvent) + 'static) {
+        self.ivars().mouse_up.replace(Some(Rc::new(handler)));
     }
 
     /// Makes the view a drop destination reporting to `handlers`, replacing

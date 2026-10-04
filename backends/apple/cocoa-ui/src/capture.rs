@@ -115,20 +115,22 @@ impl CaptureGeometry {
 /// the pixel destination, restored before returning.
 ///
 /// The scaled position folds into the transform — not `layer.position` — so
-/// the only property touched is one the host's layout never writes. Pending
-/// transactions are flushed on both edges because `CARenderer` renders the
-/// committed tree.
+/// the only property touched is one the host's layout never writes.
+///
+/// The transform is a model-layer mutation only: it must run inside the
+/// caller's one outer disabled-actions transaction that covers suppression
+/// open, the `CARenderer` encode and suppression close. This function does
+/// no transaction work of its own — committing or flushing here would push
+/// the suppressed, transformed tree to the render server mid-capture and
+/// flicker the on-screen tree.
 pub fn with_capture_transform<T>(
     layer: &CALayer,
     geometry: CaptureGeometry,
     body: impl FnOnce() -> T,
 ) -> T {
-    flush_transaction();
     let saved_transform = layer.transform();
     let saved_position = layer.position();
 
-    CATransaction::begin();
-    CATransaction::setDisableActions(true);
     layer.setTransform(saved_transform.concat(
         CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0).concat(
             CATransform3D::new_translation(
@@ -138,8 +140,6 @@ pub fn with_capture_transform<T>(
             ),
         ),
     ));
-    CATransaction::commit();
-    flush_transaction();
 
     let restore = TransformRestore {
         layer,
@@ -158,11 +158,10 @@ struct TransformRestore<'a> {
 
 impl Drop for TransformRestore<'_> {
     fn drop(&mut self) {
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
+        // See `with_capture_transform`: the restore is a model-layer
+        // mutation inside the caller's outer transaction — no transaction,
+        // commit or flush of its own.
         self.layer.setTransform(self.transform);
-        CATransaction::commit();
-        flush_transaction();
     }
 }
 
@@ -324,6 +323,20 @@ pub trait CapturableSurface {
         height: u32,
         completion: SurfaceCaptureCompletion,
     );
+    /// Whether at least one frame of this output has reached the screen
+    /// since mount — first-paint readiness. On-screen readiness comes only
+    /// from a real presentation receipt; an offscreen capture completion
+    /// never answers it.
+    fn has_presented_frame(&self) -> bool;
+    /// Whether this output participates in its window's first-paint
+    /// readiness — `participatesInFirstPaintReady`. A view whose window
+    /// cannot present (hidden, occluded, zero-alpha, degenerate bounds,
+    /// detached) is not a participant: first-frame waiters skip it and it
+    /// owes no frame. Non-participation is never reported as presented.
+    fn participates_in_first_paint(&self) -> bool;
+    /// Arms `waker` to wake after the next successfully presented frame;
+    /// an output that has already presented may leave it unarmed.
+    fn register_ready_waiter(&self, waker: std::task::Waker);
 }
 
 impl fmt::Debug for dyn CapturableSurface {
@@ -1357,6 +1370,17 @@ impl ViewCapture {
             )
         };
 
+        // INVARIANT: the synchronous native pass is one outer
+        // disabled-actions `CATransaction` — suppression open, the capture
+        // transform, the `CARenderer` encode, transform restore and
+        // suppression close all happen inside it, then a single commit
+        // pushes every model change at once. Nothing inside may open,
+        // commit or flush a transaction of its own: a mid-pass commit would
+        // push the suppressed or transformed state to the render server and
+        // flicker the on-screen tree. The suppression setters
+        // (`CapturableSurface::begin/end_capture_suppression`) and
+        // `with_capture_transform` are plain model mutations for exactly
+        // this reason.
         let native_fence = {
             // The borrow outlives the `RefMut`: dropped after it, so
             // `RootBorrow`'s restore runs only once the renderer is
@@ -1364,6 +1388,8 @@ impl ViewCapture {
             // re-attach can never re-enter a borrowed renderer.
             let borrow = RootBorrow::claim(content, &layer);
             let mut renderer = self.renderer.borrow_mut();
+            CATransaction::begin();
+            CATransaction::setDisableActions(true);
             let fence = if snapshots.is_empty() {
                 renderer.render_layer(&layer, &native_target, geometry)
             } else {
@@ -1378,6 +1404,8 @@ impl ViewCapture {
             };
             drop(renderer);
             drop(borrow);
+            CATransaction::commit();
+            flush_transaction();
             fence
         };
 
