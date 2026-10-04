@@ -152,14 +152,14 @@ struct PendingWindow {
 }
 
 impl PendingWindow {
-    fn application(window: Window) -> Self {
+    const fn application(window: Window) -> Self {
         Self {
             window,
             activates: true,
         }
     }
 
-    fn popup(window: Window) -> Self {
+    const fn popup(window: Window) -> Self {
         Self {
             window,
             activates: false,
@@ -216,6 +216,10 @@ impl LocalExecutor for WinitMainThreadExecutor {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "startup wires the event loop, the first windows and the executor in one ordered sequence; splitting it would obscure the setup order"
+)]
 pub fn run(
     app: App,
     style: impl crate::Style,
@@ -321,7 +325,7 @@ pub fn run(
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &super::menu_bar::register_menu_bar(&menu_bar, &env),
         &env,
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -526,15 +530,15 @@ fn native_window_attributes(
             waterui::window::WindowStyle::Borderless
         ))
         .with_inner_size(winit::dpi::LogicalSize::new(
-            frame.width() as f64,
-            frame.height() as f64,
+            f64::from(frame.width()),
+            f64::from(frame.height()),
         ))
         // The requested position is a creation-time attribute: on X11 a
         // position set on an unmapped window is dropped, so it must travel
         // with the map request for the window manager to honor it.
         .with_position(winit::dpi::LogicalPosition::new(
-            frame.x() as f64,
-            frame.y() as f64,
+            f64::from(frame.x()),
+            f64::from(frame.y()),
         ));
 
     // The window's desktop identity: on X11 the `WM_CLASS` pair is split
@@ -622,13 +626,11 @@ impl WinitRunner {
         if let Ok(position) = native_window.outer_position() {
             let logical = position.to_logical::<f64>(native_window.scale_factor());
             return HydrolysisWindowOrigin {
-                x: logical.x as f32,
-                y: logical.y as f32,
+                x: crate::num_cast::f64_as_f32(logical.x),
+                y: crate::num_cast::f64_as_f32(logical.y),
             };
         }
-        HydrolysisWindowOrigin {
-            ..runtime_window_origin(runtime)
-        }
+        runtime_window_origin(runtime)
     }
     fn create_runtime_window(
         &mut self,
@@ -963,7 +965,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             return;
         }
 
-        if let WindowEvent::RedrawRequested = event {
+        if event == WindowEvent::RedrawRequested {
             let Some(runtime) = self.windows.get_mut(&window_id) else {
                 return;
             };
@@ -1002,10 +1004,8 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         let mut next_gesture_deadline: Option<Instant> = None;
         for runtime in self.windows.values_mut() {
             if let Some(deadline) = advance_runtime(runtime, &self.env, now) {
-                next_gesture_deadline = Some(match next_gesture_deadline {
-                    Some(existing) => existing.min(deadline),
-                    None => deadline,
-                });
+                next_gesture_deadline =
+                    Some(next_gesture_deadline.map_or(deadline, |existing| existing.min(deadline)));
             }
         }
         if let Some(deadline) = next_gesture_deadline {
@@ -1045,13 +1045,13 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RunnerEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RunnerEvent) {
         match event {
             RunnerEvent::PollLocalTasks => {
                 let _ = self.drain_local_executor_queue();
             }
             RunnerEvent::MountPendingWindows => {
-                self.mount_pending_windows(_event_loop);
+                self.mount_pending_windows(event_loop);
             }
 
             RunnerEvent::AccessKit(event) => {
@@ -1123,7 +1123,7 @@ impl ApplicationHandler<RunnerEvent> for WinitRunner {
             }
             #[cfg(any(unix, windows))]
             RunnerEvent::Terminate => {
-                self.exit_after_runtime_cleanup(_event_loop);
+                self.exit_after_runtime_cleanup(event_loop);
             }
             #[cfg(hydrolysis_wayland_platform)]
             RunnerEvent::X11VisibilitySignal => {

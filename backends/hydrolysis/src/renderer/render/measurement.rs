@@ -1007,14 +1007,15 @@ pub fn measure_list_intrinsic(
     env: &Environment,
     theme: &Rc<dyn WidgetTheme>,
 ) -> LayoutSize {
-    let row_count = list.contents.len().snapshot();
+    // One immutable row set for the measure: the count, the sampled item, and
+    // the section-marker walk all read the same membership.
+    let contents = list.contents.snapshot();
+    let row_count = contents.len();
     if row_count == 0 {
         return LayoutSize::zero();
     }
     let editing = list.editing.snapshot();
-    let mut first_item = list
-        .contents
-        .snapshot()
+    let mut first_item = contents
         .get_view(0)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index 0"));
     first_item.content = normalize_layout_view(first_item.content, env);
@@ -1039,13 +1040,8 @@ pub fn measure_list_intrinsic(
     // virtualized `List::for_each` never does.
     let mut section_height = 0.0;
     if list.uses_sections {
-        for index in 0..row_count {
-            let Some(section) = list
-                .contents
-                .snapshot()
-                .get_view(index)
-                .and_then(|item| item.section)
-            else {
+        for index in contents.range() {
+            let Some(section) = contents.get_view(index).and_then(|item| item.section) else {
                 continue;
             };
             if section.label.is_some() {
@@ -1066,13 +1062,15 @@ pub fn measure_list_intrinsic(
     )
 }
 
+/// Materializes the `ListItem` at `index` from `contents` — an immutable
+/// snapshot of the row collection, so the caller's whole pass (section walk,
+/// accessibility emit, or draw loop) reads one coherent membership.
 pub fn materialize_list_item(
-    contents: &impl Views<View = ListItem>,
+    contents: &impl ViewSnapshot<View = ListItem>,
     index: usize,
     env: &Environment,
 ) -> ListItem {
     let mut item = contents
-        .snapshot()
         .get_view(index)
         .unwrap_or_else(|| panic!("ListConfig failed to materialize item at index {index}"));
     item.content = normalize_layout_view(item.content, env);
@@ -1392,9 +1390,9 @@ pub fn update_table_slot_visible_cell_widths(
         .take(col_window.end)
         .skip(col_window.start)
     {
-        let rows = column.rows();
+        let rows = column.rows().snapshot();
         for row_index in row_window.start..row_window.end {
-            if let Some(cell) = rows.snapshot().get_view(row_index) {
+            if let Some(cell) = rows.get_view(row_index) {
                 let cell_view = normalize_layout_view(AnyView::new(cell), env);
                 let size = measure_transient_view_intrinsic(&cell_view, state, env, theme);
                 let width = (f64::from(size.width) + metrics.cell_horizontal_padding)

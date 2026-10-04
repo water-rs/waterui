@@ -229,6 +229,12 @@ jobs:
       - name: Check (hydrolysis, no features)
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
+      # The cli's own CI ran a no-default-features check on every change
+      # (water-rs/cli ci.yml): `default` bundles esp32+svg-icons+preview,
+      # and nothing else in this workspace compiles the bare shape.
+      - name: Check (waterui-cli, no default features)
+        if: inputs.full || contains(inputs.affected, 'waterui-cli')
+        run: cargo check --locked --profile ci-check -p waterui-cli --no-default-features --all-targets
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
       # and must keep compiling. The non-default feature exposes the test/bench
@@ -357,8 +363,12 @@ jobs:
       # target archives previously occupied the cache budget while every dev
       # push cold-compiled clippy. The frequent lint gate now owns that budget;
       # these daily runs keep every test without evicting its check artifacts.
+      # `artifact_symbols` tests build a wasm rlib fixture: the web
+      # backend's metadata is read from a wasm32 artifact, so every leg
+      # that runs waterui-cli's suite needs the target installed.
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive — the `lint` job
       # writes it on Linux, apple.yml's rust job on macOS; read-only
@@ -460,6 +470,7 @@ jobs:
       # cache budget note in ci.yml).
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive written by the `lint`
       # job in this file; read-only lanes never save.
@@ -533,6 +544,7 @@ jobs:
       # whatever the last gate-side write left.
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
@@ -633,6 +645,13 @@ jobs:
       # `harness = false` and nextest cannot enumerate it.
       - name: Run the CEF real-engine tests
         run: cargo test --locked -p waterui-browser-cef --features real-engine --test real_engine
+      # The cli's own CI linted on every OS because most of the crate is
+      # behind `cfg(target_os)`: the Apple backend, the Windows toolchain
+      # and process plumbing. A clippy finding in macOS-only code surfaces
+      # nowhere else — the fast gate lints on Linux alone — so this job,
+      # the macOS lint leg, owns waterui-cli too.
+      - name: Clippy (waterui-cli)
+        run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -704,9 +723,14 @@ jobs:
   # dependency it reaches is pure Rust. Both feature extremes, as its own CI
   # ran them: the checked set proves `winit` stays inert on Android, and the
   # bare pass catches call sites a feature gates out.
+  #
+  # The nightly sweeps it under `full`; the fast gate also runs it when the
+  # affected scope can reach the crate — `hydrolysis` or one of its reverse
+  # dependencies in the package set — so the Android runner cannot regress
+  # between nightlies (#1582).
   hydrolysis-android:
     name: aarch64-linux-android
-    if: inputs.full
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

@@ -18,6 +18,7 @@ members = [
     "components/visual/*",
     "utils/*",
     "src",
+    "cli",
     "testing",
     "ffi",
     "ffi/generator",
@@ -266,16 +267,20 @@ waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/prev
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # Nothing in this workspace links the GTK, WinUI or Dew backends: the `water`
-# CLI reads these entries to scaffold a launcher crate against the published
-# versions. A `git` half here would not be inert — the CLI's stable channel
-# refuses to distribute a scaffold package that carries one.
-waterui-gtk = "0.2.1"
-waterui-winui = "0.1.0"
+# CLI reads these entries to scaffold a launcher crate. Each pins the
+# backend's nami-migration head — the published releases still require the
+# pre-rename nami line (`^0.11.2` and peers), which cannot resolve beside the
+# `nami = "=0.11.1"` pin above — so `dev`, `nightly` and local-checkout
+# scaffolds declare the commit directly while `stable` withholds the packages
+# under `experimental-packages` (water-rs/nami#26). Drop the `git`/`rev` half
+# once each backend releases a migrated version.
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
+waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
 waterui-dylib = { version = "0.5.1", path = "utils/dylib", default-features = false }
 hydrolysis = { version = "0.3.1", path = "backends/hydrolysis", default-features = false }
-waterui-dew = "0.3.0"
+waterui-dew = { version = "0.3.0", git = "https://github.com/water-rs/dew", rev = "db709fc0c29fd1b4493c014409406de710f8b915" }
 # default-features lives here, not on members: cargo rejects a member
 # `default-features` override when the workspace entry does not declare
 # one (the MSRV failure in #1551). Members name the features they need.
@@ -525,6 +530,13 @@ codegen-units = 1
 opt-level = "z"    # Optimize for size
 strip = true       # Strip symbols
 
+# cargo-dist builds release binaries with `--profile=dist`; the profile must
+# exist in the root manifest or every `dist build` leg fails. This is the
+# profile `dist init` generates.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
@@ -620,7 +632,6 @@ wgpu = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae
 wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
-wgpu-core-deps-wasm = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
@@ -658,14 +669,3 @@ waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev =
 # 0.1.2 registry release; this is the rev waterkit pins itself.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "878bfc0284b32ee18c1a50860adf9ba489a4d5ab" }
-
-# The published backend crates still read the pre-rename signal API — their
-# `nami` requirements (`^0.11.2` and peers) cannot resolve beside the pinned
-# nami 0.11.1 — so a scaffolded project selects their migration heads, whose
-# manifests declare the `=0.11.1` pin this table carries. The pins satisfy the
-# `[workspace.dependencies]` requirements (`0.2.1`, `0.1.0`, `0.3.0`), keeping
-# the stable channel's registry scaffolds untouched. Drop the entries once
-# each backend releases a migrated version.
-waterui-dew = { git = "https://github.com/water-rs/dew", rev = "db709fc0c29fd1b4493c014409406de710f8b915" }
-waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
-waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
