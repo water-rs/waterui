@@ -744,7 +744,13 @@ mod tests {
                 button("Tap").action(move || fired.set(true)),
             )))
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -780,7 +786,13 @@ mod tests {
                 ],
             ),)))
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -847,7 +859,13 @@ mod tests {
                 .state(&store),
             )
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -877,7 +895,13 @@ mod tests {
                 &value_for_field,
             ),)))
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -955,7 +979,13 @@ mod tests {
 
     /// Builds the runtime, focuses the single text field, and returns both.
     fn focused_field_runtime(builder: AnyViewBuilder<AnyView>) -> (SemanticRuntime, NodeId) {
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
         let (field, _) = update
@@ -1267,7 +1297,13 @@ mod tests {
                     .on_key_press(counting_handler(hits, KeyHandling::Handled)),
             )
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
         let (button_node, _) = update
@@ -1328,7 +1364,13 @@ mod tests {
                 .on_key_press(counting_handler(root, KeyHandling::Handled)),
             )
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600, FontFamilyResolution::Strict);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
         let _ = pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
         assert_eq!(
             runtime.focused_ui_node(),

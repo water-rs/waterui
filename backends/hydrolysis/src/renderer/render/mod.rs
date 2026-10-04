@@ -26,8 +26,8 @@ pub use render_context::{WidgetRenderContext, bounded_proposal};
 pub use state::HydroState;
 pub use subview::HydroSubview;
 pub use text_service::{
-    FontFamilyResolution, ResolvedTextLayoutInput, TailMark, TextMeasureService,
-    layout_ink_extent, resolve_text_layout_input, text_dimensions_from_layout,
+    FontFamilyResolution, ResolvedTextLayoutInput, TailMark, TextMeasureService, layout_ink_extent,
+    resolve_text_layout_input, text_dimensions_from_layout,
 };
 pub use view_helpers::*;
 pub use view_helpers::{

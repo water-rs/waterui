@@ -215,6 +215,29 @@ impl LocalExecutor for TestLocalExecutor {
     }
 }
 
+/// Raw data of the default face of an installed font `family`, resolved
+/// through system font discovery as a runtime resolves a named family. The
+/// repository commits no fonts: `backends/hydrolysis/test-fonts/install.py`
+/// installs the fixtures, and a family that is not installed fails naming it.
+pub fn installed_font_bytes(family: &str) -> std::sync::Arc<[u8]> {
+    let mut collection =
+        parley::fontique::Collection::new(parley::fontique::CollectionOptions::default());
+    let info = collection.family_by_name(family).unwrap_or_else(|| {
+        panic!(
+            "font family `{family}` is not installed; install the test fonts with \
+             `uv run backends/hydrolysis/test-fonts/install.py`"
+        )
+    });
+    let face = info
+        .default_font()
+        .unwrap_or_else(|| panic!("the installed `{family}` family carries no face"));
+    std::sync::Arc::from(
+        face.load(None)
+            .unwrap_or_else(|| panic!("the installed `{family}` face failed to load"))
+            .as_ref(),
+    )
+}
+
 pub fn test_environment() -> Environment {
     let (parked_tx, parked_rx) = mpsc::channel();
     let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(

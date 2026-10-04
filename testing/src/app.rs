@@ -300,13 +300,8 @@ impl<S> UiBuilder<S> {
         family_resolution: FontFamilyResolution,
     ) -> SemanticApp {
         let env = self.mount_env();
-        let runtime = SemanticRuntime::new(
-            env,
-            content,
-            self.width,
-            self.height,
-            family_resolution,
-        );
+        let runtime =
+            SemanticRuntime::new(env, content, self.width, self.height, family_resolution);
         SemanticApp::new(runtime, (self.width, self.height))
     }
 }

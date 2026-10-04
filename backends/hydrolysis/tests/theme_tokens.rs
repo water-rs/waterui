@@ -74,8 +74,7 @@ fn headless_probe(
 fn semantic_probe(env: Environment) -> Rc<RefCell<CapturedTokens>> {
     let (probe, captured) = token_probe();
     let content = AnyViewBuilder::new(move || AnyView::new(probe.clone()));
-    let mut runtime =
-        SemanticRuntime::new(env, content, 64, 64, FontFamilyResolution::Strict);
+    let mut runtime = SemanticRuntime::new(env, content, 64, 64, FontFamilyResolution::Strict);
     let _ = runtime.pump();
     captured
 }

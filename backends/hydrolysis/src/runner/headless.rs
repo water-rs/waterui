@@ -1253,7 +1253,7 @@ mod generation_tests {
         std::mem::replace(&mut runtime.gpu, gpu)
     }
 
-    /// Scene content that registers real resources — the committed Roboto
+    /// Scene content that registers real resources — the installed Roboto
     /// test font and a synthesized 4x4 image — on whatever
     /// `RecordingResources` table the engine hands it, then names them into
     /// the recording (which asserts the table that owns them) and draws a
@@ -1284,8 +1284,7 @@ mod generation_tests {
                 self.font = Some(
                     resources
                         .font(FontSource::bytes(
-                            include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf")
-                                .as_slice(),
+                            crate::renderer::tests::installed_font_bytes("Roboto"),
                         ))
                         .expect("test font registers on the engine's resource table"),
                 );

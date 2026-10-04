@@ -28,8 +28,8 @@ use waterui::widget::condition::when;
 use waterui_core::{AnyView, Environment, Retain};
 use waterui_text::text;
 
-use crate::renderer::{FontFamilyResolution, SemanticCore};
 use crate::renderer::navigation::navigation_state::{NavigationKey, NavigationSlot};
+use crate::renderer::{FontFamilyResolution, SemanticCore};
 
 /// Logs `tag` into `drops` when its last owner drops it.
 struct DropTag {

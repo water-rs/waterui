@@ -80,8 +80,7 @@ fn bench_remeasure_at_three_widths(c: &mut Criterion) {
 
     let mut env = Environment::new();
     hydrolysis::testing::install_theme(&mut env);
-    let mut runtime =
-        HeadlessRuntime::new_for_tests(env, builder, 800, 600, Material3::defaults());
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 800, 600, Material3::defaults());
     let at = Instant::now();
     // Settle: first layout, font decode and shader warm-up happen here, not
     // inside the measured loop.
