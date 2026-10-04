@@ -9,6 +9,7 @@
 
 use std::cell::RefCell;
 use std::fmt;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -16,11 +17,16 @@ use objc2_core_foundation::CGRect;
 use objc2_foundation::{NSObjectProtocol, NSString};
 use objc2_ui_kit::{
     NSObjectUIAccessibility, UIColor, UIImage, UIImageSymbolConfiguration, UIImageView,
-    UIViewContentMode,
+    UITraitCollection, UIViewContentMode,
 };
 
+use crate::callback::guarded;
 use crate::geometry::Size;
 use crate::image::ScaleMode;
+
+/// Receives a lifecycle event of the view — layout, a window move, a
+/// display-scale change.
+type LifecycleHandler = Rc<dyn Fn(&ImageView)>;
 
 /// The named system symbol an [`ImageView`] shows.
 ///
@@ -29,11 +35,25 @@ use crate::image::ScaleMode;
 /// to draw the icon itself.
 pub struct ImageViewIvars {
     symbol_name: RefCell<Option<String>>,
+    on_layout: RefCell<Option<LifecycleHandler>>,
+    on_window_changed: RefCell<Option<LifecycleHandler>>,
+    on_backing_changed: RefCell<Option<LifecycleHandler>>,
 }
 
 impl fmt::Debug for ImageViewIvars {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ImageViewIvars").finish()
+        f.debug_struct("ImageViewIvars")
+            .field("symbol_name", &self.symbol_name.borrow())
+            .field("on_layout", &self.on_layout.borrow().is_some())
+            .field(
+                "on_window_changed",
+                &self.on_window_changed.borrow().is_some(),
+            )
+            .field(
+                "on_backing_changed",
+                &self.on_backing_changed.borrow().is_some(),
+            )
+            .finish()
     }
 }
 
@@ -61,6 +81,46 @@ define_class!(
                 .as_deref()
                 .map(NSString::from_str)
         }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("ImageView layoutSubviews", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                let handler = self.ivars().on_layout.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window_override(&self) {
+            guarded("ImageView didMoveToWindow", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+                let handler = self.ivars().on_window_changed.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(traitCollectionDidChange:))]
+        fn trait_collection_did_change_override(&self, previous: Option<&UITraitCollection>) {
+            guarded("ImageView traitCollectionDidChange:", || {
+                // SAFETY: see the module safety note.
+                let _: () =
+                    unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
+                let handler = self.ivars().on_backing_changed.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self);
+                }
+            });
+        }
     }
 );
 
@@ -70,6 +130,9 @@ impl ImageView {
     pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ImageViewIvars {
             symbol_name: RefCell::new(None),
+            on_layout: RefCell::new(None),
+            on_window_changed: RefCell::new(None),
+            on_backing_changed: RefCell::new(None),
         });
         // SAFETY: `initWithFrame:` is the inherited designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
@@ -85,6 +148,29 @@ impl ImageView {
             ScaleMode::Fill => UIViewContentMode::ScaleAspectFill,
         };
         self.setContentMode(content_mode);
+    }
+
+    /// Calls `handler` at the end of every layout pass, replacing any
+    /// handler set before — where a bounds-dependent image is rebuilt.
+    pub fn set_layout_handler(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars().on_layout.replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` when the view moves into or out of a window —
+    /// `didMoveToWindow`, where a display-dependent image is rebuilt.
+    pub fn set_window_handler(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars()
+            .on_window_changed
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` when the trait collection changes —
+    /// `traitCollectionDidChange:`, which a display-scale change rides on.
+    /// The handler decides whether the change matters to it.
+    pub fn set_backing_changed_handler(&self, handler: impl Fn(&Self) + 'static) {
+        self.ivars()
+            .on_backing_changed
+            .replace(Some(Rc::new(handler)));
     }
 
     /// The image the view draws; `None` clears it.
