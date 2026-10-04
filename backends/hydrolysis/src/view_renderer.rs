@@ -94,12 +94,8 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 let device = &device;
                 let queue = &queue;
                 let device_loss = device_loss;
-                let mut renderer = HydrolysisRenderer::new(
-                    &adapter,
-                    device,
-                    Rc::clone(&self.theme),
-                    FontFamilyResolution::Lenient,
-                );
+                let mut renderer =
+                    HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
                 renderer.reset_scene();
                 renderer.begin_rebuild_frame();
 

@@ -457,15 +457,7 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(
-                surface.adapter(),
-                surface.device(),
-                Rc::clone(&theme),
-                family_resolution,
-            )
-        };
+        let mut renderer = HydrolysisRenderer::new(Rc::clone(&theme), family_resolution);
         super::seed_core(&mut renderer, &fonts);
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
@@ -508,15 +500,7 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(
-                surface.adapter(),
-                surface.device(),
-                Rc::clone(&self.theme),
-                self.family_resolution,
-            )
-        };
+        let mut renderer = HydrolysisRenderer::new(Rc::clone(&self.theme), self.family_resolution);
         super::seed_core(&mut renderer, &self.fonts);
         renderer.set_window_id(
             self.env

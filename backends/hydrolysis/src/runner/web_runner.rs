@@ -31,7 +31,7 @@ use waterui_text::FontCollection;
 use web_sys::Response;
 
 use super::fonts::ResourceFontFamilies;
-use crate::platform::{BrowserWindow, GpuSurfaceWindow, PlatformWindow};
+use crate::platform::{BrowserWindow, PlatformWindow};
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
 };
@@ -429,15 +429,7 @@ pub fn run(app: App, style: impl crate::Style) {
             load_web_fonts()
         );
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(
-                surface.adapter(),
-                surface.device(),
-                theme,
-                FontFamilyResolution::Lenient,
-            )
-        };
+        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
         let fonts = FontCollection::new(font_cx);
         fonts.clone().install(&mut env);
         super::fonts::seed_core(&mut renderer, &fonts);

@@ -121,15 +121,7 @@ fn test_renderer() -> HydrolysisRenderer {
 }
 
 fn test_renderer_with_theme(theme: MinimalTestTheme) -> HydrolysisRenderer {
-    let mut platform =
-        crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
-    let surface = platform.surface();
-    HydrolysisRenderer::new(
-        surface.adapter(),
-        surface.device(),
-        Rc::new(theme),
-        FontFamilyResolution::Strict,
-    )
+    HydrolysisRenderer::new(Rc::new(theme), FontFamilyResolution::Strict)
 }
 
 /// Emits the semantic node a real widget emits for an interaction identity:
@@ -976,17 +968,10 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         }
     };
 
-    let mut platform =
-        crate::platform::OffscreenWindow::new_for_tests(160, 160, wgpu::TextureFormat::Rgba8Unorm);
-    let mut renderer = {
-        let surface = platform.surface();
-        HydrolysisRenderer::new(
-            surface.adapter(),
-            surface.device(),
-            Rc::new(MinimalTestTheme::default()),
-            FontFamilyResolution::Strict,
-        )
-    };
+    let mut renderer = HydrolysisRenderer::new(
+        Rc::new(MinimalTestTheme::default()),
+        FontFamilyResolution::Strict,
+    );
     let env = test_environment();
     let bounds = kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
     capture_root_window(&mut renderer, view, &env, bounds);

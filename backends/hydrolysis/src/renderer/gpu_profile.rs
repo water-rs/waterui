@@ -165,15 +165,16 @@ impl GpuFrameProfiler {
 
 impl HydrolysisRenderer {
     /// Writes a timestamp marker when this frame can be profiled, folding the
-    /// marker's queue drain into `gpu_wait`; a no-op on a device without
-    /// `TIMESTAMP_QUERY`.
+    /// marker's queue drain into `gpu_wait`; a no-op when the frame's context
+    /// has no profiler (a device without `TIMESTAMP_QUERY`).
     pub(crate) fn gpu_profile_mark(
         &mut self,
+        profiler: Option<&GpuFrameProfiler>,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         slot: u32,
     ) {
-        if let Some(profiler) = &self.gpu_profiler {
+        if let Some(profiler) = profiler {
             self.core.state_mut().counters.gpu_submissions += 1;
             self.frame_stage_times.gpu_wait += profiler.mark(device, queue, slot);
         }
@@ -181,9 +182,19 @@ impl HydrolysisRenderer {
 
     /// Resolves this frame's markers into `frame_stage_times`, blocking until
     /// the GPU drains the frame's submits. Called once per presented frame by
-    /// the surface render path; a no-op when profiling is unsupported.
-    pub(crate) fn finish_gpu_frame_profile(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let Some(profiler) = &self.gpu_profiler else {
+    /// the surface render path; a no-op when the frame's context has no
+    /// profiler.
+    pub(crate) fn finish_gpu_frame_profile(
+        &mut self,
+        gpu_context_id: u64,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let Some(profiler) = self
+            .cherenkov_windows
+            .get(&gpu_context_id)
+            .and_then(|window| window.gpu_profiler.as_ref())
+        else {
             return;
         };
         let wait_started_at = Instant::now();
