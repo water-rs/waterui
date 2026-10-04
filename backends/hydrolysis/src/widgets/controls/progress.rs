@@ -276,22 +276,27 @@ pub fn render_progress_parts(
                 )
             });
             {
-                let mut draw = ctx.draw_context();
-                theme.draw_progress_linear_track(
-                    &mut draw,
-                    bar_rect,
-                    fill_rect.map(|rect| rect.x1),
-                );
+                ctx.draw_context(|draw| {
+                    theme.draw_progress_linear_track(
+                        &mut *draw,
+                        bar_rect,
+                        fill_rect.map(|rect| rect.x1),
+                    );
+                });
             }
             if let Some(fill_rect) = fill_rect {
-                let mut draw = ctx.draw_context();
-                theme.draw_progress_linear_fill(&mut draw, fill_rect);
+                ctx.draw_context(|draw| {
+                    theme.draw_progress_linear_fill(&mut *draw, fill_rect);
+                });
             } else {
                 let elapsed = ctx
                     .renderer_mut()
                     .sample_repeating_motion(motion.linear_indeterminate_cycle, node_id);
-                let mut draw = ctx.draw_context();
-                theme.draw_progress_linear_indeterminate(&mut draw, bar_rect, elapsed, four_color);
+                ctx.draw_context(|draw| {
+                    theme.draw_progress_linear_indeterminate(
+                        &mut *draw, bar_rect, elapsed, four_color,
+                    );
+                });
             }
 
             if finite {
@@ -343,28 +348,30 @@ pub fn render_progress_parts(
                     clamped
                 };
                 let arc = circle_arc_path(center, radius, -FRAC_PI_2, TAU * f64::from(animated));
-                let mut draw = ctx.draw_context();
-                theme.draw_progress_circular_track(
-                    &mut draw,
-                    center,
-                    radius,
-                    stroke_width,
-                    Some(f64::from(animated)),
-                );
-                theme.draw_progress_circular_fill(&mut draw, &arc, stroke_width);
+                ctx.draw_context(|draw| {
+                    theme.draw_progress_circular_track(
+                        &mut *draw,
+                        center,
+                        radius,
+                        stroke_width,
+                        Some(f64::from(animated)),
+                    );
+                    theme.draw_progress_circular_fill(&mut *draw, &arc, stroke_width);
+                });
             } else {
                 let elapsed = ctx
                     .renderer_mut()
                     .sample_repeating_motion(motion.circular_indeterminate_cycle, node_id);
-                let mut draw = ctx.draw_context();
-                theme.draw_progress_circular_indeterminate(
-                    &mut draw,
-                    center,
-                    radius,
-                    stroke_width,
-                    elapsed,
-                    four_color,
-                );
+                ctx.draw_context(|draw| {
+                    theme.draw_progress_circular_indeterminate(
+                        &mut *draw,
+                        center,
+                        radius,
+                        stroke_width,
+                        elapsed,
+                        four_color,
+                    );
+                });
             }
         }
         ProgressStyle::Loading => {
@@ -376,8 +383,9 @@ pub fn render_progress_parts(
             let elapsed = ctx
                 .renderer_mut()
                 .sample_repeating_motion(motion.loading_cycle, node_id);
-            let mut draw = ctx.draw_context();
-            theme.draw_progress_loading(&mut draw, bounds, elapsed, four_color);
+            ctx.draw_context(|draw| {
+                theme.draw_progress_loading(&mut *draw, bounds, elapsed, four_color);
+            });
         }
         _ => {
             panic!("hydrolysis ProgressStyle variant is not implemented");

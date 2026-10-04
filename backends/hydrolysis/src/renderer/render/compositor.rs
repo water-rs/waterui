@@ -328,8 +328,8 @@ struct FrameInstall<'a> {
     surface: &'a cherenkov::Surface<cherenkov_gpu::Gpu>,
     /// The window's persistent mount table.
     mounts: &'a mut crate::renderer::retained::Mounts,
-    /// The frame's shared engine, for `gpu_content` handles and filter
-    /// registration.
+    /// The frame's shared engine, for `gpu_producer`/`frame_producer` pairs
+    /// and filter registration.
     engine: &'a Rc<crate::engine::GpuEngine>,
     /// The renderer's frame filter telemetry, handed to every `EngineEffect`
     /// this frame registers.
@@ -380,9 +380,13 @@ impl FrameInstall<'_> {
                     order.push(slot);
                     let layer = slot_layer(self.mounts, self.surface, scope, slot);
                     if self.rasterize {
-                        let (content, held) = recording.to_content(self.resources.as_ref());
-                        tx[layer].content(content);
-                        self.mounts.set_held(scope.parent_key(), slot, held);
+                        let resources = self.resources.as_ref();
+                        let mut held = None;
+                        tx[layer].record(|recorder| {
+                            held = Some(recording.record_on(recorder, resources));
+                        });
+                        self.mounts
+                            .set_held(scope.parent_key(), slot, held.expect("record ran"));
                         self.installs += 1;
                     }
                 }
@@ -461,7 +465,10 @@ impl FrameInstall<'_> {
                                     wake.request_redraw();
                                 }
                             });
-                            tx[target].content(self.engine.gpu_content(pixels, content));
+                            let producer = self.engine.gpu_producer(content);
+                            tx[target].content(producer.at(pixels));
+                            runtime.producer = Some(producer);
+                            runtime.bound_size = Some(pixels);
                             runtime.installed = true;
                             self.installs += 1;
                         }
@@ -469,7 +476,12 @@ impl FrameInstall<'_> {
                         // producers flush their staged work here before the
                         // engine renders the layer.
                         runtime.view.frame();
-                        tx[target].gpu_content_size(pixels);
+                        if runtime.bound_size != Some(pixels) {
+                            if let Some(producer) = &runtime.producer {
+                                tx[target].content(producer.at(pixels));
+                            }
+                            runtime.bound_size = Some(pixels);
+                        }
                     }
                     tx[target].transform(gpu_frame_transform(
                         layer.transform,
@@ -494,6 +506,9 @@ impl FrameInstall<'_> {
                                 .wake
                                 .clone()
                                 .unwrap_or_else(|| RedrawHandle::new(|| {}));
+                            let (producer, sink) = self.engine.frame_producer();
+                            runtime.producer = Some(producer);
+                            runtime.sink = Some(sink);
                             runtime.receiver =
                                 Some(runtime.view.stream().start(self.device, self.queue, redraw));
                             self.installs += 1;
@@ -506,8 +521,17 @@ impl FrameInstall<'_> {
                             .as_ref()
                             .and_then(waterui_graphics::gpu::FrameReceiver::take)
                         {
-                            runtime.frame_pixels = Some(external_frame_plane_size(&frame));
-                            tx[target].content(self.engine.external_frame(frame));
+                            let pixels = external_frame_plane_size(&frame);
+                            runtime.frame_pixels = Some(pixels);
+                            if let Some(sink) = &runtime.sink {
+                                sink.submit(frame);
+                            }
+                            if runtime.bound_size != Some(pixels) {
+                                if let Some(producer) = &runtime.producer {
+                                    tx[target].content(producer.at(pixels));
+                                }
+                                runtime.bound_size = Some(pixels);
+                            }
                         }
                         if let Some(pixels) = runtime.frame_pixels {
                             tx[target].transform(gpu_frame_transform(
@@ -853,11 +877,15 @@ impl HydrolysisRenderer {
                     install.surface,
                     crate::renderer::retained::MountSlot::Overlay,
                 );
-                let (content, held) = recording.to_content(install.resources.as_ref());
-                tx[overlay].content(content);
-                install
-                    .mounts
-                    .set_held(None, crate::renderer::retained::MountSlot::Overlay, held);
+                let mut held = None;
+                tx[overlay].record(|recorder| {
+                    held = Some(recording.record_on(recorder, install.resources.as_ref()));
+                });
+                install.mounts.set_held(
+                    None,
+                    crate::renderer::retained::MountSlot::Overlay,
+                    held.expect("record ran"),
+                );
             }
             install
                 .mounts

@@ -386,7 +386,9 @@ mod tests {
     use super::*;
     use cherenkov::kurbo::{Rect, Shape};
     use cherenkov::testing::Event;
-    use cherenkov::{Command, ImageData, ImageId, Paint, Rgba8, Sampling, WorkingColor};
+    use cherenkov::{
+        Command, ImageData, ImageId, LayoutSize, Paint, Rgba8, Sampling, WorkingColor,
+    };
     use core::cell::Cell;
     use nami::{SignalExt, binding, constant};
     use waterui_core::layout::StretchAxis;
@@ -670,9 +672,9 @@ mod tests {
         );
 
         let mut resources = mount_b.resources.recording();
-        let mut recorder = Recorder::new();
-        content.build_scene(&mut recorder, &mut resources, 10.0, 10.0);
-        let mut recording = recorder.finish();
+        let mut recording = cherenkov::Content::record(&LayoutSize::new(), |recorder| {
+            content.build_scene(recorder, &mut resources, 10.0, 10.0);
+        });
         // A scene drawing a picture emits one `Command::Picture`; the
         // source's own commands live on that picture's shared display list.
         let [Command::Picture { picture, .. }] = recording.snapshot().commands() else {
@@ -700,14 +702,14 @@ mod tests {
             current: None,
             rebuild_recording: false,
         };
-        let mut recorder = Recorder::new();
-        content.build_scene(&mut recorder, &mut resources.recording(), 20.0, 20.0);
-        let first = recorder.finish();
+        let first = cherenkov::Content::record(&LayoutSize::new(), |recorder| {
+            content.build_scene(recorder, &mut resources.recording(), 20.0, 20.0);
+        });
         assert_eq!(first.len(), 1);
         tint.set(WorkingColor::WHITE);
-        let mut recorder = Recorder::new();
-        content.build_scene(&mut recorder, &mut resources.recording(), 20.0, 20.0);
-        let second = recorder.finish();
+        let second = cherenkov::Content::record(&LayoutSize::new(), |recorder| {
+            content.build_scene(recorder, &mut resources.recording(), 20.0, 20.0);
+        });
         assert_eq!(second.len(), 1);
     }
 }

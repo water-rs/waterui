@@ -1,0 +1,12 @@
+android:
+  manifest:
+    package: cool.lexo.cherenkov_planes_static
+    sdk:
+      min_sdk_version: 30
+      target_sdk_version: 33
+    uses_feature:
+      - name: android.hardware.vulkan.version
+        version: 0x400003
+        required: true
+    application:
+      label: cherenkov planes

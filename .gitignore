@@ -55,8 +55,19 @@ native-reference/
 # vendored and tracked so icon crates build offline and reproducibly.
 # Do not add an ignore rule for it.
 
-# Python bytecode from the release-script tests
+# Python bytecode from the release-script tests and the scene generators
 __pycache__/
+*.pyc
+
+# Generated Cherenkov scene tree: `graphics/cherenkov/scenes/tools/generate.py`
+# rebuilds all of it (fetch -> fonts -> test fonts -> corpus -> perf) from
+# pinned, hash-verified sources.
+graphics/cherenkov/out/
+graphics/cherenkov/scenes/corpus/
+graphics/cherenkov/scenes/perf/
+graphics/cherenkov/scenes/fonts/_full/
+graphics/cherenkov/scenes/fonts/*.ttf
+graphics/cherenkov/scenes/fonts/OFL.txt
 
 # Android backend build outputs (Gradle) and the local SDK pointer Android
 # Studio writes.

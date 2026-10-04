@@ -1617,18 +1617,19 @@ pub fn render_list_parts(
         );
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            if swipe_dx != 0.0 {
-                let threshold =
-                    (row_slot.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
-                let progress = (swipe_dx.abs() / threshold).clamp(0.0, 1.0);
-                theme.draw_list_swipe_dismiss_background(
-                    &mut draw,
-                    row_slot,
-                    progress,
-                    swipe_dx < 0.0,
-                );
-            }
+            ctx.draw_context(|draw| {
+                if swipe_dx != 0.0 {
+                    let threshold =
+                        (row_slot.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
+                    let progress = (swipe_dx.abs() / threshold).clamp(0.0, 1.0);
+                    theme.draw_list_swipe_dismiss_background(
+                        &mut *draw,
+                        row_slot,
+                        progress,
+                        swipe_dx < 0.0,
+                    );
+                }
+            });
         }
         // Everything the row draws — its background, controls and content —
         // rides the swipe displacement; only the revealed dismiss background
@@ -1652,14 +1653,15 @@ pub fn render_list_parts(
         });
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_list_row_background(&mut draw, row_rect, index % 2 == 1);
-            if let Some(fill) = selection_fill {
-                draw.fill(row_rect, fill);
-            }
-            if lifted_id == Some(row_id) {
-                theme.draw_list_row_lifted(&mut draw, row_rect, REORDER_LIFT_ELEVATION);
-            }
+            ctx.draw_context(|draw| {
+                theme.draw_list_row_background(&mut *draw, row_rect, index % 2 == 1);
+                if let Some(fill) = selection_fill {
+                    draw.fill(row_rect, fill);
+                }
+                if lifted_id == Some(row_id) {
+                    theme.draw_list_row_lifted(&mut *draw, row_rect, REORDER_LIFT_ELEVATION);
+                }
+            });
         }
         if let Some(header) = chrome.header.clone() {
             let header_rect = kurbo::Rect::new(
@@ -1821,14 +1823,15 @@ pub fn render_list_parts(
                             )
                         });
                 let theme = ctx.theme();
-                let mut draw = ctx.draw_context();
-                theme.draw_list_move_control(&mut draw, control_rect);
-                if let Some((rect, state)) = up_state {
-                    theme.draw_list_move_control_state_layer(&mut draw, rect, state);
-                }
-                if let Some((rect, state)) = down_state {
-                    theme.draw_list_move_control_state_layer(&mut draw, rect, state);
-                }
+                ctx.draw_context(|draw| {
+                    theme.draw_list_move_control(&mut *draw, control_rect);
+                    if let Some((rect, state)) = up_state {
+                        theme.draw_list_move_control_state_layer(&mut *draw, rect, state);
+                    }
+                    if let Some((rect, state)) = down_state {
+                        theme.draw_list_move_control_state_layer(&mut *draw, rect, state);
+                    }
+                });
             }
             if let Some((_, hit_bounds, _, press_slot)) = up_interaction {
                 let state = Rc::clone(state);
@@ -1865,13 +1868,14 @@ pub fn render_list_parts(
                 let delete_interaction =
                     local_interaction_state(delete_interaction, ctx.hit_transform);
                 let theme = ctx.theme();
-                let mut draw = ctx.draw_context();
-                theme.draw_list_delete_control(&mut draw, delete_rect);
-                theme.draw_list_delete_control_state_layer(
-                    &mut draw,
-                    delete_rect,
-                    delete_interaction,
-                );
+                ctx.draw_context(|draw| {
+                    theme.draw_list_delete_control(&mut *draw, delete_rect);
+                    theme.draw_list_delete_control_state_layer(
+                        &mut *draw,
+                        delete_rect,
+                        delete_interaction,
+                    );
+                });
             }
             let state = Rc::clone(state);
             let action_env = row_env.clone();
@@ -1949,8 +1953,9 @@ pub fn render_list_parts(
                 row_rect.y1,
             );
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_list_separator(&mut draw, separator);
+            ctx.draw_context(|draw| {
+                theme.draw_list_separator(&mut *draw, separator);
+            });
         }
     }
     // Evict content sub-views for rows no longer in the visible window.

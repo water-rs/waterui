@@ -43,3 +43,4 @@ jobs:
       package-args: ${{ needs.scope.outputs.package-args }}
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
       test-assets: ${{ needs.scope.outputs.test-assets == 'true' }}
+      scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
