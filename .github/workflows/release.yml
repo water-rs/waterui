@@ -31,7 +31,7 @@ jobs:
       group: release-${{ github.ref_name }}
       cancel-in-progress: false
     outputs:
-      # The `waterui-cli-v<version>` tag release-plz created this run, empty
+      # The `cli/v<version>` tag release-plz created this run, empty
       # when it released no CLI — the tag drives the `cli-dist` leg.
       cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
@@ -107,7 +107,7 @@ jobs:
           echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
 
       # Same report, different package: the CLI's tag is namespaced
-      # (`waterui-cli-v<version>`, release-plz.toml) so it never collides
+      # (`cli/v<version>`, release-plz.toml) so it never collides
       # with the facade's `v<version>`. There is no fallback path here —
       # unlike framework.json there is nothing to certify on a tag that
       # missed the report; the dist legs simply do not run.
@@ -404,7 +404,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${TAG#waterui-cli-v}"
+          version="${TAG#cli/v}"
           cd homebrew-water
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
