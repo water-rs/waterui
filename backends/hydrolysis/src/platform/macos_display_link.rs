@@ -1,6 +1,6 @@
-//! Explicit ProMotion opt-in for the winit runner on macOS.
+//! Explicit `ProMotion` opt-in for the winit runner on macOS.
 //!
-//! macOS only ramps a ProMotion panel up to 120Hz when something in the
+//! macOS only ramps a `ProMotion` panel up to 120Hz when something in the
 //! process declares a frame-rate demand; wgpu's vsync-paced present alone
 //! leaves the panel free to idle at a lower cadence. A [`CADisplayLink`]
 //! created from the window's `NSView` (macOS 14+) carrying
@@ -23,7 +23,7 @@ use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window as NativeWindow;
 
-/// The declared frame-rate range: ProMotion panels run up to 120Hz; the
+/// The declared frame-rate range: `ProMotion` panels run up to 120Hz; the
 /// system clamps the range on displays with a lower maximum.
 const FRAME_RATE_MIN: f32 = 60.0;
 const FRAME_RATE_MAX: f32 = 120.0;
