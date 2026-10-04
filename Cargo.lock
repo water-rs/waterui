@@ -1705,6 +1705,7 @@ version = "0.0.0"
 dependencies = [
  "arc-swap",
  "cherenkov-record",
+ "crossbeam-channel",
  "filtrate-core",
  "kurbo 0.13.1",
  "libm",

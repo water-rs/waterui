@@ -110,6 +110,11 @@ pub trait Renderer: 'static {
 
     fn memory(&self) -> MemoryUsage;
     fn trim(&mut self, pressure: Pressure);
+    /// Called after every retirement drain — a producer's retirement wakes
+    /// the render loop by itself, so an idle engine still submits the queued
+    /// native releases at once (#1691). A renderer with no native releases
+    /// queues nothing to submit.
+    fn submit_native_releases(&mut self);
 }
 ```
 

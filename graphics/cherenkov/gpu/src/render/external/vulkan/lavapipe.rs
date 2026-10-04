@@ -1160,6 +1160,112 @@ fn delayed_timeline_signal_stays_on_gpu() {
     unsafe { dev.destroy_semaphore(semaphore, None) };
 }
 
+/// A producer's retirement must release its frame's lease even when no
+/// frame is rendered again: the retirement itself wakes the render loop
+/// and submits the queued native release at once (#1691). The old loop
+/// could only drain the retirement around a message, so an idle engine
+/// left the release unsubmitted — this is a liveness check, and a few
+/// seconds is generous for a submission the fix makes immediately.
+#[test]
+fn idle_retirement_submits_native_release() {
+    let Some((shared, device)) = setup() else {
+        return;
+    };
+    if !device.caps().timeline_semaphore {
+        eprintln!("unavailable: timeline semaphores");
+        return;
+    }
+    let (dev, _, _) = raw(&shared);
+    // SAFETY: `dev` is live and the create info describes a plain
+    // timeline semaphore — nothing external is referenced.
+    let semaphore = unsafe {
+        let mut type_info =
+            vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
+        dev.create_semaphore(
+            &vk::SemaphoreCreateInfo::default().push_next(&mut type_info),
+            None,
+        )
+    }
+    .expect("timeline semaphore");
+    let Some(rgb) = make_rgb(&shared, &device, (8, 8), [0x10, 0x20, 0x30, 0xff]) else {
+        eprintln!("unavailable: RGB image");
+        // SAFETY: `semaphore` was created above and no command references
+        // it yet — destroying it here is its only destroy.
+        unsafe { dev.destroy_semaphore(semaphore, None) };
+        return;
+    };
+    let generation = rgb_generation(
+        &shared,
+        &device,
+        rgb,
+        (8, 8),
+        Some(vulkan::Wait::Timeline {
+            semaphore: semaphore.as_raw(),
+            value: 1,
+        }),
+        Some(vulkan::ReleaseSync::Timeline {
+            semaphore: semaphore.as_raw(),
+            value: 2,
+        }),
+    );
+    let external = ExternalFrame::native(vulkan::Frame { generation }).expect("native frame");
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        device: Some(shared),
+        ..GpuConfig::default()
+    })
+    .expect("engine");
+    let (target, _) = TextureTarget::new((16, 16));
+    let surface = engine.surface(target).expect("surface");
+    let layer = surface.layer();
+    let (video, sink) = engine.frame_producer();
+    sink.submit(external);
+    surface.update(|tx| {
+        tx[surface.root()].push(&layer);
+        tx[&layer].content(video.at((16, 16)));
+    });
+    assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    // The producer signals the wait point on the host; the GPU-side
+    // wait in the consuming submission resolves on the queue.
+    // SAFETY: `semaphore` is live and value 1 is a legal timeline signal
+    // (it never regresses).
+    unsafe {
+        dev.signal_semaphore(
+            &vk::SemaphoreSignalInfo::default()
+                .semaphore(semaphore)
+                .value(1),
+        )
+        .expect("signal");
+    }
+    // Retiring the producer while the engine is idle posts its
+    // retirement on the retirement queue — no render follows, so the
+    // retirement alone must carry the release to submission.
+    drop(surface);
+    drop(video);
+    // SAFETY: `semaphore` is live; the call only waits on it with a
+    // timeout. The wait is a liveness check: a fixed loop submits the
+    // release within a frame time, the old loop never submits it.
+    let released = unsafe {
+        dev.wait_semaphores(
+            &vk::SemaphoreWaitInfo::default()
+                .semaphores(&[semaphore])
+                .values(&[2]),
+            5_000_000_000,
+        )
+    };
+    assert!(
+        released.is_ok(),
+        "idle retirement never submitted the release: {released:?}"
+    );
+    // The wait above proves the release submission — the last queue
+    // reference — completed, and `drop(engine)` joins the teardown
+    // queue regardless.
+    drop(engine);
+    // SAFETY: the wait above proved the release submission — the last
+    // queue reference — completed, so VUID-vkDestroySemaphore-semaphore-
+    // 01149 is met; `semaphore` is destroyed exactly once.
+    unsafe { dev.destroy_semaphore(semaphore, None) };
+}
+
 #[test]
 fn binary_state_machine_acquired_once() {
     let Some((shared, device)) = setup() else {

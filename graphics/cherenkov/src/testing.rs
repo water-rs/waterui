@@ -516,6 +516,9 @@ impl Renderer for NullRenderer {
     }
 
     fn trim(&mut self, _pressure: Pressure) {}
+
+    /// `Null` imports no native frames — nothing to submit.
+    fn submit_native_releases(&mut self) {}
 }
 
 impl ShaderPaint for Null {

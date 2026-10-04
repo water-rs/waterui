@@ -251,6 +251,15 @@ pub trait Renderer: 'static {
 
     /// Releases memory under system `pressure`.
     fn trim(&mut self, pressure: Pressure);
+
+    /// Submits the native external-frame releases retirement work has
+    /// queued since the last submission. An external frame's release
+    /// must be signalled even when no frame is being drawn, so the
+    /// render loop calls this after every retirement drain — including
+    /// one a retirement itself woke — and an idle engine still releases
+    /// the lease. A renderer that imports no native frames queues
+    /// nothing to submit.
+    fn submit_native_releases(&mut self);
 }
 
 /// The render-side facts of a surface, answered by
