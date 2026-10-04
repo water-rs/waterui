@@ -72,11 +72,57 @@ TOTAL_BOUND_S = DEADLINE_S + RSS_BOUND_S + 3 * TERMINATE_GRACE_S
 
 
 class Failure(Exception):
-    """Any path on which this launch never proved it reached first paint."""
+    """A launch-protocol failure, named by the phase that produced it."""
+
+    def __init__(self, phase, detail):
+        self.phase = phase
+        super().__init__(f"{phase}: {detail}")
 
 
 class LaunchFailed(Failure):
     """The owned launch itself failed or the process died before painting."""
+
+
+class CleanupFailed(Failure):
+    """One bounded cleanup step failed, named by the step it ran."""
+
+    def __init__(self, step, detail):
+        super().__init__(f"cleanup {step}", detail)
+
+
+class FailureReport(Failure):
+    """Every failure the run produced, kept together and named by phase.
+
+    A cleanup failure never replaces the protocol failure it ran
+    alongside — the report carries all of them. Members that are
+    themselves reports are flattened, so every cause is named once.
+    """
+
+    def __init__(self, failures):
+        flat = []
+        for failure in failures:
+            if isinstance(failure, FailureReport):
+                flat.extend(failure.failures)
+            else:
+                flat.append(failure)
+        self.failures = tuple(flat)
+        detail = "; ".join(
+            _describe_failure(failure) for failure in self.failures)
+        super().__init__(f"{len(self.failures)} failures", detail)
+
+
+def _describe_failure(exc):
+    """One failure rendered for stderr: its own message, or a repr."""
+    if isinstance(exc, asyncio.CancelledError):
+        return "interrupted: CancelledError"
+    return str(exc) or repr(exc)
+
+
+def _proc_outcome(proc):
+    """A child's reaped outcome for cleanup diagnostics."""
+    if proc.returncode is None:
+        return f"pid={proc.pid} still running"
+    return f"pid={proc.pid} exited {proc.returncode}"
 
 
 class _Deadline:
@@ -86,6 +132,10 @@ class _Deadline:
 
     def __init__(self, budget_s):
         self._ends = time.monotonic() + budget_s
+
+    def expired(self):
+        """Whether the shared budget has already been consumed."""
+        return time.monotonic() >= self._ends
 
     async def wait(self, awaitable):
         return await asyncio.wait_for(
@@ -104,7 +154,8 @@ async def _reap(proc):
     try:
         await asyncio.wait_for(proc.wait(), TERMINATE_GRACE_S)
     except asyncio.TimeoutError as exc:
-        raise Failure(f"child {proc.pid} did not exit after kill") from exc
+        raise Failure(
+            "reap", f"child {proc.pid} did not exit after kill") from exc
 
 
 @dataclasses.dataclass(frozen=True)
@@ -138,28 +189,81 @@ def _stream_argv(target):
     return argv
 
 
+async def _cleanup(name, describe, awaitable):
+    """Run one cleanup step without replacing a pending failure.
+
+    A cleanup failure while an exception is already propagating joins
+    that exception in a FailureReport instead of masking it; alone it
+    raises as a CleanupFailed named for the step. Cancellation is
+    re-raised only when no other failure is in flight — otherwise the
+    interrupted step is still reported by name.
+    """
+    pending = sys.exc_info()[1]
+    started = time.monotonic()
+    try:
+        await awaitable
+    except BaseException as exc:
+        if pending is None and isinstance(exc, asyncio.CancelledError):
+            raise
+        issue = CleanupFailed(
+            name, f"{describe()} after {time.monotonic() - started:.2f}s: "
+                  f"{_describe_failure(exc)}")
+        if pending is None:
+            raise issue from exc
+        raise FailureReport((pending, issue)) from pending
+
+
+async def _attempt_cleanup(name, describe, awaitable):
+    """Await one cleanup step; return its named failure, or None.
+
+    A task we cancelled ourselves reports CancelledError and is
+    expected; anything else that failed is surfaced, never swallowed.
+    """
+    started = time.monotonic()
+    try:
+        result = await awaitable
+    except BaseException as exc:
+        result = exc
+    if (isinstance(result, BaseException)
+            and not isinstance(result, asyncio.CancelledError)):
+        return CleanupFailed(
+            name, f"{describe()} after {time.monotonic() - started:.2f}s: "
+                  f"{_describe_failure(result)}")
+    return None
+
+
 async def _launch(target):
     """Start the app; return (owned pid, app process or None for simctl)."""
     if isinstance(target, SimulatorLaunch):
-        proc = await asyncio.create_subprocess_exec(
+        argv = [
             "xcrun", "simctl", "launch", "--terminate-running-process",
             target.udid, target.bundle_id,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
         try:
             out, _ = await proc.communicate()
         finally:
-            await _reap(proc)
+            await _cleanup(
+                "reap simctl launch",
+                lambda: f"{_proc_outcome(proc)} argv={argv!r}",
+                _reap(proc))
         text = out.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
-            raise LaunchFailed(f"simctl launch {target.bundle_id} failed: {text}")
+            raise LaunchFailed(
+                "launch",
+                f"simctl launch {target.bundle_id} failed: {text}")
         match = LAUNCH_PID.search(text)
         if not match:
-            raise LaunchFailed(f"simctl launch reported no pid: {text!r}")
+            raise LaunchFailed(
+                "launch", f"simctl launch reported no pid: {text!r}")
         return int(match.group(1)), None
     if not target.executable.is_file():
         raise LaunchFailed(
+            "launch",
             f"bundle executable does not exist: {target.executable}")
     proc = await asyncio.create_subprocess_exec(
         str(target.executable),
@@ -172,7 +276,8 @@ async def _launch(target):
 def _marker_ms(event, pid):
     """Marker value when `event` is the first-paint log from process `pid`."""
     if not isinstance(event, dict):
-        raise Failure("log stream event is not a JSON object")
+        raise Failure(
+            "first-paint", "log stream event is not a JSON object")
     if event.get("processID") != pid or event.get("subsystem") != SUBSYSTEM:
         return None
     match = MARKER.search(event.get("eventMessage") or "")
@@ -183,7 +288,8 @@ async def _lines(stdout):
     while True:
         raw = await stdout.readline()
         if not raw:
-            raise Failure("log stream closed before the first-paint marker")
+            raise Failure(
+                "log stream", "closed before the first-paint marker")
         yield raw.decode("utf-8", errors="replace").rstrip("\n")
 
 
@@ -191,7 +297,9 @@ async def _await_attach(lines):
     async for line in lines:
         if line.startswith(ATTACH_PREFIX):
             return
-        raise Failure(f"unexpected log stream output before attach: {line!r}")
+        raise Failure(
+            "attach",
+            f"unexpected log stream output before attach: {line!r}")
 
 
 async def _await_marker(lines, pid):
@@ -201,11 +309,14 @@ async def _await_marker(lines, pid):
         try:
             event = json.loads(line)
         except ValueError as exc:
-            raise Failure(f"unexpected log stream output: {line!r}") from exc
+            raise Failure(
+                "first-paint",
+                f"unexpected log stream output: {line!r}") from exc
         ms = _marker_ms(event, pid)
         if ms is not None:
             return ms
-    raise Failure("log stream ended before the first-paint marker")
+    raise Failure(
+        "first-paint", "log stream ended before the first-paint marker")
 
 
 async def _await_first_paint(lines, pid, app_proc):
@@ -219,7 +330,9 @@ async def _await_first_paint(lines, pid, app_proc):
             waiters, return_when=asyncio.FIRST_COMPLETED)
         if exit_watch is not None and exit_watch in done:
             raise LaunchFailed(
-                f"the app exited during launch (status {app_proc.returncode})")
+                "launch",
+                f"the app exited during launch "
+                f"(status {app_proc.returncode})")
         return await marker
     finally:
         pending = [task for task in waiters if not task.done()]
@@ -238,26 +351,33 @@ async def _rss_kb_once(pid):
     status with output, or anything but one integer violates the probe's
     contract and is a Failure, never a sample to fold in.
     """
+    argv = ["ps", "-o", "rss=", "-p", str(pid)]
     proc = await asyncio.create_subprocess_exec(
-        "ps", "-o", "rss=", "-p", str(pid),
+        *argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
     try:
         out, _ = await proc.communicate()
     finally:
-        await _reap(proc)
+        await _cleanup(
+            "reap ps",
+            lambda: f"{_proc_outcome(proc)} argv={argv!r}",
+            _reap(proc))
     fields = out.split()
     if proc.returncode == 1 and not fields:
         return None
     if proc.returncode != 0 or len(fields) != 1:
         raise Failure(
+            "rss",
             f"ps -o rss= -p {pid} exited {proc.returncode}: {out!r}")
     try:
         return int(fields[0])
     except ValueError as exc:
         raise Failure(
-            f"ps -o rss= -p {pid} printed non-integer output: {out!r}") from exc
+            "rss",
+            f"ps -o rss= -p {pid} printed non-integer output: {out!r}") \
+            from exc
 
 
 async def _sample_peak_rss(pid):
@@ -292,6 +412,14 @@ async def _drain(task):
     return result
 
 
+def _app_outcome(target, app_proc):
+    """The owned app's identity for cleanup diagnostics."""
+    if app_proc is not None:
+        return (f"{_proc_outcome(app_proc)} "
+                f"argv={[str(target.executable)]!r}")
+    return f"simulator app {_describe(target)}"
+
+
 async def _terminate(target, app_proc):
     """End the owned app: the simulator app by bundle id, the host process.
 
@@ -299,18 +427,28 @@ async def _terminate(target, app_proc):
     deadline even when the platform layer misbehaves.
     """
     if isinstance(target, SimulatorLaunch):
+        argv = ["xcrun", "simctl", "terminate", target.udid, target.bundle_id]
         terminate = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
-                "xcrun", "simctl", "terminate", target.udid, target.bundle_id,
+                *argv,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL),
             TERMINATE_GRACE_S)
         try:
             await asyncio.wait_for(terminate.wait(), TERMINATE_GRACE_S)
+        except asyncio.TimeoutError as exc:
+            raise Failure(
+                "terminate",
+                f"simctl terminate {target.bundle_id} did not exit "
+                f"within {TERMINATE_GRACE_S:.0f}s") from exc
         finally:
-            await _reap(terminate)
+            await _cleanup(
+                "reap simctl terminate",
+                lambda: f"{_proc_outcome(terminate)} argv={argv!r}",
+                _reap(terminate))
         if terminate.returncode != 0:
             raise Failure(
+                "terminate",
                 f"simctl terminate {target.bundle_id} "
                 f"exited {terminate.returncode}")
         return
@@ -330,7 +468,8 @@ async def _run(target, metrics_path):
             stdout=asyncio.subprocess.PIPE,
         ))
     except asyncio.TimeoutError as exc:
-        raise Failure("the log stream did not start in time") from exc
+        raise Failure(
+            "attach", "the log stream did not start in time") from exc
     app_proc = None
     rss_task = None
     # Once the launch attempt exists the app may have started even if the
@@ -342,16 +481,42 @@ async def _run(target, metrics_path):
         try:
             await deadline.wait(_await_attach(lines))
         except asyncio.TimeoutError as exc:
-            raise Failure("the log stream did not attach in time") from exc
+            raise Failure(
+                "attach", "the log stream did not attach in time") from exc
         launch_attempted = True
         try:
             pid, app_proc = await deadline.wait(_launch(target))
         except asyncio.TimeoutError as exc:
             raise LaunchFailed(
+                "launch",
                 f"{_describe(target)} did not launch within "
                 f"{DEADLINE_S:.0f}s") from exc
+        except FailureReport as exc:
+            # The launch wait was interrupted and _launch's cleanup
+            # failed too — the report preempted wait_for's TimeoutError.
+            # Name the interrupted phase in place of the bare
+            # CancelledError: the deadline's own expiry only when it has
+            # provably passed, a generic interruption otherwise.
+            members = [
+                LaunchFailed(
+                    "launch",
+                    f"{_describe(target)} did not launch within "
+                    f"{DEADLINE_S:.0f}s"
+                    if deadline.expired() else
+                    f"{_describe(target)} was interrupted during launch")
+                if isinstance(failure, asyncio.CancelledError)
+                else failure
+                for failure in exc.failures]
+            raise FailureReport(members) from exc
         if metrics_path is None:
-            ms = await deadline.wait(_await_first_paint(lines, pid, app_proc))
+            try:
+                ms = await deadline.wait(
+                    _await_first_paint(lines, pid, app_proc))
+            except asyncio.TimeoutError as exc:
+                raise Failure(
+                    "first-paint",
+                    f"no first-paint marker from {_describe(target)} "
+                    f"within {DEADLINE_S:.0f}s") from exc
             print(f"first paint: {ms} ms")
             return
         # RSS sampling runs parallel to the marker wait so the whole idle
@@ -370,7 +535,8 @@ async def _run(target, metrics_path):
         try:
             peak_rss = await asyncio.wait_for(rss_task, RSS_BOUND_S)
         except asyncio.TimeoutError as exc:
-            raise Failure("peak RSS sampling did not complete in time") \
+            raise Failure(
+                "rss", "peak RSS sampling did not complete in time") \
                 from exc
         metrics_path.write_text(
             json.dumps(
@@ -381,19 +547,34 @@ async def _run(target, metrics_path):
     finally:
         # Every owned resource is cleaned up independently and
         # concurrently — a failure in one must not starve the others, and
-        # each step carries its own bound. A task we cancelled ourselves
-        # reports CancelledError and is expected; anything else that failed
-        # is surfaced, never swallowed.
-        cleanups = [_drain(rss_task), _reap(stream)]
+        # each step carries its own bound. Cleanup failures never replace
+        # a failure already propagating: all of them are kept together in
+        # one FailureReport, each named by the phase that produced it.
+        pending = sys.exc_info()[1]
+        steps = [
+            ("drain RSS sampler", lambda: f"task={rss_task!r}",
+             _drain(rss_task)),
+            ("reap log stream",
+             lambda: f"{_proc_outcome(stream)} "
+                     f"argv={_stream_argv(target)!r}",
+             _reap(stream)),
+        ]
         if launch_attempted:
-            cleanups.append(_terminate(target, app_proc))
-        results = await asyncio.gather(*cleanups, return_exceptions=True)
-        problems = [
-            repr(result) for result in results
-            if isinstance(result, BaseException)
-            and not isinstance(result, asyncio.CancelledError)]
-        if problems:
-            raise Failure("cleanup failed: " + "; ".join(problems))
+            steps.append((
+                "terminate app", lambda: _app_outcome(target, app_proc),
+                _terminate(target, app_proc)))
+        issues = [
+            issue for issue in await asyncio.gather(
+                *(_attempt_cleanup(name, describe, awaitable)
+                  for name, describe, awaitable in steps),
+                return_exceptions=True)
+            if issue is not None]
+        if issues:
+            if pending is None:
+                if len(issues) == 1:
+                    raise issues[0]
+                raise FailureReport(issues)
+            raise FailureReport((pending, *issues)) from pending
 
 
 def main():
@@ -430,7 +611,9 @@ def main():
         asyncio.run(asyncio.wait_for(
             _run(target, args.metrics_json), TOTAL_BOUND_S))
     except Failure as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        causes = exc.failures if isinstance(exc, FailureReport) else (exc,)
+        for cause in causes:
+            print(f"error: {_describe_failure(cause)}", file=sys.stderr)
         sys.exit(1)
     except asyncio.TimeoutError:
         print(f"error: no first-paint marker from {_describe(target)} "
