@@ -3440,8 +3440,7 @@ mod tests {
                 continue;
             }
             assert!(
-                rest
-                    .trim_start_matches(char::is_whitespace)
+                rest.trim_start_matches(char::is_whitespace)
                     .strip_prefix('{')
                     .is_some_and(|body| body
                         .trim_start_matches(char::is_whitespace)
