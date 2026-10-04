@@ -71,13 +71,11 @@ impl Dispatcher {
                 });
             handler(native.into_inner(), ctx)
         });
-        self.handlers
-            .insert(TypeId::of::<waterui_backend_core::Native<C>>(), wrapped);
-        // The name the fallback's registry keys is the erased view's own:
-        // `Native<C>`, not `C`.
-        #[cfg(debug_assertions)]
-        self.names
-            .push(core::any::type_name::<waterui_backend_core::Native<C>>());
+        self.claim(
+            TypeId::of::<waterui_backend_core::Native<C>>(),
+            wrapped,
+            core::any::type_name::<waterui_backend_core::Native<C>>(),
+        );
     }
 
     /// Claims `T` exactly as it appears in the view tree: a metadata wrapper
@@ -132,9 +130,21 @@ impl Dispatcher {
             });
             handler(*typed, ctx)
         });
-        self.handlers.insert(TypeId::of::<T>(), wrapped);
+        self.claim(TypeId::of::<T>(), wrapped, core::any::type_name::<T>());
+    }
+
+    /// Claims `type_id` for `handler`, failing loudly on a second claim.
+    /// Every type owns exactly one handler; a silent `insert` overwrite
+    /// swaps the live port for whichever module registers last — the
+    /// duplicate `ResolvedMenu` ports that shipped a label-less menu
+    /// trigger (#1563) hid behind exactly that.
+    fn claim(&mut self, type_id: TypeId, handler: Handler, name: &'static str) {
+        assert!(
+            self.handlers.insert(type_id, handler).is_none(),
+            "dispatcher already has a handler for {name}"
+        );
         #[cfg(debug_assertions)]
-        self.names.push(core::any::type_name::<T>());
+        self.names.push(name);
     }
 
     /// The handler claiming `type_id`, if any.

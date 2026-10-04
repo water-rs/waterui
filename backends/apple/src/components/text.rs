@@ -517,6 +517,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
         leaf
     });
 
+    // `plain` owns the bare-`Str` leaf when enabled; `text` supplies it
+    // only so a `text`-without-`plain` build still renders strings. Two
+    // claims on the same type are rejected by the dispatcher.
+    #[cfg(not(feature = "plain"))]
     dispatcher.register_native::<Str>(|text, ctx| {
         let (leaf, ..) = label_leaf(
             ctx,

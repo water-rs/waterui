@@ -7,15 +7,14 @@
 //! hosts the bar (`UINavigationBar` on `UIKit`, the window toolbar on
 //! `AppKit`); standalone it draws an in-content bar. `Native<NavigationStack>`
 //! is the stack container, `Native<NavigationSplitLayout>` a two- or
-//! three-column split, `Native<TabsLayout>` the platform's tab container,
-//! and `Native<ResolvedMenu>` a menu trigger.
+//! three-column split, and `Native<TabsLayout>` the platform's tab
+//! container.
 
 use alloc::string::String;
 
 use cocoa_ui::PlatformView;
 
 pub mod bar;
-pub mod menu;
 pub mod metadata;
 pub mod nav_view;
 pub mod split;
@@ -25,7 +24,6 @@ pub mod tabs;
 /// Installs every navigation handler on the dispatcher.
 pub fn install(dispatcher: &mut crate::dispatch::Dispatcher) {
     metadata::install(dispatcher);
-    menu::install(dispatcher);
     nav_view::install(dispatcher);
     stack::install(dispatcher);
     split::install(dispatcher);
