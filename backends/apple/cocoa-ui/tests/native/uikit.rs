@@ -91,8 +91,6 @@ fn extended_linear_display_p3_preserves_space_and_hdr_channels() {
 fn attach(mtm: MainThreadMarker, content: &PlatformView) -> Retained<UIWindow> {
     // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer; `mtm` is
     // the real main thread.
-    // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer; `mtm` is
-    // a test-owned allocation on the main thread.
     let window: Retained<UIWindow> = unsafe {
         msg_send![
             UIWindow::alloc(mtm),
@@ -355,15 +353,12 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     let mtm = marker();
     // SAFETY: `initWithFrame:` is `UIView`'s plain initializer; `mtm` is
     // the real main thread — same for `UILabel` below.
-    // SAFETY: `initWithFrame:` is `UIView`'s plain initializer; `mtm` is
-    // a test-owned allocation on the main thread.
     let parent: Retained<UIView> = unsafe {
         msg_send![
             UIView::alloc(mtm),
             initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(400.0, 400.0))
         ]
     };
-    // SAFETY: `initWithFrame:` is `UIView`'s plain initializer; `mtm` is
     let content: Retained<UIView> = unsafe {
         msg_send![
             UIView::alloc(mtm),
