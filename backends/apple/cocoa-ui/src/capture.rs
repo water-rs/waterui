@@ -979,19 +979,25 @@ impl NativeRenderer {
 /// is supported and restores nothing.
 struct RootBorrow {
     view: Retained<PlatformView>,
-    /// The temporary layer owner — released only after the view is
-    /// restored, so the claim's teardown can never free the backing
-    /// layer out from under it.
-    _layer: Retained<CALayer>,
+    /// The view's model layer, owned for the claim's span — the claim's
+    /// teardown can never free the backing layer out from under the
+    /// view — and the writer the layer transform is restored through:
+    /// `UIView.transform` is affine-only, so restoring through the view
+    /// would flatten a perspective `CATransform3D`.
+    layer: Retained<CALayer>,
     /// `Some` only when the view reported a parent at claim; a detached
     /// view captures normally and restores nothing.
     attachment: Option<Attachment>,
+    /// The hidden flag as the encode saw it — the claim runs while the
+    /// content is temporarily unhidden; `HiddenRestore`, dropped after
+    /// this in `prepare`, owns the caller's original flag.
     hidden: bool,
     bounds: Rect,
+    /// The model layer's full transform at claim — restored after the
+    /// geometry writes so a non-affine transform survives the claim.
+    layer_transform: CATransform3D,
     #[cfg(target_os = "ios")]
     center: crate::geometry::Point,
-    #[cfg(target_os = "ios")]
-    transform: objc2_core_foundation::CGAffineTransform,
     #[cfg(target_os = "macos")]
     frame: Rect,
 }
@@ -1036,14 +1042,13 @@ impl RootBorrow {
         });
         Self {
             view: Retained::from(view),
-            _layer: layer.retain(),
+            layer: layer.retain(),
             attachment,
             hidden: crate::view::is_hidden(view),
             bounds: crate::view::bounds(view),
+            layer_transform: layer.transform(),
             #[cfg(target_os = "ios")]
             center: view.center().into(),
-            #[cfg(target_os = "ios")]
-            transform: view.transform(),
             #[cfg(target_os = "macos")]
             frame: crate::view::frame(view),
         }
@@ -1082,15 +1087,20 @@ impl Drop for RootBorrow {
                 }
             }
         }
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
         crate::view::set_bounds(&self.view, self.bounds);
         #[cfg(target_os = "ios")]
-        {
-            crate::view::set_center(&self.view, self.center);
-            crate::view::set_transform(&self.view, self.transform);
-        }
+        crate::view::set_center(&self.view, self.center);
         #[cfg(target_os = "macos")]
         crate::view::set_frame(&self.view, self.frame);
+        // The layer transform last: `TransformRestore` already undid the
+        // encode scale, and an affine-only write here would flatten a
+        // perspective transform the claim found.
+        self.layer.setTransform(self.layer_transform);
         crate::view::set_hidden(&self.view, self.hidden);
+        CATransaction::commit();
+        flush_transaction();
     }
 }
 

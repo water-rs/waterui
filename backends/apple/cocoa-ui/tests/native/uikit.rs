@@ -343,8 +343,8 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use cocoa_ui::capture::ViewCapture;
-    use cocoa_ui::objc2_core_foundation::CGAffineTransform;
     use cocoa_ui::objc2_foundation::NSString;
+    use cocoa_ui::objc2_quartz_core::CATransform3D;
     use cocoa_ui::objc2_ui_kit::{UIColor, UILabel};
 
     let mtm = marker();
@@ -363,14 +363,11 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         ]
     };
     content.setBackgroundColor(Some(&UIColor::systemBlueColor()));
-    content.setTransform(CGAffineTransform {
-        a: 1.08,
-        b: 0.05,
-        c: -0.06,
-        d: 0.94,
-        tx: 0.0,
-        ty: 0.0,
-    });
+    // A perspective transform is the flattening case: an affine-only
+    // `UIView.transform` restore would zero `m34`.
+    let mut perspective = CATransform3D::new_rotation(0.3, 0.0, 1.0, 0.0);
+    perspective.m34 = -1.0 / 600.0;
+    content.layer().setTransform(perspective);
     let label: Retained<UILabel> = unsafe {
         msg_send![
             UILabel::alloc(mtm),
@@ -391,7 +388,7 @@ fn a_capture_claim_restores_containment_and_survives_release() {
 
     let bounds = content.bounds();
     let center = content.center();
-    let transform = content.transform();
+    let layer_transform = content.layer().transform();
 
     let Some(target) = capture_target() else {
         return; // No Metal on this runner — nothing to check.
@@ -426,7 +423,13 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     ));
     assert_eq!(content.bounds(), bounds);
     assert_eq!(content.center(), center);
-    assert_eq!(content.transform(), transform);
+    assert!(
+        content
+            .layer()
+            .transform()
+            .equal_to_transform(layer_transform),
+        "the claim must preserve the layer's full transform, perspective included"
+    );
     assert!(!content.isHidden());
     let hit = parent.hitTest_withEvent(CGPoint::new(center.x + 20.0, center.y), None);
     assert!(
@@ -465,6 +468,13 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         "the backing layer lost its parent when the renderer dropped"
     );
     assert_eq!(content.bounds(), bounds);
+    assert!(
+        content
+            .layer()
+            .transform()
+            .equal_to_transform(layer_transform),
+        "renderer release must not disturb the restored transform"
+    );
 
     content.removeFromSuperview();
     sibling.removeFromSuperview();

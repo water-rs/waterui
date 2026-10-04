@@ -324,6 +324,16 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         .layer()
         .expect("a wanted layer exists")
         .setBackgroundColor(Some(&NSColor::systemBlueColor().CGColor()));
+    // A non-identity layer transform is the preservation case: the
+    // claim's restore must hand back the full `CATransform3D`, not an
+    // affine view-level approximation of it.
+    let mut perspective =
+        cocoa_ui::objc2_quartz_core::CATransform3D::new_rotation(0.3, 0.0, 1.0, 0.0);
+    perspective.m34 = -1.0 / 600.0;
+    content
+        .layer()
+        .expect("a wanted layer exists")
+        .setTransform(perspective);
     let label = Label::new(mtm);
     label.set_text("capture-claim");
     content.addSubview(&label);
@@ -336,6 +346,7 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     parent.addSubview(&sibling);
 
     let frame = content.frame();
+    let layer_transform = content.layer().expect("a wanted layer exists").transform();
 
     let Some(target) = capture_target() else {
         return; // No Metal on this runner — nothing to check.
@@ -372,6 +383,12 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     assert!(
         content
             .layer()
+            .is_some_and(|layer| layer.transform().equal_to_transform(layer_transform)),
+        "the claim must preserve the layer's full transform"
+    );
+    assert!(
+        content
+            .layer()
             .is_some_and(|layer| layer.superlayer().is_some()),
         "the backing layer must be re-attached to its superlayer"
     );
@@ -402,6 +419,12 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         "the backing layer lost its parent when the renderer dropped"
     );
     assert_eq!(content.frame(), frame);
+    assert!(
+        content
+            .layer()
+            .is_some_and(|layer| layer.transform().equal_to_transform(layer_transform)),
+        "renderer release must not disturb the restored transform"
+    );
 
     content.removeFromSuperview();
     sibling.removeFromSuperview();
