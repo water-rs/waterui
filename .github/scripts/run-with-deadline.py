@@ -30,7 +30,11 @@ to stderr: the argv, the owned pid, wall-clock start/end, the monotonic
 duration, the remaining budget at start, and the outcome — exited / timeout
 / budget_exhausted / spawn_error / reap_failed — with the raw returncode.
 The child's own stdout and stderr pass through untouched, so `$(...)`
-capture by the caller still works.
+capture by the caller still works. --child-stderr-file PATH instead writes
+the child's stderr to that file while the supervisor's own records keep
+going to the inherited stderr — separating supervisor diagnostics from
+child output so a hung command stays attributable live even when the caller
+consumes the child's streams.
 
 Exit status is the contract the shell checks: the child's own status on
 exit, 128+signal when the child died on a signal, 124 when the deadline
@@ -41,6 +45,7 @@ not be reaped, and 127 when the command could not be spawned at all.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import logging
@@ -76,6 +81,7 @@ class Receipt:
     pid: int | None
     returncode: int | None
     timed_out: bool
+    child_stderr_file: str | None
 
 
 def _clock() -> float:
@@ -134,57 +140,68 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 pid=pid,
                 returncode=returncode,
                 timed_out=timed_out,
+                child_stderr_file=args.child_stderr_file,
             ),
         )
 
     if remaining <= 0:
         finish("budget_exhausted", None, None, True)
         return TIMEOUT_EXIT
-    try:
-        proc = subprocess.Popen(argv)
-    except OSError as exc:
-        logging.error("%s could not be spawned: %s", args.label, exc)
-        finish("spawn_error", None, None, False)
-        return SPAWN_ERROR_EXIT
-    # The start record lands before the wait, so a hang is attributable to an
-    # exact argv/pid even if the final receipt never arrives.
-    logging.info(
-        "%s",
-        json.dumps(
-            {
-                "event": "command_started",
-                "label": args.label,
-                "argv": argv,
-                "pid": proc.pid,
-                "deadline_at": args.deadline_at,
-                "remaining_at_start_s": round(remaining, 6),
-                "started_at": started_at,
-            },
-            separators=(",", ":"),
-        ),
-    )
-    timed_out = False
-    try:
-        proc.wait(timeout=remaining)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        # Only the owned child is signalled — no process-group kill, so a
-        # CoreSimulator service or any sibling the tool spawned is untouched.
-        # Popen's signal/wait methods already absorb a child that exited
-        # between the deadline and the signal; a wait that still times out
-        # after SIGKILL is a real reap failure, surfaced rather than claimed.
-        proc.terminate()
+    with contextlib.ExitStack() as stack:
+        # An optional separate destination for the child's stderr: the
+        # supervisor's own records keep going to the inherited stderr — never
+        # into a captured variable — so a hung command stays attributable
+        # live while the child's diagnostics land in a retained file.
+        child_stderr = (
+            stack.enter_context(
+                open(args.child_stderr_file, "w", encoding="utf-8"))
+            if args.child_stderr_file else None)
         try:
-            proc.wait(timeout=REAP_GRACE_S)
+            proc = subprocess.Popen(argv, stderr=child_stderr)
+        except OSError as exc:
+            logging.error("%s could not be spawned: %s", args.label, exc)
+            finish("spawn_error", None, None, False)
+            return SPAWN_ERROR_EXIT
+        # The start record lands before the wait, so a hang is attributable
+        # to an exact argv/pid even if the final receipt never arrives.
+        logging.info(
+            "%s",
+            json.dumps(
+                {
+                    "event": "command_started",
+                    "label": args.label,
+                    "argv": argv,
+                    "pid": proc.pid,
+                    "deadline_at": args.deadline_at,
+                    "remaining_at_start_s": round(remaining, 6),
+                    "started_at": started_at,
+                },
+                separators=(",", ":"),
+            ),
+        )
+        timed_out = False
+        try:
+            proc.wait(timeout=remaining)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            timed_out = True
+            # Only the owned child is signalled — no process-group kill, so a
+            # CoreSimulator service or any sibling the tool spawned is
+            # untouched. Popen's signal/wait methods already absorb a child
+            # that exited between the deadline and the signal; a wait that
+            # still times out after SIGKILL is a real reap failure, surfaced
+            # rather than claimed.
+            proc.terminate()
             try:
                 proc.wait(timeout=REAP_GRACE_S)
             except subprocess.TimeoutExpired:
-                finish("reap_failed", proc.pid, proc.returncode, True)
-                raise RuntimeError(
-                    f"{args.label}: owned child pid {proc.pid} did not exit "
-                    "within the reap grace after SIGKILL")
+                proc.kill()
+                try:
+                    proc.wait(timeout=REAP_GRACE_S)
+                except subprocess.TimeoutExpired:
+                    finish("reap_failed", proc.pid, proc.returncode, True)
+                    raise RuntimeError(
+                        f"{args.label}: owned child pid {proc.pid} did not "
+                        "exit within the reap grace after SIGKILL")
     status = "timeout" if timed_out else "exited"
     finish(status, proc.pid, proc.returncode, timed_out)
     if timed_out:
@@ -224,6 +241,10 @@ def main() -> None:
     run.add_argument(
         "--label", required=True,
         help="receipt label identifying this command's role")
+    run.add_argument(
+        "--child-stderr-file", metavar="PATH", default=None,
+        help="write the child's stderr to PATH instead of inheriting it; "
+             "supervisor records stay on this process's stderr")
     run.add_argument("argv", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command == "deadline":

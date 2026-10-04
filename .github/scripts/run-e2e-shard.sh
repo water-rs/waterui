@@ -348,25 +348,43 @@ capture_settled() {
 # hiding.
 simctl_cleanup() {
   local what="$1" bundle="$2"
-  local deadline_at out rc=0
+  local deadline_at child_err rc=0
+  # The child's stderr goes to an owned per-invocation file — the helper's
+  # command_started/receipt records stay on the inherited live stderr, so a
+  # stuck cleanup is attributable in the step log instead of vanishing into
+  # a captured variable nobody reads until the command settles.
+  child_err="$(mktemp "${logs_dir}/.cleanup-${what}-stderr.XXXXXX")"
   deadline_at="$("${command_deadline}" deadline --seconds "${CLEANUP_DEADLINE_S}")"
-  out="$("${command_deadline}" run --label "cleanup:simctl-${what}" \
+  "${command_deadline}" run --label "cleanup:simctl-${what}" \
     --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
-    -- xcrun simctl "${what}" "${SIMULATOR_UDID}" "${bundle}" 2>&1)" || rc=$?
+    --child-stderr-file "${child_err}" \
+    -- xcrun simctl "${what}" "${SIMULATOR_UDID}" "${bundle}" \
+    >/dev/null || rc=$?
+  # The child has settled — reaped or deadline-killed — so its stderr is now
+  # safe to classify. Retain the diagnostics for every outcome, then drop
+  # only this owned file.
+  if [[ -s "${child_err}" ]]; then
+    echo "simctl ${what} ${bundle} stderr:" >&2
+    sed 's/^/  /' "${child_err}" >&2
+  fi
   if (( rc == 0 )); then
+    rm -f "${child_err}"
     return 0
   fi
   if (( rc == 124 )); then
     echo "::error::${example}: 'simctl ${what} ${bundle}' was killed at the ${CLEANUP_DEADLINE_S}s cleanup deadline; last receipt in ${receipts_file}."
+    rm -f "${child_err}"
     return 1
   fi
   if [[ "${what}" == "terminate" ]] && (( rc == 3 )) && \
-     grep -q "domain=NSPOSIXErrorDomain, code=3" <<<"${out}" && \
-     grep -q "found nothing to terminate" <<<"${out}"; then
+     grep -q "domain=NSPOSIXErrorDomain, code=3" "${child_err}" && \
+     grep -q "found nothing to terminate" "${child_err}"; then
     echo "::notice::${example}: simctl terminate reports '${bundle}' already exited (exit 3 / NSPOSIXErrorDomain code=3); treating as clean."
+    rm -f "${child_err}"
     return 0
   fi
-  echo "::error::${example}: 'simctl ${what} ${bundle}' failed (exit ${rc}): ${out}"
+  echo "::error::${example}: 'simctl ${what} ${bundle}' failed (exit ${rc}); stderr retained above."
+  rm -f "${child_err}"
   return 1
 }
 
