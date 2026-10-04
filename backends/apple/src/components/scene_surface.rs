@@ -16,16 +16,23 @@ use waterui_graphics::gpu::{GpuRuntime, RedrawHandle, SharedGpuContext};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
 use waterui_graphics::resources::{HeldResources, SceneResources};
-use waterui_graphics::scene_view::{SceneView, resolve_scene_proposal, scene_stretch_axis};
+use waterui_graphics::scene_view::{
+    SceneInvalidator, SceneView, resolve_scene_proposal, scene_stretch_axis,
+};
 use waterui_graphics::wgpu;
 
 use super::{HostedRenderer, HostedView};
 
 /// Content and its structural invalidation survive ordinary frame submissions.
-#[derive(Debug)]
 pub struct Scene {
     view: Rc<RefCell<SceneView>>,
     dirty: Rc<Cell<bool>>,
+    /// The invalidation callback `mount` installed in the content, kept so an
+    /// engine (re)creation can re-install it after `rebuild_for_engine` clears
+    /// the content's engine-bound state — watchers included — on the new
+    /// generation. `None` while unmounted; a renderer created before `mount`
+    /// installs nothing rather than inventing a subscription.
+    invalidator: Option<SceneInvalidator>,
     /// The intrinsic size the layout was last notified about: the baseline
     /// `measurement_dependency_invalidated` compares the live
     /// [`SceneContent::intrinsic_size`](waterui_graphics::scene_view::SceneContent::intrinsic_size)
@@ -43,7 +50,20 @@ impl Scene {
             last_published: Cell::new(view.intrinsic_size()),
             view: Rc::new(RefCell::new(view)),
             dirty: Rc::new(Cell::new(true)),
+            invalidator: None,
         }
+    }
+}
+
+// `invalidator` is a closure: the honest Debug shows the semantic fields and
+// stays non-exhaustive.
+impl core::fmt::Debug for Scene {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Scene")
+            .field("view", &self.view)
+            .field("dirty", &self.dirty)
+            .field("last_published", &self.last_published)
+            .finish_non_exhaustive()
     }
 }
 
@@ -71,16 +91,19 @@ impl HostedView for Scene {
     fn mount(&mut self, redraw: &RedrawHandle) {
         let dirty = self.dirty.clone();
         let redraw = redraw.clone();
+        let invalidator: SceneInvalidator = Rc::new(move || {
+            dirty.set(true);
+            redraw.request_redraw();
+        });
+        self.invalidator = Some(Rc::clone(&invalidator));
         self.view
             .borrow_mut()
             .content_mut()
-            .set_invalidator(Some(Rc::new(move || {
-                dirty.set(true);
-                redraw.request_redraw();
-            })));
+            .set_invalidator(Some(invalidator));
     }
 
     fn unmount(&mut self) {
+        self.invalidator = None;
         self.view.borrow_mut().content_mut().set_invalidator(None);
     }
 
@@ -184,7 +207,15 @@ impl SceneRenderer {
             shader_delivery(context.adapter().get_info().backend, context.device())
                 .expect("scene presentation shaders failed"),
         );
+        // `rebuild_for_engine` clears the content's engine-bound state,
+        // including the watchers its invalidator feeds — so the mounted
+        // callback goes back in before the first record on this generation.
         scene.view.borrow_mut().content_mut().rebuild_for_engine();
+        scene
+            .view
+            .borrow_mut()
+            .content_mut()
+            .set_invalidator(scene.invalidator.clone());
         scene.dirty.set(true);
         Self {
             surface,
@@ -312,9 +343,14 @@ impl HostedRenderer for SceneRenderer {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use waterui_graphics::cherenkov::{Command, Draw, Recorder, WorkingColor};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use waterui::{Binding, SignalExt, binding};
+    use waterui_core::{AnyView, Environment, View};
+    use waterui_graphics::cherenkov::{Command, Draw, Paint, Recorder, WorkingColor};
     use waterui_graphics::resources::RecordingResources;
-    use waterui_graphics::scene_view::SceneContent;
+    use waterui_graphics::scene_view::{SceneContent, SceneViewMergeToParent};
+    use waterui_graphics::{Picture, PictureRecording};
 
     /// Content that counts its recordings and fills a half-extent logical
     /// rect: `build_scene` receives the logical box, so the recorded shape
@@ -508,5 +544,178 @@ mod tests {
         assert_eq!(draws.get(), 2, "an unchanged geometry stays cached");
         record(&mut renderer, 256, 2.0, 1.0);
         assert_eq!(draws.get(), 3, "a new logical size re-records");
+    }
+
+    fn square(color: WorkingColor) -> PictureRecording {
+        Picture::record(|scene| {
+            scene.fill(kurbo::Rect::new(0.0, 0.0, 10.0, 10.0), color);
+        })
+    }
+
+    /// A `Scene` over a real reactive `Picture`: its content watches the
+    /// recording signal through whichever invalidator the host installs.
+    fn picture_scene(recording: &Binding<WorkingColor>) -> Scene {
+        let picture = Picture::new(Size::new(10.0, 10.0), recording.map(square));
+        let scene_view =
+            AnyView::new(picture.body(&Environment::new().extending(SceneViewMergeToParent)))
+                .downcast::<SceneView>()
+                .unwrap_or_else(|_| panic!("a merged picture is a SceneView"));
+        Scene::new(*scene_view)
+    }
+
+    /// The colour the content's last recording draws, read out of the
+    /// picture's own display list — the observable output a reactive
+    /// `Picture` changes when its recording signal lands.
+    fn recorded_color(renderer: &SceneRenderer) -> WorkingColor {
+        let (mut content, _held, _again) = renderer.record_content(10.0, 10.0, 1.0);
+        let picture_command = content
+            .snapshot()
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                Command::Picture { picture, .. } => Some(picture),
+                _ => None,
+            })
+            .expect("the scene draws the picture, not inline content");
+        picture_command
+            .display_list()
+            .commands()
+            .iter()
+            .find_map(|command| match command {
+                Command::Fill {
+                    paint: Paint::Solid(color),
+                    ..
+                } => Some(*color),
+                _ => None,
+            })
+            .expect("the picture's square fill is recorded")
+    }
+
+    /// `mount`'s invalidator is semantic state; `rebuild_for_engine` clears
+    /// the watchers it feeds along with every other engine-bound value, so a
+    /// renderer created on a fresh generation must put it back — on the first
+    /// creation and on every replacement — or fine-grained invalidation dies
+    /// with the old engine. An unmounted scene gains no subscription.
+    #[test]
+    fn engine_recreation_preserves_the_mounted_invalidator() {
+        const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
+        const BLUE: WorkingColor = WorkingColor::new([0.0, 0.0, 1.0, 1.0]);
+        const GREEN: WorkingColor = WorkingColor::new([0.0, 1.0, 0.0, 1.0]);
+
+        let runtime = pollster::block_on(GpuRuntime::new())
+            .expect("a GPU adapter is required on test hardware");
+        let context = runtime.context();
+        let redraws = Arc::new(AtomicU32::new(0));
+        let redraws_probe = Arc::clone(&redraws);
+        let redraw = RedrawHandle::new(move || {
+            redraws_probe.fetch_add(1, Ordering::Relaxed);
+        });
+        let color = binding(RED);
+        let mut scene = picture_scene(&color);
+        let size = OffscreenSize::try_from_pixels(20, 20).expect("nonzero size");
+
+        // An unmounted scene installs nothing: the renderer's rebuild leaves
+        // the content without a watcher rather than inventing one, so a model
+        // update on it never dirties or wakes.
+        let quiet_color = binding(RED);
+        let scene_unmounted = picture_scene(&quiet_color);
+        let mut unmounted_renderer =
+            SceneRenderer::new(&runtime, &context, &redraw, size, &scene_unmounted);
+        unmounted_renderer.record_if_needed(
+            &target(&unmounted_renderer, 20),
+            Display {
+                scale: 1.0,
+                headroom: 1.0,
+            },
+        );
+        let wakes = redraws.load(Ordering::Relaxed);
+        quiet_color.set(GREEN);
+        assert!(
+            !scene_unmounted.dirty.get(),
+            "no subscription is invented for an unmounted scene"
+        );
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            wakes,
+            "the unmounted scene's update wakes nobody"
+        );
+
+        scene.mount(&redraw);
+        let mut renderer = SceneRenderer::new(&runtime, &context, &redraw, size, &scene);
+
+        // The first record clears the seeded dirty bit. A fresh install on an
+        // idle engine may itself ask for a frame through `set_waker`; the
+        // invalidator's contribution is the delta each `set` adds.
+        renderer.record_if_needed(
+            &target(&renderer, 20),
+            Display {
+                scale: 1.0,
+                headroom: 1.0,
+            },
+        );
+        assert!(!scene.dirty.get(), "an ordinary record clears dirty");
+        assert_eq!(recorded_color(&renderer), RED);
+
+        // The invalidator the rebuild re-installed is live: a fine-grained
+        // signal update dirties the scene and requests a frame, and the next
+        // record draws the new recording.
+        let wakes = redraws.load(Ordering::Relaxed);
+        color.set(BLUE);
+        assert!(
+            scene.dirty.get(),
+            "the reinstalled watcher marks the scene dirty"
+        );
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            wakes + 1,
+            "the reinstalled watcher requests a redraw"
+        );
+        renderer.record_if_needed(
+            &target(&renderer, 20),
+            Display {
+                scale: 1.0,
+                headroom: 1.0,
+            },
+        );
+        assert_eq!(recorded_color(&renderer), BLUE);
+
+        // A real context replacement keeps the semantic state — the picture,
+        // the subscription — while the engine is rebuilt.
+        context.mark_device_lost_for_testing("test device loss");
+        let fresh = pollster::block_on(runtime.context_after(context.generation()));
+        assert!(fresh.generation() > context.generation());
+        let mut renderer = SceneRenderer::new(&runtime, &fresh, &redraw, size, &scene);
+        assert_eq!(recorded_color(&renderer), BLUE);
+        renderer.record_if_needed(
+            &target(&renderer, 20),
+            Display {
+                scale: 1.0,
+                headroom: 1.0,
+            },
+        );
+        assert!(!scene.dirty.get());
+        let wakes = redraws.load(Ordering::Relaxed);
+        color.set(GREEN);
+        assert!(
+            scene.dirty.get(),
+            "invalidation survives the generation change"
+        );
+        assert_eq!(redraws.load(Ordering::Relaxed), wakes + 1);
+        renderer.record_if_needed(
+            &target(&renderer, 20),
+            Display {
+                scale: 1.0,
+                headroom: 1.0,
+            },
+        );
+        assert_eq!(recorded_color(&renderer), GREEN);
+
+        // Unmount cancels the watcher: a later model update neither dirties
+        // nor wakes.
+        scene.unmount();
+        let wakes = redraws.load(Ordering::Relaxed);
+        color.set(RED);
+        assert!(!scene.dirty.get());
+        assert_eq!(redraws.load(Ordering::Relaxed), wakes);
     }
 }
