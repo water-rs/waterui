@@ -52,7 +52,7 @@ use objc2_ui_kit::{
 
 use crate::action::{ActionTarget, ControlEvents};
 use crate::callback::guarded;
-use crate::geometry::MeasureProposal;
+use crate::geometry::{MeasureProposal, Size};
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::host_view::HostView;
 
@@ -114,6 +114,16 @@ pub enum PanelSlot {
     Accessory,
 }
 
+/// A mounted leaf part: its view and the leaf's own measure — the
+/// query the leaf's `SubView` layout face answers a `MeasureProposal`
+/// through, supplied by the owner when the part mounts. A leaf always
+/// measures: the callback returns its `Size` directly.
+#[derive(Clone)]
+struct PanelPart {
+    view: Retained<UIView>,
+    measure: Rc<dyn Fn(MeasureProposal) -> Size>,
+}
+
 /// What a row is: a separator, or a button carrying a command.
 enum PanelRowKind {
     /// A hairline between row groups; kept so a palette change re-tints it.
@@ -165,10 +175,10 @@ pub struct MenuPanelControllerIvars {
     scroll: RefCell<Option<Retained<UIScrollView>>>,
     /// The stacked content the scroll view holds.
     column: RefCell<Option<Retained<HostView>>>,
-    /// The mounted preview leaf's view.
-    preview: RefCell<Option<Retained<UIView>>>,
-    /// The mounted accessory leaf's view.
-    accessory: RefCell<Option<Retained<UIView>>>,
+    /// The mounted preview leaf, when the menu carries a preview.
+    preview: RefCell<Option<PanelPart>>,
+    /// The mounted accessory leaf, when the menu has one.
+    accessory: RefCell<Option<PanelPart>>,
     /// The page stack; page zero is the menu's top level.
     pages: RefCell<Vec<PanelPage>>,
     /// The keyboard-focused row's index into the focusable rows, if any.
@@ -387,9 +397,9 @@ impl MenuPanelController {
     /// that wraps or grows when narrowed reports its true height.
     fn natural_size(&self) -> CGSize {
         let ivars = self.ivars();
-        let parts: Vec<Retained<UIView>> = [
-            ivars.preview.borrow().clone(),
-            ivars.accessory.borrow().clone(),
+        let parts: Vec<PanelPart> = [
+            ivars.preview.borrow().as_ref().cloned(),
+            ivars.accessory.borrow().as_ref().cloned(),
         ]
         .into_iter()
         .flatten()
@@ -397,7 +407,7 @@ impl MenuPanelController {
         let pages = ivars.pages.borrow();
         let mut width = 0.0_f64;
         for part in &parts {
-            width = width.max(fitting_size(part).width);
+            width = width.max(part_size(part).width);
         }
         if let Some(page) = pages.last() {
             width = width.max(page.width);
@@ -406,7 +416,7 @@ impl MenuPanelController {
         let mut height = EDGE_PAD;
         let mut sections = false;
         for part in &parts {
-            height += if sections { SECTION_GAP } else { 0.0 } + measure_height_at(part, width);
+            height += if sections { SECTION_GAP } else { 0.0 } + part_height_at(part, width);
             sections = true;
         }
         if let Some(page) = pages.last() {
@@ -449,14 +459,14 @@ impl MenuPanelController {
         };
         let mut y = EDGE_PAD;
         for part in [
-            ivars.preview.borrow().clone(),
-            ivars.accessory.borrow().clone(),
+            ivars.preview.borrow().as_ref().cloned(),
+            ivars.accessory.borrow().as_ref().cloned(),
         ]
         .into_iter()
         .flatten()
         {
-            let height = measure_height_at(&part, width);
-            part.setFrame(CGRect::new(
+            let height = part_height_at(&part, width);
+            part.view.setFrame(CGRect::new(
                 CGPoint::new(0.0, y),
                 CGSize::new(width, height),
             ));
@@ -996,41 +1006,17 @@ fn row_height_for(row: &PanelRow, width: f64) -> f64 {
     }
 }
 
-/// A mounted part's size under `proposal`. A `HostView` answers through
-/// its installed measure handler — the same query `sizeThatFits` and
-/// `intrinsicContentSize` forward, so a `None` axis reaches the leaf
-/// truly unbounded; any other view answers `intrinsicContentSize`.
-fn measure_view(view: &UIView, proposal: MeasureProposal) -> CGSize {
-    if let Some(host) = AnyObject::downcast_ref::<HostView>(view)
-        && let Some(size) = host.measure(proposal)
-    {
-        return size.into();
-    }
-    let size = view.intrinsicContentSize();
-    let bounds = view.bounds().size;
-    CGSize::new(
-        if size.width >= 0.0 {
-            size.width
-        } else {
-            bounds.width
-        },
-        if size.height >= 0.0 {
-            size.height
-        } else {
-            bounds.height
-        },
-    )
+/// A mounted part's height under `width` — the leaf's own measure with
+/// the width bound and the height unbounded.
+fn part_height_at(part: &PanelPart, width: f64) -> f64 {
+    (part.measure)(MeasureProposal::width(width)).height
 }
 
-/// A mounted part's height under `width` — the leaf's measure with the
-/// width bound and the height unbounded.
-fn measure_height_at(view: &UIView, width: f64) -> f64 {
-    measure_view(view, MeasureProposal::width(width)).height
-}
-
-/// A view's natural size — the leaf's measure unbounded on both axes.
-fn fitting_size(view: &UIView) -> CGSize {
-    measure_view(view, MeasureProposal::UNBOUNDED)
+/// A mounted part's natural size — the leaf's own measure unbounded on
+/// both axes.
+fn part_size(part: &PanelPart) -> CGSize {
+    let size = (part.measure)(MeasureProposal::UNBOUNDED);
+    CGSize::new(size.width, size.height)
 }
 
 /// The separator color the panel draws with — the palette's `Border`
@@ -1358,20 +1344,30 @@ impl ContextMenuPopover {
     }
 
     /// The view a content leaf mounts into: the column the panel stacks.
-    /// Mounting a leaf here installs its intrinsic measure, which is how
-    /// the panel re-measures it every layout pass.
+    /// The panel measures the leaf through the `measure` callback
+    /// `set_slot` receives, not the view.
     #[must_use]
     pub fn mount_target(&self) -> Retained<UIView> {
         self.controller.column_view()
     }
 
-    /// Registers a mounted leaf's view in `slot` so the layout pass places
-    /// it above the command rows.
-    pub fn set_slot(&self, slot: PanelSlot, view: &UIView) {
+    /// Registers a mounted leaf in `slot`: its view — placed above the
+    /// command rows — and its own measure, which the layout queries for
+    /// every width and natural-size answer the part gives.
+    pub fn set_slot(
+        &self,
+        slot: PanelSlot,
+        view: &UIView,
+        measure: Rc<dyn Fn(MeasureProposal) -> Size>,
+    ) {
+        let part = PanelPart {
+            view: Retained::from(view),
+            measure,
+        };
         let ivars = self.controller.ivars();
         match slot {
-            PanelSlot::Preview => ivars.preview.replace(Some(Retained::from(view))),
-            PanelSlot::Accessory => ivars.accessory.replace(Some(Retained::from(view))),
+            PanelSlot::Preview => ivars.preview.replace(Some(part)),
+            PanelSlot::Accessory => ivars.accessory.replace(Some(part)),
         };
         if let Some(column) = ivars.column.borrow().as_ref() {
             column.set_needs_layout();

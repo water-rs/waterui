@@ -129,6 +129,15 @@ impl NativeLeaf {
         &*self.layout
     }
 
+    /// The leaf's measure handle itself — a caller that measures the
+    /// leaf apart from `HostView`'s intrinsic forwarding (the iOS
+    /// context-menu panel is one) clones this and queries it directly.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
+        Rc::clone(&self.layout)
+    }
+
     /// Mirrors the leaf's layout face onto the view's intrinsic measure,
     /// so an Auto Layout parent — the toggle's row is one — can size the
     /// mounted child. Without it a `HostView` leaf reports no intrinsic
@@ -229,6 +238,18 @@ impl Mounted {
     #[must_use]
     pub fn view(&self) -> &PlatformView {
         self.0.as_ref().expect("a live Mounted").view()
+    }
+
+    /// The child's measure handle — the query its `SubView` layout face
+    /// answers, cloned for measuring apart from the view.
+    ///
+    /// # Panics
+    ///
+    /// When called on a `Mounted` that is already unmounting.
+    #[cfg(target_os = "ios")]
+    #[must_use]
+    pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
+        self.0.as_ref().expect("a live Mounted").layout_handle()
     }
 
     /// The child's layout face.

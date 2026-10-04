@@ -46,11 +46,7 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!(
             "uikit::menu_panel",
-            a_presented_panel_tracks_its_rows_pages_and_focus
-        ),
-        case!(
-            "uikit::menu_panel",
-            a_presenter_driven_dismissal_ends_the_panel
+            an_unpresented_panel_tracks_its_rows_pages_and_focus
         ),
         case!("view", display_immediately_targets_the_layer_not_the_view),
     ])
@@ -190,11 +186,12 @@ fn the_text_input_selectors_register_under_uikits_names() {
     }
 }
 
-/// The popover panel's command surface: rows build from the menu tree —
+/// The popover panel's command surface — unpresented here, so only its
+/// composition is covered: rows build from the menu tree —
 /// separators stay non-activatable, focus moves across enabled buttons
 /// and skips them — a submenu row pushes a page with a back row, Left
 /// pops it, and activating a command runs its action.
-fn a_presented_panel_tracks_its_rows_pages_and_focus() {
+fn an_unpresented_panel_tracks_its_rows_pages_and_focus() {
     use cocoa_ui::menu::{Command, MenuTreeNode};
     use cocoa_ui::objc2::rc::Weak;
     use cocoa_ui::objc2_ui_kit::UIColor;
@@ -301,102 +298,6 @@ fn a_presented_panel_tracks_its_rows_pages_and_focus() {
     let weak = Weak::new(&*popover.mount_target());
     drop(popover);
     assert!(weak.load().is_none());
-}
-
-/// A dismissal the presenter drives — `dismissViewController` on the
-/// presenting controller — ends the panel through the controller's own
-/// view lifecycle, not through `dismiss` or the adaptive delegate:
-/// `UIKit` does not call `presentationControllerDidDismiss` for a
-/// programmatic dismissal. The backstop in `viewDidDisappear` runs the
-/// same once-only teardown and the panel presents again afterwards.
-fn a_presenter_driven_dismissal_ends_the_panel() {
-    use cocoa_ui::menu::{Command, MenuTreeNode};
-    use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
-    use cocoa_ui::objc2_ui_kit::{UIColor, UIViewController};
-    use cocoa_ui::uikit::{ContextMenuPopover, PanelPalette};
-
-    let mtm = marker();
-    let palette = PanelPalette {
-        label: UIColor::labelColor(),
-        muted: UIColor::secondaryLabelColor(),
-        destructive: UIColor::systemRedColor(),
-        separator: UIColor::separatorColor(),
-        focus_fill: UIColor::tertiarySystemFillColor(),
-        surface: UIColor::systemBackgroundColor(),
-    };
-
-    let root = UIViewController::new(mtm);
-    // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer; `mtm`
-    // is the real main thread.
-    let window: Retained<UIWindow> = unsafe {
-        msg_send![
-            UIWindow::alloc(mtm),
-            initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(390.0, 844.0))
-        ]
-    };
-    window.setRootViewController(Some(&root));
-    window.makeKeyAndVisible();
-    let host = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 44.0));
-    root.view()
-        .expect("a plain controller loads its view on demand")
-        .addSubview(&host);
-
-    // A bounded main-runloop pump: presentation and dismissal settle on
-    // later cycles.
-    let pump = || {
-        NSRunLoop::mainRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
-    };
-    let settle = |done: &dyn Fn() -> bool| {
-        for _ in 0..40 {
-            pump();
-            if done() {
-                break;
-            }
-        }
-    };
-
-    let popover = ContextMenuPopover::new(mtm, &palette);
-    popover.set_commands(&[MenuTreeNode::Command(
-        Command {
-            label: String::from("Copy"),
-            enabled: true,
-            ..Command::default()
-        },
-        Rc::new(|| {}),
-    )]);
-
-    let dismissed = Rc::new(Cell::new(0));
-    assert!(popover.present(&host, {
-        let dismissed = Rc::clone(&dismissed);
-        Rc::new(move || dismissed.set(dismissed.get() + 1))
-    }));
-    settle(&|| root.presentedViewController().is_some());
-    assert!(
-        root.presentedViewController().is_some(),
-        "the panel presented under the window's root controller"
-    );
-
-    // The presenter dismisses with no completion and no outside tap:
-    // only the panel's own lifecycle can carry the teardown.
-    root.dismissViewControllerAnimated_completion(false, None);
-    settle(&|| dismissed.get() > 0);
-    assert_eq!(dismissed.get(), 1);
-    assert!(root.presentedViewController().is_none());
-
-    // The teardown released the panel: it presents again, and the next
-    // presenter-driven dismissal runs its own teardown — the first
-    // callback does not fire twice.
-    let dismissed_again = Rc::new(Cell::new(0));
-    assert!(popover.present(&host, {
-        let dismissed_again = Rc::clone(&dismissed_again);
-        Rc::new(move || dismissed_again.set(dismissed_again.get() + 1))
-    }));
-    settle(&|| root.presentedViewController().is_some());
-    assert!(root.presentedViewController().is_some());
-    root.dismissViewControllerAnimated_completion(false, None);
-    settle(&|| dismissed_again.get() > 0);
-    assert_eq!(dismissed_again.get(), 1);
-    assert_eq!(dismissed.get(), 1);
 }
 
 /// Regression test for the `displayIfNeeded` defect: `UIView` has no

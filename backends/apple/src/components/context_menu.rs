@@ -127,6 +127,29 @@ fn ideal_size(leaf: &NativeLeaf) -> cocoa_ui::Size {
     }
 }
 
+/// A leaf's own measure as the panel's typed `MeasureProposal` callback
+/// — the same conversion `NativeLeaf` installs on `HostView` leaves,
+/// applied to whatever view the leaf mounted.
+#[cfg(target_os = "ios")]
+fn leaf_measure(
+    layout: Rc<dyn SubView>,
+) -> Rc<dyn Fn(cocoa_ui::geometry::MeasureProposal) -> cocoa_ui::Size> {
+    Rc::new(move |proposal| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the layout contract is f32; measured points always fit"
+        )]
+        let measured = layout.measure(ProposalSize::new(
+            proposal.width.map(|width| width as f32),
+            proposal.height.map(|height| height as f32),
+        ));
+        cocoa_ui::Size::new(
+            f64::from(measured.size.width),
+            f64::from(measured.size.height),
+        )
+    })
+}
+
 /// `dismissPresentedMenu`: close whatever is open. The platform teardown
 /// paths restore the leaves, so teardown is idempotent.
 ///
@@ -294,12 +317,20 @@ fn present_panel(state: &Rc<RefCell<ContextMenuState>>, host: &cocoa_ui::Platfor
     let mut state = state.borrow_mut();
     let preview_mount = state.preview.take().map(|IosPreview { leaf, controller }| {
         let mounted = leaf.mount(&mount_target);
-        popover.set_slot(uikit::PanelSlot::Preview, mounted.view());
+        popover.set_slot(
+            uikit::PanelSlot::Preview,
+            mounted.view(),
+            leaf_measure(mounted.layout_handle()),
+        );
         (mounted, controller)
     });
     let accessory_mount = state.accessory.take().map(|leaf| {
         let mounted = leaf.mount(&mount_target);
-        popover.set_slot(uikit::PanelSlot::Accessory, mounted.view());
+        popover.set_slot(
+            uikit::PanelSlot::Accessory,
+            mounted.view(),
+            leaf_measure(mounted.layout_handle()),
+        );
         mounted
     });
     let presented = popover.present(host, on_dismiss);

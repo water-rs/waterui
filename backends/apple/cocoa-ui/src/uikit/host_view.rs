@@ -548,20 +548,6 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
-    /// Measures the content under `proposal` through the installed
-    /// measure handler — the same query `sizeThatFits` and
-    /// `intrinsicContentSize` forward, so a `None` axis reaches the
-    /// handler truly unbounded. Returns `None` when no handler is
-    /// installed.
-    #[must_use]
-    pub fn measure(&self, proposal: MeasureProposal) -> Option<Size> {
-        self.ivars()
-            .measure
-            .borrow()
-            .as_ref()
-            .map(|handler| handler(self, proposal))
-    }
-
     /// Whether the intrinsic content size reports the height the current
     /// Auto Layout width produces.
     ///
