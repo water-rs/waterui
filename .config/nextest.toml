@@ -82,6 +82,16 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
 
+# The CLI's tests shell out to cargo and git — `cargo metadata`, `git clone`,
+# the `water` binary under test — which are occasionally flaky on shared
+# runners; a retry keeps that from failing the branch, and the retry is
+# reported through `final-status-level`. The standalone repository retried
+# the whole suite unconditionally for the same reason; here the retry is
+# scoped to the package, the way every other flaky-backed suite above is.
+[[profile.ci.overrides]]
+filter = 'package(waterui-cli)'
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+
 # How many wgpu devices may exist at once on the Windows runner.
 #
 # Every package in the filter mounts a `waterui-testing` host or creates a

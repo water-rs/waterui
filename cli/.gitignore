@@ -1,0 +1,4 @@
+# Generated test assets — `tests/fixtures/fonts/generate.py` fetches the
+# pinned, hash-verified font at build time; the repository carries no binary
+# files.
+/tests/fixtures/fonts/*.ttf

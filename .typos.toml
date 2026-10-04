@@ -32,6 +32,10 @@ unparseable = "unparseable"
 wdth = "wdth"
 # A deliberately truncated "Archive" rendering in scroll test comments.
 Archiv = "Archiv"
+# A deliberately misspelled manifest key in a CLI parse-rejection test.
+andriod = "andriod"
+# The Windows `secur32` system library.
+secur = "secur"
 
 [default.extend-identifiers]
 NdefFormatable = "NdefFormatable"

@@ -29,10 +29,6 @@ on:
           - ios
           - macos
         default: both
-      cli_ref:
-        description: water-rs/cli branch, tag, or full commit SHA (default dev)
-        required: false
-        type: string
       record_baselines:
         description: Upload captures as baseline artifacts instead of comparing them
         required: true
@@ -79,8 +75,6 @@ jobs:
 
       - name: Prepare the e2e workspace
         id: setup
-        env:
-          WATER_CLI_REF: ${{ inputs.cli_ref }}
         run: ./.github/scripts/setup-e2e.sh
 
       # A name discovery does not know is a typo; fail the run here, once,

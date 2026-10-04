@@ -1,0 +1,197 @@
+{
+ "version": 1,
+ "packages": [
+  {
+   "name": "accesskit",
+   "version": "0.25.0",
+   "id": "registry+https://github.com/rust-lang/crates.io-index#accesskit@0.25.0",
+   "source": "registry+https://github.com/rust-lang/crates.io-index",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/accesskit-0.25.0/Cargo.toml",
+   "edition": "2024"
+  },
+  {
+   "name": "accesskit_winit",
+   "version": "0.34.0",
+   "id": "registry+https://github.com/rust-lang/crates.io-index#accesskit_winit@0.34.0",
+   "source": "registry+https://github.com/rust-lang/crates.io-index",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/accesskit_winit-0.34.0/Cargo.toml",
+   "edition": "2024"
+  },
+  {
+   "name": "hydrolysis",
+   "version": "0.3.1",
+   "id": "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#0.3.1",
+   "source": "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/git/checkouts/hydrolysis-c7d6b1fabf6f55cd/9d3c6fa/Cargo.toml",
+   "edition": "2024"
+  },
+  {
+   "name": "objc2",
+   "version": "0.5.2",
+   "id": "registry+https://github.com/rust-lang/crates.io-index#objc2@0.5.2",
+   "source": "registry+https://github.com/rust-lang/crates.io-index",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-0.5.2/Cargo.toml",
+   "edition": "2021"
+  },
+  {
+   "name": "objc2",
+   "version": "0.6.4",
+   "id": "registry+https://github.com/rust-lang/crates.io-index#objc2@0.6.4",
+   "source": "registry+https://github.com/rust-lang/crates.io-index",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-0.6.4/Cargo.toml",
+   "edition": "2021"
+  },
+  {
+   "name": "objc2-encode",
+   "version": "4.1.0",
+   "id": "registry+https://github.com/rust-lang/crates.io-index#objc2-encode@4.1.0",
+   "source": "registry+https://github.com/rust-lang/crates.io-index",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-encode-4.1.0/Cargo.toml",
+   "edition": "2021"
+  },
+  {
+   "name": "repro_app",
+   "version": "0.1.0",
+   "id": "path+file:///home/ubuntu/repro/repro-app#repro_app@0.1.0",
+   "source": null,
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/repro/repro-app/Cargo.toml",
+   "edition": "2024"
+  },
+  {
+   "name": "repro_app-hydrolysis-dfbff848",
+   "version": "0.1.0",
+   "id": "path+file:///home/ubuntu/repro/repro-app/backends/hydrolysis#repro_app-hydrolysis-dfbff848@0.1.0",
+   "source": null,
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/repro/repro-app/backends/hydrolysis/Cargo.toml",
+   "edition": "2024"
+  },
+  {
+   "name": "waterui",
+   "version": "0.5.2",
+   "id": "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#0.5.2",
+   "source": "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#a6318b38c54b31cbfbc518b75bd9de737e229ff6",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/git/checkouts/waterui-2308096a1ebd3ee0/a6318b3/Cargo.toml",
+   "edition": "2024"
+  },
+  {
+   "name": "winit",
+   "version": "0.30.13",
+   "id": "registry+https://github.com/rust-lang/crates.io-index#winit@0.30.13",
+   "source": "registry+https://github.com/rust-lang/crates.io-index",
+   "dependencies": [],
+   "targets": [],
+   "features": {},
+   "manifest_path": "/home/ubuntu/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/Cargo.toml",
+   "edition": "2021"
+  }
+ ],
+ "workspace_members": [
+  "path+file:///home/ubuntu/repro/repro-app/backends/hydrolysis#repro_app-hydrolysis-dfbff848@0.1.0"
+ ],
+ "resolve": {
+  "nodes": [
+   {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#accesskit@0.25.0",
+    "dependencies": [],
+    "deps": []
+   },
+   {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#accesskit_winit@0.34.0",
+    "dependencies": [
+     "registry+https://github.com/rust-lang/crates.io-index#accesskit@0.25.0",
+     "registry+https://github.com/rust-lang/crates.io-index#winit@0.30.13"
+    ],
+    "deps": []
+   },
+   {
+    "id": "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#0.3.1",
+    "dependencies": [
+     "registry+https://github.com/rust-lang/crates.io-index#accesskit@0.25.0",
+     "registry+https://github.com/rust-lang/crates.io-index#accesskit_winit@0.34.0",
+     "registry+https://github.com/rust-lang/crates.io-index#objc2@0.6.4",
+     "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#0.5.2",
+     "registry+https://github.com/rust-lang/crates.io-index#winit@0.30.13"
+    ],
+    "deps": []
+   },
+   {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#objc2@0.5.2",
+    "dependencies": [
+     "registry+https://github.com/rust-lang/crates.io-index#objc2-encode@4.1.0"
+    ],
+    "deps": []
+   },
+   {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#objc2@0.6.4",
+    "dependencies": [
+     "registry+https://github.com/rust-lang/crates.io-index#objc2-encode@4.1.0"
+    ],
+    "deps": []
+   },
+   {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#objc2-encode@4.1.0",
+    "dependencies": [],
+    "deps": []
+   },
+   {
+    "id": "path+file:///home/ubuntu/repro/repro-app#repro_app@0.1.0",
+    "dependencies": [
+     "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#0.5.2"
+    ],
+    "deps": []
+   },
+   {
+    "id": "path+file:///home/ubuntu/repro/repro-app/backends/hydrolysis#repro_app-hydrolysis-dfbff848@0.1.0",
+    "dependencies": [
+     "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#0.3.1",
+     "path+file:///home/ubuntu/repro/repro-app#repro_app@0.1.0",
+     "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#0.5.2"
+    ],
+    "deps": []
+   },
+   {
+    "id": "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#0.5.2",
+    "dependencies": [],
+    "deps": []
+   },
+   {
+    "id": "registry+https://github.com/rust-lang/crates.io-index#winit@0.30.13",
+    "dependencies": [
+     "registry+https://github.com/rust-lang/crates.io-index#objc2@0.5.2"
+    ],
+    "deps": []
+   }
+  ],
+  "root": "path+file:///home/ubuntu/repro/repro-app/backends/hydrolysis#repro_app-hydrolysis-dfbff848@0.1.0"
+ },
+ "workspace_root": "/home/ubuntu/repro/repro-app/backends/hydrolysis",
+ "target_directory": "/home/ubuntu/repro/repro-app/backends/hydrolysis/target",
+ "workspace_metadata": {}
+}
