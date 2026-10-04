@@ -609,6 +609,11 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
+      # The checked feature set below includes `testing`, whose font table is
+      # generated, not committed — `--all-targets` also compiles the
+      # `#[cfg(test)]` `include_bytes!` sites.
+      - name: Generate Hydrolysis test assets
+        uses: ./.github/actions/generate-test-assets
       # Hydrolysis's own CI ran this clippy shape on macos-latest alongside
       # Linux and Windows; the in-tree move kept it on Linux only, which
       # silently dropped the backend's `cfg(target_os = "macos")` lint

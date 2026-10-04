@@ -59,6 +59,17 @@ jobs:
         with:
           tool: cargo-msrv@0.19.3
           path: ~/.cargo/bin/cargo-msrv*
+      # `cargo check --workspace` builds every member's lib target, and
+      # `waterui-testing` enables `hydrolysis/testing` — feature unification
+      # turns that feature on for hydrolysis's lib across the whole build, so
+      # the `cfg(feature = "testing")` `include_bytes!` sites compile even
+      # without `--all-targets`. The repository stores no generated fonts:
+      # the same derivation the gate runs (`test_asset_consumers`, the
+      # dev-dependency closure on `hydrolysis/testing`) intersected with the
+      # workspace is non-empty by construction, so this job always needs the
+      # assets.
+      - name: Generate Hydrolysis test assets
+        uses: ./.github/actions/generate-test-assets
       - name: Verify the workspace builds on the declared MSRV
         run: |
           set -o pipefail
