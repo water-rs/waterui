@@ -1205,3 +1205,285 @@ fn translate_input_event(event: InputEvent, dx: f32, dy: f32) -> InputEvent {
         other => other,
     }
 }
+
+/// Real device-generation coverage for the retained renderer: private to
+/// `cfg(test)` so no public API, trait, `testing` helper or export is added.
+///
+/// The fixture keeps the mounted [`HeadlessRuntime`]'s renderer and view
+/// tree, destroys the original wgpu device, and swaps in a platform window
+/// bound to a *new* [`OffscreenGpuContext`] — the same shape the platform
+/// runner performs when a device is replaced — then drives the normal
+/// production `pump_at` path.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod generation_tests {
+    use super::*;
+    use crate::platform::GpuSurfaceWindow;
+    use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use cherenkov::{
+        Draw as _, Font, FontSource, Glyph, GlyphRun, GlyphStyle, Image, ImageData, Rgba8,
+        Sampling, WorkingColor,
+    };
+    use core::time::Duration;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    use std::time::Instant;
+    use waterui_graphics::{
+        RecordingResources, Registered, SceneContent, SceneInvalidator, SceneView,
+    };
+
+    /// Replaces `runtime`'s GPU context: the platform window is rebuilt on
+    /// `gpu`'s own context id (fresh pooled `SharedEngineState`, fresh
+    /// `SceneResources` table) while the retained `HydrolysisRenderer` and
+    /// view tree — including every `Weak` table association — carry over
+    /// unchanged. Returns the replaced context so the test can drop it last,
+    /// matching the runner's own `ReclaimGpuOnDrop` discipline.
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the private test replaces the intentionally unread RAII guard when replacing its GPU context"
+    )]
+    fn replace_gpu_context(
+        runtime: &mut HeadlessRuntime,
+        gpu: OffscreenGpuContext,
+    ) -> OffscreenGpuContext {
+        let (width, height) = runtime.runtime.platform.content_size();
+        runtime.runtime.platform = HeadlessPlatformWindow::on_context(
+            gpu.clone(),
+            width,
+            height,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        runtime
+            .runtime
+            .platform
+            .apply_properties(&runtime.runtime.window);
+        runtime._gpu_reclaim = ReclaimGpuOnDrop(gpu.clone());
+        std::mem::replace(&mut runtime.gpu, gpu)
+    }
+
+    /// Scene content that registers real resources — the committed Roboto
+    /// test font and a synthesized 4x4 image — on whatever
+    /// `RecordingResources` table the engine hands it, then names them into
+    /// the recording (which asserts the table that owns them) and draws a
+    /// fill, a glyph run and the image. Engine-bound `Registered` handles
+    /// and the invalidator are cleared by `rebuild_for_engine`; the
+    /// semantic `builds`/`installs` counters are ordinary view state and
+    /// survive replacement.
+    struct ResourceSceneContent {
+        builds: Rc<Cell<u32>>,
+        rebuilds: Rc<Cell<u32>>,
+        installs: Rc<Cell<u32>>,
+        latest: Rc<RefCell<Option<SceneInvalidator>>>,
+        font: Option<Registered<Font>>,
+        image: Option<Registered<Image<Rgba8>>>,
+    }
+
+    impl SceneContent for ResourceSceneContent {
+        fn build_scene(
+            &mut self,
+            recorder: &mut cherenkov::Recorder,
+            resources: &mut RecordingResources<'_>,
+            width: f32,
+            height: f32,
+        ) -> bool {
+            let _ = (width, height);
+            self.builds.set(self.builds.get() + 1);
+            if self.font.is_none() {
+                self.font = Some(
+                    resources
+                        .font(FontSource::bytes(
+                            include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf")
+                                .as_slice(),
+                        ))
+                        .expect("test font registers on the engine's resource table"),
+                );
+            }
+            if self.image.is_none() {
+                let mut pixels = Vec::with_capacity(4 * 4 * 4);
+                for index in 0_u8..16 {
+                    pixels.extend_from_slice(&[255, index * 16, 64, 255]);
+                }
+                self.image = Some(
+                    resources
+                        .image(ImageData::<Rgba8>::new(4, 4, pixels).expect("valid image data"))
+                        .expect("test image registers on the engine's resource table"),
+                );
+            }
+            // Naming a `Registered` whose table is not this recording's
+            // table panics — the assertion itself proves the association
+            // retargeted the new engine's table after replacement.
+            let font_id = resources.name(self.font.as_ref().expect("registered"));
+            let image_id = resources.name(self.image.as_ref().expect("registered"));
+            // Red band across the top: fill pixels on the device.
+            recorder.fill(
+                kurbo::Rect::new(8.0, 8.0, 40.0, 24.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+            // A row of real glyphs through the registered font: the band
+            // collects whatever outlines the face maps these ids to.
+            recorder.glyphs(
+                GlyphRun {
+                    font: font_id,
+                    size: 16.0,
+                    coords: Vec::new().into(),
+                    glyphs: (10_u32..80)
+                        .step_by(7)
+                        .enumerate()
+                        .map(|(i, id)| Glyph {
+                            id,
+                            x: crate::num_cast::usize_as_f32(i).mul_add(7.0, 8.0),
+                            y: 38.0,
+                            transform: None,
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                    style: GlyphStyle::Fill,
+                },
+                WorkingColor::new([0.0, 0.0, 1.0, 1.0]),
+            );
+            // The registered image, nearest-sampled so each texel lands on a
+            // deterministic 2x2 pixel block.
+            recorder.image(
+                image_id,
+                kurbo::Rect::new(8.0, 48.0, 16.0, 56.0),
+                Sampling::Nearest,
+            );
+            false
+        }
+
+        fn set_invalidator(&mut self, invalidator: Option<SceneInvalidator>) {
+            if invalidator.is_some() {
+                self.installs.set(self.installs.get() + 1);
+            }
+            *self.latest.borrow_mut() = invalidator;
+        }
+
+        /// Engine-bound state drops: the `Registered` handles belong to the
+        /// old engine's table and — as the contract permits — the installed
+        /// invalidator, which the host re-installs before the next record.
+        /// Semantic counters stay.
+        fn rebuild_for_engine(&mut self) {
+            self.rebuilds.set(self.rebuilds.get() + 1);
+            self.latest.replace(None);
+            self.font = None;
+            self.image = None;
+        }
+    }
+
+    /// Mounts a resource-registering `SceneView` on a real GPU context,
+    /// destroys its device (the asynchronous device-lost callback must
+    /// arrive within a bounded observation), swaps in a fresh context, and
+    /// verifies the retained content rebuilds its engine state exactly once
+    /// on the new table while ordinary frames and captures stay quiet.
+    #[test]
+    fn device_replacement_rebuilds_scene_resources_once() {
+        let builds = Rc::new(Cell::new(0_u32));
+        let rebuilds = Rc::new(Cell::new(0_u32));
+        let installs = Rc::new(Cell::new(0_u32));
+        let latest = Rc::new(RefCell::new(None));
+        let gpu_a = OffscreenGpuContext::new_for_tests_blocking();
+        let mut runtime = HeadlessRuntime::new_for_tests_on_context(
+            gpu_a,
+            test_environment(),
+            AnyViewBuilder::new({
+                let builds = Rc::clone(&builds);
+                let rebuilds = Rc::clone(&rebuilds);
+                let installs = Rc::clone(&installs);
+                let latest = Rc::clone(&latest);
+                move || {
+                    AnyView::new(SceneView::new(ResourceSceneContent {
+                        builds: Rc::clone(&builds),
+                        rebuilds: Rc::clone(&rebuilds),
+                        installs: Rc::clone(&installs),
+                        latest: Rc::clone(&latest),
+                        font: None,
+                        image: None,
+                    }))
+                }
+            }),
+            96,
+            64,
+            MinimalTestTheme::default(),
+        );
+        let t0 = Instant::now();
+        runtime.pump_at(true, t0);
+        assert_eq!(rebuilds.get(), 0, "first mount must not rebuild");
+        assert!(builds.get() >= 1, "first frame records the scene");
+        assert_eq!(installs.get(), 1, "mount installs the invalidator once");
+
+        // Destroy the actual device through wgpu, then drive the device's own
+        // reclaim — the mechanism every frame's `reclaim_device` uses — so
+        // wgpu detects the loss lazily and delivers the platform-installed
+        // callback. Bounded wait: a missing callback fails, never skips.
+        let surface = runtime.runtime.platform.surface();
+        let device_loss = surface.device_loss().clone();
+        surface.device().destroy();
+        let device = surface.device().clone();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !device_loss.is_lost() && Instant::now() < deadline {
+            crate::platform::reclaim_device(&device);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            device_loss.is_lost(),
+            "device.destroy() delivered no device-lost callback within 10s of device polls"
+        );
+
+        let gpu_b = OffscreenGpuContext::new_for_tests_blocking();
+        let _replaced = replace_gpu_context(&mut runtime, gpu_b);
+
+        let mut second = runtime.pump_at(true, t0 + Duration::from_millis(16));
+        assert_eq!(
+            rebuilds.get(),
+            1,
+            "replacement rebuilds content exactly once"
+        );
+        assert_eq!(installs.get(), 2, "invalidator re-installed after rebuild");
+        let snapshot = second.snapshot.take().expect("capture after replacement");
+        assert_eq!((snapshot.width, snapshot.height), (96, 64));
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * 96 + x) * 4;
+            &snapshot.rgba8[offset..offset + 4]
+        };
+        // The fill covers (8,8)..(40,24): real red pixels on the new device.
+        assert!(pixel(24, 16)[0] > 200, "fill renders on the new device");
+        // The image's first texel is (255,0,64,255); nearest sampling pins it
+        // to a deterministic block on the NEW table's registration.
+        assert_eq!(
+            pixel(9, 49),
+            &[255, 0, 64, 255],
+            "registered image texel renders on the replacement device"
+        );
+        // The glyphs are opaque blue: require strong B, weak R and G, so the
+        // red fill, image texels and an opaque background cannot pass.
+        let glyph_ink = (26..42)
+            .flat_map(|y| (8..80).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let px = pixel(x, y);
+                px[3] > 0 && px[2] > 100 && px[0] < 100 && px[1] < 100
+            })
+            .count();
+        assert!(glyph_ink > 0, "registered font's blue glyphs render");
+
+        // Ordinary later frames and captures never rebuild again.
+        runtime.pump_at(false, t0 + Duration::from_millis(32));
+        runtime.pump_at(true, t0 + Duration::from_millis(48));
+        assert_eq!(rebuilds.get(), 1, "later frames do not rebuild again");
+        assert!(
+            builds.get() >= 3,
+            "semantic view state survives replacement"
+        );
+
+        // The re-installed invalidator is the retained semantic callback:
+        // firing it still requests a frame on the live renderer, so the
+        // fine-grained invalidation path resumed on the new engine.
+        let invalidator = latest
+            .borrow()
+            .clone()
+            .expect("the re-installed invalidator is held by the content");
+        invalidator();
+        assert!(
+            runtime.runtime.renderer.take_patch_request(),
+            "re-installed invalidator requests a frame on the new engine"
+        );
+    }
+}

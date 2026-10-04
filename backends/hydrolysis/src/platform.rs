@@ -1753,7 +1753,7 @@ impl SurfaceProvider for OffscreenSurface {
 pub struct OffscreenSceneSurface {
     target: OffscreenSurface,
     cherenkov: crate::engine::CherenkovSurface,
-    engine: std::rc::Rc<crate::engine::GpuEngine>,
+    state: std::rc::Rc<crate::engine::SharedEngineState>,
 }
 
 impl core::fmt::Debug for OffscreenSceneSurface {
@@ -1812,14 +1812,14 @@ impl OffscreenSceneSurface {
                 height,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
             );
-            let engine = crate::engine::engine_await!(crate::engine::shared_engine(
+            let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
                 target.gpu_context_id(),
                 target.adapter(),
                 target.shared_device(),
                 || {},
             ));
             let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
-                std::rc::Rc::clone(&engine),
+                std::rc::Rc::clone(&state.engine),
                 target.device(),
                 target.adapter().get_info().backend,
                 (width.max(1), height.max(1)),
@@ -1827,7 +1827,7 @@ impl OffscreenSceneSurface {
             Self {
                 target,
                 cherenkov,
-                engine,
+                state,
             }
         }
     }
@@ -1835,8 +1835,8 @@ impl OffscreenSceneSurface {
     /// The engine this host renders with — callers drive
     /// `engine.render(FrameTime)` themselves.
     #[must_use]
-    pub const fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
-        &self.engine
+    pub fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
+        &self.state.engine
     }
 
     /// The engine surface behind this host — `clear_color`, `update`, layer
