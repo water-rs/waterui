@@ -44,13 +44,15 @@ use objc2_ui_kit::{
     UIAdaptivePresentationControllerDelegate, UIButton, UIButtonConfiguration,
     UIButtonConfigurationTitleAlignment, UIColor, UIImage, UIImageView, UIKeyCommand,
     UIKeyInputDownArrow, UIKeyInputEscape, UIKeyInputLeftArrow, UIKeyInputRightArrow,
-    UIKeyInputUpArrow, UIKeyModifierFlags, UIModalPresentationStyle, UIPopoverArrowDirection,
+    UIKeyInputUpArrow, UIKeyModifierFlags, UILayoutPriorityFittingSizeLevel,
+    UILayoutPriorityRequired, UIModalPresentationStyle, UIPopoverArrowDirection,
     UIPopoverPresentationControllerDelegate, UIPresentationController, UIScrollView, UIView,
     UIViewAnimationOptions, UIViewController,
 };
 
 use crate::action::{ActionTarget, ControlEvents};
 use crate::callback::guarded;
+use crate::geometry::MeasureProposal;
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::host_view::HostView;
 
@@ -130,6 +132,9 @@ enum PanelRowKind {
         /// the disclosure glyph — so the button's content never runs
         /// under it.
         trailing_reserve: f64,
+        /// Whether the page reserves the checkmark gutter on every row —
+        /// set when any command on the page is `selected`.
+        check_gutter: bool,
         action: Rc<dyn Fn()>,
     },
 }
@@ -168,8 +173,9 @@ pub struct MenuPanelControllerIvars {
     pages: RefCell<Vec<PanelPage>>,
     /// The keyboard-focused row's index into the focusable rows, if any.
     focused: Cell<Option<usize>>,
-    /// The colors the rows draw with, supplied by the owner.
-    palette: RefCell<Option<PanelPalette>>,
+    /// The palette the rows and chrome draw with — resolved by the owner
+    /// at construction and pushed again on every token change.
+    palette: RefCell<PanelPalette>,
     /// The key commands the controller answers, built once.
     key_commands: RefCell<Option<Retained<NSArray<UIKeyCommand>>>>,
     /// The preferred size last reported — a same-size set is a no-op.
@@ -190,8 +196,10 @@ impl fmt::Debug for MenuPanelControllerIvars {
     }
 }
 
-impl Default for MenuPanelControllerIvars {
-    fn default() -> Self {
+impl MenuPanelControllerIvars {
+    /// The ivars a controller starts with: every slot empty except the
+    /// palette the owner already resolved.
+    fn new(palette: PanelPalette) -> Self {
         Self {
             scroll: RefCell::new(None),
             column: RefCell::new(None),
@@ -199,7 +207,7 @@ impl Default for MenuPanelControllerIvars {
             accessory: RefCell::new(None),
             pages: RefCell::new(Vec::new()),
             focused: Cell::new(None),
-            palette: RefCell::new(None),
+            palette: RefCell::new(palette),
             key_commands: RefCell::new(None),
             reported_size: Cell::new(CGSize::new(-1.0, -1.0)),
             max_height: Cell::new(f64::MAX),
@@ -242,6 +250,33 @@ define_class!(
                 // Hardware-keyboard navigation needs the panel in the
                 // responder chain; a presented controller takes it here.
                 self.becomeFirstResponder();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(viewDidDisappear:))]
+        fn view_did_disappear(&self, animated: bool) {
+            guarded("MenuPanelController viewDidDisappear", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), viewDidDisappear: animated] };
+                // The presentation can also end without the panel's own
+                // `dismiss` or the adaptive delegate: a presenter-side
+                // `dismissViewController`, the presenter being dismissed
+                // or popped, or the scene tearing its window down removes
+                // the view without either callback, and the panel would
+                // stay presented in the owner's state — the next open
+                // refused. `isBeingDismissed` reports a dismissal of the
+                // controller or an ancestor;
+                // `isMovingFromParentViewController` covers container
+                // removal; a vanished presenter means the presentation is
+                // already gone. A temporary cover — a presented child —
+                // reports none of these, so it is not a dismissal.
+                if self.isBeingDismissed()
+                    || self.isMovingFromParentViewController()
+                    || self.presentingViewController().is_none()
+                {
+                    self.run_on_dismiss();
+                }
             });
         }
 
@@ -289,11 +324,12 @@ define_class!(
 
 impl MenuPanelController {
     /// A panel controller with its column, scroll view and key commands
-    /// built but no content placed yet.
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+    /// built but no content placed yet. `palette` is the owner's resolved
+    /// theme — the panel has no chrome colors of its own.
+    fn new(mtm: MainThreadMarker, palette: PanelPalette) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(MenuPanelControllerIvars {
             key_commands: RefCell::new(Some(key_commands(mtm))),
-            ..MenuPanelControllerIvars::default()
+            ..MenuPanelControllerIvars::new(palette)
         });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s
         // designated initializer; no nib means the view comes from us.
@@ -511,6 +547,7 @@ impl MenuPanelController {
                     command,
                     leading_symbol,
                     trailing_reserve,
+                    check_gutter,
                     ..
                 } = &row.kind
                 else {
@@ -522,8 +559,9 @@ impl MenuPanelController {
                     command,
                     leading_symbol.as_deref(),
                     *trailing_reserve,
+                    *check_gutter,
                     is_focused,
-                    palette.as_ref(),
+                    &palette,
                 )));
                 if is_focused {
                     focused_view = Some(button.clone());
@@ -594,11 +632,18 @@ impl MenuPanelController {
         let mut keepalive: Vec<Box<dyn Any>> = Vec::new();
         let mut width = 0.0_f64;
 
+        // A menu page shows one checkmark column: when any row is
+        // selected every row reserves the gutter so titles stay aligned,
+        // like the native menus do.
+        let check_gutter = nodes.iter().any(|node| {
+            matches!(node, MenuTreeNode::Command(command, _) if command.selected)
+        });
+
         let mut push_row = |view: Retained<UIView>, kind: PanelRowKind| {
             width = match &kind {
                 PanelRowKind::Separator { .. } => width,
                 PanelRowKind::Activatable { button, .. } => {
-                    width.max(button.sizeThatFits(CGSize::new(1_000.0, 1_000.0)).width)
+                    width.max(button.intrinsicContentSize().width)
                 }
             };
             container.add_subview(&view);
@@ -621,7 +666,8 @@ impl MenuPanelController {
                 &command,
                 Some("chevron.left"),
                 false,
-                self.ivars().palette.borrow().as_ref(),
+                check_gutter,
+                &self.ivars().palette.borrow(),
             );
             keepalive.push(Box::new(ActionTarget::new(
                 &row.button,
@@ -640,6 +686,7 @@ impl MenuPanelController {
                     checkmark: row.checkmark,
                     chevron: row.chevron,
                     trailing_reserve: row.trailing_reserve,
+                    check_gutter,
                     action,
                 },
             );
@@ -668,7 +715,8 @@ impl MenuPanelController {
                         command,
                         command.symbol.as_deref(),
                         false,
-                        self.ivars().palette.borrow().as_ref(),
+                        check_gutter,
+                        &self.ivars().palette.borrow(),
                     );
                     row.button.setEnabled(command.enabled);
                     let weak = Weak::new(self);
@@ -698,6 +746,7 @@ impl MenuPanelController {
                             checkmark: row.checkmark,
                             chevron: row.chevron,
                             trailing_reserve: row.trailing_reserve,
+                            check_gutter,
                             action,
                         },
                     );
@@ -708,7 +757,8 @@ impl MenuPanelController {
                         command,
                         command.symbol.as_deref(),
                         true,
-                        self.ivars().palette.borrow().as_ref(),
+                        check_gutter,
+                        &self.ivars().palette.borrow(),
                     );
                     row.button.setEnabled(command.enabled);
                     let weak = Weak::new(self);
@@ -736,6 +786,7 @@ impl MenuPanelController {
                             checkmark: row.checkmark,
                             chevron: row.chevron,
                             trailing_reserve: row.trailing_reserve,
+                            check_gutter,
                             action,
                         },
                     );
@@ -922,11 +973,16 @@ fn key_commands(mtm: MainThreadMarker) -> Retained<NSArray<UIKeyCommand>> {
     NSArray::from_retained_slice(&commands)
 }
 
-/// A row's height under `width`: the control's own measure under the real
-/// proposal, never below the touch target.
+/// A row's height under `width`: the control's own fitting measure —
+/// required horizontally, free vertically — never below the touch
+/// target.
 fn row_height_at(button: &UIButton, width: f64) -> f64 {
     button
-        .sizeThatFits(CGSize::new(width, 100_000.0))
+        .systemLayoutSizeFittingSize_withHorizontalFittingPriority_verticalFittingPriority(
+            CGSize::new(width, 0.0),
+            UILayoutPriorityRequired,
+            UILayoutPriorityFittingSizeLevel,
+        )
         .height
         .max(ROW_MIN_HEIGHT)
 }
@@ -940,33 +996,39 @@ fn row_height_for(row: &PanelRow, width: f64) -> f64 {
     }
 }
 
-/// A mounted part's height under `width` — `sizeThatFits` answers the real
-/// width proposal through the leaf's installed intrinsic measure.
-fn measure_height_at(view: &UIView, width: f64) -> f64 {
-    view.sizeThatFits(CGSize::new(width, 100_000.0)).height
+/// A mounted part's size under `proposal`. A `HostView` answers through
+/// its installed measure handler — the same query `sizeThatFits` and
+/// `intrinsicContentSize` forward, so a `None` axis reaches the leaf
+/// truly unbounded; any other view answers `intrinsicContentSize`.
+fn measure_view(view: &UIView, proposal: MeasureProposal) -> CGSize {
+    if let Some(host) = AnyObject::downcast_ref::<HostView>(view)
+        && let Some(size) = host.measure(proposal)
+    {
+        return size.into();
+    }
+    let size = view.intrinsicContentSize();
+    let bounds = view.bounds().size;
+    CGSize::new(
+        if size.width >= 0.0 { size.width } else { bounds.width },
+        if size.height >= 0.0 { size.height } else { bounds.height },
+    )
 }
 
-/// A view's natural size: `intrinsicContentSize` where the content reports
-/// one — a mounted leaf's measure is installed there — else a fitting
-/// measure.
+/// A mounted part's height under `width` — the leaf's measure with the
+/// width bound and the height unbounded.
+fn measure_height_at(view: &UIView, width: f64) -> f64 {
+    measure_view(view, MeasureProposal::width(width)).height
+}
+
+/// A view's natural size — the leaf's measure unbounded on both axes.
 fn fitting_size(view: &UIView) -> CGSize {
-    let intrinsic = view.intrinsicContentSize();
-    if intrinsic.width > 0.0 && intrinsic.height > 0.0 {
-        intrinsic
-    } else {
-        view.sizeThatFits(CGSize::new(100_000.0, 100_000.0))
-    }
+    measure_view(view, MeasureProposal::UNBOUNDED)
 }
 
 /// The separator color the panel draws with — the palette's `Border`
-/// token, or the platform's separator color until a palette arrives.
+/// token.
 fn separator_color(panel: &MenuPanelController) -> Retained<UIColor> {
-    panel
-        .ivars()
-        .palette
-        .borrow()
-        .as_ref()
-        .map_or_else(UIColor::separatorColor, |palette| palette.separator.clone())
+    panel.ivars().palette.borrow().separator.clone()
 }
 
 /// The pieces [`row_button`] assembles for [`build_page`].
@@ -1006,7 +1068,8 @@ fn row_button(
     command: &Command,
     leading_symbol: Option<&str>,
     disclosure: bool,
-    palette: Option<&PanelPalette>,
+    check_gutter: bool,
+    palette: &PanelPalette,
 ) -> BuiltRow {
     let row = HostView::new(mtm, crate::geometry::Rect::ZERO);
     let button = UIButton::new(mtm);
@@ -1014,11 +1077,7 @@ fn row_button(
     // the content insets can reserve its real extent — title text then
     // never runs under the chevron, however long it is.
     let chevron = if disclosure {
-        symbol_image_view(
-            mtm,
-            "chevron.right",
-            &palette.map_or_else(UIColor::secondaryLabelColor, |p| p.muted.clone()),
-        )
+        symbol_image_view(mtm, "chevron.right", &palette.muted)
     } else {
         None
     };
@@ -1030,6 +1089,7 @@ fn row_button(
         command,
         leading_symbol,
         trailing_reserve,
+        check_gutter,
         false,
         palette,
     )));
@@ -1051,22 +1111,11 @@ fn row_button(
         symbol_image_view(
             mtm,
             "checkmark",
-            &palette.map_or_else(
-                || {
-                    if command.destructive {
-                        UIColor::systemRedColor()
-                    } else {
-                        UIColor::labelColor()
-                    }
-                },
-                |p| {
-                    if command.destructive {
-                        p.destructive.clone()
-                    } else {
-                        p.label.clone()
-                    }
-                },
-            ),
+            if command.destructive {
+                &palette.destructive
+            } else {
+                &palette.label
+            },
         )
     } else {
         None
@@ -1118,8 +1167,9 @@ fn row_configuration(
     command: &Command,
     leading_symbol: Option<&str>,
     trailing_reserve: f64,
+    check_gutter: bool,
     focused: bool,
-    palette: Option<&PanelPalette>,
+    palette: &PanelPalette,
 ) -> Retained<UIButtonConfiguration> {
     let config = UIButtonConfiguration::plainButtonConfiguration(mtm);
     config.setTitle(Some(&NSString::from_str(&command.label)));
@@ -1129,15 +1179,13 @@ fn row_configuration(
     config.setTitleAlignment(UIButtonConfigurationTitleAlignment::Leading);
     config.setContentInsets(NSDirectionalEdgeInsets {
         top: 10.0,
-        leading: 16.0 + if command.selected { CHECK_GUTTER } else { 0.0 },
+        leading: 16.0 + if check_gutter { CHECK_GUTTER } else { 0.0 },
         bottom: 10.0,
         trailing: 16.0 + trailing_reserve,
     });
     if command.destructive {
-        config.setBaseForegroundColor(Some(
-            &palette.map_or_else(UIColor::systemRedColor, |p| p.destructive.clone()),
-        ));
-    } else if let Some(palette) = palette {
+        config.setBaseForegroundColor(Some(&palette.destructive));
+    } else {
         config.setBaseForegroundColor(Some(&palette.label));
     }
     if let Some(name) = leading_symbol
@@ -1148,9 +1196,7 @@ fn row_configuration(
         config.setImagePadding(8.0);
     }
     if focused {
-        config.setBaseBackgroundColor(Some(
-            &palette.map_or_else(UIColor::tertiarySystemFillColor, |p| p.focus_fill.clone()),
-        ));
+        config.setBaseBackgroundColor(Some(&palette.focus_fill));
         config.background().setCornerRadius(FOCUS_CORNER_RADIUS);
     }
     config
@@ -1241,7 +1287,7 @@ impl ContextMenuPopover {
     /// and its chrome colors resolved from the owner's theme.
     #[must_use]
     pub fn new(mtm: MainThreadMarker, palette: &PanelPalette) -> Self {
-        let controller = MenuPanelController::new(mtm);
+        let controller = MenuPanelController::new(mtm, palette.clone());
         let delegate = MenuPanelDelegate::new(mtm, &controller);
         let this = Self {
             controller,
@@ -1256,7 +1302,7 @@ impl ContextMenuPopover {
     /// chevron and hairline in place and re-measuring the column.
     pub fn apply_palette(&self, palette: &PanelPalette) {
         let ivars = self.controller.ivars();
-        ivars.palette.replace(Some(palette.clone()));
+        ivars.palette.replace(palette.clone());
         if let Some(scroll) = ivars.scroll.borrow().as_ref() {
             scroll.setBackgroundColor(Some(&palette.surface));
         }
@@ -1383,8 +1429,10 @@ impl ContextMenuPopover {
     }
 
     /// Dismisses the panel programmatically — a `DismissContextMenu`
-    /// request lands here; the teardown still runs through
-    /// `presentationControllerDidDismiss`.
+    /// request lands here; the teardown runs once through whichever path
+    /// lands first: this dismissal's completion, the adaptive delegate on
+    /// an outside tap, or `viewDidDisappear` when the presenter ends the
+    /// presentation itself.
     pub fn dismiss(&self) {
         self.controller.dismiss_menu();
     }
