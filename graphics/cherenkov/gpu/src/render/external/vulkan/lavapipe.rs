@@ -862,6 +862,7 @@ fn capability_record_and_honest_failures() {
             release: None,
             color: FrameColor::BT709_VIDEO,
             alpha: crate::interop::RgbAlpha::Opaque,
+            usage: vulkan::DmaBufUsage::Sampled,
         };
         let result = device.import(vulkan::FrameSource::DmaBuf(Box::new(desc)));
         assert!(

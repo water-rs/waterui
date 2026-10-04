@@ -774,9 +774,10 @@ pub mod vulkan {
     // `Generation`/`State` and the staging pair remain public for the
     // standalone Android device-test binary, recorded in docs/api.md.
     pub use crate::render::external::vulkan::{
-        Caps, Device, DmaBuf, DmaBufPlane, Frame, FrameSource, Generation, LAYOUT_GENERAL, Native,
-        NativeError, PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, State, Wait,
-        cancel_staged, open_device, stage_acquire,
+        Caps, Device, DmaBuf, DmaBufPlane, DmaBufUsage, Frame, FrameSource, Generation,
+        LAYOUT_COLOR_ATTACHMENT, LAYOUT_GENERAL, LAYOUT_TRANSFER_DST, Native, NativeError,
+        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, State, Wait, cancel_staged,
+        open_device, stage_acquire,
     };
 }
 

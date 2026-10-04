@@ -211,6 +211,7 @@ fn dmabuf_of(frame: &mut DmaBufFrame) -> DmaBuf {
         } else {
             RgbAlpha::Premultiplied
         },
+        usage: vulkan::DmaBufUsage::Sampled,
     }
 }
 

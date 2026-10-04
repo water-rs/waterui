@@ -225,6 +225,7 @@ fn dmabuf_frame_imports_and_decodes_in_place() -> Result<(), Box<dyn std::error:
         release: None,
         color: FrameColor::SRGB,
         alpha: RgbAlpha::Premultiplied,
+        usage: vulkan::DmaBufUsage::Sampled,
     })))?;
     assert_eq!(
         frame.repr(),
@@ -249,8 +250,13 @@ fn dmabuf_frame_imports_and_decodes_in_place() -> Result<(), Box<dyn std::error:
         tx[&layer].content(video.at((SIZE, SIZE)));
     });
     engine.render(FrameTime::now())?;
-    let pixels = surface.readback()?.pixels;
+    assert_fixture_pixels(&surface.readback()?.pixels, "dma-buf");
+    Ok(())
+}
 
+/// Asserts every pixel of a `SIZE`×`SIZE` `LinearF16` readback against the
+/// fixture the frame's contents were encoded from.
+fn assert_fixture_pixels(pixels: &[[f32; 4]], label: &str) {
     for y in 0..SIZE {
         for x in 0..SIZE {
             let got = pixels[(y * SIZE + x) as usize];
@@ -259,10 +265,174 @@ fn dmabuf_frame_imports_and_decodes_in_place() -> Result<(), Box<dyn std::error:
             for (c, (g_, w_)) in got.iter().zip(want.iter()).enumerate() {
                 assert!(
                     (f64::from(*g_) - w_).abs() < 0.01,
-                    "dma-buf pixel ({x}, {y}) channel {c}: got {got:?}, expected {want:?}"
+                    "{label} pixel ({x}, {y}) channel {c}: got {got:?}, expected {want:?}"
                 );
             }
         }
     }
+}
+
+/// The one GPU copy the CEF callback runs: `CopySource` into a fresh
+/// `WriteTarget` generation on `slot`, submitted on the engine's queue
+/// so it orders against the engine's own submissions.
+fn copy_into(
+    device: &vulkan::Device,
+    wgpu_device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    source: &wgpu::Texture,
+    slot: &vulkan::DmaBuf,
+) -> Result<vulkan::Frame, Box<dyn std::error::Error>> {
+    let target = device.import(vulkan::FrameSource::DmaBuf(Box::new(slot.reopen()?)))?;
+    let mut encoder = wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("pool copy"),
+    });
+    encoder.copy_texture_to_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: source,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: target
+                .generation
+                .rgb_wrap
+                .as_ref()
+                .expect("pool target imports as an RGB frame"),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    Ok(target)
+}
+
+/// A `CopySource`-usage descriptor identical to `dmabuf_of`'s fixture,
+/// for the transient CEF-side import the test's copy reads.
+fn copy_source_desc(fd: OwnedFd, usage: vulkan::DmaBufUsage) -> vulkan::DmaBuf {
+    vulkan::DmaBuf {
+        fourcc: DRM_FORMAT_ABGR8888,
+        modifier: DRM_FORMAT_MOD_LINEAR,
+        size: (SIZE, SIZE),
+        planes: vec![vulkan::DmaBufPlane {
+            memory: 0,
+            offset: 0,
+            stride: SIZE * 4,
+        }],
+        memory: vec![fd],
+        layout: vulkan::LAYOUT_GENERAL,
+        producer_family: QueueFamily::External,
+        sync: None,
+        release: None,
+        color: FrameColor::SRGB,
+        alpha: RgbAlpha::Premultiplied,
+        usage,
+    }
+}
+
+/// Copies a transient `CopySource` import into a `WriteTarget` pool
+/// allocation, presents the result through the engine, and recycles the
+/// allocation once its generation reports `Released` — the CEF pooled
+/// contract of #1561 end to end.
+#[test]
+fn dmabuf_copy_into_pool_target_presents_and_recycles() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((shared, device)) = setup() else {
+        return Ok(());
+    };
+    let data = fixture_bytes();
+    let Some(fd) = dmabuf(&data)? else {
+        return Ok(());
+    };
+    // The producer side is the CEF contract: the shared plane imports
+    // transiently with `CopySource` so the GPU copy reads it in place —
+    // its declared GENERAL layout is a legal copy source and never moves.
+    let source = device.import(vulkan::FrameSource::DmaBuf(Box::new(copy_source_desc(
+        fd,
+        vulkan::DmaBufUsage::CopySource,
+    ))))?;
+    let source_texture = source
+        .generation
+        .rgb_wrap
+        .as_ref()
+        .expect("ABGR8888 imports as an RGB frame")
+        .clone();
+
+    // The destination is an engine-owned allocation the client keeps:
+    // `WriteTarget` so the copy may write it, `LAYOUT_TRANSFER_DST`
+    // declaring the state the copy leaves it in.
+    let slot = device.alloc_dmabuf(
+        (SIZE, SIZE),
+        DRM_FORMAT_ABGR8888,
+        vulkan::LAYOUT_TRANSFER_DST,
+        FrameColor::SRGB,
+        RgbAlpha::Premultiplied,
+    )?;
+    // A second slot keeps the recycle observation honest: presenting its
+    // frame is what unleases the first.
+    let spare = device.alloc_dmabuf(
+        (SIZE, SIZE),
+        DRM_FORMAT_ABGR8888,
+        vulkan::LAYOUT_TRANSFER_DST,
+        FrameColor::SRGB,
+        RgbAlpha::Premultiplied,
+    )?;
+
+    let queue = shared.queue.clone();
+    let wgpu_device = shared.device.clone();
+    let engine = Engine::<Gpu>::new(GpuConfig {
+        device: Some(shared),
+        ..GpuConfig::default()
+    })?;
+    let surface = engine.surface(Offscreen::new((SIZE, SIZE), OffscreenFormat::LinearF16))?;
+    let layer = surface.layer();
+    let (video, sink) = engine.frame_producer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&layer);
+        tx[&layer].content(video.at((SIZE, SIZE)));
+    });
+
+    let first = copy_into(&device, &wgpu_device, &queue, &source_texture, &slot)?;
+    assert_eq!(
+        first.generation.state(),
+        vulkan::State::Registered,
+        "a fresh pool generation is unacquired until presented"
+    );
+    sink.submit(ExternalFrame::native(first.clone())?);
+    engine.render(FrameTime::now())?;
+    assert_fixture_pixels(&surface.readback()?.pixels, "pooled dma-buf");
+
+    // Replacing the slot's presented frame unleases its generation; the
+    // next renders drain and submit the release, whose completion runs
+    // the destroy that marks it `Released` — the pool's reuse gate.
+    let first_generation = first.generation.clone();
+    drop(first);
+    let second = copy_into(&device, &wgpu_device, &queue, &source_texture, &spare)?;
+    sink.submit(ExternalFrame::native(second.clone())?);
+    engine.render(FrameTime::now())?;
+    engine.render(FrameTime::now())?;
+    wgpu_device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(30)),
+    })?;
+    assert_eq!(
+        first_generation.state(),
+        vulkan::State::Released,
+        "an engine-released pool generation reports Released"
+    );
+
+    // The allocation itself is still live — the dmabuf fd owns it — so
+    // `reopen` imports the same memory as a fresh generation.
+    let third = copy_into(&device, &wgpu_device, &queue, &source_texture, &slot)?;
+    sink.submit(ExternalFrame::native(third)?);
+    engine.render(FrameTime::now())?;
+    assert_fixture_pixels(&surface.readback()?.pixels, "recycled dma-buf");
+    drop(second);
+    drop(source);
     Ok(())
 }

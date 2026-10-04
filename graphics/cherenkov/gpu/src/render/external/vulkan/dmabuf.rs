@@ -12,7 +12,7 @@
 //! single-plane RGB buffers wrap as a `wgpu::Texture` through
 //! `texture_from_raw` so the ordinary external path draws them.
 
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 
 use ash::vk;
@@ -31,6 +31,10 @@ const DRM_FORMAT_P010: u32 = 0x3031_3050;
 
 /// `DRM_FORMAT_MOD_INVALID` — a descriptor must name a real modifier.
 const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+
+/// `DRM_FORMAT_MOD_LINEAR` — the packed-rows layout `alloc_linear_dmabuf`
+/// produces.
+pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 
 /// What a fourcc describes: the Vulkan image format, the colour-plane
 /// count, and — for multiplanar — the integer plane-view formats.
@@ -92,6 +96,7 @@ fn support_checked(
     shared: &Shared,
     format: vk::Format,
     modifier: u64,
+    usage: vk::ImageUsageFlags,
     flags: vk::ImageCreateFlags,
 ) -> Result<(), NativeError> {
     let mut modifier_info = vk::PhysicalDeviceImageDrmFormatModifierInfoEXT::default()
@@ -103,7 +108,7 @@ fn support_checked(
         .format(format)
         .ty(vk::ImageType::TYPE_2D)
         .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-        .usage(vk::ImageUsageFlags::SAMPLED)
+        .usage(usage)
         .flags(flags)
         .push_next(&mut external_info)
         .push_next(&mut modifier_info);
@@ -232,6 +237,24 @@ pub fn import(shared: &Arc<Shared>, mut desc: super::DmaBuf) -> Result<Frame, Na
     if opaque_only && desc.alpha != crate::interop::RgbAlpha::Opaque {
         return Err(NativeError::Invalid("the format carries no alpha"));
     }
+    // Beyond-sampling usage modes apply to the RGB wrap; a planar import
+    // has no wrap to act through.
+    if desc.usage != super::DmaBufUsage::Sampled && !matches!(shape, Shape::Rgb { .. }) {
+        return Err(NativeError::Invalid(
+            "copy-source/write-target usage applies to RGB planes",
+        ));
+    }
+    let image_usage = match desc.usage {
+        super::DmaBufUsage::Sampled => vk::ImageUsageFlags::SAMPLED,
+        super::DmaBufUsage::CopySource => {
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC
+        }
+        super::DmaBufUsage::WriteTarget => {
+            vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT
+        }
+    };
     let layout = vk::ImageLayout::from_raw(desc.layout.cast_signed());
     if layout == vk::ImageLayout::UNDEFINED {
         // A producer that wrote pixels must name its real layout; UNDEFINED
@@ -250,7 +273,7 @@ pub fn import(shared: &Arc<Shared>, mut desc: super::DmaBuf) -> Result<Frame, Na
         }
         Shape::Rgb { .. } => {}
     }
-    support_checked(shared, format_of(shape), desc.modifier, flags)?;
+    support_checked(shared, format_of(shape), desc.modifier, image_usage, flags)?;
 
     let dev = &shared.vk.device;
     let layout_infos: Vec<vk::SubresourceLayout> = desc
@@ -284,7 +307,7 @@ pub fn import(shared: &Arc<Shared>, mut desc: super::DmaBuf) -> Result<Frame, Na
         .array_layers(1)
         .samples(vk::SampleCountFlags::TYPE_1)
         .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
-        .usage(vk::ImageUsageFlags::SAMPLED)
+        .usage(image_usage)
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .flags(flags)
         .initial_layout(vk::ImageLayout::UNDEFINED)
@@ -526,13 +549,41 @@ fn finish(
         }
         Shape::Rgb { wgpu, .. } => {
             // Ordinary single-plane RGB wraps as a wgpu texture tracking
-            // the producer's actual state — never a convenience
-            // UNINITIALIZED: the acquire barrier lands the image in
-            // SHADER_READ_ONLY_OPTIMAL before first use, which is what
-            // `RESOURCE` declares.
+            // the state `desc.usage` declares for it:
+            // - `Sampled` is `RESOURCE` — never a convenience
+            //   UNINITIALIZED: the acquire barrier lands the image in
+            //   SHADER_READ_ONLY_OPTIMAL before first use, which is what
+            //   `RESOURCE` declares.
+            // - `CopySource` is `COPY_SRC` — the client copies out of the
+            //   wrap without an acquire, and the declared producer layout
+            //   is a legal copy-source layout already, so no transition
+            //   may record.
+            // - `WriteTarget` is `UNINITIALIZED` — the image is fresh and
+            //   the client's first use transitions it honestly.
+            let (hal_usage, wgpu_usage, tracker_init) = match desc.usage {
+                super::DmaBufUsage::Sampled => (
+                    wgpu::wgt::TextureUses::RESOURCE,
+                    wgpu::TextureUsages::TEXTURE_BINDING,
+                    wgpu::wgt::TextureUses::RESOURCE,
+                ),
+                super::DmaBufUsage::CopySource => (
+                    wgpu::wgt::TextureUses::RESOURCE | wgpu::wgt::TextureUses::COPY_SRC,
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    wgpu::wgt::TextureUses::COPY_SRC,
+                ),
+                super::DmaBufUsage::WriteTarget => (
+                    wgpu::wgt::TextureUses::RESOURCE
+                        | wgpu::wgt::TextureUses::COPY_DST
+                        | wgpu::wgt::TextureUses::COLOR_TARGET,
+                    wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    wgpu::wgt::TextureUses::UNINITIALIZED,
+                ),
+            };
             // SAFETY: `image` was created on `shared`'s VkDevice with the
             // format, extent and usage the descriptor declares; the
-            // comment above records why RESOURCE is the honest state.
+            // comment above records why each tracker state is honest.
             let texture = unsafe {
                 let hal_device = shared
                     .wgpu
@@ -551,7 +602,7 @@ fn finish(
                         sample_count: 1,
                         dimension: wgpu::TextureDimension::D2,
                         format: wgpu,
-                        usage: wgpu::wgt::TextureUses::RESOURCE,
+                        usage: hal_usage,
                         memory_flags: wgpu::hal::MemoryFlags::empty(),
                         view_formats: Vec::new(),
                     },
@@ -575,10 +626,10 @@ fn finish(
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
                             format: wgpu,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                            usage: wgpu_usage,
                             view_formats: &[],
                         },
-                        wgpu::wgt::TextureUses::RESOURCE,
+                        tracker_init,
                     )
             };
             (
@@ -663,4 +714,122 @@ fn finish(
             plane_fences: std::sync::Mutex::new(Vec::new()),
         }),
     })
+}
+
+/// Allocates a device-local dma-buf for one [`DmaBufUsage::WriteTarget`]
+/// RGB image — see [`super::Device::alloc_dmabuf`].
+///
+/// A probe image built like `import`'s reports the allocation size the
+/// driver wants for the `LINEAR` image of the same extent, format and
+/// usage; the `VkDeviceMemory` is exported through `vkGetMemoryFdKHR`
+/// and freed immediately — the exported dma-buf carries its own
+/// reference to the allocation, so every later `import` of the fd sees
+/// live memory.
+///
+/// # Errors
+/// [`NativeError`] per [`super::Device::alloc_dmabuf`].
+///
+/// # Panics
+/// On a `usize`/`u32` conversion failure or a poisoned handle read.
+pub fn alloc_linear_dmabuf(
+    shared: &Arc<Shared>,
+    size: (u32, u32),
+    fourcc: u32,
+) -> Result<OwnedFd, NativeError> {
+    if !shared.caps.external_memory_dma_buf || !shared.caps.external_memory_fd {
+        return Err(NativeError::Unsupported(
+            "dma-buf external memory is not enabled on this device",
+        ));
+    }
+    if !shared.caps.image_drm_format_modifier {
+        return Err(NativeError::Unsupported(
+            "VK_EXT_image_drm_format_modifier is not enabled",
+        ));
+    }
+    let Some(Shape::Rgb { format, .. }) = shape(fourcc) else {
+        return Err(NativeError::Invalid("pool targets are single-plane RGB"));
+    };
+    if size.0 == 0 || size.1 == 0 {
+        return Err(NativeError::Invalid("empty extent"));
+    }
+    let usage = vk::ImageUsageFlags::SAMPLED
+        | vk::ImageUsageFlags::TRANSFER_DST
+        | vk::ImageUsageFlags::COLOR_ATTACHMENT;
+    let flags = vk::ImageCreateFlags::MUTABLE_FORMAT;
+    support_checked(shared, format, DRM_FORMAT_MOD_LINEAR, usage, flags)?;
+
+    let dev = &shared.vk.device;
+    let layout_infos = [vk::SubresourceLayout::default()
+        .offset(0)
+        .row_pitch(u64::from(size.0) * 4)];
+    let mut modifier_info = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+        .drm_format_modifier(DRM_FORMAT_MOD_LINEAR)
+        .plane_layouts(&layout_infos);
+    let mut external_info = vk::ExternalMemoryImageCreateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let create_info = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(format)
+        .extent(vk::Extent3D {
+            width: size.0,
+            height: size.1,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .flags(flags)
+        .initial_layout(vk::ImageLayout::UNDEFINED)
+        .push_next(&mut modifier_info)
+        .push_next(&mut external_info);
+    // SAFETY: `dev` is live and `create_info` mirrors what `import`
+    // builds for the same descriptor — the probe exists only to read
+    // the driver's memory requirements and is destroyed below.
+    let probe = unsafe { dev.create_image(&create_info, None) }.map_err(NativeError::from)?;
+    // SAFETY: `probe` is a live image created just above.
+    let requirements = unsafe { dev.get_image_memory_requirements(probe) };
+    // SAFETY: `probe` is destroyed exactly once here; nothing was bound.
+    unsafe { dev.destroy_image(probe, None) };
+
+    // SAFETY: `shared`'s instance and physical device are live.
+    let memory_props = unsafe {
+        shared
+            .instance
+            .get_physical_device_memory_properties(shared.physical_device)
+    };
+    let memory_type = (0..memory_props.memory_type_count)
+        .find(|index| {
+            requirements.memory_type_bits & (1 << index) != 0
+                && memory_props.memory_types[*index as usize]
+                    .property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+        })
+        .ok_or(NativeError::Unsupported("no device-local memory type"))?;
+    let mut export_info = vk::ExportMemoryAllocateInfo::default()
+        .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    let allocate_info = vk::MemoryAllocateInfo::default()
+        .allocation_size(requirements.size)
+        .memory_type_index(memory_type)
+        .push_next(&mut export_info);
+    // SAFETY: `dev` is live and `allocate_info` requests the probed size
+    // on a device-local type the image accepts, with the export contract
+    // probed above.
+    let memory = unsafe { dev.allocate_memory(&allocate_info, None) }.map_err(NativeError::from)?;
+    let fd_loader = ash::khr::external_memory_fd::Device::new(&shared.instance, dev);
+    let get_fd_info = vk::MemoryGetFdInfoKHR::default()
+        .memory(memory)
+        .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+    // SAFETY: `fd_loader` was built on `dev`, and `memory` is a live
+    // allocation just made with the dma-buf export handle type.
+    let fd = unsafe { fd_loader.get_memory_fd(&get_fd_info) };
+    // The exported dma-buf references the allocation independently of
+    // the Vulkan memory object — freeing here drops only this handle.
+    // SAFETY: `memory` was allocated above and freed exactly once.
+    unsafe { dev.free_memory(memory, None) };
+    let fd = fd.map_err(NativeError::from)?;
+    // SAFETY: `get_memory_fd` returned a new owned descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }

@@ -47,6 +47,19 @@ pub use sync::{Release, drain_destroys, drain_releases, mark_owned, mark_submitt
 /// release barrier hands back to such a producer.
 pub const LAYOUT_GENERAL: u32 = vk::ImageLayout::GENERAL.as_raw().cast_unsigned();
 
+/// `VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL` — the handoff layout a producer
+/// declares when its last GPU operation wrote the image as a copy
+/// destination.
+pub const LAYOUT_TRANSFER_DST: u32 = vk::ImageLayout::TRANSFER_DST_OPTIMAL
+    .as_raw()
+    .cast_unsigned();
+
+/// `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` — the handoff layout after
+/// the producer's render pass wrote into the image.
+pub const LAYOUT_COLOR_ATTACHMENT: u32 = vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+    .as_raw()
+    .cast_unsigned();
+
 /// `QueueFamily` the producer released the image on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueFamily {
@@ -121,6 +134,30 @@ pub enum ReleaseSync {
     },
 }
 
+/// How a dma-buf import's RGB wrap participates beyond the engine's own
+/// sampling. Only single-plane RGB imports take a mode other than
+/// [`DmaBufUsage::Sampled`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DmaBufUsage {
+    /// Sampled only — the ordinary consumer path (default).
+    #[default]
+    Sampled,
+    /// The `Repr::Rgb` wrap additionally acts as a client-side
+    /// `copy_texture_to_texture` source: the image gains `TRANSFER_SRC`
+    /// and the wrap `COPY_SRC`. The wrap's tracker state is `COPY_SRC`
+    /// from the start, so the first copy records no transition — valid
+    /// because the declared `layout` is then a layout copies may legally
+    /// read from (`GENERAL` or `TRANSFER_SRC_OPTIMAL`).
+    CopySource,
+    /// The `Repr::Rgb` wrap is a client-side GPU write target: the image
+    /// gains `TRANSFER_DST | COLOR_ATTACHMENT` and the wrap
+    /// `COPY_DST | RENDER_ATTACHMENT`. The wrap's tracker starts
+    /// UNINITIALIZED, matching the freshly imported image; `layout`
+    /// still declares the state the client leaves it in.
+    WriteTarget,
+}
+
 /// One colour-format plane of a dma-buf image.
 ///
 /// Colour planes are not memory planes: a two-plane NV12 image may live in
@@ -167,6 +204,56 @@ pub struct DmaBuf {
     pub color: FrameColor,
     /// How the RGB plane's alpha composes; ignored for YUV.
     pub alpha: RgbAlpha,
+    /// How the RGB wrap participates beyond engine sampling; a mode other
+    /// than [`DmaBufUsage::Sampled`] is valid only on a single-plane RGB
+    /// import.
+    pub usage: DmaBufUsage,
+}
+
+impl DmaBuf {
+    /// A descriptor for the same allocation that imports as a fresh
+    /// generation: the file descriptors are duplicated so each import
+    /// owns its handles.
+    ///
+    /// This is the pooled-target reuse path — a client re-imports the
+    /// allocation only after the generation presented from the previous
+    /// descriptor reports [`State::Released`]. The clone carries no
+    /// producer synchronization: pool descriptors never carry any.
+    ///
+    /// # Errors
+    /// [`NativeError::Invalid`] when a descriptor cannot be duplicated.
+    pub fn reopen(&self) -> Result<Self, NativeError> {
+        let memory = self
+            .memory
+            .iter()
+            .map(|fd| {
+                fd.try_clone()
+                    .map_err(|_| NativeError::Invalid("dma-buf fd duplication failed"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            fourcc: self.fourcc,
+            modifier: self.modifier,
+            size: self.size,
+            planes: self
+                .planes
+                .iter()
+                .map(|plane| DmaBufPlane {
+                    memory: plane.memory,
+                    offset: plane.offset,
+                    stride: plane.stride,
+                })
+                .collect(),
+            memory,
+            layout: self.layout,
+            producer_family: self.producer_family,
+            sync: None,
+            release: None,
+            color: self.color,
+            alpha: self.alpha,
+            usage: self.usage,
+        })
+    }
 }
 
 /// An Android `AHardwareBuffer` frame.
@@ -367,6 +454,56 @@ impl Device {
             #[cfg(target_os = "android")]
             FrameSource::Ahb(ahb) => ahb::import(&self.shared, *ahb),
         }
+    }
+
+    /// Allocates an engine-owned dma-buf for one RGB image and returns its
+    /// import descriptor — the pooled destination of a client-side GPU
+    /// copy (#1561).
+    ///
+    /// The buffer is device-local memory exported through
+    /// `VK_KHR_external_memory_fd` in a `DRM_FORMAT_MOD_LINEAR` layout —
+    /// packed rows of `fourcc` pixels at `stride = size.0 * 4` — already
+    /// owned by the engine's queue family and already a
+    /// [`DmaBufUsage::WriteTarget`] carrying no producer sync. `layout`
+    /// declares the state the caller's write leaves the image in
+    /// (`LAYOUT_TRANSFER_DST` after a copy, `LAYOUT_COLOR_ATTACHMENT`
+    /// after a render); `color`/`alpha` describe its pixels.
+    ///
+    /// Keeping the returned descriptor lets the caller re-import the same
+    /// allocation once the generation presented from it has retired —
+    /// [`Generation::state`] is the release observation, never a CPU wait.
+    ///
+    /// # Errors
+    /// [`NativeError`] when `fourcc` is not an RGB fourcc, the device
+    /// lacks dma-buf memory export, no device-local memory type exists,
+    /// or the driver rejects the write usage for `LINEAR`.
+    pub fn alloc_dmabuf(
+        &self,
+        size: (u32, u32),
+        fourcc: u32,
+        layout: u32,
+        color: FrameColor,
+        alpha: RgbAlpha,
+    ) -> Result<DmaBuf, NativeError> {
+        let fd = dmabuf::alloc_linear_dmabuf(&self.shared, size, fourcc)?;
+        Ok(DmaBuf {
+            fourcc,
+            modifier: dmabuf::DRM_FORMAT_MOD_LINEAR,
+            size,
+            planes: vec![DmaBufPlane {
+                memory: 0,
+                offset: 0,
+                stride: size.0 * 4,
+            }],
+            memory: vec![fd],
+            layout,
+            producer_family: QueueFamily::Index(self.shared.vk.queue_family),
+            sync: None,
+            release: None,
+            color,
+            alpha,
+            usage: DmaBufUsage::WriteTarget,
+        })
     }
 }
 

@@ -935,6 +935,27 @@ engine's shared `VkDevice` and queue, zero-copy, synchronised on the GPU.
 - **`Frame::{size, repr, imported_bytes, lease, unlease, release_fd}`** is
   the #165 retained-frame contract unchanged: the engine holds the frame
   while any layer attachment references it.
+- **`DmaBuf::usage` (`DmaBufUsage`)** scopes the RGB wrap's participation
+  for a client that must touch the image before the engine samples it —
+  added for #1561's CEF path, whose shared handle dies with the paint
+  callback so the sink copies once, on the GPU, inside it. `Sampled` is
+  the unchanged default. `CopySource` adds `TRANSFER_SRC` to the image
+  and `COPY_SRC` to the wrap, whose tracker state is `COPY_SRC` from the
+  start — legal because the declared `layout` is then a copy-readable
+  layout, so no transition records and the producer's `GENERAL` is left
+  untouched. `WriteTarget` adds `TRANSFER_DST | COLOR_ATTACHMENT` and the
+  wrap gains `COPY_DST | RENDER_ATTACHMENT` with an UNINITIALIZED tracker,
+  matching a freshly allocated image the client writes first.
+- **`Device::alloc_dmabuf(size, fourcc, layout, color, alpha)`** allocates
+  an engine-owned device-local dma-buf (exported through
+  `VK_KHR_external_memory_fd`, `DRM_FORMAT_MOD_LINEAR`, packed rows) and
+  returns its `DmaBuf` descriptor: `WriteTarget` usage, engine queue
+  family, no sync. It exists for the pool the CEF path presents from —
+  keeping the descriptor lets the client re-import the same allocation
+  once `Generation::state` reports the engine released the frame that
+  showed it; the observation is the state machine, never a CPU wait.
+- **`LAYOUT_TRANSFER_DST` / `LAYOUT_COLOR_ATTACHMENT`** join
+  `LAYOUT_GENERAL` as the handoff layouts a `DmaBuf` descriptor declares.
 
 Wrap-time state (recorded for #2): `create_texture_from_hal` describes the
 wrapped image as `TextureUses::RESOURCE`, which maps to
