@@ -455,3 +455,39 @@ pub enum ManagedToolError {
         binary: String,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{dxc, managed_tools_path_env};
+    use crate::toolchain::testing::TestMachine;
+
+    #[test]
+    fn path_env_prepends_installed_tool_binary_dirs() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let dxc = dxc();
+        let binary = dxc
+            .install_dir(&host)
+            .expect("install dir")
+            .join(&dxc.binary);
+        std::fs::create_dir_all(binary.parent().expect("binary dir")).expect("create bin dir");
+        std::fs::write(&binary, b"").expect("write binary");
+
+        let (key, value) =
+            managed_tools_path_env(&host).expect("an installed tool yields a PATH env");
+        assert_eq!(key, "PATH");
+        let entries: Vec<_> = std::env::split_paths(&value).collect();
+        assert_eq!(
+            entries.first(),
+            Some(&binary.parent().expect("binary dir").to_path_buf()),
+            "the managed tool's bin directory must lead the build PATH"
+        );
+    }
+
+    #[test]
+    fn path_env_is_none_without_installed_tools() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        assert!(managed_tools_path_env(&host).is_none());
+    }
+}
