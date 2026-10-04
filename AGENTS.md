@@ -293,10 +293,9 @@ Keep unrelated changes out of the change set.
 
 ```bash
 # Install the `water` CLI (required for `water run` to work). It is a workspace
-# member at `cli/`; a change to it is a change to this repository. Released
-# CLIs publish under this repository's `cli/v*` tags with the cargo-dist
-# installer attached; `water update` upgrades an installed release in place.
-# To build this checkout's CLI:
+# member at `cli/`; a change to it is a change to this repository, and its
+# releases are tagged `cli/v<version>` in this repository. Build this
+# checkout's CLI:
 cargo install --path cli --locked
 
 # Build entire workspace
