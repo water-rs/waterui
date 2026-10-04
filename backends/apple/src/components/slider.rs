@@ -362,8 +362,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }));
 
         host.set_layout_handler({
-            let state = Rc::clone(&state);
-            move |view| layout_children(view, &state.borrow())
+            let state = Rc::downgrade(&state);
+            move |view| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                layout_children(view, &state.borrow());
+            }
         });
 
         let mut leaf = NativeLeaf::new(

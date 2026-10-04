@@ -258,9 +258,12 @@ pub(crate) fn mount_content(
     let leaf = crate::dispatch::render(view, env);
     let content = Rc::new(leaf.mount(root));
     crate::primary_content::forward(root, content.view());
-    let placed = content.clone();
+    let placed = Rc::downgrade(&content);
     crate::inspector::install(root, env, keepalive);
     root.set_layout_handler(move |root| {
+        let Some(placed) = placed.upgrade() else {
+            return;
+        };
         let frame = crate::native_layout::content_frame(placed.view(), root);
         #[expect(
             clippy::cast_possible_truncation,

@@ -107,8 +107,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 .union(PointerEvents::MOVED)
                 .union(PointerEvents::EXITED),
             {
-                let state = Rc::clone(&state);
+                let state = Rc::downgrade(&state);
                 move |_, event| {
+                    let Some(state) = state.upgrade() else {
+                        return false;
+                    };
                     let state = state.borrow();
                     #[allow(clippy::cast_possible_truncation)]
                     match event {
@@ -131,8 +134,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }

@@ -87,8 +87,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Each press carries the `KeyPress` in an extended environment;
         // `Handled` consumes it so it never reaches `super`.
         host.set_key_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |_, event: &KeyEvent| {
+                let Some(state) = state.upgrade() else {
+                    return false;
+                };
                 let state = state.borrow();
                 let env = state.env.extending(KeyPress {
                     key: event.key.clone(),
@@ -105,8 +108,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }
