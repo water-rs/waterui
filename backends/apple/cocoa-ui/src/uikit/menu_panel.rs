@@ -907,7 +907,7 @@ impl MenuPanelController {
         let completion = RcBlock::new(move || {
             if let Some(this) = weak.load() {
                 guarded("MenuPanelController dismiss completion", || {
-                    this.run_on_dismiss()
+                    this.run_on_dismiss();
                 });
             }
         });
