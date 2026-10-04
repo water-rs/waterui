@@ -176,7 +176,7 @@ impl HydrolysisRenderer {
     /// Writes a timestamp marker when this frame can be profiled, folding the
     /// marker's queue drain into `gpu_wait`; a no-op when the frame's context
     /// has no profiler (a device without `TIMESTAMP_QUERY`).
-    pub fn gpu_profile_mark(
+    pub(crate) fn gpu_profile_mark(
         &mut self,
         profiler: Option<&GpuFrameProfiler>,
         device: &wgpu::Device,
@@ -193,7 +193,7 @@ impl HydrolysisRenderer {
     /// the GPU drains the frame's submits. Called once per presented frame by
     /// the surface render path; a no-op when the frame's context has no
     /// profiler.
-    pub fn finish_gpu_frame_profile(
+    pub(crate) fn finish_gpu_frame_profile(
         &mut self,
         gpu_context_id: u64,
         device: &wgpu::Device,
