@@ -13062,6 +13062,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ttf-parser",
+ "unicode-ident",
  "url",
  "walkdir",
  "waterui-assets-core",
