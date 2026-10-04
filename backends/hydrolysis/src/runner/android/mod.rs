@@ -73,9 +73,7 @@ pub fn register_app(factory: impl Fn() -> (App, Rc<dyn crate::Style>) + Send + S
 /// with no cause.
 pub(crate) fn init_logging(level: Option<LevelFilter>) {
     let level = level.unwrap_or(LevelFilter::INFO);
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(level.as_log()),
-    );
+    android_logger::init_once(android_logger::Config::default().with_max_level(level.as_log()));
     std::panic::set_hook(Box::new(|info| {
         let payload = info
             .payload()
