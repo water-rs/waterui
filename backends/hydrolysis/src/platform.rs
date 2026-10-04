@@ -1,0 +1,5205 @@
+use std::path::PathBuf;
+
+use nami::Signal;
+use waterui::cursor::CursorStyle;
+use waterui::window::{Window as WuiWindow, WindowState};
+use waterui_graphics::gpu::RedrawHandle;
+
+#[cfg(any(
+    hydrolysis_winit,
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+use waterui_graphics::gpu::preferred_surface_format;
+
+/// Releases the resources whose destruction `device` deferred.
+///
+/// `wgpu` retires finished submissions from inside `Queue::submit`, but the
+/// bookkeeping of the objects those submissions dropped is released only
+/// from `Device::poll`. A frame loop that only ever submits and presents
+/// therefore keeps every frame's share of it forever, so every frame owner
+/// calls this once per presented frame.
+///
+/// Non-blocking: `PollType::Poll` processes what has already completed and
+/// returns.
+pub fn reclaim_device(device: &wgpu::Device) {
+    if let Err(error) = poll_device(device, wgpu::PollType::Poll) {
+        tracing::warn!("GPU device did not reclaim deferred resources: {error}");
+    }
+}
+
+/// Lets `device` release everything dropped since the last call, then returns
+/// once its submitted work has finished.
+///
+/// Every type that owns a device to the end of its life calls this from
+/// `Drop`. A device with nothing outstanding returns immediately.
+pub fn drain_device_before_teardown(device: &wgpu::Device) {
+    if let Err(error) = poll_device(
+        device,
+        wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        },
+    ) {
+        tracing::warn!("GPU device did not drain before teardown: {error}");
+    }
+}
+
+/// Polls the device, treating a panic from inside `wgpu`'s bookkeeping as one
+/// more failed poll.
+///
+/// Device loss is detected lazily: the driver notices mid-call, purges the
+/// resource storage, and only then reports through the device-lost callback.
+/// A poll that lands in that window can dereference a resource the loss
+/// already removed, and `wgpu-core`'s storage lookup panics rather than
+/// erroring. The device is dead either way, so the poll reports failure and
+/// lets the owner move on instead of taking the process down over bookkeeping
+/// for a device that no longer exists.
+fn poll_device(
+    device: &wgpu::Device,
+    poll_type: wgpu::PollType,
+) -> Result<wgpu::PollStatus, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| device.poll(poll_type))) {
+        Ok(Ok(status)) => Ok(status),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(payload) => {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("unknown panic");
+            Err(format!(
+                "poll panicked inside wgpu after device loss: {message}"
+            ))
+        }
+    }
+}
+
+/// The features a host-provided wgpu device must carry for the Cherenkov
+/// engine and the media the UI draws.
+///
+/// `PASSTHROUGH_SHADERS` loads the engine's precompiled fixed shaders on
+/// Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get the
+/// same hard `Engine::new` failure the engine documents. Normalized 16-bit
+/// textures feed HDR media paths wherever the adapter provides them.
+#[must_use]
+pub fn required_media_features(adapter_features: wgpu::Features) -> wgpu::Features {
+    if cfg!(target_vendor = "apple") {
+        assert!(
+            adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM),
+            "the Apple GPU backend requires normalized 16-bit textures for HDR media"
+        );
+        assert!(
+            adapter_features.contains(wgpu::Features::PASSTHROUGH_SHADERS),
+            "the Apple GPU backend requires native shader passthrough for the engine's precompiled shaders"
+        );
+    }
+
+    let mut required =
+        adapter_features & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS);
+    if adapter_features.contains(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM) {
+        required |= wgpu::Features::TEXTURE_FORMAT_16BIT_NORM;
+    }
+    required
+}
+
+/// The GPU context a [`DeviceLoss`] handle was taken on: the device-creation
+/// chain and its engine-pool identity.
+#[derive(Clone, Debug)]
+pub struct GpuContextHandle {
+    /// Identity of this device creation chain for the engine pool.
+    pub(crate) context_id: u64,
+    /// The instance/adapter/device/queue of that chain, which the shared
+    /// Cherenkov engine requires of its `SharedDevice`.
+    pub(crate) shared_device: cherenkov_gpu::interop::SharedDevice,
+}
+
+/// A view onto whether one context's device has been lost.
+///
+/// wgpu reports a loss exactly once, through the callback installed at
+/// creation, and every resource call after it fails. Work that runs off the
+/// frame path takes a clone of this handle and asks it before each batch of
+/// wgpu calls; once the answer is `true` the only correct move is to stop.
+///
+/// The handle also carries the context it was created on, so a caller that
+/// only sees surface handles — adapter, device, queue and this handle —
+/// still reaches the device's full creation chain.
+#[derive(Clone, Debug, Default)]
+pub struct DeviceLoss {
+    reason: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    gpu_context: Option<GpuContextHandle>,
+}
+
+impl DeviceLoss {
+    /// Starts observing a device: installs its device-lost callback so the
+    /// returned handle reports the loss the moment the driver announces it.
+    /// `context_id` identifies the creation chain `shared_device` names for
+    /// the engine pool.
+    ///
+    /// wgpu keeps one lost callback per device, so this belongs to whoever
+    /// owns the device and is called once, right after the device is created.
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+    )]
+    pub(crate) fn observe(
+        shared_device: cherenkov_gpu::interop::SharedDevice,
+        context_id: u64,
+    ) -> Self {
+        let handle = Self {
+            reason: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            gpu_context: Some(GpuContextHandle {
+                context_id,
+                shared_device: shared_device.clone(),
+            }),
+        };
+        // The callback must be `Send` — a `DeviceLoss` clone is not, since it
+        // carries the device's `SharedDevice` — so capture only the reason
+        // cell it writes to.
+        let reason_cell = std::sync::Arc::clone(&handle.reason);
+        shared_device
+            .device
+            .set_device_lost_callback(move |reason, message| {
+                tracing::error!(?reason, message, "GPU device was lost");
+                *reason_cell
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(format!("{reason:?}: {message}"));
+            });
+        handle
+    }
+
+    /// The GPU context this handle was taken on.
+    ///
+    /// # Panics
+    /// When the handle was built without a context (`DeviceLoss::default`) —
+    /// only [`SurfaceProvider`] device-loss handles can drive the engine pool.
+    pub(crate) fn gpu_context(&self) -> GpuContextHandle {
+        self.gpu_context.clone().unwrap_or_else(|| {
+            panic!(
+                "hydrolysis: a DeviceLoss outside a hydrolysis surface carries no GPU context; \
+                 take the handle from the surface's device_loss()"
+            )
+        })
+    }
+
+    /// Whether the driver has reported this device lost.
+    #[must_use]
+    pub(crate) fn is_lost(&self) -> bool {
+        self.reason().is_some()
+    }
+
+    /// The reason the driver gave for the loss, once it reported one.
+    #[must_use]
+    pub(crate) fn reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Input button mapped from a platform pointer event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerButton {
+    /// The primary button — the left button for right-handed mice.
+    Primary,
+    /// The secondary button — the right button for right-handed mice.
+    Secondary,
+    /// The middle (wheel) button.
+    Middle,
+    /// The back navigation button.
+    Back,
+    /// The forward navigation button.
+    Forward,
+    /// Another button identified by its platform button number.
+    Other(u16),
+}
+
+/// Physical pointer source reported by the platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerKind {
+    /// A mouse pointer.
+    Mouse,
+    /// A touch contact.
+    Touch,
+    /// A pen or stylus.
+    Pen,
+}
+
+/// Input key state mapped from a platform keyboard event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyState {
+    /// The button or contact is down.
+    Pressed,
+    /// The button or contact is up.
+    Released,
+}
+
+/// Platform-agnostic key identifier.
+///
+/// This is the vocabulary `WaterUI`'s own widgets and the embedded browser
+/// bridges match on. New code should read [`InputEvent::Key`]'s `logical_key`
+/// and `physical_code` instead — the W3C UI Events pair, which is what GPU
+/// surfaces receive and what the browser engines will move to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyCode {
+    /// A printable character key, as the layout resolved it.
+    Character(String),
+    /// A named (non-printable) key, as the layout resolved it.
+    Named(String),
+    /// A key the layout could not identify.
+    Unidentified,
+}
+
+impl KeyCode {
+    /// The W3C UI Events logical key this identifier denotes.
+    ///
+    /// A producer holding the platform's own key event maps that directly into
+    /// [`InputEvent::Key`]'s `logical_key`, which is strictly better. This is
+    /// for the synthetic keystrokes a test driver injects, where the
+    /// identifier is the only thing there is.
+    #[must_use]
+    pub fn to_w3c_key(&self) -> keyboard_types::Key {
+        let unidentified = keyboard_types::Key::Named(keyboard_types::NamedKey::Unidentified);
+        match self {
+            Self::Character(value) => keyboard_types::Key::Character(value.clone()),
+            // The W3C vocabulary has no named "Space": it is the character the
+            // key types.
+            Self::Named(value) if value == "Space" => {
+                keyboard_types::Key::Character(" ".to_owned())
+            }
+            Self::Named(value) => value.parse().unwrap_or(unidentified),
+            Self::Unidentified => unidentified,
+        }
+    }
+}
+
+/// Active key modifiers snapshot.
+// The fields mirror `keyboard_types::Modifiers`' fixed four-flag set rather
+// than an evolving state machine, so per-flag bools are the honest shape.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Modifiers {
+    /// Whether a Shift modifier was held.
+    pub shift: bool,
+    /// Whether a Control modifier was held.
+    pub control: bool,
+    /// Whether an Alt/Option modifier was held.
+    pub alt: bool,
+    /// Whether a platform-command modifier (Super/Windows/Command) was held.
+    pub super_key: bool,
+}
+
+impl From<Modifiers> for keyboard_types::Modifiers {
+    fn from(modifiers: Modifiers) -> Self {
+        let mut result = Self::empty();
+        result.set(Self::SHIFT, modifiers.shift);
+        result.set(Self::CONTROL, modifiers.control);
+        result.set(Self::ALT, modifiers.alt);
+        result.set(Self::META, modifiers.super_key);
+        result
+    }
+}
+
+impl From<keyboard_types::Modifiers> for Modifiers {
+    fn from(modifiers: keyboard_types::Modifiers) -> Self {
+        Self {
+            shift: modifiers.contains(keyboard_types::Modifiers::SHIFT),
+            control: modifiers.contains(keyboard_types::Modifiers::CONTROL),
+            alt: modifiers.contains(keyboard_types::Modifiers::ALT),
+            super_key: modifiers.contains(keyboard_types::Modifiers::META),
+        }
+    }
+}
+
+/// IME purpose for the focused text input target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextInputPurpose {
+    /// Plain single-line text.
+    Normal,
+    /// Secret text — the platform may mask or protect it.
+    Password,
+}
+
+pub use waterui_backend_core::input::TouchPhase;
+
+/// Focused text-input area used for IME activation and candidate-window placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextInputState {
+    /// Left edge of the input field, in logical points.
+    pub x: f64,
+    /// Top edge of the input field, in logical points.
+    pub y: f64,
+    /// Width of the input field, in logical points.
+    pub width: f64,
+    /// Height of the input field, in logical points.
+    pub height: f64,
+    /// The field's purpose, which selects the platform's input treatment.
+    pub purpose: TextInputPurpose,
+}
+
+/// Input events emitted by a windowing backend.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputEvent {
+    /// A pointer button pressed or a contact started.
+    PointerDown {
+        /// The pointer's stream identifier.
+        id: u64,
+        /// The pointer's device kind.
+        kind: PointerKind,
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+        /// The button that changed.
+        button: PointerButton,
+    },
+    /// A pointer button released or a contact ended.
+    PointerUp {
+        /// The pointer's stream identifier.
+        id: u64,
+        /// The pointer's device kind.
+        kind: PointerKind,
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+        /// The button that changed.
+        button: PointerButton,
+    },
+    /// A pointer or contact moved.
+    PointerMove {
+        /// The pointer's stream identifier.
+        id: u64,
+        /// The pointer's device kind.
+        kind: PointerKind,
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+    },
+    /// The platform cancelled the pointer stream.
+    PointerCancel {
+        /// The pointer's stream identifier.
+        id: u64,
+        /// The pointer's device kind.
+        kind: PointerKind,
+    },
+    /// The pointer moved while a button was held (drag).
+    Moved {
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+    },
+    /// A scroll wheel or scroll gesture step.
+    Scroll {
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+        /// Horizontal scroll delta.
+        dx: f32,
+        /// Vertical scroll delta.
+        dy: f32,
+        /// Whether the deltas are in lines (`true`) or pixels (`false`).
+        is_line_delta: bool,
+    },
+    /// A two-finger trackpad pan gesture.
+    TrackpadPan {
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+        /// Horizontal scroll delta.
+        dx: f32,
+        /// Vertical scroll delta.
+        dy: f32,
+        /// The gesture's touch phase.
+        phase: TouchPhase,
+    },
+    /// A trackpad pinch magnification gesture.
+    Magnification {
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+        /// The gesture's cumulative delta.
+        delta: f32,
+        /// The gesture's touch phase.
+        phase: TouchPhase,
+    },
+    /// A trackpad rotation gesture.
+    Rotation {
+        /// Horizontal position in logical points.
+        x: f32,
+        /// Vertical position in logical points.
+        y: f32,
+        /// The gesture's cumulative delta.
+        delta: f32,
+        /// The gesture's touch phase.
+        phase: TouchPhase,
+    },
+    /// Text inserted through a non-key input source.
+    TextInput {
+        /// The inserted, committed, or composed text.
+        text: String,
+    },
+    /// Text that is the `text` payload of the [`InputEvent::Key`] press
+    /// immediately preceding it — the web platform's `keydown` →
+    /// `beforeinput` pair, in that order. A press a key handler consumed
+    /// suppresses this event at dispatch. Distinct from [`TextInput`],
+    /// which carries text with no key origin (synthetic pushes, test
+    /// drivers) and is never suppressed.
+    KeyText {
+        /// The inserted, committed, or composed text.
+        text: String,
+    },
+    /// A key state changed.
+    Key {
+        /// The logical key.
+        key: KeyCode,
+        /// The logical key in the W3C UI Events vocabulary — what the layout
+        /// and modifiers produce. Unlike `key`, this is never suppressed when
+        /// the same keystroke also produces text: an embedded engine needs the
+        /// real `keydown` alongside the insertion, exactly as the web does.
+        logical_key: keyboard_types::Key,
+        /// The physical key in the W3C UI Events vocabulary — where it sits on
+        /// the keyboard, independent of layout.
+        physical_code: keyboard_types::Code,
+        /// Whether the platform generated this press by auto-repeat.
+        repeat: bool,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        state: KeyState,
+        /// The modifier state at the moment of the event.
+        modifiers: Modifiers,
+    },
+    /// A focus-change replay released a key that was held: winit resends
+    /// every held key as a synthetic release when the window loses focus
+    /// (on X11, at `XI_FocusOut`). The press it belonged to is aborted, not
+    /// completed — the armed keyboard activation and its pressed affordance
+    /// come down without firing an action, so a real release arriving later
+    /// finds nothing stale left to activate.
+    KeyboardCancel,
+    /// The modifier set changed; carries the new [`Modifiers`].
+    ModifiersChanged(Modifiers),
+    /// An IME composition is in progress; carries the pre-edit text.
+    ImePreedit {
+        /// The inserted, committed, or composed text.
+        text: String,
+        /// Caret offset within `text`, in bytes, when the platform reports one.
+        caret: Option<usize>,
+    },
+    /// The IME committed text.
+    ImeCommit {
+        /// The inserted, committed, or composed text.
+        text: String,
+    },
+    /// IME input was disabled for the focused target.
+    ImeDisabled,
+    /// The window's logical size changed.
+    Resize {
+        /// New logical width, in pixels.
+        width: u32,
+        /// New logical height, in pixels.
+        height: u32,
+    },
+    /// The OS window gained (`true`) or lost (`false`) focus.
+    ///
+    /// This is the window's own activation, not a focus move inside it:
+    /// keyboard focus stays where it was, and the surface holding it is
+    /// told focus left and returned so it can report the transition (a
+    /// terminal's DECSET 1004 focus tracking, for one).
+    Focused(bool),
+    /// The window server reports the window's maximized flag — carried with
+    /// the `Resized` a chrome-driven maximize or restore produces, so the
+    /// app-side `Window::state` binding tracks the real window instead of
+    /// drifting when the user toggles maximization through the titlebar.
+    Maximized(bool),
+    /// The user asked the OS to close the window.
+    CloseRequested,
+    /// One file of an OS file drag is hovering the window (winit
+    /// `WindowEvent::HoveredFile`). winit emits one event per file of the
+    /// drag; the runner collects them into the drag's single `Files`
+    /// payload.
+    FileHovered {
+        /// Path of the dragged or dropped file.
+        path: PathBuf,
+    },
+    /// An OS file drag left the window or ended without a drop (winit
+    /// `WindowEvent::HoveredFileCancelled`).
+    FileHoverCancelled,
+    /// One file of an OS file drag was dropped on the window (winit
+    /// `WindowEvent::DroppedFile`). winit emits one event per file of the
+    /// drop.
+    FileDropped {
+        /// Path of the dragged or dropped file.
+        path: PathBuf,
+    },
+}
+
+/// Errors raised by surface acquisition/presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceError {
+    /// Surface acquisition timed out waiting for the next frame.
+    Timeout,
+    /// The surface is fully occluded and produced no frame.
+    Occluded,
+    /// The surface configuration is stale and must be reapplied.
+    Outdated,
+    /// The surface was lost and must be recreated.
+    Lost,
+    /// The surface failed validation against the requested configuration.
+    Validation,
+}
+
+impl core::fmt::Display for SurfaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Timeout => "surface acquisition timed out",
+            Self::Occluded => "surface is occluded",
+            Self::Outdated => "surface configuration is outdated",
+            Self::Lost => "surface was lost",
+            Self::Validation => "surface acquisition failed validation",
+        })
+    }
+}
+
+impl std::error::Error for SurfaceError {}
+
+/// A frame acquired from a `SurfaceProvider`.
+#[derive(Debug)]
+pub enum SurfaceFrame {
+    /// An offscreen render target: the frame already lives in a texture.
+    Offscreen {
+        /// The texture holding the rendered frame.
+        texture: wgpu::Texture,
+        /// A view of `texture` to render into or read from.
+        view: wgpu::TextureView,
+    },
+    #[cfg(hydrolysis_winit)]
+    /// A platform surface frame presented through winit.
+    Window {
+        output: wgpu::SurfaceTexture,
+        /// A view of `texture` to render into or read from.
+        view: wgpu::TextureView,
+    },
+    #[cfg(target_os = "android")]
+    Android {
+        output: wgpu::SurfaceTexture,
+        /// A view of `texture` to render into or read from.
+        view: wgpu::TextureView,
+    },
+    /// A surface frame acquired from a browser canvas (the `web` feature).
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    Browser {
+        /// The acquired surface texture, handed to the frame's renderer.
+        output: wgpu::SurfaceTexture,
+        /// A view of `texture` to render into or read from.
+        view: wgpu::TextureView,
+    },
+}
+
+impl SurfaceFrame {
+    #[must_use]
+    /// The frame's texture, whichever presentation form it took.
+    pub const fn texture(&self) -> &wgpu::Texture {
+        match self {
+            Self::Offscreen { texture, .. } => texture,
+            #[cfg(hydrolysis_winit)]
+            Self::Window { output, .. } => &output.texture,
+            #[cfg(target_os = "android")]
+            Self::Android { output, .. } => &output.texture,
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            Self::Browser { output, .. } => &output.texture,
+        }
+    }
+
+    #[must_use]
+    /// A view of the frame's texture.
+    pub const fn view(&self) -> &wgpu::TextureView {
+        match self {
+            Self::Offscreen { view, .. } => view,
+            #[cfg(hydrolysis_winit)]
+            Self::Window { view, .. } => view,
+            #[cfg(target_os = "android")]
+            Self::Android { view, .. } => view,
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            Self::Browser { view, .. } => view,
+        }
+    }
+}
+
+#[cfg(any(
+    hydrolysis_winit,
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+pub fn select_hydrolysis_surface_format(caps: &wgpu::SurfaceCapabilities) -> wgpu::TextureFormat {
+    let preferred = preferred_surface_format(caps, true);
+    if supports_hydrolysis_surface_format(preferred) {
+        return normalize_surface_format(caps, preferred);
+    }
+
+    if let Some(format) = caps
+        .formats
+        .iter()
+        .copied()
+        .find(|format| supports_hydrolysis_surface_format(*format))
+    {
+        return normalize_surface_format(caps, format);
+    }
+
+    panic!(
+        "hydrolysis surface: requires one of Rgba16Float/Rgba32Float/Rgba8/Bgra8 surface formats, got {:?}",
+        caps.formats
+    );
+}
+
+#[cfg(any(
+    hydrolysis_winit,
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+fn supports_hydrolysis_surface_format(format: wgpu::TextureFormat) -> bool {
+    matches!(
+        format.remove_srgb_suffix(),
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm
+    ) || matches!(
+        format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    )
+}
+
+#[cfg(any(
+    hydrolysis_winit,
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+fn normalize_surface_format(
+    caps: &wgpu::SurfaceCapabilities,
+    format: wgpu::TextureFormat,
+) -> wgpu::TextureFormat {
+    if format.is_srgb() {
+        let linear = format.remove_srgb_suffix();
+        if caps.formats.contains(&linear) {
+            return linear;
+        }
+    }
+    format
+}
+
+#[cfg(any(
+    hydrolysis_winit,
+    all(target_arch = "wasm32", feature = "web"),
+    target_os = "android"
+))]
+pub fn acquire_surface_texture(
+    surface: &wgpu::Surface<'_>,
+) -> Result<wgpu::SurfaceTexture, SurfaceError> {
+    match surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(output)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(output) => Ok(output),
+        wgpu::CurrentSurfaceTexture::Timeout => Err(SurfaceError::Timeout),
+        wgpu::CurrentSurfaceTexture::Occluded => Err(SurfaceError::Occluded),
+        wgpu::CurrentSurfaceTexture::Outdated => Err(SurfaceError::Outdated),
+        wgpu::CurrentSurfaceTexture::Lost => Err(SurfaceError::Lost),
+        wgpu::CurrentSurfaceTexture::Validation => Err(SurfaceError::Validation),
+    }
+}
+
+/// Rendering surface abstraction consumed by hydrolysis runner/renderer.
+pub trait SurfaceProvider {
+    /// The wgpu adapter this surface renders through.
+    fn adapter(&self) -> &wgpu::Adapter;
+    /// The wgpu device this surface renders through.
+    fn device(&self) -> &wgpu::Device;
+    /// The submission queue this surface renders through.
+    fn queue(&self) -> &wgpu::Queue;
+    /// Reports this surface's device lost; taken when the device was opened.
+    fn device_loss(&self) -> &DeviceLoss;
+    /// Acquires the next frame, or reports why none could be presented into.
+    ///
+    /// # Errors
+    /// Returns [`SurfaceError`] when the surface is lost, the device timed
+    /// out, or the surface is out of date and must be reconfigured.
+    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError>;
+    /// Presents an acquired frame to the surface.
+    fn present(&mut self, frame: SurfaceFrame);
+    /// The surface's current pixel size `(width, height)`.
+    fn size(&self) -> (u32, u32);
+    /// The surface's texture format.
+    fn format(&self) -> wgpu::TextureFormat;
+    /// Reconfigures the surface for a new pixel size.
+    fn resize(&mut self, width: u32, height: u32);
+    /// The identity of the GPU context this surface's device belongs to: the
+    /// key that binds one shared Cherenkov engine to one device creation
+    /// chain.
+    fn gpu_context_id(&self) -> u64;
+    /// The instance/adapter/device/queue this surface's device was created
+    /// from — all four from the same creation chain, which the shared
+    /// Cherenkov engine requires of its [`SharedDevice`].
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice;
+    /// Whether the pixels written into this surface's textures are consumed
+    /// as premultiplied-alpha. True only for an OS surface configured
+    /// `CompositeAlphaMode::PreMultiplied`; offscreen/readback targets keep
+    /// their straight-alpha bytes and stay `false`.
+    fn premultiply_alpha(&self) -> bool {
+        false
+    }
+    /// The display's HDR headroom — the brightest white the surface
+    /// presents, relative to SDR white. Every current surface is SDR, so
+    /// the default is 1.0; an HDR presentation surface overrides it.
+    fn display_headroom(&self) -> f32 {
+        1.0
+    }
+}
+
+/// The window's platform safe area, in logical units — the insets the host
+/// reports for regions obscured by system chrome (status bar, navigation bar,
+/// display cutout) and the IME.
+///
+/// The host owns the binding: it writes the combined insets on every change,
+/// and the windowed pipeline lays the root content out inside them while
+/// `waterui_layout::safe_area::IgnoreSafeArea` content reaches the window
+/// edge on its flagged edges. The binding lives in the session environment so
+/// an update re-lays out through the ordinary input path; hosts with no
+/// unsafe regions simply never install one.
+#[derive(Debug, Clone)]
+pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
+
+/// Asserts the app's `Window::frame` binding carries finite components on
+/// all four fields. The binding is a trust boundary — a NaN or infinite
+/// frame is a programming error, not something the runner silently repairs
+/// deeper in the geometry path.
+pub fn validated_window_frame(frame: waterui_core::layout::Rect) -> waterui_core::layout::Rect {
+    for (field, value) in [
+        ("x", frame.x()),
+        ("y", frame.y()),
+        ("width", frame.width()),
+        ("height", frame.height()),
+    ] {
+        assert!(
+            value.is_finite(),
+            "hydrolysis runner: Window::frame.{field} must be finite, got {value}"
+        );
+    }
+    frame
+}
+
+/// Window host-services contract consumed by hydrolysis runner: window
+/// metrics, property application, input delivery, redraw wakeup, IME state
+/// sync and cursor chrome.
+///
+/// This contract carries no GPU objects — a host satisfies it without a
+/// wgpu device, a presentation surface or a render thread. The GPU
+/// painter's presentation attachment is the separate [`GpuSurfaceWindow`]
+/// boundary: only window types that implement it can drive the GPU frame
+/// pump, so a host that stays `PlatformWindow`-only can never hand the
+/// runner a wgpu surface.
+pub trait PlatformWindow: 'static {
+    /// The drawable content area in physical pixels.
+    ///
+    /// Window metrics are host state: layout bounds, the semantic tree and
+    /// DPI all come from here, never from a presentation attachment, so a
+    /// host answers correctly before any surface exists and while it is
+    /// between surface generations.
+    fn content_size(&self) -> (u32, u32);
+    /// Applies the window's declarative properties to the platform window.
+    fn apply_properties(&mut self, window: &WuiWindow);
+    /// Applies the window's effective content-size limits (logical units).
+    ///
+    /// The minimum is the content's layout minimum, overridden by an explicit
+    /// `Window::min_size`. The maximum stays `None` — resizable and
+    /// maximizable — unless the app pins `Window::max_size`: content never
+    /// contributes a maximum, since content that does not stretch on an axis
+    /// is laid out inside a larger offer per the layout spec rather than
+    /// capping the window. A `+∞` component inside an explicit `Some` max is
+    /// the app's per-axis unbounded — treat it as "no bound on that axis".
+    /// Targets without per-window runtime size limits
+    /// (offscreen surfaces, web canvases, fixed embedded displays) keep this
+    /// default no-op.
+    fn set_size_limits(
+        &mut self,
+        min: Option<waterui_core::layout::Size>,
+        max: Option<waterui_core::layout::Size>,
+    ) {
+        let _ = (min, max);
+    }
+    /// Whether this window acts on content-derived size limits.
+    ///
+    /// Deriving them costs four extra whole-tree measure passes per frame, so a
+    /// surface that cannot resize to fit its content — offscreen capture, an
+    /// embedded GPU host, a fixed-size shell — leaves this `false` and never pays
+    /// for them. Defaults to `false` alongside the no-op [`Self::set_size_limits`].
+    fn applies_size_limits(&self) -> bool {
+        false
+    }
+    /// Makes the window transparent or opaque to the compositor, following
+    /// a window background that switches between a translucent colour and an
+    /// opaque one after the window exists.
+    ///
+    /// Targets whose presentation has no composite alpha to switch —
+    /// offscreen surfaces keep their straight alpha regardless, and web and
+    /// embedded hosts present into a fixed surface — keep this default no-op.
+    fn set_transparent(&mut self, transparent: bool) {
+        let _ = transparent;
+    }
+    /// Drains the input events queued since the last drain.
+    fn drain_events(&mut self) -> Vec<InputEvent>;
+    /// Requests that the window be repainted.
+    fn request_redraw(&self);
+    /// The window's logical-points-per-pixel scale factor.
+    fn scale_factor(&self) -> f64;
+    /// The refresh rate (Hz) of the display this window is on, if known.
+    ///
+    /// Drives the game-engine continuous-render frame budget and the diagnostics
+    /// slow-frame threshold. Returns `None` on headless/offscreen/web paths with no
+    /// monitor information, where the renderer falls back to its default pacing.
+    fn refresh_rate_hz(&self) -> Option<f64> {
+        None
+    }
+    /// The pointer's live position in this window's logical units, when the
+    /// host can answer.
+    ///
+    /// OS file-drop events carry no coordinates, and a platform that
+    /// suppresses cursor events while an external drag owns the pointer —
+    /// the OLE grab on Windows, `NSDraggingSession` on macOS — leaves the
+    /// event stream's last position stale exactly when a drop needs it. The
+    /// runner asks the host where the pointer actually is when a file event
+    /// arrives; hosts that cannot report it (Wayland, offscreen surfaces)
+    /// return `None` and the dispatch falls back to the last position the
+    /// stream delivered.
+    fn pointer_position(&self) -> Option<(f32, f32)> {
+        None
+    }
+    /// Whether the host reports the window cannot be seen right now:
+    /// minimized, fully occluded, backgrounded, or without a surface to
+    /// present into. The runner parks the frame pump while this holds —
+    /// no frames, no wakes, no GPU-content pulls — and unparks it on the
+    /// first report that flips back.
+    ///
+    /// The default `false` is the explicit gap: a host with no visibility
+    /// signal keeps pumping rather than guessing, which is what the
+    /// contract requires — a platform without a signal is documented,
+    /// never polled.
+    fn is_occluded(&self) -> bool {
+        false
+    }
+    /// Pushes the focused text input's state to the platform IME.
+    fn sync_text_input_state(&mut self, state: Option<TextInputState>);
+    /// Sets the cursor image the window displays.
+    fn set_cursor_style(&mut self, style: CursorStyle);
+}
+
+/// The GPU painter's presentation attachment: a [`PlatformWindow`] whose
+/// content is presented through a wgpu surface.
+///
+/// This is the compile-time painter boundary — the windowed frame pump is
+/// generic over this trait, so a GPU surface exists only where a painter
+/// attached one. A host implementing only [`PlatformWindow`] has no surface
+/// to give the pump, and the GPU render path is unreachable for it.
+pub trait GpuSurfaceWindow: PlatformWindow {
+    /// The GPU surface this window presents into.
+    fn surface(&mut self) -> &mut dyn SurfaceProvider;
+    /// Returns a thread-safe wake bridge for nested GPU surfaces.
+    ///
+    /// Windowed platforms override this when their native window can be woken
+    /// from a `RedrawHandle`. Offscreen and single-threaded hosts may keep the
+    /// default and rely on their explicit render pump.
+    fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+        None
+    }
+}
+
+/// The adapter, device and queue an [`OffscreenSurface`] renders on.
+///
+/// A wgpu device is a heavyweight, driver-allocated resource, and on a machine
+/// whose only adapter is a software rasterizer it is heavyweight in *system*
+/// memory too. A process that builds one offscreen surface — a snapshot, a
+/// preview, a `waterui-testing` host — pays for exactly one and never notices.
+/// A process that builds hundreds, because it measures a fresh runtime per
+/// sample, pays hundreds of times and exhausts the machine.
+///
+/// Such a caller creates one context and hands a clone to every surface. The
+/// device is shared; everything a measurement is actually about — the view
+/// tree, the renderer, the retained scene — is still built fresh per surface.
+///
+/// This owns the device to the end of the last clone's life, so it drains it on
+/// the way out — see `drain_device_before_teardown`. Every headless test builds
+/// one of these, and on a runner without a GPU they were the ones dying on drop.
+#[derive(Clone, Debug)]
+pub struct OffscreenGpuContext {
+    /// Shared so the device is drained once, when the last surface using it
+    /// goes away. `drain_device_before_teardown` blocks until the device is
+    /// idle with no timeout, so running it per clone would make every surface's
+    /// drop wait out the work of every *other* surface still on that device.
+    inner: std::sync::Arc<OffscreenGpuContextInner>,
+}
+
+#[derive(Debug)]
+struct OffscreenGpuContextInner {
+    /// The instance this adapter came from — the shared Cherenkov engine
+    /// keeps it alive for as long as the device is in use.
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    /// Identity of this device creation chain for the engine pool.
+    context_id: u64,
+    /// Reports this device lost; taken when the device was opened.
+    device_loss: DeviceLoss,
+}
+
+/// One id per device creation chain — instances, adapters, devices and
+/// queues are only shared inside one, so it is also the Cherenkov engine key.
+static NEXT_GPU_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub fn next_gpu_context_id() -> u64 {
+    NEXT_GPU_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Drop for OffscreenGpuContextInner {
+    fn drop(&mut self) {
+        crate::platform::drain_device_before_teardown(&self.device);
+    }
+}
+
+impl OffscreenGpuContext {
+    /// Lets the device release everything dropped since the last call.
+    ///
+    /// Non-blocking: it processes the destruction queue rather than waiting for
+    /// the device to go idle. Call it once the renderer and surface that used
+    /// this device are both gone — a process that builds and drops many of them
+    /// in sequence otherwise keeps every one of their allocations outstanding
+    /// until the device itself is torn down.
+    pub fn reclaim(&self) {
+        reclaim_device(&self.inner.device);
+    }
+
+    /// Requests a context on the adapter `WaterUI` would render an application on.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+        )
+    )]
+    pub async fn new() -> Self {
+        Self::new_with_adapter_selection(AdapterSelection::PRODUCTION).await
+    }
+
+    /// Requests a context for `WaterUI` test hosts.
+    ///
+    /// Unlike a production context, this allows compute-capable software
+    /// adapters so CI can run Hydrolysis accessibility tests on llvmpipe
+    /// without opting the runtime path into fallback adapters.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn new_for_tests() -> Self {
+        Self::new_with_adapter_selection(AdapterSelection::TEST).await
+    }
+
+    /// Blocking [`Self::new_for_tests`], for synchronous test harnesses.
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_for_tests_blocking() -> Self {
+        pollster::block_on(Self::new_for_tests())
+    }
+
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "`OffscreenGpuContextInner` holds a wgpu adapter, device and queue, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The context is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+        )
+    )]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+        )
+    )]
+    async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
+        let (instance, adapter) =
+            request_instance_and_adapter("hydrolysis offscreen surface", selection).await;
+
+        ensure_compute_capable_adapter(
+            &adapter,
+            "hydrolysis offscreen surface",
+            "failed to find compute-capable wgpu adapter",
+        );
+        let required_limits = required_device_limits(&adapter);
+        // PIPELINE_CACHE is requested wherever the adapter has it: without the
+        // feature `create_pipeline_cache` errors, so the persistent store in
+        // `pipeline_cache.rs` can only exist when it was requested here.
+        // PASSTHROUGH_SHADERS loads the engine's precompiled fixed shaders on
+        // Metal and Vulkan (water-rs/cherenkov#57); adapters that lack it get
+        // the same hard Engine::new failure the engine documents.
+        #[cfg(not(feature = "frame-profile"))]
+        let required_features = crate::platform::required_media_features(adapter.features())
+            | (adapter.features()
+                & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
+        // The frame profiler timestamps GPU work through timestamp queries
+        // written between submits, which needs both timestamp features;
+        // request them where the adapter has them and report absent where it
+        // does not — the feature never fails a device request over this.
+        #[cfg(feature = "frame-profile")]
+        let required_features = crate::platform::required_media_features(adapter.features())
+            | (adapter.features()
+                & (wgpu::Features::TIMESTAMP_QUERY
+                    | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
+                    | wgpu::Features::PIPELINE_CACHE
+                    | wgpu::Features::PASSTHROUGH_SHADERS));
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("hydrolysis-offscreen-device"),
+                required_features,
+                required_limits,
+                memory_hints: wgpu::MemoryHints::Performance,
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+                trace: wgpu::Trace::default(),
+            })
+            .await
+            .expect("hydrolysis offscreen surface: failed to request wgpu device");
+        let context_id = next_gpu_context_id();
+        let shared_device = cherenkov_gpu::interop::SharedDevice {
+            instance: instance.clone(),
+            adapter: adapter.clone(),
+            device: device.clone(),
+            queue: queue.clone(),
+        };
+        let device_loss = DeviceLoss::observe(shared_device, context_id);
+
+        Self {
+            inner: std::sync::Arc::new(OffscreenGpuContextInner {
+                instance,
+                adapter,
+                device,
+                queue,
+                context_id,
+                device_loss,
+            }),
+        }
+    }
+}
+
+/// Headless offscreen rendering surface.
+///
+/// Dropping one lets the device reclaim the textures it allocated. That is a
+/// non-blocking maintain, not the full drain the device gets at teardown: a
+/// process that builds surfaces in sequence must not leave every surface's
+/// allocations outstanding until the last one goes away — on a software
+/// rasterizer that runs the machine out of memory — but neither should each
+/// drop wait out the queued work of the other surfaces sharing the device.
+pub struct OffscreenSurface {
+    gpu: OffscreenGpuContext,
+    /// New logical width, in pixels.
+    width: u32,
+    /// New logical height, in pixels.
+    height: u32,
+    format: wgpu::TextureFormat,
+    last_presented: Option<wgpu::Texture>,
+}
+
+fn should_force_fallback_adapter() -> bool {
+    std::env::var_os("WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER").is_some()
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdapterSelection {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            dead_code,
+            reason = "WebGPU adapter selection cannot enumerate software adapters"
+        )
+    )]
+    allow_software_adapter: bool,
+}
+
+impl AdapterSelection {
+    const PRODUCTION: Self = Self {
+        allow_software_adapter: false,
+    };
+
+    #[cfg(any(test, feature = "testing"))]
+    const TEST: Self = Self {
+        allow_software_adapter: true,
+    };
+
+    fn force_fallback_adapter() -> bool {
+        should_force_fallback_adapter()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn allow_software_adapter(self) -> bool {
+        self.allow_software_adapter || Self::force_fallback_adapter()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg(not(target_arch = "wasm32"))]
+struct AdapterPreference {
+    backend_rank: u8,
+    device_type_rank: u8,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl AdapterPreference {
+    /// `prefer_software` is the diagnostics escape hatch: the flag is named
+    /// `FORCE_FALLBACK_ADAPTER`, so with it set a software adapter must win
+    /// over the real GPU beside it, which is the whole point of reproducing a
+    /// software-adapter run on a machine that has a GPU.
+    const fn for_info(info: &wgpu::AdapterInfo, prefer_software: bool) -> Self {
+        Self {
+            backend_rank: backend_rank(info.backend),
+            device_type_rank: if prefer_software {
+                software_first_device_type_rank(info.device_type)
+            } else {
+                device_type_rank(info.device_type)
+            },
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const fn backend_rank(backend: wgpu::Backend) -> u8 {
+    if cfg!(target_os = "windows") {
+        match backend {
+            wgpu::Backend::Dx12 => 0,
+            wgpu::Backend::Vulkan => 1,
+            wgpu::Backend::Metal => 2,
+            wgpu::Backend::Gl => 3,
+            wgpu::Backend::BrowserWebGpu => 4,
+            wgpu::Backend::Noop => 5,
+        }
+    } else if cfg!(target_os = "macos") {
+        match backend {
+            wgpu::Backend::Metal => 0,
+            wgpu::Backend::Vulkan => 1,
+            wgpu::Backend::Dx12 => 2,
+            wgpu::Backend::Gl => 3,
+            wgpu::Backend::BrowserWebGpu => 4,
+            wgpu::Backend::Noop => 5,
+        }
+    } else {
+        match backend {
+            wgpu::Backend::Vulkan => 0,
+            wgpu::Backend::Metal => 1,
+            wgpu::Backend::Dx12 => 2,
+            wgpu::Backend::Gl => 3,
+            wgpu::Backend::BrowserWebGpu => 4,
+            wgpu::Backend::Noop => 5,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
+    match device_type {
+        wgpu::DeviceType::DiscreteGpu => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        wgpu::DeviceType::VirtualGpu => 2,
+        wgpu::DeviceType::Other => 3,
+        wgpu::DeviceType::Cpu => 4,
+    }
+}
+
+/// What a user on a host without a usable GPU is told, wherever the renderer
+/// refuses to start.
+///
+/// Hydrolysis is GPU-required by design, so the honest answer is another host
+/// or another renderer. The escape hatch is named as diagnostics and nothing
+/// more: a software adapter reports compute support and still aborts the
+/// process inside shader compilation (Microsoft Basic Render Driver on
+/// Windows Server does exactly that), so recommending it as the remedy sends
+/// the user somewhere worse than the refusal.
+const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU compute pipelines and has no CPU path: \
+run on a machine with a GPU, or on a virtual machine enable hardware 3D acceleration and install the vendor driver. \
+For targets without a GPU, waterui-dew is the CPU renderer. \
+WATER_HYDROLYSIS_FORCE_FALLBACK_ADAPTER=1 widens adapter selection to software adapters for diagnostics only; \
+a software adapter that cannot run the renderer's pipelines fails or aborts the process instead of drawing.";
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod adapter_selection_tests {
+    use super::{AdapterPreference, GPU_REQUIRED_GUIDANCE};
+
+    const fn info(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: String::new(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Vulkan,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: Some(false),
+            limit_bucket: None,
+        }
+    }
+
+    #[test]
+    fn a_gpu_outranks_a_software_adapter_by_default() {
+        let gpu = AdapterPreference::for_info(&info(wgpu::DeviceType::DiscreteGpu), false);
+        let software = AdapterPreference::for_info(&info(wgpu::DeviceType::Cpu), false);
+        assert!(gpu < software);
+    }
+
+    #[test]
+    fn forcing_the_fallback_adapter_picks_software_over_a_gpu() {
+        let gpu = AdapterPreference::for_info(&info(wgpu::DeviceType::DiscreteGpu), true);
+        let software = AdapterPreference::for_info(&info(wgpu::DeviceType::Cpu), true);
+        assert!(
+            software < gpu,
+            "the escape hatch is named `force`: it must select the software adapter even when a GPU is present"
+        );
+    }
+
+    #[test]
+    fn the_refusal_does_not_recommend_the_escape_hatch_as_a_remedy() {
+        // A software adapter that reports compute support can still abort the
+        // process in shader compilation, so the guidance must offer another
+        // host or Dew and name the flag as diagnostics only.
+        assert!(GPU_REQUIRED_GUIDANCE.contains("waterui-dew"));
+        assert!(GPU_REQUIRED_GUIDANCE.contains("diagnostics only"));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const fn software_first_device_type_rank(device_type: wgpu::DeviceType) -> u8 {
+    match device_type {
+        wgpu::DeviceType::Cpu => 0,
+        wgpu::DeviceType::DiscreteGpu => 1,
+        wgpu::DeviceType::IntegratedGpu => 2,
+        wgpu::DeviceType::VirtualGpu => 3,
+        wgpu::DeviceType::Other => 4,
+    }
+}
+
+fn is_compute_capable_adapter(adapter: &wgpu::Adapter) -> bool {
+    let downlevel_caps = adapter.get_downlevel_capabilities();
+    let limits = adapter.limits();
+    downlevel_caps
+        .flags
+        .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroups_per_dimension > 0
+}
+
+/// The wgpu backend masks Hydrolysis probes for an adapter, in order.
+///
+/// `WGPU_BACKEND` is an absolute override — its mask is the only tier probed.
+/// Without it, `PRIMARY` (Vulkan, Metal, DX12, browser WebGPU) probes first and
+/// `GL` follows only when no primary adapter is acceptable, so wgpu
+/// instantiates the GL backend's EGL driver stack only on hosts that need it —
+/// a headless CI box where Mesa llvmpipe supplies GL 4.5 compute shaders —
+/// never alongside a Vulkan adapter it would sit idle next to.
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
+)]
+fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
+    match wgpu::Backends::from_env() {
+        Some(backends) => vec![backends],
+        None => vec![wgpu::Backends::PRIMARY, wgpu::Backends::GL],
+    }
+}
+
+fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    descriptor.backends = backends;
+    descriptor
+}
+
+/// Probe `instance` over `backends` for the best adapter that is
+/// surface-compatible, not `Noop`, software only when `selection` allows it,
+/// and compute-capable. `None` means this tier satisfied nothing; the
+/// inspected list comes back either way for the no-adapter panic.
+#[cfg(not(target_arch = "wasm32"))]
+async fn probe_adapters(
+    instance: &wgpu::Instance,
+    compatible_surface: Option<&wgpu::Surface<'_>>,
+    context: &str,
+    selection: AdapterSelection,
+    backends: wgpu::Backends,
+) -> (Option<wgpu::Adapter>, Vec<String>) {
+    {
+        // The diagnostics escape hatch widens which adapters are eligible
+        // (`AdapterSelection::allow_software_adapter`); it does not hand the
+        // renderer whatever `request_adapter` returns. Asking wgpu for a
+        // fallback adapter directly skipped the compute-capability filter and
+        // the ranking below, which is how a CPU adapter that cannot run the
+        // compute pipelines reached the engine's shader init.
+        let mut best_candidate: Option<(AdapterPreference, wgpu::Adapter)> = None;
+        let mut inspected_adapters: Vec<String> = Vec::new();
+
+        for adapter in instance.enumerate_adapters(backends).await {
+            let info = adapter.get_info();
+            let surface_supported = compatible_surface
+                .as_ref()
+                .is_none_or(|surface| adapter.is_surface_supported(surface));
+            let limits = adapter.limits();
+            let compute_capable = is_compute_capable_adapter(&adapter);
+
+            tracing::info!(
+                target: "hydrolysis::gpu",
+                context,
+                adapter = ?info,
+                surface_supported,
+                compute_capable,
+                max_compute_workgroups_per_dimension = limits.max_compute_workgroups_per_dimension,
+                "hydrolysis adapter candidate"
+            );
+
+            if !surface_supported {
+                continue;
+            }
+
+            inspected_adapters.push(format!(
+                "'{}' ({:?}, {:?}, compute={}, max_compute_workgroups_per_dimension={})",
+                info.name,
+                info.backend,
+                info.device_type,
+                compute_capable,
+                limits.max_compute_workgroups_per_dimension
+            ));
+
+            if info.backend == wgpu::Backend::Noop
+                || (info.device_type == wgpu::DeviceType::Cpu
+                    && !selection.allow_software_adapter())
+            {
+                tracing::info!(
+                    target: "hydrolysis::gpu",
+                    context,
+                    adapter = ?info,
+                    "skipping software/noop adapter because fallback adapter was not requested"
+                );
+                continue;
+            }
+
+            if !compute_capable {
+                continue;
+            }
+
+            let preference =
+                AdapterPreference::for_info(&info, AdapterSelection::force_fallback_adapter());
+            match &best_candidate {
+                Some((best_preference, _)) if *best_preference <= preference => {}
+                _ => best_candidate = Some((preference, adapter)),
+            }
+        }
+
+        (
+            best_candidate.map(|(_, adapter)| adapter),
+            inspected_adapters,
+        )
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
+)]
+fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu::Backends]) -> ! {
+    assert!(
+        !inspected_adapters.is_empty(),
+        "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
+    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
+    );
+
+    panic!(
+        "{context}: this host has no GPU Hydrolysis can use. \
+Surface-compatible adapters inspected: {}. \
+{GPU_REQUIRED_GUIDANCE}",
+        inspected_adapters.join("; ")
+    );
+}
+
+/// Probe each backend tier on a fresh instance until one yields an adapter
+/// Hydrolysis can use. The instance is returned because a wgpu `Surface` must
+/// be created on the instance that produced its adapter — the caller keeps
+/// both, or recreates its surface on the returned instance.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; adapter handles are !Send by design"
+    )
+)]
+async fn request_instance_and_adapter(
+    context: &str,
+    selection: AdapterSelection,
+) -> (wgpu::Instance, wgpu::Adapter) {
+    // WebGPU is the only wgpu backend wasm can reach, so the adapter is
+    // requested rather than enumerated on every wasm build shape.
+    #[cfg(target_arch = "wasm32")]
+    {
+        // The caller's selection preference only matters where backends can
+        // be enumerated; on wasm every request goes to the one adapter source.
+        let _ = selection;
+        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(
+            wgpu::Backends::from_env().unwrap_or(wgpu::Backends::BROWSER_WEBGPU),
+        ));
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: AdapterSelection::force_fallback_adapter(),
+                apply_limit_buckets: false,
+            })
+            .await
+            .expect("hydrolysis adapter selection: failed to find web adapter");
+        log_selected_adapter(context, &adapter);
+        (instance, adapter)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let tiers = hydrolysis_backend_tiers();
+        let mut inspected_adapters = Vec::new();
+        for &backends in &tiers {
+            let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+            let (adapter, inspected) =
+                probe_adapters(&instance, None, context, selection, backends).await;
+            inspected_adapters.extend(inspected);
+            if let Some(adapter) = adapter {
+                log_selected_adapter(context, &adapter);
+                return (instance, adapter);
+            }
+        }
+        fail_no_adapter(context, inspected_adapters, &tiers);
+    }
+}
+
+/// The winit side of [`request_instance_and_adapter`]: the surface has to be
+/// created on the instance that produced the adapter, so each tier creates its
+/// own surface before probing and the winning tier returns both.
+#[cfg(hydrolysis_winit)]
+async fn request_instance_surface_adapter(
+    context: &str,
+    selection: AdapterSelection,
+    make_surface: impl Fn(&wgpu::Instance) -> wgpu::Surface<'static>,
+) -> (wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter) {
+    let tiers = hydrolysis_backend_tiers();
+    let mut inspected_adapters = Vec::new();
+    for &backends in &tiers {
+        let instance = wgpu::Instance::new(hydrolysis_instance_descriptor(backends));
+        let surface = make_surface(&instance);
+        let (adapter, inspected) =
+            probe_adapters(&instance, Some(&surface), context, selection, backends).await;
+        inspected_adapters.extend(inspected);
+        if let Some(adapter) = adapter {
+            log_selected_adapter(context, &adapter);
+            return (instance, surface, adapter);
+        }
+    }
+    fail_no_adapter(context, inspected_adapters, &tiers);
+}
+
+fn log_selected_adapter(context: &str, adapter: &wgpu::Adapter) {
+    let info = adapter.get_info();
+    tracing::info!(
+        target: "hydrolysis::gpu",
+        context,
+        force_fallback_adapter = should_force_fallback_adapter(),
+        adapter = ?info,
+        "selected wgpu adapter"
+    );
+}
+
+impl Drop for OffscreenSurface {
+    fn drop(&mut self) {
+        self.last_presented = None;
+        self.gpu.reclaim();
+    }
+}
+
+impl core::fmt::Debug for OffscreenSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OffscreenSurface")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OffscreenSurface {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+        )
+    )]
+    /// Creates an offscreen surface synchronously.
+    pub async fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self::on_context(OffscreenGpuContext::new().await, width, height, format)
+    }
+
+    /// Creates an offscreen surface for `WaterUI` test hosts.
+    ///
+    /// Unlike production surfaces, this constructor allows compute-capable
+    /// software adapters so CI can run Hydrolysis accessibility tests on
+    /// llvmpipe without opting the runtime path into fallback adapters.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self::on_context(
+            OffscreenGpuContext::new_for_tests().await,
+            width,
+            height,
+            format,
+        )
+    }
+
+    /// Creates a surface on an already-requested [`OffscreenGpuContext`].
+    ///
+    /// Every surface built on one context shares its device, so a process that
+    /// needs many surfaces requests a device once instead of once per surface.
+    #[must_use]
+    pub fn on_context(
+        gpu: OffscreenGpuContext,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            gpu,
+            width: width.max(1),
+            height: height.max(1),
+            format,
+            last_presented: None,
+        }
+    }
+
+    #[must_use]
+    /// Creates an offscreen surface synchronously, polling the async setup to completion.
+    pub fn new_blocking(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        pollster::block_on(Self::new(width, height, format))
+    }
+
+    #[must_use]
+    /// The last texture this surface presented, if any.
+    pub const fn last_presented(&self) -> Option<&wgpu::Texture> {
+        self.last_presented.as_ref()
+    }
+}
+
+pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let adapter_limits = adapter.limits();
+    let downlevel_caps = adapter.get_downlevel_capabilities();
+    let base_limits = if downlevel_caps.is_webgpu_compliant()
+        || downlevel_caps
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+    {
+        wgpu::Limits::default()
+    } else {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    };
+
+    base_limits
+        .using_resolution(adapter_limits.clone())
+        .using_alignment(adapter_limits)
+}
+
+pub fn ensure_compute_capable_adapter(
+    adapter: &wgpu::Adapter,
+    context: &str,
+    no_compute_message: &str,
+) {
+    let limits = adapter.limits();
+    if is_compute_capable_adapter(adapter) {
+        return;
+    }
+
+    let info = adapter.get_info();
+    panic!(
+        "{context}: {no_compute_message}. Selected adapter '{}' ({:?}) reports max_compute_workgroups_per_dimension = {}. \
+{GPU_REQUIRED_GUIDANCE}",
+        info.name, info.backend, limits.max_compute_workgroups_per_dimension
+    );
+}
+
+impl SurfaceProvider for OffscreenSurface {
+    /// The wgpu adapter this surface renders through.
+    fn adapter(&self) -> &wgpu::Adapter {
+        &self.gpu.inner.adapter
+    }
+
+    /// The wgpu device this surface renders through.
+    fn device(&self) -> &wgpu::Device {
+        &self.gpu.inner.device
+    }
+
+    /// The submission queue this surface renders through.
+    fn queue(&self) -> &wgpu::Queue {
+        &self.gpu.inner.queue
+    }
+
+    fn device_loss(&self) -> &DeviceLoss {
+        &self.gpu.inner.device_loss
+    }
+
+    fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+        let texture = self.last_presented.take().unwrap_or_else(|| {
+            self.gpu
+                .inner
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("hydrolysis-offscreen-frame"),
+                    size: wgpu::Extent3d {
+                        width: self.width,
+                        height: self.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: self.format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    view_formats: &[],
+                })
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Ok(SurfaceFrame::Offscreen { texture, view })
+    }
+
+    /// Presents an acquired frame to the surface.
+    fn present(&mut self, frame: SurfaceFrame) {
+        match frame {
+            SurfaceFrame::Offscreen { texture, .. } => {
+                self.last_presented = Some(texture);
+            }
+            #[cfg(hydrolysis_winit)]
+            SurfaceFrame::Window { .. } => {
+                panic!("hydrolysis offscreen surface received a window frame");
+            }
+            #[cfg(target_os = "android")]
+            SurfaceFrame::Android { .. } => {
+                panic!("hydrolysis offscreen surface received an android frame");
+            }
+            #[cfg(all(target_arch = "wasm32", feature = "web"))]
+            SurfaceFrame::Browser { .. } => {
+                panic!("hydrolysis offscreen surface received a browser frame");
+            }
+        }
+    }
+
+    /// The surface's current pixel size `(width, height)`.
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// The surface's texture format.
+    fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// Reconfigures the surface for a new pixel size.
+    fn resize(&mut self, width: u32, height: u32) {
+        let width = width.max(1);
+        let height = height.max(1);
+        if (width, height) != (self.width, self.height) {
+            self.width = width;
+            self.height = height;
+            self.last_presented = None;
+        }
+    }
+
+    fn gpu_context_id(&self) -> u64 {
+        self.gpu.inner.context_id
+    }
+
+    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        let inner = &*self.gpu.inner;
+        cherenkov_gpu::interop::SharedDevice {
+            instance: inner.instance.clone(),
+            adapter: inner.adapter.clone(),
+            device: inner.device.clone(),
+            queue: inner.queue.clone(),
+        }
+    }
+}
+
+/// An offscreen Cherenkov surface on the shared engine, for scene-level tests
+/// and exports that mount [`cherenkov::Content`] directly instead of driving
+/// the full view pipeline.
+///
+/// One `OffscreenSceneSurface` owns a GPU context, the engine shared on that
+/// context, an engine surface the caller mounts content onto through
+/// [`Self::surface`], and an offscreen presentation target for
+/// [`Self::readback_rgba8`]. Frames are rendered explicitly through
+/// [`Self::engine`]'s `Engine::render`; nothing pumps or pumps-on-wake here.
+pub struct OffscreenSceneSurface {
+    target: OffscreenSurface,
+    cherenkov: crate::engine::CherenkovSurface,
+    engine: std::rc::Rc<crate::engine::GpuEngine>,
+}
+
+impl core::fmt::Debug for OffscreenSceneSurface {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OffscreenSceneSurface")
+            .field("size", &self.target.size())
+            .finish_non_exhaustive()
+    }
+}
+
+impl OffscreenSceneSurface {
+    crate::engine::cfg_async_fn! {
+        /// Creates the host on the adapter `WaterUI` would render an
+        /// application on, at `width × height` sRGB pixels.
+        ///
+        /// # Panics
+        /// Panics when no compute-capable adapter exists or the engine cannot
+        /// be created — same failure contract as [`OffscreenGpuContext::new`].
+        /// Async on wasm32, where the engine surface creation inside awaits
+        /// the browser's GPU device.
+        #[must_use]
+        pub fn new(width: u32, height: u32) -> Self {
+            crate::engine::engine_await!(Self::on_context(
+                pollster::block_on(OffscreenGpuContext::new()),
+                width,
+                height,
+            ))
+        }
+    }
+
+    #[cfg(any(test, feature = "testing"))]
+    crate::engine::cfg_async_fn! {
+        /// Creates the host on a test context, allowing compute-capable
+        /// software adapters so CI can run on llvmpipe.
+        #[must_use]
+        pub fn new_for_tests(width: u32, height: u32) -> Self {
+            crate::engine::engine_await!(Self::on_context(
+                OffscreenGpuContext::new_for_tests_blocking(),
+                width,
+                height
+            ))
+        }
+    }
+
+    crate::engine::cfg_async_fn! {
+        /// Creates the host on an already-requested [`OffscreenGpuContext`],
+        /// so every surface built on one context shares its device and engine.
+        ///
+        /// Async on wasm32, where `shared_engine` and `CherenkovSurface::new`
+        /// await the browser's GPU device.
+        #[must_use]
+        pub fn on_context(gpu: OffscreenGpuContext, width: u32, height: u32) -> Self {
+            let target = OffscreenSurface::on_context(
+                gpu,
+                width,
+                height,
+                wgpu::TextureFormat::Rgba8UnormSrgb,
+            );
+            let engine = crate::engine::engine_await!(crate::engine::shared_engine(
+                target.gpu_context_id(),
+                target.adapter(),
+                target.shared_device(),
+                || {},
+            ));
+            let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
+                std::rc::Rc::clone(&engine),
+                target.device(),
+                target.adapter().get_info().backend,
+                (width.max(1), height.max(1)),
+            ));
+            Self {
+                target,
+                cherenkov,
+                engine,
+            }
+        }
+    }
+
+    /// The engine this host renders with — callers drive
+    /// `engine.render(FrameTime)` themselves.
+    #[must_use]
+    pub const fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
+        &self.engine
+    }
+
+    /// The engine surface behind this host — `clear_color`, `update`, layer
+    /// mounts and transactions route through it.
+    #[must_use]
+    pub const fn surface(&self) -> &cherenkov::Surface<cherenkov_gpu::Gpu> {
+        self.cherenkov.engine_surface()
+    }
+
+    /// Presents the last rendered engine frame into the offscreen target and
+    /// reads it back as premultiplied sRGB RGBA8 rows (`width * 4` bytes per
+    /// row).
+    ///
+    /// Call after `engine.render(..)`; a call before the engine produces its
+    /// first texture panics through the surface's presentation contract.
+    ///
+    /// # Panics
+    /// Panics when the offscreen surface fails to hand back a frame or the
+    /// readback copy cannot be mapped.
+    #[must_use]
+    pub fn readback_rgba8(&mut self) -> Vec<u8> {
+        let (width, height) = self.target.size();
+        let frame = self
+            .target
+            .acquire()
+            .expect("hydrolysis offscreen scene surface: acquire failed");
+        let texture = frame.texture().clone();
+        self.cherenkov.present_into(
+            self.target.device(),
+            self.target.queue(),
+            &texture,
+            true,
+            1.0,
+        );
+        crate::readback::readback_texture_rgba8(
+            self.target.device(),
+            self.target.queue(),
+            &texture,
+            width,
+            height,
+        )
+    }
+}
+
+/// Headless platform window backed by an offscreen texture.
+#[derive(Debug)]
+pub struct OffscreenWindow {
+    surface: OffscreenSurface,
+    scale_factor: f64,
+    /// Last applied (min, max) content-size limits, recorded so tests can
+    /// assert what the runner derived; offscreen surfaces have no real window
+    /// to constrain.
+    size_limits: Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )>,
+}
+
+impl OffscreenWindow {
+    #[must_use]
+    /// Creates an offscreen surface synchronously.
+    pub fn new(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            surface: OffscreenSurface::new_blocking(width, height, format),
+            scale_factor: 1.0,
+            size_limits: None,
+        }
+    }
+
+    /// Creates an offscreen window for `WaterUI` test hosts.
+    ///
+    /// This keeps production adapter selection strict while allowing
+    /// `waterui-testing` to run on compute-capable software adapters in CI.
+    /// Requests a device of its own; a caller that builds several windows
+    /// should request one [`OffscreenGpuContext`] and use [`Self::on_context`].
+    #[cfg(any(test, feature = "testing"))]
+    #[must_use]
+    pub fn new_for_tests(width: u32, height: u32, format: wgpu::TextureFormat) -> Self {
+        Self::on_context(
+            OffscreenGpuContext::new_for_tests_blocking(),
+            width,
+            height,
+            format,
+        )
+    }
+
+    /// Creates a window on an already-requested [`OffscreenGpuContext`], so
+    /// every window built on that context shares its device.
+    #[must_use]
+    pub fn on_context(
+        gpu: OffscreenGpuContext,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        Self {
+            surface: OffscreenSurface::on_context(gpu, width, height, format),
+            scale_factor: 1.0,
+            size_limits: None,
+        }
+    }
+
+    /// Renders at `scale_factor` physical pixels per logical pixel.
+    ///
+    /// Layout stays in logical units; only the surface allocation and the
+    /// reported [`PlatformWindow::scale_factor`] change, so a 2x offscreen
+    /// window produces a HiDPI-sharp image of the very same layout.
+    /// Sets the physical-pixels-per-logical-pixel ratio, reallocating the
+    /// surface to match. See [`Self::with_scale_factor`].
+    ///
+    /// # Panics
+    /// Panics when `scale_factor` is not finite and positive.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "offscreen scale factor must be finite and positive, got {scale_factor}"
+        );
+        let logical_width = f64::from(self.surface.size().0) / self.scale_factor;
+        let logical_height = f64::from(self.surface.size().1) / self.scale_factor;
+        self.scale_factor = scale_factor;
+        self.resize_to_logical(logical_width, logical_height);
+    }
+
+    /// Sets the scale factor, consuming and returning the window. See
+    /// [`Self::set_scale_factor`].
+    ///
+    /// # Panics
+    /// Panics when `scale_factor` is not finite and positive.
+    #[must_use]
+    pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "offscreen scale factor must be finite and positive, got {scale_factor}"
+        );
+        self.set_scale_factor(scale_factor);
+        self
+    }
+
+    fn resize_to_logical(&mut self, width: f64, height: f64) {
+        let physical =
+            |value: f64| crate::num_cast::f64_as_u32((value * self.scale_factor).round().max(1.0));
+        self.surface.resize(physical(width), physical(height));
+    }
+
+    #[must_use]
+    /// The underlying [`OffscreenSurface`].
+    pub const fn surface_ref(&self) -> &OffscreenSurface {
+        &self.surface
+    }
+
+    /// The offscreen presentation attachment, directly on the concrete type.
+    ///
+    /// [`GpuSurfaceWindow::surface`] carries the same entry point on the
+    /// painter-boundary trait; this inherent form exists because downstream
+    /// test hosts (e.g. `waterui-testing`) call `surface()` on the concrete
+    /// window without importing the trait.
+    pub fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
+    }
+
+    /// The last (min, max) content-size limits the runner applied, for tests.
+    #[must_use]
+    pub const fn applied_size_limits(
+        &self,
+    ) -> Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )> {
+        self.size_limits
+    }
+}
+
+impl PlatformWindow for OffscreenWindow {
+    fn content_size(&self) -> (u32, u32) {
+        // An offscreen window is exactly its render target.
+        self.surface.size()
+    }
+
+    /// Applies the window's declarative properties to the platform window.
+    fn apply_properties(&mut self, window: &WuiWindow) {
+        if window.state.snapshot() == WindowState::Closed {
+            return;
+        }
+        let frame = validated_window_frame(window.frame.snapshot());
+        // `frame` is in logical units; the surface is allocated in physical
+        // pixels, so the scale factor has to be applied here or a HiDPI window
+        // would rasterize at one physical pixel per logical pixel.
+        self.resize_to_logical(
+            f64::from(frame.width().max(1.0)),
+            f64::from(frame.height().max(1.0)),
+        );
+    }
+
+    fn set_size_limits(
+        &mut self,
+        min: Option<waterui_core::layout::Size>,
+        max: Option<waterui_core::layout::Size>,
+    ) {
+        self.size_limits = Some((min, max));
+    }
+
+    fn applies_size_limits(&self) -> bool {
+        true
+    }
+
+    /// Drains the input events queued since the last drain.
+    fn drain_events(&mut self) -> Vec<InputEvent> {
+        Vec::new()
+    }
+
+    /// Requests that the window be repainted.
+    fn request_redraw(&self) {}
+
+    /// The window's logical-points-per-pixel scale factor.
+    fn scale_factor(&self) -> f64 {
+        self.scale_factor
+    }
+
+    /// Pushes the focused text input's state to the platform IME.
+    fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
+
+    /// Sets the cursor image the window displays.
+    fn set_cursor_style(&mut self, _style: CursorStyle) {}
+}
+
+impl GpuSurfaceWindow for OffscreenWindow {
+    /// The GPU surface this window presents into.
+    fn surface(&mut self) -> &mut dyn SurfaceProvider {
+        &mut self.surface
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+mod web_impl;
+
+#[cfg(all(hydrolysis_winit, target_os = "macos"))]
+mod macos_display_link;
+
+#[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
+pub(crate) mod native_menu_bar;
+
+#[cfg(hydrolysis_winit)]
+mod winit_impl {
+    #[cfg(hydrolysis_macos_system_webview)]
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use nami::Signal;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2::runtime::NSObjectProtocol;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2::{
+        DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
+    };
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_app_kit::NSView;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_core_graphics::CGPath;
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_quartz_core::{CAMetalLayer, CAShapeLayer};
+    #[cfg(hydrolysis_macos_system_webview)]
+    use objc2_web_kit::WKWebView;
+    use waterui::window::{UserAttention, WindowLevel, WindowState};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use winit::{
+        dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize},
+        event::{
+            ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase,
+            WindowEvent,
+        },
+        keyboard::{Key, ModifiersState, PhysicalKey},
+        window::{
+            Cursor as WinitCursor, CursorIcon, Fullscreen, ImePurpose, Window as NativeWindow,
+            WindowId,
+        },
+    };
+
+    use super::{
+        CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
+        PlatformWindow, PointerButton, PointerKind, RedrawHandle, SurfaceError, SurfaceFrame,
+        SurfaceProvider, TextInputPurpose, TextInputState, TouchPhase, reclaim_device,
+        validated_window_frame,
+    };
+
+    #[derive(Clone)]
+    pub struct WinitGpuContext {
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        /// Identity of this device creation chain for the engine pool.
+        context_id: u64,
+        /// Reports this device lost; taken when the device was opened.
+        device_loss: DeviceLoss,
+    }
+
+    pub struct WinitSurface {
+        surface: wgpu::Surface<'static>,
+        gpu: WinitGpuContext,
+        config: wgpu::SurfaceConfiguration,
+        /// The window this surface presents into — `present` asks it for
+        /// the platform's next-frame pacing (`pre_present_notify`), which
+        /// on Wayland requests the frame callback a compositor withholds
+        /// from a hidden surface. `None` for the macOS CoreAnimationLayer
+        /// overlay, which has no winit window of its own.
+        window: Option<Arc<NativeWindow>>,
+    }
+
+    impl core::fmt::Debug for WinitSurface {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.debug_struct("WinitSurface")
+                .field("config", &self.config)
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl WinitSurface {
+        /// The composite alpha mode a surface is configured with.
+        ///
+        /// A window the compositor must see through needs a mode whose alpha
+        /// channel reaches it — premultiplied, postmultiplied, or the
+        /// platform-inherited mode compositors honour on alpha-capable
+        /// visuals — in that preference order. An opaque window takes
+        /// whatever the surface prefers first. An adapter offering a
+        /// transparent window none of the transparency-capable modes cannot
+        /// present it at all: under an opaque composite the pixels' alpha
+        /// never reaches the compositor and the window reads as fully
+        /// transparent, which is a window-creation error naming the adapter
+        /// and the modes it reported, not a silently opaque window.
+        fn select_alpha_mode(
+            caps: &wgpu::SurfaceCapabilities,
+            requires_transparency: bool,
+            adapter_info: &wgpu::AdapterInfo,
+        ) -> wgpu::CompositeAlphaMode {
+            if !requires_transparency {
+                // An opaque window's alpha channel never reaches the
+                // compositor, so the surface's preferred mode is fine.
+                return caps.alpha_modes[0];
+            }
+            const TRANSPARENT_MODES: [wgpu::CompositeAlphaMode; 3] = [
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                wgpu::CompositeAlphaMode::PostMultiplied,
+                wgpu::CompositeAlphaMode::Inherit,
+            ];
+            for wanted in TRANSPARENT_MODES {
+                if caps.alpha_modes.contains(&wanted) {
+                    return wanted;
+                }
+            }
+            let info = adapter_info;
+            panic!(
+                "hydrolysis winit surface: a transparent window needs a \
+                 transparency-capable composite alpha mode, but adapter {:?} \
+                 ({:?}, driver {:?} {:?}) offers only {:?} — presented pixels \
+                 would carry no alpha and the window would draw nothing. \
+                 Transparent windows require a compositing window manager and \
+                 an adapter that reports a non-opaque alpha mode.",
+                info.name, info.backend, info.driver, info.driver_info, caps.alpha_modes
+            );
+        }
+
+        /// The X11 presentation defect a transparent window hits on an old
+        /// Mesa software rasterizer: the WSI's `x11_present_to_x11_sw` sent
+        /// its `xcb_put_image` at a hardcoded depth of 24, which the X
+        /// server rejects with BadMatch for a depth-32 window — and the
+        /// driver discards the reply, so `present` reports success while
+        /// the window never updates. Fixed by Mesa commit 1e849b12
+        /// ("vk/wsi/x11/sw: use swapchain depth for putimage"), released in
+        /// Mesa 24.1. Returns the failure message naming the cause when
+        /// `adapter_info` is that stack; `None` otherwise.
+        ///
+        /// The gate is the version alone: only a software rasterizer
+        /// (`DeviceType::Cpu`, which is how Vulkan reports llvmpipe and
+        /// lavapipe) presents through the software X11 WSI path at all, and
+        /// it takes it on every X11 server it drives — with DRI3 it would
+        /// take the shared-pixmap path instead, but a hardware Mesa driver
+        /// already answers `DeviceType` differently, so a version check on
+        /// the software adapter cannot misfire against hardware.
+        fn mesa_x11_transparency_blocker(adapter_info: &wgpu::AdapterInfo) -> Option<String> {
+            if adapter_info.device_type != wgpu::DeviceType::Cpu {
+                return None;
+            }
+            let (major, minor, patch) = Self::mesa_driver_version(&adapter_info.driver_info)?;
+            ((major, minor) < (24, 1)).then(|| {
+                format!(
+                    "Mesa {major}.{minor}.{patch} software WSI presents \
+                     depth-32 X11 windows at depth 24 and the server rejects \
+                     every frame (fixed in Mesa 24.1, commit 1e849b12); \
+                     upgrade Mesa"
+                )
+            })
+        }
+
+        /// The Mesa version `driver_info` announces, e.g. "Mesa
+        /// 23.2.1-1ubuntu2". `None` for a non-Mesa driver or an
+        /// unrecognizable string — an unversioned Mesa build is not proven
+        /// broken, so it is not blocked.
+        fn mesa_driver_version(driver_info: &str) -> Option<(u32, u32, u32)> {
+            let version = &driver_info[driver_info.find("Mesa ")? + "Mesa ".len()..];
+            let mut parts = version
+                .split(|c: char| c != '.' && !c.is_ascii_digit())
+                .next()?
+                .split('.');
+            let major = parts.next()?.parse().ok()?;
+            let minor = parts.next().map_or(0, |p| p.parse().unwrap_or(0));
+            let patch = parts.next().map_or(0, |p| p.parse().unwrap_or(0));
+            Some((major, minor, patch))
+        }
+
+        /// Whether the realized winit window lives on an X11 connection —
+        /// the only display path the Mesa software-WSI defect can hit. A
+        /// window whose handle is not `Xcb`/`Xlib` (Wayland, AppKit,
+        /// Windows, an unrecognized or missing handle) is not blocked.
+        fn window_is_x11(window: &NativeWindow) -> bool {
+            matches!(
+                window.window_handle().map(|handle| handle.as_raw()),
+                Ok(RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_))
+            )
+        }
+
+        fn from_surface(
+            surface: wgpu::Surface<'static>,
+            gpu: WinitGpuContext,
+            width: u32,
+            height: u32,
+            requires_transparency: bool,
+            on_x11: bool,
+            window: Option<Arc<NativeWindow>>,
+        ) -> Self {
+            let caps = surface.get_capabilities(&gpu.adapter);
+            let format = super::select_hydrolysis_surface_format(&caps);
+            let adapter_info = gpu.adapter.get_info();
+            if requires_transparency
+                && on_x11
+                && let Some(cause) = Self::mesa_x11_transparency_blocker(&adapter_info)
+            {
+                panic!("hydrolysis winit surface: {cause}");
+            }
+            let alpha_mode = Self::select_alpha_mode(&caps, requires_transparency, &adapter_info);
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                color_space: wgpu::SurfaceColorSpace::Auto,
+                width: width.max(1),
+                height: height.max(1),
+                present_mode: wgpu::PresentMode::AutoVsync,
+                alpha_mode,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            surface.configure(&gpu.device, &config);
+            Self {
+                surface,
+                gpu,
+                config,
+                window,
+            }
+        }
+
+        /// Creates an offscreen surface synchronously.
+        pub async fn new(
+            window: Arc<NativeWindow>,
+            shared_gpu: Option<&WinitGpuContext>,
+            requires_transparency: bool,
+        ) -> (Self, WinitGpuContext) {
+            let (gpu, surface) = match shared_gpu {
+                Some(gpu) => {
+                    let surface = gpu
+                        .instance
+                        .create_surface(window.clone())
+                        .expect("hydrolysis winit surface: failed to create shared surface");
+                    (gpu.clone(), surface)
+                }
+                None => {
+                    let (instance, surface, adapter) = super::request_instance_surface_adapter(
+                        "hydrolysis winit surface",
+                        super::AdapterSelection::PRODUCTION,
+                        |instance| {
+                            instance
+                                .create_surface(window.clone())
+                                .expect("hydrolysis winit surface: failed to create surface")
+                        },
+                    )
+                    .await;
+
+                    super::ensure_compute_capable_adapter(
+                        &adapter,
+                        "hydrolysis winit surface",
+                        "failed to find compute-capable wgpu adapter",
+                    );
+                    let required_limits = super::required_device_limits(&adapter);
+                    let required_features =
+                        crate::platform::required_media_features(adapter.features())
+                            | (adapter.features()
+                                & (wgpu::Features::PIPELINE_CACHE
+                                    | wgpu::Features::PASSTHROUGH_SHADERS));
+                    let (device, queue) = adapter
+                        .request_device(&wgpu::DeviceDescriptor {
+                            label: Some("hydrolysis-winit-device"),
+                            required_features,
+                            required_limits,
+                            memory_hints: wgpu::MemoryHints::Performance,
+                            experimental_features: wgpu::ExperimentalFeatures::default(),
+                            trace: wgpu::Trace::default(),
+                        })
+                        .await
+                        .expect("hydrolysis winit surface: failed to request device");
+                    let context_id = super::next_gpu_context_id();
+                    let shared_device = cherenkov_gpu::interop::SharedDevice {
+                        instance: instance.clone(),
+                        adapter: adapter.clone(),
+                        device: device.clone(),
+                        queue: queue.clone(),
+                    };
+                    let device_loss = DeviceLoss::observe(shared_device, context_id);
+                    (
+                        WinitGpuContext {
+                            instance,
+                            adapter,
+                            device,
+                            queue,
+                            context_id,
+                            device_loss,
+                        },
+                        surface,
+                    )
+                }
+            };
+
+            let size = window.inner_size();
+            (
+                Self::from_surface(
+                    surface,
+                    gpu.clone(),
+                    size.width,
+                    size.height,
+                    requires_transparency,
+                    Self::window_is_x11(&window),
+                    Some(window),
+                ),
+                gpu,
+            )
+        }
+
+        /// Re-selects the composite alpha mode for a window whose background
+        /// switched between opaque and translucent, reconfiguring only when
+        /// the mode actually changes. The selection is the one creation uses,
+        /// so a surface that offers no transparency-capable mode fails the
+        /// same way — on X11 that is a window created opaque, whose visual
+        /// cannot gain an alpha channel afterwards.
+        fn set_transparent(&mut self, transparent: bool) {
+            let caps = self.surface.get_capabilities(&self.gpu.adapter);
+            let alpha_mode =
+                Self::select_alpha_mode(&caps, transparent, &self.gpu.adapter.get_info());
+            if alpha_mode != self.config.alpha_mode {
+                self.config.alpha_mode = alpha_mode;
+                self.surface.configure(&self.gpu.device, &self.config);
+            }
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        fn for_core_animation_layer(
+            layer: &CAMetalLayer,
+            gpu: &WinitGpuContext,
+            width: u32,
+            height: u32,
+        ) -> Self {
+            let target = wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(
+                std::ptr::from_ref(layer).cast_mut().cast(),
+            );
+            // SAFETY: the layer handed to `create_surface_unsafe` is the window's own
+            // `CAMetalLayer`, which the window keeps alive for at least as long as the
+            // surface created from it.
+            let surface = unsafe {
+                gpu.instance
+                    .create_surface_unsafe(target)
+                    .expect("Hydrolysis failed to create a Metal overlay surface")
+            };
+            Self::from_surface(surface, gpu.clone(), width, height, true, false, None)
+        }
+    }
+
+    impl SurfaceProvider for WinitSurface {
+        /// The wgpu adapter this surface renders through.
+        fn adapter(&self) -> &wgpu::Adapter {
+            &self.gpu.adapter
+        }
+
+        /// The wgpu device this surface renders through.
+        fn device(&self) -> &wgpu::Device {
+            &self.gpu.device
+        }
+
+        /// The submission queue this surface renders through.
+        fn queue(&self) -> &wgpu::Queue {
+            &self.gpu.queue
+        }
+
+        fn device_loss(&self) -> &DeviceLoss {
+            &self.gpu.device_loss
+        }
+
+        fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
+            let output = super::acquire_surface_texture(&self.surface)?;
+            let view = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            Ok(SurfaceFrame::Window { output, view })
+        }
+
+        /// Presents an acquired frame to the surface.
+        fn present(&mut self, frame: SurfaceFrame) {
+            match frame {
+                SurfaceFrame::Window { output, .. } => {
+                    // Ask for the platform's next-frame pacing before
+                    // submitting this frame: on Wayland this requests the
+                    // frame callback that gates `RedrawRequested` — a
+                    // compositor withholds it from a hidden surface, so the
+                    // pump parks there without any explicit signal. The
+                    // call is a no-op on every other platform.
+                    if let Some(window) = &self.window {
+                        window.pre_present_notify();
+                    }
+                    self.gpu.queue.present(output);
+                    reclaim_device(&self.gpu.device);
+                }
+                SurfaceFrame::Offscreen { .. } => {
+                    panic!("hydrolysis winit surface received an offscreen frame")
+                }
+            }
+        }
+
+        /// The surface's current pixel size `(width, height)`.
+        fn size(&self) -> (u32, u32) {
+            (self.config.width, self.config.height)
+        }
+
+        /// The surface's texture format.
+        fn format(&self) -> wgpu::TextureFormat {
+            self.config.format
+        }
+
+        /// Reconfigures the surface for a new pixel size.
+        fn resize(&mut self, width: u32, height: u32) {
+            self.config.width = width.max(1);
+            self.config.height = height.max(1);
+            self.surface.configure(&self.gpu.device, &self.config);
+        }
+
+        fn premultiply_alpha(&self) -> bool {
+            self.config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied
+        }
+
+        fn gpu_context_id(&self) -> u64 {
+            self.gpu.context_id
+        }
+
+        fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+            let gpu = &self.gpu;
+            cherenkov_gpu::interop::SharedDevice {
+                instance: gpu.instance.clone(),
+                adapter: gpu.adapter.clone(),
+                device: gpu.device.clone(),
+                queue: gpu.queue.clone(),
+            }
+        }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct MacOverlaySurface {
+        layer: Retained<CAMetalLayer>,
+        surface: WinitSurface,
+    }
+
+    /// Whether an AppKit rect contains a point, in the same coordinate space.
+    #[cfg(hydrolysis_macos_system_webview)]
+    fn ns_rect_contains(rect: NSRect, point: NSPoint) -> bool {
+        point.x >= rect.origin.x
+            && point.y >= rect.origin.y
+            && point.x < rect.origin.x + rect.size.width
+            && point.y < rect.origin.y + rect.size.height
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct NativeViewContainerIvars {
+        /// Where `WaterUI` draws interactive content over the hosted native
+        /// view, in this container's *superview* coordinate space — the space
+        /// `hitTest:` is given its point in.
+        occluded: core::cell::RefCell<Vec<NSRect>>,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    define_class!(
+        #[unsafe(super(NSView))]
+        #[name = "WuiHydrolysisNativeViewContainer"]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = NativeViewContainerIvars]
+        struct NativeViewContainer;
+
+        unsafe impl NSObjectProtocol for NativeViewContainer {}
+
+        impl NativeViewContainer {
+            /// Refuses hits where `WaterUI` painted interactive content on top.
+            ///
+            /// Raising the overlay's `zPosition` fixed only what the user sees:
+            /// a `CALayer` is not in AppKit's hit-test chain, so a snackbar,
+            /// dialog or menu drawn over a `WKWebView` rendered above it and
+            /// still handed every click to the page underneath. Returning `nil`
+            /// lets the event fall through to the winit content view, where
+            /// Hydrolysis's own hit test finds the target that is visibly on
+            /// top.
+            ///
+            /// The view is returned unowned, as `hitTest:` is defined to: the
+            /// pointer travels straight through from the superclass, so it is a
+            /// raw pointer rather than a `Retained` here.
+            #[unsafe(method(hitTest:))]
+            fn hit_test(&self, point: NSPoint) -> *mut NSView {
+                if self
+                    .ivars()
+                    .occluded
+                    .borrow()
+                    .iter()
+                    .any(|rect| ns_rect_contains(*rect, point))
+                {
+                    return core::ptr::null_mut();
+                }
+                // SAFETY: main-thread call to `NSView`'s own implementation,
+                // which is what this override defers to for every other point.
+                unsafe { msg_send![super(self), hitTest: point] }
+            }
+        }
+    );
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl NativeViewContainer {
+        /// Creates an offscreen surface synchronously.
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            let this = Self::alloc(mtm).set_ivars(NativeViewContainerIvars {
+                occluded: core::cell::RefCell::new(Vec::new()),
+            });
+            // SAFETY: `initWithFrame:` is `NSView`'s designated initializer, and
+            // `-> Retained<Self>` is the signature objc2 expects here.
+            unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+        }
+
+        fn set_occluded(&self, rects: Vec<NSRect>) {
+            self.ivars().occluded.replace(rects);
+        }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct MacNativeViewHost {
+        web_view: Retained<WKWebView>,
+        container: Retained<NativeViewContainer>,
+        rounded_clip_views: Vec<Retained<NSView>>,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl MacNativeViewHost {
+        /// Creates an offscreen surface synchronously.
+        fn new(web_view: Retained<WKWebView>, root_view: &NSView) -> Self {
+            let mtm = MainThreadMarker::new()
+                .expect("Hydrolysis hybrid composition must run on the AppKit main thread");
+            let container = NativeViewContainer::new(mtm);
+            container.setWantsLayer(true);
+            container
+                .layer()
+                .expect("Hydrolysis native WebView container must have a Core Animation layer")
+                .setMasksToBounds(true);
+            container.addSubview(&web_view);
+            root_view.addSubview(&container);
+            Self {
+                web_view,
+                container,
+                rounded_clip_views: Vec::new(),
+            }
+        }
+
+        fn set_rounded_clip_count(&mut self, count: usize) {
+            if self.rounded_clip_views.len() == count {
+                return;
+            }
+            self.web_view.removeFromSuperview();
+            for clip_view in self.rounded_clip_views.drain(..) {
+                clip_view.removeFromSuperview();
+            }
+
+            let mtm = MainThreadMarker::new()
+                .expect("Hydrolysis hybrid composition must run on the AppKit main thread");
+            for _ in 0..count {
+                let clip_view = NSView::new(mtm);
+                clip_view.setWantsLayer(true);
+                clip_view
+                    .layer()
+                    .expect("Hydrolysis rounded clip view must have a Core Animation layer")
+                    .setMasksToBounds(true);
+                self.rounded_clip_views.push(clip_view);
+            }
+
+            let mut parent: &NSView = &self.container;
+            for clip_view in &self.rounded_clip_views {
+                parent.addSubview(clip_view);
+                parent = clip_view;
+            }
+            parent.addSubview(&self.web_view);
+        }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    #[derive(Clone, Copy)]
+    struct MacRoundedClip {
+        rect: kurbo::Rect,
+        corner_width: f64,
+        corner_height: f64,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    fn assert_axis_aligned_positive(transform: kurbo::Affine, operation: &str) -> [f64; 6] {
+        let coefficients = transform.as_coeffs();
+        let epsilon = f64::EPSILON * 64.0;
+        assert!(
+            coefficients[1].abs() <= epsilon && coefficients[2].abs() <= epsilon,
+            "Hydrolysis native WebView {operation} requires an axis-aligned transform"
+        );
+        assert!(
+            coefficients[0].is_finite()
+                && coefficients[3].is_finite()
+                && coefficients[0] > 0.0
+                && coefficients[3] > 0.0,
+            "Hydrolysis native WebView {operation} requires positive finite axis scales"
+        );
+        coefficients
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    fn appkit_root_rect(
+        physical_rect: kurbo::Rect,
+        logical_height: f64,
+        scale_factor: f64,
+        flipped: bool,
+    ) -> NSRect {
+        let x = physical_rect.x0 / scale_factor;
+        let y_from_top = physical_rect.y0 / scale_factor;
+        let width = physical_rect.width() / scale_factor;
+        let height = physical_rect.height() / scale_factor;
+        let y = if flipped {
+            y_from_top
+        } else {
+            logical_height - y_from_top - height
+        };
+        NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    struct MacHybridCompositor {
+        gpu: WinitGpuContext,
+        native_views: HashMap<usize, MacNativeViewHost>,
+        overlays: Vec<MacOverlaySurface>,
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl core::fmt::Debug for MacHybridCompositor {
+        fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            formatter
+                .debug_struct("MacHybridCompositor")
+                .field("native_view_count", &self.native_views.len())
+                .field("overlay_count", &self.overlays.len())
+                .finish_non_exhaustive()
+        }
+    }
+
+    #[cfg(hydrolysis_macos_system_webview)]
+    impl MacHybridCompositor {
+        /// Creates an offscreen surface synchronously.
+        fn new(gpu: WinitGpuContext) -> Self {
+            Self {
+                gpu,
+                native_views: HashMap::new(),
+                overlays: Vec::new(),
+            }
+        }
+
+        fn root_view(window: &NativeWindow) -> &NSView {
+            let handle = window
+                .window_handle()
+                .expect("Hydrolysis macOS window must expose an AppKit handle");
+            let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+                panic!("Hydrolysis macOS window returned a non-AppKit handle");
+            };
+            // SAFETY: winit hands out the window's live `NSView` pointer, and the
+            // borrow does not outlive the window handle it came from.
+            unsafe { appkit.ns_view.cast::<NSView>().as_ref() }
+        }
+
+        fn sync(
+            &mut self,
+            window: &NativeWindow,
+            native_views: &[crate::renderer::NativeViewLayer],
+            physical_width: u32,
+            physical_height: u32,
+            scale_factor: f64,
+        ) {
+            assert!(
+                scale_factor.is_finite() && scale_factor > 0.0,
+                "Hydrolysis hybrid composition received invalid scale factor {scale_factor}"
+            );
+            let root_view = Self::root_view(window);
+            root_view.setWantsLayer(true);
+            let root_layer = root_view
+                .layer()
+                .expect("Hydrolysis macOS root view must have a Core Animation layer");
+            let logical_height = f64::from(physical_height) / scale_factor;
+            let mut active = HashSet::new();
+
+            for (index, placement) in native_views.iter().enumerate() {
+                let id = Retained::as_ptr(&placement.view) as usize;
+                active.insert(id);
+                let coefficients = placement.transform.as_coeffs();
+                let epsilon = f64::EPSILON * 64.0;
+                assert!(
+                    coefficients[1].abs() <= epsilon && coefficients[2].abs() <= epsilon,
+                    "Hydrolysis native WebView currently requires an axis-aligned transform"
+                );
+                assert!(
+                    coefficients[0].is_finite()
+                        && coefficients[3].is_finite()
+                        && coefficients[0] > 0.0
+                        && coefficients[3] > 0.0,
+                    "Hydrolysis native WebView requires positive finite axis scales"
+                );
+                let transformed = placement.transform.transform_rect_bbox(placement.bounds);
+                let mut opacity = 1.0f32;
+                let mut visible = transformed;
+                let mut rounded_clips = Vec::new();
+                for active_layer in &placement.active_layers {
+                    assert!(
+                        active_layer.alpha.is_finite() && (0.0..=1.0).contains(&active_layer.alpha),
+                        "Hydrolysis native WebView received invalid layer opacity {}",
+                        active_layer.alpha
+                    );
+                    opacity *= active_layer.alpha;
+                    match &active_layer.shape {
+                        crate::renderer::LayerShape::Rect(rect) => {
+                            assert_axis_aligned_positive(
+                                active_layer.transform,
+                                "rectangular clipping",
+                            );
+                            let clip = active_layer.transform.transform_rect_bbox(*rect);
+                            visible = visible.intersect(clip);
+                        }
+                        crate::renderer::LayerShape::RoundedRect {
+                            rect,
+                            corner_width,
+                            corner_height,
+                            ..
+                        } => {
+                            let clip_transform = active_layer.transform;
+                            let clip_coefficients =
+                                assert_axis_aligned_positive(clip_transform, "rounded clipping");
+                            let clip = clip_transform.transform_rect_bbox(*rect);
+                            visible = visible.intersect(clip);
+                            rounded_clips.push(MacRoundedClip {
+                                rect: clip,
+                                corner_width: corner_width * clip_coefficients[0],
+                                corner_height: corner_height * clip_coefficients[3],
+                            });
+                        }
+                        crate::renderer::LayerShape::Path(_) => {
+                            panic!(
+                                "Hydrolysis native WebView does not support non-rectangular path masks"
+                            )
+                        }
+                    }
+                }
+                let host = self
+                    .native_views
+                    .entry(id)
+                    .or_insert_with(|| MacNativeViewHost::new(placement.view.clone(), root_view));
+                host.set_rounded_clip_count(rounded_clips.len());
+
+                let container_frame =
+                    appkit_root_rect(visible, logical_height, scale_factor, root_view.isFlipped());
+                let web_view_frame = appkit_root_rect(
+                    transformed,
+                    logical_height,
+                    scale_factor,
+                    root_view.isFlipped(),
+                );
+                host.container.setFrame(container_frame);
+                host.container
+                    .setHidden(visible.is_zero_area() || opacity == 0.0);
+                // The renderer republishes these every frame in window hit-test
+                // space, which is logical points measured from the top-left, so
+                // they convert with a scale factor of 1. `hitTest:` is given its
+                // point in the root view's space, which is what this produces.
+                host.container.set_occluded(
+                    placement
+                        .occlusion
+                        .borrow()
+                        .iter()
+                        .map(|rect| {
+                            appkit_root_rect(*rect, logical_height, 1.0, root_view.isFlipped())
+                        })
+                        .collect(),
+                );
+                let local_bounds = NSRect::new(
+                    NSPoint::ZERO,
+                    NSSize::new(container_frame.size.width, container_frame.size.height),
+                );
+                let web_view_local_frame = NSRect::new(
+                    NSPoint::new(
+                        web_view_frame.origin.x - container_frame.origin.x,
+                        web_view_frame.origin.y - container_frame.origin.y,
+                    ),
+                    web_view_frame.size,
+                );
+                host.web_view.setFrame(web_view_local_frame);
+                host.web_view.setWantsLayer(true);
+
+                for (clip_view, rounded_clip) in host.rounded_clip_views.iter().zip(&rounded_clips)
+                {
+                    clip_view.setFrame(local_bounds);
+                    let clip_layer = clip_view
+                        .layer()
+                        .expect("Hydrolysis rounded clip view must have a Core Animation layer");
+                    let clip_root_frame = appkit_root_rect(
+                        rounded_clip.rect,
+                        logical_height,
+                        scale_factor,
+                        root_view.isFlipped(),
+                    );
+                    let clip_local_rect = NSRect::new(
+                        NSPoint::new(
+                            clip_root_frame.origin.x - container_frame.origin.x,
+                            clip_root_frame.origin.y - container_frame.origin.y,
+                        ),
+                        clip_root_frame.size,
+                    );
+                    let mask = CAShapeLayer::layer();
+                    mask.setFrame(local_bounds);
+                    // SAFETY: main-thread Core Graphics call with a by-value rect and
+                    // radii; the returned path is owned by this scope.
+                    let path = unsafe {
+                        CGPath::with_rounded_rect(
+                            clip_local_rect,
+                            rounded_clip.corner_width / scale_factor,
+                            rounded_clip.corner_height / scale_factor,
+                            core::ptr::null(),
+                        )
+                    };
+                    mask.setPath(Some(&path));
+                    // SAFETY: main-thread message send to layers this window owns;
+                    // `mask` is retained by the layer for as long as it is set.
+                    unsafe {
+                        clip_layer.setMask(Some(&mask));
+                    }
+                }
+
+                let container_layer = host
+                    .container
+                    .layer()
+                    .expect("Hydrolysis native WebView container must have a Core Animation layer");
+                container_layer.setOpacity(opacity);
+                container_layer.setZPosition((index * 2 + 1) as f64);
+            }
+
+            self.native_views.retain(|id, host| {
+                if active.contains(id) {
+                    true
+                } else {
+                    host.container.removeFromSuperview();
+                    false
+                }
+            });
+
+            while self.overlays.len() < native_views.len() {
+                let layer = CAMetalLayer::layer();
+                layer.setOpaque(false);
+                layer.setFramebufferOnly(false);
+                root_layer.addSublayer(&layer);
+                let surface = WinitSurface::for_core_animation_layer(
+                    &layer,
+                    &self.gpu,
+                    physical_width,
+                    physical_height,
+                );
+                self.overlays.push(MacOverlaySurface { layer, surface });
+            }
+            while self.overlays.len() > native_views.len() {
+                let overlay = self
+                    .overlays
+                    .pop()
+                    .expect("Hydrolysis overlay count changed during removal");
+                overlay.layer.removeFromSuperlayer();
+            }
+
+            let logical_width = f64::from(physical_width) / scale_factor;
+            for (index, overlay) in self.overlays.iter_mut().enumerate() {
+                overlay.layer.setFrame(NSRect::new(
+                    NSPoint::ZERO,
+                    NSSize::new(logical_width, logical_height),
+                ));
+                overlay.layer.setContentsScale(scale_factor);
+                overlay.layer.setDrawableSize(NSSize::new(
+                    f64::from(physical_width),
+                    f64::from(physical_height),
+                ));
+                overlay.layer.setZPosition((index * 2 + 2) as f64);
+                overlay.surface.resize(physical_width, physical_height);
+            }
+        }
+
+        fn clear(&mut self) {
+            for (_, host) in self.native_views.drain() {
+                host.container.removeFromSuperview();
+            }
+            for overlay in self.overlays.drain(..) {
+                overlay.layer.removeFromSuperlayer();
+            }
+        }
+
+        fn overlay_surface(&mut self, index: usize) -> &mut WinitSurface {
+            &mut self
+                .overlays
+                .get_mut(index)
+                .unwrap_or_else(|| {
+                    panic!("Hydrolysis requested missing hybrid overlay surface {index}")
+                })
+                .surface
+        }
+    }
+
+    /// The platform IME calls behind [`PlatformWindow::sync_text_input_state`],
+    /// computed without a window: tracks the last state applied so a repeat
+    /// sync is a no-op, `set_ime_allowed` fires only across a focus
+    /// transition, and the cursor area is reported in physical pixels.
+    #[derive(Debug, Default)]
+    pub(crate) struct TextInputSync {
+        applied: Option<TextInputState>,
+    }
+
+    /// One winit IME call [`TextInputSync::sync`] asks the window to make.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub(crate) enum TextInputSyncOp {
+        Allowed(bool),
+        Purpose(TextInputPurpose),
+        CursorArea {
+            /// Horizontal position in logical points.
+            x: i32,
+            /// Vertical position in logical points.
+            y: i32,
+            /// New logical width, in pixels.
+            width: u32,
+            /// New logical height, in pixels.
+            height: u32,
+        },
+    }
+
+    impl TextInputSync {
+        /// The winit calls needed to bring the platform IME to `state`, in
+        /// order. An unchanged state returns nothing — including when only
+        /// the caret moved: a moved caret changes the state, so it is never
+        /// swallowed by the equality early-return.
+        pub(crate) fn sync(
+            &mut self,
+            state: Option<TextInputState>,
+            scale_factor: f64,
+        ) -> Vec<TextInputSyncOp> {
+            if self.applied == state {
+                return Vec::new();
+            }
+            let mut ops = Vec::with_capacity(3);
+            if self.applied.is_some() != state.is_some() {
+                ops.push(TextInputSyncOp::Allowed(state.is_some()));
+            }
+            self.applied = state;
+            let Some(state) = state else {
+                return ops;
+            };
+            ops.push(TextInputSyncOp::Purpose(state.purpose));
+            assert!(
+                scale_factor.is_finite() && scale_factor > 0.0,
+                "hydrolysis winit backend received invalid scale factor {scale_factor}"
+            );
+            ops.push(TextInputSyncOp::CursorArea {
+                x: (state.x * scale_factor).round() as i32,
+                y: (state.y * scale_factor).round() as i32,
+                width: (state.width.max(1.0) * scale_factor).ceil() as u32,
+                height: (state.height.max(1.0) * scale_factor).ceil() as u32,
+            });
+            ops
+        }
+    }
+
+    /// The window setup the app requested, held until the window has
+    /// actually mapped.
+    ///
+    /// `apply_properties` pushes the requested frame and state while the
+    /// window is still unmapped (`with_visible(false)`); on X11 a request
+    /// made of an unmapped window is dropped and the window manager's own
+    /// initial state wins the race — its placement for geometry, a normal
+    /// window for `Fullscreen`/`Minimized`/`Closed`. The request is held
+    /// for one re-delivery on the first event that only reaches a mapped
+    /// window. Events that precede the map leave it armed.
+    #[derive(Debug, Default)]
+    struct MappedRequestRetry {
+        pending: Option<PendingMappedRequest>,
+        mapped: bool,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct PendingMappedRequest {
+        position: LogicalPosition<f64>,
+        size: LogicalSize<f64>,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        state: WindowState,
+    }
+
+    impl MappedRequestRetry {
+        /// Records the requested frame and state while the window is not
+        /// yet known to be visible, overwriting any earlier pending one —
+        /// the latest request wins. Once a mapped event has been seen this
+        /// never re-arms: `is_visible` can lag the real map transition, and
+        /// re-arming off it would re-deliver a request the live window has
+        /// already overtaken.
+        /// Whether the window is still in its initial placement — not yet
+        /// known visible, and no mapped-signal event has been seen. The same
+        /// window `arm` records requests for, so the initial-placement guard
+        /// and the post-map re-apply cover exactly the same writes.
+        fn is_initial_placement(&self, visible: Option<bool>) -> bool {
+            visible != Some(true) && !self.mapped
+        }
+
+        fn arm(
+            &mut self,
+            visible: Option<bool>,
+            position: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            state: WindowState,
+        ) {
+            if self.is_initial_placement(visible) {
+                self.pending = Some(PendingMappedRequest {
+                    position,
+                    size,
+                    state,
+                });
+            }
+        }
+
+        /// Consumes the held request on the first mapped-signal event —
+        /// `Moved`, `Resized`, `Occluded(false)`, or `ScaleFactorChanged`,
+        /// each of which only reaches a mapped window — returning it for
+        /// re-application. Other events leave it armed.
+        fn take_on_mapped_event(&mut self, event: &WindowEvent) -> Option<PendingMappedRequest> {
+            let mapped = matches!(
+                event,
+                WindowEvent::Moved(_)
+                    | WindowEvent::Resized(_)
+                    | WindowEvent::ScaleFactorChanged { .. }
+                    | WindowEvent::Occluded(false)
+            );
+            if mapped {
+                self.mapped = true;
+                self.pending.take()
+            } else {
+                None
+            }
+        }
+    }
+
+    /// One platform call toward a requested `WindowState`. Entering a state
+    /// clears the states it is leaving first — an X11 `set_maximized(true)`
+    /// on a minimized or fullscreen window is dropped or applied on top of
+    /// the stale state, so every transition unwinds the rest.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum WindowStateOp {
+        Maximized(bool),
+        Minimized(bool),
+        Fullscreen,
+        NoFullscreen,
+        Hide,
+    }
+
+    /// The ordered calls realizing `state` from any prior state.
+    fn window_state_ops(state: WindowState) -> &'static [WindowStateOp] {
+        use WindowStateOp::{Fullscreen, Hide, Maximized, Minimized, NoFullscreen};
+        match state {
+            WindowState::Normal => &[Maximized(false), Minimized(false), NoFullscreen],
+            WindowState::Minimized => &[Maximized(false), NoFullscreen, Minimized(true)],
+            WindowState::Maximized => &[Minimized(false), NoFullscreen, Maximized(true)],
+            WindowState::Fullscreen => &[Maximized(false), Minimized(false), Fullscreen],
+            WindowState::Closed => &[Hide],
+        }
+    }
+
+    /// Snapshot of the window properties `apply_properties` last pushed to the
+    /// native window, so unchanged syncs cost no platform calls.
+    #[derive(Clone, Debug, PartialEq)]
+    struct AppliedWindowProperties {
+        title: waterui::Str,
+        resizable: bool,
+        decorations: bool,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        state: WindowState,
+        frame: waterui_core::layout::Rect,
+        level: WindowLevel,
+        attention: Option<UserAttention>,
+        resize_increments: Option<waterui_core::layout::Size>,
+    }
+
+    /// A monitor's logical rect: `(position, extent)` — the shape
+    /// `clamp_frame_to_monitors` judges a frame write against.
+    type MonitorRect = (LogicalPosition<f64>, LogicalSize<f64>);
+
+    #[derive(Debug)]
+    pub struct WinitWindow {
+        window: Arc<NativeWindow>,
+        surface: WinitSurface,
+        pending_surface_size: Option<PhysicalSize<u32>>,
+        pending_events: Vec<InputEvent>,
+        pointer_position: (f32, f32),
+        /// The modifier state at the moment of the event.
+        modifiers: Modifiers,
+        text_input_sync: TextInputSync,
+        current_cursor_style: CursorStyle,
+        /// Last applied (min, max) content-size limits, so per-frame application
+        /// only reaches winit when the effective limits actually change.
+        applied_size_limits: Option<(
+            Option<waterui_core::layout::Size>,
+            Option<waterui_core::layout::Size>,
+        )>,
+        /// Last applied window properties. `apply_properties` runs every event
+        /// cycle, and each unconditional winit setter emits X writes whose
+        /// replies wake the loop again — dedupe keeps the loop idle when
+        /// nothing changed. The frame binding in particular is enforced only
+        /// when it changed since the previous pump: a user-driven resize or
+        /// move lands in the window server before its `Resized`/`Moved` event
+        /// updates the binding, and reading the live geometry against the
+        /// stale binding would yank the window straight back to its old frame.
+        applied_properties: Option<AppliedWindowProperties>,
+        /// The requested window frame and state held until the window has
+        /// actually mapped (`with_visible(false)`): on X11 a request made
+        /// of an unmapped window is dropped, so the first mapped-signal
+        /// event re-delivers it — the window manager's own initial state
+        /// otherwise wins.
+        pending_mapped_request: MappedRequestRetry,
+        /// Latest `WindowEvent::Occluded` report: macOS's
+        /// `NSWindow.occlusionState` (miniaturize counts there), the iOS
+        /// scene's backgrounded state, X11 `VisibilityFullyObscured`, the
+        /// web's IntersectionObserver. Winit emits no `Occluded` on
+        /// Windows, Wayland or Android, so this stays false there.
+        occluded: bool,
+        /// The last `Resized` carried a zero client area — how Windows'
+        /// `SIZE_MINIMIZED` reaches winit, and a 0x0 Wayland configure. A
+        /// later `Resized` with a real extent clears it.
+        zero_sized: bool,
+        /// The window's own minimized query — `IsIconic` on Windows,
+        /// `_NET_WM_STATE_HIDDEN` on X11, `isMiniaturized` on AppKit —
+        /// refreshed on the events that can accompany a state change,
+        /// never on a timer. X11 emits no iconify `WindowEvent`, so the
+        /// query on pump wakes is that platform's minimize signal.
+        minimized: bool,
+        /// The DWM's cloaked report (`DWMWA_CLOAKED`), refreshed on the
+        /// same events as `minimized`: how a Windows window hidden by a
+        /// virtual-desktop switch or the shell is detected — cloaking
+        /// likewise arrives as no `WindowEvent`. Always false off
+        /// Windows, which is the only platform that cloaks.
+        cloaked: bool,
+        /// Shared with the GPU-surface redraw waker: a wake posted for a
+        /// window that cannot be seen is dropped before reaching the
+        /// event loop, so external GPU content cannot un-park the pump.
+        occlusion_signal: Arc<AtomicBool>,
+        /// Whether the window currently presents as transparent, so a
+        /// per-frame background push reaches winit and the surface only when
+        /// the background switches between opaque and translucent.
+        transparent: bool,
+        /// Explicit ProMotion opt-in: declares the 120Hz frame-rate demand to
+        /// the window server while redraws are being requested. `None` before
+        /// macOS 14.
+        #[cfg(target_os = "macos")]
+        frame_rate_demand: Option<super::macos_display_link::FrameRateDemandLink>,
+        #[cfg(hydrolysis_macos_system_webview)]
+        hybrid_compositor: MacHybridCompositor,
+    }
+
+    impl WinitWindow {
+        /// Creates an offscreen surface synchronously.
+        pub async fn new(window: Arc<NativeWindow>, requires_transparency: bool) -> Self {
+            Self::new_with_shared_gpu(window, None, requires_transparency)
+                .await
+                .0
+        }
+
+        pub async fn new_with_shared_gpu(
+            window: Arc<NativeWindow>,
+            shared_gpu: Option<&WinitGpuContext>,
+            requires_transparency: bool,
+        ) -> (Self, WinitGpuContext) {
+            let (surface, gpu) =
+                WinitSurface::new(window.clone(), shared_gpu, requires_transparency).await;
+            let size = window.inner_size();
+            let minimized = window.is_minimized().unwrap_or(false);
+            let zero_sized = size.width == 0 || size.height == 0;
+            #[cfg(target_os = "windows")]
+            let cloaked = window_is_cloaked(&window);
+            #[cfg(not(target_os = "windows"))]
+            let cloaked = false;
+            (
+                Self {
+                    #[cfg(target_os = "macos")]
+                    frame_rate_demand: super::macos_display_link::FrameRateDemandLink::attach(
+                        &window,
+                    ),
+                    #[cfg(hydrolysis_macos_system_webview)]
+                    hybrid_compositor: MacHybridCompositor::new(gpu.clone()),
+                    window,
+                    surface,
+                    occluded: false,
+                    zero_sized,
+                    minimized,
+                    cloaked,
+                    occlusion_signal: Arc::new(AtomicBool::new(minimized || zero_sized || cloaked)),
+                    pending_surface_size: None,
+                    pending_events: Vec::new(),
+                    pointer_position: (0.0, 0.0),
+                    modifiers: Modifiers::default(),
+                    text_input_sync: TextInputSync::default(),
+                    current_cursor_style: CursorStyle::Arrow,
+                    applied_size_limits: None,
+                    applied_properties: None,
+                    pending_mapped_request: MappedRequestRetry::default(),
+                    transparent: requires_transparency,
+                },
+                gpu,
+            )
+        }
+
+        #[must_use]
+        pub fn id(&self) -> WindowId {
+            self.window.id()
+        }
+
+        #[must_use]
+        pub fn native_window(&self) -> &NativeWindow {
+            self.window.as_ref()
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        pub(crate) fn sync_hybrid_composition(
+            &mut self,
+            native_views: &[crate::renderer::NativeViewLayer],
+            physical_width: u32,
+            physical_height: u32,
+        ) {
+            self.hybrid_compositor.sync(
+                &self.window,
+                native_views,
+                physical_width,
+                physical_height,
+                self.window.scale_factor(),
+            );
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        pub(crate) fn clear_hybrid_composition(&mut self) {
+            self.hybrid_compositor.clear();
+        }
+
+        #[cfg(hydrolysis_macos_system_webview)]
+        pub(crate) fn hybrid_overlay_surface(&mut self, index: usize) -> &mut dyn SurfaceProvider {
+            self.hybrid_compositor.overlay_surface(index)
+        }
+
+        /// Pushes the requested `WindowLevel` to the window server. Shared by
+        /// `apply_properties` and the first-mapped-event re-delivery.
+        fn apply_window_level(&self, level: WindowLevel) {
+            self.window.set_window_level(match level {
+                WindowLevel::Normal => winit::window::WindowLevel::Normal,
+                WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+            });
+        }
+
+        /// Pushes the requested `UserAttention` to the window server. Shared by
+        /// `apply_properties` and the first-mapped-event re-delivery.
+        fn apply_window_attention(&self, attention: Option<UserAttention>) {
+            self.window
+                .request_user_attention(attention.map(|urgency| match urgency {
+                    UserAttention::Informational => winit::window::UserAttentionType::Informational,
+                    UserAttention::Critical => winit::window::UserAttentionType::Critical,
+                }));
+        }
+
+        /// Pushes the requested `WindowState` to the window server. Shared
+        /// by `apply_properties` and the first-mapped-event re-delivery: on
+        /// X11 the same call made of an unmapped window is dropped.
+        fn apply_window_state(&self, state: WindowState) {
+            for op in window_state_ops(state) {
+                match op {
+                    WindowStateOp::Maximized(maximized) => {
+                        self.window.set_maximized(*maximized);
+                    }
+                    WindowStateOp::Minimized(minimized) => {
+                        self.window.set_minimized(*minimized);
+                    }
+                    WindowStateOp::Fullscreen => {
+                        self.window
+                            .set_fullscreen(Some(Fullscreen::Borderless(None)));
+                    }
+                    WindowStateOp::NoFullscreen => {
+                        self.window.set_fullscreen(None);
+                    }
+                    WindowStateOp::Hide => {
+                        self.window.set_visible(false);
+                    }
+                }
+            }
+        }
+
+        /// Every monitor winit reports as a `(position, extent)` pair in
+        /// logical points, plus the index of the window's current monitor
+        /// when winit reports one. Shared by `clamp_frame_to_monitors` for
+        /// the first-map placement and every later frame write.
+        fn monitor_layout(&self) -> (Vec<MonitorRect>, Option<usize>) {
+            let scale_factor = self.window.scale_factor();
+            let monitors = self
+                .window
+                .available_monitors()
+                .map(|monitor| {
+                    (
+                        monitor.position().to_logical::<f64>(scale_factor),
+                        monitor.size().to_logical::<f64>(scale_factor),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let current = self.window.current_monitor().and_then(|monitor| {
+                let position = monitor.position().to_logical::<f64>(scale_factor);
+                let extent = monitor.size().to_logical::<f64>(scale_factor);
+                monitors.iter().position(|m| *m == (position, extent))
+            });
+            (monitors, current)
+        }
+
+        /// A frame write clamped so it can never leave every monitor the
+        /// window can see: the size is capped at the target monitor's
+        /// extent and a frame that ends up entirely outside every monitor
+        /// is pulled onto the target monitor's bounds. The target monitor
+        /// is the window's current one, falling back to the monitor
+        /// containing the requested origin and then the nearest. A frame
+        /// that intersects any monitor — including one a second display
+        /// occupies — keeps its origin, so intentional off-screen
+        /// positions (slide-out animations, water-rs/hydrolysis#270)
+        /// still reach the window server, while an oversized request can
+        /// no longer wrap X11's CARD16 geometry field into a pixel-sized
+        /// window — the screen edge is the ceiling, which is also the
+        /// reference terminal's own bound.
+        ///
+        /// The same rule bounds the first-map placement — a not-yet-mapped
+        /// window simply has no current monitor to start from — and every
+        /// later write, so post-map frames cannot escape the screen either.
+        /// With no monitor information at all the request stands.
+        fn clamp_frame_to_monitors(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            monitors: &[MonitorRect],
+            current: Option<usize>,
+        ) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+            let target = current
+                .filter(|index| *index < monitors.len())
+                .or_else(|| {
+                    monitors.iter().position(|(position, extent)| {
+                        requested.x >= position.x
+                            && requested.x < position.x + extent.width
+                            && requested.y >= position.y
+                            && requested.y < position.y + extent.height
+                    })
+                })
+                .or_else(|| {
+                    monitors
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| {
+                            let distance_a = Self::clamp_distance(requested, size, a.0, a.1);
+                            let distance_b = Self::clamp_distance(requested, size, b.0, b.1);
+                            distance_a.total_cmp(&distance_b)
+                        })
+                        .map(|(index, _)| index)
+                });
+            let Some(target) = target else {
+                return (requested, size);
+            };
+            let (position, extent) = monitors[target];
+            // The window server carries geometry in CARD16/INT16 fields;
+            // a request larger than the monitor it lands on used to wrap
+            // modulo 65536 and map as a pixel-sized window.
+            let size = LogicalSize::new(
+                size.width.clamp(1.0, extent.width.max(1.0)),
+                size.height.clamp(1.0, extent.height.max(1.0)),
+            );
+            let intersects = monitors.iter().any(|(p, e)| {
+                requested.x < p.x + e.width
+                    && requested.x + size.width > p.x
+                    && requested.y < p.y + e.height
+                    && requested.y + size.height > p.y
+            });
+            if intersects {
+                return (requested, size);
+            }
+            (Self::pull_inside(requested, size, position, extent), size)
+        }
+
+        /// `requested` clamped so the frame fits inside the monitor rect
+        /// `(position, extent)` — the monitor's bounds, never a constant.
+        fn pull_inside(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            position: LogicalPosition<f64>,
+            extent: LogicalSize<f64>,
+        ) -> LogicalPosition<f64> {
+            let max_x = (position.x + extent.width - size.width).max(position.x);
+            let max_y = (position.y + extent.height - size.height).max(position.y);
+            LogicalPosition::new(
+                requested.x.clamp(position.x, max_x),
+                requested.y.clamp(position.y, max_y),
+            )
+        }
+
+        /// Squared distance between `requested` and the point it would be
+        /// pulled to inside `(position, extent)` — picks the nearest
+        /// monitor for a frame outside all of them.
+        fn clamp_distance(
+            requested: LogicalPosition<f64>,
+            size: LogicalSize<f64>,
+            position: LogicalPosition<f64>,
+            extent: LogicalSize<f64>,
+        ) -> f64 {
+            let pulled = Self::pull_inside(requested, size, position, extent);
+            (pulled.x - requested.x).powi(2) + (pulled.y - requested.y).powi(2)
+        }
+
+        /// The pointer's live position in window-local logical units as the
+        /// host window system reports it right now — `None` where the host
+        /// cannot be asked.
+        ///
+        /// winit's file events carry no coordinates, and no `CursorMoved`
+        /// arrives while an OS drag owns the pointer — OLE keeps
+        /// `WM_MOUSEMOVE` out of the queue on Windows, and AppKit withholds
+        /// `mouseMoved` for an `NSDraggingSession` — so the event-stream
+        /// position goes stale exactly when a drop needs it. Asking the host
+        /// is the only truthful source there; X11 keeps streaming motion
+        /// during XDND, and the query stays right even if the drag source
+        /// grabs the pointer.
+        fn live_pointer_position(&self) -> Option<(f32, f32)> {
+            #[cfg(target_os = "windows")]
+            {
+                self.windows_live_pointer_position()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                self.macos_live_pointer_position()
+            }
+            #[cfg(hydrolysis_wayland_platform)]
+            {
+                self.x11_live_pointer_position()
+            }
+            #[cfg(not(any(
+                target_os = "windows",
+                target_os = "macos",
+                hydrolysis_wayland_platform
+            )))]
+            {
+                None
+            }
+        }
+
+        /// `GetCursorPos` mapped into this window's client area
+        /// (`ScreenToClient`), physical pixels converted to logical points —
+        /// the same space `CursorMoved` reports in.
+        #[cfg(target_os = "windows")]
+        fn windows_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use windows_sys::Win32::Foundation::POINT;
+            use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
+            use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+            let RawWindowHandle::Win32(win32) = self.window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            let mut point = POINT { x: 0, y: 0 };
+            if unsafe { GetCursorPos(&mut point) } == 0 {
+                return None;
+            }
+            if unsafe { ScreenToClient(win32.hwnd.get(), &mut point) } == 0 {
+                return None;
+            }
+            let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
+                .to_logical::<f64>(self.window.scale_factor());
+            Some((position.x as f32, position.y as f32))
+        }
+
+        /// `-[NSWindow mouseLocationOutsideOfEventStream]` converted into
+        /// the view's flipped logical space — the answer a `mouseMoved`
+        /// would carry, without the event AppKit withholds during a drag.
+        #[cfg(target_os = "macos")]
+        fn macos_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use objc2_app_kit::NSView;
+            let RawWindowHandle::AppKit(appkit) = self.window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            // SAFETY: winit guarantees `ns_view` is a valid `NSView` for the
+            // window's lifetime — the same borrow `handle_window_event`'s
+            // WebView bridge makes.
+            let view = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+            let window = view.window()?;
+            let window_point = window.mouseLocationOutsideOfEventStream();
+            let view_point = view.convertPoint_fromView(window_point, None);
+            // AppKit's window base space grows up from the bottom-left corner;
+            // winit reports logical points down from the top-left. `WinitView`
+            // is flipped, so the two spaces already agree — an unflipped view
+            // needs y mirrored across its height.
+            let y = if view.isFlipped() {
+                view_point.y
+            } else {
+                view.bounds().size.height - view_point.y
+            };
+            Some((view_point.x as f32, y as f32))
+        }
+
+        /// `XQueryPointer` on this window over the connection winit already
+        /// holds: `win_x`/`win_y` are window-local physical pixels,
+        /// converted to logical points.
+        #[cfg(hydrolysis_wayland_platform)]
+        fn x11_live_pointer_position(&self) -> Option<(f32, f32)> {
+            use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+            use x11rb::protocol::xproto::ConnectionExt as _;
+            use x11rb::xcb_ffi::XCBConnection;
+            let window_xid = match self.window.window_handle().ok()?.as_raw() {
+                RawWindowHandle::Xcb(handle) => handle.window.get(),
+                RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok()?,
+                _ => return None,
+            };
+            let connection_ptr = match self.window.display_handle().ok()?.as_raw() {
+                RawDisplayHandle::Xcb(handle) => handle.connection?.as_ptr(),
+                RawDisplayHandle::Xlib(handle) => {
+                    let display = handle.display?.as_ptr().cast::<x11_dl::xlib::Display>();
+                    let xlib_xcb = x11_dl::xlib_xcb::Xlib_xcb::open().ok()?;
+                    // SAFETY: `display` is winit's live `Display*` and
+                    // `XGetXCBConnection` borrows its XCB side without
+                    // transferring ownership.
+                    unsafe { (xlib_xcb.XGetXCBConnection)(display) }.cast()
+                }
+                _ => return None,
+            };
+            // `should_drop = false`: the connection is winit's — the wrapper
+            // is a borrow, and dropping it must not disconnect.
+            let connection =
+                unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }.ok()?;
+            let reply = connection.query_pointer(window_xid).ok()?.reply().ok()?;
+            let position = PhysicalPosition::new(f64::from(reply.win_x), f64::from(reply.win_y))
+                .to_logical::<f64>(self.window.scale_factor());
+            Some((position.x as f32, position.y as f32))
+        }
+
+        pub fn handle_window_event(&mut self, event: &WindowEvent) {
+            // The first mapped-signal event re-applies the frame and state
+            // the app asked for: requests made of an unmapped window were
+            // dropped by X11, and the window manager's own state won the
+            // race.
+            if let Some(request) = self.pending_mapped_request.take_on_mapped_event(event) {
+                self.window.set_outer_position(request.position);
+                let _ = self.window.request_inner_size(request.size);
+                self.apply_window_state(request.state);
+                // Level and attention are EWMH client messages too: requests
+                // made of the unmapped window were dropped the same way, so
+                // the last-applied values are re-delivered here.
+                if let Some(properties) = self.applied_properties.clone() {
+                    self.apply_window_level(properties.level);
+                    self.apply_window_attention(properties.attention);
+                }
+            }
+            match event {
+                WindowEvent::Occluded(occluded) => {
+                    self.occluded = *occluded;
+                    self.refresh_visibility_signals();
+                }
+                WindowEvent::RedrawRequested => {
+                    // The pump's own wake: the cheapest place to refresh
+                    // the signals that arrive as no event — X11's minimize
+                    // and Windows' cloaked state.
+                    self.refresh_visibility_signals();
+                }
+                WindowEvent::CloseRequested => {
+                    self.pending_events.push(InputEvent::CloseRequested);
+                }
+                WindowEvent::Resized(size) => {
+                    self.zero_sized = size.width == 0 || size.height == 0;
+                    self.refresh_visibility_signals();
+                    self.pending_surface_size = Some(*size);
+                    self.pending_events.push(InputEvent::Resize {
+                        width: size.width.max(1),
+                        height: size.height.max(1),
+                    });
+                    // A maximize or restore through the window chrome arrives
+                    // as this same `Resized` — the binding write-back rides on
+                    // it so `Window::state` observes the chrome's move.
+                    self.pending_events
+                        .push(InputEvent::Maximized(self.window.is_maximized()));
+                }
+                WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                    assert!(
+                        scale_factor.is_finite() && *scale_factor > 0.0,
+                        "hydrolysis winit backend received invalid scale factor {scale_factor}"
+                    );
+                    let size = self.window.inner_size();
+                    self.pending_surface_size = Some(size);
+                    self.pending_events.push(InputEvent::Resize {
+                        width: size.width.max(1),
+                        height: size.height.max(1),
+                    });
+                }
+                WindowEvent::Moved(position) => {
+                    let logical = position.to_logical::<f64>(self.window.scale_factor());
+                    self.pending_events.push(InputEvent::Moved {
+                        x: logical.x as f32,
+                        y: logical.y as f32,
+                    });
+                }
+                WindowEvent::Focused(focused) => {
+                    self.refresh_visibility_signals();
+                    self.pending_events.push(InputEvent::Focused(*focused));
+                }
+                WindowEvent::HoveredFile(path) => {
+                    self.pending_events
+                        .push(InputEvent::FileHovered { path: path.clone() });
+                }
+                WindowEvent::HoveredFileCancelled => {
+                    self.pending_events.push(InputEvent::FileHoverCancelled);
+                }
+                WindowEvent::DroppedFile(path) => {
+                    self.pending_events
+                        .push(InputEvent::FileDropped { path: path.clone() });
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.pointer_position =
+                        map_cursor_position(position, self.window.scale_factor());
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::input_raw",
+                        event = "cursor_moved",
+                        x = self.pointer_position.0,
+                        y = self.pointer_position.1,
+                        "winit raw input event"
+                    );
+                    self.pending_events.push(InputEvent::PointerMove {
+                        id: 0,
+                        kind: PointerKind::Mouse,
+                        x: self.pointer_position.0,
+                        y: self.pointer_position.1,
+                    });
+                }
+                WindowEvent::CursorLeft { .. } => {
+                    self.pending_events.push(InputEvent::PointerCancel {
+                        id: 0,
+                        kind: PointerKind::Mouse,
+                    });
+                }
+                WindowEvent::MouseInput { state, button, .. } => {
+                    let mapped_button = map_button(*button);
+                    let (x, y) = self.pointer_position;
+                    tracing::trace!(
+                        target: "waterui::hydrolysis::input_raw",
+                        event = "mouse_input",
+                        x,
+                        y,
+                        state = ?state,
+                        button = ?mapped_button,
+                        "winit raw input event"
+                    );
+                    match state {
+                        ElementState::Pressed => {
+                            self.pending_events.push(InputEvent::PointerDown {
+                                id: 0,
+                                kind: PointerKind::Mouse,
+                                x,
+                                y,
+                                button: mapped_button,
+                            });
+                        }
+                        ElementState::Released => {
+                            self.pending_events.push(InputEvent::PointerUp {
+                                id: 0,
+                                kind: PointerKind::Mouse,
+                                x,
+                                y,
+                                button: mapped_button,
+                            });
+                        }
+                    }
+                }
+                WindowEvent::Touch(touch) => {
+                    let position = map_cursor_position(&touch.location, self.window.scale_factor());
+                    self.pointer_position = position;
+                    let (x, y) = position;
+                    let event = match touch.phase {
+                        WinitTouchPhase::Started => InputEvent::PointerDown {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                            x,
+                            y,
+                            button: PointerButton::Primary,
+                        },
+                        WinitTouchPhase::Moved => InputEvent::PointerMove {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                            x,
+                            y,
+                        },
+                        WinitTouchPhase::Ended => InputEvent::PointerUp {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                            x,
+                            y,
+                            button: PointerButton::Primary,
+                        },
+                        WinitTouchPhase::Cancelled => InputEvent::PointerCancel {
+                            id: touch.id,
+                            kind: PointerKind::Touch,
+                        },
+                    };
+                    self.pending_events.push(event);
+                }
+                WindowEvent::MouseWheel { delta, phase, .. } => {
+                    let (dx, dy, is_line_delta) =
+                        map_scroll_delta(delta, self.window.scale_factor());
+                    if is_line_delta {
+                        self.pending_events.push(InputEvent::Scroll {
+                            x: self.pointer_position.0,
+                            y: self.pointer_position.1,
+                            dx,
+                            dy,
+                            is_line_delta,
+                        });
+                    } else {
+                        self.pending_events.push(InputEvent::TrackpadPan {
+                            x: self.pointer_position.0,
+                            y: self.pointer_position.1,
+                            dx,
+                            dy,
+                            phase: map_touch_phase(*phase),
+                        });
+                    }
+                }
+                WindowEvent::PinchGesture { delta, phase, .. } => {
+                    self.pending_events.push(InputEvent::Magnification {
+                        x: self.pointer_position.0,
+                        y: self.pointer_position.1,
+                        delta: *delta as f32,
+                        phase: map_touch_phase(*phase),
+                    });
+                }
+                WindowEvent::RotationGesture { delta, phase, .. } => {
+                    self.pending_events.push(InputEvent::Rotation {
+                        x: self.pointer_position.0,
+                        y: self.pointer_position.1,
+                        delta: *delta,
+                        phase: map_touch_phase(*phase),
+                    });
+                }
+                WindowEvent::ModifiersChanged(modifiers) => {
+                    self.modifiers = modifiers.state().into();
+                    self.pending_events
+                        .push(InputEvent::ModifiersChanged(self.modifiers));
+                }
+                WindowEvent::KeyboardInput {
+                    event,
+                    is_synthetic,
+                    ..
+                } => queue_keyboard_input(
+                    &mut self.pending_events,
+                    self.modifiers,
+                    WinitKeyInput {
+                        is_synthetic: *is_synthetic,
+                        state: event.state,
+                        repeat: event.repeat,
+                        text: event.text.as_deref(),
+                        logical_key: &event.logical_key,
+                        physical_key: event.physical_key,
+                    },
+                ),
+                WindowEvent::Ime(ime) => match ime {
+                    Ime::Preedit(text, caret) => {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "ime_preedit",
+                            text = text.as_str(),
+                            "winit raw input event"
+                        );
+                        self.pending_events.push(InputEvent::ImePreedit {
+                            text: text.clone(),
+                            // winit reports the pre-edit selection as a byte
+                            // range; the caret sits at its start.
+                            caret: caret.map(|(start, _)| start),
+                        });
+                    }
+                    Ime::Commit(text) => {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "ime_commit",
+                            text = text.as_str(),
+                            "winit raw input event"
+                        );
+                        self.pending_events
+                            .push(InputEvent::ImeCommit { text: text.clone() });
+                    }
+                    Ime::Disabled => {
+                        tracing::trace!(
+                            target: "waterui::hydrolysis::input_raw",
+                            event = "ime_disabled",
+                            "winit raw input event"
+                        );
+                        self.pending_events.push(InputEvent::ImeDisabled);
+                    }
+                    Ime::Enabled => {}
+                },
+                _ => {}
+            }
+            // The GPU-content waker reads this before posting a wake: a
+            // signal produced while the window cannot be seen is dropped
+            // rather than waking the loop to render nothing.
+            self.occlusion_signal
+                .store(self.is_occluded(), Ordering::Relaxed);
+        }
+
+        /// Reads the platform's own visibility state into the cached
+        /// signals — `is_minimized` (winit surfaces no event on X11 when
+        /// `_NET_WM_STATE_HIDDEN` flips; the runner's `x11_state_watch`
+        /// turns that property change into a wake) and, on Windows,
+        /// `DWMWA_CLOAKED` (the virtual-desktop or shell cloak, likewise
+        /// delivered as no `WindowEvent`). Called only from the events
+        /// that can accompany a state change, so it is a synchronous
+        /// public-API read on a wake already running, never a timer or a
+        /// poll.
+        pub(crate) fn refresh_visibility_signals(&mut self) {
+            if let Some(minimized) = self.window.is_minimized() {
+                self.minimized = minimized;
+            }
+            #[cfg(target_os = "windows")]
+            {
+                self.cloaked = window_is_cloaked(&self.window);
+            }
+        }
+    }
+
+    /// The DWM's cloaked report for the window's `HWND` — `DWMWA_CLOAKED`
+    /// is nonzero when the shell or a virtual-desktop switch hides the
+    /// window, the only visibility signal Windows gives a process beyond
+    /// minimization. The query itself is the public `DwmGetWindowAttribute`
+    /// API; when it fails the window is reported uncloaked rather than
+    /// guessed.
+    #[cfg(target_os = "windows")]
+    fn window_is_cloaked(native_window: &NativeWindow) -> bool {
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+        let Ok(handle) = native_window.window_handle() else {
+            return false;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return false;
+        };
+        let mut cloaked = 0i32;
+        // SAFETY: `hwnd` is the window's live handle for as long as the
+        // `NativeWindow` lives, and `pvAttribute` points at writable memory
+        // of exactly `cbAttribute` bytes, as the API requires.
+        unsafe {
+            DwmGetWindowAttribute(
+                win32.hwnd.get() as HWND,
+                DWMWA_CLOAKED as u32,
+                (&raw mut cloaked).cast(),
+                size_of::<i32>() as u32,
+            ) == 0
+                && cloaked != 0
+        }
+    }
+
+    fn map_cursor_position(position: &PhysicalPosition<f64>, scale_factor: f64) -> (f32, f32) {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "hydrolysis winit backend received invalid scale factor {scale_factor}"
+        );
+        let logical = position.to_logical::<f64>(scale_factor);
+        (logical.x as f32, logical.y as f32)
+    }
+
+    fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
+        assert!(
+            scale_factor.is_finite() && scale_factor > 0.0,
+            "hydrolysis winit backend received invalid scale factor {scale_factor}"
+        );
+        match delta {
+            MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
+            MouseScrollDelta::PixelDelta(delta) => {
+                let logical = delta.to_logical::<f64>(scale_factor);
+                (logical.x as f32, logical.y as f32, false)
+            }
+        }
+    }
+
+    impl PlatformWindow for WinitWindow {
+        fn content_size(&self) -> (u32, u32) {
+            let size = self.window.inner_size();
+            (size.width, size.height)
+        }
+
+        fn applies_size_limits(&self) -> bool {
+            true
+        }
+
+        fn set_size_limits(
+            &mut self,
+            min: Option<waterui_core::layout::Size>,
+            max: Option<waterui_core::layout::Size>,
+        ) {
+            if self.applied_size_limits == Some((min, max)) {
+                return;
+            }
+            self.window.set_min_inner_size(
+                min.map(|size| LogicalSize::new(f64::from(size.width), f64::from(size.height))),
+            );
+            self.window.set_max_inner_size(
+                max.map(|size| LogicalSize::new(f64::from(size.width), f64::from(size.height))),
+            );
+            self.applied_size_limits = Some((min, max));
+        }
+
+        fn set_transparent(&mut self, transparent: bool) {
+            if self.transparent == transparent {
+                return;
+            }
+            self.window.set_transparent(transparent);
+            self.surface.set_transparent(transparent);
+            self.transparent = transparent;
+        }
+
+        /// Applies the window's declarative properties to the platform window.
+        fn apply_properties(&mut self, window: &waterui::window::Window) {
+            let title = window.display_title().snapshot();
+            let decorations = !matches!(
+                window.style.snapshot(),
+                waterui::window::WindowStyle::Borderless
+            );
+            let state = window.state.snapshot();
+            let frame = validated_window_frame(window.frame.snapshot());
+            let properties = AppliedWindowProperties {
+                title: title.clone(),
+                resizable: window.resizable,
+                decorations,
+                state,
+                frame,
+                level: window.level.snapshot(),
+                attention: window.attention.snapshot(),
+                resize_increments: window
+                    .resize_increments
+                    .as_ref()
+                    .map(|signal| signal.snapshot()),
+            };
+            let previous = self.applied_properties.replace(properties.clone());
+            let applied = previous.as_ref();
+            if applied.is_none_or(|p| p.title != properties.title) {
+                self.window.set_title(properties.title.as_str());
+            }
+            if applied.is_none_or(|p| p.resizable != properties.resizable) {
+                self.window.set_resizable(properties.resizable);
+            }
+            if applied.is_none_or(|p| p.decorations != properties.decorations) {
+                self.window.set_decorations(properties.decorations);
+            }
+            if applied.is_none_or(|p| p.level != properties.level) {
+                self.apply_window_level(properties.level);
+            }
+            if applied.is_none_or(|p| p.attention != properties.attention) {
+                self.apply_window_attention(properties.attention);
+            }
+            if applied.is_none_or(|p| p.resize_increments != properties.resize_increments) {
+                self.window.set_resize_increments(
+                    properties.resize_increments.map(|size| {
+                        LogicalSize::new(f64::from(size.width), f64::from(size.height))
+                    }),
+                );
+            }
+            // The frame binding is pushed to the window only when it changed
+            // since the previous pump. A user-driven resize or move lands in
+            // the window server before its `Resized`/`Moved` event reaches the
+            // binding, so the live geometry legitimately disagrees with the
+            // stale binding in that window — enforcing it then would yank the
+            // window straight back and make user resizes impossible.
+            // Arm the post-map re-apply while the window is still hidden:
+            // the frame and state pushed above reach an unmapped X11 window
+            // and are dropped, so the first mapped event must re-deliver
+            // them — a window manager that stretched the window on map is
+            // put back on the requested frame, and a Fullscreen/Minimized/
+            // Closed request is restored after the window exists. Once the
+            // window is visible the app-requested setup was already
+            // enforced and further changes just flow through the ordinary
+            // path.
+            let size_changed = applied.is_none_or(|p| *p.frame.size() != *frame.size());
+            let origin_changed = applied.is_none_or(|p| p.frame.origin() != frame.origin());
+            let mut target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
+            let mut target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
+            let visible = self.window.is_visible();
+            // Every frame write — the first-map placement and each later
+            // one alike — is clamped to the monitors winit reports: the
+            // size is capped at the window's current monitor (the monitor
+            // containing the requested origin, or the nearest, when there
+            // is no current one) and a frame entirely outside every
+            // monitor is pulled back onto it. Frames that intersect a
+            // display still pass as written, so off-screen slide positions
+            // keep working (water-rs/hydrolysis#270), but an oversized
+            // request no longer wraps X11's CARD16 geometry field into a
+            // pixel-sized window. Monitor enumeration is skipped on pumps
+            // where no frame write can go out.
+            if self.pending_mapped_request.is_initial_placement(visible)
+                || size_changed
+                || origin_changed
+            {
+                let (monitors, current) = self.monitor_layout();
+                (target_position, target_size) =
+                    Self::clamp_frame_to_monitors(target_position, target_size, &monitors, current);
+            }
+            self.pending_mapped_request
+                .arm(visible, target_position, target_size, state);
+            if size_changed || origin_changed {
+                let current_position = self
+                    .window
+                    .outer_position()
+                    .ok()
+                    .map(|value| value.to_logical::<f64>(self.window.scale_factor()));
+                if origin_changed
+                    && current_position.is_none_or(|current| {
+                        (current.x - target_position.x).abs() > 0.5
+                            || (current.y - target_position.y).abs() > 0.5
+                    })
+                {
+                    self.window.set_outer_position(target_position);
+                }
+                let current_size = self
+                    .window
+                    .inner_size()
+                    .to_logical::<f64>(self.window.scale_factor());
+                if size_changed
+                    && ((current_size.width - target_size.width).abs() > 0.5
+                        || (current_size.height - target_size.height).abs() > 0.5)
+                {
+                    let _ = self.window.request_inner_size(target_size);
+                }
+            }
+            if applied.is_none_or(|p| p.state != state) {
+                self.apply_window_state(state);
+            }
+        }
+
+        /// Drains the input events queued since the last drain.
+        fn drain_events(&mut self) -> Vec<InputEvent> {
+            core::mem::take(&mut self.pending_events)
+        }
+
+        /// The window cannot be seen: the window server reported it fully
+        /// occluded (macOS `NSWindow.occlusionState`, iOS scene state, X11
+        /// `VisibilityFullyObscured`), it is minimized by the platform's
+        /// own report (`IsIconic`, `_NET_WM_STATE_HIDDEN`,
+        /// `isMiniaturized`), the DWM cloaked it (Windows `DWMWA_CLOAKED`),
+        /// or its client area is zero (Windows `SIZE_MINIMIZED`, a 0x0
+        /// Wayland configure).
+        ///
+        /// Documented gaps: a Windows window fully covered by other
+        /// windows while neither cloaked nor minimized reports nothing —
+        /// the visibility signals the DWM lets a process query are the
+        /// `DWMWINDOWATTRIBUTE` values of `DwmGetWindowAttribute`
+        /// (<https://learn.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute>),
+        /// and covered-by-other-windows is not one of them. X11's
+        /// `_NET_WM_STATE_HIDDEN` change reaches `is_minimized`'s query
+        /// through the runner's second-connection state watch
+        /// (`x11_state_watch`) — winit selects `PropertyChangeMask` but
+        /// drops the `PropertyNotify` itself. Wayland's signal is instead
+        /// the withheld frame callback, which `pre_present_notify` in
+        /// `present` arms.
+        fn is_occluded(&self) -> bool {
+            self.occluded || self.minimized || self.zero_sized || self.cloaked
+        }
+
+        /// The pointer's live position: the host's own answer where it can
+        /// be asked, else the last position `CursorMoved`/`Touch` reported —
+        /// the fallback keeps the stream that never went quiet (X11 motion
+        /// during XDND) supplying it.
+        fn pointer_position(&self) -> Option<(f32, f32)> {
+            self.live_pointer_position().or(Some(self.pointer_position))
+        }
+
+        /// Requests that the window be repainted.
+        fn request_redraw(&self) {
+            self.window.request_redraw();
+            // Hold the ProMotion frame-rate demand while frames are being
+            // requested, so animations run at 120Hz on high-refresh panels.
+            #[cfg(target_os = "macos")]
+            if let Some(demand) = &self.frame_rate_demand {
+                demand.hold_demand();
+            }
+        }
+
+        /// The window's logical-points-per-pixel scale factor.
+        fn scale_factor(&self) -> f64 {
+            self.window.scale_factor()
+        }
+
+        fn refresh_rate_hz(&self) -> Option<f64> {
+            self.window
+                .current_monitor()
+                .and_then(|monitor| monitor.refresh_rate_millihertz())
+                .map(|millihertz| f64::from(millihertz) / 1000.0)
+        }
+
+        /// Pushes the focused text input's state to the platform IME.
+        fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
+            let scale_factor = self.window.scale_factor();
+            for op in self.text_input_sync.sync(state, scale_factor) {
+                match op {
+                    TextInputSyncOp::Allowed(allowed) => {
+                        self.window.set_ime_allowed(allowed);
+                    }
+                    TextInputSyncOp::Purpose(purpose) => {
+                        let purpose = match purpose {
+                            TextInputPurpose::Normal => ImePurpose::Normal,
+                            TextInputPurpose::Password => ImePurpose::Password,
+                        };
+                        self.window.set_ime_purpose(purpose);
+                    }
+                    TextInputSyncOp::CursorArea {
+                        x,
+                        y,
+                        width,
+                        height,
+                    } => {
+                        self.window.set_ime_cursor_area(
+                            PhysicalPosition::new(x, y),
+                            PhysicalSize::new(width, height),
+                        );
+                    }
+                }
+            }
+        }
+
+        /// Sets the cursor image the window displays.
+        fn set_cursor_style(&mut self, style: CursorStyle) {
+            if self.current_cursor_style == style {
+                return;
+            }
+            self.current_cursor_style = style;
+            self.window
+                .set_cursor(WinitCursor::Icon(map_cursor_style(style)));
+        }
+    }
+
+    impl GpuSurfaceWindow for WinitWindow {
+        /// The GPU surface this window presents into.
+        fn surface(&mut self) -> &mut dyn SurfaceProvider {
+            if let Some(size) = self.pending_surface_size.take() {
+                self.surface.resize(size.width, size.height);
+            }
+            &mut self.surface
+        }
+
+        fn gpu_surface_redraw_handle(&self) -> Option<RedrawHandle> {
+            let window = Arc::clone(&self.window);
+            let occluded = Arc::clone(&self.occlusion_signal);
+            Some(RedrawHandle::new(move || {
+                // GPU content cannot see the window's pump state, so the
+                // occlusion report is shared as a flag: a frame produced
+                // while the window is hidden posts no wake.
+                if !occluded.load(Ordering::Relaxed) {
+                    window.request_redraw();
+                }
+            }))
+        }
+    }
+
+    impl From<ModifiersState> for Modifiers {
+        fn from(value: ModifiersState) -> Self {
+            Self {
+                shift: value.shift_key(),
+                control: value.control_key(),
+                alt: value.alt_key(),
+                super_key: value.super_key(),
+            }
+        }
+    }
+
+    fn map_touch_phase(phase: WinitTouchPhase) -> TouchPhase {
+        match phase {
+            WinitTouchPhase::Started => TouchPhase::Started,
+            WinitTouchPhase::Moved => TouchPhase::Moved,
+            WinitTouchPhase::Ended => TouchPhase::Ended,
+            WinitTouchPhase::Cancelled => TouchPhase::Cancelled,
+        }
+    }
+
+    fn map_button(button: MouseButton) -> PointerButton {
+        match button {
+            MouseButton::Left => PointerButton::Primary,
+            MouseButton::Right => PointerButton::Secondary,
+            MouseButton::Middle => PointerButton::Middle,
+            MouseButton::Back => PointerButton::Back,
+            MouseButton::Forward => PointerButton::Forward,
+            MouseButton::Other(value) => PointerButton::Other(value),
+        }
+    }
+
+    fn map_key(key: &Key) -> KeyCode {
+        match key {
+            Key::Character(value) => KeyCode::Character(value.to_string()),
+            Key::Named(value) => KeyCode::Named(format!("{value:?}")),
+            _ => KeyCode::Unidentified,
+        }
+    }
+
+    fn should_emit_keyboard_text(modifiers: Modifiers) -> bool {
+        !(modifiers.control || modifiers.alt || modifiers.super_key)
+    }
+
+    /// The fields of `WindowEvent::KeyboardInput` hydrolysis reads, decomposed
+    /// at the match site: `winit::event::KeyEvent` cannot be constructed
+    /// outside winit (its `platform_specific` field is private), and this
+    /// translation is what the unit tests drive.
+    #[derive(Clone, Copy)]
+    struct WinitKeyInput<'a> {
+        /// winit's focus-change replay (on X11, `XI_FocusIn` resends every
+        /// held key as a synthetic press and `XI_FocusOut` as a synthetic
+        /// release): state synchronisation, not a keystroke the user made.
+        is_synthetic: bool,
+        /// Whether the key went down (`Pressed`) or came up (`Released`).
+        state: ElementState,
+        repeat: bool,
+        /// The inserted, committed, or composed text.
+        text: Option<&'a str>,
+        logical_key: &'a Key,
+        physical_key: PhysicalKey,
+    }
+
+    fn queue_keyboard_input(
+        pending_events: &mut Vec<InputEvent>,
+        modifiers: Modifiers,
+        input: WinitKeyInput<'_>,
+    ) {
+        if input.is_synthetic {
+            // A replayed press carries no user input: no text, key action or
+            // gesture may observe it. The modifier side of the same sync
+            // still arrives through `ModifiersChanged`.
+            if input.state == ElementState::Released {
+                // The focus-out replay of a held key's release aborts the
+                // press it belonged to: nothing downstream may activate on
+                // it, but the armed press state must come down so a real
+                // release later cannot fire a stale target.
+                pending_events.push(InputEvent::KeyboardCancel);
+            }
+            return;
+        }
+        // Press first, then its text: the web platform's `keydown` →
+        // `beforeinput` order. Text-first would deliver the text before the
+        // handler that could have consumed the press, so a bound key echoed
+        // into the focused surface anyway. With the press leading, a handler
+        // that consumes it suppresses the paired `KeyText` at dispatch.
+        tracing::trace!(
+            target: "waterui::hydrolysis::input_raw",
+            event = "keyboard_input",
+            state = ?input.state,
+            logical_key = ?input.logical_key,
+            modifiers = ?modifiers,
+            "winit raw input event"
+        );
+        pending_events.push(InputEvent::Key {
+            key: map_key_event(input.logical_key, input.text, modifiers),
+            logical_key: ui_events_winit::keyboard::from_winit_key(input.logical_key.clone()),
+            physical_code: ui_events_winit::keyboard::from_winit_code(input.physical_key),
+            repeat: input.repeat,
+            state: match input.state {
+                ElementState::Pressed => KeyState::Pressed,
+                ElementState::Released => KeyState::Released,
+            },
+            modifiers,
+        });
+        if input.state == ElementState::Pressed
+            && should_emit_keyboard_text(modifiers)
+            && let Some(text) = keyboard_text_payload(input.text)
+        {
+            tracing::trace!(
+                target: "waterui::hydrolysis::input_raw",
+                event = "keyboard_text",
+                text,
+                "winit raw input event"
+            );
+            pending_events.push(InputEvent::KeyText {
+                text: text.to_string(),
+            });
+        }
+    }
+
+    fn map_key_event(logical_key: &Key, text: Option<&str>, modifiers: Modifiers) -> KeyCode {
+        if should_emit_keyboard_text(modifiers)
+            && keyboard_text_payload(text).is_some()
+            && matches!(logical_key, Key::Character(_))
+        {
+            return KeyCode::Unidentified;
+        }
+        map_key(logical_key)
+    }
+
+    fn keyboard_text_payload(text: Option<&str>) -> Option<&str> {
+        let text = text?;
+        if text.is_empty() || text.chars().all(char::is_control) {
+            return None;
+        }
+        Some(text)
+    }
+
+    fn map_cursor_style(style: CursorStyle) -> CursorIcon {
+        match style {
+            CursorStyle::Arrow => CursorIcon::Default,
+            CursorStyle::PointingHand => CursorIcon::Pointer,
+            CursorStyle::IBeam => CursorIcon::Text,
+            CursorStyle::Crosshair => CursorIcon::Crosshair,
+            CursorStyle::OpenHand => CursorIcon::Grab,
+            CursorStyle::ClosedHand => CursorIcon::Grabbing,
+            CursorStyle::NotAllowed => CursorIcon::NotAllowed,
+            CursorStyle::ResizeLeft => CursorIcon::WResize,
+            CursorStyle::ResizeRight => CursorIcon::EResize,
+            CursorStyle::ResizeUp => CursorIcon::NResize,
+            CursorStyle::ResizeDown => CursorIcon::SResize,
+            CursorStyle::ResizeLeftRight => CursorIcon::EwResize,
+            CursorStyle::ResizeUpDown => CursorIcon::NsResize,
+            CursorStyle::Move => CursorIcon::Move,
+            CursorStyle::Wait => CursorIcon::Wait,
+            CursorStyle::Copy => CursorIcon::Copy,
+            _ => panic!("unsupported CursorStyle variant in hydrolysis winit backend"),
+        }
+    }
+
+    pub use WinitGpuContext as ExportedWinitGpuContext;
+    pub use WinitWindow as ExportedWinitWindow;
+
+    #[cfg(test)]
+    mod tests {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseScrollDelta};
+        use winit::keyboard::{Key, PhysicalKey};
+
+        use super::{
+            TextInputSync, TextInputSyncOp, WinitKeyInput, map_cursor_position, map_scroll_delta,
+            queue_keyboard_input, should_emit_keyboard_text,
+        };
+        use crate::platform::{InputEvent, KeyState, Modifiers, TextInputPurpose, TextInputState};
+
+        fn input_state(x: f64, y: f64, purpose: TextInputPurpose) -> TextInputState {
+            TextInputState {
+                x,
+                y,
+                width: 2.0,
+                height: 14.0,
+                purpose,
+            }
+        }
+
+        /// Every window-state transition must land in the requested state from
+        /// any prior state: entering a state unwinds the ones it leaves, the
+        /// way `Normal` always did.
+        #[test]
+        fn window_state_transitions_land_from_any_prior_state() {
+            use super::{WindowStateOp, window_state_ops};
+            use waterui::window::WindowState;
+
+            // The flags a platform window carries between calls, applied in
+            // the order `window_state_ops` emits them.
+            #[derive(Clone, Copy)]
+            struct Flags {
+                maximized: bool,
+                minimized: bool,
+                fullscreen: bool,
+            }
+            let start = |state: WindowState| match state {
+                WindowState::Normal | WindowState::Closed => Flags {
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: false,
+                },
+                WindowState::Minimized => Flags {
+                    maximized: false,
+                    minimized: true,
+                    fullscreen: false,
+                },
+                WindowState::Maximized => Flags {
+                    maximized: true,
+                    minimized: false,
+                    fullscreen: false,
+                },
+                WindowState::Fullscreen => Flags {
+                    maximized: false,
+                    minimized: false,
+                    fullscreen: true,
+                },
+            };
+            let settle = |mut flags: Flags, ops: &[WindowStateOp]| {
+                for op in ops {
+                    match op {
+                        WindowStateOp::Maximized(v) => flags.maximized = *v,
+                        WindowStateOp::Minimized(v) => flags.minimized = *v,
+                        WindowStateOp::Fullscreen => flags.fullscreen = true,
+                        WindowStateOp::NoFullscreen => flags.fullscreen = false,
+                        WindowStateOp::Hide => {}
+                    }
+                }
+                flags
+            };
+
+            for from in [
+                WindowState::Normal,
+                WindowState::Minimized,
+                WindowState::Maximized,
+                WindowState::Fullscreen,
+            ] {
+                for to in [
+                    WindowState::Normal,
+                    WindowState::Minimized,
+                    WindowState::Maximized,
+                    WindowState::Fullscreen,
+                ] {
+                    let flags = settle(start(from), window_state_ops(to));
+                    let landed = match (flags.maximized, flags.minimized, flags.fullscreen) {
+                        (false, false, false) => WindowState::Normal,
+                        (false, true, false) => WindowState::Minimized,
+                        (true, false, false) => WindowState::Maximized,
+                        (false, false, true) => WindowState::Fullscreen,
+                        _ => panic!("{from:?} -> {to:?} left a mixed state"),
+                    };
+                    assert_eq!(landed, to, "{from:?} -> {to:?} must land in {to:?}");
+                }
+            }
+        }
+
+        #[test]
+        fn sync_reports_allowed_only_across_focus_transitions() {
+            let mut sync = TextInputSync::default();
+            let state = input_state(10.0, 20.0, TextInputPurpose::Normal);
+            assert_eq!(
+                sync.sync(Some(state), 1.0),
+                vec![
+                    TextInputSyncOp::Allowed(true),
+                    TextInputSyncOp::Purpose(TextInputPurpose::Normal),
+                    TextInputSyncOp::CursorArea {
+                        x: 10,
+                        y: 20,
+                        width: 2,
+                        height: 14,
+                    },
+                ]
+            );
+            // Same state again: nothing to do.
+            assert_eq!(sync.sync(Some(state), 1.0), Vec::new());
+            // Losing focus disables the IME once and reports nothing else.
+            assert_eq!(sync.sync(None, 1.0), vec![TextInputSyncOp::Allowed(false)]);
+            assert_eq!(sync.sync(None, 1.0), Vec::new());
+            // Refocusing re-enables it.
+            assert_eq!(
+                sync.sync(Some(state), 1.0),
+                vec![
+                    TextInputSyncOp::Allowed(true),
+                    TextInputSyncOp::Purpose(TextInputPurpose::Normal),
+                    TextInputSyncOp::CursorArea {
+                        x: 10,
+                        y: 20,
+                        width: 2,
+                        height: 14,
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn sync_reports_purpose_transitions() {
+            let mut sync = TextInputSync::default();
+            let normal = input_state(10.0, 20.0, TextInputPurpose::Normal);
+            let password = input_state(10.0, 20.0, TextInputPurpose::Password);
+            let _ = sync.sync(Some(normal), 1.0);
+            // Purpose changed while staying allowed: no Allowed op, but the
+            // new purpose and cursor area are reported.
+            assert_eq!(
+                sync.sync(Some(password), 1.0),
+                vec![
+                    TextInputSyncOp::Purpose(TextInputPurpose::Password),
+                    TextInputSyncOp::CursorArea {
+                        x: 10,
+                        y: 20,
+                        width: 2,
+                        height: 14,
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn sync_converts_logical_geometry_to_physical_pixels() {
+            let mut sync = TextInputSync::default();
+            let ops = sync.sync(Some(input_state(10.4, 20.5, TextInputPurpose::Normal)), 2.0);
+            assert_eq!(
+                ops.last(),
+                Some(&TextInputSyncOp::CursorArea {
+                    x: 21,      // 10.4 * 2.0 rounded
+                    y: 41,      // 20.5 * 2.0 rounded
+                    width: 4,   // max(2,1) * 2.0 ceiled
+                    height: 28, // max(14,1) * 2.0 ceiled
+                })
+            );
+        }
+
+        #[test]
+        fn sync_never_swallows_a_moving_caret() {
+            let mut sync = TextInputSync::default();
+            let _ = sync.sync(Some(input_state(10.0, 20.0, TextInputPurpose::Normal)), 1.0);
+            // Only the caret x moves: the state differs, so the equality
+            // early-return must not drop the update.
+            let ops = sync.sync(Some(input_state(12.0, 20.0, TextInputPurpose::Normal)), 1.0);
+            assert_eq!(
+                ops,
+                vec![
+                    TextInputSyncOp::Purpose(TextInputPurpose::Normal),
+                    TextInputSyncOp::CursorArea {
+                        x: 12,
+                        y: 20,
+                        width: 2,
+                        height: 14,
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn cursor_position_is_converted_to_logical_coordinates() {
+            let (x, y) = map_cursor_position(&PhysicalPosition::new(384.5, 216.25), 2.0);
+            assert_eq!(x, 192.25);
+            assert_eq!(y, 108.125);
+        }
+
+        #[test]
+        fn pixel_scroll_delta_is_converted_to_logical_space() {
+            let (dx, dy, is_line_delta) = map_scroll_delta(
+                &MouseScrollDelta::PixelDelta(PhysicalPosition::new(120.0, -48.5)),
+                2.0,
+            );
+            assert_eq!(dx, 60.0);
+            assert_eq!(dy, -24.25);
+            assert!(!is_line_delta);
+        }
+
+        #[test]
+        fn line_scroll_delta_is_preserved() {
+            let (dx, dy, is_line_delta) =
+                map_scroll_delta(&MouseScrollDelta::LineDelta(-2.0, 3.5), 2.0);
+            assert_eq!(dx, -2.0);
+            assert_eq!(dy, 3.5);
+            assert!(is_line_delta);
+        }
+
+        #[test]
+        fn command_modified_characters_are_reserved_for_shortcuts() {
+            assert!(should_emit_keyboard_text(Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            }));
+            assert!(!should_emit_keyboard_text(Modifiers {
+                control: true,
+                ..Modifiers::default()
+            }));
+            assert!(!should_emit_keyboard_text(Modifiers {
+                super_key: true,
+                ..Modifiers::default()
+            }));
+            assert!(!should_emit_keyboard_text(Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            }));
+        }
+
+        /// water-rs/hydrolysis#211: on X11, `XI_FocusIn` replays every held
+        /// key as a synthetic `KeyboardInput` press and `XI_FocusOut` as a
+        /// synthetic release — state synchronisation, not keystrokes. The
+        /// replayed press must not produce text or a key event; the replayed
+        /// release surfaces only as the cancellation of the press it paired
+        /// with. The real press that follows is the only one that types.
+        #[test]
+        fn a_synthetic_focus_replay_emits_no_input() {
+            let logical_e = Key::Character("e".into());
+            let held_key = WinitKeyInput {
+                is_synthetic: true,
+                state: ElementState::Pressed,
+                repeat: false,
+                text: Some("e"),
+                logical_key: &logical_e,
+                physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyE),
+            };
+
+            let mut events = Vec::new();
+            // The focus-in replay of the held key, then the real press.
+            queue_keyboard_input(&mut events, Modifiers::default(), held_key);
+            queue_keyboard_input(
+                &mut events,
+                Modifiers::default(),
+                WinitKeyInput {
+                    state: ElementState::Released,
+                    ..held_key
+                },
+            );
+            queue_keyboard_input(
+                &mut events,
+                Modifiers::default(),
+                WinitKeyInput {
+                    is_synthetic: false,
+                    ..held_key
+                },
+            );
+
+            let text_inputs = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        InputEvent::TextInput { .. } | InputEvent::KeyText { .. }
+                    )
+                })
+                .count();
+            let presses = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        InputEvent::Key {
+                            state: KeyState::Pressed,
+                            ..
+                        }
+                    )
+                })
+                .count();
+            let cancels = events
+                .iter()
+                .filter(|event| matches!(event, InputEvent::KeyboardCancel))
+                .count();
+            assert_eq!(text_inputs, 1, "only the real press may type text");
+            assert_eq!(presses, 1, "only the real press may produce a key event");
+            assert_eq!(
+                cancels, 1,
+                "the synthetic release cancels the press it belonged to"
+            );
+            assert_eq!(events.len(), 3, "the synthetic press emits nothing");
+        }
+
+        /// The web platform's `keydown` → `beforeinput` order: a press leads
+        /// the text it produces, and the text is tagged `KeyText` so the
+        /// dispatch loops can suppress it when a handler consumes the press.
+        /// Text-first delivery let a bound key echo into a focused surface
+        /// before the handler could see it.
+        #[test]
+        fn a_key_press_leads_its_paired_text() {
+            let logical_a = Key::Character("a".into());
+            let press = WinitKeyInput {
+                is_synthetic: false,
+                state: ElementState::Pressed,
+                repeat: false,
+                text: Some("a"),
+                logical_key: &logical_a,
+                physical_key: PhysicalKey::Code(winit::keyboard::KeyCode::KeyA),
+            };
+            let mut events = Vec::new();
+            queue_keyboard_input(&mut events, Modifiers::default(), press);
+            assert!(
+                matches!(
+                    events.first(),
+                    Some(InputEvent::Key {
+                        state: KeyState::Pressed,
+                        ..
+                    })
+                ),
+                "the press does not lead the queue: {events:?}"
+            );
+            assert!(
+                matches!(events.get(1), Some(InputEvent::KeyText { .. })),
+                "the paired text does not follow its press: {events:?}"
+            );
+            assert_eq!(events.len(), 2, "a press plus its text is the whole pair");
+        }
+
+        #[test]
+        fn cursor_position_panics_with_invalid_scale_factor() {
+            let result = std::panic::catch_unwind(|| {
+                let _ = map_cursor_position(&PhysicalPosition::new(120.0, 80.0), 0.0);
+            });
+            assert!(result.is_err());
+        }
+
+        fn caps_with_alpha_modes(
+            alpha_modes: &[wgpu::CompositeAlphaMode],
+        ) -> wgpu::SurfaceCapabilities {
+            wgpu::SurfaceCapabilities {
+                alpha_modes: alpha_modes.to_vec(),
+                ..wgpu::SurfaceCapabilities::default()
+            }
+        }
+
+        fn fake_adapter_info() -> wgpu::AdapterInfo {
+            wgpu::AdapterInfo {
+                name: "fake adapter".to_string(),
+                vendor: 0,
+                device: 0,
+                device_type: wgpu::DeviceType::Cpu,
+                device_pci_bus_id: String::new(),
+                driver: String::new(),
+                driver_info: String::new(),
+                backend: wgpu::Backend::Gl,
+                subgroup_min_size: 4,
+                subgroup_max_size: 128,
+                transient_saves_memory: Some(false),
+                limit_bucket: None,
+            }
+        }
+
+        #[test]
+        fn a_transparent_window_gets_the_first_transparent_alpha_mode_the_surface_offers() {
+            use wgpu::CompositeAlphaMode as Mode;
+            assert_eq!(
+                super::WinitSurface::select_alpha_mode(
+                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit, Mode::PreMultiplied]),
+                    true,
+                    &fake_adapter_info(),
+                ),
+                Mode::PreMultiplied
+            );
+            // X11 compositing on a 32-bit visual reports exactly this pair:
+            // with no explicit multiplied mode the inherited mode is the only
+            // one whose alpha reaches the compositor.
+            assert_eq!(
+                super::WinitSurface::select_alpha_mode(
+                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::Inherit]),
+                    true,
+                    &fake_adapter_info(),
+                ),
+                Mode::Inherit
+            );
+        }
+
+        #[test]
+        fn an_opaque_window_keeps_the_surface_preferred_alpha_mode() {
+            use wgpu::CompositeAlphaMode as Mode;
+            assert_eq!(
+                super::WinitSurface::select_alpha_mode(
+                    &caps_with_alpha_modes(&[Mode::Opaque, Mode::PreMultiplied]),
+                    false,
+                    &fake_adapter_info(),
+                ),
+                Mode::Opaque
+            );
+        }
+
+        /// water-rs/hydrolysis#118: a depth-32 X11 window on a Mesa
+        /// software rasterizer below 24.1 is silently un-presentable — the
+        /// version gate is the only signal presentation never had.
+        #[test]
+        fn a_mesa_software_adapter_below_24_1_is_blocked_for_transparency() {
+            use super::WinitSurface;
+            let adapter = |driver_info: &str, device_type: wgpu::DeviceType| {
+                let mut info = fake_adapter_info();
+                info.name = "llvmpipe (LLVM 15.0.7, 256 bits)".to_string();
+                info.device_type = device_type;
+                info.driver_info = driver_info.to_string();
+                info
+            };
+            let blocked = WinitSurface::mesa_x11_transparency_blocker(&adapter(
+                "Mesa 23.2.1-1ubuntu2",
+                wgpu::DeviceType::Cpu,
+            ));
+            let cause = blocked.expect("Mesa 23.2.1 llvmpipe must be rejected");
+            assert!(
+                cause.contains("23.2.1")
+                    && cause.contains("Mesa 24.1")
+                    && cause.contains("1e849b12")
+                    && cause.contains("upgrade Mesa"),
+                "the failure must name the cause and the fix: {cause}"
+            );
+            for driver_info in [
+                "Mesa 24.1.0",
+                "Mesa 24.1.0-devel (git-c4b20fd)",
+                "Mesa 25.0.7",
+                "Mesa 26.2.3",
+                // Not a Mesa driver — the defect is Mesa-specific.
+                "SwiftShader driver",
+                // No Mesa version to prove the defect against.
+                "",
+            ] {
+                assert!(
+                    WinitSurface::mesa_x11_transparency_blocker(&adapter(
+                        driver_info,
+                        wgpu::DeviceType::Cpu,
+                    ))
+                    .is_none(),
+                    "{driver_info} must pass"
+                );
+            }
+            // A hardware adapter presents through DRI3, never the software
+            // X11 WSI path — even a Mesa one on an old version.
+            for device_type in [
+                wgpu::DeviceType::IntegratedGpu,
+                wgpu::DeviceType::DiscreteGpu,
+                wgpu::DeviceType::VirtualGpu,
+                wgpu::DeviceType::Other,
+            ] {
+                assert!(
+                    WinitSurface::mesa_x11_transparency_blocker(&adapter(
+                        "Mesa 23.2.1",
+                        device_type,
+                    ))
+                    .is_none(),
+                    "{device_type:?} must pass"
+                );
+            }
+        }
+
+        #[test]
+        #[should_panic(expected = "fake adapter")]
+        fn a_transparent_window_on_an_opaque_only_adapter_fails_at_creation() {
+            use wgpu::CompositeAlphaMode as Mode;
+            let _ = super::WinitSurface::select_alpha_mode(
+                &caps_with_alpha_modes(&[Mode::Opaque]),
+                true,
+                &fake_adapter_info(),
+            );
+        }
+
+        #[test]
+        fn the_requested_frame_is_reapplied_on_the_first_mapped_event() {
+            use waterui::window::WindowState;
+            use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
+            use winit::event::WindowEvent;
+
+            let mut retry = super::MappedRequestRetry::default();
+            let position = LogicalPosition::new(12.0, 34.0);
+            let size = LogicalSize::new(800.0, 300.0);
+            let armed = |position, size, state| super::PendingMappedRequest {
+                position,
+                size,
+                state,
+            };
+
+            // Armed while the window is unmapped: a pre-map event leaves the
+            // frame held; the first mapped-signal event returns it once.
+            retry.arm(Some(false), position, size, WindowState::Normal);
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Focused(true)),
+                None,
+                "a non-mapped event must not consume the held frame"
+            );
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0))),
+                Some(armed(position, size, WindowState::Normal)),
+            );
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Resized(PhysicalSize::new(1, 1))),
+                None,
+                "the re-apply fires once only"
+            );
+
+            // A later request while still hidden replaces the earlier one —
+            // frame and state alike.
+            let mut retry = super::MappedRequestRetry::default();
+            retry.arm(Some(false), position, size, WindowState::Normal);
+            let newer = (
+                LogicalPosition::new(56.0, 78.0),
+                LogicalSize::new(1024.0, 640.0),
+            );
+            retry.arm(None, newer.0, newer.1, WindowState::Fullscreen);
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Occluded(false)),
+                Some(armed(newer.0, newer.1, WindowState::Fullscreen)),
+            );
+
+            // Once the window is visible nothing is held: the ordinary
+            // frame-binding path applies later frames. `is_visible` may lag
+            // the real map transition — a mapped event latches `mapped`, so
+            // arming must not resurrect a retry the live geometry overtook.
+            let mut retry = super::MappedRequestRetry::default();
+            retry.arm(Some(false), position, size, WindowState::Normal);
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0))),
+                Some(armed(position, size, WindowState::Normal)),
+            );
+            retry.arm(None, newer.0, newer.1, WindowState::Normal);
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0))),
+                None,
+                "no re-arm is allowed once a mapped event has been seen"
+            );
+            let mut retry = super::MappedRequestRetry::default();
+            retry.arm(Some(true), position, size, WindowState::Normal);
+            assert_eq!(
+                retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0))),
+                None,
+                "a confirmed-visible window holds nothing"
+            );
+        }
+
+        #[test]
+        fn an_off_screen_frame_origin_passes_initial_placement_as_written() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            // A window sliding in from above the top edge still intersects
+            // the monitor, so the guard must not touch it
+            // (water-rs/hydrolysis#270).
+            let monitors = [(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1920.0, 1080.0),
+            )];
+            let requested = LogicalPosition::new(120.0, -36.0);
+            let size = LogicalSize::new(800.0, 600.0);
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, None),
+                (requested, size),
+                "a partially off-screen origin must reach the window server as written"
+            );
+        }
+
+        #[test]
+        fn a_frame_on_another_monitor_passes_initial_placement_as_written() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            // A two-monitor layout: the requested origin sits on the second
+            // display and must not be pulled back onto the first.
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            let requested = LogicalPosition::new(2200.0, 400.0);
+            let size = LogicalSize::new(800.0, 600.0);
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, None),
+                (requested, size),
+                "a frame on a second display must reach the window server as written"
+            );
+        }
+
+        #[test]
+        fn a_frame_entirely_outside_every_monitor_lands_on_the_nearest_at_placement() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            let size = LogicalSize::new(800.0, 600.0);
+            let single = [(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1920.0, 1080.0),
+            )];
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(
+                    LogicalPosition::new(4000.0, 3000.0),
+                    size,
+                    &single,
+                    None,
+                )
+                .0,
+                LogicalPosition::new(1120.0, 480.0),
+                "a first-mapped window outside every display is pulled back in"
+            );
+
+            // The pull goes to the nearest monitor, not the primary one.
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(
+                    LogicalPosition::new(2400.0, 3000.0),
+                    size,
+                    &monitors,
+                    None,
+                )
+                .0,
+                LogicalPosition::new(2400.0, 840.0),
+                "the nearest display claims a window outside all of them"
+            );
+
+            // With no monitor information the request stands as written.
+            let requested = LogicalPosition::new(-4000.0, -3000.0);
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &[], None),
+                (requested, size),
+            );
+        }
+
+        #[test]
+        fn an_oversized_frame_write_is_capped_at_the_monitor_extent() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            // The CARD16-wrap report: a ~524292px request used to reach
+            // X11 verbatim and map modulo 65536 as a 4-pixel window. The
+            // size is capped at the target monitor while the origin —
+            // which intersects the display — passes as written, so the
+            // window lands exactly at the screen edge.
+            let monitors = [(
+                LogicalPosition::new(0.0, 0.0),
+                LogicalSize::new(1600.0, 1200.0),
+            )];
+            let requested = LogicalPosition::new(0.0, 0.0);
+            let oversized = LogicalSize::new(524_292.0, 524_292.0);
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, oversized, &monitors, None,),
+                (requested, LogicalSize::new(1600.0, 1200.0)),
+                "an oversized frame write lands at the monitor's edge"
+            );
+        }
+
+        #[test]
+        fn a_post_map_write_is_measured_against_the_current_monitor() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            let size = LogicalSize::new(2000.0, 1500.0);
+            // The current monitor wins the size cap even when the
+            // requested origin sits on a larger second display.
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(
+                    LogicalPosition::new(2200.0, 100.0),
+                    size,
+                    &monitors,
+                    Some(0),
+                )
+                .1,
+                LogicalSize::new(1920.0, 1080.0),
+                "the current monitor caps the size, not the requested one"
+            );
+            // With no current monitor the one containing the requested
+            // origin takes over.
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(
+                    LogicalPosition::new(2200.0, 100.0),
+                    size,
+                    &monitors,
+                    None,
+                )
+                .1,
+                LogicalSize::new(2000.0, 1440.0),
+                "the origin's monitor caps the size when no monitor claims the window"
+            );
+        }
+
+        #[test]
+        fn a_fully_off_screen_post_map_write_returns_to_the_current_monitor() {
+            use winit::dpi::{LogicalPosition, LogicalSize};
+
+            let monitors = [
+                (
+                    LogicalPosition::new(0.0, 0.0),
+                    LogicalSize::new(1920.0, 1080.0),
+                ),
+                (
+                    LogicalPosition::new(1920.0, 0.0),
+                    LogicalSize::new(2560.0, 1440.0),
+                ),
+            ];
+            let size = LogicalSize::new(800.0, 600.0);
+            let requested = LogicalPosition::new(3000.0, 2000.0);
+            // Nearest would pick the second display; the current monitor
+            // claims a post-map write back.
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, Some(0),).0,
+                LogicalPosition::new(1120.0, 480.0),
+                "the pull lands on the window's current monitor"
+            );
+            assert_eq!(
+                super::WinitWindow::clamp_frame_to_monitors(requested, size, &monitors, None).0,
+                LogicalPosition::new(3000.0, 840.0),
+                "without a current monitor the nearest display claims it"
+            );
+        }
+
+        #[test]
+        fn the_placement_guard_applies_only_until_the_first_mapped_event() {
+            use waterui::window::WindowState;
+            use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
+            use winit::event::WindowEvent;
+
+            let mut retry = super::MappedRequestRetry::default();
+            assert!(retry.is_initial_placement(Some(false)));
+            assert!(retry.is_initial_placement(None));
+            assert!(
+                !retry.is_initial_placement(Some(true)),
+                "a confirmed-visible window takes frame writes as written"
+            );
+
+            retry.arm(
+                Some(false),
+                LogicalPosition::new(12.0, 34.0),
+                LogicalSize::new(800.0, 300.0),
+                WindowState::Normal,
+            );
+            let _ = retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0)));
+            assert!(
+                !retry.is_initial_placement(None),
+                "once a mapped event has been seen, later writes are never guarded"
+            );
+        }
+
+        #[test]
+        fn a_premap_state_is_reapplied_on_the_first_mapped_event() {
+            use waterui::window::WindowState;
+            use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
+            use winit::event::WindowEvent;
+
+            let position = LogicalPosition::new(12.0, 34.0);
+            let size = LogicalSize::new(800.0, 300.0);
+
+            // A Fullscreen request made while the window was still unmapped
+            // is held and delivered once on the first mapped-signal event.
+            for state in [
+                WindowState::Fullscreen,
+                WindowState::Minimized,
+                WindowState::Closed,
+            ] {
+                let mut retry = super::MappedRequestRetry::default();
+                retry.arm(Some(false), position, size, state);
+                assert_eq!(
+                    retry.take_on_mapped_event(&WindowEvent::Moved(PhysicalPosition::new(0, 0))),
+                    Some(super::PendingMappedRequest {
+                        position,
+                        size,
+                        state,
+                    }),
+                    "a pre-map {state:?} must be re-delivered on the first mapped event"
+                );
+                assert_eq!(
+                    retry.take_on_mapped_event(&WindowEvent::Resized(PhysicalSize::new(1, 1))),
+                    None,
+                    "a pre-map {state:?} is delivered once only"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+
+#[cfg(hydrolysis_winit)]
+pub(crate) use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
+#[cfg(hydrolysis_winit)]
+#[cfg(hydrolysis_winit)]
+pub use winit_impl::ExportedWinitWindow as WinitWindow;

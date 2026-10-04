@@ -93,6 +93,19 @@ jobs:
       pull-requests: write
       issues: write
 
+  # The whole-workspace MSRV sweep: the per-change gate runs this check
+  # only when a diff touches a toolchain boundary, so the nightly carries
+  # the standing signal that `dev` still compiles on the declared
+  # `rust-version` — including pins that moved a dependency's floor under
+  # a released patch.
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/msrv
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -133,6 +146,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
+      # The instrumented build compiles hydrolysis's test targets, which
+      # `include_bytes!` the generated fonts — the repository stores none.
+      - name: Generate Hydrolysis test assets
+        uses: ./.github/actions/generate-test-assets
       - name: Prepare coverage target dir
         run: |
           mkdir -p target/llvm-cov-target
@@ -172,6 +189,10 @@ jobs:
         with:
           tool: cargo-hack@0.6.45
           path: ~/.cargo/bin/cargo-hack*
+      # `--each-feature` compiles hydrolysis with `testing` on its own; that
+      # feature's font table is generated, not committed.
+      - name: Generate Hydrolysis test assets
+        uses: ./.github/actions/generate-test-assets
       # `--feature-powerset` is deliberately absent. The workspace has ~33_800
       # feature combinations (waterui alone has 14 features = 16_384), so the
       # sweep either ran for 105 minutes or was cancelled at ~27 minutes having
@@ -236,7 +257,7 @@ jobs:
 
   test-report:
     name: Test Report
-    needs: [test, windows, webview-js, ts-js]
+    needs: [test, windows, webview-js, ts-js, msrv]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -253,7 +274,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, test-report, android-backend, apple-e2e]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, android-backend, apple-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -297,7 +318,7 @@ jobs:
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, android-backend, promote, apple-e2e]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, android-backend, promote, apple-e2e]
     if: failure()
     runs-on: ubuntu-latest
     timeout-minutes: 5

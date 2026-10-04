@@ -14,7 +14,7 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterkit-camera.workspace = true
 waterkit-permission.workspace = true
 shaderloom = { workspace = true, features = ["runtime"] }

@@ -1,0 +1,34 @@
+# Event order source: AppKit NSTextInputClient as implemented by winit
+# (winit-0.30 src/platform_impl/macos/view.rs). Every keystroke that updates
+# marked text delivers `setMarkedText` -> `Ime::Preedit`. Confirming with
+# Enter runs `insertText`, which emits `Ime::Preedit("")` and then
+# `Ime::Commit` — the preedit is cleared BEFORE the commit. The key that
+# confirms never reaches the app: `keyDown` suppresses `KeyboardInput` while
+# `ImeState` is `Preedit`/`Committed`, and `keyUp` is only sent in the
+# Ground/Disabled states, so no `key`/`text` events appear here at all.
+# Order derived from the documented NSTextInputClient flow above; not an
+# observed platform trace.
+final_text = "你好"
+selection = [6, 6]
+committing_key_swallowed = true
+
+# Typing "nihao": each keystroke rewrites the marked text.
+[[step]]
+events = [
+    { preedit = { text = "n i h a o", caret = 9 } },
+]
+
+# Space selects the first candidate; the marked text becomes the candidate
+# with the caret at the start of the selection range.
+[[step]]
+events = [
+    { preedit = { text = "你好", caret = 0 } },
+]
+
+# Enter confirms: insertText emits the cleared preedit then the commit, and
+# the Enter keystroke itself is swallowed upstream by the IME.
+[[step]]
+events = [
+    { preedit = { text = "" } },
+    { commit = "你好" },
+]
