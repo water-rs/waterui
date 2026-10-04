@@ -146,9 +146,11 @@ impl NativeLeaf {
         if let Some(host) = view.downcast_ref::<HostView>() {
             // The view must not keep the leaf alive: a strong layout here
             // closes a HostView → handler → SubView → leaf-state → HostView
-            // cycle (water-rs/waterui#1567). The leaf is the layout's sole
-            // owner; the handler upgrades only for the measure call, and
-            // `detach` clears it before the leaf can be released.
+            // cycle (water-rs/waterui#1567). The leaf retains the layout
+            // for its mounted lifetime — the context-menu panel clones it
+            // through `layout_handle` — so the handler upgrades only for
+            // the measure call, and `detach` clears it before the leaf
+            // can be released.
             let layout = Rc::downgrade(layout);
             host.set_measure_handler(move |_host, proposal| {
                 let layout = layout
