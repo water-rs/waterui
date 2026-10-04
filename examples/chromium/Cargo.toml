@@ -15,7 +15,7 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 serde_json = "1.0"
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 waterui-browser-cef = { workspace = true, features = ["chromium"] }
 waterui-chromium.workspace = true
 

@@ -28,6 +28,10 @@ mis = "mis"
 PN = "PN"
 # A standard variant in technical prose.
 unparseable = "unparseable"
+# The OpenType width-variation axis tag (`wght`, `wdth`), not "width".
+wdth = "wdth"
+# A deliberately truncated "Archive" rendering in scroll test comments.
+Archiv = "Archiv"
 
 [default.extend-identifiers]
 NdefFormatable = "NdefFormatable"

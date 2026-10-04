@@ -25,7 +25,7 @@ tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
-waterui.workspace = true
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
 hydrolysis-m3.workspace = true
 
 [lints]

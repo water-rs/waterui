@@ -14,4 +14,4 @@ publish = false
 dev = ["waterui/dynamic_linking"]
 
 [dependencies]
-waterui = { workspace = true, features = ["flow-markdown"] }
+waterui = { workspace = true, features = ["flow-markdown", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }

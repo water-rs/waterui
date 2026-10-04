@@ -1,0 +1,18 @@
+name: Generate Hydrolysis test assets
+description: >
+  Regenerates the binary test assets hydrolysis's test and dev code compile
+  from `include_bytes!` — the fonts under backends/hydrolysis/test-fonts/ and
+  the live-photo fixture under backends/hydrolysis/tests/fixtures/ — from
+  their pinned, hash-verified sources. The repository carries no binary
+  files, so any job that compiles hydrolysis's `#[cfg(test)]` or dev paths
+  (the `--all-targets` clippy passes, nextest, doctests) must run this first.
+
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v6
+    - name: Generate fonts and fixtures
+      shell: bash
+      run: |
+        uv run backends/hydrolysis/test-fonts/generate.py
+        uv run backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py

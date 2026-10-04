@@ -1,0 +1,350 @@
+[package]
+name = "hydrolysis"
+version = "0.3.1"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "README.md"
+repository.workspace = true
+description = "GPU-required self-drawn backend for WaterUI"
+keywords = ["ui", "graphics", "gpu", "waterui", "cherenkov"]
+categories = ["gui", "graphics"]
+
+[dependencies]
+waterui-core.workspace = true
+waterui-assets.workspace = true
+# Decodes the CLI-staged window icon (always written as 8-bit RGBA PNG).
+png = "0.18"
+waterui = { workspace = true, features = ["gpu", "inspector"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+nami.workspace = true
+waterui-graphics = { workspace = true, features = ["gpu"] }
+# `font-collection` for the one `parley` collection this runner builds and
+# installs into the environment; the faces come from the resource loader and
+# the system source `parley/system` provides, so `system-fonts` is not needed.
+waterui-text = { workspace = true, features = ["font-collection"] }
+waterui-icon.workspace = true
+waterui-shape.workspace = true
+waterui-map.workspace = true
+waterui-webview.workspace = true
+waterui-layout.workspace = true
+waterui-controls.workspace = true
+waterui-form.workspace = true
+waterui-backend-core = { workspace = true, features = ["widgets", "gestures", "overlay"] }
+waterkit-clipboard.workspace = true
+waterui-locale.workspace = true
+# `std` for `Url::from_file_path`, the OS file-drop path.
+waterui-url = { workspace = true, features = ["std"] }
+cherenkov.workspace = true
+cherenkov-gpu.workspace = true
+kurbo.workspace = true
+peniko = "0.6"
+# `complex-scripts` ships the ICU4X segmentation dictionaries (CJ plus the
+# Southeast-Asian scripts) inside the one parley build: this runner owns the
+# `LayoutContext`, and without them its word segmenter logs `No segmentation
+# model for complex script` per CJK run on every layout pass.
+parley = { workspace = true, features = ["system", "complex-scripts"] }
+# Glyph outline bounds for the measured-frame-must-cover-ink contract (#237):
+# parley's advance metrics stop at the pen advance, so the measure path reads
+# the real outline extents through the same font stack version parley uses.
+skrifa = "0.44"
+# `Emoji`/`Emoji_Presentation` sets for the emoji-cluster ranges shaping must
+# route through the `emoji` generic family first.
+icu_properties = { version = "2.3", default-features = false, features = ["compiled_data"] }
+wgpu.workspace = true
+lru.workspace = true
+pollster.workspace = true
+executor-core.workspace = true
+rustc-hash.workspace = true
+unicode-segmentation = "1.13"
+async-task = "4.7"
+native-executor.workspace = true
+keyboard-types.workspace = true
+# `serde` lets the Android host push the merged accesskit tree to its
+# accessibility provider as JSON (src/runner/android/accessibility.rs).
+accesskit = { version = "0.25", optional = true, features = ["serde"] }
+waterui-inspector-protocol.workspace = true
+
+# The winit runner and its companion crates: desktop only. Android's
+# Activity belongs to the Kotlin host, and winit's `android-activity` can
+# only build once an application picks an activity backend — nothing in
+# this library may — so the dependency edge does not exist for the Android
+# target at all. The `winit` feature still exists there and means nothing.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+winit = { version = "0.30", optional = true }
+ui-events-winit = { workspace = true, optional = true }
+accesskit_winit = { version = "0.34.0", optional = true }
+
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
+# Termination signals for the windowed desktop runner. No windowing system
+# delivers SIGINT/SIGTERM/SIGHUP (or the Windows console close events) to winit,
+# so the runner installs its own handler on every desktop target it builds for.
+[target.'cfg(all(any(unix, windows), not(target_os = "android")))'.dependencies]
+ctrlc = { version = "3.5", features = ["termination"], optional = true }
+
+# Explicit ProMotion opt-in on macOS: a CADisplayLink created from the winit
+# window's NSView declares the 120Hz frame-rate demand (see
+# platform/macos_display_link.rs). All of these are already in winit's own
+# dependency graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = { workspace = true, optional = true }
+cookie = { version = "0.18", optional = true }
+futures = { workspace = true, optional = true }
+objc2 = { workspace = true, optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = [
+    "NSAnimation",
+    "NSEvent",
+    "NSGraphics",
+    "NSResponder",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "objc2-quartz-core",
+] }
+objc2-core-graphics = { version = "0.3", optional = true, features = ["CGPath"] }
+objc2-foundation = { workspace = true, optional = true, features = [
+    "NSArray",
+    "NSBundle",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSHTTPCookie",
+    "NSJSONSerialization",
+    "NSObject",
+    "NSProcessInfo",
+    "NSRunLoop",
+    "NSString",
+    "NSURL",
+    "NSURLError",
+    "NSURLRequest",
+    "NSURLResponse",
+] }
+objc2-quartz-core = { version = "0.3", optional = true, features = [
+    "CALayer",
+    "CADisplayLink",
+    "CAFrameRateRange",
+    "CAMetalLayer",
+    "CAShapeLayer",
+    "objc2-core-graphics",
+] }
+objc2-web-kit = { version = "0.3.2", optional = true, default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "WKBackForwardList",
+    "WKContentWorld",
+    "WKFrameInfo",
+    "WKSecurityOrigin",
+    "WKHTTPCookieStore",
+    "WKNavigation",
+    "WKNavigationAction",
+    "WKNavigationDelegate",
+    "WKNavigationResponse",
+    "WKScriptMessage",
+    "WKScriptMessageHandler",
+    "WKURLSchemeHandler",
+    "WKURLSchemeTask",
+    "WKUserContentController",
+    "WKUserScript",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKWebsiteDataStore",
+] }
+serde_json = { workspace = true, optional = true }
+
+# The native app menu-bar surface (`App::menu_bar`): muda builds the real
+# NSMenu on NSApp.mainMenu (macOS) and a Win32 HMENU on the window's HWND
+# (Windows). See src/platform/native_menu_bar.rs.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+muda = { version = "0.20", optional = true, default-features = false }
+
+# Window placement (water-rs/waterui#1302): X11 reads the pointer position and
+# `_NET_WORKAREA` over the connection winit already holds — borrowed through
+# the raw display handle, never a second connection. `x11-dl`'s `xlib_xcb`
+# module turns the Xlib backend's `Display*` into its `xcb_connection_t`.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "emscripten", target_os = "redox"))))'.dependencies]
+x11-dl = { version = "2.21", optional = true }
+x11rb = { version = "0.13", optional = true }
+
+# `GetCursorPos` / `GetMonitorInfoW` for `MonitorSelector::Pointer` and
+# `visible_frame`, `WS_EX_NOACTIVATE` for `Activation::Never`,
+# `DwmGetWindowAttribute(DWMWA_CLOAKED)` for hidden-window occlusion. The
+# version tracks the `windows-sys` release winit 0.30 already builds against.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# The Android host's JNI boundary (see src/runner/android/): `ndk` is pinned to
+# the API-31 NDK symbols it calls (Surface frame-rate and MotionEvent-from-Java
+# are runtime-gated by Build.VERSION.SDK_INT), `libc` carries the eventfd the
+# main-Looper executor wakes on, and `android_logger` + `tracing-log` route
+# `tracing` into logcat.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
+ndk = { version = "0.9.0", features = ["nativewindow", "api-level-31"] }
+raw-window-handle = "0.6"
+libc = "0.2"
+android_logger = "0.15"
+log = "0.4"
+tracing-log = "0.2"
+# The accessibility tree publish and the platform-view placement set cross JNI
+# as JSON.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The web runner fetches its fonts while the GPU device comes up; `join!` and
+# `join_all` are the whole of what it needs from futures.
+futures = { workspace = true, optional = true }
+js-sys = "0.3"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Response",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "CustomEvent",
+    "CustomEventInit",
+    "Document",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+    "KeyboardEvent",
+    "Node",
+    "PointerEvent",
+    "WheelEvent",
+    "Window",
+] }
+
+[dev-dependencies]
+# The renderer itself knows nothing about `Canvas`: it resolves to a
+# `SceneView` before it reaches layout. The tests still author canvases, which
+# is what keeps that resolution honest.
+waterui-canvas.workspace = true
+# The wayland examples need a widget theme; m3 is independently maintained.
+hydrolysis-m3.workspace = true
+waterui-testing.workspace = true
+waterui-navigation.workspace = true
+# The presentation tests received from waterui exercise these component crates
+# directly: live photos (media), the MCP session harness (mcp, aither-mcp,
+# futures-lite, serde_json).
+waterui-media.workspace = true
+# The #210 regression test drives a real `ReactiveImage`: its handle's `set`
+# is the same call the decode pipeline makes when an image lands.
+waterui-image.workspace = true
+waterui-mcp.workspace = true
+aither-mcp = { workspace = true, features = ["server"] }
+futures-lite.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml.workspace = true
+jiff.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+waterui = { workspace = true, features = ["flow-markdown", "gpu", "snackbar", "video-gpu"] }
+base64 = "0.22"
+executor-core = { workspace = true, features = ["async-executor"] }
+tiny_http = "0.12"
+# Two crates that only exist to let the segmentation test see what it asserts
+# about: `icu_provider/logging` routes ICU4X data warnings through `log`
+# instead of the `eprintln` shim debug builds get otherwise, and `tracing-log`
+# bridges those records into the `tracing` subscriber the test captures. With
+# `complex-scripts` on the parley dep, no warning may be emitted at all.
+icu_provider = { version = "2.3", features = ["logging"] }
+tracing-log = "0.2"
+# The frame-profile example renders a packaged icon set and a chart through
+# the real pipeline.
+waterui-icons-lucide.workspace = true
+waterui-chart.workspace = true
+# Drives the text-measure bench (`benches/text_measure.rs`).
+criterion = "0.8"
+# The text-measure bench rides the real layout path; `harness = false` hands
+# the binary's `main` to criterion.
+[[bench]]
+name = "text_measure"
+harness = false
+required-features = ["testing"]
+
+# `WKWebView` is `MainThreadOnly` and libtest runs tests on worker threads, so
+# the macOS real-engine suite owns its `main` and pumps the main run loop.
+[[test]]
+name = "real_engine_macos"
+harness = false
+required-features = ["webview-system", "winit"]
+
+# The headless frame-pipeline profiler: representative scenes rendered
+# offscreen through the real pipeline, one JSON document per scene.
+[[example]]
+name = "frame_profile"
+required-features = ["frame-profile"]
+
+[features]
+default = []
+accessibility = ["dep:accesskit"]
+testing = []
+# Per-frame CPU/GPU stage timing: wgpu timestamp queries around the
+# layer-content and compositor submits plus the CPU stage split the window
+# pump measures. The `testing` adapter selection is what lets the profiler
+# exercise a software adapter for bring-up on a host without a GPU.
+frame-profile = ["testing"]
+inspector-signals = ["waterui/inspector-signals"]
+# The platform's own web engine, bridged as a native subview. Every other engine
+# is a crate the application links and installs; this backend never names one.
+webview-system = [
+    "dep:block2",
+    "dep:cookie",
+    "dep:futures",
+    "dep:objc2-web-kit",
+    "dep:serde_json",
+]
+winit = [
+    "accessibility",
+    "dep:winit",
+    "dep:ui-events-winit",
+    "dep:accesskit_winit",
+    "dep:ctrlc",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-core-graphics",
+    "dep:objc2-foundation",
+    "dep:objc2-quartz-core",
+    "dep:muda",
+    "dep:x11-dl",
+    "dep:x11rb",
+    "dep:windows-sys",
+]
+web = [
+    "accessibility",
+    "dep:futures",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+]
+
+[lints]
+workspace = true
+
+# cargo-machete: these entries exist to switch features on, not to be named
+# in code — `waterui-url/std` exposes `Url::from_file_path` for the OS
+# file-drop tests, `icu_provider/logging` routes ICU4X data warnings through
+# `log`, and `tracing-log` bridges them into the test subscriber.
+[package.metadata.cargo-machete]
+ignored = ["cfg_aliases", "waterui-url", "icu_provider", "tracing-log"]
