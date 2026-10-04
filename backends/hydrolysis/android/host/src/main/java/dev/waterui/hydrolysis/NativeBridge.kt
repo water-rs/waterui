@@ -25,9 +25,10 @@ object NativeBridge {
      * `--logs` level) and logging init moves out of the app cdylib's
      * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
      * touch-scroll parameters (slop, min/max fling velocity, scroll
-     * friction).
+     * friction); 8 = [nativeCreateSession] drops `sdkInt`. The API floor is
+     * 31, so `ANativeWindow_setFrameRate` is linked directly.
      */
-    private const val SCHEMA: Int = 7
+    private const val SCHEMA: Int = 8
 
     private var initialized = false
 
@@ -58,7 +59,6 @@ object NativeBridge {
     @JvmStatic
     external fun nativeCreateSession(
         session: HydrolysisSession,
-        sdkInt: Int,
         context: Context,
     ): Long
 

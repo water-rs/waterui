@@ -1,7 +1,6 @@
 package dev.waterui.hydrolysis
 
 import android.graphics.Rect
-import android.os.Build
 import android.os.Bundle
 import android.view.MotionEvent
 import android.view.View
@@ -312,9 +311,7 @@ internal class HydrolysisAccessibilityProvider(
             }
             "mixed" -> info.isCheckable = true
         }
-        if (Build.VERSION.SDK_INT >= 30 &&
-            properties != null && properties.has("expanded")
-        ) {
+        if (properties != null && properties.has("expanded")) {
             info.stateDescription =
                 if (properties.optBoolean("expanded")) "Expanded" else "Collapsed"
         }
@@ -412,13 +409,10 @@ internal class HydrolysisAccessibilityProvider(
         if (hasAction(node, AK_SCROLL_INTO_VIEW)) {
             info.addAction(AccessibilityAction.ACTION_SHOW_ON_SCREEN)
         }
-        // ACTION_SHOW/HIDE_TOOLTIP exist from API 28 — below that their
-        // fields aren't on the class, so these are guarded rather than
-        // loaded unconditionally on the API-26 floor.
-        if (Build.VERSION.SDK_INT >= 28 && hasAction(node, AK_SHOW_TOOLTIP)) {
+        if (hasAction(node, AK_SHOW_TOOLTIP)) {
             info.addAction(AccessibilityAction.ACTION_SHOW_TOOLTIP)
         }
-        if (Build.VERSION.SDK_INT >= 28 && hasAction(node, AK_HIDE_TOOLTIP)) {
+        if (hasAction(node, AK_HIDE_TOOLTIP)) {
             info.addAction(AccessibilityAction.ACTION_HIDE_TOOLTIP)
         }
         if (hasAction(node, AK_SHOW_CONTEXT_MENU)) {
@@ -431,9 +425,7 @@ internal class HydrolysisAccessibilityProvider(
             // Selection is intrinsic to the editing session the text actions
             // run over — it needs no separate accesskit bit.
             info.addAction(ACTION_SET_SELECTION)
-            if (Build.VERSION.SDK_INT >= 30) {
-                info.addAction(AccessibilityAction.ACTION_IME_ENTER)
-            }
+            info.addAction(AccessibilityAction.ACTION_IME_ENTER)
         }
         // Named custom actions ride in as `customActions` entries; the id
         // they advertise encodes their position so `performAction` can echo
@@ -587,11 +579,11 @@ internal class HydrolysisAccessibilityProvider(
                 if (hasAction(node, AK_SCROLL_INTO_VIEW)) {
                     return MappedAction(AK_SCROLL_INTO_VIEW, null, null)
                 }
-            ACTION_SHOW_TOOLTIP_ID ->
+            AccessibilityAction.ACTION_SHOW_TOOLTIP.id ->
                 if (hasAction(node, AK_SHOW_TOOLTIP)) {
                     return MappedAction(AK_SHOW_TOOLTIP, null, null)
                 }
-            ACTION_HIDE_TOOLTIP_ID ->
+            AccessibilityAction.ACTION_HIDE_TOOLTIP.id ->
                 if (hasAction(node, AK_HIDE_TOOLTIP)) {
                     return MappedAction(AK_HIDE_TOOLTIP, null, null)
                 }
@@ -645,7 +637,7 @@ internal class HydrolysisAccessibilityProvider(
                     }
                 }
             }
-            ACTION_IME_ENTER_ID ->
+            AccessibilityAction.ACTION_IME_ENTER.id ->
                 if (isEditable(node) && hasAction(node, AK_FOCUS)) {
                     return MappedAction(AK_FOCUS, null, null)
                 }
@@ -842,14 +834,6 @@ internal class HydrolysisAccessibilityProvider(
         const val ACTION_SET_TEXT = AccessibilityNodeInfo.ACTION_SET_TEXT
         const val ACTION_SET_SELECTION = AccessibilityNodeInfo.ACTION_SET_SELECTION
 
-        /**
-         * Action ids added after the API-26 floor; matched by value so the
-         * `when` never loads an `AccessibilityAction` field that doesn't
-         * exist on the running device.
-         */
-        const val ACTION_SHOW_TOOLTIP_ID = 16908356
-        const val ACTION_HIDE_TOOLTIP_ID = 16908357
-        const val ACTION_IME_ENTER_ID = 16908372
         const val ACTION_NEXT_AT_MOVEMENT_GRANULARITY =
             AccessibilityNodeInfo.ACTION_NEXT_AT_MOVEMENT_GRANULARITY
         const val ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY =
