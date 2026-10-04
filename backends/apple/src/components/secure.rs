@@ -106,8 +106,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Both platforms lay the secure field and the content over the full
         // bounds.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let bounds = view::bounds(host);
                 #[cfg(target_os = "ios")]
                 {

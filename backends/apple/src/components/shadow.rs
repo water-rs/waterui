@@ -271,8 +271,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content fills the wrapper; the shadow path follows its bounds.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host_view| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 view::set_frame(state.child.view(), view::bounds(host_view));
                 update_shadow_path(host_view, kind, &commands);
             }

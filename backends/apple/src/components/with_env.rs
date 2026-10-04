@@ -94,8 +94,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `contentView.frame = wuiContentFrame(of:in:)`.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let frame = content_frame(host, state.child.view());
                 view::set_frame(state.child.view(), frame);
             }
