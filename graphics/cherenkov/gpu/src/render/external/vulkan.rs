@@ -31,13 +31,15 @@ use rustc_hash::FxHashMap;
 use crate::interop::{ChromaOffset, FrameColor, RgbAlpha};
 
 mod ahb;
-mod dmabuf;
+pub mod dmabuf;
 mod sync;
 mod ycbcr;
 
-pub use sync::{Generation, PendingAcquire, PendingWait, State, cancel_staged, stage_acquire};
+pub use sync::{
+    Generation, PendingAcquire, PendingWait, State, cancel_staged, import_sync_fd, stage_acquire,
+};
 #[cfg(target_os = "android")]
-pub use sync::{PlaneAcquire, PlaneSource, import_sync_fd};
+pub use sync::{PlaneAcquire, PlaneSource};
 pub use sync::{Release, drain_destroys, drain_releases, mark_owned, mark_submitted, submit_waits};
 
 /// `QueueFamily` the producer released the image on.
@@ -450,6 +452,9 @@ pub struct Vk {
     pub ycbcr: Option<ash::khr::sampler_ycbcr_conversion::Device>,
     /// `VK_KHR_external_semaphore_fd` entry points, when enabled.
     pub external_semaphore_fd: Option<ash::khr::external_semaphore_fd::Device>,
+    /// `VK_KHR_external_memory_fd` entry points, when enabled — the
+    /// `vkGetMemoryFdKHR` dma-buf export needs them.
+    pub external_memory_fd: Option<ash::khr::external_memory_fd::Device>,
     /// `VK_ANDROID_external_memory_android_hardware_buffer` entry points.
     #[cfg(target_os = "android")]
     pub ahb: Option<ash::android::external_memory_android_hardware_buffer::Device>,
@@ -472,6 +477,7 @@ impl std::fmt::Debug for Vk {
                 "external_semaphore_fd",
                 &self.external_semaphore_fd.is_some(),
             )
+            .field("external_memory_fd", &self.external_memory_fd.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -533,6 +539,9 @@ impl Shared {
             external_semaphore_fd: (caps.external_semaphore_opaque_fd
                 || caps.external_semaphore_sync_fd)
                 .then(|| ash::khr::external_semaphore_fd::Device::new(&instance, &device)),
+            external_memory_fd: caps
+                .external_memory_fd
+                .then(|| ash::khr::external_memory_fd::Device::new(&instance, &device)),
             #[cfg(target_os = "android")]
             ahb: caps.external_memory_android_hardware_buffer.then(|| {
                 ash::android::external_memory_android_hardware_buffer::Device::new(

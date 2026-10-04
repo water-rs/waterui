@@ -160,7 +160,8 @@ pub unsafe fn mount(
     #[cfg(target_os = "macos")]
     let root = create_root(&mut env, host, &mut keepalive, mtm);
     #[cfg(target_os = "ios")]
-    let controller = cocoa_ui::uikit::ViewController::new(mtm);
+    let controller =
+        cocoa_ui::uikit::ViewController::new(mtm, HostView::new(mtm, cocoa_ui::view::bounds(host)));
     #[cfg(target_os = "ios")]
     let root = {
         crate::theme::install_controller(&mut env, &controller, &mut keepalive);

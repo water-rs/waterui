@@ -248,6 +248,10 @@ pub enum GpuTarget {
     /// planes for eligible layers.
     #[cfg(target_os = "android")]
     SurfaceControl(interop::android::SurfaceControlTarget),
+    /// A Linux target presenting through a bounded pool of exportable
+    /// DMA-BUF images with sync-file acquire/release fences (#1687).
+    #[cfg(target_os = "linux")]
+    Dmabuf(interop::dmabuf::DmabufTarget),
 }
 
 /// A window the engine presents on: a raw window handle and the drawable

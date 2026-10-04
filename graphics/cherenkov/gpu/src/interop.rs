@@ -780,6 +780,237 @@ pub mod vulkan {
     };
 }
 
+/// Linux interop: presenting through exported DMA-BUFs (#1687).
+///
+/// [`DmabufTarget`] is the zero-copy present target for hosts that can
+/// import Linux dma-bufs (e.g. `GdkDmabufTexture`, a Wayland compositor,
+/// GStreamer): the engine renders each frame into one image of a small
+/// pool of exportable Vulkan images and hands the host the image's
+/// planes, an explicit DRM format modifier and a sync-file acquire
+/// fence. The host returns each image with a release sync file; an image
+/// is reused only after that release has signalled, and a surface with
+/// no free image waits for a release rather than allocating — never a
+/// CPU wait on the render thread.
+#[cfg(target_os = "linux")]
+pub mod dmabuf {
+    use std::os::fd::OwnedFd;
+    use std::sync::mpsc::{Receiver, Sender};
+
+    pub use crate::render::external::vulkan::dmabuf::{
+        DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_XBGR8888, DRM_FORMAT_XRGB8888,
+    };
+
+    use super::{FrameColor, OutputAlpha, OutputColor, RgbAlpha};
+
+    /// `DRM_FORMAT_ABGR16161616F` — linear half-float RGBA, for hosts
+    /// that take wide-gamut/HDR pixels without an encode step.
+    pub const DRM_FORMAT_ABGR16161616F: u32 = 0x4834_4241;
+
+    /// `DRM_FORMAT_MOD_LINEAR` — an exported linear (row-major) image.
+    ///
+    /// `Linear` is itself an explicit DRM modifier: a `VkImage` created
+    /// with `VK_IMAGE_TILING_LINEAR` plus an exported plane layout is
+    /// exactly what `DRM_FORMAT_MOD_LINEAR` describes, so a host
+    /// declaring it stays honest even where the driver lacks
+    /// `VK_EXT_image_drm_format_modifier`. Other modifiers always
+    /// require that extension.
+    pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+    /// One colour plane of a presented frame: the file descriptor the
+    /// plane's bytes live behind plus its byte offset and row stride.
+    ///
+    /// Ownership of `fd` transfers to the host; it stays valid until
+    /// closed, so the host may import it at its own pace. Offsets and
+    /// strides are the driver's own `vkGetImageSubresourceLayout` values.
+    #[derive(Debug)]
+    #[non_exhaustive]
+    pub struct DmabufPlane {
+        /// The dma-buf descriptor for this plane.
+        pub fd: OwnedFd,
+        /// Byte offset of the plane inside the buffer.
+        pub offset: u32,
+        /// Byte stride between rows of the plane.
+        pub stride: u32,
+    }
+
+    /// One presented frame: a pool image the engine has just rendered.
+    ///
+    /// `acquire` is a sync file that signals when the engine's submission
+    /// completing the image executes on the GPU — the host must not read
+    /// the planes until it has signalled. [`DmabufFrame::release`] hands
+    /// the image back: the engine reuses it only after the host's own
+    /// release sync file has signalled, with no CPU wait. A frame dropped
+    /// without `release` is never reused — the bounded pool holds its
+    /// pressure on the surface.
+    #[derive(Debug)]
+    pub struct DmabufFrame {
+        /// The image's colour planes — one for the RGBA formats this
+        /// target exports.
+        pub planes: Vec<DmabufPlane>,
+        /// The DRM fourcc (`DRM_FORMAT_*`) of the colour image.
+        pub fourcc: u32,
+        /// The `DRM_FORMAT_MOD_*` modifier the image was created with —
+        /// the driver's negotiated value, never an assumption.
+        pub modifier: u64,
+        /// Pixel extent of the image.
+        pub size: (u32, u32),
+        /// The `VkImageLayout` the image is presented in, as `u32`
+        /// (`VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL`).
+        pub layout: u32,
+        /// How the pixels decode into the working space.
+        pub color: FrameColor,
+        /// How the plane's alpha composes.
+        pub alpha: RgbAlpha,
+        /// The acquire sync file: signals when the engine's writes are
+        /// complete on the GPU. Ownership transfers to the host.
+        pub acquire: OwnedFd,
+        /// The channel the host's release returns the image on.
+        pub(crate) release_to: Sender<crate::render::dmabuf_export::Release>,
+        /// The pool image this frame was presented from.
+        pub(crate) slot: usize,
+    }
+
+    impl DmabufFrame {
+        /// Returns the image to the engine's pool once `release` — the
+        /// host's own sync file — has signalled that its consumers are
+        /// done reading. The engine waits on that fence on the GPU before
+        /// writing the image again; it never waits on the CPU.
+        ///
+        /// On a torn-down surface the release is dropped silently — a
+        /// dead pool never reuses the image either way.
+        pub fn release(self, release: OwnedFd) {
+            let _ = self.release_to.send(crate::render::dmabuf_export::Release {
+                slot: self.slot,
+                fence: release,
+            });
+        }
+    }
+
+    /// One `(fourcc, modifiers, colour, alpha)` combination the host can
+    /// import.
+    ///
+    /// `modifiers` is the host's declared set for `fourcc`; the engine
+    /// picks the first entry the device supports — the explicit modifier
+    /// contract the issue fixes. `color`/`alpha` are the presentation
+    /// encoding the host expects in the exported pixels.
+    #[derive(Debug, Clone)]
+    #[non_exhaustive]
+    pub struct DmabufFormat {
+        /// The DRM fourcc (`DRM_FORMAT_*`) the host imports.
+        pub fourcc: u32,
+        /// The `DRM_FORMAT_MOD_*` modifiers the host imports, in
+        /// preference order.
+        pub modifiers: Vec<u64>,
+        /// The presentation colour encoding the host expects.
+        pub color: OutputColor,
+        /// The alpha convention the host expects.
+        pub alpha: OutputAlpha,
+    }
+
+    impl DmabufFormat {
+        /// Declares one importable `(fourcc, modifiers, colour, alpha)`
+        /// combination; `modifiers` is in preference order.
+        #[must_use]
+        pub const fn new(
+            fourcc: u32,
+            modifiers: Vec<u64>,
+            color: OutputColor,
+            alpha: OutputAlpha,
+        ) -> Self {
+            Self {
+                fourcc,
+                modifiers,
+                color,
+                alpha,
+            }
+        }
+    }
+
+    /// A surface presented through a pool of exportable dma-buf images.
+    ///
+    /// `new` returns the target and the frame receiver the host drains:
+    /// every [`DmabufFrame`] the engine presents lands on it. `.formats`
+    /// declares what the host can import — required, in preference
+    /// order; the engine picks the first entry the device supports and
+    /// fails the surface with `UnsupportedTarget` when none works.
+    /// `.pool` bounds the image count (default three — the Android
+    /// `AHardwareBuffer` precedent).
+    #[derive(Debug)]
+    pub struct DmabufTarget {
+        pub(crate) size: (u32, u32),
+        pub(crate) sink: Sender<DmabufFrame>,
+        pub(crate) formats: Vec<DmabufFormat>,
+        pub(crate) refresh: cherenkov::RefreshRange,
+        pub(crate) pool_size: usize,
+    }
+
+    impl DmabufTarget {
+        /// Presents at `size` device pixels; returns the host's frame
+        /// receiver.
+        #[must_use]
+        pub fn new(size: (u32, u32)) -> (Self, Receiver<DmabufFrame>) {
+            let (sink, frames) = std::sync::mpsc::channel();
+            (
+                Self {
+                    size,
+                    sink,
+                    formats: Vec::new(),
+                    refresh: cherenkov::DEFAULT_REFRESH,
+                    pool_size: 3,
+                },
+                frames,
+            )
+        }
+
+        /// Declares the `(fourcc, modifiers, colour)` combinations the
+        /// host can import, in preference order.
+        #[must_use]
+        pub fn formats(mut self, formats: impl Into<Vec<DmabufFormat>>) -> Self {
+            self.formats = formats.into();
+            self
+        }
+
+        /// Sets the refresh range for backend animation and presentation
+        /// retries.
+        ///
+        /// # Panics
+        /// When the range is empty or includes zero.
+        #[must_use]
+        pub fn rate(mut self, rate: cherenkov::RefreshRange) -> Self {
+            assert!(
+                *rate.start() > 0 && !rate.is_empty(),
+                "refresh range must be positive and ordered"
+            );
+            self.refresh = rate;
+            self
+        }
+
+        /// Bounds the export pool: with every image out with the host the
+        /// surface waits for a release rather than allocating.
+        ///
+        /// # Panics
+        /// When `images` is zero.
+        #[must_use]
+        pub fn pool(mut self, images: usize) -> Self {
+            assert!(images > 0, "the dma-buf pool must hold an image");
+            self.pool_size = images;
+            self
+        }
+
+        /// The size the pool images are allocated at.
+        #[must_use]
+        pub const fn size(&self) -> (u32, u32) {
+            self.size
+        }
+    }
+
+    impl From<DmabufTarget> for crate::GpuTarget {
+        fn from(target: DmabufTarget) -> Self {
+            Self::Dmabuf(target)
+        }
+    }
+}
+
 /// Android interop: presenting on system compositor planes (#90).
 #[cfg(target_os = "android")]
 pub mod android {

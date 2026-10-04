@@ -83,7 +83,9 @@ impl TargetBackend {
         match self {
             Self::Apple | Self::Android => &[],
             Self::Gtk4 => &["waterui-gtk"],
-            Self::Hydrolysis => &["hydrolysis", "hydrolysis-m3"],
+            // `hydrolysis` itself is an in-tree framework member resolved
+            // through `hydrolysis-path`, not a scaffold package (#1635).
+            Self::Hydrolysis => &["hydrolysis-m3"],
             Self::WinUi => &["waterui-winui"],
             Self::Dew => &["waterui-dew"],
         }

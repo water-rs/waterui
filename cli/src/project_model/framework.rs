@@ -522,37 +522,27 @@ impl ResolvedFramework {
         self.rust_version.as_ref()
     }
 
-    /// The canonical path the native Apple backend occupies inside the
-    /// framework tree — the `backends/apple` workspace member carrying the
-    /// `waterui-apple` crate — as the selected revision's
-    /// `[package.metadata.waterui]` declares it. `None` names a revision
-    /// from before the backend's return: it carries no native Apple backend
-    /// to resolve.
-    pub(crate) fn apple_backend_path(&self) -> Option<&str> {
+    /// The canonical path `member` occupies inside the framework tree —
+    /// the `member.subdirectory` workspace member — as the selected
+    /// revision's `[package.metadata.waterui]` declares it under
+    /// `member.path_key`. `None` names a revision from before the
+    /// declaration: it carries no such crate to resolve.
+    fn member_path(&self, member: FrameworkMember) -> Option<&str> {
         self.metadata
-            .get("apple-backend-path")
+            .get(member.path_key)
             .and_then(toml::Value::as_str)
     }
 
-    /// The `waterui-apple` dependency a generated crate declares on a
-    /// channel selection: the backend is a member of the framework
-    /// workspace, so `dev` and `nightly` name the framework repository at
-    /// the selected revision, and `stable` names the certified release's
-    /// repository and revision — the crate stays a Git member on every
-    /// channel while the framework packages it inherits resolve from the
-    /// registry through the source's `[patch]` table. A local checkout
-    /// resolves the member by path instead.
-    ///
-    /// One source serves every consumer — the Rust dependency, the root
-    /// `Package.swift` Swift package and the embedded source — from the
-    /// same repository and revision.
+    /// The `(repository, revision)` the framework tree itself resolves from
+    /// on a channel selection — `dev` and `nightly` the selected revision,
+    /// `stable` the certified release's provenance. `None` names a local
+    /// checkout: its members resolve by path instead.
     ///
     /// # Errors
-    /// Returns an error when the selected revision declares no
-    /// `apple-backend-path` — it carries no native Apple backend — or a
-    /// `stable` selection predates release provenance.
-    pub(crate) fn apple_backend_source(&self) -> Result<DependencyDetail> {
-        let (repository, revision) = match &self.source {
+    /// Returns an error when a `stable` selection predates release
+    /// provenance.
+    fn git_coordinates(&self) -> Result<Option<(&str, &str)>> {
+        match &self.source {
             Source::Stable { release } => {
                 let Some(release) = release else {
                     bail!(
@@ -560,7 +550,7 @@ impl ResolvedFramework {
                          re-run `water channel` to resolve it again"
                     );
                 };
-                (&release.repository, &release.revision)
+                Ok(Some((&release.repository, &release.revision)))
             }
             Source::Dev {
                 repository,
@@ -571,49 +561,85 @@ impl ResolvedFramework {
                 repository,
                 revision,
                 ..
-            } => (repository, revision),
-            Source::Local { .. } => {
-                unreachable!("a local checkout resolves the Apple backend by path")
-            }
+            } => Ok(Some((repository, revision))),
+            Source::Local { .. } => Ok(None),
+        }
+    }
+
+    /// The dependency a generated crate declares for `member` — an in-tree
+    /// framework workspace crate resolved through `member.path_key` —
+    /// on a channel selection: `dev` and `nightly` name the framework
+    /// repository at the selected revision, and `stable` names the
+    /// certified release's repository and revision — the crate stays a Git
+    /// member on every channel while the framework packages it inherits
+    /// resolve from the registry through the source's `[patch]` table. A
+    /// local checkout resolves the member by path instead.
+    ///
+    /// One source serves every consumer: for `waterui-apple` the Rust
+    /// dependency, the root `Package.swift` Swift package and the embedded
+    /// source, and for `hydrolysis` the generated backend's dependency and
+    /// the requirement an independent crate like `hydrolysis-m3` carries.
+    ///
+    /// # Errors
+    /// Returns an error when the selected revision declares no
+    /// `member.path_key` — it carries no such member crate — or a `stable`
+    /// selection predates release provenance.
+    pub(crate) fn member_source(&self, member: FrameworkMember) -> Result<DependencyDetail> {
+        let Some((repository, revision)) = self.git_coordinates()? else {
+            unreachable!("a local checkout resolves {} by path", member.package)
         };
-        self.apple_backend_path().ok_or_else(|| {
+        self.member_path(member).ok_or_else(|| {
             eyre!(
-                "the framework at {repository}@{revision} declares no `apple-backend-path`; \
-                 it carries no native Apple backend crate"
+                "the framework at {repository}@{revision} declares no `{}`; \
+                 it carries no `{}` crate",
+                member.path_key,
+                member.package
             )
         })?;
         Ok(DependencyDetail {
-            git: Some(repository.clone()),
-            rev: Some(revision.clone()),
+            git: Some(repository.to_owned()),
+            rev: Some(revision.to_owned()),
             ..DependencyDetail::default()
         })
     }
 
-    /// The Hydrolysis Android host the framework pins — the
-    /// `hydrolysis-android-host-{url,revision,subdirectory}` coordinates the
-    /// CLI materializes into a managed checkout and `includeBuild`s.
+    /// The Gradle root inside the Hydrolysis host checkout the generated
+    /// project `includeBuild`s — the `hydrolysis-android-host-subdirectory`
+    /// scaffold metadata (#1428).
     ///
     /// # Errors
     /// Returns an error naming the missing key when the resolved framework
     /// predates the host coordinates.
+    pub(crate) fn hydrolysis_android_host_subdirectory(&self) -> Result<&str> {
+        self.scaffold
+            .get("hydrolysis-android-host-subdirectory")
+            .map(String::as_str)
+            .ok_or_else(|| {
+                eyre!(
+                    "resolved framework carries no `hydrolysis-android-host-subdirectory` \
+                     scaffold metadata: it predates the in-tree host (#1428); re-run \
+                     `water channel` to resolve it again"
+                )
+            })
+    }
+
+    /// The checkout the Hydrolysis Android host lives inside — the
+    /// framework tree itself: a channel framework's repository at the
+    /// selected revision (materialized into a managed checkout), or the
+    /// `waterui_path` checkout itself.
+    ///
+    /// # Errors
+    /// Returns an error when a `stable` selection predates release
+    /// provenance.
     pub(crate) fn hydrolysis_android_host(&self) -> Result<HydrolysisAndroidHost<'_>> {
-        const PREFIX: &str = "hydrolysis-android-host-";
-        let value = |suffix: &str| {
-            self.scaffold
-                .get(&format!("{PREFIX}{suffix}"))
-                .map(String::as_str)
-                .ok_or_else(|| {
-                    eyre!(
-                        "resolved framework carries no `{PREFIX}{suffix}` scaffold metadata: \
-                     the hydrolysis Android host needs the URL, revision and subdirectory pins"
-                    )
-                })
-        };
-        Ok(HydrolysisAndroidHost {
-            url: value("url")?,
-            revision: value("revision")?,
-            subdirectory: value("subdirectory")?,
-        })
+        if let Some((url, revision)) = self.git_coordinates()? {
+            Ok(HydrolysisAndroidHost::Git { url, revision })
+        } else {
+            let Source::Local { root } = &self.source else {
+                unreachable!("`None` coordinates name only a local checkout")
+            };
+            Ok(HydrolysisAndroidHost::Local { root })
+        }
     }
 
     /// The Android API floor the selected framework's native runtime
@@ -700,10 +726,12 @@ impl ResolvedFramework {
                 .and_then(toml_edit::Item::as_str)
                 .unwrap_or(&name)
                 .to_owned();
-            // `waterui-apple` is a workspace member, not a registry package:
-            // a scaffolded project's dependency on it is pinned by
-            // `apple_backend_source`, never rewritten to a version requirement.
-            if package == "waterui-apple"
+            // The `*-path` members are workspace members, not registry
+            // packages: a scaffolded project's dependency on one is pinned
+            // by `member_source`, never rewritten to a version requirement.
+            if FRAMEWORK_MEMBERS
+                .iter()
+                .any(|member| member.package == package)
                 || !self.scaffold.contains_key(&format!("{package}-version"))
             {
                 continue;
@@ -1330,7 +1358,7 @@ impl ResolvedFramework {
             // or canonical lock to persist.
             FrameworkChannel::Stable => (
                 BTreeMap::new(),
-                stable_member_substitutions(&root, &lock, repository, &metadata)?,
+                stable_member_substitutions(&root, &lock, repository, revision, &metadata)?,
                 None,
             ),
             FrameworkChannel::Dev | FrameworkChannel::Nightly => {
@@ -1597,6 +1625,43 @@ fn declares_backend_revision(scaffold: &BTreeMap<String, String>, submodule_path
 /// The workspace crates a scaffolded project pins; each `{name}-version`
 /// scaffold entry comes from the framework's own lockfile at the selected
 /// revision.
+/// A crate the framework workspace carries in-tree — never a scaffold
+/// package with a requirement of its own. The manifest declares it through a
+/// `{path_key}` `[package.metadata.waterui]` entry naming its directory, and
+/// every channel resolves it as a member of the selected framework source:
+/// `dev`/`nightly`/`stable` pin the framework repository at the selected
+/// revision, a `waterui_path` checkout supplies it by path at the canonical
+/// `subdirectory` slot.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameworkMember {
+    /// The `[package.metadata.waterui]` key declaring the member's directory
+    /// inside the framework tree.
+    pub(crate) path_key: &'static str,
+    /// The crate the member carries.
+    pub(crate) package: &'static str,
+    /// The member's canonical directory inside the checkout — the slot a
+    /// `waterui_path` checkout supplies.
+    pub(crate) subdirectory: &'static str,
+}
+
+/// The objc2 Rust backend, `waterui-apple` at `backends/apple`.
+pub(crate) const APPLE_BACKEND: FrameworkMember = FrameworkMember {
+    path_key: "apple-backend-path",
+    package: "waterui-apple",
+    subdirectory: "backends/apple",
+};
+
+/// The self-drawn Hydrolysis backend, `hydrolysis` at `backends/hydrolysis`
+/// (#1635).
+pub(crate) const HYDROLYSIS: FrameworkMember = FrameworkMember {
+    path_key: "hydrolysis-path",
+    package: "hydrolysis",
+    subdirectory: "backends/hydrolysis",
+};
+
+/// Every crate resolved through a `{name}-path` member declaration.
+pub(crate) const FRAMEWORK_MEMBERS: &[FrameworkMember] = &[APPLE_BACKEND, HYDROLYSIS];
+
 const FRAMEWORK_PACKAGES: &[&str] = &[
     "waterui",
     "waterui-core",
@@ -1656,9 +1721,10 @@ fn framework_metadata(manifest: &toml::Value) -> Result<toml::Table> {
 /// pins a repository — and every backend coordinate — `{name}-backend-url`,
 /// plus the `{name}-backend-version` of a backend pinned by release or the
 /// `{name}-backend-revision` of one pinned by commit, rather than by
-/// gitlink — and every host coordinate — `{name}-host-url`,
-/// `{name}-host-revision` and `{name}-host-subdirectory` — from
-/// `[package.metadata.waterui]`.
+/// gitlink — and every in-tree member declaration — `{name}-path`, the
+/// crate directory a `{name}-backend-path` names for the native backends —
+/// and the `{name}-host-subdirectory` of the Android host the framework
+/// tree itself carries — from `[package.metadata.waterui]`.
 ///
 /// `framework_manifest.py` emits exactly this table into every `framework.json`
 /// it publishes; both must produce the same table for the same tree.
@@ -1708,9 +1774,7 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
         if !(key.ends_with("-backend-url")
             || key.ends_with("-backend-version")
             || key.ends_with("-backend-revision")
-            || key.ends_with("-backend-path")
-            || key.ends_with("-host-url")
-            || key.ends_with("-host-revision")
+            || key.ends_with("-path")
             || key.ends_with("-host-subdirectory"))
         {
             continue;
@@ -1718,10 +1782,10 @@ fn framework_scaffold(manifest: &toml::Value) -> Result<BTreeMap<String, String>
         let value = value
             .as_str()
             .ok_or_else(|| eyre!("package.metadata.waterui.{key} must be a string"))?;
-        if key.ends_with("-backend-revision") || key.ends_with("-host-revision") {
+        if key.ends_with("-backend-revision") {
             validate_revision(value).wrap_err_with(|| format!("package.metadata.waterui.{key}"))?;
         }
-        if key.ends_with("-host-subdirectory") || key.ends_with("-backend-path") {
+        if key.ends_with("-host-subdirectory") || key.ends_with("-path") {
             validate_host_subdirectory(value)
                 .wrap_err_with(|| format!("package.metadata.waterui.{key}"))?;
         }
@@ -2161,18 +2225,28 @@ fn validate_revision(revision: &str) -> Result<()> {
     Ok(())
 }
 
-/// The Hydrolysis Android host coordinates a resolved framework carries:
-/// where to fetch the host repository, the exact commit to check out, and
-/// the subdirectory inside that checkout that is the Gradle project the
-/// generated app `includeBuild`s.
+/// Where the Hydrolysis Android host resolves from for a resolved
+/// framework: the framework tree itself. The host lives in the framework
+/// repository — `hydrolysis-android-host-subdirectory` names the Gradle
+/// composite root inside it — so a generated project builds the host from
+/// the exact revision it builds the `hydrolysis` crate from (#1428, #1635):
+/// there is no second repository to pin.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct HydrolysisAndroidHost<'a> {
-    /// Git URL the host checkout is fetched from.
-    pub url: &'a str,
-    /// Full commit hash the checkout pins.
-    pub revision: &'a str,
-    /// Gradle root inside the checkout (e.g. `android`).
-    pub subdirectory: &'a str,
+pub(crate) enum HydrolysisAndroidHost<'a> {
+    /// A channel framework: the framework repository at the selected
+    /// revision — `stable` answers the certified release's provenance.
+    Git {
+        /// Git URL the framework checkout is fetched from.
+        url: &'a str,
+        /// Full commit hash the checkout pins.
+        revision: &'a str,
+    },
+    /// A `waterui_path` checkout: the local framework tree the host lives
+    /// inside — no clone exists for a filesystem source.
+    Local {
+        /// Root of the framework checkout.
+        root: &'a Path,
+    },
 }
 
 /// A `{name}-host-subdirectory` names the Gradle root inside the host
@@ -2252,22 +2326,20 @@ pub(crate) mod test_fixtures {
             .iter()
             .map(|name| (format!("{name}-version"), "0.4.1".to_owned()))
             .chain([
-                ("hydrolysis-version".to_owned(), "0.2.1".to_owned()),
                 ("hydrolysis-m3-version".to_owned(), "0.2.0".to_owned()),
                 ("apple-backend-path".to_owned(), "backends/apple".to_owned()),
+                (
+                    "hydrolysis-path".to_owned(),
+                    "backends/hydrolysis".to_owned(),
+                ),
                 (
                     "android-backend-url".to_owned(),
                     "https://github.com/water-rs/android-backend.git".to_owned(),
                 ),
                 ("android-backend-revision".to_owned(), revision('c')),
                 (
-                    "hydrolysis-android-host-url".to_owned(),
-                    "https://github.com/water-rs/hydrolysis.git".to_owned(),
-                ),
-                ("hydrolysis-android-host-revision".to_owned(), revision('d')),
-                (
                     "hydrolysis-android-host-subdirectory".to_owned(),
-                    "android".to_owned(),
+                    "backends/hydrolysis/android".to_owned(),
                 ),
             ])
             .collect();
@@ -2284,6 +2356,7 @@ pub(crate) mod test_fixtures {
             metadata: toml::toml! {
                 android-min-api-level = 26
                 apple-backend-path = "backends/apple"
+                hydrolysis-path = "backends/hydrolysis"
             },
             scaffold,
             experimental_packages: experimental_scaffold_packages(),
@@ -2372,6 +2445,7 @@ pub(crate) mod test_fixtures {
             metadata: toml::toml! {
                 android-min-api-level = 26
                 apple-backend-path = "backends/apple"
+                hydrolysis-path = "backends/hydrolysis"
             },
             scaffold,
             experimental_packages,
@@ -2963,14 +3037,24 @@ struct SubmodulePin {
     commit: String,
 }
 
-/// The `[patch]` rows a `stable` project's Git-sourced `waterui-apple`
-/// member needs: every `path` member the selected revision's root
-/// `[patch.crates-io]` table names — plus the `waterui` facade itself — is
-/// pinned at the exact version the certified lock records for it, so the
-/// member's workspace-internal path dependencies resolve to the published
-/// packages rather than a second copy inside the Git source. The backend
-/// crate itself is never substituted: `waterui-apple` is a Git member on
-/// every channel.
+/// The `[patch]` rows a `stable` project's Git-sourced members need.
+///
+/// `[patch.crates-io]` carries the framework's own Git pins verbatim — the
+/// member's registry requirements (`cherenkov`, `nami`, `waterkit-*`, the
+/// `wgpu` fork) resolve nowhere else — plus a member-source entry for every
+/// `*-path` member the workspace's own table path-pins, so a crates.io
+/// requirement for the member (`hydrolysis-m3`'s `hydrolysis` edge) joins
+/// the member the generated crate links. A `path` entry that is not a
+/// declared member is left off the table: its crates.io requirements keep
+/// resolving the published release.
+///
+/// `[patch.<framework repository>]` substitutes every `path` member the
+/// revision's root table names — plus the `waterui` facade itself — with
+/// the exact version the certified lock records, so a member's
+/// workspace-internal path dependencies resolve to the published packages
+/// rather than a second copy inside the Git source. The `*-path` member
+/// crates themselves — `waterui-apple`, `hydrolysis` — are never
+/// substituted: they are Git members on every channel.
 ///
 /// A member the table names but the lock does not record has no registry
 /// identity to substitute — the revision is not one `stable` can carry the
@@ -2979,32 +3063,66 @@ fn stable_member_substitutions(
     root: &toml::Value,
     lock: &Lockfile,
     repository: &str,
+    revision: &str,
     metadata: &toml::Table,
 ) -> Result<PatchSet> {
     let mut patches = PatchSet::default();
-    // A revision from before the backend's return declares no
-    // `apple-backend-path`; nothing resolves the Git member, so nothing
-    // needs substituting.
-    if metadata.get("apple-backend-path").is_none() {
+    // The `*-path` members this revision declares — the crates a generated
+    // crate links from the framework's own Git source. A revision that
+    // declares none resolves nothing from the repository, so nothing needs
+    // substituting.
+    let member_packages: BTreeSet<&str> = FRAMEWORK_MEMBERS
+        .iter()
+        .filter(|member| metadata.get(member.path_key).is_some())
+        .map(|member| member.package)
+        .collect();
+    if member_packages.is_empty() {
         return Ok(patches);
     }
-    let mut members: BTreeSet<String> = root
+    let crates_io_source = root
         .get("patch")
         .and_then(|patch| patch.get("crates-io"))
-        .and_then(toml::Value::as_table)
-        .map(|table| {
-            table
-                .iter()
-                .filter(|(_, dependency)| dependency.get("path").is_some())
-                .map(|(name, _)| name.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+        .and_then(toml::Value::as_table);
+    let mut crates_io = BTreeMap::new();
+    let mut members: BTreeSet<String> = BTreeSet::new();
+    if let Some(table) = crates_io_source {
+        for (name, dependency) in table {
+            if dependency.get("path").is_some() {
+                members.insert(name.clone());
+                // The member whose crates.io name the workspace redirects —
+                // the independent dependent's edge — resolves to the
+                // framework source instead of the registry.
+                if member_packages.contains(name.as_str()) {
+                    crates_io.insert(
+                        name.clone(),
+                        Dependency::Detailed(Box::new(DependencyDetail {
+                            git: Some(repository.to_owned()),
+                            rev: Some(revision.to_owned()),
+                            ..DependencyDetail::default()
+                        })),
+                    );
+                }
+                continue;
+            }
+            crates_io.insert(
+                name.clone(),
+                dependency
+                    .clone()
+                    .try_into()
+                    .wrap_err_with(|| format!("invalid patch.crates-io.{name}"))?,
+            );
+        }
+    }
+    if !crates_io.is_empty() {
+        patches.insert("crates-io".to_owned(), crates_io);
+    }
     // The facade's own `[patch.crates-io]` entry is a member like the rest —
     // name it anyway so a revision that drops its row still substitutes the
     // root package a Git member's `waterui` edge resolves to.
     members.insert("waterui".to_owned());
-    members.remove("waterui-apple");
+    for member in &member_packages {
+        members.remove(*member);
+    }
     let mut dependencies = BTreeMap::new();
     for name in members {
         let candidates: Vec<_> = lock
@@ -3102,7 +3220,12 @@ fn patch_framework_members(
     let crates_io = patches.entry("crates-io".to_owned()).or_default();
     for package in &lock.packages {
         let name = package.name.as_str();
-        if package.source.is_some() || !name.starts_with("waterui") {
+        if package.source.is_some()
+            || !(name.starts_with("waterui")
+                || FRAMEWORK_MEMBERS
+                    .iter()
+                    .any(|member| member.package == name))
+        {
             continue;
         }
         crates_io.entry(name.to_owned()).or_insert_with(|| {
@@ -3149,15 +3272,17 @@ fn annotate_workspace_lock(lock: &mut Lockfile, repository: &str, revision: &str
 /// at the revision the scaffold pins — the only written record of its resolved
 /// graph, since an extracted crate never enters the framework lock.
 ///
-/// `hydrolysis` builds `winit`, `accesskit_winit` and `redox_syscall` versions
-/// the `WaterUI` workspace lock does not name, so the backend's graph failed
-/// the `Water.lock` gate on every edge (water-rs/cli#197). Each pinned
-/// repository's lock is annotated with its own pin exactly as the framework
-/// lock is annotated with the channel's — member packages become
-/// `git+<repo>?rev=<rev>` entries and member edges follow them. Entries naming
-/// a framework member, or resolving the framework repository at the extracted
-/// crate's own (older) patch pin, are dropped: the channel's lock owns every
-/// `waterui-*` identity at this revision.
+/// An extracted backend's graph can require package identities the `WaterUI`
+/// workspace lock does not name — the backend's graph failed the `Water.lock`
+/// gate on every edge while Hydrolysis lived out-of-tree (water-rs/cli#197;
+/// the in-tree member's graph now resolves from the framework lock itself,
+/// #1635). Each pinned repository's lock is annotated with its own pin
+/// exactly as the framework lock is annotated with the channel's — member
+/// packages become `git+<repo>?rev=<rev>` entries and member edges follow
+/// them. Entries naming a framework member, or resolving the framework
+/// repository at the extracted crate's own (older) patch pin, are dropped:
+/// the channel's lock owns every framework member identity at this
+/// revision.
 async fn foreign_locked_packages(
     framework_lock: &Lockfile,
     packages: &BTreeMap<String, DependencyDetail>,
@@ -3624,6 +3749,7 @@ mod tests {
             metadata: toml::toml! {
                 android-min-api-level = 26
                 apple-backend-path = "backends/apple"
+                hydrolysis-path = "backends/hydrolysis"
             },
             packages: resolve_packages(&scaffold, lock, repository, &revision).unwrap(),
             scaffold,
@@ -3705,12 +3831,13 @@ mod tests {
     #[test]
     fn snapshot_preserves_independent_package_sources() {
         let backend_revision = "b".repeat(40);
-        let backend_source =
-            format!("git+https://example.com/hydrolysis?rev={backend_revision}#{backend_revision}");
+        let backend_source = format!(
+            "git+https://example.com/waterui-gtk?rev={backend_revision}#{backend_revision}"
+        );
         let lock = Lockfile {
             packages: vec![
                 package("waterui", "0.3.0", None),
-                package("hydrolysis", "0.1.0", Some(&backend_source)),
+                package("waterui-gtk", "0.1.0", Some(&backend_source)),
                 package(
                     "hydrolysis-m3",
                     "0.1.0",
@@ -3727,10 +3854,10 @@ mod tests {
         let framework: ResolvedFramework = toml::from_str(&persisted).unwrap();
         assert_eq!(framework.channel(), Some(FrameworkChannel::Nightly));
         assert_eq!(framework.dependency("waterui").rev, Some("a".repeat(40)));
-        let backend = framework.dependency("hydrolysis");
+        let backend = framework.dependency("waterui-gtk");
         assert_eq!(
             backend.git.as_deref(),
-            Some("https://example.com/hydrolysis")
+            Some("https://example.com/waterui-gtk")
         );
         assert_eq!(backend.rev, Some(backend_revision));
         let theme = framework.dependency("hydrolysis-m3");
@@ -3914,7 +4041,7 @@ mod tests {
             assert!(error.contains("--channel nightly"), "{error}");
         }
         // Registry-backed scaffold packages stay distributable on stable.
-        for name in ["waterui", "hydrolysis", "hydrolysis-m3"] {
+        for name in ["waterui", "hydrolysis-m3"] {
             framework
                 .require_distributable(name)
                 .unwrap_or_else(|error| panic!("{name} must scaffold on stable: {error}"));
@@ -4549,6 +4676,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             metadata: toml::toml! {
                 android-min-api-level = 26
                 apple-backend-path = "backends/apple"
+                hydrolysis-path = "backends/hydrolysis"
             },
         }
     }
@@ -4633,7 +4761,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 "backends/android": "c".repeat(40),
             },
             "scaffold": {
-                "hydrolysis-version": "0.2.1",
+                "hydrolysis-path": "backends/hydrolysis",
                 "hydrolysis-m3-version": "0.2.0",
                 "waterui-dew-version": "0.2.1",
                 "waterui-gtk-version": "0.1.2",
@@ -4678,7 +4806,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         assert_eq!(
             scaffold,
             BTreeMap::from([
-                ("hydrolysis-version".to_owned(), workspace("hydrolysis")),
                 (
                     "hydrolysis-m3-version".to_owned(),
                     workspace("hydrolysis-m3")
@@ -4715,21 +4842,17 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 ),
                 ("apple-backend-path".to_owned(), "backends/apple".to_owned()),
                 (
+                    "hydrolysis-path".to_owned(),
+                    "backends/hydrolysis".to_owned()
+                ),
+                (
                     "android-backend-url".to_owned(),
                     "https://github.com/water-rs/android-backend.git".to_owned()
                 ),
                 ("android-backend-revision".to_owned(), "c".repeat(40)),
                 (
-                    "hydrolysis-android-host-url".to_owned(),
-                    "https://github.com/water-rs/hydrolysis.git".to_owned()
-                ),
-                (
-                    "hydrolysis-android-host-revision".to_owned(),
-                    "d".repeat(40)
-                ),
-                (
                     "hydrolysis-android-host-subdirectory".to_owned(),
-                    "android".to_owned()
+                    "backends/hydrolysis/android".to_owned()
                 ),
             ])
         );
@@ -4766,12 +4889,14 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
     }
 
     #[test]
-    fn framework_scaffold_validates_the_hydrolysis_android_host_coordinates() {
+    fn framework_scaffold_validates_the_member_and_host_paths() {
         for (key, value) in [
-            ("hydrolysis-android-host-revision", "dev"),
             ("hydrolysis-android-host-subdirectory", "../outside"),
             ("hydrolysis-android-host-subdirectory", "/absolute"),
             ("hydrolysis-android-host-subdirectory", ""),
+            ("hydrolysis-path", "../outside"),
+            ("hydrolysis-path", "/absolute"),
+            ("hydrolysis-path", ""),
         ] {
             let mut root: toml::Value = toml::from_str(include_str!(
                 "../../tests/fixtures/framework_checkout_manifest.toml"
@@ -4785,30 +4910,42 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
 
     /// The Git member every channel emits — the framework repository at the
     /// selected revision; `stable` resolves the certified release's
-    /// provenance — and never a backend repository of its own.
+    /// provenance — and never a backend repository of its own. `hydrolysis`
+    /// resolves through the same shared `member_source` (#1635).
     #[test]
-    fn apple_backend_source_pins_the_framework_source_on_every_channel() {
+    fn member_sources_pin_the_framework_source_on_every_channel() {
         let repository = framework_repository();
         let revision = 'a'.to_string().repeat(40);
         for framework in [stable_framework(), dev_framework(), nightly_framework()] {
-            let detail = framework.apple_backend_source().unwrap();
-            assert_eq!(detail.git.as_deref(), Some(repository));
-            assert_eq!(detail.rev.as_deref(), Some(revision.as_str()));
+            for member in [APPLE_BACKEND, HYDROLYSIS] {
+                let detail = framework.member_source(member).unwrap();
+                assert_eq!(detail.git.as_deref(), Some(repository));
+                assert_eq!(detail.rev.as_deref(), Some(revision.as_str()));
+            }
         }
     }
 
     #[test]
-    fn apple_backend_source_requires_the_declared_backend_path() {
-        let mut framework = stable_framework();
-        framework.metadata.remove("apple-backend-path");
-        let error = framework.apple_backend_source().unwrap_err().to_string();
-        assert!(error.contains("apple-backend-path"), "{error}");
+    fn member_sources_require_the_declared_member_path() {
+        for (key, member) in [
+            ("apple-backend-path", APPLE_BACKEND),
+            ("hydrolysis-path", HYDROLYSIS),
+        ] {
+            let mut framework = stable_framework();
+            framework.metadata.remove(key);
+            let error = framework.member_source(member).unwrap_err().to_string();
+            assert!(error.contains(key), "{error}");
+        }
     }
 
     /// The stable member-substitution table: every `path` member the root
     /// `[patch.crates-io]` names — and the `waterui` facade — resolves to the
     /// exact version the certified lock records, under the framework's Git
-    /// source. `waterui-apple` and non-`path` entries are never substituted.
+    /// source. The `*-path` members (`waterui-apple`, `hydrolysis`) are never
+    /// substituted, and the crates.io table keeps the framework's Git pins
+    /// plus a member-source entry for the member the workspace redirects —
+    /// the row `hydrolysis-m3`'s `hydrolysis` requirement resolves through
+    /// (#1635).
     #[test]
     fn stable_member_substitutions_patch_path_members_to_lock_versions() {
         let root: toml::Value = toml::from_str(
@@ -4816,8 +4953,9 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
 [patch.crates-io]
 waterui-core = { path = "core" }
 waterui-graphics = { path = "components/visual/graphics" }
-waterui-apple = { path = "backends/apple" }
+hydrolysis = { path = "backends/hydrolysis" }
 nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d8872e5" }
 "#,
         )
         .unwrap();
@@ -4827,6 +4965,7 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
                 package("waterui-core", "0.5.1", None),
                 package("waterui-graphics", "0.5.1", None),
                 package("waterui-apple", "0.4.1", None),
+                package("hydrolysis", "0.3.1", None),
                 package(
                     "nami",
                     "0.11.1",
@@ -4842,9 +4981,12 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         };
         let metadata = toml::toml! {
             apple-backend-path = "backends/apple"
+            hydrolysis-path = "backends/hydrolysis"
         };
         let repository = framework_repository();
-        let patches = stable_member_substitutions(&root, &lock, repository, &metadata).unwrap();
+        let revision = "a".repeat(40);
+        let patches =
+            stable_member_substitutions(&root, &lock, repository, &revision, &metadata).unwrap();
         let dependencies = &patches[repository];
         let version = |name: &str| match &dependencies[name] {
             Dependency::Detailed(detail) => detail.version.as_ref().unwrap().to_string(),
@@ -4854,7 +4996,37 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         assert_eq!(version("waterui-core"), "=0.5.1");
         assert_eq!(version("waterui-graphics"), "=0.5.1");
         assert!(!dependencies.contains_key("waterui-apple"));
+        assert!(!dependencies.contains_key("hydrolysis"));
         assert!(!dependencies.contains_key("nami"));
+
+        // The crates.io table carries the framework's Git pins verbatim —
+        // the member graph's registry requirements cannot resolve without
+        // them — and redirects the member's own crates.io name to the
+        // framework source so `hydrolysis-m3`'s edge joins the member the
+        // generated crate links. `waterui-apple` earns no row: the
+        // workspace's own table names no crates.io redirect for it.
+        let crates_io = &patches["crates-io"];
+        let Dependency::Detailed(hydrolysis) = &crates_io["hydrolysis"] else {
+            panic!("hydrolysis resolves as a member of the framework source");
+        };
+        assert_eq!(hydrolysis.git.as_deref(), Some(repository));
+        assert_eq!(hydrolysis.rev.as_deref(), Some(revision.as_str()));
+        assert!(hydrolysis.path.is_none());
+        assert!(!crates_io.contains_key("waterui-apple"));
+        let Dependency::Detailed(nami) = &crates_io["nami"] else {
+            panic!("the framework's git pins ride verbatim");
+        };
+        assert_eq!(
+            nami.git.as_deref(),
+            Some("https://github.com/water-rs/nami")
+        );
+        let Dependency::Detailed(m3) = &crates_io["hydrolysis-m3"] else {
+            panic!("the theme's own pin rides verbatim");
+        };
+        assert_eq!(
+            m3.git.as_deref(),
+            Some("https://github.com/water-rs/hydrolysis-m3")
+        );
 
         // A member the lock does not record has no registry identity — the
         // revision cannot carry the native backend on `stable`.
@@ -4862,31 +5034,54 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         sparse
             .packages
             .retain(|package| package.name.as_str() != "waterui-graphics");
-        let error = stable_member_substitutions(&root, &sparse, repository, &metadata)
+        let error = stable_member_substitutions(&root, &sparse, repository, &revision, &metadata)
             .unwrap_err()
             .to_string();
         assert!(error.contains("waterui-graphics"), "{error}");
 
-        // A revision without `apple-backend-path` resolves no Git member —
+        // A revision declaring no `*-path` member resolves no Git member —
         // nothing needs substituting.
         let patches =
-            stable_member_substitutions(&root, &lock, repository, &toml::Table::new()).unwrap();
+            stable_member_substitutions(&root, &lock, repository, &revision, &toml::Table::new())
+                .unwrap();
         assert!(patches.is_empty());
     }
 
+    /// The Hydrolysis Android host is the selected framework source itself:
+    /// a channel answers its own `(repository, revision)` — `stable` the
+    /// certified release's provenance — a local checkout its own root, and
+    /// the subdirectory names the Gradle root inside that source (#1428,
+    /// #1635).
     #[test]
-    fn resolved_framework_carries_the_hydrolysis_android_host_pin() {
-        let framework = stable_framework();
-        let host = framework.hydrolysis_android_host().unwrap();
-        assert_eq!(host.url, "https://github.com/water-rs/hydrolysis.git");
-        assert_eq!(host.revision, "d".repeat(40));
-        assert_eq!(host.subdirectory, "android");
+    fn the_hydrolysis_android_host_is_the_selected_framework_source() {
+        let repository = framework_repository();
+        let revision = 'a'.to_string().repeat(40);
+        for framework in [stable_framework(), dev_framework(), nightly_framework()] {
+            let HydrolysisAndroidHost::Git {
+                url,
+                revision: resolved,
+            } = framework.hydrolysis_android_host().unwrap()
+            else {
+                panic!("a channel framework resolves its host by Git source");
+            };
+            assert_eq!(url, repository);
+            assert_eq!(resolved, revision);
+            assert_eq!(
+                framework.hydrolysis_android_host_subdirectory().unwrap(),
+                "backends/hydrolysis/android"
+            );
+        }
 
         let mut missing = stable_framework();
-        missing.scaffold.remove("hydrolysis-android-host-revision");
-        let error = missing.hydrolysis_android_host().unwrap_err().to_string();
+        missing
+            .scaffold
+            .remove("hydrolysis-android-host-subdirectory");
+        let error = missing
+            .hydrolysis_android_host_subdirectory()
+            .unwrap_err()
+            .to_string();
         assert!(
-            error.contains("hydrolysis-android-host-revision"),
+            error.contains("hydrolysis-android-host-subdirectory"),
             "{error}"
         );
     }
@@ -4898,7 +5093,7 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         write_local_checkout(&root);
 
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
-        assert_eq!(framework.apple_backend_path(), Some("backends/apple"));
+        assert_eq!(framework.member_path(APPLE_BACKEND), Some("backends/apple"));
         assert!(framework.git_source().is_none());
     }
 
@@ -4912,7 +5107,7 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         write_apple_pathless_checkout(&root);
 
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
-        assert!(framework.apple_backend_path().is_none());
+        assert!(framework.member_path(APPLE_BACKEND).is_none());
         assert!(!framework.scaffold.contains_key("apple-backend-revision"));
         assert!(!framework.scaffold.contains_key("apple-backend-version"));
     }
@@ -4924,7 +5119,20 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         write_local_checkout(&root);
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
         assert_eq!(framework.channel(), None);
-        assert_eq!(framework.scaffold_value("hydrolysis-version"), "0.2.1");
+        assert_eq!(
+            framework.scaffold_value("hydrolysis-path"),
+            "backends/hydrolysis"
+        );
+        let HydrolysisAndroidHost::Local { root: host_root } =
+            framework.hydrolysis_android_host().unwrap()
+        else {
+            panic!("a local checkout resolves its host in place");
+        };
+        assert_eq!(host_root, root);
+        assert_eq!(
+            framework.hydrolysis_android_host_subdirectory().unwrap(),
+            "backends/hydrolysis/android"
+        );
         assert_eq!(
             framework.scaffold_value("apple-backend-path"),
             "backends/apple"
@@ -4949,7 +5157,7 @@ nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b30
         write_pre_decoupling_checkout(&root);
 
         let framework = smol::block_on(ResolvedFramework::for_local_checkout(&root)).unwrap();
-        assert!(framework.apple_backend_path().is_none());
+        assert!(framework.member_path(APPLE_BACKEND).is_none());
         assert!(!framework.scaffold.contains_key("apple-backend-revision"));
         assert_eq!(
             framework.scaffold_value("android-backend-revision"),
