@@ -25,7 +25,7 @@ pub(crate) fn register_web_surface_accessibility(
     {
         use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 
-        use crate::renderer::transformed_rect;
+        use crate::renderer::{SemanticCore, transformed_rect};
 
         let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
         let renderer = ctx.renderer_mut();
