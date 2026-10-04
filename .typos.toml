@@ -32,6 +32,17 @@ unparseable = "unparseable"
 wdth = "wdth"
 # A deliberately truncated "Archive" rendering in scroll test comments.
 Archiv = "Archiv"
+# Level of detail — the graphics term, not a dropped 'a'.
+lod = "lod"
+# The Paeth predictor, the PNG filtering algorithm's own name.
+paeth = "paeth"
+# Apple Neural Engine — a powermetrics energy rail name.
+ane = "ane"
+ANE = "ANE"
+# fontTools' `otTables as ot` OpenType tables alias (scene font tools).
+ot = "ot"
+# The paired backdrop-test group `group_ba`, not a dropped 'y'.
+ba = "ba"
 
 [default.extend-identifiers]
 NdefFormatable = "NdefFormatable"
@@ -40,6 +51,12 @@ numer = "numer"
 formatable = "formatable"
 thw = "thw"
 trun = "trun"
+# The ix/iy integer coordinate pair; `ix` passes, `iy` should too.
+iy = "iy"
+# fontTools' OpenType tables module name (scene font tools).
+otTables = "otTables"
+# A git short hash quoted in cpu-port-review.md (`ba` inside is not "by").
+81ba2b8 = "81ba2b8"
 
 [files]
 extend-exclude = [

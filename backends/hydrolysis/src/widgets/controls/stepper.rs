@@ -274,33 +274,34 @@ pub fn render_stepper_parts(
         theme.disabled_content_alpha(),
         controls_bounds,
         |ctx| {
-            let mut draw = ctx.draw_context();
-            theme.draw_stepper_button(
-                &mut draw,
-                minus_bounds,
-                StepperEnd::Decrement,
-                minus_interaction,
-            );
-            theme.draw_stepper_decrement_icon(&mut draw, minus_bounds);
-            theme.draw_stepper_button_state_layer(
-                &mut draw,
-                minus_bounds,
-                StepperEnd::Decrement,
-                minus_interaction,
-            );
-            theme.draw_stepper_button(
-                &mut draw,
-                plus_bounds,
-                StepperEnd::Increment,
-                plus_interaction,
-            );
-            theme.draw_stepper_increment_icon(&mut draw, plus_bounds);
-            theme.draw_stepper_button_state_layer(
-                &mut draw,
-                plus_bounds,
-                StepperEnd::Increment,
-                plus_interaction,
-            );
+            ctx.draw_context(|draw| {
+                theme.draw_stepper_button(
+                    &mut *draw,
+                    minus_bounds,
+                    StepperEnd::Decrement,
+                    minus_interaction,
+                );
+                theme.draw_stepper_decrement_icon(&mut *draw, minus_bounds);
+                theme.draw_stepper_button_state_layer(
+                    &mut *draw,
+                    minus_bounds,
+                    StepperEnd::Decrement,
+                    minus_interaction,
+                );
+                theme.draw_stepper_button(
+                    &mut *draw,
+                    plus_bounds,
+                    StepperEnd::Increment,
+                    plus_interaction,
+                );
+                theme.draw_stepper_increment_icon(&mut *draw, plus_bounds);
+                theme.draw_stepper_button_state_layer(
+                    &mut *draw,
+                    plus_bounds,
+                    StepperEnd::Increment,
+                    plus_interaction,
+                );
+            });
         },
     );
 

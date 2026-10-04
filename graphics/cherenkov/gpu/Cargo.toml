@@ -1,0 +1,115 @@
+[package]
+name = "cherenkov-gpu"
+version = "0.0.0"
+description = "wgpu backend for the Cherenkov 2D rendering engine"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# Harness-only YUV decode uniform and shader. Not part of `interop`.
+bench = []
+
+[dependencies]
+filtrate = { path = "../../filtrate" }
+filtrate-core = { path = "../../filtrate/core" }
+cherenkov = { path = ".." }
+wgpu = "30.0.1"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+kurbo = "0.13"
+skrifa = "0.44"
+png = "0.18"
+half = "2"
+thiserror = "2"
+tracing = "0.1"
+rustc-hash = "2"
+libm = "0.2"
+# Caller-side validation of user shaders, at the naga version wgpu 30 links.
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+
+# Retained external frames: IOSurface/CVPixelBuffer import and
+# MTLSharedEvent waits on the shared device and queue (#165).
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
+objc2-io-surface = "0.3"
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColorSpace"] }
+# System-compositor planes (#90): the Core Animation layer tree, the video
+# display layer promoted frames go to, and the CoreVideo/CoreMedia wrap of
+# a frame's own IOSurface. Features are listed so only these frameworks'
+# bindings compile.
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFDictionary", "CFArray", "CFNumber", "CFPropertyList"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSDictionary", "NSNotification", "NSObject"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-metal", "CALayer", "CAMetalLayer", "CATransaction", "CABase", "CAAnimation", "CAMediaTiming", "CAMediaTimingFunction"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-media", "objc2-quartz-core", "AVAnimation", "AVQueuedSampleBufferRendering", "AVSampleBufferDisplayLayer", "AVSampleBufferVideoRenderer"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CMBase", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-quartz-core", "NSResponder", "NSView"] }
+
+[target.'cfg(all(target_vendor = "apple", not(target_os = "macos")))'.dependencies]
+objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "objc2-quartz-core", "UIResponder", "UIView"] }
+
+# Vulkan external frames: dmabuf/AHardwareBuffer import, YCbCr conversion
+# and semaphore synchronisation below wgpu (#166).
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+ash = "0.38"
+libc = "0.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", default-features = false, features = ["api-level-30", "sync"] }
+ndk-sys = "0.6"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std", "async-await"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+half = "2"
+
+[build-dependencies]
+# The WGSL engine shaders are compiled once at build time (issue #57), at
+# the naga version wgpu 30 links.
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# `tests/planes.rs` stands Core Animation's own renderer in for the window
+# server: it draws a view's layer tree into an extended sRGB texture once the
+# run loop and the main queue have made the display layer ready.
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGColorSpace"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-video", "CARenderer"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "objc2-core-video"] }
+
+[target.'cfg(all(unix, not(target_vendor = "apple")))'.dev-dependencies]
+# Raw Vulkan access for external-frame import tests on lavapipe (#166).
+ash = "0.38"
+libc = "0.2"
+
+[dev-dependencies]
+cherenkov-oracle = { path = "../oracle" }
+naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-out"] }
+cherenkov-scene = { path = "../scene" }
+
+cherenkov = { path = "..", features = ["testing"] }
+nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+# `tests/planes.rs` runs its cases on the process main thread.
+libtest-mimic = "0.8.2"
+
+[[test]]
+name = "planes"
+harness = false
+
+[lints]
+workspace = true

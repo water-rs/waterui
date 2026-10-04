@@ -978,45 +978,46 @@ impl HydrolysisRenderer {
         let mut scene = Recording::new();
         let theme = self.theme();
         {
-            let mut draw = SceneDrawContext::with_root_transform(&mut scene, transform);
-            for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
-                if target.content_alpha <= 0.0 {
-                    continue;
-                }
-                let selection_visible = focused == Some(index) || menu_target == Some(index);
-                if !selection_visible {
-                    continue;
-                }
-                let selection = refreshed_target_selection(target);
-                let selection_paint = theme.input_selection_paint();
-                let caret_opacity = (selection.is_collapsed() && focused == Some(index))
-                    .then(|| self.text_caret_opacity(self.frame_instant()));
-                let caret_paint = caret_opacity
-                    .filter(|opacity| *opacity > 0.0)
-                    .map(|opacity| theme.input_caret_paint(opacity));
-                draw.clip(target.text_clip_bounds, |draw| {
-                    draw.group(
-                        cherenkov::Group::new().opacity(target.content_alpha),
-                        |draw| {
-                            if selection.is_collapsed() {
-                                if let Some(paint) = &caret_paint {
-                                    draw.fill(target.cursor_area, paint.clone());
+            scene.record_picture(transform, |draw| {
+                for (index, target) in self.text_editing.text_input_targets.iter().enumerate() {
+                    if target.content_alpha <= 0.0 {
+                        continue;
+                    }
+                    let selection_visible = focused == Some(index) || menu_target == Some(index);
+                    if !selection_visible {
+                        continue;
+                    }
+                    let selection = refreshed_target_selection(target);
+                    let selection_paint = theme.input_selection_paint();
+                    let caret_opacity = (selection.is_collapsed() && focused == Some(index))
+                        .then(|| self.text_caret_opacity(self.frame_instant()));
+                    let caret_paint = caret_opacity
+                        .filter(|opacity| *opacity > 0.0)
+                        .map(|opacity| theme.input_caret_paint(opacity));
+                    draw.clip(target.text_clip_bounds, |draw| {
+                        draw.group(
+                            cherenkov::Group::new().opacity(target.content_alpha),
+                            |draw| {
+                                if selection.is_collapsed() {
+                                    if let Some(paint) = &caret_paint {
+                                        draw.fill(target.cursor_area, paint.clone());
+                                    }
+                                } else {
+                                    for (rect, _) in selection.geometry(&target.layout) {
+                                        let highlight = kurbo::Rect::new(
+                                            target.text_bounds.x0 + rect.x0,
+                                            target.text_bounds.y0 + rect.y0,
+                                            target.text_bounds.x0 + rect.x1,
+                                            target.text_bounds.y0 + rect.y1,
+                                        );
+                                        draw.fill(highlight, selection_paint.clone());
+                                    }
                                 }
-                            } else {
-                                for (rect, _) in selection.geometry(&target.layout) {
-                                    let highlight = kurbo::Rect::new(
-                                        target.text_bounds.x0 + rect.x0,
-                                        target.text_bounds.y0 + rect.y0,
-                                        target.text_bounds.x0 + rect.x1,
-                                        target.text_bounds.y0 + rect.y1,
-                                    );
-                                    draw.fill(highlight, selection_paint.clone());
-                                }
-                            }
-                        },
-                    );
-                });
-            }
+                            },
+                        );
+                    });
+                }
+            });
         }
         self.transient_scene = Some(scene);
     }
@@ -1305,8 +1306,9 @@ impl HydrolysisRenderer {
         let theme = self.theme();
         let metrics = theme.text_context_menu_metrics();
         {
-            let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
-            theme.draw_text_context_menu_panel(&mut draw, overlay.bounds);
+            self.scene.record_picture(transform, |draw| {
+                theme.draw_text_context_menu_panel(&mut *draw, overlay.bounds);
+            });
         }
         for (index, row) in overlay.rows.iter().enumerate() {
             let next_is_divider = overlay
@@ -1324,8 +1326,9 @@ impl HydrolysisRenderer {
                     row.bounds.x1 - metrics.separator_horizontal_inset,
                     row.bounds.y1,
                 );
-                let mut draw = SceneDrawContext::with_root_transform(&mut self.scene, transform);
-                theme.draw_text_context_menu_separator(&mut draw, separator);
+                self.scene.record_picture(transform, |draw| {
+                    theme.draw_text_context_menu_separator(&mut *draw, separator);
+                });
             }
 
             match &row.node {
@@ -1366,9 +1369,9 @@ impl HydrolysisRenderer {
                             .separator_thickness
                             .mul_add(0.5, f64::mul_add(row.bounds.height(), 0.5, row.bounds.y0)),
                     );
-                    let mut draw =
-                        SceneDrawContext::with_root_transform(&mut self.scene, transform);
-                    theme.draw_text_context_menu_separator(&mut draw, separator);
+                    self.scene.record_picture(transform, |draw| {
+                        theme.draw_text_context_menu_separator(&mut *draw, separator);
+                    });
                 }
             }
         }

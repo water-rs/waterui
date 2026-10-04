@@ -1,0 +1,52 @@
+[package]
+name = "android-planes"
+version = "0.0.0"
+description = "On-device verification harness for Android system-compositor planes (#90)"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# A standalone workspace: the apk/xbuild manifest readers cannot
+# resolve the repo's virtual workspace root.
+[workspace]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+[lints]
+workspace = true
+
+# Same pin as the repo root: the `kurbo` feature is unreleased
+# (water-rs/nami#27).
+[patch.crates-io]
+nami-core = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5aff23bfffd7d2b109d08fea" }
+
+[dependencies]
+cherenkov = { path = "../../.." }
+cherenkov-gpu = { path = "../.." }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt"] }
+
+[dev-dependencies]
+wgpu = "30.0.1"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+ash = "0.38"
+jni = "0.22"
+libc = "0.2"
+ndk = { version = "0.9", default-features = false, features = ["api-level-30", "sync"] }
+ndk-sys = "0.6"
+skrifa = "0.44"

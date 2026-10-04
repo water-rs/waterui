@@ -1,0 +1,99 @@
+[package]
+name = "filtrate"
+version = "0.2.1"
+edition.workspace = true
+rust-version = "1.95"
+authors = ["Lexo Liu"]
+readme = "README.md"
+repository.workspace = true
+description = "Filter library: built-in filters (blur, brightness, color matrix, ...) as shader functions for the shared composer, and a reference wgpu executor, built on filtrate-core."
+keywords = ["gpu", "filter", "wgpu", "image", "video"]
+categories = ["graphics", "multimedia::images", "rendering"]
+license = "Apache-2.0 OR MIT"
+
+# The cargo-semver-checks feature heuristic enables every non-"unstable"
+# feature — including `webgl`, which is an intentional `compile_error!`
+# off wasm32 and would fail the baseline build outright. `webgl` adds no
+# cfg-gated API surface, so default features cover the whole public API.
+[package.metadata.cargo-semver-checks.lints]
+feature-group = "default-features"
+
+# filtrate's lint policy is stricter than the workspace default: it warns on
+# every clippy group (including `cargo` lints), undocumented unsafe blocks,
+# and missing Debug impls. The first entries repeat the workspace lints
+# because `[lints] workspace = true` cannot be combined with extra entries.
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+multiple_crate_versions = "allow"
+
+[features]
+default = ["gpu"]
+# Everything that touches a GPU: the wgpu `Executor`, the `Effect` runtime
+# trait and `ShaderEffect`, `TextureImage` and texture-backed `FilterImage`s.
+# With `gpu` off the crate carries no wgpu stack: the built-in filter
+# definitions, their WGSL stage sources and the CPU kernels stay available,
+# so a consumer can name and describe filters without a GPU.
+gpu = [
+    "dep:cherenkov-shader",
+    "dep:thiserror",
+    "dep:tracing",
+    "dep:web-time",
+    "dep:wgpu",
+]
+# WebGL2 backend support for wasm targets: turns on wgpu's `webgl` backend.
+# Every executor pass is a fragment pass, so WebGL2's lack of compute shaders
+# and storage textures does not matter. Enabling this feature for a non-wasm
+# target is a compile error — native and WebGPU devices run the same code
+# without it.
+webgl = ["gpu", "wgpu/webgl"]
+
+[dependencies]
+bytemuck = "1"
+# The shared shader composer; only the GPU executor composes stages.
+cherenkov-shader = { version = "0.0.0", path = "../cherenkov/shader", optional = true }
+filtrate-core = { version = "0.2.0", path = "core" }
+# f16 aux images and CPU-kernel texels; no_std-capable.
+half = { version = "2.5", default-features = false }
+filtrate-derive = { version = "0.1.0", path = "derive" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+thiserror = { version = "2.0.19", optional = true }
+tracing = { version = "0.1.44", optional = true }
+# Portable SIMD for the CPU kernels.
+wide = "1.7"
+# `naga-ir`: pass modules reach wgpu as composed naga IR, never as text.
+wgpu = { version = "30.0.1", features = ["naga-ir"], optional = true }
+
+# `std::time::Instant::now` panics on wasm32-unknown-unknown; web-time backs it
+# with `performance.now()` there and delegates to std everywhere else.
+[target.'cfg(target_family = "wasm")'.dependencies]
+web-time = { version = "1", optional = true }
+
+[dev-dependencies]
+# The evaluator runs snippets on the CPU to cross-check the CPU kernels and
+# the linearity of `LINEAR` filters.
+cherenkov-shader = { version = "0.0.0", path = "../cherenkov/shader", features = ["eval"] }
+divan = "0.1"
+pollster = "1.0"
+
+[[bench]]
+name = "filter_trait"
+harness = false
+
+[[bench]]
+name = "gpu_runtime"
+harness = false
+required-features = ["gpu"]

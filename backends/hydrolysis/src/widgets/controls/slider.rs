@@ -418,22 +418,23 @@ pub fn render_slider_parts(
     let thumb_center = kurbo::Point::new(fill_right, track_center_y);
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_slider_track(&mut draw, track_rect, fill_rect, state.size, interaction);
-        theme.draw_slider_thumb(
-            &mut draw,
-            thumb_center,
-            metrics.handle_overhang(),
-            state.size,
-            interaction,
-        );
-        theme.draw_slider_thumb_state_layer(
-            &mut draw,
-            thumb_center,
-            metrics.handle_overhang(),
-            state.size,
-            interaction,
-        );
+        ctx.draw_context(|draw| {
+            theme.draw_slider_track(&mut *draw, track_rect, fill_rect, state.size, interaction);
+            theme.draw_slider_thumb(
+                &mut *draw,
+                thumb_center,
+                metrics.handle_overhang(),
+                state.size,
+                interaction,
+            );
+            theme.draw_slider_thumb_state_layer(
+                &mut *draw,
+                thumb_center,
+                metrics.handle_overhang(),
+                state.size,
+                interaction,
+            );
+        });
     }
 
     // The value indicator floats above the thumb while the pointer holds the
@@ -477,8 +478,9 @@ pub fn render_slider_parts(
             bubble_bottom,
         );
         {
-            let mut draw = ctx.draw_context();
-            theme.draw_slider_value_indicator(&mut draw, bubble);
+            ctx.draw_context(|draw| {
+                theme.draw_slider_value_indicator(&mut *draw, bubble);
+            });
         }
         let text_rect = kurbo::Rect::new(
             bubble.x0,

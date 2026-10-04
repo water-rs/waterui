@@ -32,6 +32,15 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
   `test_asset_consumers`, derived from the dev-dependency closure, so a
   crate that merely dev-depends on `waterui-testing` — `waterui-controls`,
   say — still gets the fonts before its check.
+- `scene-assets` — `true` when a package whose `--all-targets` compile
+  `include_bytes!`s a generated Cherenkov scene font is in scope, or the
+  whole workspace is. That is a fixed owner set, not a dev-dependency
+  closure: only `cherenkov-oracle`'s glyph tests and `cherenkov-gpu`'s
+  bitmap/browser test targets embed `scenes/fonts/*`, and test-only code
+  never compiles for a dependent — so `SCENE_ASSET_OWNERS` names them
+  directly. Runtime readers (`cherenkov-cpu`'s tests, `cherenkov-bench`'s
+  corpus) are not in it: the gate never runs tests, and every `full` job
+  generates the tree unconditionally.
 
 Usage:
 
@@ -64,6 +73,13 @@ DEPENDENCY_TABLES = (
     "workspace.dependencies",
     "patch",
 )
+
+# The packages whose `--all-targets` compile `include_bytes!`s a file the
+# Cherenkov scene generator writes (its test targets embed
+# `scenes/fonts/*` subsets). The gate's `scene-assets` output is this set
+# intersected with the scoped package names: test-only code never
+# compiles for a dependent, so no dev-dependency closure is involved.
+SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu"}
 
 
 def is_prose(path):
@@ -216,12 +232,16 @@ def main():
         def assets_for(names):
             return "true" if consumers & set(names) else "false"
 
+        def scene_assets_for(names):
+            return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
+
         if not entries:
             outputs.update(
                 {
                     "packages": "",
                     "msrv": "false",
                     "test-assets": "false",
+                    "scene-assets": "false",
                 }
             )
         elif report["workspace"]:
@@ -232,6 +252,7 @@ def main():
                     "packages": "workspace",
                     "msrv": "true" if msrv else "false",
                     "test-assets": "true",
+                    "scene-assets": "true",
                 }
             )
         elif comment_only:
@@ -249,6 +270,7 @@ def main():
                     "comment-only": "true",
                     "msrv": "true" if msrv else "false",
                     "test-assets": assets_for(owners),
+                    "scene-assets": scene_assets_for(owners),
                 }
             )
         else:
@@ -259,6 +281,7 @@ def main():
                     "package-args": " ".join(f"-p {name}" for name in affected),
                     "msrv": "true" if msrv else "false",
                     "test-assets": assets_for(affected),
+                    "scene-assets": scene_assets_for(affected),
                 }
             )
     except Exception as error:  # widen on any failure — never scope on a guess

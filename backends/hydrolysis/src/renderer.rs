@@ -53,7 +53,7 @@ pub use identity::*;
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
-pub use recording::{Glyph, GlyphRun, Recording, SceneDrawContext, working_color};
+pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
 pub use tree::*;
 pub use views::*;

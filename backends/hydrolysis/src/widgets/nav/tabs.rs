@@ -375,8 +375,9 @@ pub fn render_tabs_parts(
 
     {
         let theme = ctx.theme();
-        let mut draw = ctx.draw_context();
-        theme.draw_tabs_bar(&mut draw, bar_rect, false);
+        ctx.draw_context(|draw| {
+            theme.draw_tabs_bar(&mut *draw, bar_rect, false);
+        });
     }
 
     for index in 0..tab_count {
@@ -434,28 +435,29 @@ pub fn render_tabs_parts(
             };
             {
                 let theme = ctx.theme();
-                let mut draw = ctx.draw_context();
-                if is_selected {
-                    let highlight = tabs_highlight_rect(
+                ctx.draw_context(|draw| {
+                    if is_selected {
+                        let highlight = tabs_highlight_rect(
+                            chrome_bounds,
+                            style,
+                            theme_metrics.active_indicator_height,
+                            if matches!(style, NativeTabStyle::Sidebar) {
+                                f64::from(label_size.height)
+                            } else {
+                                f64::from(label_size.width)
+                            },
+                            layout,
+                        );
+                        theme.draw_tabs_highlight(&mut *draw, highlight, layout);
+                    }
+                    theme.draw_tabs_button_state_layer(
+                        &mut *draw,
                         chrome_bounds,
-                        style,
-                        theme_metrics.active_indicator_height,
-                        if matches!(style, NativeTabStyle::Sidebar) {
-                            f64::from(label_size.height)
-                        } else {
-                            f64::from(label_size.width)
-                        },
+                        is_selected,
+                        interaction,
                         layout,
                     );
-                    theme.draw_tabs_highlight(&mut draw, highlight, layout);
-                }
-                theme.draw_tabs_button_state_layer(
-                    &mut draw,
-                    chrome_bounds,
-                    is_selected,
-                    interaction,
-                    layout,
-                );
+                });
             }
             let selection_binding = selection.clone();
             let enabled = {

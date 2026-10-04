@@ -76,6 +76,11 @@ jobs:
       # the generated fonts — the repository stores none of them.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      # Same for the Cherenkov test targets the workspace pass below
+      # compiles and runs: their fonts and corpus scenes are generated,
+      # not committed.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so

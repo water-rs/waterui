@@ -216,31 +216,32 @@ pub fn draw_scroll_indicators(
         .flatten();
 
     {
-        let mut draw = ctx.draw_context();
-        if let Some(geometry) = &vertical {
-            let thumb_y = viewport.y0 + geometry.thumb_offset;
-            theme.draw_scroll_indicator(
-                &mut draw,
-                kurbo::Rect::new(
-                    viewport.x1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
-                    thumb_y,
-                    viewport.x1 - SCROLL_INDICATOR_EDGE_INSET,
-                    thumb_y + geometry.thumb_extent,
-                ),
-            );
-        }
-        if let Some(geometry) = &horizontal {
-            let thumb_x = viewport.x0 + geometry.thumb_offset;
-            theme.draw_scroll_indicator(
-                &mut draw,
-                kurbo::Rect::new(
-                    thumb_x,
-                    viewport.y1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
-                    thumb_x + geometry.thumb_extent,
-                    viewport.y1 - SCROLL_INDICATOR_EDGE_INSET,
-                ),
-            );
-        }
+        ctx.draw_context(|draw| {
+            if let Some(geometry) = &vertical {
+                let thumb_y = viewport.y0 + geometry.thumb_offset;
+                theme.draw_scroll_indicator(
+                    &mut *draw,
+                    kurbo::Rect::new(
+                        viewport.x1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
+                        thumb_y,
+                        viewport.x1 - SCROLL_INDICATOR_EDGE_INSET,
+                        thumb_y + geometry.thumb_extent,
+                    ),
+                );
+            }
+            if let Some(geometry) = &horizontal {
+                let thumb_x = viewport.x0 + geometry.thumb_offset;
+                theme.draw_scroll_indicator(
+                    &mut *draw,
+                    kurbo::Rect::new(
+                        thumb_x,
+                        viewport.y1 - SCROLL_INDICATOR_EDGE_INSET - thickness,
+                        thumb_x + geometry.thumb_extent,
+                        viewport.y1 - SCROLL_INDICATOR_EDGE_INSET,
+                    ),
+                );
+            }
+        });
     }
 
     let hit_transform = ctx.hit_transform;

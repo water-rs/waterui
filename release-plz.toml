@@ -245,3 +245,26 @@ version_group = "waterui"
 name = "hydrolysis"
 git_release_name = "hydrolysis-v{{ version }}"
 git_tag_name = "hydrolysis-v{{ version }}"
+
+# Cherenkov / filtrate (#1449): the same releases the cherenkov
+# repository's release-plz config opted into — `release = true` there is
+# a `[[package]]` entry here (publishable crates release only when
+# listed). The engine crates (cherenkov*, `publish = false` at 0.0.0)
+# are never picked up. Tag names namespace to the package, matching this
+# config's default: the upstream `v*`/`core-v*`/`derive-v*`/`shader-v*`
+# names would collide with the facade's and waterui-core's.
+[[package]]
+name = "filtrate"
+# cargo-semver-checks' feature heuristic enables `webgl`, which is
+# intentionally a compile_error! off-wasm; PR semver coverage stays in
+# release-preflight.yml (default-features).
+semver_check = false
+
+[[package]]
+name = "filtrate-core"
+
+[[package]]
+name = "filtrate-derive"
+
+[[package]]
+name = "cherenkov-shader"

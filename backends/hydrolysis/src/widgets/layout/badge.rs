@@ -180,13 +180,15 @@ pub fn render_badge_parts(
     let rect = kurbo::Rect::new(x0, y0, x0 + badge_width, y0 + badge_height);
 
     let Some((label, text_size)) = large else {
-        let mut draw = ctx.draw_context();
-        theme.draw_badge_small(&mut draw, rect);
+        ctx.draw_context(|draw| {
+            theme.draw_badge_small(&mut *draw, rect);
+        });
         return;
     };
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_badge_large(&mut draw, rect);
+        ctx.draw_context(|draw| {
+            theme.draw_badge_large(&mut *draw, rect);
+        });
     }
 
     // The count indicator is vector-drawn, so it must emit its own semantic
