@@ -234,6 +234,7 @@ enum Phase {
 /// Mutable harness state — everything is main-thread.
 struct Inner {
     phase: Phase,
+    config: MatrixConfig,
     queue: std::collections::VecDeque<CellSpec>,
     pass: u32,
     cell: Option<CellSpec>,
@@ -347,9 +348,13 @@ define_class!(
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     inner.borrow_mut().tick(link);
                 }));
-                // A panic must not unwind through Objective-C frames.
+                // A cell panic (e.g. a SceneView mount that runs out of
+                // threads) is a measurement outcome: fail the cell and
+                // continue the matrix rather than unwinding into
+                // Objective-C frames.
                 if result.is_err() {
-                    std::process::abort();
+                    let inner = inner.clone();
+                    fail_current(&inner, "tick");
                 }
             }
         }
@@ -389,6 +394,7 @@ pub fn install(
     }
     let inner = Rc::new(RefCell::new(Inner {
         phase: Phase::SetupCell,
+        config: config.clone(),
         queue,
         pass: 0,
         cell: None,
@@ -585,12 +591,17 @@ fn run_after(inner: &Rc<RefCell<Inner>>, config: MatrixConfig, seconds: f64, ste
         let Some(inner) = ctx.inner.upgrade() else {
             return;
         };
-        match ctx.step {
-            TimerStep::StartCell => start_cell(inner, ctx.config),
-            TimerStep::WaitHandles => wait_handles(inner, ctx.config),
-            TimerStep::MeasureStart => measure_start(inner, ctx.config),
-            TimerStep::MeasureEnd => measure_end(inner, ctx.config),
-            TimerStep::TeardownDone => start_cell(inner, ctx.config),
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match ctx.step {
+                TimerStep::StartCell => start_cell(inner.clone(), ctx.config.clone()),
+                TimerStep::WaitHandles => wait_handles(inner.clone(), ctx.config.clone()),
+                TimerStep::MeasureStart => measure_start(inner.clone(), ctx.config.clone()),
+                TimerStep::MeasureEnd => measure_end(inner.clone(), ctx.config.clone()),
+                TimerStep::TeardownDone => start_cell(inner.clone(), ctx.config.clone()),
+            }
+        }));
+        if result.is_err() {
+            fail_current(&inner, "timer");
         }
     }
     let run_loop = CFRunLoop::main().expect("main run loop exists");
@@ -652,7 +663,9 @@ fn start_cell(inner: Rc<RefCell<Inner>>, config: MatrixConfig) {
         pass = pass_index,
         "bench cell setup"
     );
+    mark(&format!("cell-mount-{}", cell.name()));
     borrowed.cell_binding.set(Some(cell));
+    mark("binding-set-done");
     drop(borrowed);
     run_after(&inner, config, 0.2, TimerStep::WaitHandles);
 }
@@ -791,6 +804,50 @@ fn measure_end(inner: Rc<RefCell<Inner>>, config: MatrixConfig) {
     borrowed.phase = Phase::Teardown;
     drop(borrowed);
     run_after(&inner, config, TEARDOWN_S, TimerStep::TeardownDone);
+}
+
+/// A panic inside a cell's callbacks is a measurement outcome, not a
+/// crash: record the cell failed with what was captured, unmount it, and
+/// move to the next cell.
+fn fail_current(inner: &Rc<RefCell<Inner>>, where_in: &str) {
+    let mut borrowed = inner.borrow_mut();
+    let config = borrowed.config.clone();
+    if let Some(cell) = borrowed.cell.take() {
+        let (pass, thermal, frames, mem_samples) = (
+            borrowed.pass,
+            borrowed.thermal_current.clone(),
+            std::mem::take(&mut borrowed.frames),
+            std::mem::take(&mut borrowed.mem),
+        );
+        borrowed.results.push(CellResult {
+            name: format!("{}-p{}", cell.name(), pass + 1),
+            scenario: cell.scenario,
+            variant: cell.variant.clone(),
+            n: cell.n,
+            pass,
+            thermal,
+            measured_seconds: frames
+                .first()
+                .and_then(|first| frames.last().map(|last| last.t - first.t))
+                .unwrap_or(0.0),
+            rows_created_per_second: 0.0,
+            producer_calls_per_second: 0.0,
+            frames,
+            mem_samples,
+            status: format!("panic:{where_in}"),
+        });
+    }
+    borrowed.handles = None;
+    borrowed.animate = None;
+    let binding = borrowed.cell_binding.clone();
+    borrowed.phase = Phase::Teardown;
+    drop(borrowed);
+    // Teardown itself may panic if the broken view tree is still
+    // reacting — swallow it; the next cell mounts a fresh subtree.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        binding.set(None);
+    }));
+    run_after(inner, config, TEARDOWN_S, TimerStep::TeardownDone);
 }
 
 /// Round over: write `bench-<run_id>.json`.
@@ -1079,5 +1136,22 @@ fn write_result(json: &str, run_id: &str) {
     match std::fs::write(&path, json) {
         Ok(()) => info!(run_id = %run_id, path = %path.display(), "BENCH_DONE"),
         Err(error) => tracing::error!(run_id = %run_id, %error, "result write failed"),
+    }
+}
+/// Debug breadcrumb — appends a line to Documents/bench-debug.txt so a
+/// startup crash is bisectable without stderr access.
+pub fn mark(stage: &str) {
+    let path = std::env::home_dir()
+        .unwrap_or_else(|| "/tmp".into())
+        .join("Documents")
+        .join("bench-debug.txt");
+    let mut line = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok();
+    use std::io::Write;
+    if let Some(f) = &mut line {
+        let _ = writeln!(f, "{stage}");
     }
 }

@@ -54,6 +54,7 @@ pub fn cell_view(spec: &CellSpec, slot: &Rc<RefCell<Option<SceneHandles>>>) -> A
         producer_calls: Arc::new(AtomicU64::new(0)),
     };
     *slot.borrow_mut() = Some(handles.clone());
+    crate::harness::mark(&format!("cell-view-{}", spec.name()));
     match spec.scenario {
         1 => {
             let ScrollDriver::Controller(controller) = &handles.scroll else {
