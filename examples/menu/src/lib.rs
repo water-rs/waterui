@@ -187,6 +187,85 @@ fn context_menu_section(context_action: &Binding<String>) -> impl View {
     .padding()
 }
 
+fn context_menu_accessory_section(
+    context_action: &Binding<String>,
+    like_label: &Binding<waterui::Str>,
+) -> impl View {
+    vstack((
+        text("Context Menu with Accessory").sub_headline(),
+        text("Long press to preview with an inline accessory bar")
+            .body()
+            .muted(),
+        spacer().height(12.0),
+        text("Long Press Me")
+            .padding_with(24.0)
+            .background(ORANGE_BG)
+            .foreground(ORANGE_FG)
+            .context_menu(
+                ContextMenu::new((
+                    "Copy"
+                        .action(|State(action): State<Binding<String>>| {
+                            action.set("Copied!".to_string())
+                        })
+                        .state(context_action),
+                    "Share"
+                        .command()
+                        .action(|State(action): State<Binding<String>>| {
+                            action.set("Shared!".to_string())
+                        })
+                        .state(context_action)
+                        .subtitle("Sends a link"),
+                    Divider,
+                    Menu::new(
+                        "More",
+                        "Archive"
+                            .command()
+                            .action(|State(action): State<Binding<String>>| {
+                                action.set("Archived!".to_string())
+                            })
+                            .state(context_action),
+                    ),
+                    "Delete"
+                        .command()
+                        .action(|State(action): State<Binding<String>>| {
+                            action.set("Deleted!".to_string())
+                        })
+                        .state(context_action)
+                        .destructive(),
+                ))
+                .preview(vstack((
+                    text("Preview Card")
+                        .padding_with(32.0)
+                        .background(ORANGE_BG)
+                        .foreground(ORANGE_FG),
+                    button("Card Tap")
+                        .action(|State(action): State<Binding<String>>| {
+                            action.set("CardTapped!".to_string())
+                        })
+                        .state(context_action),
+                )))
+                .accessory({
+                    let label_view = like_label.clone();
+                    let label_set = like_label.clone();
+                    hstack((
+                        button(text!("{label_view}"))
+                            .action(move |State(action): State<Binding<String>>| {
+                                action.set("Liked!".to_string());
+                                label_set.set(waterui::Str::from("Liked!"));
+                            })
+                            .state(context_action),
+                        button("Dismiss")
+                            .action(|Use(dismiss): Use<DismissContextMenu>| dismiss.dismiss()),
+                    ))
+                    .padding()
+                }),
+            ),
+        spacer().height(12.0),
+        text!("{context_action}").font(font::Caption).muted(),
+    ))
+    .padding()
+}
+
 fn selection_menu_section(selection_action: &Binding<String>) -> impl View {
     let draft = binding(Str::from("Select some of this text, then open the menu"));
     vstack((
@@ -280,6 +359,7 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
     let menu_selected = Binding::container(String::from("None"));
     let styled_action = Binding::container(String::from("No action yet"));
     let context_action = Binding::container(String::from("No action yet"));
+    let like_label = Binding::container(waterui::Str::from("Like"));
     let view_action = Binding::container(String::from("No action yet"));
     let selection_action = Binding::container(String::from("No action yet"));
 
@@ -295,7 +375,11 @@ fn scene(toolbar_status: Binding<String>) -> impl View {
             Divider,
             styled_menu_section(&styled_action),
             Divider,
-            context_menu_section(&context_action),
+            vstack((
+                context_menu_section(&context_action),
+                Divider,
+                context_menu_accessory_section(&context_action, &like_label),
+            )),
             Divider,
             vstack((
                 context_menu_views_section(&view_action),

@@ -17,17 +17,18 @@ pub mod context_menu {
     use waterui_controls::menu::{MenuItem, MenuView, ResolvedMenuItem, resolve_menu_items};
     use waterui_core::{AnyView, Environment, Metadata, View, env::with, metadata::MetadataKey};
 
-    /// A context menu: the menu itself, plus an optional lifted preview of
-    /// the view it acts on and an optional interactive accessory presented
-    /// alongside the menu.
+    /// A context menu with an optional custom preview and an interactive
+    /// accessory presented alongside its commands.
     ///
     /// The menu appears when the user long-presses (iOS, Android, touch and
     /// pen elsewhere) or secondary-clicks (macOS, desktop pointers). Menu rows
     /// stay within what every platform's own menu can render; custom content
     /// belongs in the [`accessory`](Self::accessory). Placement is
     /// platform-specific: macOS presents the accessory as a native
-    /// `NSMenuItem` view inside the menu, while iOS anchors it to the
-    /// lifted preview outside the menu.
+    /// `NSMenuItem` view inside the menu. On iOS, menus with an accessory
+    /// present the custom preview, accessory and commands together in a
+    /// native popover; menus without an accessory use the system context
+    /// menu and lifted preview.
     ///
     /// The two placements are not interchangeable capabilities. In a
     /// tracked `NSMenu` the accessory is pointer-interactive only — text
@@ -35,8 +36,8 @@ pub mod context_menu {
     /// dimensions are fixed while the menu tracks, and a changed
     /// intrinsic size is applied on the next open. `Binding`-driven
     /// updates inside the accessory still render in place while it is
-    /// open. On iOS the accessory keeps the full external-preview
-    /// contract.
+    /// open. On iOS, the accessory remains interactive and its intrinsic
+    /// size can change while the popover is open.
     ///
     /// # Example
     ///
@@ -58,12 +59,12 @@ pub mod context_menu {
     pub struct ContextMenu {
         /// The menu items to display in the context menu.
         pub items: Computed<Vec<MenuItem>>,
-        /// The view lifted while the menu is open. `None` lifts the source
-        /// view itself.
+        /// The custom preview shown while the menu is open. `None` uses
+        /// the platform's default presentation of the source view.
         pub preview: Option<AnyView>,
         /// An interactive view presented alongside the menu — a
-        /// pointer-interactive `NSMenuItem` view row on macOS, anchored
-        /// to the lifted preview outside the menu on iOS.
+        /// pointer-interactive `NSMenuItem` view row on macOS, alongside
+        /// the preview and commands in a native popover on iOS.
         pub accessory: Option<AnyView>,
     }
 
@@ -81,7 +82,9 @@ pub mod context_menu {
             }
         }
 
-        /// Lifts `preview` instead of the source view while the menu is open.
+        /// Shows `preview` while the menu is open, using the platform's
+        /// presentation: a lifted preview for an iOS system context menu,
+        /// or content inside its accessory-bearing popover.
         #[must_use]
         pub fn preview(mut self, preview: impl View) -> Self {
             self.preview = Some(AnyView::new(preview));
@@ -89,8 +92,8 @@ pub mod context_menu {
         }
 
         /// Presents an interactive `accessory` alongside the menu — as a
-        /// native row inside the `NSMenu` on macOS, anchored to the
-        /// lifted preview outside the menu on iOS.
+        /// native row inside the `NSMenu` on macOS, alongside the preview
+        /// and commands in a native popover on iOS.
         ///
         /// Inside a tracked `NSMenu` the accessory is pointer-interactive
         /// only: keyboard input is unsupported, and its dimensions are
@@ -151,8 +154,8 @@ pub mod context_menu {
     pub struct ResolvedContextMenu {
         /// The resolved menu items for the current environment.
         pub items: Computed<Vec<ResolvedMenuItem>>,
-        /// The view to lift while the menu is open; `None` lifts the source
-        /// view.
+        /// The custom preview shown while the menu is open; `None` uses
+        /// the platform's default presentation of the source view.
         pub preview: Option<AnyView>,
         /// The accessory presented alongside the menu, with
         /// [`DismissContextMenu`] installed in its environment.

@@ -41,14 +41,13 @@ mod context_menu;
 mod date_picker;
 pub mod drag_drop;
 pub mod gesture;
+mod menu_panel;
 pub use color_well::ColorWell;
-#[cfg(feature = "native-test")]
-#[doc(hidden)]
-pub use context_menu::accessory_overlay_window_for_test;
 pub use context_menu::{
-    AccessoryOverlay, ContextMenu, ContextMenuConfiguration, ContextMenuHandlers, bounds_in_window,
-    preview_controller, targeted_preview, targeted_preview_at,
+    ContextMenu, ContextMenuConfiguration, ContextMenuHandlers, preview_controller,
+    targeted_preview,
 };
+pub use menu_panel::{ContextMenuPopover, PanelPalette, PanelSlot};
 pub mod colors;
 mod host_view;
 pub mod image;

@@ -172,6 +172,9 @@ pub(super) fn tree_nodes(items: &[ResolvedMenuItem], env: &Environment) -> Vec<M
                         .icon
                         .as_ref()
                         .map(|icon| String::from(icon.name.as_str())),
+                    // A submenu is a container: always activatable, like
+                    // the `NSMenuItem`/`UIMenu` the canonical paths build.
+                    enabled: true,
                     ..KitCommand::default()
                 },
                 tree_nodes(&submenu.items.snapshot(), env),
