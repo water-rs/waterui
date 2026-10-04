@@ -310,14 +310,15 @@ impl MetalPresenter {
             this: RefCell::new(this.clone()),
         });
         let delegate = LinkDelegate::new(mtm, &inner);
-        // SAFETY: `initWithMetalLayer:` is `CAMetalDisplayLink`'s designated
-        // initializer, binding the link to `inner`'s layer.
-        let link =
-            CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), &inner.layer);
         // The presenter owns the layer's static contract: drawables are
         // render-targets only, the pool is bounded at two, presenting never
         // blocks on the transaction, and until a new-size frame lands the
-        // last frame scales — the `IOSurface` path's exact semantics.
+        // last frame scales — the `IOSurface` path's exact semantics. These
+        // setters must run BEFORE the link exists: once a
+        // `CAMetalDisplayLink` is bound to the layer, mutating
+        // `maximumDrawableCount` raises `CAMetalLayerInvalidOperation`
+        // ("should not be called when using CAMetalDisplayLink") — verified
+        // on real hardware.
         inner.layer.setFramebufferOnly(true);
         inner.layer.setMaximumDrawableCount(2);
         inner.layer.setPresentsWithTransaction(false);
@@ -325,6 +326,10 @@ impl MetalPresenter {
         inner
             .layer
             .setContentsGravity(unsafe { objc2_quartz_core::kCAGravityResize });
+        // SAFETY: `initWithMetalLayer:` is `CAMetalDisplayLink`'s designated
+        // initializer, binding the link to `inner`'s layer.
+        let link =
+            CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), &inner.layer);
         // The delegate is a plain `NSObject` protocol adoption;
         // `CAMetalDisplayLink` keeps it weak, the presenter retains it.
         link.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
