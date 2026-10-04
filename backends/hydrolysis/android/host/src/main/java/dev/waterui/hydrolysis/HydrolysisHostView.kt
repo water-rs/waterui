@@ -16,6 +16,7 @@ import android.view.autofill.AutofillValue
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import androidx.annotation.RequiresApi
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -408,9 +409,15 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
     }
 
+    /**
+     * The cursor in view-local coordinates. Positional parameters require the
+     * view-to-screen matrix, which [transformMatrixToGlobal] supplies with
+     * every ancestor's transform.
+     */
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     private fun cursorAnchorInfo(rect: Rect): android.view.inputmethod.CursorAnchorInfo =
         android.view.inputmethod.CursorAnchorInfo.Builder()
-            .setMatrix(matrix)
+            .setMatrix(android.graphics.Matrix().also { transformMatrixToGlobal(it) })
             .setInsertionMarkerLocation(
                 rect.left.toFloat(),
                 rect.top.toFloat(),
