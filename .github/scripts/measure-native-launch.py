@@ -226,31 +226,66 @@ async def _attempt_cleanup(name, describe, awaitable):
         result = exc
     if (isinstance(result, BaseException)
             and not isinstance(result, asyncio.CancelledError)):
+        if isinstance(result, (CleanupFailed, FailureReport)):
+            return result
         return CleanupFailed(
             name, f"{describe()} after {time.monotonic() - started:.2f}s: "
                   f"{_describe_failure(result)}")
     return None
 
 
-async def _launch(target):
-    """Start the app; return (owned pid, app process or None for simctl)."""
+class _OwnedChild:
+    """A subprocess slot owned by this run, created before the wait.
+
+    `spawn` records the Process immediately after
+    `create_subprocess_exec` returns, with no await between recording
+    and returning — so a run whose result delivery is discarded by
+    cancellation still owns the child it created. `reap` is a no-op in
+    the unspawned state; afterwards it reaps through the bounded
+    mechanism and never masks a failure already propagating.
+    """
+
+    __slots__ = ("argv", "process")
+
+    def __init__(self):
+        self.argv = None
+        self.process = None
+
+    async def spawn(self, argv, **kwargs):
+        self.argv = argv
+        self.process = await asyncio.create_subprocess_exec(
+            *argv, **kwargs)
+        return self.process
+
+    def describe(self):
+        """Target pid/argv/outcome for cleanup diagnostics."""
+        return f"{_proc_outcome(self.process)} argv={self.argv!r}"
+
+    async def reap(self, step):
+        if self.process is not None:
+            await _cleanup(
+                step, self.describe, _reap(self.process))
+
+
+async def _launch(target, app_slot):
+    """Start the app; return (owned pid, app process or None for simctl).
+
+    The macOS child is spawned into the caller-owned `app_slot`, so the
+    run keeps its handle even if this coroutine's result is discarded
+    by a cancellation on delivery.
+    """
     if isinstance(target, SimulatorLaunch):
-        argv = [
-            "xcrun", "simctl", "launch", "--terminate-running-process",
-            target.udid, target.bundle_id,
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
+        slot = _OwnedChild()
+        proc = await slot.spawn(
+            ["xcrun", "simctl", "launch", "--terminate-running-process",
+             target.udid, target.bundle_id],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
         try:
             out, _ = await proc.communicate()
         finally:
-            await _cleanup(
-                "reap simctl launch",
-                lambda: f"{_proc_outcome(proc)} argv={argv!r}",
-                _reap(proc))
+            await slot.reap("reap simctl launch")
         text = out.decode("utf-8", errors="replace").strip()
         if proc.returncode != 0:
             raise LaunchFailed(
@@ -265,8 +300,8 @@ async def _launch(target):
         raise LaunchFailed(
             "launch",
             f"bundle executable does not exist: {target.executable}")
-    proc = await asyncio.create_subprocess_exec(
-        str(target.executable),
+    proc = await app_slot.spawn(
+        [str(target.executable)],
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
@@ -335,11 +370,13 @@ async def _await_first_paint(lines, pid, app_proc):
                 f"(status {app_proc.returncode})")
         return await marker
     finally:
-        pending = [task for task in waiters if not task.done()]
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        for task in waiters:
+            if not task.done():
+                task.cancel()
+        # Every waiter is gathered, not only the cancelled ones — a task
+        # that already completed with an exception is retrieved here too,
+        # never abandoned unreported.
+        await asyncio.gather(*waiters, return_exceptions=True)
 
 
 async def _rss_kb_once(pid):
@@ -351,19 +388,16 @@ async def _rss_kb_once(pid):
     status with output, or anything but one integer violates the probe's
     contract and is a Failure, never a sample to fold in.
     """
-    argv = ["ps", "-o", "rss=", "-p", str(pid)]
-    proc = await asyncio.create_subprocess_exec(
-        *argv,
+    slot = _OwnedChild()
+    proc = await slot.spawn(
+        ["ps", "-o", "rss=", "-p", str(pid)],
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
     )
     try:
         out, _ = await proc.communicate()
     finally:
-        await _cleanup(
-            "reap ps",
-            lambda: f"{_proc_outcome(proc)} argv={argv!r}",
-            _reap(proc))
+        await slot.reap("reap ps")
     fields = out.split()
     if proc.returncode == 1 and not fields:
         return None
@@ -427,25 +461,24 @@ async def _terminate(target, app_proc):
     deadline even when the platform layer misbehaves.
     """
     if isinstance(target, SimulatorLaunch):
-        argv = ["xcrun", "simctl", "terminate", target.udid, target.bundle_id]
-        terminate = await asyncio.wait_for(
-            asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL),
-            TERMINATE_GRACE_S)
+        slot = _OwnedChild()
         try:
-            await asyncio.wait_for(terminate.wait(), TERMINATE_GRACE_S)
-        except asyncio.TimeoutError as exc:
-            raise Failure(
-                "terminate",
-                f"simctl terminate {target.bundle_id} did not exit "
-                f"within {TERMINATE_GRACE_S:.0f}s") from exc
+            terminate = await asyncio.wait_for(
+                slot.spawn(
+                    ["xcrun", "simctl", "terminate",
+                     target.udid, target.bundle_id],
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL),
+                TERMINATE_GRACE_S)
+            try:
+                await asyncio.wait_for(terminate.wait(), TERMINATE_GRACE_S)
+            except asyncio.TimeoutError as exc:
+                raise Failure(
+                    "terminate",
+                    f"simctl terminate {target.bundle_id} did not exit "
+                    f"within {TERMINATE_GRACE_S:.0f}s") from exc
         finally:
-            await _cleanup(
-                "reap simctl terminate",
-                lambda: f"{_proc_outcome(terminate)} argv={argv!r}",
-                _reap(terminate))
+            await slot.reap("reap simctl terminate")
         if terminate.returncode != 0:
             raise Failure(
                 "terminate",
@@ -462,14 +495,11 @@ async def _terminate(target, app_proc):
 
 async def _run(target, metrics_path):
     deadline = _Deadline(DEADLINE_S)
-    try:
-        stream = await deadline.wait(asyncio.create_subprocess_exec(
-            *_stream_argv(target),
-            stdout=asyncio.subprocess.PIPE,
-        ))
-    except asyncio.TimeoutError as exc:
-        raise Failure(
-            "attach", "the log stream did not start in time") from exc
+    # Every spawned child is owned through a slot established before the
+    # cancellable wait that delivers it — a spawn whose result never
+    # reaches its caller is still reaped by the slot.
+    stream_slot = _OwnedChild()
+    app_slot = _OwnedChild()
     app_proc = None
     rss_task = None
     # Once the launch attempt exists the app may have started even if the
@@ -477,7 +507,13 @@ async def _run(target, metrics_path):
     # on a parsed pid or a live process handle.
     launch_attempted = False
     try:
-        lines = _lines(stream.stdout)
+        try:
+            await deadline.wait(stream_slot.spawn(
+                _stream_argv(target), stdout=asyncio.subprocess.PIPE))
+        except asyncio.TimeoutError as exc:
+            raise Failure(
+                "attach", "the log stream did not start in time") from exc
+        lines = _lines(stream_slot.process.stdout)
         try:
             await deadline.wait(_await_attach(lines))
         except asyncio.TimeoutError as exc:
@@ -485,7 +521,7 @@ async def _run(target, metrics_path):
                 "attach", "the log stream did not attach in time") from exc
         launch_attempted = True
         try:
-            pid, app_proc = await deadline.wait(_launch(target))
+            pid, app_proc = await deadline.wait(_launch(target, app_slot))
         except asyncio.TimeoutError as exc:
             raise LaunchFailed(
                 "launch",
@@ -554,15 +590,14 @@ async def _run(target, metrics_path):
         steps = [
             ("drain RSS sampler", lambda: f"task={rss_task!r}",
              _drain(rss_task)),
-            ("reap log stream",
-             lambda: f"{_proc_outcome(stream)} "
-                     f"argv={_stream_argv(target)!r}",
-             _reap(stream)),
+            ("reap log stream", stream_slot.describe,
+             stream_slot.reap("reap log stream")),
         ]
         if launch_attempted:
             steps.append((
-                "terminate app", lambda: _app_outcome(target, app_proc),
-                _terminate(target, app_proc)))
+                "terminate app",
+                lambda: _app_outcome(target, app_slot.process),
+                _terminate(target, app_slot.process)))
         issues = [
             issue for issue in await asyncio.gather(
                 *(_attempt_cleanup(name, describe, awaitable)
@@ -616,8 +651,9 @@ def main():
             print(f"error: {_describe_failure(cause)}", file=sys.stderr)
         sys.exit(1)
     except asyncio.TimeoutError:
-        print(f"error: no first-paint marker from {_describe(target)} "
-              f"within {DEADLINE_S:.0f}s", file=sys.stderr)
+        print(f"error: launch of {_describe(target)} did not complete "
+              f"within the {TOTAL_BOUND_S:.0f}s run bound",
+              file=sys.stderr)
         sys.exit(1)
 
 
