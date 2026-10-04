@@ -535,9 +535,7 @@ fn dispatch_ready_demand(state: &Rc<FilteredState>) {
 /// bursts coalesce instead of flooding the queue, and the dispatch
 /// itself decides whether the waiters are still owed.
 fn reconsider_ready_demand(state: &Rc<FilteredState>) {
-    if state.ready_waiters.borrow().is_empty()
-        || state.demand_reconsider_queued.replace(true)
-    {
+    if state.ready_waiters.borrow().is_empty() || state.demand_reconsider_queued.replace(true) {
         return;
     }
     let mtm = cocoa_ui::MainThreadMarker::new().expect("filter events run on the main thread");
