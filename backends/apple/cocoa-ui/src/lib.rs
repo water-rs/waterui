@@ -87,6 +87,7 @@ pub mod map;
 pub mod material;
 pub mod menu;
 pub mod metal;
+pub mod metal_presenter;
 pub mod notification;
 pub mod path;
 pub mod picker;

@@ -157,6 +157,12 @@ fn surface_format(format: MTLPixelFormat) -> (u32, usize) {
 /// comes out clipped and dark.
 /// Half-float pixels use extended linear Display P3, matching the GPU
 /// presenter's output and the filter working space; 8-bit pixels use sRGB.
+///
+/// # Panics
+///
+/// When `CGColorSpaceCreateWithName` rejects the system constant names —
+/// it cannot on supported targets.
+#[must_use]
 pub(crate) fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
     let name = if format == MTLPixelFormat::RGBA16Float {
         // SAFETY: the colorspace statics are system constants.

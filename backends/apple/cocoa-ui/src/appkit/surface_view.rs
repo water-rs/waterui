@@ -28,7 +28,7 @@ use objc2_app_kit::{
     NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::NSRect;
-use objc2_quartz_core::CALayer;
+use objc2_quartz_core::{CALayer, CAMetalLayer};
 
 use crate::PlatformView;
 use crate::callback::guarded;
@@ -51,7 +51,7 @@ pub struct SurfaceViewIvars {
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     /// The layer the renderer presents frames into, owned by the view's
     /// host layer.
-    presentation_layer: RefCell<Option<Retained<CALayer>>>,
+    presentation_layer: RefCell<Option<Retained<CAMetalLayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
 }
 
@@ -354,7 +354,7 @@ impl SurfaceView {
         // are rendered at device-pixel size, so the layer must not rescale
         // them — `contentsScale` carries that.
         let host = CALayer::new();
-        let presentation = CALayer::new();
+        let presentation = CAMetalLayer::new();
         presentation.setOpaque(false);
         // SAFETY: `kCAGravityResize` is a system constant.
         presentation.setContentsGravity(unsafe { objc2_quartz_core::kCAGravityResize });
@@ -391,7 +391,7 @@ impl SurfaceView {
     /// When the presentation layer is gone — it is created in `new` and never
     /// removed, so this cannot happen in a live view.
     #[must_use]
-    pub fn presentation_layer(&self) -> Retained<CALayer> {
+    pub fn presentation_layer(&self) -> Retained<CAMetalLayer> {
         self.ivars()
             .presentation_layer
             .borrow()
