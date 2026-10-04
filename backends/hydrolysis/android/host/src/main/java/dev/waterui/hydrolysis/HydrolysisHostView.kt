@@ -52,7 +52,8 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     private val accessibilityProvider: HydrolysisAccessibilityProvider =
         HydrolysisAccessibilityProvider(this, session)
-    private val autofillBridge: AutofillBridge = AutofillBridge(accessibilityProvider)
+    private val autofillBridge: AutofillBridge =
+        AutofillBridge(this, accessibilityProvider)
 
     private var lastMetricsWidth = -1
     private var lastMetricsHeight = -1
@@ -66,10 +67,27 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var imeRect = Rect()
     private var imePurpose = -1
 
+    /**
+     * The live [HydrolysisInputConnection], if the IMM has bound one — the
+     * target for the session's editing-state and cursor-anchor pushes.
+     */
+    internal var inputConnection: HydrolysisInputConnection? = null
+
+    /**
+     * The [EditorInfo] contract the live connection was built with. The view
+     * is one editor for every field, so a focus move has to [InputMethodManager.restartInput]
+     * before the IME will read a new input type — a password field reached
+     * through a connection opened while nothing was focused otherwise keeps
+     * the plain multiline type and shows suggestions.
+     */
+    private var inputContract: InputContract? = null
+    private var inputRestartPosted = false
+
     init {
         isFocusable = true
         isFocusableInTouchMode = true
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        importantForAutofill = IMPORTANT_FOR_AUTOFILL_YES
         addView(platformViewRegistry.container)
         session?.bind(this)
     }
@@ -288,16 +306,81 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
+        // Bind to the authoritative session state — the pulled `editorId`
+        // becomes this connection's generation token, and the state seeds
+        // the mirror so the IMM's first queries agree with the editor.
+        val state =
+            session
+                ?.let { NativeBridge.nativeEditingState(it.nativePtr) }
+                ?.let(::EditingStatePayload)
+        inputContract = InputContract.from(state)
+        val password = state?.password == true
         outAttrs.inputType =
-            if (imePurpose == 1) {
-                EditorInfo.TYPE_CLASS_TEXT or EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
-            } else {
-                EditorInfo.TYPE_CLASS_TEXT or EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
+            EditorInfo.TYPE_CLASS_TEXT or
+                (if (password) {
+                    EditorInfo.TYPE_TEXT_VARIATION_PASSWORD or EditorInfo.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                } else {
+                    0
+                }) or
+                (if (!password && (state == null || !state.singleLine)) {
+                    EditorInfo.TYPE_TEXT_FLAG_MULTI_LINE
+                } else {
+                    0
+                })
+        outAttrs.imeOptions =
+            (if (state?.hasSubmit == true) EditorInfo.IME_ACTION_DONE else EditorInfo.IME_ACTION_NONE) or
+                EditorInfo.IME_FLAG_NO_FULLSCREEN or
+                (if (password) EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING else 0)
+        outAttrs.initialSelStart = state?.selStart ?: 0
+        outAttrs.initialSelEnd = state?.selEnd ?: 0
+        outAttrs.initialCapsMode = 0
+        val connection =
+            HydrolysisInputConnection(
+                this,
+                session,
+                editorId = state?.editorId ?: 0L,
+                live = state?.focused ?: false,
+            )
+        if (state != null && state.focused) {
+            connection.applyNativeState(state)
+        }
+        inputConnection = connection
+        return connection
+    }
+
+    /** The session's authoritative editing push — the connection adopts it. */
+    internal fun applyEditingState(json: String) {
+        val state = EditingStatePayload(json)
+        val contract = InputContract.from(state)
+        if (contract != inputContract) {
+            // Posted, not called here. This push runs inside the session
+            // borrow; restartInput re-enters nativeEditingState on this
+            // thread, which would alias that borrow.
+            if (!inputRestartPosted) {
+                inputRestartPosted = true
+                post {
+                    inputRestartPosted = false
+                    // A connection created in the meantime already recorded
+                    // the contract it was built with. Restarting again would
+                    // only drop the IME's first keystrokes.
+                    val latest =
+                        session
+                            ?.let { NativeBridge.nativeEditingState(it.nativePtr) }
+                            ?.let(::EditingStatePayload)
+                    if (InputContract.from(latest) == inputContract) return@post
+                    val imm =
+                        context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.restartInput(this)
+                }
             }
-        outAttrs.imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_FULLSCREEN
-        outAttrs.initialSelStart = 0
-        outAttrs.initialSelEnd = 0
-        return HydrolysisInputConnection(this, session, outAttrs)
+            return
+        }
+        inputConnection?.applyNativeState(state)
+    }
+
+    /** The session's subscribed cursor-anchor push. */
+    internal fun applyCursorAnchorInfo(json: String) {
+        inputConnection?.applyCursorAnchorInfo(AnchorInfoPayload(json))
     }
 
     /**
@@ -327,6 +410,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
 
     private fun cursorAnchorInfo(rect: Rect): android.view.inputmethod.CursorAnchorInfo =
         android.view.inputmethod.CursorAnchorInfo.Builder()
+            .setMatrix(matrix)
             .setInsertionMarkerLocation(
                 rect.left.toFloat(),
                 rect.top.toFloat(),
@@ -342,8 +426,46 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun getAccessibilityNodeProvider(): AccessibilityNodeProvider =
         accessibilityProvider
 
-    internal fun notifyAccessibilityTreeChanged() {
-        accessibilityProvider.notifyTreeChanged()
+    /**
+     * Explore-by-touch: TalkBack injects hover events to find the node under
+     * the pointer; without a dispatch here they die in the ViewGroup and a
+     * tap activates instead of focusing (#246). The platform overlay fills
+     * the host, so super would claim every point — a mounted platform view
+     * keeps the hover traffic only inside its own slot bounds, and
+     * everywhere else the provider maps the point onto the served virtual
+     * tree.
+     */
+    override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+        if (!platformViewRegistry.coversPixel(event.x, event.y)) {
+            accessibilityProvider.dispatchHoverEvent(event)
+            return true
+        }
+        val handled = super.dispatchHoverEvent(event)
+        if (handled) accessibilityProvider.clearHovered()
+        return handled
+    }
+
+    internal fun notifyAccessibilityTreeChanged(diffJson: String) {
+        accessibilityProvider.notifyTreeChanged(diffJson)
+    }
+
+    /** The session pushed a new placement set — pull and apply it. */
+    internal fun notifyPlatformViewsChanged() {
+        platformViewRegistry.notifyChanged()
+    }
+
+    /** Each a11y publish also drives the autofill enter/exit diff. */
+    internal fun autofillSnapshotChanged() {
+        autofillBridge.snapshotChanged()
+    }
+
+    /** The activity finishing commits the pending autofill save. */
+    internal fun autofillCommit() {
+        autofillBridge.commit()
+    }
+
+    internal fun autofillCancel() {
+        autofillBridge.cancel()
     }
 
     override fun onProvideAutofillVirtualStructure(structure: ViewStructure, flags: Int) {
@@ -354,5 +476,39 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     override fun autofill(values: SparseArray<AutofillValue>) {
         autofillBridge.autofill(values)
         super.autofill(values)
+    }
+}
+
+/**
+ * The slice of an editing-state push that [EditorInfo] is built from.
+ * Text and selection stay on the live connection; the IME reads these
+ * only when the connection is created.
+ */
+private data class InputContract(
+    val focused: Boolean,
+    val editorId: Long,
+    val password: Boolean,
+    val singleLine: Boolean,
+    val hasSubmit: Boolean,
+) {
+    companion object {
+        fun from(state: EditingStatePayload?): InputContract =
+            if (state == null) {
+                InputContract(
+                    focused = false,
+                    editorId = 0L,
+                    password = false,
+                    singleLine = false,
+                    hasSubmit = false,
+                )
+            } else {
+                InputContract(
+                    focused = state.focused,
+                    editorId = state.editorId,
+                    password = state.password,
+                    singleLine = state.singleLine,
+                    hasSubmit = state.hasSubmit,
+                )
+            }
     }
 }

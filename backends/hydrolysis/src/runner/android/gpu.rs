@@ -36,6 +36,8 @@ struct AndroidDisplay;
 
 impl HasDisplayHandle for AndroidDisplay {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
+        // SAFETY: Android's display handle is a static system resource —
+        // borrowing it raw is always sound for the process lifetime.
         Ok(unsafe {
             DisplayHandle::borrow_raw(RawDisplayHandle::Android(AndroidDisplayHandle::new()))
         })
@@ -44,7 +46,7 @@ impl HasDisplayHandle for AndroidDisplay {
 
 /// A GPU-attachment failure surfaced to the Kotlin host as an exception.
 #[derive(Debug)]
-pub(crate) struct GpuError(pub String);
+pub struct GpuError(pub String);
 
 impl GpuError {
     fn new(message: impl Into<String>) -> Self {
@@ -104,7 +106,7 @@ impl Drop for AndroidGpuContextInner {
 /// is an explicit [`GpuError`] naming the adapter and the missing flags,
 /// never a switch to GLES or another painter.
 #[derive(Clone)]
-pub(crate) struct AndroidGpuContext {
+pub struct AndroidGpuContext {
     inner: Arc<AndroidGpuContextInner>,
 }
 
@@ -138,18 +140,17 @@ impl AndroidGpuContext {
                 .await
                 .into_iter()
                 .find(capable);
-            match chosen {
-                Some(candidate) => candidate,
-                None => {
-                    let info = preferred.get_info();
-                    let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
-                    return Err(GpuError::new(format!(
-                        "hydrolysis android: no Vulkan adapter meets the \
+            if let Some(candidate) = chosen {
+                candidate
+            } else {
+                let info = preferred.get_info();
+                let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
+                return Err(GpuError::new(format!(
+                    "hydrolysis android: no Vulkan adapter meets the \
                          painter's requirements — '{}' ({:?}) lacks \
                          {missing:?} and no alternate Vulkan adapter qualifies",
-                        info.name, info.backend
-                    )));
-                }
+                    info.name, info.backend
+                )));
             }
         };
         crate::platform::ensure_compute_capable_adapter(
@@ -204,9 +205,9 @@ impl AndroidGpuContext {
 /// `detach`/`drop` destroy the `wgpu::Surface` — which holds its own acquired
 /// `ANativeWindow` reference internally and releases it during surface
 /// teardown — before this struct's own lease goes away. Field and drop order
-/// are the teardown order: SurfaceFlinger must never see a surface still
+/// are the teardown order: `SurfaceFlinger` must never see a surface still
 /// pointing at a released window.
-pub(crate) struct AndroidSurface {
+pub struct AndroidSurface {
     gpu: AndroidGpuContext,
     /// The generation the Kotlin host assigned this attachment; a stale
     /// `surfaceDestroyed` from an older `SurfaceHolder` callback is ignored.
@@ -230,7 +231,7 @@ pub(crate) struct AndroidSurface {
 }
 
 impl AndroidSurface {
-    pub(crate) fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
+    pub const fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
         Self {
             gpu,
             generation: 0,
@@ -246,7 +247,7 @@ impl AndroidSurface {
 
     /// Whether a live `wgpu::Surface` is attached — the band exists and has a
     /// real size the last configure reported.
-    pub(crate) fn is_attached(&self) -> bool {
+    pub const fn is_attached(&self) -> bool {
         self.surface.is_some()
     }
 
@@ -456,8 +457,7 @@ impl SurfaceProvider for AndroidSurface {
     fn format(&self) -> wgpu::TextureFormat {
         self.config
             .as_ref()
-            .map(|config| config.format)
-            .unwrap_or(wgpu::TextureFormat::Rgba8Unorm)
+            .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
     }
 
     fn gpu_context_id(&self) -> u64 {

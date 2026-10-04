@@ -1,0 +1,323 @@
+{
+  "schema": "bench/android/interactions@1",
+  "note": "Shared interaction specifications. The macrobenchmark startup/frame/energy tests, the baseline-profile generator and run.py's replays all execute these journeys so every instrument sees byte-identical actions. Selectors use the testTags the twins export; env mirrors suite.toml [defaults.env] plus per-fixture env.",
+  "defaults": {
+    "env": {
+      "WATERUI_DISABLE_DYNAMIC_COLORS": "1"
+    }
+  },
+  "fixtures": {
+    "anchored_overlay": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "anchor:top-flips"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "anchor:bottom-start"},
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2}
+      ]
+    },
+    "animation": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "wait_ms", "ms": 1500},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "wait_ms", "ms": 1500}
+      ]
+    },
+    "drag_drop": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "drag", "from": {"tag": "fruit:Apple"}, "to": {"tag": "basket"}},
+        {"op": "settle"},
+        {"op": "drag", "from": {"tag": "fruit:Orange"}, "to": {"tag": "basket"}},
+        {"op": "settle"}
+      ]
+    },
+    "edge_layout": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 3},
+        {"op": "swipe", "direction": "down", "times": 3}
+      ]
+    },
+    "edge_list": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 12},
+        {"op": "scroll", "direction": "up", "times": 12}
+      ]
+    },
+    "edge_text": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "swipe", "direction": "down", "times": 2}
+      ]
+    },
+    "filter": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "filter:vibrant"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "filter:vintage"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "filter:dreamy"}
+      ]
+    },
+    "flow_markdown": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "flow:next"},
+        {"op": "wait_ms", "ms": 4000},
+        {"op": "tap", "tag": "flow:next"},
+        {"op": "wait_ms", "ms": 4000}
+      ]
+    },
+    "form": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "input_text", "clazz": "android.widget.EditText", "text": "Water Bench"},
+        {"op": "tap", "text": "Newsletter"},
+        {"op": "scroll", "direction": "down", "times": 4},
+        {"op": "settle"}
+      ]
+    },
+    "gallery": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "gallery:item-buttons"},
+        {"op": "tap", "tag": "gallery:auto"},
+        {"op": "tap", "tag": "gallery:item-slider"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "gallery:item-toggle"},
+        {"op": "tap", "tag": "gallery:wifi"}
+      ]
+    },
+    "gesture": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "swipe", "direction": "left", "times": 2},
+        {"op": "swipe", "direction": "down", "times": 2}
+      ]
+    },
+    "gradient": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "wait_ms", "ms": 1500},
+        {"op": "swipe", "direction": "up", "times": 1}
+      ]
+    },
+    "hover": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "swipe", "direction": "down", "times": 2}
+      ]
+    },
+    "icons": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 8},
+        {"op": "scroll", "direction": "up", "times": 8}
+      ]
+    },
+    "list": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 15},
+        {"op": "scroll", "direction": "up", "times": 15}
+      ]
+    },
+    "locale": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "locale:picker"},
+        {"op": "settle"},
+        {"op": "back"},
+        {"op": "scroll", "direction": "down", "times": 3}
+      ]
+    },
+    "map": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "swipe", "direction": "left", "times": 2},
+        {"op": "wait_ms", "ms": 1000}
+      ]
+    },
+    "markdown": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 6},
+        {"op": "scroll", "direction": "up", "times": 6}
+      ]
+    },
+    "media_picker": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "picker:image"},
+        {"op": "wait_ms", "ms": 2500},
+        {"op": "back"},
+        {"op": "settle"}
+      ]
+    },
+    "menu": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "text": "Choose an Option"},
+        {"op": "wait_ms", "ms": 800},
+        {"op": "back"}
+      ]
+    },
+    "multi_window": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "wait_ms", "ms": 1000},
+        {"op": "swipe", "direction": "up", "times": 1}
+      ]
+    },
+    "navigation": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "tab:library"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "tab:gallery"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "tab:inbox"},
+        {"op": "tap", "tag": "nav:message-0"},
+        {"op": "settle"},
+        {"op": "back"}
+      ]
+    },
+    "picker": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "text": "Menu Style"},
+        {"op": "wait_ms", "ms": 800},
+        {"op": "back"},
+        {"op": "settle"}
+      ]
+    },
+    "reminders": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "reminders:tile-scheduled"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "reminders:tile-all"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "reminders:row-6"}
+      ]
+    },
+    "reply": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "reply:thread-Dinner Club"},
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 3},
+        {"op": "tap", "tag": "rail:notes"},
+        {"op": "tap", "tag": "rail:mail"}
+      ]
+    },
+    "shape": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "swipe", "direction": "down", "times": 2}
+      ]
+    },
+    "snackbar": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "snackbar:simple"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "snackbar:queue"},
+        {"op": "settle"}
+      ]
+    },
+    "starfield": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "wait_ms", "ms": 1500},
+        {"op": "swipe", "direction": "up", "times": 1}
+      ]
+    },
+    "stress": {
+      "env": {
+        "WATERUI_STRESS_SYSTEM_COUNT": "18",
+        "WATERUI_STRESS_CUSTOM_COUNT": "14",
+        "WATERUI_STRESS_FILTER_COUNT": "12"
+      },
+      "journey": [
+        {"op": "settle"},
+        {"op": "wait_ms", "ms": 2000},
+        {"op": "swipe", "direction": "up", "times": 2},
+        {"op": "wait_ms", "ms": 2000}
+      ]
+    },
+    "typography-rtl": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 4},
+        {"op": "scroll", "direction": "up", "times": 4}
+      ]
+    },
+    "video_player": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "video:source-1"},
+        {"op": "wait_ms", "ms": 5000},
+        {"op": "tap", "tag": "video:source-2"},
+        {"op": "wait_ms", "ms": 2000}
+      ]
+    },
+    "waterkit_camera_filters": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "camera:preset-Noir"},
+        {"op": "settle"},
+        {"op": "tap", "tag": "camera:preset-Vintage"},
+        {"op": "settle"}
+      ]
+    },
+    "webview": {
+      "journey": [
+        {"op": "settle"},
+        {"op": "tap", "tag": "web:go"},
+        {"op": "wait_ms", "ms": 1500},
+        {"op": "scroll", "direction": "down", "times": 3},
+        {"op": "tap", "tag": "web:title"}
+      ]
+    },
+    "editing": {
+      "suite_screen": true,
+      "journey": [
+        {"op": "settle"},
+        {"op": "input_text", "tag": "edit:single-field", "text": "Bench"},
+        {"op": "input_text", "tag": "edit:multi-field", "text": "Line one\nLine two"},
+        {"op": "input_text", "tag": "edit:password-field", "text": "hunter2"},
+        {"op": "ime_input", "tag": "edit:cjk-field", "text": "こんにちは世界"},
+        {"op": "input_text", "tag": "edit:editor-field", "text": "Appended editing line."},
+        {"op": "back"},
+        {"op": "settle"}
+      ]
+    },
+    "list-stress": {
+      "suite_screen": true,
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "tag": "stress:list", "direction": "down", "times": 20},
+        {"op": "scroll", "tag": "stress:list", "direction": "up", "times": 20}
+      ]
+    },
+    "suite": {
+      "suite_screen": true,
+      "journey": [
+        {"op": "settle"},
+        {"op": "scroll", "direction": "down", "times": 10},
+        {"op": "scroll", "direction": "up", "times": 10}
+      ]
+    }
+  }
+}

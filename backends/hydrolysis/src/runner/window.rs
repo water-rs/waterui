@@ -461,7 +461,7 @@ pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
 }
 
 #[cfg(hydrolysis_winit)]
-pub(crate) fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
+pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
     window.resolved_background(env).snapshot().components[3] < 1.0
 }
 

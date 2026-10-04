@@ -93,6 +93,9 @@ pub fn progress_accessibility(
         if let Some(resolved) = resolved {
             node.set_label(resolved);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         node.set_min_numeric_value(0.0);
         node.set_max_numeric_value(1.0);
         let current = renderer.read_signal(value);

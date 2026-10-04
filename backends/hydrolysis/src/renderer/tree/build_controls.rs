@@ -81,6 +81,12 @@ impl_widget_behavior!(
     ; a11y: crate::widgets::layout::badge::emit_badge_accessibility
 );
 
+impl_widget_behavior!(
+    crate::widgets::platform::platform_view::PlatformViewRenderState,
+    crate::widgets::platform::platform_view::render_platform_view_node,
+    crate::widgets::platform::platform_view::measure_platform_view_node
+);
+
 impl RenderNode {
     /// Build a `Widget` node around its single shared state allocation.
     pub(super) fn build_widget<S>(state: Rc<S>, stretch: StretchAxis, env: &Environment) -> Self
@@ -94,6 +100,21 @@ impl RenderNode {
             stretch,
             env: env.clone(),
         })
+    }
+
+    /// Build a platform-view placement leaf: the retained state is the factory
+    /// key, a stable placement id and the session's `PlatformViewSink` — the
+    /// sink lookup happens here so a runner that embeds no native views fails
+    /// at build instead of at first flush.
+    pub(super) fn build_platform_view(
+        config: &crate::platform_view::PlatformView,
+        env: &Environment,
+    ) -> Self {
+        use crate::widgets::platform::platform_view::PlatformViewRenderState;
+        let state = Rc::new(RefCell::new(PlatformViewRenderState::from_config(
+            config, env,
+        )));
+        Self::build_widget(state, StretchAxis::Both, env)
     }
 
     /// Build a persistent button node: retain the config behind an `Rc<RefCell<…>>`

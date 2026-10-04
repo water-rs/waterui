@@ -87,8 +87,22 @@ fn the_context_menu_popup_presents_its_items_through_a_presentable_window() {
                 ]),
         )
     });
-    let mut runtime =
-        HeadlessRuntime::new_for_tests(env, builder, 160, 160, MinimalTestTheme::default());
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        {
+            #[cfg_attr(
+                not(hydrolysis_winit),
+                expect(
+                    clippy::redundant_clone,
+                    reason = "the clone keeps `env` alive for the winit-gated transparency assert below"
+                )
+            )]
+            env.clone()
+        },
+        builder,
+        160,
+        160,
+        MinimalTestTheme::default(),
+    );
     let _ = runtime.pump_at(false, Instant::now());
     for event in secondary_click(80.0, 80.0) {
         runtime.push_input_event(event);

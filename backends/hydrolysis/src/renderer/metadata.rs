@@ -443,6 +443,9 @@ impl HydrolysisRenderer {
                 {
                     node.set_label(label);
                 }
+                if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+                    node.set_value(value);
+                }
                 node.add_action(AccessibilityAction::Focus);
                 if renderer.control_selected(env, &InteractionKey::for_rc(&effect.action, 0)) {
                     node.set_selected(true);

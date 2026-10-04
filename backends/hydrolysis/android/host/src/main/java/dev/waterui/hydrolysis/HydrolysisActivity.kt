@@ -31,7 +31,7 @@ abstract class HydrolysisActivity : ComponentActivity() {
         NativeBridge.load(nativeLibraryName)
         @Suppress("DEPRECATION")
         val retained = lastCustomNonConfigurationInstance as? HydrolysisSession
-        val session = retained ?: HydrolysisSession()
+        val session = retained ?: HydrolysisSession(this)
         this.session = session
         setContentView(createContentView(session))
     }
@@ -55,6 +55,9 @@ abstract class HydrolysisActivity : ComponentActivity() {
         // The session dies only with the activity — a configuration change
         // retains it, and the new host view binds to the same native state.
         if (isFinishing && !isChangingConfigurations) {
+            // A genuine finish commits the pending autofill save; a
+            // configuration recreation keeps the session and drops nothing.
+            session?.hostView?.autofillCommit()
             session?.destroy()
         }
         session = null

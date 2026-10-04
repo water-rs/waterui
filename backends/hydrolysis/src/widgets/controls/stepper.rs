@@ -83,6 +83,9 @@ pub fn stepper_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         let start = *stepper.range.start();
         let end = *stepper.range.end();
         assert!(

@@ -805,6 +805,7 @@ impl AccessibilityBuilder {
             return;
         }
         let label = container.label().map(str::to_owned);
+        let value = container.value().map(str::to_owned);
         let author_id = container.author_id().map(str::to_owned);
         let role = container.role();
         let click = container.supports_action(AccessibilityAction::Click);
@@ -816,6 +817,9 @@ impl AccessibilityBuilder {
             .expect("hydrolysis accessibility container child is not registered");
         if let Some(label) = label {
             child.set_label(label);
+        }
+        if let Some(value) = value {
+            child.set_value(value);
         }
         // The container's advertised actions and action target — the activation
         // a silenced tap delegated to it — move to the surviving node; a real
@@ -968,16 +972,20 @@ impl AccessibilityContainerScope {
 /// once for the bar.
 #[cfg(feature = "accessibility")]
 pub fn accessibility_container_child_environment(env: &Environment) -> Option<Environment> {
-    // A role or a label names the container. Identifier/hidden/state metadata are
-    // subtree-scoped and name nothing on their own, so they never make a bare
-    // container into a semantic node.
-    if env.get::<AccessibilityRole>().is_none() && env.get::<AccessibilityLabel>().is_none() {
+    // A role, a label, or a value names the container. Identifier/hidden/state
+    // metadata are subtree-scoped and name nothing on their own, so they never
+    // make a bare container into a semantic node.
+    if env.get::<AccessibilityRole>().is_none()
+        && env.get::<AccessibilityLabel>().is_none()
+        && env.get::<AccessibilityValue>().is_none()
+    {
         return None;
     }
 
     let mut child_env = env.clone();
     child_env.remove::<ScopedAccessibilityIdentifier>();
     child_env.remove::<AccessibilityLabel>();
+    child_env.remove::<AccessibilityValue>();
     child_env.remove::<AccessibilityRole>();
     child_env.remove::<AccessibilityHidden>();
     child_env.remove::<AccessibilityChildren>();
@@ -1646,7 +1654,7 @@ impl SemanticCore {
     ) -> AccessibilityContainerScope {
         debug_assert!(
             accessibility_container_child_environment(env).is_some(),
-            "hydrolysis accessibility container scope requires a role or a label"
+            "hydrolysis accessibility container scope requires a role, a label, or a value"
         );
 
         if env
@@ -1677,6 +1685,9 @@ impl SemanticCore {
         ));
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);
+        }
+        if let Some(value) = self.resolve_accessibility_value(env, None) {
+            node.set_value(value);
         }
         let state_hidden = env
             .get::<AccessibilityStateSignal>()
@@ -1741,9 +1752,9 @@ impl SemanticCore {
     /// claiming element's name, so a `Label` node for it is read twice
     /// (water-rs/hydrolysis#229).
     ///
-    /// A leaf carrying its own role or label is a nearer claim and keeps its
-    /// node; a suppressed subtree (hidden, `ExcludeDescendants`, or a widget's
-    /// own merged label) names nothing and donates nothing.
+    /// A leaf carrying its own role, label, or value is a nearer claim and
+    /// keeps its node; a suppressed subtree (hidden, `ExcludeDescendants`, or
+    /// a widget's own merged label) names nothing and donates nothing.
     #[cfg(feature = "accessibility")]
     pub(crate) fn consume_accessibility_descendant_text(
         &self,
@@ -1753,6 +1764,7 @@ impl SemanticCore {
         if env.get::<AccessibilityNameFromContents>().is_none()
             || env.get::<AccessibilityRole>().is_some()
             || env.get::<AccessibilityLabel>().is_some()
+            || env.get::<AccessibilityValue>().is_some()
             || self.accessibility.suppression_depth > 0
         {
             return false;
@@ -2245,14 +2257,19 @@ impl SemanticCore {
             .or(default_label)
     }
 
+    /// Resolves the accessibility value `env` scopes onto the emitting node,
+    /// falling back to `default_value` — what the node's own content says —
+    /// when the application published none.
+    ///
+    /// Same contract as [`Self::resolve_accessibility_label`]: reading the
+    /// value through `read_signal` subscribes it, so a reactive value
+    /// republishes without a subtree rebuild.
     #[cfg(feature = "accessibility")]
     pub(crate) fn resolve_accessibility_value(
         &mut self,
         env: &Environment,
         default_value: Option<String>,
     ) -> Option<String> {
-        // Same subscription as the label: a reactive value republishes without
-        // a subtree rebuild.
         let signal = env
             .get::<AccessibilityValue>()
             .map(|value| value.signal().clone());
