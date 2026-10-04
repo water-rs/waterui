@@ -65,6 +65,12 @@ PS_TIMEOUT_S = 5.0
 RSS_BOUND_S = RSS_SAMPLES * RSS_INTERVAL_S + PS_TIMEOUT_S
 # Cleanup is bounded too: every kill/reap and terminate gets this grace.
 TERMINATE_GRACE_S = 5.0
+# Inside that one grace, TERM comes first with this much of it: TERM is
+# the signal a wrapper can forward — `simctl spawn` reparents its log
+# child under simlaunchd, so a wrapper that is only ever SIGKILLed leaks
+# the child while a TERM'd wrapper forwards and exits. The remainder of
+# the grace is the hard bound for a child that resists TERM.
+TERM_GRACE_S = 3.0
 # The outer bound the whole process answers to: the 30 s protocol budget,
 # then the tail of the RSS window, then concurrently-bounded cleanup
 # (reap + drain + terminate each use one grace). ~54 s worst case.
@@ -142,20 +148,38 @@ class _Deadline:
             awaitable, timeout=max(self._ends - time.monotonic(), 0.0))
 
 
-async def _reap(proc):
-    """SIGKILL `proc` if it is still running and reap it within the grace.
+async def _reap(proc, subtree=False):
+    """SIGTERM `proc` first, escalating to SIGKILL inside one grace.
 
-    Every child this script owns exits through here — an unbounded wait
-    after a kill would defeat the deadline that asked for the kill, and a
-    child that does not die is a failure worth reporting, not a leak.
+    Every child this script owns exits through here. TERM is the
+    forwarding signal: a wrapper child (a `simctl spawn` log stream is
+    reparented under simlaunchd) delivers it to the real child and then
+    exits itself — SIGKILL can never be forwarded. A child that resists
+    TERM is killed with the remaining budget. When `subtree` marks a
+    wrapper whose real child lives under a foreign parent, a forced kill
+    reaps only the wrapper — the forwarded child may still run — so that
+    is reported as a named failure, never claimed as a clean reap.
     """
-    if proc.returncode is None:
-        proc.kill()
+    if proc.returncode is not None:
+        await proc.wait()
+        return
+    proc.terminate()
     try:
-        await asyncio.wait_for(proc.wait(), TERMINATE_GRACE_S)
+        await asyncio.wait_for(proc.wait(), TERM_GRACE_S)
+        return
+    except asyncio.TimeoutError:
+        pass
+    proc.kill()
+    try:
+        await asyncio.wait_for(proc.wait(), TERMINATE_GRACE_S - TERM_GRACE_S)
     except asyncio.TimeoutError as exc:
         raise Failure(
             "reap", f"child {proc.pid} did not exit after kill") from exc
+    if subtree:
+        raise Failure(
+            "reap",
+            f"child {proc.pid} resisted TERM and was SIGKILLed; a child "
+            f"it forwarded under simlaunchd may still run")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -261,10 +285,11 @@ class _OwnedChild:
         """Target pid/argv/outcome for cleanup diagnostics."""
         return f"{_proc_outcome(self.process)} argv={self.argv!r}"
 
-    async def reap(self, step):
+    async def reap(self, step, subtree=False):
         if self.process is not None:
             await _cleanup(
-                step, self.describe, _reap(self.process))
+                step, self.describe,
+                _reap(self.process, subtree=subtree))
 
 
 async def _launch(target, app_slot):
@@ -591,7 +616,9 @@ async def _run(target, metrics_path):
             ("drain RSS sampler", lambda: f"task={rss_task!r}",
              _drain(rss_task)),
             ("reap log stream", stream_slot.describe,
-             stream_slot.reap("reap log stream")),
+             stream_slot.reap(
+                 "reap log stream",
+                 subtree=isinstance(target, SimulatorLaunch))),
         ]
         if launch_attempted:
             steps.append((
