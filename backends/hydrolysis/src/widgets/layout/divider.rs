@@ -56,6 +56,7 @@ pub fn render_divider_parts(
         )
     };
 
-    let mut draw = ctx.draw_context();
-    theme.draw_divider(&mut draw, rect);
+    ctx.draw_context(|draw| {
+        theme.draw_divider(&mut *draw, rect);
+    });
 }

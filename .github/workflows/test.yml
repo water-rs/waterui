@@ -29,6 +29,14 @@ on:
       test-assets:
         type: boolean
         default: true
+      # `true` when a scoped package's `--all-targets` compile
+      # `include_bytes!`s a generated Cherenkov scene font
+      # (cherenkov-oracle / cherenkov-gpu test targets), so the scene
+      # tree must exist before the check. `full` generates it in every
+      # job regardless.
+      scene-assets:
+        type: boolean
+        default: true
 
 # Narrow by default: callers may grant actions:write for the lint job's
 # cache retirement, but every other job in this workflow keeps read-only
@@ -119,6 +127,15 @@ jobs:
       - name: Generate Hydrolysis test assets
         if: inputs.full || inputs['test-assets']
         uses: ./.github/actions/generate-test-assets
+      # cherenkov-oracle's glyph tests and cherenkov-gpu's bitmap/browser
+      # test targets `include_bytes!` fonts only `scenes/tools/generate.py`
+      # writes; `--all-targets` compiles them, so the tree must exist
+      # first. The corpus/perf readers (cherenkov-cpu tests,
+      # cherenkov-bench) are runtime readers — the gate never runs tests,
+      # and every `full` job generates the tree unconditionally.
+      - name: Generate Cherenkov scene assets
+        if: inputs.full || inputs['scene-assets']
+        uses: ./.github/actions/generate-scene-assets
       - name: Format
         run: cargo fmt --all -- --check
       # Workspace-wide under default features first: it is the cheapest of the
@@ -163,6 +180,24 @@ jobs:
       - name: Clippy (graphics effects without gpu)
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'waterui-graphics')
         run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects -- -D warnings
+      # filtrate with the wgpu stack off: its `webgl` feature (a deliberate
+      # compile_error off wasm32) is the only GPU runtime the crate has, so
+      # this is the shared filter core in the shape non-GPU embedders
+      # consume it — the leg the cherenkov repository's `check` job ran
+      # (`-p filtrate --no-default-features`, moved in with the tree
+      # (#1449)). On the scoped gate it fires whenever a `filtrate*`
+      # package is in scope.
+      - name: Clippy (filtrate without wgpu)
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'filtrate')
+        run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets -- -D warnings
+      # The scene crate's `generator` feature compiles the corpus-writing
+      # binaries (`generate-corpus`, `prepare-fonts`) that every scene
+      # consumer's assets come from; the cherenkov repository kept a
+      # dedicated leg because a generator-only lint break cannot hide
+      # behind the default-feature pass.
+      - name: Clippy (cherenkov-scene generator)
+        if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'cherenkov-scene')
+        run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator -- -D warnings
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -182,6 +217,12 @@ jobs:
       # linted under its default features by the workspace pass above, and the
       # steps share this job's target dir, so each is an increment on a graph
       # that is already built.
+      # filtrate and cherenkov-bench join the exclusion set (#1449):
+      # `filtrate/webgl` is an intentional `compile_error!` off wasm32
+      # (the wasm job lints it where it is legal), and `cherenkov-bench`'s
+      # `skia-metal` is Apple-only — the `cherenkov-corpus`/`cherenkov-metal`
+      # jobs lint every bench adapter feature in its own shape, so nothing
+      # is lost to the exclusion.
       - name: Clippy (all features, workspace)
         if: inputs.full
         run: |
@@ -192,6 +233,8 @@ jobs:
             --exclude waterui-core \
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
+            --exclude filtrate \
+            --exclude cherenkov-bench \
             -- -D warnings
       # `waterui-core`'s `nightly` feature turns on `feature(never_type)`, which
       # is a hard E0554 on the stable channel this job pins. Everything else the
@@ -229,6 +272,12 @@ jobs:
       - name: Check (hydrolysis, no features)
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
+      # The cli's own CI ran a no-default-features check on every change
+      # (water-rs/cli ci.yml): `default` bundles esp32+svg-icons+preview,
+      # and nothing else in this workspace compiles the bare shape.
+      - name: Check (waterui-cli, no default features)
+        if: inputs.full || contains(inputs.affected, 'waterui-cli')
+        run: cargo check --locked --profile ci-check -p waterui-cli --no-default-features --all-targets
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
       # and must keep compiling. The non-default feature exposes the test/bench
@@ -312,6 +361,11 @@ jobs:
       # native headers.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's browser test target `include_bytes!`s a generated
+      # scene font, and the scene generator writes the fonts every leg
+      # below reads — the tree is generated, not committed.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # `waterkit-dialog` is a registry crate now (its browser backend is
       # linted for wasm32 in water-rs/waterkit's own CI), so cargo caps its
       # lints; only the workspace crate is named here. Hydrolysis's `web`
@@ -330,6 +384,24 @@ jobs:
           # compiles — call sites a feature gates out rot silently otherwise.
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p hydrolysis --no-default-features \
+            -- -D warnings
+      # The wasm32 legs the cherenkov repository's `wasm` job ran
+      # (#1449). filtrate's `webgl` feature is a deliberate
+      # `compile_error` off wasm32, so the all-features pass is the only
+      # way the WebGL executor gets linted anywhere. cherenkov-gpu's
+      # browser test target compiles the WebGPU surface code nothing on
+      # the host can see, and cherenkov-cpu is the whole CPU backend's
+      # wasm shape.
+      - name: Clippy (Cherenkov wasm32 legs)
+        run: |
+          cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
+            -p filtrate --all-features \
+            -- -D warnings
+          cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
+            -p cherenkov-gpu --lib --test browser \
+            -- -D warnings
+          cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
+            -p cherenkov-cpu --all-targets \
             -- -D warnings
 
   # The workspace test run, per platform, also carrying the doctests that
@@ -357,8 +429,12 @@ jobs:
       # target archives previously occupied the cache budget while every dev
       # push cold-compiled clippy. The frequent lint gate now owns that budget;
       # these daily runs keep every test without evicting its check artifacts.
+      # `artifact_symbols` tests build a wasm rlib fixture: the web
+      # backend's metadata is read from a wasm32 artifact, so every leg
+      # that runs waterui-cli's suite needs the target installed.
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive — the `lint` job
       # writes it on Linux, apple.yml's rust job on macOS; read-only
@@ -383,6 +459,11 @@ jobs:
       # stores none of. Runs on both OSes: the macOS leg needs the same files.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      # Cherenkov's test targets both embed (`include_bytes!`) and read
+      # the generated scene fonts, and the corpus tests read scenes/corpus
+      # at runtime; the tree is generated, not committed.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # The stow pilot (#1145): the release binary installs and wires
       # RUSTC_WRAPPER plus the cc/CMAKE launchers through the job
       # environment, so the workspace's dependency closure resolves from
@@ -460,6 +541,7 @@ jobs:
       # cache budget note in ci.yml).
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive written by the `lint`
       # job in this file; read-only lanes never save.
@@ -477,6 +559,8 @@ jobs:
           path: ~/.cargo/bin/cargo-nextest*
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # The `trybuild_*` binaries each drive a cold fixture build of the
       # framework that is independent of the outer feature set; they already
       # ran once in the default-features `test` job on this OS, so this pass
@@ -491,6 +575,8 @@ jobs:
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude skill_snippets \
+            --exclude filtrate \
+            --exclude cherenkov-bench \
             -E 'not binary(/^trybuild_/)'
       # `nightly` is `feature(never_type)`, a hard E0554 on stable.
       - name: Test (waterui-core, every stable feature)
@@ -533,6 +619,7 @@ jobs:
       # whatever the last gate-side write left.
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive written by the Apple
       # gate's rust job (apple.yml); read-only lanes never save.
@@ -546,11 +633,16 @@ jobs:
       # `include_bytes!` the generated fonts — the repository stores none.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # Of the excluded crates, `waterui-core`'s stable feature shape runs
       # below; the FFI C surfaces and the CEF runtime shape are
       # host-independent and the Linux job covers them, and the compile-only
       # `cef-header` shape is the `cef` job. The `trybuild_*` macro contract
-      # tests ran already in `test` on this OS; see there.
+      # tests ran already in `test` on this OS; see there. `filtrate` is
+      # excluded for `webgl`'s off-wasm `compile_error!` — the wasm job
+      # lints it where it is legal; `cherenkov-bench/skia-metal` is legal
+      # here and stays in the pass.
       - name: Test (all features, workspace)
         run: |
           cargo nextest run --locked --workspace --all-features --profile ci \
@@ -561,6 +653,7 @@ jobs:
             --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude skill_snippets \
+            --exclude filtrate \
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
@@ -633,6 +726,13 @@ jobs:
       # `harness = false` and nextest cannot enumerate it.
       - name: Run the CEF real-engine tests
         run: cargo test --locked -p waterui-browser-cef --features real-engine --test real_engine
+      # The cli's own CI linted on every OS because most of the crate is
+      # behind `cfg(target_os)`: the Apple backend, the Windows toolchain
+      # and process plumbing. A clippy finding in macOS-only code surfaces
+      # nowhere else — the fast gate lints on Linux alone — so this job,
+      # the macOS lint leg, owns waterui-cli too.
+      - name: Clippy (waterui-cli)
+        run: cargo clippy --locked --profile ci-check -p waterui-cli --all-targets -- -D warnings
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -704,9 +804,14 @@ jobs:
   # dependency it reaches is pure Rust. Both feature extremes, as its own CI
   # ran them: the checked set proves `winit` stays inert on Android, and the
   # bare pass catches call sites a feature gates out.
+  #
+  # The nightly sweeps it under `full`; the fast gate also runs it when the
+  # affected scope can reach the crate — `hydrolysis` or one of its reverse
+  # dependencies in the package set — so the Android runner cannot regress
+  # between nightlies (#1582).
   hydrolysis-android:
     name: aarch64-linux-android
-    if: inputs.full
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -735,3 +840,247 @@ jobs:
         uses: ./.github/actions/generate-test-assets
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
+
+  # ── Cherenkov engine legs (#1449) ──────────────────────────────────────
+  # The checks water-rs/cherenkov's `ci.yml` ran on every pull request,
+  # moved in with the tree. The CPU corpus comparison owns `bench-corpus`,
+  # the Metal adapters own `bench-macos-metal`, and the NDK build owns
+  # `bench-android`. All three are `full`-only: they are the engine's
+  # correctness surface — oracle-compared renders, feature-matrix lint
+  # and target builds — not per-change compile gates, matching where the
+  # rest of the nightly's non-lint checks live (#379/#458).
+
+  # The corpus comparison: every generated scene rendered on the CPU
+  # adapters against the oracle's f64 reference, plus the lint of every
+  # bench adapter feature in combination and alone. The scene tree is
+  # generated, not committed, so the fonts and corpus this renders come
+  # from the pinned sources every machine fetches.
+  cherenkov-corpus:
+    name: cherenkov corpus (CPU adapters)
+    if: inputs.full
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          cache: "false"
+      # Restore-only reader of the shared Linux cargo-sources archive
+      # (the lint job writes it); nightly lanes save nothing.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # skia-safe's prebuilt Linux binaries link the system freetype and
+      # fontconfig, which the runner does not ship (fontconfig is in the
+      # shared list, freetype is this job's extra). The cherenkov adapter
+      # tests render on lavapipe, which needs the Vulkan loader and Mesa
+      # drivers the `gpu` flag adds.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          extra-packages: libfreetype-dev
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-nextest@0.9.145
+          path: ~/.cargo/bin/cargo-nextest*
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-hack@0.6.45
+          path: ~/.cargo/bin/cargo-hack*
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+      # The bench adapters are all feature-gated, so the default-feature
+      # clippy in `lint` never compiles them — lint them here, on the
+      # dependency graph this job already warms.
+      - name: Clippy / all adapter features together
+        run: |
+          cargo clippy --locked --profile ci-check -p cherenkov-bench --all-targets \
+            --features vello-classic,vello-hybrid,vello-cpu,skia,cherenkov,cherenkov-cpu -- -D warnings
+      # `skia-metal` is Apple-only; every other adapter must lint alone.
+      - name: Clippy / each adapter feature alone
+        run: |
+          cargo hack clippy --locked -p cherenkov-bench --each-feature \
+            --exclude-features skia-metal --all-targets -- -D warnings
+      - name: Bench adapter tests (cherenkov, cherenkov-cpu)
+        run: cargo nextest run --locked -p cherenkov-bench --features cherenkov,cherenkov-cpu --no-tests=pass
+      - run: cargo build --locked --release -p cherenkov-bench --features vello-cpu,skia
+      # The oracle reference depends only on the scene; build it once for
+      # both passes below (#218).
+      - name: Render the corpus reference
+        run: |
+          ./target/release/cherenkov-bench reference \
+            --corpus graphics/cherenkov/scenes/corpus --out-dir graphics/cherenkov/out/reference
+      - name: Render the corpus on CPU adapters
+        run: |
+          set -euo pipefail
+          for engine in vello-cpu skia-cpu; do
+            ./target/release/cherenkov-bench render --engine "$engine" \
+              --corpus graphics/cherenkov/scenes/corpus --out-dir "graphics/cherenkov/out/$engine" \
+              --reference graphics/cherenkov/out/reference
+          done
+          python3 - <<'PY'
+          import glob, json, sys
+          files = glob.glob('graphics/cherenkov/out/*/render-*.json')
+          # Every corpus scene produces a report (metrics or unsupported).
+          scenes = {json.load(open(f))['scene'] for f in files}
+          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
+          missing = corpus - scenes
+          assert not missing, f'scenes without a report: {missing}'
+          measured = [f for f in files if 'metrics' in json.load(open(f))]
+          assert measured, 'no metrics JSON produced'
+          for f in files:
+              d = json.load(open(f))
+              assert 'info' in d and d['info']['crate_version'], f'{f} lacks provenance'
+          print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
+          PY
+
+  # The Metal side: Skia Metal, Vello classic and hybrid on a real Apple
+  # GPU, the map-scene frame measure that hangs on no Linux adapter, and
+  # the presentation corpus — srgb-hw, srgb-shader and linear-p3 — the
+  # leg that keeps the presentation pass honest against the oracle.
+  cherenkov-metal:
+    name: cherenkov corpus (Metal adapters)
+    if: inputs.full
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+          cache: "false"
+      # Restore-only reader of the shared macOS cargo-sources archive
+      # (apple.yml's rust job writes it); nightly lanes save nothing.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+      - name: Clippy / Metal adapter features
+        run: |
+          cargo clippy --locked --profile ci-check -p cherenkov-bench --all-targets \
+            --features skia-metal,vello-classic,vello-hybrid,cherenkov,cherenkov-cpu -- -D warnings
+      - run: cargo build --locked --release -p cherenkov-bench --features skia-metal,vello-classic,vello-hybrid,cherenkov
+      # Many timed frames of the map scene on a Metal device: the workload
+      # that used to hang the render thread on Apple GPUs.
+      - name: Measure the map scene on Metal
+        run: |
+          set -euo pipefail
+          mkdir -p graphics/cherenkov/out/map-only
+          cp -R graphics/cherenkov/scenes/perf/map graphics/cherenkov/out/map-only/map
+          RUST_LOG=info,cherenkov_gpu=debug ./target/release/cherenkov-bench measure \
+            --engine cherenkov --corpus graphics/cherenkov/out/map-only --frames 20 --warmup 5 --out graphics/cherenkov/out/measure-metal
+      # #218: the oracle's f64 reference depends only on the scene, so the
+      # six passes below share one parallel render instead of each
+      # recomputing it; `render --reference` verifies the scene inputs
+      # still match the cached file.
+      - name: Render the corpus reference
+        run: |
+          ./target/release/cherenkov-bench reference \
+            --corpus graphics/cherenkov/scenes/corpus --out-dir graphics/cherenkov/out/reference
+      - name: Render the corpus on Metal adapters
+        run: |
+          set -euo pipefail
+          for engine in skia-metal vello-classic vello-hybrid; do
+            ./target/release/cherenkov-bench render --engine "$engine" \
+              --corpus graphics/cherenkov/scenes/corpus --out-dir "graphics/cherenkov/out/$engine" \
+              --reference graphics/cherenkov/out/reference
+          done
+          python3 - <<'PY'
+          import glob, json
+          files = glob.glob('graphics/cherenkov/out/*/render-*.json')
+          # Every corpus scene produces a report (metrics or unsupported).
+          scenes = {json.load(open(f))['scene'] for f in files}
+          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
+          missing = corpus - scenes
+          assert not missing, f'scenes without a report: {missing}'
+          measured = [f for f in files if 'metrics' in json.load(open(f))]
+          assert measured, 'no metrics JSON produced'
+          for f in files:
+              d = json.load(open(f))
+              assert 'info' in d and d['info']['crate_version'], f'{f} lacks provenance'
+          print(f'{len(files)} reports ({len(measured)} measured) across {len(scenes)} scenes')
+          PY
+      # #100: the corpus through the real presentation pass, one run per
+      # output kind, compared to the oracle's matching presentation.
+      - name: Render the presentation corpus
+        run: |
+          set -euo pipefail
+          for kind in srgb-hw srgb-shader linear-p3; do
+            ./target/release/cherenkov-bench render --engine cherenkov \
+              --present "$kind" --corpus graphics/cherenkov/scenes/corpus \
+              --out-dir "graphics/cherenkov/out/present-$kind" --reference graphics/cherenkov/out/reference
+          done
+          python3 - <<'PY'
+          import glob, json
+          files = glob.glob('graphics/cherenkov/out/present-*/render-*.json')
+          scenes = {json.load(open(f))['scene'] for f in files}
+          corpus = {p.split('/')[-2] for p in glob.glob('graphics/cherenkov/scenes/corpus/*/scene.json')}
+          missing = corpus - scenes
+          assert not missing, f'scenes without a report: {missing}'
+          measured = [f for f in files if 'metrics' in json.load(open(f))]
+          assert measured, 'no metrics JSON produced'
+          for f in files:
+              d = json.load(open(f))
+              # An unsupported scene is presented nowhere; it names the missing feature instead.
+              assert d.get('present') or d.get('unsupported'), f'{f} lacks the presentation record'
+          print(f'{len(files)} presentation reports ({len(measured)} measured)')
+          PY
+
+  # The Android build: the whole bench binary and the Vulkan
+  # external-frame device test cross-compiled for aarch64. The cherenkov
+  # repository ran this on NDK r27d; that pin moves in with the tree
+  # rather than riding the workspace default, which tracks the CLI's
+  # toolchain check.
+  cherenkov-android:
+    name: cherenkov aarch64-linux-android
+    if: inputs.full
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: aarch64-linux-android
+          cache: "false"
+      # Restore-only reader of the shared Linux cargo-sources archive.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The Vulkan external-frame test links cherenkov's `testing`
+      # feature, which embeds generated fonts, so the scene tree must
+      # exist before the build — generated, not committed.
+      - name: Install native dependencies
+        uses: ./.github/actions/setup-linux-deps
+      # cherenkov-gpu's build script optimizes its precompiled SPIR-V with
+      # the NDK's bundled spirv-opt on Android targets, so the toolchain
+      # setup probes for it; the NDK pin is the r27d cherenkov's own CI
+      # built against, not the workspace default.
+      - name: Set up the Android NDK toolchain
+        uses: ./.github/actions/setup-android-ndk
+        with:
+          ndk-version: r27d
+          spirv-tools: "true"
+      - uses: ./.github/actions/install-tool
+        with:
+          tool: cargo-ndk@4.1.2
+          path: ~/.cargo/bin/cargo-ndk*
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+      - name: Build cherenkov-bench for aarch64-linux-android
+        run: |
+          cargo ndk --target aarch64-linux-android --platform 30 \
+            build --release -p cherenkov-bench \
+            --features vello-classic,vello-hybrid,skia,cherenkov,cherenkov-cpu
+          ls -l target/aarch64-linux-android/release/cherenkov-bench
+      # The Vulkan external-frame device test (#166) runs on a Pixel 9
+      # Pro over adb; CI builds and archives the prebuilt binary.
+      - name: Build the Vulkan external-frame test for aarch64-linux-android
+        run: |
+          cargo ndk --target aarch64-linux-android --platform 30 \
+            build --release -p cherenkov-gpu --test vulkan_external_android
+          ls target/aarch64-linux-android/release/deps/vulkan_external_android-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vulkan-external-android-tests
+          path: target/aarch64-linux-android/release/deps/vulkan_external_android-*
+          if-no-files-found: error

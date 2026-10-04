@@ -338,6 +338,10 @@ pub struct TextInputState {
     pub height: f64,
     /// The field's purpose, which selects the platform's input treatment.
     pub purpose: TextInputPurpose,
+    /// The renderer's count of primary presses on editable targets. A
+    /// platform with a soft keyboard shows it when this changes, which is
+    /// how a tap on the already-focused field re-opens a dismissed keyboard.
+    pub activation: u64,
 }
 
 /// Input events emitted by a windowing backend.
@@ -582,12 +586,17 @@ pub enum SurfaceFrame {
     #[cfg(hydrolysis_winit)]
     /// A platform surface frame presented through winit.
     Window {
+        /// The surface texture this frame was acquired into; presenting it
+        /// queues the frame for display.
         output: wgpu::SurfaceTexture,
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
     },
+    /// A platform surface frame presented through Android's `ANativeWindow`.
     #[cfg(target_os = "android")]
     Android {
+        /// The surface texture this frame was acquired into; presenting it
+        /// queues the frame for display.
         output: wgpu::SurfaceTexture,
         /// A view of `texture` to render into or read from.
         view: wgpu::TextureView,
@@ -1744,7 +1753,7 @@ impl SurfaceProvider for OffscreenSurface {
 pub struct OffscreenSceneSurface {
     target: OffscreenSurface,
     cherenkov: crate::engine::CherenkovSurface,
-    engine: std::rc::Rc<crate::engine::GpuEngine>,
+    state: std::rc::Rc<crate::engine::SharedEngineState>,
 }
 
 impl core::fmt::Debug for OffscreenSceneSurface {
@@ -1803,14 +1812,14 @@ impl OffscreenSceneSurface {
                 height,
                 wgpu::TextureFormat::Rgba8UnormSrgb,
             );
-            let engine = crate::engine::engine_await!(crate::engine::shared_engine(
+            let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
                 target.gpu_context_id(),
                 target.adapter(),
                 target.shared_device(),
                 || {},
             ));
             let cherenkov = crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
-                std::rc::Rc::clone(&engine),
+                std::rc::Rc::clone(&state.engine),
                 target.device(),
                 target.adapter().get_info().backend,
                 (width.max(1), height.max(1)),
@@ -1818,7 +1827,7 @@ impl OffscreenSceneSurface {
             Self {
                 target,
                 cherenkov,
-                engine,
+                state,
             }
         }
     }
@@ -1826,8 +1835,8 @@ impl OffscreenSceneSurface {
     /// The engine this host renders with — callers drive
     /// `engine.render(FrameTime)` themselves.
     #[must_use]
-    pub const fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
-        &self.engine
+    pub fn engine(&self) -> &std::rc::Rc<crate::engine::GpuEngine> {
+        &self.state.engine
     }
 
     /// The engine surface behind this host — `clear_color`, `update`, layer
@@ -2067,7 +2076,7 @@ mod web_impl;
 mod macos_display_link;
 
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
-pub(crate) mod native_menu_bar;
+pub mod native_menu_bar;
 
 #[cfg(hydrolysis_winit)]
 mod winit_impl {
@@ -2115,7 +2124,7 @@ mod winit_impl {
         validated_window_frame,
     };
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub struct WinitGpuContext {
         instance: wgpu::Instance,
         adapter: wgpu::Adapter,
@@ -2134,7 +2143,7 @@ mod winit_impl {
         /// The window this surface presents into — `present` asks it for
         /// the platform's next-frame pacing (`pre_present_notify`), which
         /// on Wayland requests the frame callback a compositor withholds
-        /// from a hidden surface. `None` for the macOS CoreAnimationLayer
+        /// from a hidden surface. `None` for the macOS `CoreAnimationLayer`
         /// overlay, which has no winit window of its own.
         window: Option<Arc<NativeWindow>>,
     }
@@ -2165,16 +2174,16 @@ mod winit_impl {
             requires_transparency: bool,
             adapter_info: &wgpu::AdapterInfo,
         ) -> wgpu::CompositeAlphaMode {
-            if !requires_transparency {
-                // An opaque window's alpha channel never reaches the
-                // compositor, so the surface's preferred mode is fine.
-                return caps.alpha_modes[0];
-            }
             const TRANSPARENT_MODES: [wgpu::CompositeAlphaMode; 3] = [
                 wgpu::CompositeAlphaMode::PreMultiplied,
                 wgpu::CompositeAlphaMode::PostMultiplied,
                 wgpu::CompositeAlphaMode::Inherit,
             ];
+            if !requires_transparency {
+                // An opaque window's alpha channel never reaches the
+                // compositor, so the surface's preferred mode is fine.
+                return caps.alpha_modes[0];
+            }
             for wanted in TRANSPARENT_MODES {
                 if caps.alpha_modes.contains(&wanted) {
                     return wanted;
@@ -2195,7 +2204,7 @@ mod winit_impl {
         /// The X11 presentation defect a transparent window hits on an old
         /// Mesa software rasterizer: the WSI's `x11_present_to_x11_sw` sent
         /// its `xcb_put_image` at a hardcoded depth of 24, which the X
-        /// server rejects with BadMatch for a depth-32 window — and the
+        /// server rejects with `BadMatch` for a depth-32 window — and the
         /// driver discards the reply, so `present` reports success while
         /// the window never updates. Fixed by Mesa commit 1e849b12
         /// ("vk/wsi/x11/sw: use swapchain depth for putimage"), released in
@@ -2242,7 +2251,7 @@ mod winit_impl {
 
         /// Whether the realized winit window lives on an X11 connection —
         /// the only display path the Mesa software-WSI defect can hit. A
-        /// window whose handle is not `Xcb`/`Xlib` (Wayland, AppKit,
+        /// window whose handle is not `Xcb`/`Xlib` (Wayland, `AppKit`,
         /// Windows, an unrecognized or missing handle) is not blocked.
         fn window_is_x11(window: &NativeWindow) -> bool {
             matches!(
@@ -2296,68 +2305,65 @@ mod winit_impl {
             shared_gpu: Option<&WinitGpuContext>,
             requires_transparency: bool,
         ) -> (Self, WinitGpuContext) {
-            let (gpu, surface) = match shared_gpu {
-                Some(gpu) => {
-                    let surface = gpu
-                        .instance
-                        .create_surface(window.clone())
-                        .expect("hydrolysis winit surface: failed to create shared surface");
-                    (gpu.clone(), surface)
-                }
-                None => {
-                    let (instance, surface, adapter) = super::request_instance_surface_adapter(
-                        "hydrolysis winit surface",
-                        super::AdapterSelection::PRODUCTION,
-                        |instance| {
-                            instance
-                                .create_surface(window.clone())
-                                .expect("hydrolysis winit surface: failed to create surface")
-                        },
-                    )
-                    .await;
+            let (gpu, surface) = if let Some(gpu) = shared_gpu {
+                let surface = gpu
+                    .instance
+                    .create_surface(window.clone())
+                    .expect("hydrolysis winit surface: failed to create shared surface");
+                (gpu.clone(), surface)
+            } else {
+                let (instance, surface, adapter) = super::request_instance_surface_adapter(
+                    "hydrolysis winit surface",
+                    super::AdapterSelection::PRODUCTION,
+                    |instance| {
+                        instance
+                            .create_surface(window.clone())
+                            .expect("hydrolysis winit surface: failed to create surface")
+                    },
+                )
+                .await;
 
-                    super::ensure_compute_capable_adapter(
-                        &adapter,
-                        "hydrolysis winit surface",
-                        "failed to find compute-capable wgpu adapter",
-                    );
-                    let required_limits = super::required_device_limits(&adapter);
-                    let required_features =
-                        crate::platform::required_media_features(adapter.features())
-                            | (adapter.features()
-                                & (wgpu::Features::PIPELINE_CACHE
-                                    | wgpu::Features::PASSTHROUGH_SHADERS));
-                    let (device, queue) = adapter
-                        .request_device(&wgpu::DeviceDescriptor {
-                            label: Some("hydrolysis-winit-device"),
-                            required_features,
-                            required_limits,
-                            memory_hints: wgpu::MemoryHints::Performance,
-                            experimental_features: wgpu::ExperimentalFeatures::default(),
-                            trace: wgpu::Trace::default(),
-                        })
-                        .await
-                        .expect("hydrolysis winit surface: failed to request device");
-                    let context_id = super::next_gpu_context_id();
-                    let shared_device = cherenkov_gpu::interop::SharedDevice {
-                        instance: instance.clone(),
-                        adapter: adapter.clone(),
-                        device: device.clone(),
-                        queue: queue.clone(),
-                    };
-                    let device_loss = DeviceLoss::observe(shared_device, context_id);
-                    (
-                        WinitGpuContext {
-                            instance,
-                            adapter,
-                            device,
-                            queue,
-                            context_id,
-                            device_loss,
-                        },
-                        surface,
-                    )
-                }
+                super::ensure_compute_capable_adapter(
+                    &adapter,
+                    "hydrolysis winit surface",
+                    "failed to find compute-capable wgpu adapter",
+                );
+                let required_limits = super::required_device_limits(&adapter);
+                let required_features =
+                    crate::platform::required_media_features(adapter.features())
+                        | (adapter.features()
+                            & (wgpu::Features::PIPELINE_CACHE
+                                | wgpu::Features::PASSTHROUGH_SHADERS));
+                let (device, queue) = adapter
+                    .request_device(&wgpu::DeviceDescriptor {
+                        label: Some("hydrolysis-winit-device"),
+                        required_features,
+                        required_limits,
+                        memory_hints: wgpu::MemoryHints::Performance,
+                        experimental_features: wgpu::ExperimentalFeatures::default(),
+                        trace: wgpu::Trace::default(),
+                    })
+                    .await
+                    .expect("hydrolysis winit surface: failed to request device");
+                let context_id = super::next_gpu_context_id();
+                let shared_device = cherenkov_gpu::interop::SharedDevice {
+                    instance: instance.clone(),
+                    adapter: adapter.clone(),
+                    device: device.clone(),
+                    queue: queue.clone(),
+                };
+                let device_loss = DeviceLoss::observe(shared_device, context_id);
+                (
+                    WinitGpuContext {
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                        context_id,
+                        device_loss,
+                    },
+                    surface,
+                )
             };
 
             let size = window.inner_size();
@@ -2968,13 +2974,13 @@ mod winit_impl {
     /// sync is a no-op, `set_ime_allowed` fires only across a focus
     /// transition, and the cursor area is reported in physical pixels.
     #[derive(Debug, Default)]
-    pub(crate) struct TextInputSync {
+    pub struct TextInputSync {
         applied: Option<TextInputState>,
     }
 
     /// One winit IME call [`TextInputSync::sync`] asks the window to make.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub(crate) enum TextInputSyncOp {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TextInputSyncOp {
         Allowed(bool),
         Purpose(TextInputPurpose),
         CursorArea {
@@ -3016,10 +3022,10 @@ mod winit_impl {
                 "hydrolysis winit backend received invalid scale factor {scale_factor}"
             );
             ops.push(TextInputSyncOp::CursorArea {
-                x: (state.x * scale_factor).round() as i32,
-                y: (state.y * scale_factor).round() as i32,
-                width: (state.width.max(1.0) * scale_factor).ceil() as u32,
-                height: (state.height.max(1.0) * scale_factor).ceil() as u32,
+                x: crate::num_cast::f64_as_i32((state.x * scale_factor).round()),
+                y: crate::num_cast::f64_as_i32((state.y * scale_factor).round()),
+                width: crate::num_cast::f64_as_u32((state.width.max(1.0) * scale_factor).ceil()),
+                height: crate::num_cast::f64_as_u32((state.height.max(1.0) * scale_factor).ceil()),
             });
             ops
         }
@@ -3084,7 +3090,10 @@ mod winit_impl {
         /// `Moved`, `Resized`, `Occluded(false)`, or `ScaleFactorChanged`,
         /// each of which only reaches a mapped window — returning it for
         /// re-application. Other events leave it armed.
-        fn take_on_mapped_event(&mut self, event: &WindowEvent) -> Option<PendingMappedRequest> {
+        const fn take_on_mapped_event(
+            &mut self,
+            event: &WindowEvent,
+        ) -> Option<PendingMappedRequest> {
             let mapped = matches!(
                 event,
                 WindowEvent::Moved(_)
@@ -3115,7 +3124,7 @@ mod winit_impl {
     }
 
     /// The ordered calls realizing `state` from any prior state.
-    fn window_state_ops(state: WindowState) -> &'static [WindowStateOp] {
+    const fn window_state_ops(state: WindowState) -> &'static [WindowStateOp] {
         use WindowStateOp::{Fullscreen, Hide, Maximized, Minimized, NoFullscreen};
         match state {
             WindowState::Normal => &[Maximized(false), Minimized(false), NoFullscreen],
@@ -3145,7 +3154,13 @@ mod winit_impl {
     /// `clamp_frame_to_monitors` judges a frame write against.
     type MonitorRect = (LogicalPosition<f64>, LogicalSize<f64>);
 
+    /// The `PlatformWindow` realized on a winit window: its surface, input
+    /// queues and visibility signals, and the IME/geometry sync state.
     #[derive(Debug)]
+    #[expect(
+        clippy::struct_excessive_bools,
+        reason = "each flag mirrors a distinct winit/OS visibility report; folding them would lose which signal delivered the state"
+    )]
     pub struct WinitWindow {
         window: Arc<NativeWindow>,
         surface: WinitSurface,
@@ -3180,7 +3195,7 @@ mod winit_impl {
         /// Latest `WindowEvent::Occluded` report: macOS's
         /// `NSWindow.occlusionState` (miniaturize counts there), the iOS
         /// scene's backgrounded state, X11 `VisibilityFullyObscured`, the
-        /// web's IntersectionObserver. Winit emits no `Occluded` on
+        /// web's `IntersectionObserver`. Winit emits no `Occluded` on
         /// Windows, Wayland or Android, so this stays false there.
         occluded: bool,
         /// The last `Resized` carried a zero client area — how Windows'
@@ -3188,7 +3203,7 @@ mod winit_impl {
         /// later `Resized` with a real extent clears it.
         zero_sized: bool,
         /// The window's own minimized query — `IsIconic` on Windows,
-        /// `_NET_WM_STATE_HIDDEN` on X11, `isMiniaturized` on AppKit —
+        /// `_NET_WM_STATE_HIDDEN` on X11, `isMiniaturized` on `AppKit` —
         /// refreshed on the events that can accompany a state change,
         /// never on a timer. X11 emits no iconify `WindowEvent`, so the
         /// query on pump wakes is that platform's minimize signal.
@@ -3207,7 +3222,7 @@ mod winit_impl {
         /// per-frame background push reaches winit and the surface only when
         /// the background switches between opaque and translucent.
         transparent: bool,
-        /// Explicit ProMotion opt-in: declares the 120Hz frame-rate demand to
+        /// Explicit `ProMotion` opt-in: declares the 120Hz frame-rate demand to
         /// the window server while redraws are being requested. `None` before
         /// macOS 14.
         #[cfg(target_os = "macos")]
@@ -3224,6 +3239,12 @@ mod winit_impl {
                 .0
         }
 
+        /// Creates the surface for `window`, reusing `shared_gpu`'s device
+        /// chain when given and returning the [`WinitGpuContext`] in use so
+        /// the caller can hand it to the next surface.
+        ///
+        /// # Panics
+        /// Propagates panics from surface and device creation.
         pub async fn new_with_shared_gpu(
             window: Arc<NativeWindow>,
             shared_gpu: Option<&WinitGpuContext>,
@@ -3268,11 +3289,13 @@ mod winit_impl {
             )
         }
 
+        /// The winit [`WindowId`] identifying this window to the event loop.
         #[must_use]
         pub fn id(&self) -> WindowId {
             self.window.id()
         }
 
+        /// The underlying winit [`NativeWindow`].
         #[must_use]
         pub fn native_window(&self) -> &NativeWindow {
             self.window.as_ref()
@@ -3467,7 +3490,9 @@ mod winit_impl {
             extent: LogicalSize<f64>,
         ) -> f64 {
             let pulled = Self::pull_inside(requested, size, position, extent);
-            (pulled.x - requested.x).powi(2) + (pulled.y - requested.y).powi(2)
+            (pulled.x - requested.x)
+                .powi(2)
+                .mul_add(1.0, (pulled.y - requested.y).powi(2))
         }
 
         /// The pointer's live position in window-local logical units as the
@@ -3475,8 +3500,8 @@ mod winit_impl {
         /// cannot be asked.
         ///
         /// winit's file events carry no coordinates, and no `CursorMoved`
-        /// arrives while an OS drag owns the pointer — OLE keeps
-        /// `WM_MOUSEMOVE` out of the queue on Windows, and AppKit withholds
+        /// arrives while an OS drag owns the pointer — `OLE` keeps
+        /// `WM_MOUSEMOVE` out of the queue on Windows, and `AppKit` withholds
         /// `mouseMoved` for an `NSDraggingSession` — so the event-stream
         /// position goes stale exactly when a drop needs it. Asking the host
         /// is the only truthful source there; X11 keeps streaming motion
@@ -3525,12 +3550,15 @@ mod winit_impl {
             }
             let position = PhysicalPosition::new(f64::from(point.x), f64::from(point.y))
                 .to_logical::<f64>(self.window.scale_factor());
-            Some((position.x as f32, position.y as f32))
+            Some((
+                crate::num_cast::f64_as_f32(position.x),
+                crate::num_cast::f64_as_f32(position.y),
+            ))
         }
 
         /// `-[NSWindow mouseLocationOutsideOfEventStream]` converted into
         /// the view's flipped logical space — the answer a `mouseMoved`
-        /// would carry, without the event AppKit withholds during a drag.
+        /// would carry, without the event `AppKit` withholds during a drag.
         #[cfg(target_os = "macos")]
         fn macos_live_pointer_position(&self) -> Option<(f32, f32)> {
             use objc2_app_kit::NSView;
@@ -3553,7 +3581,10 @@ mod winit_impl {
             } else {
                 view.bounds().size.height - view_point.y
             };
-            Some((view_point.x as f32, y as f32))
+            Some((
+                crate::num_cast::f64_as_f32(view_point.x),
+                crate::num_cast::f64_as_f32(y),
+            ))
         }
 
         /// `XQueryPointer` on this window over the connection winit already
@@ -3583,14 +3614,33 @@ mod winit_impl {
             };
             // `should_drop = false`: the connection is winit's — the wrapper
             // is a borrow, and dropping it must not disconnect.
+            // SAFETY: `connection_ptr` is the live XCB connection winit owns
+            // for this window; `false` keeps ownership with winit, so the
+            // wrapper only borrows it for this query.
             let connection =
                 unsafe { XCBConnection::from_raw_xcb_connection(connection_ptr, false) }.ok()?;
             let reply = connection.query_pointer(window_xid).ok()?.reply().ok()?;
             let position = PhysicalPosition::new(f64::from(reply.win_x), f64::from(reply.win_y))
                 .to_logical::<f64>(self.window.scale_factor());
-            Some((position.x as f32, position.y as f32))
+            Some((
+                crate::num_cast::f64_as_f32(position.x),
+                crate::num_cast::f64_as_f32(position.y),
+            ))
         }
 
+        /// Applies one winit `WindowEvent`: queues the `InputEvent`s it maps
+        /// to, refreshes the visibility signals, and re-applies deferred
+        /// geometry once the window maps.
+        ///
+        /// # Panics
+        ///
+        /// Panics when winit reports a non-finite or non-positive scale
+        /// factor — a broken platform contract the backend cannot recover
+        /// from.
+        #[expect(
+            clippy::too_many_lines,
+            reason = "the dispatch walks every winit event kind in one ordered sequence; splitting it would obscure the event ordering"
+        )]
         pub fn handle_window_event(&mut self, event: &WindowEvent) {
             // The first mapped-signal event re-applies the frame and state
             // the app asked for: requests made of an unmapped window were
@@ -3651,8 +3701,8 @@ mod winit_impl {
                 WindowEvent::Moved(position) => {
                     let logical = position.to_logical::<f64>(self.window.scale_factor());
                     self.pending_events.push(InputEvent::Moved {
-                        x: logical.x as f32,
-                        y: logical.y as f32,
+                        x: crate::num_cast::f64_as_f32(logical.x),
+                        y: crate::num_cast::f64_as_f32(logical.y),
                     });
                 }
                 WindowEvent::Focused(focused) => {
@@ -3783,7 +3833,7 @@ mod winit_impl {
                     self.pending_events.push(InputEvent::Magnification {
                         x: self.pointer_position.0,
                         y: self.pointer_position.1,
-                        delta: *delta as f32,
+                        delta: crate::num_cast::f64_as_f32(*delta),
                         phase: map_touch_phase(*phase),
                     });
                 }
@@ -3917,7 +3967,10 @@ mod winit_impl {
             "hydrolysis winit backend received invalid scale factor {scale_factor}"
         );
         let logical = position.to_logical::<f64>(scale_factor);
-        (logical.x as f32, logical.y as f32)
+        (
+            crate::num_cast::f64_as_f32(logical.x),
+            crate::num_cast::f64_as_f32(logical.y),
+        )
     }
 
     fn map_scroll_delta(delta: &MouseScrollDelta, scale_factor: f64) -> (f32, f32, bool) {
@@ -3929,7 +3982,11 @@ mod winit_impl {
             MouseScrollDelta::LineDelta(dx, dy) => (*dx, *dy, true),
             MouseScrollDelta::PixelDelta(delta) => {
                 let logical = delta.to_logical::<f64>(scale_factor);
-                (logical.x as f32, logical.y as f32, false)
+                (
+                    crate::num_cast::f64_as_f32(logical.x),
+                    crate::num_cast::f64_as_f32(logical.y),
+                    false,
+                )
             }
         }
     }
@@ -3980,7 +4037,7 @@ mod winit_impl {
             let state = window.state.snapshot();
             let frame = validated_window_frame(window.frame.snapshot());
             let properties = AppliedWindowProperties {
-                title: title.clone(),
+                title,
                 resizable: window.resizable,
                 decorations,
                 state,
@@ -3990,7 +4047,7 @@ mod winit_impl {
                 resize_increments: window
                     .resize_increments
                     .as_ref()
-                    .map(|signal| signal.snapshot()),
+                    .map(nami::Signal::snapshot),
             };
             let previous = self.applied_properties.replace(properties.clone());
             let applied = previous.as_ref();
@@ -4033,8 +4090,10 @@ mod winit_impl {
             // path.
             let size_changed = applied.is_none_or(|p| *p.frame.size() != *frame.size());
             let origin_changed = applied.is_none_or(|p| p.frame.origin() != frame.origin());
-            let mut target_size = LogicalSize::new(frame.width() as f64, frame.height() as f64);
-            let mut target_position = LogicalPosition::new(frame.x() as f64, frame.y() as f64);
+            let mut target_size =
+                LogicalSize::new(f64::from(frame.width()), f64::from(frame.height()));
+            let mut target_position =
+                LogicalPosition::new(f64::from(frame.x()), f64::from(frame.y()));
             let visible = self.window.is_visible();
             // Every frame write — the first-map placement and each later
             // one alike — is clamped to the monitors winit reports: the
@@ -4222,7 +4281,7 @@ mod winit_impl {
         }
     }
 
-    fn map_touch_phase(phase: WinitTouchPhase) -> TouchPhase {
+    const fn map_touch_phase(phase: WinitTouchPhase) -> TouchPhase {
         match phase {
             WinitTouchPhase::Started => TouchPhase::Started,
             WinitTouchPhase::Moved => TouchPhase::Moved,
@@ -4231,7 +4290,7 @@ mod winit_impl {
         }
     }
 
-    fn map_button(button: MouseButton) -> PointerButton {
+    const fn map_button(button: MouseButton) -> PointerButton {
         match button {
             MouseButton::Left => PointerButton::Primary,
             MouseButton::Right => PointerButton::Secondary,
@@ -4250,7 +4309,7 @@ mod winit_impl {
         }
     }
 
-    fn should_emit_keyboard_text(modifiers: Modifiers) -> bool {
+    const fn should_emit_keyboard_text(modifiers: Modifiers) -> bool {
         !(modifiers.control || modifiers.alt || modifiers.super_key)
     }
 
@@ -4393,6 +4452,7 @@ mod winit_impl {
                 width: 2.0,
                 height: 14.0,
                 purpose,
+                activation: 0,
             }
         }
 
@@ -5199,7 +5259,7 @@ mod winit_impl {
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
 
 #[cfg(hydrolysis_winit)]
-pub(crate) use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
+pub use winit_impl::ExportedWinitGpuContext as WinitGpuContext;
 #[cfg(hydrolysis_winit)]
 #[cfg(hydrolysis_winit)]
 pub use winit_impl::ExportedWinitWindow as WinitWindow;

@@ -18,6 +18,10 @@ permissions:
   pull-requests: write
   id-token: write
 
+env:
+  CARGO_TERM_COLOR: always
+  DIST_VERSION: 0.30.2
+
 jobs:
   release:
     name: Release unpublished packages
@@ -26,6 +30,10 @@ jobs:
     concurrency:
       group: release-${{ github.ref_name }}
       cancel-in-progress: false
+    outputs:
+      # The `cli/v<version>` tag release-plz created this run, empty
+      # when it released no CLI — the tag drives the `cli-dist` leg.
+      cli_tag: ${{ steps.cli_tag.outputs.cli_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,7 +106,26 @@ jobs:
           fi
           echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
 
-          echo "framework_tag=${FRAMEWORK_TAG}" >> "$GITHUB_OUTPUT"
+      # Same report, different package: the CLI's tag is namespaced
+      # (`cli/v<version>`, release-plz.toml) so it never collides
+      # with the facade's `v<version>`. There is no fallback path here —
+      # unlike framework.json there is nothing to certify on a tag that
+      # missed the report; the dist legs simply do not run.
+      - name: Detect CLI release tag
+        id: cli_tag
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          REPORT: ${{ steps.release_plz.outputs.report }}
+        run: |
+          set -euo pipefail
+          TAG="$(jq -r '[.releases[]? | select(.package_name == "waterui-cli") | .tag] | last // ""' <<< "${REPORT:-}")"
+          echo "cli_tag=${TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${TAG}" ]]; then
+            echo "release-plz released waterui-cli as ${TAG}."
+          else
+            echo "release-plz released no waterui-cli this run."
+          fi
 
       # The manifest is built from the tagged tree itself: the script checks
       # the tag out and records that revision's scaffold table and lock.
@@ -111,6 +138,283 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/framework_manifest.py stable --tag "$FRAMEWORK_TAG"
           gh release upload "$FRAMEWORK_TAG" framework.json --clobber
+
+  # The `water` binary release (water-rs/cli's `dist` and `release-assets`
+  # jobs, #1446). It hangs off the same `release` run: the tag is read from
+  # release-plz's report, and crates.io publishing already happened in-band
+  # there — the standalone repository deferred publishing to a dispatch
+  # because its tag was minted under `workflow_run`, whose OIDC tokens
+  # crates.io trusted publishing refuses; this job runs on the push itself.
+  cli-dist:
+    name: dist / ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    # Empty for the non-Linux legs, which GitHub reads as "no container".
+    container: ${{ matrix.container }}
+    needs: release
+    if: needs.release.outputs.cli_tag != ''
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ needs.release.outputs.cli_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Linux legs link inside manylinux_2_28 (glibc 2.28: Ubuntu
+          # 20.04+, Debian 10+, RHEL 8+). A binary linked on the runner's
+          # own image needs the glibc of that image — `ubuntu-latest` is
+          # 24.04, glibc 2.39 — and does not start on Ubuntu 22.04 (#106).
+          # `min-glibc-version` in dist-workspace.toml states the same 2.28
+          # to the installer.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            container: quay.io/pypa/manylinux_2_28_aarch64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+          # The musl leg builds on the plain runner image: `musl-gcc` compiles
+          # and links the C dependencies against musl, so the resulting binary
+          # is fully static and has no glibc requirement at all (#151).
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dist-${{ matrix.target }}
+          targets: ${{ matrix.target }}
+
+      - uses: ./.github/actions/setup-linux-deps
+        if: runner.os == 'Linux'
+        with:
+          package-manager: ${{ matrix.container && 'dnf' || 'apt' }}
+
+      - name: Install the musl toolchain
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: sudo apt-get install -y -qq musl-tools
+
+      - uses: ./.github/actions/install-dxc
+        if: runner.os == 'Windows'
+
+      - name: Install cargo-dist
+        if: ${{ !matrix.container }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.DIST_VERSION }}
+
+      # cargo-binstall picks the glibc build for a gnu host; dist's own
+      # installer measures the container's glibc and takes the static musl
+      # build when it is too old.
+      - name: Install cargo-dist (container)
+        if: matrix.container
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.sh" | sh
+
+      # The manifest goes to stdout; the global build reads it back from
+      # `target/distrib` to embed the archive checksums in the installers.
+      # Without it the installers ship with "no checksums to verify". It is
+      # written outside `target/distrib` first: dist merges every
+      # `*-dist-manifest.json` it finds there, and the shell would create
+      # the (empty) redirect target before dist runs.
+      - name: Build artifacts
+        shell: bash
+        run: |
+          dist build \
+            --tag "${{ env.TAG }}" \
+            --artifacts=local \
+            --target "${{ matrix.target }}" \
+            --output-format=json \
+            > dist-manifest.json
+          mv dist-manifest.json "target/distrib/${{ matrix.target }}-dist-manifest.json"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            target/distrib/*${{ matrix.target }}*.tar.*
+            target/distrib/*${{ matrix.target }}*.zip*
+            target/distrib/*${{ matrix.target }}*-dist-manifest.json
+
+  cli-release-assets:
+    name: Upload CLI release assets
+    needs: [release, cli-dist]
+    if: needs.release.outputs.cli_tag != '' && needs.cli-dist.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release.outputs.cli_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install cargo-dist
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-dist@${{ env.DIST_VERSION }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          path: target/distrib
+          merge-multiple: true
+
+      - name: Build global release artifacts
+        run: dist build --tag "${{ env.TAG }}" --artifacts=global
+
+      # cargo-dist generates the shell installer from a template compiled
+      # into the dist binary, and exposes no config hook for prerequisite
+      # checks (the `shell` installer layer only carries the common options),
+      # so the generated script is patched in place here — the same approach
+      # as the Homebrew formula below. The anchors and the trailing greps are
+      # load-bearing: if dist's template ever changes shape, the release fails
+      # here rather than silently shipping an unpatched installer.
+      #
+      # The loop must name every external command the script forks that dist
+      # does not already check itself (#150): `tar xf` execs xz for .tar.xz
+      # archives, check_glibc() pipes `ldd --version` through awk, the receipt
+      # and rc-file rewriting runs sed, install() moves binaries with mv,
+      # get_home() falls back to getent/cut/id when HOME and USER are unset,
+      # and the pinned checksum verification needs sha256sum.
+      - name: Inject prerequisite checks into the shell installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer=target/distrib/waterui-cli-installer.sh
+
+          test "$(grep -c '^    need_cmd cat$' "$installer")" = "1"
+
+          block="$(mktemp)"
+          cat > "$block" <<'EOF'
+              # Every external command this script forks beyond cargo-dist's own
+              # checks above. Each failure names the command and the package
+              # that provides it:
+              #   xz              - the decompressor `tar xf` execs for .tar.xz
+              #   ldd, awk        - check_glibc() parses `ldd --version` via awk
+              #   sed             - install receipt and rc-file rewriting
+              #   mv              - install() moves binaries into place
+              #   getent, cut, id - get_home() when HOME and USER are both unset
+              #   sha256sum       - the pinned SHA-256 checksum verification
+              for _dep in "xz:xz-utils or xz" "awk:gawk or mawk" \
+                          "ldd:glibc or libc-bin" "sed:sed" "mv:coreutils" \
+                          "getent:libc-bin or glibc" "cut:coreutils" \
+                          "id:coreutils" "sha256sum:coreutils"; do
+                  check_cmd "${_dep%%:*}" \
+                      || err "need '${_dep%%:*}' (command not found; install '${_dep##*:}')"
+              done
+          EOF
+          sed -i '/^    need_cmd cat$/r '"$block" "$installer"
+          rm -f "$block"
+          grep -q 'for _dep in "xz:xz-utils or xz"' "$installer"
+
+          # `unzip` is only required when the selected archive is a .zip, so it
+          # is guarded inside that case branch rather than the loop above.
+          sed -i 's|^\( *\)ensure unzip -q "\$_file" -d "\$_dir"$|\1need_cmd unzip\n&|' "$installer"
+          grep -q 'need_cmd unzip' "$installer"
+
+          sh -n "$installer"
+
+      # The patterns must not overlap. `*.tar.*` also matched every
+      # `…tar.xz.sha256`, which `*.sha256` matched again, so each checksum
+      # beside a tarball was listed twice; the action then issued two deletes
+      # for the one existing asset of that name and the second answered
+      # `Not Found`, failing the step. Invisible on a first release, where
+      # there is nothing to delete — and fatal on the re-run that recovers
+      # one. `.tar.xz`, `.tar.gz`, `.zip`, `.sha256` and `sha256.sum` are
+      # disjoint suffixes, so each file is named once.
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: |
+            target/distrib/*.tar.xz
+            target/distrib/*.tar.gz
+            target/distrib/*.zip
+            target/distrib/*.sha256
+            target/distrib/sha256.sum
+            target/distrib/waterui-cli-installer.sh
+            target/distrib/waterui-cli-installer.ps1
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: water-rs/homebrew-water
+          token: ${{ secrets.HOMEBREW_PAT }}
+          path: homebrew-water
+
+      - name: Stage dist-generated Homebrew formula
+        run: cp target/distrib/water.rb homebrew-water/Formula/water.rb
+
+      # cargo-dist's Homebrew template installs the binary and dumps every
+      # other archive member into `pkgshare`; it has no completions support
+      # (axodotdev/cargo-dist#2429). Inject the idiomatic line ourselves:
+      # `generate_completions_from_executable` runs `bin/water completions
+      # <shell>` at install time on the user's machine, so the script is
+      # generated by the exact binary being installed.
+      #
+      # The grep is load-bearing: if dist's template ever changes shape and
+      # the awk insertion no longer lands inside `def install`, the release
+      # fails here instead of silently shipping a formula with no
+      # completions.
+      - name: Inject shell completions into the Homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          formula=homebrew-water/Formula/water.rb
+          awk '
+            /^  def install$/ { in_install = 1 }
+            in_install && /^  end$/ {
+              print "    generate_completions_from_executable(bin/\"water\", \"completions\")"
+              in_install = 0
+            }
+            { print }
+          ' "$formula" > "$formula.patched"
+          grep -q 'generate_completions_from_executable(bin/"water", "completions")' "$formula.patched"
+          mv "$formula.patched" "$formula"
+          ruby -c "$formula"
+
+      # The tap's `dev` is ruled like every other branch in the organisation:
+      # changes arrive through a pull request and commits carry a verified
+      # signature. This job can satisfy neither directly — a commit made on a
+      # runner is unsigned, and `HOMEBREW_PAT` may write contents there but
+      # not pull requests (`Resource not accessible by personal access
+      # token`). So it pushes the branch and stops. water-rs/homebrew-water's
+      # own `publish-formula.yml` picks it up, opens the pull request and
+      # merges it under that repository's `GITHUB_TOKEN`, and the squash
+      # commit GitHub writes is signed.
+      #
+      # `--force` because a re-run of a release pushes the same branch again.
+      - name: Push the Homebrew formula branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#cli/v}"
+          cd homebrew-water
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/water.rb
+          if git diff --cached --quiet; then
+            echo "No Homebrew changes to publish."
+            exit 0
+          fi
+          git commit -m "water ${version}"
+          git push --force origin "HEAD:refs/heads/water-${version}"
 
   release-pr:
     name: Prepare the next release

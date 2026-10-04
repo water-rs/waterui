@@ -6,6 +6,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
+use crate::platform_view::PlatformView;
 use waterui_core::views::ViewSnapshot;
 
 impl RenderNode {
@@ -108,13 +109,13 @@ impl RenderNode {
                 if let Some(axis) =
                     lazy_stack_axis_config(layout.as_ref(), direction).filter(|_| !wants_transition)
                 {
-                    return Self::build_lazy_stack(axis, children, env, renderer, layout_guards);
+                    return Self::build_lazy_stack(axis, &children, env, renderer, layout_guards);
                 }
                 // A non-virtualizable layout (AbsoluteLayout/ZStack overlay) or a
                 // transition collection: a retained reactive collection that
                 // reconciles membership by id (recursing into each item, so inner
                 // SceneView/Dynamic reach their dedicated nodes).
-                return Self::build_collection(layout, children, env, renderer, layout_guards);
+                return Self::build_collection(layout, &children, env, renderer, layout_guards);
             }
             Err(view) => view,
         };
@@ -561,6 +562,16 @@ impl RenderNode {
             }
             Err(view) => view,
         };
+        // A platform-view embedding leaf: it records its frame onto the host's
+        // `PlatformViewSink` each flush; mounting the real native child is the
+        // host's work. No sink means this runner cannot embed — the leaf
+        // panics at build naming the missing piece.
+        let view = match view.downcast::<Native<PlatformView>>() {
+            Ok(platform_view) => {
+                return Self::build_platform_view(&(*platform_view).into_inner(), env);
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Native<FilteredView>>() {
             Ok(filtered) => {
                 return Self::build_filtered((*filtered).into_inner(), env, renderer);
@@ -825,7 +836,7 @@ impl RenderNode {
     /// it dirty and schedules a refresh, which reconciles by id).
     fn build_collection(
         layout: Box<dyn Layout>,
-        views: AnyViews<AnyView>,
+        views: &AnyViews<AnyView>,
         env: &Environment,
         renderer: &mut SemanticCore,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -836,11 +847,23 @@ impl RenderNode {
         let signals = renderer.signals.clone();
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
+        // The node retains one immutable row set per applied event: the
+        // watcher swaps in the snapshot each notification carried — captured
+        // from the exact data that emitted it — so reconcile never re-reads
+        // the live source while applying an older change.
+        let applied = Rc::new(RefCell::new(views.snapshot()));
+        let applied_for_watch = Rc::clone(&applied);
         let guard = views.watch(.., {
             let dirty = Rc::clone(&dirty);
             move |ctx, change| {
                 dirty.set(true);
-                collect_replaced_ids(ctx.value(), &change, &mut replaced_for_watch.borrow_mut());
+                let event_snapshot = ctx.into_value();
+                collect_replaced_ids(
+                    &event_snapshot,
+                    &change,
+                    &mut replaced_for_watch.borrow_mut(),
+                );
+                *applied_for_watch.borrow_mut() = event_snapshot;
                 signals.mark_collection_dirty(key, 0);
             }
         });
@@ -854,17 +877,18 @@ impl RenderNode {
         let accessibility_container_env = item_env.as_ref().map(|_| env.clone());
         #[cfg(feature = "accessibility")]
         let env = item_env.as_ref().unwrap_or(env);
-        let len = views.len().snapshot();
         // The initial membership renders at rest — only items added or removed
-        // by a *later* change animate (`reconcile` marks phases).
-        let entries = (0..len)
+        // by a *later* change animate (`reconcile` marks phases). Every entry
+        // is built from the one snapshot, so ids and views stay coherent even
+        // if a nested build mutates the source mid-materialization.
+        let snapshot = applied.borrow().clone();
+        let entries = snapshot
+            .range()
             .map(|index| {
-                let id = views
-                    .snapshot()
+                let id = snapshot
                     .get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"));
-                let view = views
-                    .snapshot()
+                let view = snapshot
                     .get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                 CollectionEntry::stable(
@@ -879,7 +903,7 @@ impl RenderNode {
             memo_slots: RefCell::default(),
             render_id: RenderId::next(),
             layout,
-            views,
+            snapshot: applied,
             env: env.clone(),
             accessibility_identity: Rc::new(()),
             #[cfg(feature = "accessibility")]
@@ -906,7 +930,7 @@ impl RenderNode {
     )]
     fn build_lazy_stack(
         axis: LazyStackAxisConfig,
-        views: AnyViews<AnyView>,
+        views: &AnyViews<AnyView>,
         env: &Environment,
         renderer: &mut SemanticCore,
         layout_guards: Vec<BoxWatcherGuard>,
@@ -918,13 +942,25 @@ impl RenderNode {
         let dirty_for_watch = Rc::clone(&dirty);
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
+        // The node retains one immutable row set per applied event: the
+        // watcher swaps in the snapshot each notification carried, so the
+        // window re-resolution, extent index, and materialization all read
+        // the same coherent membership rather than the live source.
+        let snapshot = Rc::new(RefCell::new(views.snapshot()));
+        let snapshot_for_watch = Rc::clone(&snapshot);
         let guard = views.watch(.., move |ctx, change| {
-            // Membership changed: request a fine-grained refresh; the flush re-reads
-            // the collection length/items and re-resolves the visible window.
+            // Membership changed: request a fine-grained refresh; the flush
+            // re-resolves the visible window over the event's own snapshot.
             // The reported replaced positions accumulate their ids so the
             // patch invalidates exactly those rows.
             dirty_for_watch.set(true);
-            collect_replaced_ids(ctx.value(), &change, &mut replaced_for_watch.borrow_mut());
+            let event_snapshot = ctx.into_value();
+            collect_replaced_ids(
+                &event_snapshot,
+                &change,
+                &mut replaced_for_watch.borrow_mut(),
+            );
+            *snapshot_for_watch.borrow_mut() = event_snapshot;
             signals.mark_collection_dirty(key, 0);
         });
         let signals = renderer.signals.clone();
@@ -941,7 +977,7 @@ impl RenderNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
             axis,
-            views,
+            snapshot,
             env: env.clone(),
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
@@ -971,13 +1007,16 @@ impl RenderNode {
     fn build_scene_view_node(scene_view: Native<SceneView>, renderer: &mut SemanticCore) -> Self {
         let mut content = scene_view.into_inner().into_content();
         let signals = renderer.signals.clone();
-        content.set_invalidator(Some(Rc::new(move || {
+        let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || {
             signals.request_refresh();
-        })));
+        });
+        content.set_invalidator(Some(Rc::clone(&invalidator)));
         Self::SceneView(Box::new(SceneViewNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
             content: Rc::new(RefCell::new(content)),
+            invalidator,
+            association: Rc::new(RefCell::new(None)),
         }))
     }
 

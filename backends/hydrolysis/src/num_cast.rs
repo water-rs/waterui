@@ -162,7 +162,7 @@ pub const fn u64_as_usize(v: u64) -> usize {
     clippy::cast_possible_truncation,
     reason = "the values are sizes that fit u32"
 )]
-#[cfg(test)]
+#[cfg(any(test, hydrolysis_wayland_platform))]
 pub const fn u64_as_u32(v: u64) -> u32 {
     v as u32
 }
@@ -189,7 +189,7 @@ pub const fn usize_as_u32(v: usize) -> u32 {
     clippy::cast_precision_loss,
     reason = "i32 inputs here are small coordinate offsets well below 2^24"
 )]
-#[cfg(test)]
+#[cfg(any(test, target_os = "android"))]
 pub const fn i32_as_f32(v: i32) -> f32 {
     v as f32
 }
@@ -226,4 +226,71 @@ pub const fn usize_as_i32(v: usize) -> i32 {
 )]
 pub const fn i16_as_u16(v: i16) -> u16 {
     v as u16
+}
+
+/// Narrows a `u64` id to `i64`, wrapping modulo 2^64 (the `as` conversion);
+/// the ids handed to the Android JNI bridge are small positive values, far
+/// below `i64::MAX`.
+#[cfg_attr(
+    not(all(
+        feature = "accessibility",
+        any(target_os = "android", all(test, not(target_arch = "wasm32")))
+    )),
+    allow(
+        dead_code,
+        reason = "read by the Android accessibility provider and its tests"
+    )
+)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "the ids wrapped for JNI are small positive values, far below i64::MAX"
+)]
+pub const fn u64_as_i64(v: u64) -> i64 {
+    v as i64
+}
+
+/// Narrows a `usize` offset to `i64`, wrapping; the UTF-16 offsets wrapped
+/// for JNI are far below `i64::MAX`.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "the offsets wrapped for JNI are far below i64::MAX"
+)]
+#[cfg_attr(
+    not(any(target_os = "android", all(test, not(target_arch = "wasm32")))),
+    allow(
+        dead_code,
+        reason = "read by the Android editing session and its tests"
+    )
+)]
+pub const fn usize_as_i64(v: usize) -> i64 {
+    v as i64
+}
+
+/// Widens an `i32` to `usize` with `as` semantics; callers clamp the JNI
+/// value with `max(0)` first, so the sign never reaches the conversion.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "callers clamp the JNI value with max(0) before converting"
+)]
+#[cfg_attr(
+    not(any(target_os = "android", all(test, not(target_arch = "wasm32")))),
+    allow(
+        dead_code,
+        reason = "read by the Android editing session and its tests"
+    )
+)]
+pub const fn i32_as_usize(v: i32) -> usize {
+    v as usize
+}
+
+/// Narrows an `i64` JNI value to `u64`; callers clamp negative ids with
+/// `max(0)` first, or the value is a generation counter that never goes
+/// negative on the wire.
+#[cfg(target_os = "android")]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "callers clamp negative ids with max(0), or the value is a generation counter that never goes negative on the wire"
+)]
+pub const fn i64_as_u64(v: i64) -> u64 {
+    v as u64
 }

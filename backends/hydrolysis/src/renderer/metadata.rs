@@ -237,9 +237,9 @@ impl HydrolysisRenderer {
     ) {
         {
             let theme = renderer.theme();
-            let mut draw =
-                SceneDrawContext::with_root_transform(&mut renderer.scene, ctx.transform);
-            theme.draw_text_context_menu_panel(&mut draw, ctx.bounds);
+            renderer.scene.record_picture(ctx.transform, |draw| {
+                theme.draw_text_context_menu_panel(&mut *draw, ctx.bounds);
+            });
         }
         render_content(renderer);
     }
@@ -443,6 +443,9 @@ impl HydrolysisRenderer {
                 {
                     node.set_label(label);
                 }
+                if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+                    node.set_value(value);
+                }
                 node.add_action(AccessibilityAction::Focus);
                 if renderer.control_selected(env, &InteractionKey::for_rc(&effect.action, 0)) {
                     node.set_selected(true);
@@ -539,21 +542,22 @@ impl HydrolysisRenderer {
                 let radii = *style.state_layer_radii.resolve(state);
                 let ring =
                     interaction_focus_ring(renderer, env, layer_bounds, radii, &style, state);
-                let mut draw = renderer.draw_context(ctx);
-                theme.draw_interaction_state_layer(
-                    &mut draw,
-                    layer_bounds,
-                    radii,
-                    color,
-                    interaction,
-                );
-                if let Some((ring_bounds, ring_radii, color, width)) = ring {
-                    draw.stroke(
-                        kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
-                        kurbo::Stroke::new(width),
+                renderer.draw_context(ctx, |draw| {
+                    theme.draw_interaction_state_layer(
+                        draw,
+                        layer_bounds,
+                        radii,
                         color,
+                        interaction,
                     );
-                }
+                    if let Some((ring_bounds, ring_radii, color, width)) = ring {
+                        draw.stroke(
+                            kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
+                            kurbo::Stroke::new(width),
+                            color,
+                        );
+                    }
+                });
             }
 
             if !disabled {

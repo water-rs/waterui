@@ -233,6 +233,244 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def flavor_for_fixture(name: str) -> str:
+    """suite.toml fixture name -> gradle flavor (e.g. typography-rtl ->
+    typography_rtl). Suite-hosted screens map to the suite variant."""
+    if name in ("suite", "editing", "list-stress"):
+        return "suite"
+    return name.replace("-", "_")
+
+
+def package_for_fixture(name: str) -> str:
+    base = "dev.waterui.android.reference"
+    if name in ("suite", "editing", "list-stress"):
+        return base
+    return f"{base}.{name.replace('-', '_')}"
+
+
+def cmd_lock_campaign(args: argparse.Namespace) -> int:
+    """Resolve the current stable Compose BOM and freeze it for the campaign.
+
+    Section 6: resolve the current stable BOM at campaign start, record it
+    and all resolved dependencies, then keep it immutable. `build` appends
+    the resolved dependency graph to the same lock after the first build.
+    """
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    url = (
+        "https://dl.google.com/dl/android/maven2/"
+        "androidx/compose/compose-bom/maven-metadata.xml"
+    )
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        meta = ET.fromstring(resp.read())
+    versions = [v.text for v in meta.iter("version") if v.text]
+    stable = [
+        v
+        for v in versions
+        if not any(tag in v for tag in ("alpha", "beta", "rc", "-dev"))
+    ]
+    if not stable:
+        sys.exit("no stable Compose BOM found in maven-metadata")
+    bom = stable[-1]
+    print(f"latest stable compose-bom: {bom}")
+
+    lock_path = BENCH_DIR / "campaign-lock.json"
+    lock = {}
+    if lock_path.exists():
+        lock = json.loads(lock_path.read_text())
+        old = lock.get("compose_bom")
+        if old and old != bom and not args.refresh:
+            print(
+                f"campaign already locked to {bom} differs from existing "
+                f"{old}; pass --refresh to re-lock (recalibrate noise!)"
+            )
+    lock.update(
+        {
+            "schema": "bench/android/campaign-lock@1",
+            "compose_bom": bom,
+            "resolved_at_utc": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+            ),
+        }
+    )
+    lock_path.write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n")
+
+    props_path = BENCH_DIR / "reference" / "gradle.properties"
+    props = props_path.read_text()
+    if "composeBomVersion" in props:
+        props = "\n".join(
+            f"composeBomVersion={bom}"
+            if line.startswith("composeBomVersion=")
+            else line
+            for line in props.splitlines()
+        ) + "\n"
+    else:
+        props += f"composeBomVersion={bom}\n"
+    props_path.write_text(props)
+    print(f"froze composeBomVersion={bom} -> {props_path}")
+    return 0
+
+
+def _gradle(*tasks: str, project: Path) -> None:
+    env = dict(os.environ)
+    env.setdefault("JAVA_HOME", "/usr/lib/jvm/java-21-openjdk-amd64")
+    subprocess.run(
+        [str(project / "gradlew"), *tasks],
+        cwd=project,
+        env=env,
+        check=True,
+    )
+
+
+def _apk_out(project: Path, module: str) -> list[Path]:
+    root = project / module / "build" / "outputs" / "apk"
+    return sorted(root.glob("**/*.apk")) if root.is_dir() else []
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    """Build the release APK set for a campaign.
+
+    Per fixture flavor: :app:assemble<Flavor>Release (non-debuggable,
+    R8/resource-shrunk, arm64-v8a, debug-keystore-signed — identical signing
+    and delivery across candidates). Copies each arm64 APK to
+    --out/<fixture>.apk and records byte sizes in an artifacts manifest so
+    the zero-tolerance package-bytes gate has measured inputs.
+    """
+    project = BENCH_DIR / "reference"
+    suite = metrics.load_suite(Path(args.suite))
+    fixtures = [
+        n for n, f in sorted(suite["fixtures"].items()) if f["mode"] != "skip"
+    ]
+    flavors = {"suite"} | {flavor_for_fixture(n) for n in fixtures}
+
+    # Gradle capitalizes only the first letter of the flavor in task names:
+    # anchored_overlay -> assembleAnchored_overlayRelease.
+    tasks = [
+        f":app:assemble{f[0].upper() + f[1:]}Release" for f in sorted(flavors)
+    ]
+    tasks += [":macrobenchmark:assemble", ":baselineprofile:assemble"]
+    print("gradle:", *tasks)
+    _gradle(*tasks, project=project)
+
+    # Propagate the suite-generated baseline profile into every per-fixture
+    # variant's profile source (see BaselineProfileGenerator's docstring);
+    # skipped quietly until generation has run once on device.
+    gen = project / "app/src/suiteRelease/generated/baselineProfiles"
+    propagated = 0
+    if gen.is_dir():
+        for flavor in flavors - {"suite"}:
+            dst = project / f"app/src/{flavor}Release/generated/baselineProfiles"
+            dst.mkdir(parents=True, exist_ok=True)
+            for src_file in gen.glob("*"):
+                if src_file.is_file():
+                    (dst / src_file.name).write_bytes(src_file.read_bytes())
+            propagated += 1
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {"schema": "bench/android/artifacts@1", "apks": {}}
+    for apk in _apk_out(project, "app"):
+        # .../outputs/apk/<flavor>/release/app-<flavor>-arm64-v8a-release.apk
+        flavor = apk.parts[-3].lower()
+        for fixture in fixtures:
+            if flavor_for_fixture(fixture) == flavor:
+                dst = out_dir / f"{fixture}.apk"
+                dst.write_bytes(apk.read_bytes())
+                manifest["apks"][fixture] = {
+                    "path": str(dst),
+                    "apk_bytes": dst.stat().st_size,
+                }
+        if flavor == "suite":
+            dst = out_dir / "suite.apk"
+            dst.write_bytes(apk.read_bytes())
+            manifest["apks"]["suite"] = {
+                "path": str(dst),
+                "apk_bytes": dst.stat().st_size,
+            }
+    for module, key in (("macrobenchmark", "macrobenchmark_apks"),
+                        ("baselineprofile", "baselineprofile_apks")):
+        manifest["apks"][key] = [
+            {"path": str(p), "apk_bytes": p.stat().st_size}
+            for p in _apk_out(project, module)
+        ]
+    manifest["baseline_profiles_propagated"] = propagated
+    (out_dir / "artifacts.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+    print(
+        f"built {len(manifest['apks'])} artifacts -> {out_dir} "
+        f"(profiles propagated to {propagated} variants)"
+    )
+    return 0
+
+
+def cmd_verify_profile(args: argparse.Namespace) -> int:
+    """Verify the baseline profile is installed and applied.
+
+    Checks the package's dexopt state for the speed-profile compilation the
+    benchmarks require (CompilationMode.Partial(BaselineProfileMode.Require)
+    fails the benchmark when the profile is absent; this check makes the
+    requirement visible before a campaign round).
+    """
+    serial = args.serial or metrics.detect_serial()
+    pkg = package_for_fixture(args.fixture)
+    dexopt = metrics.adb_out(
+        serial, "shell", "dumpsys", "package", "dexopt"
+    ).decode("utf-8", "replace")
+    block = ""
+    lines = dexopt.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == pkg or line.strip().startswith(pkg + ":"):
+            block = "\n".join(lines[i : i + 8])
+            break
+    status = "speed-profile" in block
+    result = {
+        "package": pkg,
+        "dexopt_block": block,
+        "speed_profile_applied": status,
+    }
+    print(json.dumps(result, indent=2))
+    return 0 if status else 1
+
+
+def cmd_instrument(args: argparse.Namespace) -> int:
+    """Run one macrobenchmark test class against a fixture on the device.
+
+    Example:
+      run.py instrument --fixture list \\
+          --class StartupBenchmark --extra-arg iterations=30
+    """
+    serial = args.serial or metrics.detect_serial()
+    test_pkg = "dev.waterui.android.macrobenchmark.test"
+    instr_args = {
+        "fixture": args.fixture,
+        "class": (
+            "dev.waterui.android.macrobenchmark." + args.klass
+        ),
+        **dict(a.split("=", 1) for a in (args.extra_arg or [])),
+    }
+    cmd = ["am", "instrument", "-w"]
+    for k, v in instr_args.items():
+        cmd += ["-e", k, str(v)]
+    cmd.append(f"{test_pkg}/androidx.test.runner.AndroidJUnitRunner")
+    out = metrics.adb_out(serial, "shell", *cmd).decode("utf-8", "replace")
+    print(out)
+    # Pull the benchmark result payloads the test wrote to device media.
+    media_dir = Path(args.out) / "benchmark-results"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "adb", "-s", serial, "pull",
+            f"/sdcard/Android/media/{test_pkg}",
+            str(media_dir),
+        ],
+        capture_output=True,
+    )
+    print(f"results pulled -> {media_dir}")
+    return 0
+
+
 def cmd_check_inventory(args: argparse.Namespace) -> int:
     """Landing check: the inventory matches android-backend's CI exactly.
 
@@ -250,13 +488,13 @@ def cmd_check_inventory(args: argparse.Namespace) -> int:
         / "reference"
         / "app"
         / "src"
-        / "main"
+        / "suite"
         / "java"
         / "dev"
         / "waterui"
         / "android"
         / "reference"
-        / "Twins.kt"
+        / "SuiteDispatch.kt"
     ).read_text()
 
     errors: list[str] = []
@@ -292,9 +530,14 @@ def cmd_check_inventory(args: argparse.Namespace) -> int:
         line = line.strip()
         if line.startswith('"') and 'Twin()' in line:
             twins_in_source.add(line.split('"')[1])
+    # Suite-only coverage screens that are not frozen-inventory fixtures
+    # (the editing suite and the 1,000-row stress case) are dispatched
+    # through the same when-mapping but carry no fixture entry.
+    twins_in_source -= {"editing", "list-stress"}
     if registered != twins_in_source:
         errors.append(
-            f"twin set {sorted(registered)} != Twins.kt {sorted(twins_in_source)}"
+            f"twin set {sorted(registered)} != SuiteDispatch.kt "
+            f"{sorted(twins_in_source)}"
         )
     unfinished = suite.get("unfinished", {}).get("compose_twins", {})
     listed = set(
@@ -349,6 +592,44 @@ def main() -> int:
     check.add_argument("--waterui", required=True,
                        help="waterui checkout at the locked revision")
     check.set_defaults(func=cmd_check_inventory)
+
+    lock = sub.add_parser(
+        "lock-campaign",
+        help="resolve and freeze the stable Compose BOM for a campaign",
+    )
+    lock.add_argument("--refresh", action="store_true",
+                      help="re-lock even when a campaign lock already exists")
+    lock.set_defaults(func=cmd_lock_campaign)
+
+    build = sub.add_parser(
+        "build",
+        help="build every release APK (per-fixture variants + suite + tests)",
+    )
+    build.add_argument("--suite", default=str(BENCH_DIR / "suite.toml"))
+    build.add_argument("--out", default=str(BENCH_DIR / "out" / "apks"))
+    build.set_defaults(func=cmd_build)
+
+    verify = sub.add_parser(
+        "verify-profile",
+        help="check the installed package applied its baseline profile",
+    )
+    verify.add_argument("--fixture", required=True)
+    verify.add_argument("--serial", default=None)
+    verify.set_defaults(func=cmd_verify_profile)
+
+    instr = sub.add_parser(
+        "instrument",
+        help="run a macrobenchmark test class for a fixture on the device",
+    )
+    instr.add_argument("--fixture", required=True)
+    instr.add_argument("--class", dest="klass", required=True,
+                       help="test class, e.g. StartupBenchmark, "
+                            "FrameBenchmark, EnergyBenchmark")
+    instr.add_argument("--serial", default=None)
+    instr.add_argument("--extra-arg", action="append", default=None,
+                       help="extra instrumentation args, key=value")
+    instr.add_argument("--out", default=str(BENCH_DIR / "out"))
+    instr.set_defaults(func=cmd_instrument)
 
     args = parser.parse_args()
     return args.func(args)

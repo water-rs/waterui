@@ -322,6 +322,9 @@ pub fn navigation_view_accessibility(
         if let Some(label) = bar_label {
             bar_node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            bar_node.set_value(value);
+        }
         let mut title_node =
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
                 env,
@@ -577,15 +580,16 @@ pub fn render_navigation_view_parts(
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_navigation_bar(&mut draw, bar_rect, &bar_color);
-            let separator = kurbo::Rect::new(
-                bar_rect.x0,
-                (bar_rect.y1 - 1.0).max(bar_rect.y0),
-                bar_rect.x1,
-                bar_rect.y1,
-            );
-            theme.draw_navigation_bar_separator(&mut draw, separator);
+            ctx.draw_context(|draw| {
+                theme.draw_navigation_bar(&mut *draw, bar_rect, &bar_color);
+                let separator = kurbo::Rect::new(
+                    bar_rect.x0,
+                    (bar_rect.y1 - 1.0).max(bar_rect.y0),
+                    bar_rect.x1,
+                    bar_rect.y1,
+                );
+                theme.draw_navigation_bar_separator(&mut *draw, separator);
+            });
         }
 
         let (leading_size, trailing_size) = {
@@ -741,8 +745,9 @@ pub fn render_navigation_view_parts(
         let bar_color = Paint::Solid(ctx.renderer_mut().read_signal(&color_signal));
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_navigation_bar(&mut draw, bottom_rect, &bar_color);
+            ctx.draw_context(|draw| {
+                theme.draw_navigation_bar(&mut *draw, bottom_rect, &bar_color);
+            });
         }
         flush_toolbar_group(
             ctx,
@@ -1504,8 +1509,9 @@ fn render_compact_split(
         let back_rect = navigation_back_button_rect(bounds, ctx.theme().navigation_metrics());
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_navigation_back_button(&mut draw, back_rect);
+            ctx.draw_context(|draw| {
+                theme.draw_navigation_back_button(&mut *draw, back_rect);
+            });
         }
         let hit_transform = ctx.hit_transform;
         ctx.renderer_mut().register_pointer_target(
@@ -1720,11 +1726,12 @@ fn render_navigation_page_scene(
         );
         {
             let theme = renderer.theme();
-            let mut draw = renderer.draw_context(context);
-            theme.draw_navigation_back_button(
-                &mut draw,
-                navigation_back_button_rect(bounds, theme.navigation_metrics()),
-            );
+            renderer.draw_context(context, |draw| {
+                theme.draw_navigation_back_button(
+                    draw,
+                    navigation_back_button_rect(bounds, theme.navigation_metrics()),
+                );
+            });
         }
         core::mem::swap(renderer.scene_mut(), &mut scene);
     }

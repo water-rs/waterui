@@ -92,7 +92,11 @@ pub fn date_picker_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
-        node.set_value(value);
+        // The formatted date is the default value; an explicit `.a11y_value`
+        // wins the same way `.a11y_label` wins the name.
+        if let Some(value) = renderer.resolve_accessibility_value(env, Some(value)) {
+            node.set_value(value);
+        }
         node.add_action(AccessibilityAction::Focus);
         if disabled {
             node.set_disabled();
@@ -281,10 +285,11 @@ pub fn render_date_picker_parts(
             .bind_interaction_target(interaction_key, hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_bounds, interaction);
-        theme.draw_picker_indicator(&mut draw, field_bounds);
-        theme.draw_picker_state_layer(&mut draw, field_bounds, interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_bounds, interaction);
+            theme.draw_picker_indicator(&mut *draw, field_bounds);
+            theme.draw_picker_state_layer(&mut *draw, field_bounds, interaction);
+        });
     }
     let text_bounds = inset_rect(
         field_bounds,

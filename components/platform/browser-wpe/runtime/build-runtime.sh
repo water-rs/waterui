@@ -27,10 +27,10 @@ maximum_glibc="$(configuration_value maximum_glibc)"
 minimum_gcc="$(configuration_value minimum_gcc)"
 smoke_timeout_seconds="$(configuration_value smoke_timeout_seconds)"
 # The runtime this script builds must be the version the `water` CLI
-# downloads; that expectation lives in the CLI's own repository now.
+# downloads; that expectation lives in the in-tree CLI's manifest.
 cli_wpe_version="$(
     curl --fail --location --retry 3 \
-        https://raw.githubusercontent.com/water-rs/cli/dev/src/browser_runtime.toml \
+        https://raw.githubusercontent.com/water-rs/waterui/dev/cli/src/browser_runtime.toml \
         | sed -n 's/^wpe_version = "\([^"]*\)"$/\1/p'
 )"
 

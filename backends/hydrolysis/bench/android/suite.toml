@@ -84,14 +84,14 @@ source = "examples/animation"
 package = "com.waterui.animation_example"
 mode = "smoke"
 reason = "continuous animation never reaches a settled frame"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.filter]
 source = "examples/filter"
 package = "com.waterui.example.filter"
 mode = "smoke"
 reason = "GPU-rendered filter effects; the repository boundary contract requires visual verification and forbids pixel-exact golden comparison"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.gallery]
 source = "examples/gallery"
@@ -99,14 +99,14 @@ package = "com.waterui.example.gallery"
 mode = "smoke"
 reason = "loads remote images over the network"
 role = "dogfood"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.gradient]
 source = "examples/gradient"
 package = "com.waterui.gradient_example"
 mode = "smoke"
 reason = "animated mesh gradient never reaches a settled frame"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.map]
 source = "examples/map"
@@ -114,14 +114,14 @@ package = "com.waterui.example.map"
 mode = "smoke"
 reason = "SwiftShader kills the wgpu device roughly every 35s; water-rs/waterui#914 rebuilds the runtime on loss, so this verifies survival, not pixels. Tile fetch plus a loss-recovery cycle needs well over the default window"
 settle_timeout_seconds = 120
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.multi_window]
 source = "examples/multi_window"
 package = "com.waterui.example.multi_window"
 mode = "smoke"
 reason = "secondary windows need windowing the single-display emulator lacks"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.reminders]
 source = "examples/reminders"
@@ -129,7 +129,7 @@ package = "dev.waterui.reminders"
 mode = "smoke"
 reason = "may raise a runtime permission prompt over the content"
 role = "dogfood"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.reply]
 source = "examples/reply"
@@ -137,14 +137,14 @@ package = "cool.lexo.reply"
 mode = "smoke"
 reason = "avatars and message photos load over the network from a remote repository, so a settled frame may or may not contain them"
 role = "dogfood"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.starfield]
 source = "examples/starfield"
 package = "com.waterui.example.star"
 mode = "smoke"
 reason = "continuous GPU animation"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.stress]
 source = "examples/stress"
@@ -153,28 +153,28 @@ mode = "smoke"
 reason = "stress drivers mutate state on timers; counts scaled to emulator capacity (android-backend#86)"
 role = "stress"
 env = { WATERUI_STRESS_SYSTEM_COUNT = "18", WATERUI_STRESS_CUSTOM_COUNT = "14", WATERUI_STRESS_FILTER_COUNT = "12" }
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.video_player]
 source = "examples/video_player"
 package = "com.waterui.video_player_example"
 mode = "smoke"
 reason = "video playback never reaches a settled frame"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.waterkit_camera_filters]
 source = "examples/waterkit_camera_filters"
 package = "com.waterui.example.waterkit_camera_filters"
 mode = "smoke"
 reason = "camera preview stream never reaches a settled frame"
-compose_twin = "missing"
+compose_twin = "registered"
 
 [fixtures.webview]
 source = "examples/webview"
 package = "com.waterui.example.webview"
 mode = "smoke"
 reason = "remote page loads asynchronously over the network"
-compose_twin = "missing"
+compose_twin = "registered"
 
 # ---------------------------------------------------------------------------
 # verify — default-policy entries: settle, then pixel-compare against the
@@ -192,42 +192,54 @@ source = "examples/anchored_overlay"
 package = "com.waterui.anchored_overlay_example"
 mode = "verify"
 golden = "none"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.drag_drop]
 source = "examples/drag_drop"
 package = "com.waterui.example.drop_and_drop"
 mode = "verify"
 golden = "reference/goldens/drag_drop.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.edge_layout]
 source = "examples/edge_layout"
 package = "dev.waterui.edge_layout"
 mode = "verify"
 golden = "reference/goldens/edge_layout.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.edge_list]
 source = "examples/edge_list"
 package = "dev.waterui.edge_list"
 mode = "verify"
 golden = "reference/goldens/edge_list.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.edge_text]
 source = "examples/edge_text"
 package = "dev.waterui.edge_text"
 mode = "verify"
 golden = "reference/goldens/edge_text.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.flow_markdown]
 source = "examples/flow_markdown"
 package = "dev.waterui.examples.flow_markdown"
 mode = "verify"
 golden = "reference/goldens/flow_markdown.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.form]
 source = "examples/form"
@@ -261,7 +273,9 @@ source = "examples/icons"
 package = "com.waterui.example.icons"
 mode = "verify"
 golden = "reference/goldens/icons.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.list]
 source = "examples/list"
@@ -277,21 +291,27 @@ source = "examples/locale"
 package = "com.waterui.example.locale"
 mode = "verify"
 golden = "reference/goldens/locale.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.markdown]
 source = "examples/markdown"
 package = "com.waterui.example.markdown"
 mode = "verify"
 golden = "reference/goldens/markdown.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.media_picker]
 source = "examples/media_picker"
 package = "com.waterui.media_picker_example"
 mode = "verify"
 golden = "reference/goldens/media_picker.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.menu]
 source = "examples/menu"
@@ -307,7 +327,9 @@ source = "examples/navigation"
 package = "dev.waterui.navigation"
 mode = "verify"
 golden = "reference/goldens/navigation.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.picker]
 source = "examples/picker"
@@ -323,14 +345,18 @@ source = "examples/shape"
 package = "com.waterui.example.shape"
 mode = "verify"
 golden = "reference/goldens/shape.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.snackbar]
 source = "examples/snackbar"
 package = "com.waterui.snackbar_example"
 mode = "verify"
 golden = "reference/goldens/snackbar.png"
-compose_twin = "missing"
+compose_twin = "registered"
+parity_budget = 0.02
+parity_budget_source = "default"
 
 [fixtures.typography-rtl]
 source = "examples/typography-rtl"
@@ -383,17 +409,9 @@ status = "no fixture: examples/particle is absent at the pinned waterui revision
 
 [unfinished.compose_twins]
 # verify-mode fixtures missing a twin (twin + parity budget required):
-verify = [
-    "anchored_overlay", "drag_drop", "edge_layout", "edge_list", "edge_text",
-    "flow_markdown", "icons", "locale", "markdown", "media_picker",
-    "navigation", "shape", "snackbar",
-]
+verify = []
 # smoke-mode fixtures missing a twin (matching actions still required):
-smoke = [
-    "animation", "filter", "gallery", "gradient", "map", "multi_window",
-    "reminders", "reply", "starfield", "stress", "video_player",
-    "waterkit_camera_filters", "webview",
-]
+smoke = []
 # skip-mode fixtures: their missing twins are recorded but blocked — the
 # fixture itself has no Android realization, so twin work cannot run.
 skip = ["chromium", "webview-cef"]

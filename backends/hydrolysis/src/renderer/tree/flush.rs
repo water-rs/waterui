@@ -402,6 +402,8 @@ impl RenderNode {
                             presentation: crate::renderer::retained::PresentationId::ORDINARY,
                         },
                         content: Rc::clone(&node.content),
+                        invalidator: Rc::clone(&node.invalidator),
+                        association: Rc::clone(&node.association),
                         transform: ctx.transform,
                         bounds: ctx.bounds,
                         active_layers: renderer.compositor.active_scene_layers.clone(),

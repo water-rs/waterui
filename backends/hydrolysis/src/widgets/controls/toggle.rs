@@ -87,6 +87,9 @@ pub fn toggle_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         let checked = renderer.read_signal(&toggle.toggle);
         node.set_toggled(AccessibilityToggled::from(checked));
         node.add_action(AccessibilityAction::Focus);
@@ -228,18 +231,17 @@ pub fn render_toggle_parts(
     );
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        match style {
+        ctx.draw_context(|draw| match style {
             ToggleStyle::Automatic | ToggleStyle::Switch => {
                 theme.draw_toggle_switch(
-                    &mut draw,
+                    &mut *draw,
                     control_bounds,
                     thumb_progress,
                     selected,
                     interaction,
                 );
                 theme.draw_toggle_switch_state_layer(
-                    &mut draw,
+                    &mut *draw,
                     control_bounds,
                     thumb_progress,
                     selected,
@@ -247,16 +249,16 @@ pub fn render_toggle_parts(
                 );
             }
             ToggleStyle::Checkbox => {
-                theme.draw_toggle_checkbox(&mut draw, control_bounds, thumb_progress, interaction);
+                theme.draw_toggle_checkbox(&mut *draw, control_bounds, thumb_progress, interaction);
                 theme.draw_toggle_checkbox_state_layer(
-                    &mut draw,
+                    &mut *draw,
                     control_bounds,
                     thumb_progress,
                     interaction,
                 );
             }
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
-        }
+        });
     }
     // A disabled toggle registers no tap target: the pointer neither presses
     // nor toggles it. Targets are re-registered every flush, so re-enabling

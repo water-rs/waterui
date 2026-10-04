@@ -9,6 +9,17 @@ rustflags = ["-Clinker-flavor=lld-link"]
 # bindgen synthesizes.
 [env]
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim = "-target arm64-apple-ios-simulator"
+# Cherenkov's native Apple contract (graphics/cherenkov/docs/api.md) requires
+# OS 26 APIs.
+MACOSX_DEPLOYMENT_TARGET = "26.0"
+IPHONEOS_DEPLOYMENT_TARGET = "26.0"
+
+# Android 15+ kernels run with 16 KB pages; every aarch64 ELF the cherenkov
+# family ships or runs over adb (the planes libraries, cherenkov-bench, and
+# the vulkan_external_android test binary) must have 16 KB-aligned LOAD
+# segments or the loader refuses it with "ELF alignment check failed".
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 
 # `cargo test --target aarch64-apple-ios-sim` and `cargo nextest run
 # --target aarch64-apple-ios-sim` hand each built test binary to this

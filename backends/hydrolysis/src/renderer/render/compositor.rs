@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2_web_kit::WKWebView;
 use rustc_hash::FxHashSet;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 #[derive(Default)]
 pub struct Compositor {
@@ -65,6 +65,13 @@ pub struct SceneContentLayer {
     /// The node-owned content — shared so the compositor can borrow it while
     /// the render tree still owns it.
     pub(crate) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
+    /// The semantic invalidator the node installed at build — re-installed
+    /// after a `rebuild_for_engine` clears engine-bound hooks.
+    pub(crate) invalidator: waterui_graphics::SceneInvalidator,
+    /// The engine resource-table identity the content last recorded against:
+    /// `None` before its first mount, a `Weak` that expires with the pooled
+    /// engine's table. Shared with the owning node's other layer clones.
+    pub(crate) association: Rc<RefCell<Option<Weak<crate::renderer::recording::SceneResources>>>>,
     /// Placement transform mapping `bounds` into scene space.
     pub(crate) transform: kurbo::Affine,
     /// The content's rect in scene space; `build_scene` draws inside it.
@@ -321,14 +328,14 @@ struct FrameInstall<'a> {
     surface: &'a cherenkov::Surface<cherenkov_gpu::Gpu>,
     /// The window's persistent mount table.
     mounts: &'a mut crate::renderer::retained::Mounts,
-    /// The frame's shared engine, for `gpu_content` handles and filter
-    /// registration.
+    /// The frame's shared engine, for `gpu_producer`/`frame_producer` pairs
+    /// and filter registration.
     engine: &'a Rc<crate::engine::GpuEngine>,
     /// The renderer's frame filter telemetry, handed to every `EngineEffect`
     /// this frame registers.
     metrics: &'a std::sync::Arc<crate::renderer::effects::AppliedFilterMetrics>,
     /// The engine's shared resource table — the `build_scene` argument.
-    resources: &'a crate::renderer::recording::SceneResources,
+    resources: &'a Rc<crate::renderer::recording::SceneResources>,
     /// The host's display-link wake, installed on `GpuContent` producers and
     /// external-frame streams.
     wake: Option<RedrawHandle>,
@@ -373,9 +380,13 @@ impl FrameInstall<'_> {
                     order.push(slot);
                     let layer = slot_layer(self.mounts, self.surface, scope, slot);
                     if self.rasterize {
-                        let (content, held) = recording.to_content(self.resources);
-                        tx[layer].content(content);
-                        self.mounts.set_held(scope.parent_key(), slot, held);
+                        let resources = self.resources.as_ref();
+                        let mut held = None;
+                        tx[layer].record(|recorder| {
+                            held = Some(recording.record_on(recorder, resources));
+                        });
+                        self.mounts
+                            .set_held(scope.parent_key(), slot, held.expect("record ran"));
                         self.installs += 1;
                     }
                 }
@@ -389,6 +400,24 @@ impl FrameInstall<'_> {
                         .set_ancestry(self.surface, tx, layer.key, &scopes);
                     let target = slot_layer(self.mounts, self.surface, scope, slot);
                     let content = Rc::clone(&layer.content);
+                    // The retained content records only against the engine
+                    // table it is associated with: an expired or replaced
+                    // table forces `rebuild_for_engine` before any naming;
+                    // a freshly constructed content records its identity
+                    // without a reset, and the same table re-records freely.
+                    let stale = match layer.association.borrow().as_ref() {
+                        Some(weak) => match weak.upgrade() {
+                            Some(table) => !Rc::ptr_eq(&table, self.resources),
+                            None => true,
+                        },
+                        None => false,
+                    };
+                    if stale {
+                        let mut content = content.borrow_mut();
+                        content.rebuild_for_engine();
+                        content.set_invalidator(Some(Rc::clone(&layer.invalidator)));
+                    }
+                    *layer.association.borrow_mut() = Some(Rc::downgrade(self.resources));
                     let mut names = self.resources.waterui().recording();
                     let needs_redraw = &mut self.needs_redraw;
                     #[allow(clippy::cast_possible_truncation)]
@@ -436,7 +465,10 @@ impl FrameInstall<'_> {
                                     wake.request_redraw();
                                 }
                             });
-                            tx[target].content(self.engine.gpu_content(pixels, content));
+                            let producer = self.engine.gpu_producer(content);
+                            tx[target].content(producer.at(pixels));
+                            runtime.producer = Some(producer);
+                            runtime.bound_size = Some(pixels);
                             runtime.installed = true;
                             self.installs += 1;
                         }
@@ -444,7 +476,12 @@ impl FrameInstall<'_> {
                         // producers flush their staged work here before the
                         // engine renders the layer.
                         runtime.view.frame();
-                        tx[target].gpu_content_size(pixels);
+                        if runtime.bound_size != Some(pixels) {
+                            if let Some(producer) = &runtime.producer {
+                                tx[target].content(producer.at(pixels));
+                            }
+                            runtime.bound_size = Some(pixels);
+                        }
                     }
                     tx[target].transform(gpu_frame_transform(
                         layer.transform,
@@ -469,6 +506,9 @@ impl FrameInstall<'_> {
                                 .wake
                                 .clone()
                                 .unwrap_or_else(|| RedrawHandle::new(|| {}));
+                            let (producer, sink) = self.engine.frame_producer();
+                            runtime.producer = Some(producer);
+                            runtime.sink = Some(sink);
                             runtime.receiver =
                                 Some(runtime.view.stream().start(self.device, self.queue, redraw));
                             self.installs += 1;
@@ -481,8 +521,17 @@ impl FrameInstall<'_> {
                             .as_ref()
                             .and_then(waterui_graphics::gpu::FrameReceiver::take)
                         {
-                            runtime.frame_pixels = Some(external_frame_plane_size(&frame));
-                            tx[target].content(self.engine.external_frame(frame));
+                            let pixels = external_frame_plane_size(&frame);
+                            runtime.frame_pixels = Some(pixels);
+                            if let Some(sink) = &runtime.sink {
+                                sink.submit(frame);
+                            }
+                            if runtime.bound_size != Some(pixels) {
+                                if let Some(producer) = &runtime.producer {
+                                    tx[target].content(producer.at(pixels));
+                                }
+                                runtime.bound_size = Some(pixels);
+                            }
                         }
                         if let Some(pixels) = runtime.frame_pixels {
                             tx[target].transform(gpu_frame_transform(
@@ -747,7 +796,7 @@ impl HydrolysisRenderer {
         // host's display-link wake the engine's redraw callback drives.
         let host_wake = self.host_redraw_handle.clone();
         let engine_wake = host_wake.clone();
-        let engine = crate::engine::engine_await!(crate::engine::shared_engine(
+        let state = crate::engine::engine_await!(crate::engine::shared_engine_state(
             target.gpu_context_id,
             target.adapter,
             target.shared_device.clone(),
@@ -777,7 +826,7 @@ impl HydrolysisRenderer {
                 std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
                     crate::engine::engine_await!(CherenkovWindow::new(
-                        engine.clone(),
+                        Rc::clone(&state),
                         target.device,
                         backend,
                         (target.width, target.height),
@@ -787,7 +836,7 @@ impl HydrolysisRenderer {
             }
         } else {
             transient_window.insert(crate::engine::engine_await!(CherenkovWindow::new(
-                engine.clone(),
+                Rc::clone(&state),
                 target.device,
                 backend,
                 (target.width, target.height),
@@ -808,9 +857,9 @@ impl HydrolysisRenderer {
         let mut install = FrameInstall {
             surface: window.surface.engine_surface(),
             mounts: &mut window.mounts,
-            engine: &engine,
+            engine: &state.engine,
             metrics: &self.applied_filter_metrics,
-            resources: &window.resources,
+            resources: &window.state.resources,
             wake: host_wake,
             device: target.device,
             queue: target.queue,
@@ -828,11 +877,15 @@ impl HydrolysisRenderer {
                     install.surface,
                     crate::renderer::retained::MountSlot::Overlay,
                 );
-                let (content, held) = recording.to_content(install.resources);
-                tx[overlay].content(content);
-                install
-                    .mounts
-                    .set_held(None, crate::renderer::retained::MountSlot::Overlay, held);
+                let mut held = None;
+                tx[overlay].record(|recorder| {
+                    held = Some(recording.record_on(recorder, install.resources.as_ref()));
+                });
+                install.mounts.set_held(
+                    None,
+                    crate::renderer::retained::MountSlot::Overlay,
+                    held.expect("record ran"),
+                );
             }
             install
                 .mounts
@@ -850,7 +903,7 @@ impl HydrolysisRenderer {
         let (created, removed) = window.mounts.take_frame_stats();
         self.state.counters.layer_creations += created;
         self.state.counters.layer_removals += removed;
-        let (fonts, images) = window.resources.take_registration_stats();
+        let (fonts, images) = window.state.resources.take_registration_stats();
         self.state.counters.font_registrations += fonts;
         self.state.counters.image_registrations += images;
 
@@ -893,7 +946,10 @@ impl HydrolysisRenderer {
 pub struct CherenkovWindow {
     pub surface: crate::engine::CherenkovSurface,
     pub(crate) mounts: crate::renderer::retained::Mounts,
-    pub(crate) resources: crate::renderer::recording::SceneResources,
+    /// The pooled engine state — its `Rc<SceneResources>` is the ONE
+    /// registration table every mount on this context's engine shares;
+    /// keeping the state here pins that table for the window's lifetime.
+    pub(crate) state: Rc<crate::engine::SharedEngineState>,
     /// The device-loss token taken when this window's context was opened; a
     /// dead token prunes the entry so a recovered context gets a fresh mount
     /// set instead of reusing a surface on a dead device.
@@ -903,18 +959,21 @@ pub struct CherenkovWindow {
 crate::engine::cfg_async_fn! {
     impl CherenkovWindow {
         pub(crate) fn new(
-            engine: Rc<crate::engine::GpuEngine>,
+            state: Rc<crate::engine::SharedEngineState>,
             device: &wgpu::Device,
             backend: wgpu::Backend,
             size: (u32, u32),
             device_loss: crate::platform::DeviceLoss,
         ) -> Self {
             Self {
-                surface: crate::engine::engine_await!(
-                    crate::engine::CherenkovSurface::new(engine.clone(), device, backend, size)
-                ),
+                surface: crate::engine::engine_await!(crate::engine::CherenkovSurface::new(
+                    Rc::clone(&state.engine),
+                    device,
+                    backend,
+                    size,
+                )),
                 mounts: crate::renderer::retained::Mounts::new(),
-                resources: crate::renderer::recording::SceneResources::new(engine),
+                state,
                 device_loss,
             }
         }

@@ -1189,6 +1189,9 @@ impl HydrolysisRenderer {
             // `Focus(true)`/`Focus(false)` sink transition.
             self.set_keyboard_focus(Some(target.interaction_key.clone()), false);
             self.set_focused_text_input(None);
+            if button == PointerButton::Primary {
+                self.text_editing.note_activation();
+            }
             target.sink.pointer_move(local_position);
             // A secondary press still focuses the surface, but a context menu
             // enclosing it claims the button: the menu's actions act on the
@@ -1264,6 +1267,7 @@ impl HydrolysisRenderer {
             if let Some(index) = focused {
                 match button {
                     PointerButton::Primary => {
+                        self.text_editing.note_activation();
                         let click_count = self.next_text_selection_click_count(index, point, at);
                         if let Some((anchor, focus, gesture_changed)) =
                             self.apply_text_selection_click_gesture(index, point, click_count)
@@ -3038,6 +3042,20 @@ impl SemanticCore {
             Rc::new(RefCell::new(action)),
             self.render_depth,
         );
+    }
+
+    /// Computes a platform-view leaf's placement in window hit-test space:
+    /// the leaf's rect clipped to the open hit clips (a scrolled-off child
+    /// keeps only its remaining slice) plus the hit-test order claimed on its
+    /// behalf — the same order every interactive target uses, which is what
+    /// makes "placed later" mean "stacked above" for the host.
+    ///
+    /// Returns `(clipped bounds, order)`; an empty clipped rect means the leaf
+    /// is fully clipped away.
+    pub(crate) fn platform_view_placement(&mut self, bounds: kurbo::Rect) -> (kurbo::Rect, usize) {
+        let clipped = self.hit_test.clip_hit_bounds(bounds);
+        let order = self.hit_test.next_hit_test_order();
+        (clipped, order)
     }
 
     /// Records a native subview that the host platform hit-tests for itself, so

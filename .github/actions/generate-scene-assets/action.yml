@@ -1,0 +1,36 @@
+name: Generate the Cherenkov scene tree
+description: >
+  Writes graphics/cherenkov/scenes/{fonts,corpus,perf}, which the
+  repository deliberately does not store: the OFL font subsets the
+  engine's test targets `include_bytes!`, and the corpus/perf scenes the
+  corpus renders and bench tests read. One command generates the whole
+  tree deterministically — the same bytes on every host — from the
+  pinned, sha256-verified upstream fonts in
+  `scenes/fonts/tools/fetch-fonts.py` (this is the same contract the
+  cherenkov repository's own CI ran under `scenes: generate`).
+
+runs:
+  using: composite
+  steps:
+    # The full upstream fonts are the only network input: they are pinned
+    # by URL + sha256 in fetch-fonts.py, so one cache entry per tool
+    # revision is exact — it can never go stale, and it saves the fetch of
+    # ~150 MB on every job that generates the tree. OS-independent key:
+    # the files are pure data every platform's leg reads.
+    - name: Restore fetched fonts
+      uses: actions/cache@v4
+      with:
+        path: graphics/cherenkov/scenes/fonts/_full
+        key: cherenkov-fonts-${{ hashFiles('graphics/cherenkov/scenes/fonts/tools/fetch-fonts.py') }}
+    # The pinned font tools need Python >= 3.10 in a writable
+    # environment; uv supplies it (runner Pythons may be externally
+    # managed). `uv run --with-requirements` installs the exact
+    # requirements.txt the cherenkov repository pinned.
+    - uses: astral-sh/setup-uv@v10.2.0
+    - name: Generate the scene tree
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd graphics/cherenkov
+        uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt \
+          python scenes/tools/generate.py

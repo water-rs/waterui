@@ -17,7 +17,7 @@ use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
 use waterui_form::secure::SecureFieldConfig;
-use waterui_text::styled::StyledStr;
+use waterui_text::styled::{Style, StyledStr};
 
 /// The retained render state of a text field: the cloneable [`ResolvedTextFieldConfig`]
 /// drives the input model + accessibility, and its floating label is held as a
@@ -258,7 +258,12 @@ pub fn render_text_field_parts(
         if !prompt.is_empty() {
             node.set_placeholder(prompt);
         }
-        if !value.is_empty() {
+        // The field's own text is the default value; an explicit
+        // `.a11y_value` wins the same way `.a11y_label` wins the name.
+        if let Some(value) = ctx
+            .renderer_mut()
+            .resolve_accessibility_value(env, (!value.is_empty()).then_some(value))
+        {
             node.set_value(value);
         }
         if disabled {
@@ -293,9 +298,10 @@ pub fn render_text_field_parts(
     );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_rect, field_interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_rect, field_interaction);
+            theme.draw_input_field_state_layer(&mut *draw, field_rect, field_interaction);
+        });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();
@@ -398,8 +404,17 @@ pub fn render_text_field_parts(
     };
     let display_styled = if use_placeholder && !prompt_as_label {
         StyledStr::plain(display).foreground(theme.input_placeholder_color())
-    } else {
+    } else if preedit.is_empty() {
         StyledStr::plain(display)
+    } else {
+        // The pre-edit run carries the composing underline a native text
+        // field draws under the IME's composing span; the committed text
+        // either side of the splice stays plain.
+        let mut styled = StyledStr::empty();
+        styled.push_str(value[..selection_start].to_string());
+        styled.push(preedit.clone(), Style::new().underline());
+        styled.push_str(value[selection_end..].to_string());
+        styled
     };
     let effective_label_height = if prompt_as_label {
         input_metrics.label_height
@@ -536,6 +551,8 @@ pub fn render_text_field_parts(
                 text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
                 content_alpha,
                 layout: committed_layout,
+                display_text: committed_with_preedit,
+                display_layout,
                 purpose: TextInputPurpose::Normal,
                 model: input_model,
                 selection: selection_slot,
@@ -622,7 +639,12 @@ pub fn render_secure_field_parts(
         if let Some(label) = label {
             node.set_label(label);
         }
-        node.set_value("*".repeat(secure_len));
+        if let Some(value) = ctx
+            .renderer_mut()
+            .resolve_accessibility_value(env, Some("*".repeat(secure_len)))
+        {
+            node.set_value(value);
+        }
         if disabled {
             node.set_disabled();
         } else {
@@ -654,9 +676,10 @@ pub fn render_secure_field_parts(
     );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_rect, field_interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_rect, field_interaction);
+            theme.draw_input_field_state_layer(&mut *draw, field_rect, field_interaction);
+        });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();
@@ -720,7 +743,7 @@ pub fn render_secure_field_parts(
     let masked_display = StyledStr::plain(masked.clone());
     let committed_layout = HydrolysisRenderer::build_text_layout(
         ctx.state_mut(),
-        StyledStr::plain(masked),
+        StyledStr::plain(masked.clone()),
         HorizontalAlignment::Leading,
         env,
         Some(crate::num_cast::f64_as_f32(text_bounds.width())),
@@ -818,7 +841,9 @@ pub fn render_secure_field_parts(
                 text_bounds: transformed_rect(hit_transform, text_bounds),
                 text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
                 content_alpha,
-                layout: committed_layout,
+                layout: committed_layout.clone(),
+                display_text: masked.into(),
+                display_layout: committed_layout,
                 purpose: TextInputPurpose::Password,
                 model: input_model,
                 selection: selection_slot,
@@ -1059,6 +1084,10 @@ fn material_input_cursor_rect(
 /// keyboard events reaching the focused field edit against a live selection,
 /// and zero rects where the rendered path takes its layout's.
 #[cfg(feature = "accessibility")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the emission walks every text-field element in one ordered sequence; splitting it would obscure the node ordering"
+)]
 pub fn emit_text_field_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     state: &Rc<RefCell<TextFieldRenderState>>,
@@ -1134,7 +1163,7 @@ pub fn emit_text_field_accessibility(
         if !disabled {
             let layout = HydrolysisRenderer::build_text_layout(
                 renderer.state_mut(),
-                StyledStr::plain(value),
+                StyledStr::plain(value.clone()),
                 HorizontalAlignment::Leading,
                 env,
                 None,
@@ -1149,7 +1178,9 @@ pub fn emit_text_field_accessibility(
                 text_bounds: kurbo::Rect::ZERO,
                 text_clip_bounds: kurbo::Rect::ZERO,
                 content_alpha: 1.0,
-                layout,
+                layout: layout.clone(),
+                display_text: value.into(),
+                display_layout: layout,
                 purpose: TextInputPurpose::Normal,
                 model: TextInputModel::TextField {
                     value: value_binding.clone(),
@@ -1227,9 +1258,10 @@ pub fn emit_secure_field_accessibility(
             renderer.push_pending_text_input_accessibility_node(node_id);
         }
         if !disabled {
+            let masked = "*".repeat(secure_len);
             let layout = HydrolysisRenderer::build_text_layout(
                 renderer.state_mut(),
-                StyledStr::plain("*".repeat(secure_len)),
+                StyledStr::plain(masked.clone()),
                 HorizontalAlignment::Leading,
                 env,
                 None,
@@ -1244,7 +1276,9 @@ pub fn emit_secure_field_accessibility(
                 text_bounds: kurbo::Rect::ZERO,
                 text_clip_bounds: kurbo::Rect::ZERO,
                 content_alpha: 1.0,
-                layout,
+                layout: layout.clone(),
+                display_text: masked.into(),
+                display_layout: layout,
                 purpose: TextInputPurpose::Password,
                 model: TextInputModel::SecureField {
                     value: value_binding.clone(),

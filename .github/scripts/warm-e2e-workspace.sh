@@ -47,7 +47,6 @@ main() {
 
   sync_repo "${waterui_dir}" https://github.com/water-rs/waterui.git
   sync_repo "${repos_dir}/cocoa-ui" https://github.com/water-rs/cocoa-ui.git
-  sync_repo "${repos_dir}/cli" https://github.com/water-rs/cli.git
 
   # `water --version` does not expose the build commit, so there is nothing to
   # skip against — cargo install is incremental and a same-source install is
@@ -56,7 +55,7 @@ main() {
   # dependencies compile once per VM however many checkouts build them.
   export RUSTC_WRAPPER="${RUSTC_WRAPPER:-sccache}"
   export PATH="${HOME}/.cargo/bin:${PATH}"
-  cargo install --path "${repos_dir}/cli" --locked --force
+  cargo install --path "${waterui_dir}/cli" --locked --force
 
   local -a examples=("$@")
   if (( ${#examples[@]} == 0 )); then

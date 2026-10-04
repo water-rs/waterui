@@ -100,7 +100,11 @@ pub fn color_picker_accessibility(
                 AccessibilityNodeRole::Button,
             ));
         node.set_label(label);
-        node.set_value(value);
+        // The formatted color is the default value; an explicit `.a11y_value`
+        // wins the same way `.a11y_label` wins the name.
+        if let Some(value) = renderer.resolve_accessibility_value(env, Some(value)) {
+            node.set_value(value);
+        }
         node.add_action(AccessibilityAction::Focus);
         if disabled {
             node.set_disabled();
@@ -307,9 +311,10 @@ pub fn render_color_picker_parts(
             .bind_interaction_target(interaction_key, hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_bounds, interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_bounds, interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_bounds, interaction);
+            theme.draw_input_field_state_layer(&mut *draw, field_bounds, interaction);
+        });
     }
     let content_bounds = inset_rect(
         field_bounds,
@@ -329,17 +334,18 @@ pub fn render_color_picker_parts(
     let color = ctx.renderer_mut().read_signal(&value_binding);
     let swatch_color = color.resolve(env).snapshot();
     {
-        let mut draw = ctx.draw_context();
-        let swatch_shape = kurbo::RoundedRect::from_rect(swatch_rect, COLOR_SWATCH_RADIUS);
-        draw.fill(swatch_shape, swatch_color);
-        draw.stroke(
-            swatch_shape,
-            kurbo::Stroke::new(1.0),
-            Color::srgb(0, 0, 0)
-                .with_opacity(0.16)
-                .resolve(env)
-                .snapshot(),
-        );
+        ctx.draw_context(|draw| {
+            let swatch_shape = kurbo::RoundedRect::from_rect(swatch_rect, COLOR_SWATCH_RADIUS);
+            draw.fill(swatch_shape, swatch_color);
+            draw.stroke(
+                swatch_shape,
+                kurbo::Stroke::new(1.0),
+                Color::srgb(0, 0, 0)
+                    .with_opacity(0.16)
+                    .resolve(env)
+                    .snapshot(),
+            );
+        });
     }
 
     let text_bounds = Rect::new(

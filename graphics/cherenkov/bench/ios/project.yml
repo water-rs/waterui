@@ -1,0 +1,26 @@
+name: CherenkovBench
+options:
+  bundleIdPrefix: dev.cherenkov
+targets:
+  CherenkovBench:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cherenkov.bench
+        INFOPLIST_FILE: Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: CherenkovBench-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # `libcherenkov_bench.a` comes from cargo — build it first:
+        #   cargo build --release --target aarch64-apple-ios -p cherenkov-bench \
+        #     --features cherenkov,vello-hybrid,vello-classic,skia-metal
+        #   (for a simulator build, target aarch64-apple-ios-sim instead)
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": $(inherited) $(PROJECT_DIR)/../../target/aarch64-apple-ios/release
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": $(inherited) $(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release
+        # The Rust static archive carries no link info: the frameworks
+        # cherenkov-gpu's objc2 bindings need are named here.
+        OTHER_LDFLAGS: $(inherited) -lcherenkov_bench -lc++ -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework QuartzCore -framework Metal -framework IOSurface -framework CoreGraphics -framework Foundation

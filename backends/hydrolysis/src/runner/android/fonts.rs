@@ -26,7 +26,7 @@ fn is_font_file(path: &Path) -> bool {
     matches!(
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase())
+            .map(str::to_ascii_lowercase)
             .as_deref(),
         Some("ttf" | "otf" | "ttc" | "otc")
     )
@@ -52,7 +52,7 @@ fn scan_dir(root: &Path, out: &mut Vec<PathBuf>) {
 /// platform font directories, classified into the generic/script
 /// fallbacks. `system_fonts` stays off — `fontique` knows no Android
 /// source and would only double-register the same faces.
-pub(crate) fn android_fonts() -> parley::FontContext {
+pub fn android_fonts() -> parley::FontContext {
     let mut font_cx = parley::FontContext {
         collection: Collection::new(CollectionOptions {
             system_fonts: false,

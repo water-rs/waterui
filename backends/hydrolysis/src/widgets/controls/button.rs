@@ -153,6 +153,9 @@ pub fn button_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         node.add_action(AccessibilityAction::Focus);
         // A button under a `Selected` scope it owns announces the state.
         if renderer.control_selected(env, &crate::renderer::InteractionKey::for_rc(state, 0)) {
@@ -402,6 +405,9 @@ pub fn menu_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         node.add_action(AccessibilityAction::Focus);
         node.add_action(AccessibilityAction::Click);
         // Direct activation: show the popup under the trigger's own anchor. The
@@ -572,8 +578,9 @@ pub fn render_button_parts(
         }
     }
     if interaction_style.is_none() && floating_style.is_none() {
-        let mut draw = ctx.draw_context();
-        theme.draw_button_chrome(&mut draw, bounds, style, icon_only, interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_button_chrome(&mut *draw, bounds, style, icon_only, interaction);
+        });
     }
 
     let label_bounds = inset_rect(bounds, metrics.padding_x, metrics.padding_y);
@@ -649,31 +656,40 @@ pub fn render_button_parts(
                 &interaction_style,
                 interaction_flags,
             );
-            let mut draw = ctx.draw_context();
-            theme.draw_interaction_state_layer(&mut draw, layer_bounds, radii, color, interaction);
-            if let Some((ring_bounds, ring_radii, color, width)) = ring {
-                draw.stroke(
-                    kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
-                    kurbo::Stroke::new(width),
+            ctx.draw_context(|draw| {
+                theme.draw_interaction_state_layer(
+                    &mut *draw,
+                    layer_bounds,
+                    radii,
                     color,
+                    interaction,
                 );
-            }
+                if let Some((ring_bounds, ring_radii, color, width)) = ring {
+                    draw.stroke(
+                        kurbo::RoundedRect::from_rect(ring_bounds, ring_radii),
+                        kurbo::Stroke::new(width),
+                        color,
+                    );
+                }
+            });
         } else if let Some(floating_style) = floating_style {
             let color_signal = floating_style.state_layer_color.resolve(env);
             let color = ctx.renderer_mut().read_signal(&color_signal);
             let corner_radius =
                 bounds.width().min(bounds.height()) * f64::from(floating_style.clip_radius);
-            let mut draw = ctx.draw_context();
-            theme.draw_interaction_state_layer(
-                &mut draw,
-                bounds,
-                corner_radius.into(),
-                color,
-                interaction,
-            );
+            ctx.draw_context(|draw| {
+                theme.draw_interaction_state_layer(
+                    &mut *draw,
+                    bounds,
+                    corner_radius.into(),
+                    color,
+                    interaction,
+                );
+            });
         } else {
-            let mut draw = ctx.draw_context();
-            theme.draw_button_state_layer(&mut draw, bounds, style, icon_only, interaction);
+            ctx.draw_context(|draw| {
+                theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);
+            });
         }
     }
 
@@ -712,8 +728,9 @@ pub fn render_menu_parts(
             .bind_interaction_target(interaction_key, hit_bounds, env);
     let icon_only = state.borrow().icon_only;
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_button_chrome(&mut draw, bounds, style, icon_only, interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_button_chrome(&mut *draw, bounds, style, icon_only, interaction);
+        });
     }
 
     let metrics = button_metrics(
@@ -765,8 +782,9 @@ pub fn render_menu_parts(
     {
         // Hover/focus/press state layers over the menu trigger chrome.
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
-        let mut draw = ctx.draw_context();
-        theme.draw_button_state_layer(&mut draw, bounds, style, icon_only, interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);
+        });
     }
 
     let items = state.borrow().items.clone();

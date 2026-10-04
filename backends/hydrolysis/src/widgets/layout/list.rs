@@ -27,7 +27,7 @@ use waterui_core::handler::{BoxedAction, boxed_action};
 use waterui_core::id::{Id as RawId, SelfId};
 use waterui_core::interaction::Selected;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
-use waterui_core::views::{SharedAnyViews, ViewSnapshot, Views};
+use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_core::{Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
@@ -114,10 +114,11 @@ impl RowBinding {
 /// range from the anchor the last non-Shift write set (water-rs/waterui#1226).
 pub struct ListRowSelection {
     /// The erased selection `ListConfig` carries — keyed by the same row ids
-    /// `contents.get_id` reports.
+    /// the snapshot's `get_id` reports.
     selection: ListSelection<ListItemId>,
-    /// Row ids by index, resolved for Shift-range writes.
-    contents: SharedAnyViews<ListItem>,
+    /// The list's retained row snapshot — row ids by index, resolved for
+    /// Shift-range writes against the membership the list actually rendered.
+    snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
     /// The row a Shift range extends from — the last row written without
     /// Shift, or the list's first row when nothing has been written yet.
     anchor: Cell<Option<ListItemId>>,
@@ -129,13 +130,13 @@ impl ListRowSelection {
     /// behaviour — no row press target, no selected state.
     fn new(
         selection: &ListSelection<ListItemId>,
-        contents: SharedAnyViews<ListItem>,
+        snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
     ) -> Option<Rc<Self>> {
         match selection {
             ListSelection::None => None,
             _ => Some(Rc::new(Self {
                 selection: selection.clone(),
-                contents,
+                snapshot,
                 anchor: Cell::new(None),
             })),
         }
@@ -161,8 +162,10 @@ impl ListRowSelection {
     /// indices, so a range write resolves the anchor's position the same way
     /// the row loop does.
     fn index_of(&self, id: ListItemId) -> Option<usize> {
-        (0..nami::Signal::snapshot(&self.contents.len()))
-            .find(|index| self.contents.snapshot().get_id(*index) == Some(id))
+        let snapshot = self.snapshot.borrow().clone();
+        snapshot
+            .range()
+            .find(|index| snapshot.get_id(*index) == Some(id))
     }
 
     /// Writes a row interaction into the selection binding: plain selects the
@@ -186,9 +189,10 @@ impl ListRowSelection {
                 } else {
                     (index, anchor)
                 };
+                let snapshot = self.snapshot.borrow().clone();
                 selection.set(
                     (start..=end)
-                        .filter_map(|row| self.contents.snapshot().get_id(row))
+                        .filter_map(|row| snapshot.get_id(row))
                         .collect(),
                 );
             }
@@ -307,6 +311,11 @@ pub struct ListRenderState {
     /// The list's row-selection state shared by pointer, keyboard and
     /// accessibility input; `None` when the list is not selectable.
     row_selection: Option<Rc<ListRowSelection>>,
+    /// The immutable row set the membership watcher last applied. Section
+    /// resolution, anchor mapping, the virtual window, and row emission all
+    /// read this one membership — never the live collection while an older
+    /// event is still being reconciled.
+    rows_snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
 }
@@ -370,17 +379,24 @@ impl ListRenderState {
         let rows_dirty_for_watch = Rc::clone(&rows_dirty);
         let replaced_row_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_row_ids);
+        let rows_snapshot = Rc::new(RefCell::new(config.contents.snapshot()));
+        let snapshot_for_watch = Rc::clone(&rows_snapshot);
         let signals = renderer.frame_signals();
         let guard = config.contents.watch(.., move |ctx, change| {
             rows_dirty_for_watch.set(true);
+            // Each event hands over an immutable snapshot of the exact row set
+            // it reported — retained so every reader below works the same
+            // membership instead of the live collection.
+            let event_snapshot = ctx.into_value();
             crate::renderer::collect_replaced_ids(
-                ctx.value(),
+                &event_snapshot,
                 &change,
                 &mut replaced_for_watch.borrow_mut(),
             );
+            *snapshot_for_watch.borrow_mut() = event_snapshot;
             signals.request_refresh();
         });
-        let row_selection = ListRowSelection::new(&config.selection, config.contents.clone());
+        let row_selection = ListRowSelection::new(&config.selection, Rc::clone(&rows_snapshot));
         Self {
             config,
             row_selection,
@@ -402,6 +418,7 @@ impl ListRenderState {
             swipe_last_tick: Cell::new(None),
             sections: RefCell::new(Vec::new()),
             sections_resolved_for: Cell::new(None),
+            rows_snapshot,
             _guard: guard,
         }
     }
@@ -478,12 +495,13 @@ impl ListRenderState {
             return false;
         }
 
+        let snapshot = self.rows_snapshot.borrow().clone();
         let mut chrome = vec![RowSectionChrome::default(); len];
         // The footer of the section a row opens closes on the row before the
         // next marker, so each marker settles the *previous* section's footer.
         let mut open_section: Option<(usize, Option<Text>)> = None;
         for index in 0..len {
-            let item = materialize_list_item(&self.config.contents, index, env);
+            let item = materialize_list_item(&snapshot, index, env);
             let Some(section) = item.section else {
                 continue;
             };
@@ -537,15 +555,17 @@ impl ListRenderState {
                 if len == 0 {
                     return None;
                 }
+                // Anchor re-resolution reads the snapshot the last applied
+                // event carried — the same membership `prepare_rows` and the
+                // visible-window loop reconcile against.
+                let snapshot = self.rows_snapshot.borrow();
                 let index = if preserve_anchor_index {
                     anchor.index.min(len - 1)
-                } else if self.config.contents.snapshot().get_id(anchor.index) == Some(anchor.id) {
+                } else if snapshot.get_id(anchor.index) == Some(anchor.id) {
                     anchor.index
                 } else {
                     (0..len)
-                        .find(|index| {
-                            self.config.contents.snapshot().get_id(*index) == Some(anchor.id)
-                        })
+                        .find(|index| snapshot.get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
                 Some(
@@ -695,9 +715,8 @@ impl ListRenderState {
             return;
         }
         let id = self
-            .config
-            .contents
-            .snapshot()
+            .rows_snapshot
+            .borrow()
             .get_id(window.start)
             .unwrap_or_else(|| panic!("hydrolysis List item {} has no stable id", window.start));
         self.viewport_anchor.set(Some(ListViewportAnchor {
@@ -813,8 +832,10 @@ pub fn list_accessibility(
     let owner = state;
     let state = state.borrow();
     let list = &state.config;
-    let row_count_signal = list.contents.len();
-    let row_count = renderer.read_signal(&row_count_signal);
+    // Row count and every row read below come from the retained snapshot —
+    // the membership the last applied event delivered, not a live re-read.
+    let rows_snapshot = state.rows_snapshot.borrow().clone();
+    let row_count = rows_snapshot.len();
     let list_metrics = theme.map(|theme| theme.list_metrics());
     if let Some(list_metrics) = list_metrics {
         // `min_row_height` is the floor every row is estimated and measured
@@ -880,6 +901,9 @@ pub fn list_accessibility(
         if let Some(label) = list_label {
             list_node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            list_node.set_value(value);
+        }
         list_node.set_scroll_y(metrics.offset_y);
         list_node.set_scroll_y_min(0.0);
         list_node.set_scroll_y_max(metrics.max_y);
@@ -898,7 +922,7 @@ pub fn list_accessibility(
         let mut y = viewport.y0 - metrics.offset_y + leading_offset;
         for index in emit_range {
             let row_env = env.clone();
-            let item = materialize_list_item(&list.contents, index, &row_env);
+            let item = materialize_list_item(&rows_snapshot, index, &row_env);
             let chrome = state.section_chrome(index);
             // Semantic rows have no layout extent — the slot is only measured
             // when the rendered path needs it to place the row.
@@ -945,10 +969,9 @@ pub fn list_accessibility(
                 slot_rect.x1,
                 slot_rect.y1 - footer_height,
             );
-            let row_id =
-                list.contents.snapshot().get_id(index).unwrap_or_else(|| {
-                    panic!("hydrolysis list row {index} has no stable identity")
-                });
+            let row_id = rows_snapshot
+                .get_id(index)
+                .unwrap_or_else(|| panic!("hydrolysis list row {index} has no stable identity"));
             let key_base = row_a11y_key_base(row_id);
             if let Some(header) = chrome.header.clone() {
                 let header_rect = kurbo::Rect::new(
@@ -1336,16 +1359,17 @@ pub fn render_list_parts(
     state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,
 ) {
-    let (editing, row_count_signal, contents) = {
-        let list = &state.borrow().config;
+    // The retained snapshot supplies the row count and every materialization
+    // below — one immutable membership for the whole render pass.
+    let (editing, contents) = {
+        let state_ref = state.borrow();
         (
-            list.editing.clone(),
-            list.contents.len(),
-            list.contents.clone(),
+            state_ref.config.editing.clone(),
+            state_ref.rows_snapshot.borrow().clone(),
         )
     };
     let editing = ctx.renderer_mut().read_signal(&editing);
-    let row_count = ctx.renderer_mut().read_signal(&row_count_signal);
+    let row_count = contents.len();
     let list_metrics = ctx.theme().list_metrics();
     // `min_row_height` is the floor every row is estimated and measured
     // against; unset, the theme's one-line height keeps the same values.
@@ -1447,7 +1471,6 @@ pub fn render_list_parts(
             row_env.insert(crate::widgets::controls::button::ListRowChrome);
             let item = materialize_list_item(&contents, index, &row_env);
             let row_id = contents
-                .snapshot()
                 .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
             let chrome = state.borrow().section_chrome(index);
@@ -1594,18 +1617,19 @@ pub fn render_list_parts(
         );
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            if swipe_dx != 0.0 {
-                let threshold =
-                    (row_slot.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
-                let progress = (swipe_dx.abs() / threshold).clamp(0.0, 1.0);
-                theme.draw_list_swipe_dismiss_background(
-                    &mut draw,
-                    row_slot,
-                    progress,
-                    swipe_dx < 0.0,
-                );
-            }
+            ctx.draw_context(|draw| {
+                if swipe_dx != 0.0 {
+                    let threshold =
+                        (row_slot.width() * SWIPE_DISMISS_POSITIONAL_THRESHOLD).max(f64::EPSILON);
+                    let progress = (swipe_dx.abs() / threshold).clamp(0.0, 1.0);
+                    theme.draw_list_swipe_dismiss_background(
+                        &mut *draw,
+                        row_slot,
+                        progress,
+                        swipe_dx < 0.0,
+                    );
+                }
+            });
         }
         // Everything the row draws — its background, controls and content —
         // rides the swipe displacement; only the revealed dismiss background
@@ -1629,14 +1653,15 @@ pub fn render_list_parts(
         });
         {
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_list_row_background(&mut draw, row_rect, index % 2 == 1);
-            if let Some(fill) = selection_fill {
-                draw.fill(row_rect, fill);
-            }
-            if lifted_id == Some(row_id) {
-                theme.draw_list_row_lifted(&mut draw, row_rect, REORDER_LIFT_ELEVATION);
-            }
+            ctx.draw_context(|draw| {
+                theme.draw_list_row_background(&mut *draw, row_rect, index % 2 == 1);
+                if let Some(fill) = selection_fill {
+                    draw.fill(row_rect, fill);
+                }
+                if lifted_id == Some(row_id) {
+                    theme.draw_list_row_lifted(&mut *draw, row_rect, REORDER_LIFT_ELEVATION);
+                }
+            });
         }
         if let Some(header) = chrome.header.clone() {
             let header_rect = kurbo::Rect::new(
@@ -1798,14 +1823,15 @@ pub fn render_list_parts(
                             )
                         });
                 let theme = ctx.theme();
-                let mut draw = ctx.draw_context();
-                theme.draw_list_move_control(&mut draw, control_rect);
-                if let Some((rect, state)) = up_state {
-                    theme.draw_list_move_control_state_layer(&mut draw, rect, state);
-                }
-                if let Some((rect, state)) = down_state {
-                    theme.draw_list_move_control_state_layer(&mut draw, rect, state);
-                }
+                ctx.draw_context(|draw| {
+                    theme.draw_list_move_control(&mut *draw, control_rect);
+                    if let Some((rect, state)) = up_state {
+                        theme.draw_list_move_control_state_layer(&mut *draw, rect, state);
+                    }
+                    if let Some((rect, state)) = down_state {
+                        theme.draw_list_move_control_state_layer(&mut *draw, rect, state);
+                    }
+                });
             }
             if let Some((_, hit_bounds, _, press_slot)) = up_interaction {
                 let state = Rc::clone(state);
@@ -1842,13 +1868,14 @@ pub fn render_list_parts(
                 let delete_interaction =
                     local_interaction_state(delete_interaction, ctx.hit_transform);
                 let theme = ctx.theme();
-                let mut draw = ctx.draw_context();
-                theme.draw_list_delete_control(&mut draw, delete_rect);
-                theme.draw_list_delete_control_state_layer(
-                    &mut draw,
-                    delete_rect,
-                    delete_interaction,
-                );
+                ctx.draw_context(|draw| {
+                    theme.draw_list_delete_control(&mut *draw, delete_rect);
+                    theme.draw_list_delete_control_state_layer(
+                        &mut *draw,
+                        delete_rect,
+                        delete_interaction,
+                    );
+                });
             }
             let state = Rc::clone(state);
             let action_env = row_env.clone();
@@ -1926,8 +1953,9 @@ pub fn render_list_parts(
                 row_rect.y1,
             );
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_list_separator(&mut draw, separator);
+            ctx.draw_context(|draw| {
+                theme.draw_list_separator(&mut *draw, separator);
+            });
         }
     }
     // Evict content sub-views for rows no longer in the visible window.

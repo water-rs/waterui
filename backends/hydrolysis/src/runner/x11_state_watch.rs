@@ -79,7 +79,7 @@ impl X11StateWatch {
         let watching = Arc::clone(&connection);
         std::thread::Builder::new()
             .name("hydrolysis-x11-state-watch".to_owned())
-            .spawn(move || watch_events(watching, net_wm_state, wm_state, proxy))
+            .spawn(move || watch_events(&watching, net_wm_state, wm_state, &proxy))
             .map_err(|_| X11WatchError("reader thread spawn"))?;
         Ok(Self { connection })
     }
@@ -111,16 +111,16 @@ impl X11StateWatch {
 pub(super) fn x11_window_id(native_window: &winit::window::Window) -> Option<u32> {
     match native_window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Xcb(xcb) => Some(xcb.window.get()),
-        RawWindowHandle::Xlib(xlib) => Some(xlib.window as u32),
+        RawWindowHandle::Xlib(xlib) => Some(crate::num_cast::u64_as_u32(xlib.window)),
         _ => None,
     }
 }
 
 fn watch_events(
-    connection: Arc<RustConnection>,
+    connection: &Arc<RustConnection>,
     net_wm_state: Atom,
     wm_state: Atom,
-    proxy: EventLoopProxy<RunnerEvent>,
+    proxy: &EventLoopProxy<RunnerEvent>,
 ) {
     loop {
         let visibility_moved = match connection.wait_for_event() {

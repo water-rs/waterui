@@ -172,7 +172,7 @@ Pre-1.0. The API still moves, and we break it on purpose when a better shape is 
 To run one from a checkout:
 
 ```bash
-cargo install --locked --git https://github.com/water-rs/cli waterui-cli
+cargo install --locked --path cli
 cd examples/gallery
 water run --platform macos
 ```
@@ -182,7 +182,7 @@ water run --platform macos
 - [`core/`](core/) — `View`, `Environment`, layout contracts, reactive integration
 - [`components/`](components/) — layouts, text, controls, forms, navigation, media, charts, and friends
 - [`backends/`](backends/) — Apple, Android, GTK4, Hydrolysis, Dew
-- [`water` CLI](https://github.com/water-rs/cli) — the `water` command and project generators (its own repository)
+- [`cli/`](cli/) — `waterui-cli`, the `water` command and project generators (a workspace member)
 - [`ffi/`](ffi/) — the C ABI backends talk through
 - [`testing/`](testing/) — semantic UI testing over the accessibility tree
 - [`examples/`](examples/) — runnable applications
@@ -191,7 +191,7 @@ water run --platform macos
 
 - [API reference](https://docs.rs/waterui)
 - [WaterUI book](https://book.waterui.dev)
-- [CLI guide](https://github.com/water-rs/cli)
+- [CLI guide](cli/README.md)
 - [Roadmap](docs/ROADMAP.md)
 
 ## Contributing

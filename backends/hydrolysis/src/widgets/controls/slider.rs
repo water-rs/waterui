@@ -121,6 +121,12 @@ fn slider_accessibility_parts(
         if let Some(resolved) = resolved {
             node.set_label(resolved);
         }
+        // The string value is the spoken form of the numeric value: an
+        // explicit `.a11y_value` overrides it while `set_numeric_value` keeps
+        // the raw position, matching `aria-valuetext` beside `aria-valuenow`.
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         let start = *range.start();
         let end = *range.end();
         assert!(start < end, "hydrolysis slider requires range start < end");
@@ -418,22 +424,23 @@ pub fn render_slider_parts(
     let thumb_center = kurbo::Point::new(fill_right, track_center_y);
     let interaction = local_interaction_state(interaction, ctx.hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_slider_track(&mut draw, track_rect, fill_rect, state.size, interaction);
-        theme.draw_slider_thumb(
-            &mut draw,
-            thumb_center,
-            metrics.handle_overhang(),
-            state.size,
-            interaction,
-        );
-        theme.draw_slider_thumb_state_layer(
-            &mut draw,
-            thumb_center,
-            metrics.handle_overhang(),
-            state.size,
-            interaction,
-        );
+        ctx.draw_context(|draw| {
+            theme.draw_slider_track(&mut *draw, track_rect, fill_rect, state.size, interaction);
+            theme.draw_slider_thumb(
+                &mut *draw,
+                thumb_center,
+                metrics.handle_overhang(),
+                state.size,
+                interaction,
+            );
+            theme.draw_slider_thumb_state_layer(
+                &mut *draw,
+                thumb_center,
+                metrics.handle_overhang(),
+                state.size,
+                interaction,
+            );
+        });
     }
 
     // The value indicator floats above the thumb while the pointer holds the
@@ -477,8 +484,9 @@ pub fn render_slider_parts(
             bubble_bottom,
         );
         {
-            let mut draw = ctx.draw_context();
-            theme.draw_slider_value_indicator(&mut draw, bubble);
+            ctx.draw_context(|draw| {
+                theme.draw_slider_value_indicator(&mut *draw, bubble);
+            });
         }
         let text_rect = kurbo::Rect::new(
             bubble.x0,

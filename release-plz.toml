@@ -245,3 +245,43 @@ version_group = "waterui"
 name = "hydrolysis"
 git_release_name = "hydrolysis-v{{ version }}"
 git_tag_name = "hydrolysis-v{{ version }}"
+
+# Cherenkov / filtrate (#1449): the same releases the cherenkov
+# repository's release-plz config opted into — `release = true` there is
+# a `[[package]]` entry here (publishable crates release only when
+# listed). The engine crates (cherenkov*, `publish = false` at 0.0.0)
+# are never picked up. Tag names namespace to the package, matching this
+# config's default: the upstream `v*`/`core-v*`/`derive-v*`/`shader-v*`
+# names would collide with the facade's and waterui-core's.
+[[package]]
+name = "filtrate"
+# cargo-semver-checks' feature heuristic enables `webgl`, which is
+# intentionally a compile_error! off-wasm; PR semver coverage stays in
+# release-preflight.yml (default-features).
+semver_check = false
+
+[[package]]
+name = "filtrate-core"
+
+[[package]]
+name = "filtrate-derive"
+
+[[package]]
+name = "cherenkov-shader"
+
+# Tooling
+
+# The CLI releases on its own version line — it is not in the waterui
+# version group — under `cli/v*` tags (bare `v*` belongs to the
+# facade, `hydrolysis-v*` to Hydrolysis). Publishing stays in-band: this
+# repository's `release` job runs on the `main` push itself, so crates.io
+# trusted publishing issues it an OIDC token, and release-plz publishes
+# `waterui-cli` in dependency order after the workspace crates it
+# path-depends on — the standalone repository had to defer `cargo publish`
+# to a dispatch because its tag was minted under `workflow_run`, a token
+# crates.io refuses. `release.yml` reads the tag out of the report to drive
+# the `water` binary builds.
+[[package]]
+name = "waterui-cli"
+git_release_name = "cli/v{{ version }}"
+git_tag_name = "cli/v{{ version }}"

@@ -935,6 +935,16 @@ pub struct SceneViewNode {
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
     pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
+    /// The semantic invalidator installed at build — the compositor re-installs
+    /// it after a `rebuild_for_engine` clears the content's engine-bound hooks,
+    /// so signal-driven frame requests keep working across a device swap.
+    pub(super) invalidator: waterui_graphics::SceneInvalidator,
+    /// The engine resource-table identity `content` last recorded against —
+    /// `None` until its first mount, a `Weak` that expires with the pooled
+    /// engine's table. Shared into each frame's `SceneContentLayer` so every
+    /// mount sees the same recorded identity.
+    pub(super) association:
+        Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
 }
 
 /// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node
@@ -1076,17 +1086,26 @@ impl TextNode {
         }
         let plain = styled.to_semantic().to_string();
         let default_label = (!plain.is_empty()).then_some(plain);
-        let Some(label) = renderer.resolve_accessibility_label(env, default_label) else {
+        let label = renderer.resolve_accessibility_label(env, default_label);
+        let value = renderer.resolve_accessibility_value(env, None);
+        if label.is_none() && value.is_none() {
             return;
-        };
-        if renderer.consume_accessibility_descendant_text(env, &label) {
+        }
+        if let Some(label) = &label
+            && renderer.consume_accessibility_descendant_text(env, label)
+        {
             return;
         }
         let mut node = AccessibilityNode::new(SemanticCore::resolve_accessibility_role(
             env,
             AccessibilityNodeRole::Label,
         ));
-        node.set_label(label);
+        if let Some(label) = label {
+            node.set_label(label);
+        }
+        if let Some(value) = value {
+            node.set_value(value);
+        }
         let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
     }
 
@@ -1104,10 +1123,11 @@ impl TextNode {
 
 /// Emit an `Image`-role accessibility node for a self-drawn graphics leaf
 /// (`Canvas`/`SceneView`, `GpuSurface`, shapes/gradients) at its bounds, reading
-/// the role/label scoped into `env` by any `.a11y_role()` / `.a11y_label()`
-/// wrappers. These leaves draw their own pixels, so the node tree is the only place
-/// their semantic node can be emitted — mirroring `TextNode::emit_accessibility`
-/// for the text leaf. Suppressed when the subtree is accessibility-hidden.
+/// the role/label/value scoped into `env` by any `.a11y_role()` /
+/// `.a11y_label()` / `.a11y_value()` wrappers. These leaves draw their own
+/// pixels, so the node tree is the only place their semantic node can be
+/// emitted — mirroring `TextNode::emit_accessibility` for the text leaf.
+/// Suppressed when the subtree is accessibility-hidden.
 ///
 /// `default_label` is what the drawing says about itself
 /// ([`SceneContent::accessibility_label`](waterui_graphics::SceneContent::accessibility_label)):

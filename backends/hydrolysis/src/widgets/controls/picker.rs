@@ -153,7 +153,13 @@ pub fn picker_accessibility(
                 if let Some(label) = label {
                     node.set_label(label);
                 }
-                node.set_value(selected_text.as_str().to_owned());
+                // The selected option's text is the default value; an explicit
+                // `.a11y_value` wins the same way `.a11y_label` wins the name.
+                if let Some(value) = renderer
+                    .resolve_accessibility_value(env, Some(selected_text.as_str().to_owned()))
+                {
+                    node.set_value(value);
+                }
                 node.add_action(AccessibilityAction::Focus);
                 if disabled {
                     node.set_disabled();
@@ -319,6 +325,9 @@ pub fn picker_accessibility(
                 let group_label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = group_label {
                     group.set_label(label);
+                }
+                if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+                    group.set_value(value);
                 }
                 let geometry = ctx
                     .as_ref()
@@ -620,10 +629,11 @@ pub fn render_menu_picker(
                 .bind_interaction_target(interaction_key, hit_bounds, env);
         {
             let interaction = local_interaction_state(interaction, ctx.hit_transform);
-            let mut draw = ctx.draw_context();
-            theme.draw_input_field(&mut draw, bounds, interaction);
-            theme.draw_picker_indicator(&mut draw, bounds);
-            theme.draw_picker_state_layer(&mut draw, bounds, interaction);
+            ctx.draw_context(|draw| {
+                theme.draw_input_field(&mut *draw, bounds, interaction);
+                theme.draw_picker_indicator(&mut *draw, bounds);
+                theme.draw_picker_state_layer(&mut *draw, bounds, interaction);
+            });
         }
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection;
@@ -879,20 +889,21 @@ pub fn render_radio_picker(
                 .bind_interaction_target(interaction_key, hit_rect, env);
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         {
-            let mut draw = ctx.draw_context();
-            theme.draw_radio_indicator(
-                &mut draw,
-                indicator_center,
-                indicator_radius,
-                radio_indicator_state,
-            );
-            theme.draw_radio_state_layer(
-                &mut draw,
-                indicator_center,
-                indicator_radius,
-                is_selected,
-                interaction,
-            );
+            ctx.draw_context(|draw| {
+                theme.draw_radio_indicator(
+                    &mut *draw,
+                    indicator_center,
+                    indicator_radius,
+                    radio_indicator_state,
+                );
+                theme.draw_radio_state_layer(
+                    &mut *draw,
+                    indicator_center,
+                    indicator_radius,
+                    is_selected,
+                    interaction,
+                );
+            });
         }
 
         let indicator_rect = kurbo::Rect::new(
@@ -966,22 +977,23 @@ pub fn render_segmented_picker(
                 .bind_interaction_target(interaction_key, hit_rect, env);
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
         {
-            let mut draw = ctx.draw_context();
-            theme.draw_segmented_picker_segment(
-                &mut draw,
-                segment_rect,
-                is_selected,
-                index == 0,
-                index + 1 == item_count,
-            );
-            theme.draw_segmented_picker_state_layer(
-                &mut draw,
-                segment_rect,
-                is_selected,
-                index == 0,
-                index + 1 == item_count,
-                interaction,
-            );
+            ctx.draw_context(|draw| {
+                theme.draw_segmented_picker_segment(
+                    &mut *draw,
+                    segment_rect,
+                    is_selected,
+                    index == 0,
+                    index + 1 == item_count,
+                );
+                theme.draw_segmented_picker_state_layer(
+                    &mut *draw,
+                    segment_rect,
+                    is_selected,
+                    index == 0,
+                    index + 1 == item_count,
+                    interaction,
+                );
+            });
         }
         // Render the segment label directly as styled text (no dispatch), mirroring
         // the radio/menu picker styles. The item's resolved `StyledStr` carries its
@@ -1014,8 +1026,9 @@ pub fn render_segmented_picker(
             });
     }
 
-    let mut draw = ctx.draw_context();
-    theme.draw_segmented_picker_container(&mut draw, row_bounds, item_count);
+    ctx.draw_context(|draw| {
+        theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
+    });
 }
 
 fn segmented_label_rect(

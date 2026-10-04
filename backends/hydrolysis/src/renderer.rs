@@ -32,7 +32,7 @@ mod lifecycle;
 mod metadata;
 mod native_measure;
 mod navigation;
-mod recording;
+pub mod recording;
 mod render;
 mod retained;
 
@@ -53,7 +53,7 @@ pub use identity::*;
 pub use native_measure::*;
 #[cfg(test)]
 pub use recording::assert_well_formed_image;
-pub use recording::{Glyph, GlyphRun, Recording, SceneDrawContext, working_color};
+pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use retained::*;
 pub use tree::*;
 pub use views::*;
@@ -100,11 +100,9 @@ use executor_core::spawn_local;
 use nami::{Binding, Signal};
 use waterkit_clipboard::Clipboard;
 use waterui::ViewExt;
-#[cfg(feature = "accessibility")]
-use waterui::accessibility::AccessibilityValue;
 use waterui::accessibility::{
     AccessibilityChildren, AccessibilityHidden, AccessibilityIdentifier, AccessibilityLabel,
-    AccessibilityRole, AccessibilityState, AccessibilityStateSignal,
+    AccessibilityRole, AccessibilityState, AccessibilityStateSignal, AccessibilityValue,
 };
 use waterui::animation::Animation;
 use waterui::background::{Background, MaterialBackground};
@@ -228,7 +226,10 @@ pub struct SemanticCore {
     gesture_engine: GestureEngine,
     gesture_group_ids: BTreeMap<usize, usize>,
     next_gesture_group_id: usize,
-    text_editing: TextEditingState,
+    /// Input targets, selection slots and pre-edit live here — `pub(crate)`
+    /// because the runner's editing session and headless tests read them
+    /// from outside the renderer module tree.
+    pub(crate) text_editing: TextEditingState,
     popup_menu: PopupMenuState,
     /// The identity the runner gave the window this core renders — menu-chord
     /// dispatch scopes mounted `Menu` sources by it (water-rs/hydrolysis#247).

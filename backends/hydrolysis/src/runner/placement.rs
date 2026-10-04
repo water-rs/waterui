@@ -192,7 +192,7 @@ fn monitor_index(specs: &[MonitorSpec], handle: &MonitorHandle) -> Option<usize>
 /// Everything pointer resolution needs beyond the event loop: the runner's
 /// focused window (for `Focused`) and its last pointer-focused window (the
 /// only pointer home Wayland reports).
-pub(crate) struct PlacementContext<'a> {
+pub struct PlacementContext<'a> {
     pub event_loop: &'a ActiveEventLoop,
     pub focused_window: Option<&'a NativeWindow>,
     /// Wayland-only state: the other platforms answer a global pointer
@@ -207,7 +207,7 @@ pub(crate) struct PlacementContext<'a> {
 /// Panics when the platform reports zero monitors: a window being shown has
 /// nowhere to go, and skipping placement silently would map it wherever the
 /// compositor feels like — that is a bug, so it fails loudly.
-pub(crate) fn resolve_placement_monitor(
+pub fn resolve_placement_monitor(
     context: &PlacementContext<'_>,
     selector: MonitorSelector,
 ) -> Monitor {
@@ -215,7 +215,7 @@ pub(crate) fn resolve_placement_monitor(
     let primary = specs.iter().position(|spec| spec.is_primary);
     let focused = context
         .focused_window
-        .and_then(|window| window.current_monitor())
+        .and_then(NativeWindow::current_monitor)
         .and_then(|current| monitor_index(&specs, &current));
     let pointer = pointer_position(context, &specs);
     // The pointer answer's coordinate space differs per platform: macOS
@@ -244,20 +244,20 @@ pub(crate) fn resolve_placement_monitor(
 /// Whether the event loop's display connection is Wayland — the only
 /// platform family here with neither a global pointer query nor a primary
 /// monitor concept.
+#[cfg(hydrolysis_wayland_platform)]
 fn event_loop_is_wayland(event_loop: &ActiveEventLoop) -> bool {
-    #[cfg(hydrolysis_wayland_platform)]
-    {
-        use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-        return matches!(
-            event_loop.display_handle().map(|handle| handle.as_raw()),
-            Ok(RawDisplayHandle::Wayland(_))
-        );
-    }
-    #[allow(unreachable_code)]
-    {
-        let _ = event_loop;
-        false
-    }
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    matches!(
+        event_loop.display_handle().map(|handle| handle.as_raw()),
+        Ok(RawDisplayHandle::Wayland(_))
+    )
+}
+
+/// Whether the event loop's display connection is Wayland — off the
+/// Wayland-capable platforms it never is.
+#[cfg(not(hydrolysis_wayland_platform))]
+const fn event_loop_is_wayland(_event_loop: &ActiveEventLoop) -> bool {
+    false
 }
 
 /// The pointer position in the same coordinate space `resolve_selector` is
@@ -284,7 +284,7 @@ fn pointer_position(context: &PlacementContext<'_>, specs: &[MonitorSpec]) -> Op
         x11_pointer_position(context.event_loop).or_else(|| {
             context
                 .pointer_window
-                .and_then(|window| window.current_monitor())
+                .and_then(NativeWindow::current_monitor)
                 .and_then(|current| monitor_index(specs, &current))
                 .map(|index| {
                     let (x, y, width, height) = specs[index].physical;
@@ -309,19 +309,32 @@ fn pointer_position(context: &PlacementContext<'_>, specs: &[MonitorSpec]) -> Op
 fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor {
     let (x, y, width, height) = spec.logical_frame();
     let frame = Rect::new(
-        Point::new(x as f32, y as f32),
-        Size::new(width as f32, height as f32),
+        Point::new(
+            crate::num_cast::f64_as_f32(x),
+            crate::num_cast::f64_as_f32(y),
+        ),
+        Size::new(
+            crate::num_cast::f64_as_f32(width),
+            crate::num_cast::f64_as_f32(height),
+        ),
     );
     Monitor {
         frame,
-        visible_frame: platform_visible_frame(event_loop, spec)
-            .map(|(vx, vy, vw, vh)| {
+        visible_frame: platform_visible_frame(event_loop, spec).map_or(
+            frame,
+            |(vx, vy, vw, vh)| {
                 Rect::new(
-                    Point::new(vx as f32, vy as f32),
-                    Size::new(vw as f32, vh as f32),
+                    Point::new(
+                        crate::num_cast::f64_as_f32(vx),
+                        crate::num_cast::f64_as_f32(vy),
+                    ),
+                    Size::new(
+                        crate::num_cast::f64_as_f32(vw),
+                        crate::num_cast::f64_as_f32(vh),
+                    ),
                 )
-            })
-            .unwrap_or(frame),
+            },
+        ),
         scale_factor: spec.handle.scale_factor(),
         name: spec.handle.name().map(Str::from),
     }
@@ -395,12 +408,14 @@ fn x11_display(event_loop: &ActiveEventLoop) -> Option<X11Display> {
                 .as_ptr();
             // `should_drop = false`: the connection is winit's; wrapping is a
             // borrow, dropping the wrapper must not disconnect it.
+            // SAFETY: `ptr` is the live XCB connection winit owns; `false`
+            // keeps ownership with winit, so the wrapper only borrows it.
             let connection = unsafe { XCBConnection::from_raw_xcb_connection(ptr, false) }
                 .expect("hydrolysis runner: xcb_ffi failed to wrap winit's X11 connection");
             let root = connection
                 .setup()
                 .roots
-                .get(handle.screen as usize)
+                .get(crate::num_cast::i32_as_usize(handle.screen))
                 .map(|screen| screen.root)
                 .expect("hydrolysis runner: X11 connection has no root for the screen winit named");
             Some(X11Display {
@@ -417,17 +432,23 @@ fn x11_display(event_loop: &ActiveEventLoop) -> Option<X11Display> {
                 .cast::<x11_dl::xlib::Display>();
             let xlib_xcb = x11_dl::xlib_xcb::Xlib_xcb::open()
                 .expect("hydrolysis runner: Xlib_xcb::open failed — libX11-xcb is missing");
+            // SAFETY: `display` is winit's live Xlib Display*, and
+            // XGetXCBConnection on it yields the connection X11 already
+            // opened for this process.
             let ptr = unsafe { (xlib_xcb.XGetXCBConnection)(display) }.cast::<std::ffi::c_void>();
             assert!(
                 !ptr.is_null(),
                 "hydrolysis runner: XGetXCBConnection returned null for winit's Display"
             );
+            // SAFETY: `ptr` is the live XCB connection behind winit's Xlib
+            // display; `false` keeps ownership with X11, so the wrapper only
+            // borrows it.
             let connection = unsafe { XCBConnection::from_raw_xcb_connection(ptr.cast(), false) }
                 .expect("hydrolysis runner: xcb_ffi failed to wrap the Xlib XCB connection");
             let root = connection
                 .setup()
                 .roots
-                .get(handle.screen as usize)
+                .get(crate::num_cast::i32_as_usize(handle.screen))
                 .map(|screen| screen.root)
                 .expect("hydrolysis runner: X11 connection has no root for the screen winit named");
             Some(X11Display {
@@ -693,7 +714,7 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
 /// Shows a freshly mounted window the way its [`Activation`] policy asks.
 ///
 /// Every platform but macOS goes through winit's `set_visible`. macOS
-/// distinguishes: `OnShow` uses it too — AppKit's `makeKeyAndOrderFront`
+/// distinguishes: `OnShow` uses it too — `AppKit`'s `makeKeyAndOrderFront`
 /// makes the window key and activates the app, which is what showing an
 /// `OnShow` window means — while `OnClick`/`Never` order the window front
 /// with `orderFront:`, which puts it on screen without key status or app
@@ -701,7 +722,7 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
 /// `makeKeyAndOrderFront`, which activates the app — fatally at process
 /// launch, where a resident drop-down terminal must not pull focus from
 /// the user's app.
-pub(crate) fn show_at_mount(native_window: &NativeWindow, activation: Activation) {
+pub fn show_at_mount(native_window: &NativeWindow, activation: Activation) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = activation;
@@ -743,14 +764,14 @@ fn macos_order_front(native_window: &NativeWindow) {
 /// * X11 `Never`: `WM_HINTS`'s input flag false, so the window manager does
 ///   not route keyboard focus to the window at all.
 /// * macOS `OnClick`/`Never`: the `NonactivatingPanel` bit on the window's
-///   style mask. Hydrolysis's NSWindow is the winit-created `NSWindow`
+///   style mask. Hydrolysis's `NSWindow` is the winit-created `NSWindow`
 ///   subclass (`WinitWindow`), which cannot be re-classed into `NSPanel`
 ///   after creation, so the panel behaviour is set as the style bit winit
-///   leaves unset — the same bit `NSPanel` uses. What AppKit honours on a
+///   leaves unset — the same bit `NSPanel` uses. What `AppKit` honours on a
 ///   plain `NSWindow` is noted in the delivery.
 /// * Windows `Never`: `WS_EX_NOACTIVATE` on the HWND, so clicks do not
 ///   activate the window.
-pub(crate) fn apply_activation(
+pub fn apply_activation(
     event_loop: &ActiveEventLoop,
     native_window: &NativeWindow,
     activation: Activation,
@@ -800,7 +821,7 @@ fn apply_x11_input_hint(event_loop: &ActiveEventLoop, native_window: &NativeWind
         .expect("hydrolysis runner: winit window_handle() failed while writing WM_HINTS");
     let window = match handle.as_raw() {
         RawWindowHandle::Xcb(xcb) => xcb.window.get(),
-        RawWindowHandle::Xlib(xlib) => xlib.window as u32,
+        RawWindowHandle::Xlib(xlib) => crate::num_cast::u64_as_u32(xlib.window),
         other => panic!(
             "hydrolysis runner: Activation::Never on X11 got a non-X11 window handle {other:?}"
         ),
