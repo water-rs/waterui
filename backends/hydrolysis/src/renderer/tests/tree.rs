@@ -1108,6 +1108,10 @@ fn lifecycle_hooks_fire_after_first_flush_and_on_drop() {
 /// active animation instead of binding the already-settled value on the first
 /// frame and popping directly to the final state.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the entrance opacity is the exact bound target value"
+)]
 fn lifecycle_appear_updates_animate_after_initial_signal_binding() {
     use core::time::Duration;
     use std::time::Instant;
@@ -1357,6 +1361,10 @@ fn menu_picker_draws_its_label_above_the_value() {
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
 )]
+#[expect(
+    clippy::float_cmp,
+    reason = "the labelled row must keep the unlabelled row's exact height"
+)]
 fn radio_picker_draws_its_label_above_the_option_rows() {
     use accesskit::Role;
     use std::time::Instant;
@@ -1478,6 +1486,10 @@ fn radio_picker_draws_its_label_above_the_option_rows() {
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
+)]
+#[expect(
+    clippy::float_cmp,
+    reason = "the labelled segment row must keep the unlabelled row's exact height"
 )]
 fn segmented_picker_draws_its_label_above_the_segment_row() {
     use accesskit::Role;

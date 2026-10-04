@@ -186,6 +186,10 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "translation targets are the exact scripted constants"
+    )]
     fn translation_preserves_each_lane_and_matrix_motion_is_not_misrepresented() {
         let mut tree = SurfaceTree::new();
         let root = tree.root();
@@ -236,6 +240,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the initial opacity is the exact constant 1.0"
+    )]
     fn a_fading_plane_cannot_move_above_an_earlier_plane() {
         let mut tree = SurfaceTree::new();
         let below = LayerId::new(1);

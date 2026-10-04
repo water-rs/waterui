@@ -522,6 +522,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "the split halves must abut exactly")]
     fn a_decoration_continuing_across_runs_is_one_rectangle() {
         let text = "abcdef";
         let merged = lower(
@@ -640,6 +641,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "glyph positions are the exact source offsets"
+    )]
     fn text_records_its_primitives_at_the_origin() {
         let lowered = lower(
             layout(

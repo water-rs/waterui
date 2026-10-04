@@ -382,6 +382,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "density is the exact constructed constant"
+    )]
     fn capture_domain_rejects_invalid_density_and_origin() {
         let picture = cherenkov::Picture::record(|_| {});
         let ops = [super::Op::Shadow {
@@ -420,6 +424,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "density is the exact recorded constant")]
     fn periodic_content_must_outlast_its_previous_lifetime() {
         let mut entry = Observation::new(1, (0, 0));
         assert!(!entry.observe(1, (0, 0), 1.25));

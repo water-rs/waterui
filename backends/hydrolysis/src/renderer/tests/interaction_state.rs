@@ -105,6 +105,10 @@ fn key(runtime: &mut HeadlessRuntime, key: KeyCode, state: KeyState) {
 /// The M3 list-item shape morph: 8 resting, 12 hovered, 16 pressed. The theme
 /// sees the radii resolved against the control's reported state.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "each reported state maps to an exact theme radius token"
+)]
 fn state_layer_radii_morph_with_reported_state() {
     let mut env = test_environment();
     env.install(

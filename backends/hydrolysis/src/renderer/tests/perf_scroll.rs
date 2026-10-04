@@ -351,6 +351,10 @@ fn flow_markdown_blocks_reconnect_after_lazy_eviction() {
 
 #[cfg(feature = "accessibility")]
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the scroll offset must be preserved exactly across the append"
+)]
 fn flow_markdown_append_preserves_user_scroll_offset() {
     fn scroll_y(result: crate::HeadlessPumpResult) -> f64 {
         result

@@ -226,6 +226,10 @@ fn toggle_emits_and_click_flips() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "each action must write the exact stepped value"
+)]
 fn slider_emits_and_value_actions_step() {
     let value = Binding::container(0.5f64);
     let value_for_view = value.clone();
@@ -609,6 +613,10 @@ fn date_picker_emits_and_set_value_edits() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the swatch must write the exact channel constant"
+)]
 fn color_picker_emits_and_popup_swatches_select() {
     let tint = Binding::container(Color::srgb(0, 0, 0));
     let tint_for_view = tint.clone();

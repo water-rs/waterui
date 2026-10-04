@@ -1299,6 +1299,10 @@ mod tests {
     };
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "alpha is the exact step of the Material timing curve"
+    )]
     fn material_input_content_enter_matches_material_web_delay() {
         assert_eq!(material_input_content_alpha(true, 0.0), 0.0);
         assert_eq!(
@@ -1309,6 +1313,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "alpha is the exact step of the Material timing curve"
+    )]
     fn material_input_content_exit_matches_material_web_visible_window() {
         assert_eq!(material_input_content_alpha(true, 1.0), 1.0);
         assert_eq!(
@@ -1326,11 +1334,13 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "alpha is the exact constant 1.0")]
     fn material_input_without_label_keeps_content_visible() {
         assert_eq!(material_input_content_alpha(false, 0.0), 1.0);
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "clip bounds are exact layout geometry")]
     fn material_input_text_clip_expands_for_tall_fallback_glyphs() {
         let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
         let text = kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
@@ -1345,6 +1355,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "clip bounds are exact layout geometry")]
     fn material_input_text_clip_expands_for_placeholder_layout() {
         let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
         let text = kurbo::Rect::new(16.0, 26.0, 184.0, 48.0);
@@ -1358,6 +1369,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "cursor bounds are exact layout geometry")]
     fn material_input_cursor_spans_the_line_for_empty_layout_geometry() {
         // A material field's text rect is the thin baseline strip; with no
         // shaped line the caret still spans the strip down to the field's
@@ -1375,6 +1387,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "cursor bounds are exact layout geometry")]
     fn material_input_cursor_preserves_non_empty_layout_geometry() {
         let field = kurbo::Rect::new(0.0, 0.0, 200.0, 56.0);
         let text = kurbo::Rect::new(16.0, 26.0, 184.0, 60.0);

@@ -1306,6 +1306,10 @@ mod macos {
     }
 
     /// A native translation owns scheduling and cancels on a snap.
+    #[expect(
+        clippy::float_cmp,
+        reason = "the compositor-owned transform is the exact scripted constant"
+    )]
     fn promoted_translation_is_owned_by_core_animation() {
         let fixture = Fixture::new();
         let buffer = bgra_buffer();

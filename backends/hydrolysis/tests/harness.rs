@@ -170,6 +170,7 @@ fn max_width_derived_from_the_mounted_window_frame_wraps_text() {
 /// the app seeded regardless of the viewport, orphaning every signal derived
 /// from it (water-rs/hydrolysis#128).
 #[test]
+#[expect(clippy::float_cmp, reason = "the frame is the exact viewport size")]
 fn mount_app_drives_the_app_window_frame_from_the_viewport() {
     use waterui::window::{Window, WindowState};
 

@@ -1690,6 +1690,10 @@ mod tests {
     use waterui_backend_core::widget::InputFieldMetrics;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the height formula is deterministic arithmetic over fixed metrics, so equality is exact"
+    )]
     fn labeled_input_field_height_reserves_space_for_tall_text() {
         let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
 
@@ -1698,6 +1702,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the height formula is deterministic arithmetic over fixed metrics, so equality is exact"
+    )]
     fn unlabeled_input_field_height_uses_minimum_until_text_needs_more() {
         let metrics = InputFieldMetrics::new(18.0, 72.0, 56.0, 16.0, 8.0);
 

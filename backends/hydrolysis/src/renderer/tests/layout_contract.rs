@@ -389,6 +389,10 @@ fn spacer_default_priority_survives_wrappers_and_explicit_overrides() {
 /// `Spacer::new(40.0)` exactly like `Spacer::new(0.0)` (the
 /// water-rs/waterui#1080 symptom).
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the compression floor is the theme's exact min_length constant"
+)]
 fn spacer_min_length_is_the_stack_compression_floor() {
     let env = test_environment();
     let mut renderer = test_renderer();

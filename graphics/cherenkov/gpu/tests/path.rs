@@ -14,6 +14,10 @@ const RED: WorkingColor = WorkingColor::new([1.0, 0.0, 0.0, 1.0]);
 split_test! {
 /// Two integer translations admitted before atlas commit share the entire
 /// coverage layout, not just the eventual cell addresses.
+#[expect(
+    clippy::float_cmp,
+    reason = "the translated region must be identical to its source, not approximately equal"
+)]
 fn pending_paths_reuse_their_coverage_layout() -> Result<(), Box<dyn std::error::Error>> {
     use cherenkov::kurbo::{Affine, Shape as _};
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;

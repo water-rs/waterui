@@ -4534,6 +4534,10 @@ mod tests {
     /// A destructive blend composites over the whole clip (or parent),
     /// not the tight region of the layer's content.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "composite bounds are exact plane geometry"
+    )]
     fn destructive_composite_covers_the_whole_parent() {
         let Some((device, _queue)) = device_and_queue() else {
             return;
@@ -4604,6 +4608,10 @@ mod tests {
     /// A clipped destructive composite covers the padded clip rect and
     /// carries the clip on the composite instance.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "composite bounds are exact plane geometry"
+    )]
     fn destructive_composite_is_bounded_by_the_clip() {
         let Some((device, _queue)) = device_and_queue() else {
             return;
@@ -4794,6 +4802,7 @@ mod tests {
 
     #[expect(clippy::suboptimal_flops, reason = "integer-valued geometry is exact")]
     #[test]
+    #[expect(clippy::float_cmp, reason = "covered area is exact box arithmetic")]
     fn cover_strips_full_cover() {
         let b = Rect::new(-20.0, -20.0, 20.0, 20.0);
         let c = Cover {
@@ -4809,6 +4818,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "covered area is exact box arithmetic")]
     fn cover_strips_one_empty_box() {
         let b = Rect::new(-20.0, -20.0, 20.0, 20.0);
         let c = Cover {
@@ -4835,6 +4845,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::float_cmp, reason = "covered area is exact box arithmetic")]
     fn cover_strips_clips_to_b() {
         let b = Rect::new(-20.0, -20.0, 20.0, 20.0);
         let c = Cover {

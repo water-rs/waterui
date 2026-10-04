@@ -92,6 +92,10 @@ fn tap(runtime: &mut HeadlessRuntime, x: f32, y: f32) {
 /// band. A tap inside the band on the overhang must not fire it; a tap on
 /// the sliver still must.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the scroll offset must reach the exact scripted amount"
+)]
 fn a_row_straddling_the_viewport_edge_cannot_be_tapped_above_the_clip() {
     let taps: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     let mut runtime = runtime(taps.clone());

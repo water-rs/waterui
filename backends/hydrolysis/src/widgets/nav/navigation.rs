@@ -2468,6 +2468,10 @@ mod tests {
     /// minimum so the detail column gets the remaining space, while the
     /// balanced styles honour the author's ideal.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the sidebar resolves to the exact minimum token"
+    )]
     fn prominent_detail_squeezes_the_sidebar_to_its_minimum() {
         let width = ColumnWidth::new(180.0, 260.0, 400.0);
 
@@ -2486,6 +2490,10 @@ mod tests {
     /// Column constraints that leave no room to choose must resolve the same way
     /// under every style, so a fixed-width sidebar cannot drift between them.
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the fixed width resolves to the exact token"
+    )]
     fn a_fixed_width_sidebar_resolves_identically_under_every_style() {
         let fixed = ColumnWidth::new(240.0, 240.0, 240.0);
 

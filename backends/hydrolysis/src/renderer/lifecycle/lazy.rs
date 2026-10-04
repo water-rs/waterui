@@ -406,6 +406,10 @@ mod tests {
     use super::{LazyStackAxisConfig, VirtualExtentIndex, place_lazy_stack_item};
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "leading_offset is a deterministic multiple of a fixed stride, so the comparison is intentionally exact"
+    )]
     fn deep_window_resolves_without_measuring_preceding_items() {
         let mut index = VirtualExtentIndex::default();
         index.reset(100_000, 48.0, 4.0);
@@ -419,6 +423,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "extents and offsets are exact sums of the fixed test inputs"
+    )]
     fn measured_extents_update_offsets_and_visible_window() {
         let mut index = VirtualExtentIndex::default();
         index.reset(4, 10.0, 2.0);
@@ -435,6 +443,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "an empty index must report the literal 0.0, so exact equality is intended"
+    )]
     fn empty_index_has_an_empty_window() {
         let mut index = VirtualExtentIndex::default();
         index.reset(0, 10.0, 0.0);

@@ -1086,6 +1086,7 @@ mod tests {
     /// The M3 exposed-dropdown label sits inside the field, directly above the
     /// selected value with the metrics' label spacing between them.
     #[test]
+    #[expect(clippy::float_cmp, reason = "spacing is exact theme arithmetic")]
     fn labelled_content_places_label_above_value_inside_the_field() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 56.0);
         let (label, value) = menu_picker_content_rects(bounds, metrics(), 12.0);
@@ -1112,6 +1113,7 @@ mod tests {
     /// horizontal insets, and the first option row begins below it with the
     /// metrics' label spacing.
     #[test]
+    #[expect(clippy::float_cmp, reason = "spacing is exact theme arithmetic")]
     fn radio_label_heading_sits_above_the_rows_with_label_spacing() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 96.0);
         let default_row_y = bounds.y0 + metrics().vertical_inset;
@@ -1127,6 +1129,7 @@ mod tests {
     /// edge — edge to edge like the row it heads — and the segment row fills
     /// the space below it down to the bottom edge.
     #[test]
+    #[expect(clippy::float_cmp, reason = "spacing is exact theme arithmetic")]
     fn segmented_label_heading_spans_edge_to_edge_above_the_row() {
         let bounds = Rect::new(0.0, 0.0, 320.0, 64.0);
         let (heading, row) = segmented_label_area(bounds, metrics(), 12.0);

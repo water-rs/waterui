@@ -339,6 +339,10 @@ fn assert_no_answer_beats_its_offer(log: &MeasureLog) {
 /// estimate, a transient content measure) must get the offer-shaped answer,
 /// not the stale intrinsic.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the pane must answer its exact offered share"
+)]
 fn connected_dynamic_panes_answer_the_offer_not_their_intrinsic() {
     use crate::renderer::{
         measure_view_dimensions, measure_view_dimensions_with_proposal, normalize_layout_view,
@@ -491,6 +495,10 @@ fn scene_view_panes_take_their_offered_share() {
 /// up to its content's — so a finite offer caps the answer while an open
 /// axis still reads the full extent (spec §5, §6 `ScrollView`).
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "each pane must answer exactly half the offered width"
+)]
 fn lazy_stack_panes_split_the_divider_width() {
     use crate::renderer::{measure_view_dimensions_with_proposal, normalize_layout_view};
     use waterui_layout::stack::HStackLayout;
@@ -612,6 +620,10 @@ fn lazy_stack_panes_split_the_divider_width() {
 /// per child logs every min/ideal/max probe answer and every negotiated
 /// offer — the leaf-level evidence of which answer beat its offer.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "each pane must answer exactly half the offered width"
+)]
 fn input_scene_view_panes_split_the_divider_width() {
     let env = test_environment().extending(SceneViewMergeToParent);
     let mut renderer = test_renderer();

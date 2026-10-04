@@ -19,6 +19,10 @@ fn tmp() -> std::path::PathBuf {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "a self-comparison must report exactly zero error"
+)]
 fn self_comparison_is_perfect() {
     let mut b = Scene::builder(W, H);
     b.root().fill(
@@ -38,6 +42,10 @@ fn self_comparison_is_perfect() {
     reason = "comparing f32 channels against f64 constants"
 )]
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "a solid fill produces the exact constant colour"
+)]
 fn solid_rect_fills_pixel_centres() {
     let mut b = Scene::builder(W, H);
     b.root().fill(
@@ -64,6 +72,10 @@ fn solid_rect_fills_pixel_centres() {
 /// 0.5 in pixel column 9; multiplying the independent coverages
 /// (0.75 × 0.75) would give 0.5625. This test locks in the geometric rule.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "outside the clip the alpha is exactly zero"
+)]
 fn clip_is_geometric_intersection() {
     let mut b = Scene::builder(W, H).clear(Color::new(
         cherenkov_scene::ColorSpace::Srgb,
@@ -100,6 +112,10 @@ fn clip_is_geometric_intersection() {
 /// clip drop the fill's inside piece, and the open contour read as
 /// covered to the left of the clip.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "outside the clip the alpha is exactly zero"
+)]
 fn ellipse_clip_writes_nothing_outside_the_tip() {
     const W: usize = 144;
     let mut b = Scene::builder(144, 144).clear(Color::new(
@@ -188,6 +204,10 @@ fn linear_gradient_at_pixel_centre() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the metric of identical inputs is exactly zero"
+)]
 fn metrics_detect_error() {
     let mut b = Scene::builder(W, H);
     b.root().fill(
@@ -592,6 +612,10 @@ fn coverage_rotated_squares_exact() {
 /// exactly — it must not blend with the *interior* neighbour under a
 /// flipped weight.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "clamped sampling returns the exact edge texel"
+)]
 fn bilinear_clamps_at_edges() {
     use cherenkov_oracle::paint::sample_image;
     use cherenkov_scene::Sampling;

@@ -17,6 +17,10 @@ fn engine() -> Engine<Raster> {
 const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the CPU raster is deterministic, so coverage is exact"
+)]
 fn a_half_edge_rect_has_exact_coverage() {
     let engine = engine();
     let surface = engine
@@ -45,6 +49,10 @@ fn a_half_edge_rect_has_exact_coverage() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the stored value is the exact f16 rounding"
+)]
 fn linear_f16_is_the_f16_rounding_of_f32() {
     let engine = engine();
     for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
@@ -69,6 +77,10 @@ fn linear_f16_is_the_f16_rounding_of_f32() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the CPU raster is deterministic, so coverage is exact"
+)]
 fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
     let mut path = BezPath::new();
     for (a, b) in [(4.0, 60.0), (16.0, 48.0)] {

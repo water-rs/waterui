@@ -40,6 +40,21 @@ fn engine() -> Option<Engine<Gpu>> {
 }
 }
 
+/// Readback pixels pass through the GPU raster, so an assert compares
+/// against the ideal constant within a sub-LSB tolerance rather than
+/// requiring bit-exact floats.
+const READBACK_EPS: f32 = 1.0 / 255.0;
+
+fn assert_rgba(actual: [f32; 4], expected: [f32; 4], context: &str) {
+    assert!(
+        actual
+            .iter()
+            .zip(expected.iter())
+            .all(|(a, e)| (a - e).abs() < READBACK_EPS),
+        "{context}: actual {actual:?}, expected {expected:?}"
+    );
+}
+
 split_test! {
 fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>> {
     let Some(engine) = wait!(engine()) else {
@@ -63,7 +78,7 @@ fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>>
         (r - 1.0).abs() < 1e-2 && g.abs() < 1e-2 && b.abs() < 1e-2 && (a - 1.0).abs() < 1e-2,
         "center pixel: {r} {g} {b} {a}"
     );
-    assert_eq!(px(2, 2), [0.0; 4], "corner pixel must be the clear colour");
+    assert_rgba(px(2, 2), [0.0; 4], "corner pixel must be the clear colour");
     Ok(())
 }
 }
@@ -494,11 +509,7 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
     );
     let readback = wait!(surface.readback())?;
     let px = |x: u32, y: u32| readback.pixels[(y * readback.width + x) as usize];
-    assert_eq!(
-        px(32, 32),
-        [1.0, 0.0, 0.0, 1.0],
-        "solid fill centre must be exactly opaque red"
-    );
+    assert_rgba(px(32, 32), [1.0, 0.0, 0.0, 1.0], "solid fill centre must be opaque red");
     let [r, g, b, a] = px(100, 30);
     let t = (100.5 - 80.0) / 48.0;
     assert!(
@@ -508,11 +519,7 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
             && (f64::from(a) - 1.0).abs() < 1.0 / 255.0,
         "gradient under clip at (100,30): {r} {g} {b} {a}, t {t}"
     );
-    assert_eq!(
-        px(125, 80),
-        [0.0; 4],
-        "inside the fill rect but outside the clip: nothing"
-    );
+    assert_rgba(px(125, 80), [0.0; 4], "inside the fill rect but outside the clip: nothing");
     Ok(())
 }
 }

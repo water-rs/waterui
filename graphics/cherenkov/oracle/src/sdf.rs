@@ -522,6 +522,10 @@ mod tests {
     use kurbo::RoundedRect;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "sampling at a texel centre must return the texel exactly"
+    )]
     fn bilinear_at_texel_centres_is_the_texel() {
         let px: Vec<[f64; 4]> = (0..16)
             .map(|i| [f64::from(i), f64::from(i * 3), 0.5, 1.0])

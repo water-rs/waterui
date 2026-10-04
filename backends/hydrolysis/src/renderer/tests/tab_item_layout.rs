@@ -86,6 +86,10 @@ fn renderer_asks_the_layout_hook_with_bar_width_and_item_count() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the highlight bounds are exact layout constants"
+)]
 fn vertical_layout_draws_the_label_strip_highlight() {
     let env = test_environment();
     let draws = Rc::new(RefCell::new(Vec::new()));

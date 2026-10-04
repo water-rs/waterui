@@ -435,6 +435,10 @@ mod tests {
     use waterui_backend_core::widget::StepperMetrics;
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the label must share the exact centre line"
+    )]
     fn label_shares_the_controls_centre_line() {
         let metrics = StepperMetrics::new(24.0, 32.0, 28.0, 8.0, 8.0);
         let (controls, label) =

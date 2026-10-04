@@ -219,9 +219,24 @@ fn an_image_pattern_with_extend_none_is_transparent() -> Result<(), Box<dyn std:
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
     close_px(px(0, 0), premul_p3([255, 0, 0, 255]));
-    assert_eq!(px(8, 8), [0.0; 4], "outside the image must be clear");
+    assert_rgba(px(8, 8), [0.0; 4], "outside the image must be clear");
     Ok(())
 }
+}
+
+/// Readback pixels pass through the GPU raster, so an assert compares
+/// against the ideal constant within a sub-LSB tolerance rather than
+/// requiring bit-exact floats.
+const READBACK_EPS: f32 = 1.0 / 255.0;
+
+fn assert_rgba(actual: [f32; 4], expected: [f32; 4], context: &str) {
+    assert!(
+        actual
+            .iter()
+            .zip(expected.iter())
+            .all(|(a, e)| (a - e).abs() < READBACK_EPS),
+        "{context}: actual {actual:?}, expected {expected:?}"
+    );
 }
 
 /// f16 texel bytes for one pixel.

@@ -306,6 +306,10 @@ fn registration_signal<T: Clone + 'static>(
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the snapshot preserves the exact registered constant"
+)]
 fn subscribed_snapshot_preserves_registration_animation_metadata() {
     let signal = registration_signal(
         0.25,
@@ -327,6 +331,10 @@ fn subscribed_snapshot_preserves_registration_animation_metadata() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the resolved snapshot is the exact animated constant"
+)]
 fn animated_scalar_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(0.25, nami::watcher::Context::from(0.25));
     let mut renderer = test_renderer();
@@ -338,6 +346,7 @@ fn animated_scalar_subscribes_before_reading_its_snapshot() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "progress is the exact initial constant")]
 fn toggle_progress_subscribes_before_reading_its_snapshot() {
     let signal = registration_signal(false, nami::watcher::Context::from(false));
     let mut renderer = test_renderer();
@@ -594,6 +603,10 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the intrinsic answer is exact theme-token arithmetic"
+)]
 fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
@@ -612,6 +625,10 @@ fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposa
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the intrinsic answer is exact theme-token arithmetic"
+)]
 fn state_wrapped_button_remains_non_stretch_for_layout() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
@@ -675,6 +692,10 @@ fn vstack_places_state_wrapped_button_at_intrinsic_width() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "intrinsic bounds come from exact style-token arithmetic"
+)]
 fn floating_button_measurement_uses_style_tokens() {
     let env = test_environment();
     let floating_style = FloatingStyle {
@@ -749,6 +770,7 @@ fn button_outside_a_floating_surface_ignores_ambient_floating_tokens() {
 }
 
 #[test]
+#[expect(clippy::float_cmp, reason = "zoom is the exact bound signal value")]
 fn stacked_icon_buttons_above_gesture_surface_receive_clicks() {
     let env = test_environment();
     let zoom: Binding<f64> = nami::binding(1.0);
@@ -1950,6 +1972,10 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "wave progress and opacity are exact interaction-state constants"
+)]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
     let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
     press_waves.push(waterui_backend_core::widget::PressWave {
@@ -2048,6 +2074,10 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "focus progress is the exact resolved constant"
+)]
 fn interaction_engine_resolves_focus_state() {
     let mut renderer = test_renderer();
     let env = test_environment();
@@ -3495,6 +3525,10 @@ fn every_view_answers_the_three_point_probe_consistently() {
 /// edge in RTL — and its bottom edge overlaps the top edge by `offset_y`,
 /// matching `BadgedBox` in Compose. They are not center offsets.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "badge offsets are exact theme metrics, so pixel-exact comparison is intended"
+)]
 fn badge_indicator_anchors_to_the_content_trailing_edge() {
     use waterui::component::badge::Badge;
     use waterui_core::layout::LayoutDirection;

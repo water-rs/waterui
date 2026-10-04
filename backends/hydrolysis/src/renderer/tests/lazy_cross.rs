@@ -93,6 +93,10 @@ fn lazy_view_path_answers_what_its_item_answers() {
 /// lazy stack must report the offered cross extent — the content's intrinsic
 /// is what the viewport clips, not what the scroll is.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the shell must answer the exact proposed width"
+)]
 fn scroll_shell_answers_its_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());

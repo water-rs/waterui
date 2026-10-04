@@ -660,6 +660,10 @@ fn an_explicit_maximum_clamps_a_larger_window() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "a valid zero minimum must survive exactly, not be replaced"
+)]
 fn zero_layout_minimum_is_not_replaced_by_ideal_size() {
     use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView, SubviewPlacement};
     use waterui_layout::container::FixedContainer;
@@ -739,6 +743,10 @@ fn window_minimum_is_the_coupled_box_not_independent_axes() {
 }
 
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the retained frame is the exact latest size"
+)]
 fn rapid_resize_events_keep_the_retained_tree_at_the_latest_size() {
     use std::{cell::Cell, rc::Rc};
 

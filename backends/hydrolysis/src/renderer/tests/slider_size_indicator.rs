@@ -73,6 +73,10 @@ fn pointer_up(runtime: &mut HeadlessRuntime, x: f32, y: f32) {
 /// asked for and answers a track height that grows with the size, so a drawn
 /// track rect reveals which metrics the renderer resolved.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the control size is the exact theme metric"
+)]
 fn slider_size_reaches_theme_metrics() {
     let env = test_environment();
     let sizes = Rc::new(RefCell::new(Vec::new()));
@@ -125,6 +129,10 @@ fn slider_size_reaches_theme_metrics() {
 /// formatter tracks the dragged value, and releasing the pointer retires the
 /// indicator.
 #[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "the indicator geometry is exact theme arithmetic"
+)]
 fn value_indicator_only_while_dragging() {
     let indicator_draws = Rc::new(RefCell::new(Vec::new()));
     let formatted = Rc::new(RefCell::new(Vec::<f64>::new()));
