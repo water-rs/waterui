@@ -54,11 +54,13 @@ use crate::callback::guarded;
 use crate::menu::{Command, MenuTreeNode};
 use crate::uikit::host_view::HostView;
 
-/// The colors a panel draws its chrome with. The owner resolves them from
-/// the theme the menu presents in — `Foreground`, `MutedForeground`,
-/// `Error`, `Border`, `SelectionContainer` and `Surface` — and pushes a new
-/// palette through [`ContextMenuPopover::apply_palette`] whenever a token
-/// changes, so a panel already on screen repaints in place.
+/// The colors a panel draws its chrome with.
+///
+/// The owner resolves them from the theme the menu presents in —
+/// `Foreground`, `MutedForeground`, `Error`, `Border`,
+/// `SelectionContainer` and `Surface` — and pushes a new palette through
+/// [`ContextMenuPopover::apply_palette`] whenever a token changes, so a
+/// panel already on screen repaints in place.
 #[derive(Debug, Clone)]
 pub struct PanelPalette {
     /// Row titles, subtitles' base and non-destructive symbols.
@@ -1223,10 +1225,11 @@ impl MenuPanelDelegate {
     }
 }
 
-/// An assembled popover panel: the controller `UIKit` presents and the
-/// delegate it consults. `UIKit` holds the popover's delegate weakly, so
-/// this value owns it for the presentation. A clone shares the same
-/// presented panel — the owner keeps one for borrowing-free dismissal.
+/// An assembled popover panel: the controller `UIKit` presents.
+///
+/// `UIKit` holds the popover's delegate weakly, so this value owns it for
+/// the presentation. A clone shares the same presented panel — the owner
+/// keeps one for borrowing-free dismissal.
 #[derive(Debug, Clone)]
 pub struct ContextMenuPopover {
     controller: Retained<MenuPanelController>,
