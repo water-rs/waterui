@@ -1018,12 +1018,13 @@ impl NativeRenderer {
     /// compositor's completion path once the GPU stopped sampling it. A
     /// frame whose full key no longer matches the pool's current key is
     /// dropped instead: outstanding old-key storage never joins the new
-    /// pool.
+    /// pool. A frame settling after the pool was reset (shutdown) is
+    /// dropped without re-arming the pool — an outstanding capture must
+    /// never resurrect lifetime the owner already ended.
     fn return_frame(&mut self, frame: NativeRasterFrame) {
-        let key = self
-            .key
-            .as_ref()
-            .expect("a returned frame was issued under a key");
+        let Some(key) = &self.key else {
+            return;
+        };
         if frame.generation == key.generation
             && frame.pixel_width == key.pixel_width
             && frame.pixel_height == key.pixel_height
@@ -1069,6 +1070,40 @@ struct Preparation {
     /// The registrations this capture's snapshot owns — kept alive past
     /// any membership change in `active` until the frame settles.
     surfaces: HashMap<usize, Rc<SurfaceRegistration>>,
+}
+
+/// The one outer capture transaction, closed on every exit: `commit`
+/// runs explicitly as the pass's sole commit; `Drop` closes it when the
+/// pass exits early — suppression is restored (by [`SuppressionGuard`],
+/// declared after it) before that close so no suppressed state can be
+/// published. `CATransaction` has no abort: committing a restored-state
+/// transaction is the only way to end it without leaking an open
+/// transaction onto the thread's stack.
+struct TransactionGuard {
+    committed: bool,
+}
+
+impl TransactionGuard {
+    /// Opens the capture transaction with actions disabled.
+    fn begin() -> Self {
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        Self { committed: false }
+    }
+
+    /// Performs the pass's sole commit.
+    fn commit(mut self) {
+        self.committed = true;
+        CATransaction::commit();
+    }
+}
+
+impl Drop for TransactionGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            CATransaction::commit();
+        }
+    }
 }
 
 /// Restores capture suppression on exactly the subset of `snapshots`
@@ -1315,13 +1350,15 @@ impl ViewCapture {
         // The layer tree itself is never transformed or reparented — the
         // destination geometry lives in the context's CTM.
         {
-            CATransaction::begin();
-            CATransaction::setDisableActions(true);
+            // Declared in drop order: `transaction` closes AFTER
+            // `suppression` restores, so an early exit commits only the
+            // already-restored model state.
+            let transaction = TransactionGuard::begin();
             let mut suppression = SuppressionGuard::new(&snapshots);
             suppression.begin();
             raster.draw(&layer, geometry);
             suppression.end();
-            CATransaction::commit();
+            transaction.commit();
             flush_transaction();
         }
 
@@ -1408,20 +1445,26 @@ impl ViewCapture {
             .clone()
             .expect("a view capture's redraw hook must be installed before capture");
         let mut active = self.active.borrow_mut();
-        // Part first: a surface absent from this snapshot leaves the map
-        // — its registration ends when the last owner (the map or an
-        // outstanding capture's snapshot) drops on this thread.
-        active.retain(|id, _| snapshots.iter().any(|s| s.spec.surface_id == *id));
-        // Join: one registration per surface, begun once, `Rc`-shared by
-        // the map and every capture that snapshots it.
-        for snapshot in snapshots {
-            active.entry(snapshot.spec.surface_id).or_insert_with(|| {
-                snapshot.surface.begin_external_rendering(on_redraw.clone());
-                Rc::new(SurfaceRegistration {
-                    surface: snapshot.surface.clone(),
-                })
-            });
-        }
+        // One pass over the snapshot: the next registration set is built
+        // keyed by surface id — surviving surfaces keep their `Rc` lease,
+        // parted ones drop out (their registration ends when the last
+        // owner, map or outstanding capture, drops on this thread), and
+        // each new surface is begun exactly once. No per-surface scan of
+        // the snapshot, so nested-GPU-child scenes stay linear.
+        let next: HashMap<usize, Rc<SurfaceRegistration>> = snapshots
+            .iter()
+            .map(|s| {
+                let id = s.spec.surface_id;
+                let registration = active.get(&id).cloned().unwrap_or_else(|| {
+                    s.surface.begin_external_rendering(on_redraw.clone());
+                    Rc::new(SurfaceRegistration {
+                        surface: s.surface.clone(),
+                    })
+                });
+                (id, registration)
+            })
+            .collect();
+        *active = next;
     }
 
     /// Final GPU half: each surface renders into its private texture, then a
@@ -1477,13 +1520,15 @@ impl ViewCapture {
                     Self::compose(&compositor, preparation, rendered, completion, return_to);
                 } else {
                     // No usable pixels: the frame never submitted —
-                    // release its lease unreturned. Destruction still
-                    // happens on the main queue where the preparation's
-                    // CG/Metal objects belong, then the failure reports.
+                    // release its lease unreturned. Destruction AND the
+                    // failure report both happen on the main queue, in
+                    // that order: the completion contract is main-thread,
+                    // and the caller settles only after the leased
+                    // cleanup it owns has run.
                     enqueue(move |_| {
                         drop(preparation);
+                        completion(false);
                     });
-                    completion(false);
                 }
             }
         }));
@@ -1542,14 +1587,18 @@ impl ViewCapture {
                     // either result; only a completed frame may return
                     // to the pool, and an error frame is reported and
                     // dropped, never pretended to have submitted.
-                    let completed = buffer.status() == MTLCommandBufferStatus::Completed;
-                    let error = (!completed)
-                        .then(|| {
-                            buffer
-                                .error()
-                                .map(|error| error.localizedDescription().to_string())
-                        })
-                        .flatten();
+                    let status = buffer.status();
+                    let completed = status == MTLCommandBufferStatus::Completed;
+                    // Status is the authoritative outcome; the `NSError`
+                    // payload is optional. A non-completed buffer always
+                    // reports — with the error's description when there
+                    // is one, with the status itself when there isn't.
+                    let error = (!completed).then(|| {
+                        buffer.error().map_or_else(
+                            || format!("command buffer ended with status {status:?}"),
+                            |error| error.localizedDescription().to_string(),
+                        )
+                    });
                     let settle = settle.lock().expect("capture lock").take();
                     if let Some(settle) = settle {
                         enqueue(move |mtm| {
@@ -1655,6 +1704,28 @@ mod tests {
             renderer.available.is_empty(),
             "a superseded generation's frame must never rejoin the pool"
         );
+        // A different destination key drains the pool the same way:
+        // frames issued under one geometry never answer another, and
+        // stale-key returns drop rather than re-populate.
+        let wide_a = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 128, 96, 1);
+        let wide_b = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 128, 96, 1);
+        let narrow = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 1);
+        renderer.return_frame(wide_a.into_frame());
+        renderer.return_frame(wide_b.into_frame());
+        assert!(
+            renderer.available.is_empty(),
+            "frames from a superseded key must never rejoin the pool"
+        );
+        // And a pool the owner ended (shutdown) drops a still-outstanding
+        // frame instead of re-arming — a post-teardown settle is
+        // reachable, so it must be quiet, not a panic.
+        renderer = NativeRenderer::default();
+        renderer.return_frame(narrow.into_frame());
+        assert!(
+            renderer.available.is_empty(),
+            "a frame settling after shutdown is dropped, not re-pooled"
+        );
+        let _rearmed = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 0);
     }
 
     /// Regression test for the deferred-surface defect: a batch holding
