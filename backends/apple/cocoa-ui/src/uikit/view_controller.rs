@@ -79,7 +79,7 @@ impl ViewController {
         }
     }
 
-    /// The view filling the window, into which content is placed.
+    /// The controller's root host view, into which content is placed.
     #[must_use]
     pub fn host_view(&self) -> &HostView {
         &self.ivars().view

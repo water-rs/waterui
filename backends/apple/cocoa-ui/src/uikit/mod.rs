@@ -12,7 +12,7 @@
 //!
 //! ```no_run
 //! use cocoa_ui::MainThreadMarker;
-//! use cocoa_ui::uikit::{self, ApplicationHandlers, ViewController, Window};
+//! use cocoa_ui::uikit::{self, ApplicationHandlers, ViewController, Window, window_root};
 //!
 //! let mtm = MainThreadMarker::new().expect("main runs on the main thread");
 //! uikit::run(
