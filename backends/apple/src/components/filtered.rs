@@ -1350,6 +1350,12 @@ pub fn install(dispatcher: &mut Dispatcher) {
             });
         }
 
+        // Every view-owned callback holds the state weakly: the view retains
+        // its handlers, the state retains the view, so a strong capture here
+        // closes `Rc<FilteredState> → HostView → handler → Rc<FilteredState>`
+        // and the leaf's teardown could never release the state (WaterUI
+        // #1567). With the weak edge the guard's teardown drops the last
+        // strong ref and the native view is released with it.
         {
             let weak = Rc::downgrade(&state);
             view.set_layout_handler(move |_| {
@@ -1366,10 +1372,23 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 }
             });
         }
+        {
+            let weak = Rc::downgrade(&state);
+            view.set_superview_handler(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    refresh_visibility_watches(&state);
+                    initialize_gpu(&state);
+                    schedule_frame_if_needed(&state);
+                }
+            });
+        }
         #[cfg(target_os = "macos")]
         {
-            let state = state.clone();
+            let weak = Rc::downgrade(&state);
             view.set_backing_changed_handler(move |_| {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
                 if cocoa_ui::view::window(&state.view).is_none() {
                     return;
                 }

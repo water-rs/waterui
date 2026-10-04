@@ -1136,9 +1136,13 @@ fn install_input(
     let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
     let input = platform_input_view(mtm);
     let weak = Rc::downgrade(state);
-    let host = view.clone();
+    // The input responder is a subview of `view`: the view retains it, its
+    // handler must not retain the view back — `host → subtree → input →
+    // handler → host` would pin the whole graph past teardown (WaterUI
+    // #1567). Both captures stay weak.
+    let host = objc2::rc::Weak::new(&**view);
     input.set_event_handler(move |event| {
-        let Some(state) = weak.upgrade() else {
+        let (Some(state), Some(host)) = (weak.upgrade(), host.load()) else {
             return;
         };
         let event = crate::gpu_input::translate(&event);
@@ -1153,15 +1157,17 @@ fn install_input(
         }
     });
     input.set_caret_provider({
-        let state = state.clone();
+        let weak = Rc::downgrade(state);
         move || {
-            state.view.borrow().ime_caret().map(|rect| {
-                cocoa_ui::Rect::new(
-                    rect.origin().x,
-                    rect.origin().y,
-                    rect.size().width,
-                    rect.size().height,
-                )
+            weak.upgrade().and_then(|state| {
+                state.view.borrow().ime_caret().map(|rect| {
+                    cocoa_ui::Rect::new(
+                        rect.origin().x,
+                        rect.origin().y,
+                        rect.size().width,
+                        rect.size().height,
+                    )
+                })
             })
         }
     });
