@@ -219,10 +219,10 @@ def test_root_package_sources_select_waterui():
 
 @pytestmark_tool
 def test_controls_only_diff_is_a_test_asset_consumer():
-    # `waterui-controls` dev-depends on `waterui-testing`, which enables
-    # `hydrolysis/testing` — the feature whose TEST_FONTS include_bytes!
-    # the generated fonts. The consumer set is derived from the graph, so
-    # this diff must be flagged without naming the crate anywhere.
+    # `waterui-controls` dev-depends on `waterui-testing`, the crate whose
+    # styled tests resolve the installed test fonts by family name. The
+    # consumer set is derived from the graph, so this diff must be flagged
+    # without naming the crate anywhere.
     report = _report({"components/foundation/controls/src/lib.rs": "// doc\n"})
     assert report["workspace"] is False
     assert "waterui-controls" in report["affected"]

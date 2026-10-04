@@ -1,0 +1,45 @@
+[package]
+name = "filtrate-derive"
+version = "0.1.0"
+edition.workspace = true
+rust-version = "1.95"
+authors = ["Lexo Liu"]
+readme = "README.md"
+repository.workspace = true
+description = "Procedural macros for the filtrate GPU filter library."
+keywords = ["gpu", "filter", "derive", "proc-macro"]
+categories = ["graphics", "rendering"]
+license = "Apache-2.0 OR MIT"
+
+[lib]
+proc-macro = true
+
+# filtrate's lint policy is stricter than the workspace default: it warns on
+# every clippy group (including `cargo` lints), undocumented unsafe blocks,
+# and missing Debug impls. The first entries repeat the workspace lints
+# because `[lints] workspace = true` cannot be combined with extra entries.
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+multiple_crate_versions = "allow"
+
+[dependencies]
+syn = { version = "3", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+proc-macro-crate = "3"
+
+[dev-dependencies]

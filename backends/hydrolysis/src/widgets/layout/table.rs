@@ -561,9 +561,10 @@ pub fn render_table_parts(
             origin_y + layout_metrics.header_height,
         );
         let theme = ctx.theme();
-        let mut draw = ctx.draw_context();
-        theme.draw_table_background(&mut draw, table_rect);
-        theme.draw_table_header_background(&mut draw, header_rect);
+        ctx.draw_context(|draw| {
+            theme.draw_table_background(&mut *draw, table_rect);
+            theme.draw_table_header_background(&mut *draw, header_rect);
+        });
     }
 
     // Begin a fresh frame for the per-cell content sub-view cache: only cells touched
@@ -626,8 +627,9 @@ pub fn render_table_parts(
                 );
             }
             let theme = ctx.theme();
-            let mut draw = ctx.draw_context();
-            theme.draw_table_cell_border(&mut draw, cell_rect);
+            ctx.draw_context(|draw| {
+                theme.draw_table_cell_border(&mut *draw, cell_rect);
+            });
         }
 
         let separator_from = kurbo::Point::new(origin_x + x_offset + width, origin_y);
@@ -636,9 +638,10 @@ pub fn render_table_parts(
             origin_y + table_metrics.table_height,
         );
         let theme = ctx.theme();
-        let mut draw = ctx.draw_context();
-        theme.draw_table_column_separator(&mut draw, separator_from, separator_to);
-        x_offset += width;
+        ctx.draw_context(|draw| {
+            theme.draw_table_column_separator(&mut *draw, separator_from, separator_to);
+            x_offset += width;
+        });
     }
     // Evict content sub-views for cells no longer in the visible window.
     state.borrow().item_cache.borrow_mut().end_frame();

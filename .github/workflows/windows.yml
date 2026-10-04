@@ -75,10 +75,16 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # nextest compiles hydrolysis's test targets, which `include_bytes!`
-      # the generated fonts — the repository stores none of them.
+      # nextest runs the styled test targets, which resolve the installed
+      # test-font families through system font discovery and read the
+      # generated fixtures — the repository stores none of them.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      # Same for the Cherenkov test targets the workspace pass below
+      # compiles and runs: their fonts and corpus scenes are generated,
+      # not committed.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
@@ -181,8 +187,8 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The all-features pass compiles hydrolysis's test targets too; their
-      # font table is generated, not committed.
+      # The all-features pass runs the styled test targets too; their
+      # font families must be installed — the repository stores none.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       - name: Test (root crate, every feature but dynamic_linking)
@@ -237,8 +243,9 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      # `--all-targets` clippy compiles hydrolysis's `#[cfg(test)]` modules,
-      # which `include_bytes!` fonts the repository does not store.
+      # `--all-targets` clippy compiles waterui-cli's `#[cfg(test)]` module,
+      # which `include_bytes!`s the generated Roboto fixture the repository
+      # does not store.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       # Compile the CEF backend without its binary distribution (see the test

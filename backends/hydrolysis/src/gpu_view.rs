@@ -26,8 +26,13 @@ use waterui_graphics::gpu::{ExternalFrameView, FrameReceiver, GpuContentView};
 pub struct GpuContentRuntime {
     pub(crate) view: GpuContentView,
     /// `true` once `take_engine_content` has run; the producer is on the
-    /// engine from then on and only `gpu_content_size`/transform edits apply.
+    /// engine from then on and only re-bind/transform edits apply.
     pub(crate) installed: bool,
+    /// The engine producer the content was registered as, retained so its
+    /// binding can be re-issued and the producer retired on drop.
+    pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
+    /// The pixel size the producer is currently bound at.
+    pub(crate) bound_size: Option<(u32, u32)>,
 }
 
 impl GpuContentRuntime {
@@ -35,6 +40,8 @@ impl GpuContentRuntime {
         Self {
             view,
             installed: false,
+            producer: None,
+            bound_size: None,
         }
     }
 }
@@ -51,8 +58,16 @@ pub struct ExternalFrameRuntime {
     pub(crate) view: ExternalFrameView,
     /// The mailbox drain end, installed by the compositor's install pass.
     pub(crate) receiver: Option<FrameReceiver>,
+    /// The submitted-frame producer/sink pair the compositor created with
+    /// the receiver: `sink` submits each new frame, `producer` re-issues the
+    /// binding when the plane size changes.
+    pub(crate) producer: Option<cherenkov::GpuProducer<cherenkov_gpu::Gpu>>,
+    /// The submission end of `producer`'s pair.
+    pub(crate) sink: Option<cherenkov::FrameSink<cherenkov_gpu::Gpu>>,
     /// The plane size of the last presented frame, for the stretch transform.
     pub(crate) frame_pixels: Option<(u32, u32)>,
+    /// The pixel size the producer is currently bound at.
+    pub(crate) bound_size: Option<(u32, u32)>,
 }
 
 impl ExternalFrameRuntime {
@@ -60,7 +75,10 @@ impl ExternalFrameRuntime {
         Self {
             view,
             receiver: None,
+            producer: None,
+            sink: None,
             frame_pixels: None,
+            bound_size: None,
         }
     }
 }

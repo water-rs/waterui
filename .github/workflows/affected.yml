@@ -40,10 +40,18 @@ on:
         value: ${{ jobs.scope.outputs.msrv }}
       test-assets:
         description: >
-          `true` when a package whose test targets compile generated
-          assets — hydrolysis's fonts/fixture or waterui-cli's generated
-          font — is in scope.
+          `true` when a package whose test code needs a generated or
+          installed asset — waterui-cli's `include_bytes!`d Roboto
+          fixture, or the test fonts the styled suites resolve by
+          family name — is in scope.
         value: ${{ jobs.scope.outputs.test-assets }}
+      scene-assets:
+        description: >
+          `true` when cherenkov-oracle or cherenkov-gpu is in scope — the
+          packages whose `--all-targets` compile `include_bytes!`s the
+          generated Cherenkov scene fonts — so the scene tree must exist
+          before the check.
+        value: ${{ jobs.scope.outputs.scene-assets }}
 
 jobs:
   scope:
@@ -56,6 +64,7 @@ jobs:
       comment-only: ${{ steps.compute.outputs.comment-only }}
       msrv: ${{ steps.compute.outputs.msrv }}
       test-assets: ${{ steps.compute.outputs.test-assets }}
+      scene-assets: ${{ steps.compute.outputs.scene-assets }}
     steps:
       - uses: actions/checkout@v4
         # The diff and the base revision's package graph both need the
@@ -99,6 +108,7 @@ jobs:
               echo "comment-only=false"
               echo "msrv=true"
               echo "test-assets=true"
+              echo "scene-assets=true"
             } >> "$GITHUB_OUTPUT"
           else
             uv run .github/scripts/affected.py --base "${{ inputs.base }}"
