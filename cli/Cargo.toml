@@ -129,7 +129,6 @@ fs4 = "1.1.0"
 fontcull-klippa = { version = "0.1.2", optional = true }
 fontcull-write-fonts = { version = "0.44.3", optional = true }
 toml_edit = { version = "=0.25.13", features = ["serde"] }
-diffy = { version = "=0.5.0", default-features = false }
 cargo-lock = { version = "=10.1.0", default-features = false }
 rustc-demangle = "0.1"
 # `water update`: reads the install receipt the dist shell/powershell
@@ -212,6 +211,6 @@ fontcull-skrifa = "0.39.2"
 syn = { version = "2", features = ["full"] }
 
 [package.metadata.cargo-machete]
-ignored = ["roxmltree", "waterui-inspector-protocol"]
+ignored = ["roxmltree"]
 
 
