@@ -183,6 +183,8 @@ struct RunResult {
     n: u32,
     commit: String,
     bundle_id: String,
+    pid: u32,
+    launch_time_unix: u64,
     argv: Vec<String>,
     thermal_state_start: String,
     thermal_state_end: String,
@@ -412,6 +414,23 @@ pub fn install(config: &BenchConfig, mtm: MainThreadMarker, handles: SceneHandle
         thermal_state_start: thermal_state_name(),
         done: false,
     }));
+    // A retried run_id must never surface a result file left by an earlier
+    // attempt: clear every `bench-<run_id>*` artifact this app owns first.
+    let documents = std::env::home_dir()
+        .unwrap_or_else(|| "/tmp".into())
+        .join("Documents");
+    if let Ok(entries) = std::fs::read_dir(&documents) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .is_some_and(|name| name.starts_with(&format!("bench-{}", config.run_id)))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     inner.borrow_mut().mark("launch");
 
     info!(
@@ -693,6 +712,11 @@ fn result_json(inner: &Inner, config: &BenchConfig, status: &str) -> String {
         variant: config.variant.clone(),
         n: config.n,
         commit: config.commit.clone(),
+        pid: std::process::id(),
+        launch_time_unix: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         bundle_id: NSBundle::mainBundle()
             .bundleIdentifier()
             .map(|id| id.to_string())
