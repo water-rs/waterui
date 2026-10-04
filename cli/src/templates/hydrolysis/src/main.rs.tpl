@@ -64,6 +64,13 @@ fn main() {
     feature = "waterui-mcp-mode"
 )))]
 fn main() {
+    {% if ctx.cef_runtime_enabled() %}
+    #[cfg(target_os = "macos")]
+    {
+        waterui_browser_cef::initialize_sandbox_early();
+        waterui_browser_cef::initialize_macos_application();
+    }
+    {% endif %}
     let env = waterui::configure_environment!(waterui::env::Environment::new());
     let app = {{ ctx.crate_name_ident() }}::app(env);
     hydrolysis::run(app, hydrolysis_m3::Material3::defaults());

@@ -3412,6 +3412,42 @@ mod tests {
     }
 
     #[test]
+    fn hydrolysis_main_installs_the_cef_application_only_with_a_cef_engine() {
+        // CEF's macOS runtime cannot initialize until the process's
+        // `NSApplication` is a `CefAppProtocol` subclass and the sandbox has
+        // started; both must happen at entry, before `app(env)` installs the
+        // engine. The generated main carries the calls exactly when the
+        // application linked `waterui-browser-cef`.
+        let main_rs = crate::templates::hydrolysis::rendered_outputs(
+            &project_ctx().with_browser_engine(Some(ResolvedWebViewBackend::Cef)),
+            "waterui-test-hydrolysis",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("src/main.rs"))
+                .then(|| String::from_utf8(content).expect("src/main.rs must be UTF-8"))
+        })
+        .expect("hydrolysis src/main.rs output should exist");
+        assert!(main_rs.contains("waterui_browser_cef::initialize_sandbox_early"));
+        assert!(main_rs.contains("waterui_browser_cef::initialize_macos_application"));
+
+        let without_cef = crate::templates::hydrolysis::rendered_outputs(
+            &project_ctx(),
+            "waterui-test-hydrolysis-nocef",
+        )
+        .expect("hydrolysis outputs should render")
+        .into_iter()
+        .find_map(|(path, content)| {
+            (path == std::path::Path::new("src/main.rs"))
+                .then(|| String::from_utf8(content).expect("src/main.rs must be UTF-8"))
+        })
+        .expect("hydrolysis src/main.rs output should exist");
+        assert!(!without_cef.contains("waterui_browser_cef::initialize_sandbox_early"));
+        assert!(!without_cef.contains("waterui_browser_cef::initialize_macos_application"));
+    }
+
+    #[test]
     fn ffi_scaffold_without_apple_backend_emits_no_apple_dependency() {
         let tempdir = tempdir().expect("temporary ffi scaffold dir");
         write_fake_framework_checkout(
