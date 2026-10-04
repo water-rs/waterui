@@ -518,8 +518,7 @@ fn dispatch_ready_demand(state: &Rc<FilteredState>) {
 /// frame may run again. Each event enqueues exactly one reconsideration;
 /// the dispatch itself decides whether the waiters are still owed.
 fn reconsider_ready_demand(state: &Rc<FilteredState>) {
-    let mtm =
-        cocoa_ui::MainThreadMarker::new().expect("filter events run on the main thread");
+    let mtm = cocoa_ui::MainThreadMarker::new().expect("filter events run on the main thread");
     let weak = Rc::downgrade(state);
     cocoa_ui::main_queue::enqueue_local(mtm, move |_mtm| {
         if let Some(state) = weak.upgrade() {

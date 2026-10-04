@@ -580,7 +580,7 @@ impl SurfaceView {
 
     fn emit_layout(&self) {
         let handler = self.ivars().on_layout.borrow().clone();
-        guarded("SurfaceView ? visibility handler", || {
+        guarded("SurfaceView layout handler", || {
             if let Some(handler) = handler {
                 handler();
             }
