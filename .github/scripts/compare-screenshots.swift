@@ -8,11 +8,13 @@ import UniformTypeIdentifiers
 //   compare-screenshots.swift compare <expected.png> <actual.png> <diff.png>
 //     Exits 0 when the fraction of pixels differing by more than `tolerance`
 //     per channel stays under `budget`, else 1; always writes an amplified
-//     diff to <diff.png> for the artifact bundle.
+//     diff to <diff.png> for the artifact bundle. Exit 1 therefore means a
+//     comparison that ran to completion and exceeded the budget — an
+//     operational failure to decode, size, or write an image exits 2.
 //   compare-screenshots.swift content <image.png>
 //     Exits 0 when the image carries real content — i.e. it is not a single
 //     near-uniform fill, which is what a crashed or never-presented render
-//     produces.
+//     produces. An unreadable image exits 2, not the blank-capture 1.
 //
 // Env knobs: DIFF_TOLERANCE (per-channel, default 16/255), DIFF_BUDGET
 // (fraction of pixels allowed to differ, default 0.02), CONTENT_BUDGET
@@ -159,12 +161,12 @@ do {
   }
 } catch CompareError.unreadable(let path) {
   FileHandle.standardError.write(Data("cannot read image: \(path)\n".utf8))
-  exit(1)
+  exit(2)
 } catch CompareError.sizeMismatch(let w, let h, let aw, let ah) {
   FileHandle.standardError.write(
     Data("size mismatch: baseline \(w)x\(h) vs capture \(aw)x\(ah)\n".utf8))
-  exit(1)
+  exit(2)
 } catch {
   FileHandle.standardError.write(Data("\(error)\n".utf8))
-  exit(1)
+  exit(2)
 }

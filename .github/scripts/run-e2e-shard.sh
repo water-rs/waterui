@@ -43,6 +43,8 @@ record="${RECORD:-0}"
 prebuilt_dir="${PREBUILT_DIR:-}"
 parity_budgets="${PARITY_BUDGETS:-${baselines_dir}/parity-budgets.json}"
 reference_dir="${workspace}/backends/apple/Tests/E2EReference"
+command_deadline="${workspace}/.github/scripts/run-with-deadline.py"
+receipts_file="${logs_dir}/command-receipts-${platform}-${shard_index}.jsonl"
 
 if [[ "${platform}" != "ios" && "${platform}" != "macos" ]]; then
   echo "::error::Unsupported platform '${platform}'. Expected ios or macos."
@@ -76,6 +78,7 @@ size_entries="${logs_dir}/.size-${platform}-${shard_index}.entries"
 : > "${startup_entries}"
 : > "${memory_entries}"
 : > "${size_entries}"
+: > "${receipts_file}"
 if [[ "${record}" == "1" ]]; then
   mkdir -p "${record_dir}/${platform}"
 fi
@@ -192,16 +195,35 @@ fi
 
 # One frame from the current platform target. macOS captures need the pid that
 # owns the window; the running example is the default, the SwiftUI reference
-# host passes its own.
+# host passes its own. Every native command runs supervised under the caller's
+# shared deadline ($2): a hung simctl/screenshot/screencapture used to block
+# the settle loop unbounded between deadline checks — measured at 451 s for a
+# single screenshot in the Actions run behind #1539 — and a failed command
+# used to be silently retried or replaced by an earlier frame.
 capture_frame() {
   local target="$1"
-  local pid="${2:-${app_pid}}"
+  local deadline_at="$2"
+  local pid="${3:-${app_pid}}"
   if [[ "${platform}" == "ios" ]]; then
-    xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null
+    # Removing the prior file first means a command that exits 0 without
+    # writing cannot let a stale frame pass as this capture.
+    rm -f "${target}"
+    "${command_deadline}" run --label "capture:simctl-io-screenshot" \
+      --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
   else
     local window_id
-    window_id="$("${swift_tools_dir}/window-id" "${pid}")"
-    screencapture -x -o -l"${window_id}" "${target}"
+    window_id="$("${command_deadline}" run --label "capture:window-id" \
+      --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      -- "${swift_tools_dir}/window-id" "${pid}")" || return
+    rm -f "${target}"
+    "${command_deadline}" run --label "capture:screencapture" \
+      --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      -- screencapture -x -o "-l${window_id}" "${target}" || return
+  fi
+  if [[ ! -f "${target}" ]]; then
+    echo "::error::${example}: the capture command exited 0 but produced no image at ${target}."
+    return 1
   fi
 }
 
@@ -222,35 +244,148 @@ capture_frame() {
 # 30 s. 10 s is ~10x that measurement and ~2.7x the static plateau the
 # failing run demonstrated, while leaving the 90 s deadline untouched.
 SETTLE_WINDOW_S=10
+# The settle budget is one shared monotonic deadline every supervised command
+# in the loop draws down — screenshots, window-id/screencapture, and the
+# compare/sleep overhead between them — not a fresh 90 s per attempt.
+CAPTURE_DEADLINE_S=90
+# Native cleanup (terminate/uninstall of the shard-owned app) gets its own
+# scoped deadline per call: a healthy simctl answers in under a second but a
+# loaded CoreSimulator has answered a benign call in ~30 s, while the stuck
+# pathology behind #1539 measured 250 s.
+CLEANUP_DEADLINE_S=60
 capture_settled() {
   local target="$1"
   local pid="${2:-}"
   local anchor="${shots_dir}/.settle-anchor.png"
   local window_start=0
-  local deadline=$((SECONDS + 90))
+  local deadline_at frame_rc compare_rc remaining_s
+  deadline_at="$("${command_deadline}" deadline --seconds "${CAPTURE_DEADLINE_S}")"
   rm -f "${anchor}"
-  while (( SECONDS < deadline )); do
-    if capture_frame "${target}" ${pid:+"${pid}"} && [[ -f "${target}" ]]; then
-      if [[ -f "${anchor}" ]] && \
-         DIFF_BUDGET=0.01 "${swift_tools_dir}/compare-screenshots" \
-           compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" >/dev/null 2>&1; then
-        if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
+  # The sole loop bound is the shared CLOCK_MONOTONIC budget, which the
+  # supervised commands themselves draw down; SECONDS is used only for the
+  # SETTLE_WINDOW_S agreement duration, as before.
+  while remaining_s="$("${command_deadline}" remaining --deadline-at "${deadline_at}")"; do
+    if capture_frame "${target}" "${deadline_at}" ${pid:+"${pid}"}; then
+      if [[ -f "${anchor}" ]]; then
+        compare_rc=0
+        # Only compare's stdout is noise here; stderr stays — it carries the
+        # supervisor's command_started/final receipt JSON and the child's own
+        # diagnostics, which is what attributes a hang if the run dies mid-way.
+        DIFF_BUDGET=0.01 "${command_deadline}" run --label "capture:compare-screenshots" \
+          --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+          -- "${swift_tools_dir}/compare-screenshots" \
+             compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" \
+             >/dev/null || compare_rc=$?
+        # Only a comparison that ran to completion may steer the anchors:
+        # exit 0 = frames agree within budget, exit 1 = a real over-budget
+        # diff restarts the window. Exit 2 (decode/write error), 124
+        # (deadline kill), or any other status is a command failure — no
+        # anchor update, no earlier-frame substitution.
+        if (( compare_rc == 0 )); then
+          if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
+            rm -f "${anchor}"
+            return 0
+          fi
+        elif (( compare_rc == 1 )); then
+          # The screen changed: the window restarts here.
+          cp "${target}" "${anchor}"
+          window_start=${SECONDS}
+        else
           rm -f "${anchor}"
-          return 0
+          if (( compare_rc == 124 )); then
+            echo "::error::${example}: the settle compare was killed at the shared ${CAPTURE_DEADLINE_S}s capture deadline; last receipt in ${receipts_file}."
+          else
+            echo "::error::${example}: the settle compare command failed (exit ${compare_rc}); last receipt in ${receipts_file}."
+          fi
+          return 1
         fi
       else
-        # First usable frame, or the screen changed: the window restarts here.
+        # First usable frame: the window starts here.
         cp "${target}" "${anchor}"
         window_start=${SECONDS}
       fi
+    else
+      # A native capture command that fails or is killed at the deadline is
+      # the failure itself: retrying it or falling back to an earlier frame
+      # would substitute a state the harness never verified (#1539). Only a
+      # loop that ran out of budget with every command still succeeding may
+      # keep the last frame below.
+      frame_rc=$?
+      rm -f "${anchor}"
+      if (( frame_rc == 124 )); then
+        echo "::error::${example}: a capture command was killed at the shared ${CAPTURE_DEADLINE_S}s capture deadline; last receipt in ${receipts_file}."
+      else
+        echo "::error::${example}: a capture command failed (exit ${frame_rc}); last receipt in ${receipts_file}."
+      fi
+      return 1
     fi
-    sleep 1
+    # The loop-top reading is stale by the time the screenshot and compare
+    # have drawn it down, so re-read the shared budget now: expiry at this
+    # point is the ordinary exhausted loop — the last successful frame is
+    # kept below — and the sleep never runs past the deadline.
+    if ! remaining_s="$("${command_deadline}" remaining --deadline-at "${deadline_at}")"; then
+      break
+    fi
+    sleep "$(awk -v r="${remaining_s}" 'BEGIN{print (r<1)?r:1}')"
   done
   rm -f "${anchor}"
   if [[ ! -f "${target}" ]]; then
     return 1
   fi
   echo "::warning::${example} never settled to a stable frame; using the last capture."
+}
+
+# One supervised `simctl terminate|uninstall <udid> <bundle>` of a shard-owned
+# app, bounded by CLEANUP_DEADLINE_S — these calls used to run `|| true`
+# unbounded, so a stuck CoreSimulator turned 250 s of silent stall into a
+# green cleanup. Observed on the iOS 27.0 runtime this script runs against:
+# `terminate` of an app that already exited fails with exit 3 and stderr
+# "Simulator device failed to terminate … (domain=NSPOSIXErrorDomain,
+# code=3) … found nothing to terminate" — exactly that result, exit 3 with
+# the message, is the only benign already-gone outcome. `uninstall` of a
+# bundle id that is not installed exits 0 quietly. Any other nonzero status,
+# and any deadline kill, is a real failure the shard reports instead of
+# hiding.
+simctl_cleanup() {
+  local what="$1" bundle="$2"
+  local deadline_at child_err rc=0
+  # The child's stderr goes to an owned per-invocation file — the helper's
+  # command_started/receipt records stay on the inherited live stderr, so a
+  # stuck cleanup is attributable in the step log instead of vanishing into
+  # a captured variable nobody reads until the command settles.
+  child_err="$(mktemp "${logs_dir}/.cleanup-${what}-stderr.XXXXXX")"
+  deadline_at="$("${command_deadline}" deadline --seconds "${CLEANUP_DEADLINE_S}")"
+  "${command_deadline}" run --label "cleanup:simctl-${what}" \
+    --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+    --child-stderr-file "${child_err}" \
+    -- xcrun simctl "${what}" "${SIMULATOR_UDID}" "${bundle}" \
+    >/dev/null || rc=$?
+  # The child has settled — reaped or deadline-killed — so its stderr is now
+  # safe to classify. Retain the diagnostics for every outcome, then drop
+  # only this owned file.
+  if [[ -s "${child_err}" ]]; then
+    echo "simctl ${what} ${bundle} stderr:" >&2
+    sed 's/^/  /' "${child_err}" >&2
+  fi
+  if (( rc == 0 )); then
+    rm -f "${child_err}"
+    return 0
+  fi
+  if (( rc == 124 )); then
+    echo "::error::${example}: 'simctl ${what} ${bundle}' was killed at the ${CLEANUP_DEADLINE_S}s cleanup deadline; last receipt in ${receipts_file}."
+    rm -f "${child_err}"
+    return 1
+  fi
+  if [[ "${what}" == "terminate" ]] && (( rc == 3 )) && \
+     grep -q "domain=NSPOSIXErrorDomain, code=3" "${child_err}" && \
+     grep -q "found nothing to terminate" "${child_err}"; then
+    echo "::notice::${example}: simctl terminate reports '${bundle}' already exited (exit 3 / NSPOSIXErrorDomain code=3); treating as clean."
+    rm -f "${child_err}"
+    return 0
+  fi
+  echo "::error::${example}: 'simctl ${what} ${bundle}' failed (exit ${rc}); stderr retained above."
+  rm -f "${child_err}"
+  return 1
 }
 
 # ── SwiftUI parity ──────────────────────────────────────────────────────────
@@ -355,7 +490,7 @@ capture_reference() {
       rc=1
     fi
     kill "${ref_stream_pid}" 2>/dev/null || true
-    xcrun simctl terminate "${SIMULATOR_UDID}" dev.waterui.E2EReference >/dev/null 2>&1 || true
+    simctl_cleanup terminate dev.waterui.E2EReference || rc=1
     return ${rc}
   else
     log stream --predicate 'subsystem == "dev.waterui"' --style compact \
@@ -659,13 +794,13 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   if ! capture_settled "${shot}"; then
     echo "::error::Could not capture a screenshot for ${example}."
     kill "${stream_pid}" 2>/dev/null || true
+    failures+=("${example}: capture")
     if [[ "${platform}" == "ios" ]]; then
-      xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
-      xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+      simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
+      simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
       kill "${app_pid}" 2>/dev/null || true
     fi
-    failures+=("${example}: capture")
     report+=("| \`${example}\` | capture failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
     echo "::endgroup::"
@@ -677,13 +812,13 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   # record the example as failed instead of "launched".
   if (( no_first_paint )); then
     kill "${stream_pid}" 2>/dev/null || true
+    failures+=("${example}: no first paint")
     if [[ "${platform}" == "ios" ]]; then
-      xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
-      xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+      simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
+      simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
       kill "${app_pid}" 2>/dev/null || true
     fi
-    failures+=("${example}: no first paint")
     report+=("| \`${example}\` | no first paint | — | — | ${size_cell} | ${mem_cell} |")
     printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
     echo "::endgroup::"
@@ -709,9 +844,13 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   fi
 
   kill "${stream_pid}" 2>/dev/null || true
+  app_terminated=1
   if [[ "${platform}" == "ios" ]]; then
-    xcrun simctl terminate "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
-    xcrun simctl uninstall "${SIMULATOR_UDID}" "${bundle_id}" >/dev/null 2>&1 || true
+    simctl_cleanup terminate "${bundle_id}" || {
+      app_terminated=0
+      failures+=("${example}: cleanup terminate")
+    }
+    simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
   else
     kill "${app_pid}" 2>/dev/null || true
   fi
@@ -752,8 +891,20 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   # SwiftUI parity: render the twin in the reference host and compare it
   # against the example capture taken above. A `.parity-skip` marker next to
   # the baselines opts a twin out while a known divergence is worked down.
+  # A failed terminate leaves the example potentially frontmost, and a
+  # reference launch over it would photograph the "back to <app>" breadcrumb
+  # — a corrupted input, not a parity measurement. That prerequisite failure
+  # is recorded explicitly for every eligible twin; the coverage does not
+  # silently disappear.
   if has_twin "${example}" && \
      [[ ! -f "${baselines_dir}/${platform}/${example}.parity-skip" ]]; then
+    if (( ! app_terminated )); then
+      echo "::error::${example}: parity prerequisite failed — 'simctl terminate' of the example did not succeed, so the reference cannot launch to a clean frontmost state; twin capture not run."
+      failures+=("${example}: parity prerequisite")
+      report+=("| \`${example}\` (parity) | prerequisite failed (terminate) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      echo "::endgroup::"
+      continue
+    fi
     ref_shot="${shots_dir}/${platform}-${example}-ref.png"
     parity_diff="${shots_dir}/${platform}-${example}-parity-diff.png"
     budget="$(parity_budget "${example}")"
