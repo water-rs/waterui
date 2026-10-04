@@ -63,6 +63,12 @@ def test_stable_scaffolds_every_released_package_by_version():
     # Backend coordinates are not scaffold packages: they stay in the table.
     assert "apple-backend-path" in scaffold
     assert "android-backend-revision" in scaffold
+    # `hydrolysis` is an in-tree member resolved through `hydrolysis-path`
+    # (#1635): the `-path` member declaration stays in the table, and it is
+    # never a scaffold package with a requirement of its own.
+    assert scaffold["hydrolysis-path"] == "backends/hydrolysis"
+    assert "hydrolysis" not in SCAFFOLD_PACKAGES
+    assert "hydrolysis-version" not in scaffold
     # Host coordinates are not scaffold packages either. The Hydrolysis
     # Android host lives in this repository (#1428): no external pin exists,
     # and the subdirectory names the Gradle composite root inside the

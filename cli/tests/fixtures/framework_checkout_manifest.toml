@@ -14,16 +14,23 @@ android-min-api-level = 26
 # framework tree; the CLI resolves `waterui-apple` from the framework's own
 # repository and revision on every channel.
 apple-backend-path = "backends/apple"
+# The self-drawn Hydrolysis backend resolves the same way through
+# `hydrolysis-path` (#1635): an in-tree member, never a scaffold package.
+hydrolysis-path = "backends/hydrolysis"
 android-backend-url = "https://github.com/water-rs/android-backend.git"
 android-backend-revision = "cccccccccccccccccccccccccccccccccccccccc"
-hydrolysis-android-host-url = "https://github.com/water-rs/hydrolysis.git"
-hydrolysis-android-host-revision = "dddddddddddddddddddddddddddddddddddddddd"
-hydrolysis-android-host-subdirectory = "android"
-scaffold-packages = ["hydrolysis", "hydrolysis-m3", "waterui-dew", "waterui-gtk", "waterui-winui"]
+# The Kotlin Android host lives in the same tree as the `hydrolysis` crate —
+# `subdirectory` names the Gradle composite root inside the framework
+# checkout the selected revision materializes.
+hydrolysis-android-host-subdirectory = "backends/hydrolysis/android"
+scaffold-packages = ["hydrolysis-m3", "waterui-dew", "waterui-gtk", "waterui-winui"]
 
 [workspace.dependencies]
-hydrolysis = { version = "0.2.1", default-features = false }
+hydrolysis = { version = "0.2.1", path = "backends/hydrolysis", default-features = false }
 hydrolysis-m3 = "0.2.1"
 waterui-dew = { git = "https://github.com/water-rs/dew", rev = "b64f6759a3ebe7ac621bad84be00fe431f978119", version = "0.2.1" }
 waterui-gtk = { git = "https://github.com/water-rs/gtk-backend", rev = "3162043e618e759bea6d6e52ec75c6ee1273c080", version = "0.2.0" }
 waterui-winui = { git = "https://github.com/water-rs/waterui-winui", rev = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", version = "0.1.0" }
+
+[patch.crates-io]
+hydrolysis = { path = "backends/hydrolysis" }
