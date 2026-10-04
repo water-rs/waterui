@@ -635,9 +635,9 @@ impl MenuPanelController {
         // A menu page shows one checkmark column: when any row is
         // selected every row reserves the gutter so titles stay aligned,
         // like the native menus do.
-        let check_gutter = nodes.iter().any(|node| {
-            matches!(node, MenuTreeNode::Command(command, _) if command.selected)
-        });
+        let check_gutter = nodes
+            .iter()
+            .any(|node| matches!(node, MenuTreeNode::Command(command, _) if command.selected));
 
         let mut push_row = |view: Retained<UIView>, kind: PanelRowKind| {
             width = match &kind {
@@ -1009,8 +1009,16 @@ fn measure_view(view: &UIView, proposal: MeasureProposal) -> CGSize {
     let size = view.intrinsicContentSize();
     let bounds = view.bounds().size;
     CGSize::new(
-        if size.width >= 0.0 { size.width } else { bounds.width },
-        if size.height >= 0.0 { size.height } else { bounds.height },
+        if size.width >= 0.0 {
+            size.width
+        } else {
+            bounds.width
+        },
+        if size.height >= 0.0 {
+            size.height
+        } else {
+            bounds.height
+        },
     )
 }
 
