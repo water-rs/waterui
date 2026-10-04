@@ -1,10 +1,10 @@
 //! The `view_renderer` service: the environment's `ViewRenderer` —
 //! `WuiViewRenderer.swift`'s `renderViewToRGBA`, ported.
 //!
-//! An offscreen window hosts the rendered leaf at its measured size, the
-//! subtree is laid out, mounted GPU surfaces are waited on for their first
-//! presented frame, and the hierarchy is rasterized into a premultiplied
-//! RGBA8 bitmap — the `CustomViewRenderer` contract.
+//! The rendered leaf is laid out at its measured size, then captured once
+//! into premultiplied RGBA8 — through the central native+GPU capture under
+//! `gpu_surface`, the plain offscreen bitmap path in a native-only build —
+//! the `CustomViewRenderer` contract.
 
 use waterui_backend_core::Environment;
 use waterui_core::AnyView;
@@ -29,7 +29,8 @@ impl CustomViewRenderer for AppleViewRenderer {
     #[allow(clippy::future_not_send)]
     async fn render_to_rgba(&self, view: AnyView, size: RenderSize) -> RenderResult {
         let leaf = self.renderer.render(view);
-        let (pixels, width, height) = capture_leaf_to_rgba(&leaf, size).await;
+        let (pixels, width, height) =
+            capture_leaf_to_rgba(&leaf, self.renderer.context().env(), size).await;
         RenderResult {
             rgba_data: pixels,
             width,
@@ -59,6 +60,7 @@ pub fn install_service(env: &mut Environment) {
 )]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
+    env: &Environment,
     size: RenderSize,
 ) -> (alloc::vec::Vec<u8>, u32, u32) {
     let view = leaf.view();
@@ -101,19 +103,28 @@ async fn capture_leaf_to_rgba(
     cocoa_ui::view::layout_immediately(view);
 
     let scale = cocoa_ui::view::backing_scale_factor(view);
-    let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
-        .unwrap_or(usize::MAX)
-        .min((usize::MAX - 3) / 4);
-    let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
-        .unwrap_or(usize::MAX)
-        .min((usize::MAX - 3) / 4);
-
     #[cfg(feature = "gpu_surface")]
-    wait_for_surfaces(view).await;
-    capture::capture(view, actual, scale, pixel_width, pixel_height)
+    {
+        // The central capture owns the native+GPU composite and its
+        // window/lifecycle — a first-frame wait here could deadlock under
+        // link-only delivery on the screenless capture window.
+        let captured = crate::capture_image::capture_rgba(view, env, scale).await;
+        (captured.pixels, captured.width, captured.height)
+    }
+    #[cfg(not(feature = "gpu_surface"))]
+    {
+        let _ = env;
+        let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
+            .unwrap_or(usize::MAX)
+            .min((usize::MAX - 3) / 4);
+        let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
+            .unwrap_or(usize::MAX)
+            .min((usize::MAX - 3) / 4);
+        capture::capture(view, actual, scale, pixel_width, pixel_height)
+    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "gpu_surface")))]
 mod capture {
     use alloc::vec::Vec;
 
@@ -157,7 +168,7 @@ mod capture {
     }
 }
 
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
 mod capture {
     use alloc::vec::Vec;
 
@@ -198,14 +209,4 @@ mod capture {
         cocoa_ui::bitmap::close_capture_window(&window);
         (pixels, pixel_width as u32, pixel_height as u32)
     }
-}
-
-/// Waits until every mounted GPU surface inside `view`'s subtree has
-/// presented a frame — `view.ready()`: the surfaces present through
-/// `IOSurface` contents, which the layer-capture paths draw like any other
-/// layer content.
-#[cfg(feature = "gpu_surface")]
-#[allow(clippy::future_not_send)]
-async fn wait_for_surfaces(view: &cocoa_ui::PlatformView) {
-    crate::components::gpu_surface::wait_for_first_frames(view).await;
 }

@@ -21,10 +21,11 @@ pub fn mark(view: &PlatformView, env: &Environment) {
         return;
     }
     let view = cocoa_ui::view::retain_base(view);
+    let env = env.clone();
     executor_core::spawn_local(async move {
         cocoa_ui::view::layout_immediately(&view);
         #[cfg(feature = "gpu_surface")]
-        crate::components::gpu_surface::wait_for_first_frames(&view).await;
+        crate::components::gpu_surface::wait_for_first_frames(&view, &env).await;
         cocoa_ui::view::display_immediately(&view);
         cocoa_ui::core_animation::flush_transaction();
         match cocoa_ui::process::time_since_start() {

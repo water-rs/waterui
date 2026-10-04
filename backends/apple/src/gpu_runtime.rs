@@ -41,6 +41,10 @@ pub unsafe fn prepare(env: *mut Environment, then: impl FnOnce() + 'static) {
         // main executor — the same thread the launch handler runs on.
         let env = unsafe { &mut *env };
         env.insert(runtime);
+        // The env-owned capture registry and presentation-time anchor must
+        // exist before any dispatcher, view renderer or mount consults them.
+        crate::capture_registry::CaptureRegistry::install(env);
+        crate::presentation_time::PresentationTime::install(env);
         then();
     })
     .detach();

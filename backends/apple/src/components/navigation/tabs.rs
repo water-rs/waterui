@@ -198,6 +198,24 @@ mod platform {
                 icon_leaf.view(),
                 cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
             );
+            #[cfg(feature = "gpu_surface")]
+            {
+                // The raster cannot run synchronously under `CAMetalLayer`:
+                // the item waits, and the task the central capture completes
+                // installs the image — `keep` cancels it on unmount.
+                let bounds = view::bounds(icon_leaf.view());
+                if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                    let icon_view = view::retain_base(icon_leaf.view());
+                    let env = ctx.env().clone();
+                    let tabs = tabs.clone();
+                    keep.keep(executor_core::spawn_local(async move {
+                        let image =
+                            crate::capture_image::template_image(&icon_view, &env, 25.0).await;
+                        tabs.tab_item(index).setImage(Some(&image));
+                    }));
+                }
+            }
+            #[cfg(not(feature = "gpu_surface"))]
             if let Some(image) = cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 25.0) {
                 tabs.tab_item(index).setImage(Some(&image));
             }

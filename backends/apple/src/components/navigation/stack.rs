@@ -416,12 +416,7 @@ mod platform {
                             f64::from(size.height),
                         ),
                     );
-                    if let Some(image) = cocoa_ui::bitmap::view_template_image(icon.view(), 24.0) {
-                        cocoa_ui::uikit::image_bar_item(self.mtm, Some(&image), action)
-                    } else {
-                        cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
-                        bar_item(self.mtm, None, Some(item.leaf.view()), action)
-                    }
+                    self.icon_item(item, icon, action, keep)
                 }
                 None => {
                     // A hosted item must arrive with a real frame: the bar
@@ -439,6 +434,54 @@ mod platform {
                 });
             }
             object
+        }
+
+        /// A `View` icon under `gpu_surface`: the item is created at once
+        /// with no image, and the raster the central capture produces
+        /// lands through `setImage` — the task rides `keep`, so a popped
+        /// or rebuilt page cancels it before it can touch a stale item.
+        #[cfg(feature = "gpu_surface")]
+        fn icon_item(
+            &self,
+            item: &BarItem,
+            icon: &NativeLeaf,
+            action: Option<Rc<dyn Fn()>>,
+            keep: &mut KeepAlive,
+        ) -> Retained<UIBarButtonItem> {
+            if cocoa_ui::view::bounds(icon.view()).size.width <= 0.0
+                || cocoa_ui::view::bounds(icon.view()).size.height <= 0.0
+            {
+                cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
+                return bar_item(self.mtm, None, Some(item.leaf.view()), action);
+            }
+            let object = cocoa_ui::uikit::image_bar_item(self.mtm, None, action);
+            let icon_view = cocoa_ui::view::retain_base(icon.view());
+            let env = self.env().clone();
+            let item_for_image = object.clone();
+            keep.keep(executor_core::spawn_local(async move {
+                let image = crate::capture_image::template_image(&icon_view, &env, 24.0).await;
+                item_for_image.setImage(Some(&image));
+            }));
+            object
+        }
+
+        /// A `View` icon in a native-only build: the synchronous bitmap
+        /// path — complete because no GPU surface can exist in the icon's
+        /// subtree.
+        #[cfg(not(feature = "gpu_surface"))]
+        fn icon_item(
+            &self,
+            item: &BarItem,
+            icon: &NativeLeaf,
+            action: Option<Rc<dyn Fn()>>,
+            _keep: &mut KeepAlive,
+        ) -> Retained<UIBarButtonItem> {
+            if let Some(image) = cocoa_ui::bitmap::view_template_image(icon.view(), 24.0) {
+                cocoa_ui::uikit::image_bar_item(self.mtm, Some(&image), action)
+            } else {
+                cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
+                bar_item(self.mtm, None, Some(item.leaf.view()), action)
+            }
         }
 
         /// `didShow` reconcile: the pending transaction's removed states
@@ -616,6 +659,11 @@ mod platform {
         /// The entry's own watchers.
         #[allow(dead_code)]
         keep: KeepAlive,
+        /// This page's icon rasters — armed on the first `View` icon a
+        /// publish meets; the entry's drop on pop cancels every raster in
+        /// flight, so a slot can never answer for another page's item.
+        #[cfg(feature = "gpu_surface")]
+        icons: OnceCell<Rc<crate::toolbar::IconJobs>>,
     }
 
     impl fmt::Debug for Entry {
@@ -763,6 +811,8 @@ mod platform {
                 state,
                 transition,
                 keep,
+                #[cfg(feature = "gpu_surface")]
+                icons: OnceCell::new(),
             }
         }
 
@@ -920,8 +970,8 @@ mod platform {
                     size: measure(&top.bar.title.leaf),
                 });
             }
-            content.leading = top.bar.leading().map(Self::child);
-            content.trailing = top.bar.trailing().map(Self::child);
+            content.leading = top.bar.leading().map(|item| self.child(top, item));
+            content.trailing = top.bar.trailing().map(|item| self.child(top, item));
             content.status = top.bar.status().map(|item| HostedItem {
                 view: cocoa_ui::view::retain_base(item.leaf.view()),
                 size: measure(&item.leaf),
@@ -953,7 +1003,7 @@ mod platform {
         /// item into a capsule whose action forwards to the content's first
         /// control — `firstButton`'s `performClick` — and a `View` icon or
         /// no icon hosts the content itself.
-        fn child(item: &BarItem) -> ToolbarChild {
+        fn child(&self, entry: &Entry, item: &BarItem) -> ToolbarChild {
             // The item's action and its chrome both come from the button
             // inside it, the way `firstButton` informed `actionItem`.
             let button = first_button(item.leaf.view());
@@ -995,7 +1045,7 @@ mod platform {
                             view: cocoa_ui::view::retain_base(item.leaf.view()),
                             size: measure(&item.leaf),
                         },
-                        icon: cocoa_ui::bitmap::view_template_image(icon.view(), 18.0),
+                        icon: self.view_icon(entry, item, icon),
                         label,
                         bordered,
                         action,
@@ -1012,6 +1062,53 @@ mod platform {
                     action,
                 },
             }
+        }
+
+        /// A `View` icon under `gpu_surface`: `None` until the central
+        /// capture's raster lands in the entry's own jobs and its refresh
+        /// republishes the chrome.
+        #[cfg(feature = "gpu_surface")]
+        fn view_icon(
+            &self,
+            entry: &Entry,
+            item: &BarItem,
+            icon: &NativeLeaf,
+        ) -> Option<Retained<NSImage>> {
+            self.icon_jobs(entry).image(
+                core::ptr::from_ref(item).cast::<u8>() as usize,
+                icon.view(),
+                18.0,
+            )
+        }
+
+        /// A `View` icon in a native-only build: the synchronous bitmap
+        /// path — complete because no GPU surface can exist in the icon's
+        /// subtree.
+        #[cfg(not(feature = "gpu_surface"))]
+        fn view_icon(
+            &self,
+            _entry: &Entry,
+            _item: &BarItem,
+            icon: &NativeLeaf,
+        ) -> Option<Retained<NSImage>> {
+            cocoa_ui::bitmap::view_template_image(icon.view(), 18.0)
+        }
+
+        /// The entry's icon jobs, armed on first use: a landed raster
+        /// republishes the chrome through `publish`; the entry's drop on
+        /// pop cancels every raster still in flight.
+        #[cfg(feature = "gpu_surface")]
+        fn icon_jobs<'a>(&self, entry: &'a Entry) -> &'a Rc<crate::toolbar::IconJobs> {
+            entry.icons.get_or_init(|| {
+                let jobs = crate::toolbar::IconJobs::new(self.env());
+                let weak = self.self_weak.get().cloned();
+                jobs.set_refresh(move || {
+                    if let Some(stack) = weak.as_ref().and_then(|weak| weak.upgrade()) {
+                        stack.publish();
+                    }
+                });
+                jobs
+            })
         }
     }
 

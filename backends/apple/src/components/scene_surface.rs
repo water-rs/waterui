@@ -305,15 +305,12 @@ impl HostedRenderer for SceneRenderer {
         self.context.generation()
     }
 
-    fn present(&mut self, target: &wgpu::Texture, display: Display) -> Next {
+    fn present(&mut self, target: &wgpu::Texture, display: Display, time: FrameTime) -> Next {
         self.record_if_needed(target, display);
         self.surface
             .display(display)
             .expect("scene display configuration failed");
-        let next = self
-            .engine
-            .render(FrameTime::now())
-            .expect("scene rendering failed");
+        let next = self.engine.render(time).expect("scene rendering failed");
         for texture in self.textures.try_iter() {
             self.source = texture;
         }
