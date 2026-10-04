@@ -45,19 +45,25 @@ static APP_FACTORY: OnceLock<AppFactory> = OnceLock::new();
 /// Registers the app the Kotlin host mounts. Called once, from the app
 /// cdylib's `JNI_OnLoad` — before that, `nativeCreateSession` fails with an
 /// explicit error rather than mounting an empty window.
+///
+/// # Panics
+/// Panics when called a second time: the factory is a singleton.
 pub fn register_app(factory: impl Fn() -> (App, Rc<dyn crate::Style>) + Send + Sync + 'static) {
     let factory: AppFactory = Box::new(factory);
     // `register_app` may run on a non-UI JNI thread; the factory moves to
     // the UI thread on the first create.
-    if APP_FACTORY.set(factory).is_err() {
-        panic!("hydrolysis android: register_app was called twice");
-    }
+    assert!(
+        APP_FACTORY.set(factory).is_ok(),
+        "hydrolysis android: register_app was called twice"
+    );
 }
 
 /// Installs Android logging once: `log` records (wgpu, ndk) and `tracing`
-/// records both land in logcat under the app's tag. A panic hook forwards
-/// panic payloads there too — Android doesn't capture stderr, so without
-/// this a native panic surfaces as a bare JNI exception with no cause.
+/// records both land in logcat under the app's tag.
+///
+/// A panic hook forwards panic payloads there too — Android doesn't capture
+/// stderr, so without this a native panic surfaces as a bare JNI exception
+/// with no cause.
 pub fn init_logging() {
     android_logger::init_once(
         android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
@@ -69,10 +75,10 @@ pub fn init_logging() {
             .map(String::as_str)
             .or_else(|| info.payload().downcast_ref::<&str>().copied())
             .unwrap_or("unknown panic");
-        let location = info
-            .location()
-            .map(|location| format!("{location}"))
-            .unwrap_or_else(|| "unknown location".to_owned());
+        let location = info.location().map_or_else(
+            || "unknown location".to_owned(),
+            |location| format!("{location}"),
+        );
         // Write through __android_log_write rather than `log` — a panic must
         // never depend on logger state to reach logcat.
         android_log(format!("panic at {location}: {payload}").as_bytes());
@@ -110,9 +116,9 @@ impl std::io::Write for AndroidLogWriter {
 }
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for AndroidLogWriter {
-    type Writer = AndroidLogWriter;
+    type Writer = Self;
     fn make_writer(&'a self) -> Self::Writer {
-        AndroidLogWriter
+        Self
     }
 }
 
@@ -127,12 +133,14 @@ fn android_log(message: &[u8]) {
     let tag = c"hydrolysis";
     let mut text = Vec::with_capacity(message.len() + 1);
     text.extend_from_slice(message);
-    for byte in text.iter_mut() {
+    for byte in &mut text {
         if *byte == 0 {
             *byte = b' ';
         }
     }
     text.push(0);
+    // SAFETY: `tag` is a C string literal and `text` was NUL-terminated
+    // above; both pointers stay valid for the call.
     unsafe {
         __android_log_write(4, tag.as_ptr().cast(), text.as_ptr().cast());
     }

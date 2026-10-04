@@ -40,8 +40,9 @@ on:
         value: ${{ jobs.scope.outputs.msrv }}
       test-assets:
         description: >
-          `true` when hydrolysis or a reverse dependency is in scope and
-          the generated fonts/fixture must exist before compiling tests.
+          `true` when a package whose test targets compile generated
+          assets — hydrolysis's fonts/fixture or waterui-cli's generated
+          font — is in scope.
         value: ${{ jobs.scope.outputs.test-assets }}
       scene-assets:
         description: >

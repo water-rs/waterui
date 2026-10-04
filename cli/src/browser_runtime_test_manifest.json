@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "engine": "wpe",
+      "version": "2.52.5",
+      "platform": "linux",
+      "architecture": "x86_64",
+      "url": "https://github.com/water-rs/waterui/releases/download/browser-runtime-test/wpe.zip",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "size": 42
+    }
+  ]
+}

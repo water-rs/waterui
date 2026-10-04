@@ -1,7 +1,8 @@
 //! The debug app the Android landing tests run: a scrollable column of
-//! text, a counter driven by a real tap, a toggle and a text field — enough
-//! to show a rendered UI, redraw on interaction, resize on recreation, and
-//! idle with no pumping between frames.
+//! text, a counter driven by a real tap, a toggle, a slider, a text field
+//! and a secure field for IME/accessibility/autofill coverage, plus one
+//! `Native<PlatformView>` leaf that mounts the registry's `WebView` between
+//! GPU-drawn controls for the z-order and event-ownership checks.
 //!
 //! A workspace member, so host cargo sweeps reach it: its only artifact is
 //! the cdylib the Kotlin host loads, and every symbol it names (jni,
@@ -12,12 +13,20 @@
 use std::rc::Rc;
 
 use waterui::app::App;
+use waterui::form::secure::Secure;
 use waterui::graphics::color::Srgb;
 use waterui::prelude::*;
 use waterui::reactive::binding;
 use waterui::window::{Window, WindowState};
+use waterui_core::Native;
 
-fn app_view(count: Binding<i32>, enabled: Binding<bool>, name: Binding<Str>) -> impl View {
+fn app_view(
+    count: Binding<i32>,
+    enabled: Binding<bool>,
+    name: Binding<Str>,
+    password: Binding<Secure>,
+    volume: Binding<f64>,
+) -> impl View {
     scroll(
         vstack((
             text("Hydrolysis on Android").title(),
@@ -36,9 +45,19 @@ fn app_view(count: Binding<i32>, enabled: Binding<bool>, name: Binding<Str>) -> 
                 .state(&count),
             Toggle::new("Enable notifications", &enabled),
             text!("Notifications: {enabled}", enabled = enabled),
-            TextField::new("Your name", &name).prompt("Type to drive the IME"),
-            text!("Hello, {name}!", name = name),
+            slider("Volume", &volume),
+            text!("Volume: {volume}", volume = volume),
+            // The autofill/IME cluster nests: the outer column would otherwise
+            // exceed `TupleViews`' arity once every control the Android landing
+            // tests drive sits in a single tuple.
+            vstack((
+                TextField::new("Email address", &name).prompt("Autofill: email"),
+                SecureField::new("Password", &password),
+                text!("Hello, {name}!", name = name),
+            )),
             Divider,
+            layout::frame::Frame::new(Native::new(hydrolysis::PlatformView::new("webview")))
+                .height(220.0),
             text("Resize + recreation keep this tree alive.").foreground(Srgb::from_hex("#6B6B70")),
         ))
         .padding(),
@@ -54,7 +73,9 @@ fn build_app() -> App {
                 let count = binding(0);
                 let enabled = binding(false);
                 let name = binding("");
-                app_view(count, enabled, name)
+                let password = binding(waterui::form::secure::Secure::new(String::new()));
+                let volume = binding(0.5);
+                app_view(count, enabled, name, password, volume)
             },
         )],
         Environment::new(),

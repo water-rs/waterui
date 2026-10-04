@@ -840,6 +840,13 @@ impl HeadlessRuntime {
         &self.runtime.renderer
     }
 
+    /// The main window's renderer mutably — editing-session tests write
+    /// projections through it.
+    #[cfg(test)]
+    pub(crate) const fn renderer_mut(&mut self) -> &mut HydrolysisRenderer {
+        &mut self.runtime.renderer
+    }
+
     /// The `Window` the `index`th mounted popup was built from — the value the
     /// popup machinery emitted — so a test can assert on the window the
     /// platform layer will realize.

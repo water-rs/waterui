@@ -27,11 +27,12 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
   `rust-version` key, any Cargo.toml dependency section (including
   `target.<cfg>.dependencies`), or Cargo.lock.
 - `test-assets` — `true` when a package whose `--all-targets` build
-  compiles `hydrolysis/testing` (the `TEST_FONTS` `include_bytes!`s) is in
-  scope, or the whole workspace is. The set is the tool's
-  `test_asset_consumers`, derived from the dev-dependency closure, so a
-  crate that merely dev-depends on `waterui-testing` — `waterui-controls`,
-  say — still gets the fonts before its check.
+  compiles a generated asset (`hydrolysis/testing`'s `TEST_FONTS`
+  `include_bytes!`s, or the cli's generated `Roboto-Regular.ttf` fixture)
+  is in scope, or the whole workspace is. The set is the tool's
+  `test_asset_consumers` — the dev-dependency closure plus `waterui-cli`
+  itself — so a crate that merely dev-depends on `waterui-testing`,
+  `waterui-controls` say, still gets the fonts before its check.
 - `scene-assets` — `true` when a package whose `--all-targets` compile
   `include_bytes!`s a generated Cherenkov scene font is in scope, or the
   whole workspace is. That is a fixed owner set, not a dev-dependency

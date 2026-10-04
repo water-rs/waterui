@@ -121,6 +121,12 @@ fn slider_accessibility_parts(
         if let Some(resolved) = resolved {
             node.set_label(resolved);
         }
+        // The string value is the spoken form of the numeric value: an
+        // explicit `.a11y_value` overrides it while `set_numeric_value` keeps
+        // the raw position, matching `aria-valuetext` beside `aria-valuenow`.
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         let start = *range.start();
         let end = *range.end();
         assert!(start < end, "hydrolysis slider requires range start < end");

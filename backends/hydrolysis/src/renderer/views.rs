@@ -92,24 +92,27 @@ pub fn popup_menu_node(item: ResolvedMenuItem) -> PopupMenuNode {
 
 /// Emits the image accessibility node shared by the static graphics leaves
 /// (gradient, shape, morph shape). Their a11y is *not* render-driven: the leaf
-/// emits a single `Image` node from the surrounding environment's label, or the
-/// leaf-provided default when no override is installed. Shared by the dispatch
-/// path and the retained `Widget`-node path so both produce the same a11y tree.
+/// emits a single `Image` node from the surrounding environment's label and
+/// value, or the leaf-provided defaults where no override is installed. Shared
+/// by the dispatch path and the retained `Widget`-node path so both produce the
+/// same a11y tree.
 ///
 /// A leaf that names nothing emits no node: decorative fills and shapes are
 /// presentation, not semantics. Only a resolved label — the environment's
-/// `a11y_label` or the leaf's own default — or an explicit `a11y_role` puts a
-/// graphics leaf in the tree.
+/// `a11y_label` or the leaf's own default — a resolved `a11y_value`, or an
+/// explicit `a11y_role` puts a graphics leaf in the tree.
 pub fn graphics_image_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
     env: &Environment,
     default_label: Option<String>,
+    default_value: Option<String>,
 ) {
     #[cfg(feature = "accessibility")]
     {
         let label = renderer.resolve_accessibility_label(env, default_label);
-        if label.is_none() && env.get::<AccessibilityRole>().is_none() {
+        let value = renderer.resolve_accessibility_value(env, default_value);
+        if label.is_none() && value.is_none() && env.get::<AccessibilityRole>().is_none() {
             renderer.note_suppressed_graphics_leaf(ctx);
             return;
         }
@@ -121,11 +124,14 @@ pub fn graphics_image_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
+        if let Some(value) = value {
+            node.set_value(value);
+        }
         let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
     }
     #[cfg(not(feature = "accessibility"))]
     {
-        let _ = (renderer, ctx, env, default_label);
+        let _ = (renderer, ctx, env, default_label, default_value);
     }
 }
 
@@ -169,7 +175,7 @@ pub fn render_gradient_node(
         .is_some_and(AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None);
+        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
     }
     render_gradient_parts(ctx, gradient, env);
 }
@@ -216,7 +222,7 @@ pub fn render_shape_node(
         .is_some_and(AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None);
+        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
     }
     render_shape_parts(ctx, shape, env);
 }
@@ -267,7 +273,7 @@ pub fn render_morph_shape_node(
         .is_some_and(AccessibilityHidden::is_hidden);
     if !hidden {
         let render_ctx = ctx.render_context();
-        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None);
+        graphics_image_accessibility(ctx.renderer_mut(), Some(render_ctx), env, None, None);
     }
     render_morph_shape_parts(ctx, shape, env);
 }
@@ -326,15 +332,23 @@ pub fn str_accessibility(
         // (water-rs/hydrolysis#176).
         let default_label = (!text.as_str().is_empty()).then(|| text.as_str().to_owned());
         let label = renderer.resolve_accessibility_label(env, default_label);
-        if let Some(label) = label
-            && !renderer.consume_accessibility_descendant_text(env, &label)
+        let value = renderer.resolve_accessibility_value(env, None);
+        if (label.is_some() || value.is_some())
+            && !label
+                .as_deref()
+                .is_some_and(|label| renderer.consume_accessibility_descendant_text(env, label))
         {
             let mut node =
                 AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
                     env,
                     AccessibilityNodeRole::Label,
                 ));
-            node.set_label(label);
+            if let Some(label) = label {
+                node.set_label(label);
+            }
+            if let Some(value) = value {
+                node.set_value(value);
+            }
             let _ = renderer.register_accessibility_leaf(ctx, node, env, None);
         }
     }
@@ -415,5 +429,5 @@ pub fn emit_graphics_leaf_accessibility<T>(
     _state: &Rc<RefCell<T>>,
     env: &Environment,
 ) {
-    graphics_image_accessibility(renderer, None, env, None);
+    graphics_image_accessibility(renderer, None, env, None, None);
 }

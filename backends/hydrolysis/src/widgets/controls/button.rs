@@ -153,6 +153,9 @@ pub fn button_accessibility(
         if let Some(label) = label {
             node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
+        }
         node.add_action(AccessibilityAction::Focus);
         // A button under a `Selected` scope it owns announces the state.
         if renderer.control_selected(env, &crate::renderer::InteractionKey::for_rc(state, 0)) {
@@ -401,6 +404,9 @@ pub fn menu_accessibility(
         let label = renderer.resolve_accessibility_label(env, default_label);
         if let Some(label) = label {
             node.set_label(label);
+        }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
         }
         node.add_action(AccessibilityAction::Focus);
         node.add_action(AccessibilityAction::Click);

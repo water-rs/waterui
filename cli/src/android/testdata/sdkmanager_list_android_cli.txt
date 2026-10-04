@@ -1,0 +1,29 @@
+Installed packages:
+  cmdline-tools/latest                                                                    unknown              ->        23.0.0  Android SDK Command-line Tools (latest)
+Available packages:
+  add-ons/addon-google_apis-google-10                                                     2.0.0                                  Google APIs
+  build/lightbuild/0.0.10-alpha01                                                         0.0.10-rc.1                            Lightbuild
+  build/templates                                                                         0.1.1                                  Android Project Templates
+  build-tools/36.0.0                                                                      36.0.0                                 Android SDK Build-Tools 36
+  build-tools/36.1.0                                                                      36.1.0                                 Android SDK Build-Tools 36.1
+  build-tools/37.0.0                                                                      37.0.0                                 Android SDK Build-Tools 37
+  build-tools/37.0.0-rc1                                                                  37.0.0-rc.1                            Android SDK Build-Tools 37-rc1
+  build-tools/37.0.0-rc2                                                                  37.0.0-rc.2                            Android SDK Build-Tools 37-rc2
+  cmake/3.31.0                                                                            3.31.0                                 CMake 3.31.0
+  cmdline-tools/1.0                                                                       1.0.0                                  Android SDK Command-line Tools
+  cmdline-tools/22.0                                                                      22.0.0                                 Android SDK Command-line Tools
+  emulator                                                                                37.1.11                                Android Emulator
+  extras/google/m2repository                                                              58.0.0                                 Google Repository
+  ndk-bundle                                                                              22.1.7171670 (+13)                     NDK
+  ndk/27.3.13750724                                                                       27.3.13750724                          NDK (Side by side) 27.3.13750724
+  ndk/29.0.14206865                                                                       29.0.14206865                          NDK (Side by side) 29.0.14206865
+  ndk/30.0.14904198                                                                       30.0.14904198-rc.1                     NDK (Side by side) 30.0.14904198
+  platform-tools                                                                          37.0.1                                 Android SDK Platform-Tools
+  platforms/android-10                                                                    2.0.0                                  Android SDK Platform 10
+  platforms/android-36.1                                                                  1.0.0                                  Android SDK Platform 36.1
+  platforms/android-37.0                                                                  2.0.0                                  Android SDK Platform 37.0
+  platforms/android-37.1                                                                  1.0.0                                  Android SDK Platform 37.1
+  platforms/android-37.2                                                                  1.0.0                                  Android SDK Platform 37.2
+  platforms/android-37.2-beta1                                                            1.0.0                                  Android SDK Platform 37.2-beta1
+  sources/android-36.1                                                                    1.0.0                                  Sources for Android 36.1
+  system-images/android-26/default/x86                                                    1.0.0                                  Intel x86 Atom System Image

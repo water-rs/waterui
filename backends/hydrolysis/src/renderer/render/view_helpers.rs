@@ -119,6 +119,7 @@ pub fn restore_a11y_naming_scope(outer: &Environment, mut snapshot: Environment)
     }
     restore!(
         AccessibilityLabel,
+        AccessibilityValue,
         AccessibilityRole,
         AccessibilityChildren,
         ScopedAccessibilityIdentifier,
@@ -199,6 +200,10 @@ pub fn a11y_scoped_env_for_view(
     try_scope!(
         view,
         AccessibilityLabel => a11y_naming_scoped_env::<AccessibilityLabel>,
+        // `.a11y_value(..)` is naming metadata like the label: the node that
+        // represents the wrapped view owns the semantic payload — once — and a
+        // container that no control spoke for synthesizes the node carrying it.
+        AccessibilityValue => a11y_naming_scoped_env::<AccessibilityValue>,
         AccessibilityIdentifier => a11y_scoped_identifier_env,
         AccessibilityRole => a11y_naming_scoped_env::<AccessibilityRole>,
         AccessibilityHidden => a11y_scoped_env::<AccessibilityHidden>,
@@ -321,6 +326,7 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         MaterialBackground,
         AccessibilityIdentifier,
         AccessibilityLabel,
+        AccessibilityValue,
         AccessibilityRole,
         AccessibilityHidden,
         AccessibilityChildren,
@@ -491,6 +497,7 @@ fn normalize_layout_view_with_budget(
         MaterialBackground,
         AccessibilityIdentifier,
         AccessibilityLabel,
+        AccessibilityValue,
         AccessibilityRole,
         AccessibilityChildren
     );

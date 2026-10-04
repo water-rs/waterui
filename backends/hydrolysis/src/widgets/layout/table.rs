@@ -271,6 +271,9 @@ pub fn table_accessibility(
         if let Some(label) = table_label {
             table_node.set_label(label);
         }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            table_node.set_value(value);
+        }
         table_node.set_scroll_x(scroll_metrics.offset_x);
         table_node.set_scroll_x_min(0.0);
         table_node.set_scroll_x_max(scroll_metrics.max_x);
@@ -331,12 +334,15 @@ pub fn table_accessibility(
             if let Some(header_node_id) = header_node_id {
                 table_node.push_child(header_node_id);
             }
-            let rows = column.rows();
+            // One immutable row set per column for the whole window: the
+            // cells this emit reads stay coherent with each other even if a
+            // cell's own content mutates the source mid-pass.
+            let rows = column.rows().snapshot();
             for row_index in row_window.start..row_window.end {
                 let cell_rect = layout_metrics.map_or(kurbo::Rect::ZERO, |m| {
                     table_data_cell_rect(origin_x, origin_y, x_offset, width, row_index, m)
                 });
-                if let Some(cell) = rows.snapshot().get_view(row_index) {
+                if let Some(cell) = rows.get_view(row_index) {
                     let cell_view = AnyView::new(cell);
                     let mut cell_node = AccessibilityNode::new(
                         crate::renderer::SemanticCore::resolve_accessibility_role(
@@ -594,7 +600,7 @@ pub fn render_table_parts(
             header_rect,
         );
 
-        let rows = column.rows();
+        let rows = column.rows().snapshot();
         for row_index in row_window.start..row_window.end {
             let cell_rect = table_data_cell_rect(
                 origin_x,
@@ -604,7 +610,7 @@ pub fn render_table_parts(
                 row_index,
                 layout_metrics,
             );
-            if let Some(cell) = rows.snapshot().get_view(row_index) {
+            if let Some(cell) = rows.get_view(row_index) {
                 let cell_view = AnyView::new(cell);
                 let inset = inset_rect(
                     cell_rect,

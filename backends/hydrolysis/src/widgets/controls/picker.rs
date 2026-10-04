@@ -153,7 +153,13 @@ pub fn picker_accessibility(
                 if let Some(label) = label {
                     node.set_label(label);
                 }
-                node.set_value(selected_text.as_str().to_owned());
+                // The selected option's text is the default value; an explicit
+                // `.a11y_value` wins the same way `.a11y_label` wins the name.
+                if let Some(value) = renderer
+                    .resolve_accessibility_value(env, Some(selected_text.as_str().to_owned()))
+                {
+                    node.set_value(value);
+                }
                 node.add_action(AccessibilityAction::Focus);
                 if disabled {
                     node.set_disabled();
@@ -319,6 +325,9 @@ pub fn picker_accessibility(
                 let group_label = renderer.resolve_accessibility_label(env, default_label);
                 if let Some(label) = group_label {
                     group.set_label(label);
+                }
+                if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+                    group.set_value(value);
                 }
                 let geometry = ctx
                     .as_ref()

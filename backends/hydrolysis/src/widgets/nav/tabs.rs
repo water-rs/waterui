@@ -170,6 +170,9 @@ pub fn tabs_accessibility(
     if let Some(label) = tab_list_label {
         tab_list.set_label(label);
     }
+    if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+        tab_list.set_value(value);
+    }
     for (index, (tag, interaction_key, default_label, is_selected)) in labels.iter().enumerate() {
         let mut tab_node =
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(

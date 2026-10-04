@@ -10,8 +10,8 @@
 //!
 //! Configuration is explicit, per the plan of record: FIFO present mode with a
 //! maximum frame latency of two, and a high-refresh request routed through
-//! `ANativeWindow_setFrameRate` (API 30+) while interaction or animation keeps
-//! the scheduler awake. Zero-sized surfaces are never configured — the
+//! `ANativeWindow_setFrameRate` (API 30+, resolved at run time) while
+//! interaction or animation keeps the scheduler awake. Zero-sized surfaces are never configured — the
 //! attachment waits parked until the band reports a real size.
 //!
 //! Every failure here is an explicit error, never a silent redraw black hole:
@@ -36,6 +36,8 @@ struct AndroidDisplay;
 
 impl HasDisplayHandle for AndroidDisplay {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, raw_window_handle::HandleError> {
+        // SAFETY: Android's display handle is a static system resource —
+        // borrowing it raw is always sound for the process lifetime.
         Ok(unsafe {
             DisplayHandle::borrow_raw(RawDisplayHandle::Android(AndroidDisplayHandle::new()))
         })
@@ -44,7 +46,7 @@ impl HasDisplayHandle for AndroidDisplay {
 
 /// A GPU-attachment failure surfaced to the Kotlin host as an exception.
 #[derive(Debug)]
-pub(crate) struct GpuError(pub String);
+pub struct GpuError(pub String);
 
 impl GpuError {
     fn new(message: impl Into<String>) -> Self {
@@ -104,7 +106,7 @@ impl Drop for AndroidGpuContextInner {
 /// is an explicit [`GpuError`] naming the adapter and the missing flags,
 /// never a switch to GLES or another painter.
 #[derive(Clone)]
-pub(crate) struct AndroidGpuContext {
+pub struct AndroidGpuContext {
     inner: Arc<AndroidGpuContextInner>,
 }
 
@@ -138,18 +140,17 @@ impl AndroidGpuContext {
                 .await
                 .into_iter()
                 .find(capable);
-            match chosen {
-                Some(candidate) => candidate,
-                None => {
-                    let info = preferred.get_info();
-                    let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
-                    return Err(GpuError::new(format!(
-                        "hydrolysis android: no Vulkan adapter meets the \
+            if let Some(candidate) = chosen {
+                candidate
+            } else {
+                let info = preferred.get_info();
+                let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
+                return Err(GpuError::new(format!(
+                    "hydrolysis android: no Vulkan adapter meets the \
                          painter's requirements — '{}' ({:?}) lacks \
                          {missing:?} and no alternate Vulkan adapter qualifies",
-                        info.name, info.backend
-                    )));
-                }
+                    info.name, info.backend
+                )));
             }
         };
         crate::platform::ensure_compute_capable_adapter(
@@ -204,9 +205,9 @@ impl AndroidGpuContext {
 /// `detach`/`drop` destroy the `wgpu::Surface` — which holds its own acquired
 /// `ANativeWindow` reference internally and releases it during surface
 /// teardown — before this struct's own lease goes away. Field and drop order
-/// are the teardown order: SurfaceFlinger must never see a surface still
+/// are the teardown order: `SurfaceFlinger` must never see a surface still
 /// pointing at a released window.
-pub(crate) struct AndroidSurface {
+pub struct AndroidSurface {
     gpu: AndroidGpuContext,
     /// The generation the Kotlin host assigned this attachment; a stale
     /// `surfaceDestroyed` from an older `SurfaceHolder` callback is ignored.
@@ -221,16 +222,15 @@ pub(crate) struct AndroidSurface {
     /// wgpu configuration — valid while between surface generations too.
     width: u32,
     height: u32,
-    /// API level of the running device, for `ANativeWindow_setFrameRate`
-    /// gating (the symbol is API 30+).
-    sdk_int: i32,
+    /// `ANativeWindow_setFrameRate`, present on API 30 and later.
+    frame_rate: Option<FrameRateApi>,
     /// The high-refresh request currently held, so a no-change demand does
     /// not re-call the platform.
     frame_rate_request: Option<f32>,
 }
 
 impl AndroidSurface {
-    pub(crate) fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
+    pub fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
         Self {
             gpu,
             generation: 0,
@@ -239,14 +239,14 @@ impl AndroidSurface {
             config: None,
             width: 0,
             height: 0,
-            sdk_int,
+            frame_rate: FrameRateApi::resolve(sdk_int),
             frame_rate_request: None,
         }
     }
 
     /// Whether a live `wgpu::Surface` is attached — the band exists and has a
     /// real size the last configure reported.
-    pub(crate) fn is_attached(&self) -> bool {
+    pub const fn is_attached(&self) -> bool {
         self.surface.is_some()
     }
 
@@ -383,19 +383,63 @@ impl AndroidSurface {
     /// or animation, and releases the request when it goes idle. No-op below
     /// API 30 and when the request is already what the window holds.
     pub(crate) fn set_high_refresh_demand(&mut self, demand: Option<f32>) {
-        if self.sdk_int < 30 || self.frame_rate_request == demand {
+        let Some(api) = self.frame_rate.as_ref() else {
+            return;
+        };
+        if self.frame_rate_request == demand {
             return;
         }
         let Some(window) = self.native_window.as_ref() else {
             return;
         };
-        let rate = demand.unwrap_or(0.0);
-        if window
-            .set_frame_rate(rate, ndk::native_window::FrameRateCompatibility::Default)
-            .is_ok()
-        {
+        if api.set(window, demand.unwrap_or(0.0)) {
             self.frame_rate_request = demand;
         }
+    }
+}
+
+/// `ANativeWindow_setFrameRate`'s signature in `<android/native_window.h>`.
+type SetFrameRate = unsafe extern "C" fn(*mut ndk_sys::ANativeWindow, f32, i8) -> i32;
+
+/// `ANativeWindow_setFrameRate`, resolved from `libnativewindow.so` at run
+/// time. The function is API 30 while the framework's floor is API 26, so it
+/// cannot be a link-time reference: the app library would then fail to load
+/// on every device whose loader does not find the symbol.
+struct FrameRateApi {
+    set_frame_rate: SetFrameRate,
+    /// Keeps `set_frame_rate` mapped.
+    _library: libloading::Library,
+}
+
+impl FrameRateApi {
+    /// The API on API 30 and later, `None` below it.
+    fn resolve(sdk_int: i32) -> Option<Self> {
+        if sdk_int < 30 {
+            return None;
+        }
+        // SAFETY: `libnativewindow.so` is a public NDK system library that
+        // every Android process already maps.
+        let library = unsafe { libloading::Library::new("libnativewindow.so") }
+            .expect("libnativewindow.so is a public NDK library");
+        // SAFETY: `SetFrameRate` is the function's declared signature.
+        let set_frame_rate =
+            *unsafe { library.get::<SetFrameRate>(b"ANativeWindow_setFrameRate\0") }
+                .expect("API 30 and later export ANativeWindow_setFrameRate");
+        Some(Self {
+            set_frame_rate,
+            _library: library,
+        })
+    }
+
+    /// Requests `rate` on `window`, `0.0` releasing the request; whether the
+    /// platform accepted it.
+    fn set(&self, window: &NativeWindow, rate: f32) -> bool {
+        let compatibility = i8::try_from(
+            ndk_sys::ANativeWindow_FrameRateCompatibility::ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT.0,
+        )
+        .expect("frame-rate compatibility values fit the i8 parameter");
+        // SAFETY: `window` is a live `ANativeWindow` lease.
+        unsafe { (self.set_frame_rate)(window.ptr().as_ptr(), rate, compatibility) == 0 }
     }
 }
 
@@ -456,8 +500,7 @@ impl SurfaceProvider for AndroidSurface {
     fn format(&self) -> wgpu::TextureFormat {
         self.config
             .as_ref()
-            .map(|config| config.format)
-            .unwrap_or(wgpu::TextureFormat::Rgba8Unorm)
+            .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
     }
 
     fn gpu_context_id(&self) -> u64 {

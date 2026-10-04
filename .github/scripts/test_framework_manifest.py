@@ -2,8 +2,8 @@
 
 They run against the repository's own root manifest, so the split the
 release workflows record is the one asserted here: `framework_scaffold` in
-the CLI (`water-rs/cli`, `src/project_model/framework.rs`) derives the same
-tables for the same tree — the certification contract holds them to
+the CLI (`cli/src/project_model/framework.rs` in this tree) derives the
+same tables for the same tree — the certification contract holds them to
 agreement.
 """
 

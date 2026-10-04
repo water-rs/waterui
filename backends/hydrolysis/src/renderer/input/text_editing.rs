@@ -72,9 +72,26 @@ pub struct TextEditingState {
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
     pub(crate) text_caret_motion: Option<TextCaretMotion>,
+    /// How many primary presses have landed on an editable target. A
+    /// platform with a soft keyboard shows it again when this changes, so a
+    /// tap on the field already holding focus brings back a keyboard the
+    /// user dismissed.
+    activations: u64,
 }
 
 impl TextEditingState {
+    /// Records a primary press on an editable target.
+    pub(crate) const fn note_activation(&mut self) {
+        self.activations = self
+            .activations
+            .checked_add(1)
+            .expect("text input activation count overflow");
+    }
+
+    /// The press count [`Self::note_activation`] maintains.
+    pub(crate) const fn activations(&self) -> u64 {
+        self.activations
+    }
     /// This frame's position for a stable target identity, if that target is
     /// still emitted.
     pub(crate) fn index_of(&self, key: &InteractionKey) -> Option<usize> {
@@ -174,6 +191,27 @@ pub struct TextInputTarget {
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
     pub(crate) layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    /// The string the IME-visible layout was typeset from — the committed
+    /// text with the live pre-edit spliced in (a text field) or the mask
+    /// glyphs (a secure field) — and that layout, in `text_bounds`
+    /// coordinates. The platform editing session resolves cursor-anchor
+    /// character bounds against it.
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "read by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) display_text: Str,
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "read by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -261,6 +299,52 @@ pub fn common_key_handler_scope(
     }
 }
 
+/// The focused text input's authoritative editing state, projected for a
+/// platform editing session — see
+/// [`SemanticCore::focused_editor_snapshot`]. Offsets are byte indices into
+/// `text` (the committed, pre-edit-free plain text) except `preedit_caret`,
+/// which indexes `preedit`.
+#[cfg_attr(
+    not(any(target_os = "android", test)),
+    allow(
+        dead_code,
+        reason = "read by the Android editing session and its tests"
+    )
+)]
+pub struct FocusedEditorSnapshot {
+    /// The focused field's stable identity; a host editing session tags its
+    /// writes with the editor this snapshot minted so a stale connection's
+    /// writes never reach a different field.
+    pub(crate) key: InteractionKey,
+    /// Committed (pre-edit-free) plain text.
+    pub(crate) text: String,
+    /// Selection slot in byte offsets of [`Self::text`]; `anchor` may lead
+    /// `focus` (a keyboard selection made backwards).
+    pub(crate) anchor: usize,
+    pub(crate) focus: usize,
+    /// Live pre-edit and the platform-reported caret byte offset in it.
+    pub(crate) preedit: Option<String>,
+    pub(crate) preedit_caret: Option<usize>,
+    /// `SecureField` — marked text is refused and copy/cut stay inert.
+    pub(crate) password: bool,
+    /// `Some(1)` for a single-line field, `None` for unbounded multiline.
+    pub(crate) line_limit: Option<usize>,
+    /// Whether the field declares `on_submit` — the editor action an IME's
+    /// Done key fires.
+    pub(crate) has_submit: bool,
+    /// The field's hit bounds in window logical coordinates — the editor
+    /// bounds an IME sizes candidate windows against.
+    pub(crate) bounds: kurbo::Rect,
+    /// Caret rect in window logical coordinates (composition-aware).
+    pub(crate) cursor_area: kurbo::Rect,
+    /// Origin of the layout [`Self::display_layout`] was typeset on.
+    pub(crate) text_bounds: kurbo::Rect,
+    /// The text `display_layout` describes — committed + pre-edit for a
+    /// field, the mask glyphs for a secure field.
+    pub(crate) display_text: String,
+    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+}
+
 pub struct TextInputTargetRegistration {
     pub interaction_key: InteractionKey,
     pub(crate) modal: bool,
@@ -270,6 +354,23 @@ pub struct TextInputTargetRegistration {
     pub(crate) text_clip_bounds: kurbo::Rect,
     pub(crate) content_alpha: f32,
     pub(crate) layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
+    /// See [`TextInputTarget::display_text`].
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "read by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) display_text: Str,
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "read by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) display_layout: std::sync::Arc<parley::Layout<[u8; 4]>>,
     pub(crate) purpose: TextInputPurpose,
     pub(crate) model: TextInputModel,
     pub(crate) selection: Rc<RefCell<TextSelectionSlot>>,
@@ -1471,6 +1572,155 @@ impl SemanticCore {
         Some((index, target.model.clone(), Rc::clone(&target.selection)))
     }
 
+    /// The focused text input's authoritative editing state for a platform
+    /// editing session (Android's `InputConnection` mirror): committed text
+    /// and selection in byte offsets, the live pre-edit, the field's input
+    /// constraints and the geometry an IME draws around the caret.
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "read by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) fn focused_editor_snapshot(&self) -> Option<FocusedEditorSnapshot> {
+        let index = self.text_editing.focused_index()?;
+        let target = &self.text_editing.text_input_targets[index];
+        let text = target.model.plain_text();
+        let slot = target.selection.borrow();
+        Some(FocusedEditorSnapshot {
+            key: target.interaction_key.clone(),
+            anchor: clamp_to_char_boundary(text.as_str(), slot.anchor),
+            focus: clamp_to_char_boundary(text.as_str(), slot.focus),
+            text,
+            preedit: self
+                .text_editing
+                .ime_preedit
+                .as_ref()
+                .map(ToString::to_string),
+            preedit_caret: self.text_editing.ime_preedit_caret,
+            password: target.model.is_secure(),
+            line_limit: target.model.line_limit(),
+            has_submit: matches!(
+                &target.model,
+                TextInputModel::TextField {
+                    on_submit: Some(_),
+                    ..
+                }
+            ),
+            bounds: target.bounds,
+            cursor_area: target.cursor_area,
+            text_bounds: target.text_bounds,
+            display_text: target.display_text.to_string(),
+            display_layout: std::sync::Arc::clone(&target.display_layout),
+        })
+    }
+
+    /// Write an editing session's projection back into the focused model in
+    /// one step: committed text, selection slot and pre-edit, in the order
+    /// [`replace_model_selection`] publishes them (selection before text so a
+    /// refresh sees the caret that belongs to the edited value). The pre-edit
+    /// routes through [`Self::handle_ime_preedit`], so a password-purpose
+    /// target still refuses marked text.
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "written by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) fn apply_editor_projection(
+        &mut self,
+        committed: &str,
+        anchor: usize,
+        focus: usize,
+        preedit: Option<(&str, Option<usize>)>,
+    ) -> bool {
+        let Some((_index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        // The projection goes through the same normalization the text-insert
+        // path applies — carriage returns never reach a model, and a
+        // single-line field never grows a newline — and the same line-limit
+        // refusal, so a platform write cannot exceed what a keypress could.
+        let committed = normalized_insert_text(committed, model.line_limit());
+        let mut changed = false;
+        {
+            let mut slot = selection.borrow_mut();
+            let anchor = clamp_to_char_boundary(committed.as_str(), anchor);
+            let focus = clamp_to_char_boundary(committed.as_str(), focus);
+            changed |= slot.anchor != anchor || slot.focus != focus || !slot.initialized;
+            slot.anchor = anchor;
+            slot.focus = focus;
+            slot.initialized = true;
+            if model.plain_text() != committed
+                && !exceeds_line_limit(committed.as_str(), model.line_limit())
+            {
+                model.set_plain_text(committed);
+                changed = true;
+            }
+        }
+        let (preedit_text, preedit_caret) =
+            preedit.map_or(("", None), |(text, caret)| (text, caret));
+        changed |= self.handle_ime_preedit(preedit_text, preedit_caret);
+        if changed {
+            self.reset_text_caret_animation(self.frame_instant());
+        }
+        changed
+    }
+
+    /// A line-limited field's submit action, if its focused target declares
+    /// one — the `on_submit` an editor action (Return, `IME_ACTION_DONE`)
+    /// fires. Extracted from [`Self::handle_key`] so a platform editing
+    /// session submits identically.
+    pub(crate) fn perform_editor_submit(&self) -> bool {
+        let submit = self
+            .text_editing
+            .focused_target()
+            .and_then(|target| match &target.model {
+                TextInputModel::TextField {
+                    line_limit: Some(_),
+                    on_submit: Some(action),
+                    ..
+                } => Some((action.clone(), target.env.clone())),
+                _ => None,
+            });
+        let Some((action, env)) = submit else {
+            return false;
+        };
+        action.call(&env);
+        true
+    }
+
+    /// A context-menu editing action (select-all/cut/copy/paste) addressed at
+    /// the focused target — the same primitives the rendered menu executes,
+    /// for a platform `InputConnection`'s `performContextMenuAction`.
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        allow(
+            dead_code,
+            reason = "written by the Android editing session and its tests"
+        )
+    )]
+    pub(crate) fn perform_focused_context_action(&mut self, action: TextContextMenuAction) -> bool {
+        let Some((index, model, selection)) = self.focused_text_target_data() else {
+            return false;
+        };
+        // The rendered menu never offers copy/cut on a secure field; a
+        // platform connection can send the action anyway, so the guard
+        // belongs here too — a secret never reaches the clipboard.
+        if model.is_secure()
+            && matches!(
+                action,
+                TextContextMenuAction::Copy | TextContextMenuAction::Cut
+            )
+        {
+            return false;
+        }
+        let env = self.text_editing.text_input_targets[index].env.clone();
+        execute_text_context_menu_action(action, &model, &selection, &env)
+    }
+
     pub(crate) fn text_selection_index_from_point(
         target: &TextInputTarget,
         point: kurbo::Point,
@@ -2114,10 +2364,6 @@ impl SemanticCore {
         self.handle_keyboard_key_up(key, env)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
-    )]
     pub fn handle_key(&mut self, key: &KeyCode, modifiers: Modifiers) -> bool {
         if !self.text_editing.has_focus() {
             return false;
@@ -2190,33 +2436,16 @@ impl SemanticCore {
                 KeyCode::Named(value) if value == "Enter" => {
                     if self.text_editing.ime_preedit.is_some() {
                         false
+                    } else if self.perform_editor_submit() {
+                        true
                     } else {
-                        // A line-limited field with `on_submit` submits on
-                        // Return instead of inserting a newline; a field
-                        // without a limit keeps Return as a newline and never
-                        // submits.
-                        let submit = self.text_editing.focused_target().and_then(|target| {
-                            match &target.model {
-                                TextInputModel::TextField {
-                                    line_limit: Some(_),
-                                    on_submit: Some(action),
-                                    ..
-                                } => Some((action.clone(), target.env.clone())),
-                                _ => None,
-                            }
-                        });
-                        if let Some((action, env)) = submit {
-                            action.call(&env);
-                            true
-                        } else {
-                            // Enter inserts a newline like any other text. The
-                            // model's line limit is what decides whether it
-                            // survives: a single-line field strips it (and the
-                            // edit reports no change, so the key bubbles), a
-                            // capped field refuses the edit that would exceed
-                            // the limit, and an unlimited field accepts it.
-                            self.insert_text_into_focused_target("\n")
-                        }
+                        // Enter inserts a newline like any other text. The
+                        // model's line limit is what decides whether it
+                        // survives: a single-line field strips it (and the
+                        // edit reports no change, so the key bubbles), a
+                        // capped field refuses the edit that would exceed
+                        // the limit, and an unlimited field accepts it.
+                        self.insert_text_into_focused_target("\n")
                     }
                 }
                 KeyCode::Character(text) => {

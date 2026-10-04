@@ -29,13 +29,17 @@
 //! this tool's package graph rather than a second, hand-rolled mapper.
 //!
 //! `test_asset_consumers` is the set of workspace members whose
-//! `cargo check -p <pkg> --all-targets` compiles `hydrolysis` with its
-//! `testing` feature — the feature whose `TEST_FONTS` `include_bytes!` the
-//! generated fonts. It is derived from the package graph, not a name list:
-//! any member whose dev-dependency closure reaches `waterui-testing` (the
-//! only enabler of `hydrolysis/testing`) qualifies, plus `waterui-testing`
-//! itself. Dev edges count only at the first hop, matching cargo's rule
-//! that dev-dependencies do not chain.
+//! `cargo check -p <pkg> --all-targets` compiles a generated, uncommitted
+//! test asset. Most members qualify through the package graph: any member
+//! whose dev-dependency closure reaches `waterui-testing` (the only
+//! enabler of `hydrolysis/testing`, the feature whose `TEST_FONTS`
+//! `include_bytes!` the generated fonts), plus `waterui-testing` itself.
+//! Dev edges count only at the first hop, matching cargo's rule that
+//! dev-dependencies do not chain. `waterui-cli` is the one member named
+//! directly: its `#[cfg(test)]` font-subsetting module `include_bytes!`s
+//! `cli/tests/fixtures/fonts/Roboto-Regular.ttf`, which the
+//! generate-test-assets composite regenerates — a path membership, not a
+//! dependency edge, so the graph cannot derive it.
 //!
 //! The root package (`waterui`, manifest at the repository root) gets one
 //! correction on top of ancestor matching: its package directory is the
@@ -196,13 +200,17 @@ impl<'a> RootOwnership<'a> {
     }
 }
 
-/// The workspace members whose `--all-targets` build pulls in
-/// `waterui-testing` — the only crate that enables `hydrolysis/testing`,
-/// whose `TEST_FONTS` `include_bytes!` the generated fonts. A member
-/// qualifies when a dev-dependency of its own reaches `waterui-testing`
-/// through normal/build links; dev edges are first-hop only because cargo
-/// does not make dev-dependencies transitive. `waterui-testing` itself is
-/// a consumer: checking it compiles the dep.
+/// The workspace members whose `--all-targets` build compiles a generated,
+/// uncommitted test asset. A member qualifies when a dev-dependency of its
+/// own reaches `waterui-testing` — the only crate that enables
+/// `hydrolysis/testing`, whose `TEST_FONTS` `include_bytes!` the generated
+/// fonts — through normal/build links; dev edges are first-hop only
+/// because cargo does not make dev-dependencies transitive.
+/// `waterui-testing` itself is a consumer: checking it compiles the dep.
+/// `waterui-cli` needs the same treatment for the font its own `#[cfg(test)]`
+/// code `include_bytes!`s from `cli/tests/fixtures/fonts/`: that is a path
+/// membership, not a dependency edge, so it is named here instead of being
+/// derived.
 fn test_asset_consumers(graph: &PackageGraph) -> BTreeSet<String> {
     let members: Vec<_> = graph
         .query_workspace()
@@ -236,6 +244,9 @@ fn test_asset_consumers(graph: &PackageGraph) -> BTreeSet<String> {
         if reached.contains(&testing_id) {
             consumers.insert(member.name().to_string());
         }
+    }
+    if members.iter().any(|p| p.name() == "waterui-cli") {
+        consumers.insert("waterui-cli".to_string());
     }
     consumers
 }
