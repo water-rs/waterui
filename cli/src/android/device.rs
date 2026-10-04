@@ -284,12 +284,8 @@ async fn run_on_android(
     }
 
     install_android_artifact(host, &adb, device_id, artifact.path()).await?;
-    launch_android_app(
-        host,
-        &adb,
-        build_android_start_args(device_id, &artifact, &env_vars),
-    )
-    .await?;
+    let start_args = build_android_start_args(device_id, &artifact, &env_vars)?;
+    launch_android_app(host, &adb, start_args).await?;
 
     // Wait for the process to start and get its PID
     let pid = wait_for_app_pid(host, &adb, device_id, artifact.bundle_id()).await?;
@@ -363,11 +359,8 @@ fn build_android_start_args(
     device_id: &str,
     artifact: &Artifact,
     env_vars: &[(String, String)],
-) -> Vec<String> {
-    let mut start_args = vec![
-        "-s".to_string(),
-        device_id.to_string(),
-        "shell".to_string(),
+) -> Result<Vec<String>, FailToRun> {
+    let mut words = vec![
         "am".to_string(),
         "start".to_string(),
         "-S".to_string(),
@@ -376,12 +369,28 @@ fn build_android_start_args(
     ];
 
     for (key, value) in env_vars {
-        start_args.push("--es".to_string());
-        start_args.push(format!("waterui.env.{key}"));
-        start_args.push(value.clone());
+        words.push("--es".to_string());
+        words.push(format!("waterui.env.{key}"));
+        words.push(value.clone());
     }
 
-    start_args
+    // `adb shell` flattens its arguments into a single command line that the
+    // device's `/system/bin/sh` re-parses; quoting each word keeps every one
+    // of them intact as exactly one `am` argument no matter what the value
+    // contains — a space would otherwise split the value and make `am` stop
+    // reading options at the resulting bare word.
+    let command = shlex::try_join(words.iter().map(String::as_str)).map_err(|_| {
+        FailToRun::Launch(eyre!(
+            "an environment variable for the Android app contains a NUL byte"
+        ))
+    })?;
+
+    Ok(vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "shell".to_string(),
+        command,
+    ])
 }
 
 /// `adb -s <device> forward tcp:<port> tcp:<port>` maps a host loopback port
@@ -1780,12 +1789,14 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::PathBuf;
 
     use super::{
         AndroidRuntimeEvent, adb_reports_device_ready, android_log_looks_like_crash,
-        android_runtime_event_from_log_line, command_targets_avd, log_level_allows,
-        log_mentions_pid,
+        android_runtime_event_from_log_line, build_android_start_args, command_targets_avd,
+        log_level_allows, log_mentions_pid,
     };
+    use crate::device::Artifact;
     use crate::device::LogLevel;
 
     #[test]
@@ -1889,5 +1900,52 @@ mod tests {
         let output = "List of devices attached\nemulator-5554 offline transport_id:1\n";
 
         assert!(!adb_reports_device_ready(output, "emulator-5554"));
+    }
+
+    #[test]
+    fn android_start_args_quote_every_word_for_the_device_shell() {
+        // `adb shell` joins its arguments into one command line the device's
+        // `/system/bin/sh` parses again; values with spaces, quotes or
+        // metacharacters must each come back out as exactly one word.
+        let artifact = Artifact::new("dev.waterui.app", PathBuf::from("/tmp/app.apk"));
+        let env_vars = vec![
+            ("WATERUI_APP_NAME".to_string(), "Logs Repro".to_string()),
+            ("WATERUI_LOG".to_string(), "o'clock".to_string()),
+            ("WATERUI_PATH".to_string(), "say \"hi\" $HOME".to_string()),
+        ];
+
+        let start_args = build_android_start_args("100.76.86.48:5555", &artifact, &env_vars)
+            .expect("start args build");
+
+        assert_eq!(
+            start_args,
+            vec![
+                "-s".to_string(),
+                "100.76.86.48:5555".to_string(),
+                "shell".to_string(),
+                "am start -S -n dev.waterui.app/.MainActivity --es waterui.env.WATERUI_APP_NAME 'Logs Repro' --es waterui.env.WATERUI_LOG \"o'clock\" --es waterui.env.WATERUI_PATH 'say \"hi\" $HOME'".to_string(),
+            ]
+        );
+
+        let words = shlex::split(&start_args[3]).expect("quoted command re-splits");
+        assert_eq!(
+            words,
+            vec![
+                "am",
+                "start",
+                "-S",
+                "-n",
+                "dev.waterui.app/.MainActivity",
+                "--es",
+                "waterui.env.WATERUI_APP_NAME",
+                "Logs Repro",
+                "--es",
+                "waterui.env.WATERUI_LOG",
+                "o'clock",
+                "--es",
+                "waterui.env.WATERUI_PATH",
+                "say \"hi\" $HOME",
+            ]
+        );
     }
 }

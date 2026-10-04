@@ -82,6 +82,9 @@ heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
 # `cargo`'s package-name grammar is defined over Unicode XID characters
 # (`xid_start`/`xid_continue`); this is the check it ships.
 unicode-ident = "1"
+# Quoting for the `am start` words that cross the `adb shell` boundary — the
+# device's `/system/bin/sh` re-parses them.
+shlex = "2"
 
 # Asset/font downloading dependencies
 dirs = "7"                    # Platform-specific directories (cache, config, etc.)
