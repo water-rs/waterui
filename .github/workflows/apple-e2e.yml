@@ -57,11 +57,6 @@ on:
         required: false
         type: boolean
         default: false
-      cli_ref:
-        description: water-rs/cli branch, tag, or full commit SHA (default dev)
-        required: false
-        type: string
-        default: ""
   workflow_dispatch:
     inputs:
       release_metrics:
@@ -74,11 +69,6 @@ on:
         required: true
         type: boolean
         default: false
-      cli_ref:
-        description: water-rs/cli branch, tag, or full commit SHA (default dev)
-        required: false
-        type: string
-        default: ""
 
 permissions:
   contents: read
@@ -130,8 +120,6 @@ jobs:
 
       - name: Prepare the e2e workspace
         id: setup
-        env:
-          WATER_CLI_REF: ${{ inputs.cli_ref }}
         run: ./.github/scripts/setup-e2e.sh
 
       # The packaging legs fan out over a matrix of example groups; the

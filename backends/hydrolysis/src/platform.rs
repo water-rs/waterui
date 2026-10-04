@@ -338,6 +338,10 @@ pub struct TextInputState {
     pub height: f64,
     /// The field's purpose, which selects the platform's input treatment.
     pub purpose: TextInputPurpose,
+    /// The renderer's count of primary presses on editable targets. A
+    /// platform with a soft keyboard shows it when this changes, which is
+    /// how a tap on the already-focused field re-opens a dismissed keyboard.
+    pub activation: u64,
 }
 
 /// Input events emitted by a windowing backend.
@@ -2072,7 +2076,7 @@ mod web_impl;
 mod macos_display_link;
 
 #[cfg(all(hydrolysis_winit, any(target_os = "macos", target_os = "windows")))]
-pub(crate) mod native_menu_bar;
+pub mod native_menu_bar;
 
 #[cfg(hydrolysis_winit)]
 mod winit_impl {
@@ -3218,7 +3222,7 @@ mod winit_impl {
         /// per-frame background push reaches winit and the surface only when
         /// the background switches between opaque and translucent.
         transparent: bool,
-        /// Explicit ProMotion opt-in: declares the 120Hz frame-rate demand to
+        /// Explicit `ProMotion` opt-in: declares the 120Hz frame-rate demand to
         /// the window server while redraws are being requested. `None` before
         /// macOS 14.
         #[cfg(target_os = "macos")]
@@ -3554,7 +3558,7 @@ mod winit_impl {
 
         /// `-[NSWindow mouseLocationOutsideOfEventStream]` converted into
         /// the view's flipped logical space — the answer a `mouseMoved`
-        /// would carry, without the event AppKit withholds during a drag.
+        /// would carry, without the event `AppKit` withholds during a drag.
         #[cfg(target_os = "macos")]
         fn macos_live_pointer_position(&self) -> Option<(f32, f32)> {
             use objc2_app_kit::NSView;
@@ -3577,7 +3581,10 @@ mod winit_impl {
             } else {
                 view.bounds().size.height - view_point.y
             };
-            Some((view_point.x as f32, y as f32))
+            Some((
+                crate::num_cast::f64_as_f32(view_point.x),
+                crate::num_cast::f64_as_f32(y),
+            ))
         }
 
         /// `XQueryPointer` on this window over the connection winit already
@@ -4445,6 +4452,7 @@ mod winit_impl {
                 width: 2.0,
                 height: 14.0,
                 purpose,
+                activation: 0,
             }
         }
 

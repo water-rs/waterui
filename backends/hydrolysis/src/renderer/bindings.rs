@@ -127,6 +127,7 @@ impl SemanticCore {
                 width: caret.width().max(1.0),
                 height: caret.height().max(1.0),
                 purpose: crate::platform::TextInputPurpose::Normal,
+                activation: self.text_editing.activations(),
             });
         }
         let target = self.text_editing.focused_target()?;
@@ -136,6 +137,7 @@ impl SemanticCore {
             width: target.cursor_area.width().max(1.0),
             height: target.cursor_area.height().max(1.0),
             purpose: target.purpose,
+            activation: self.text_editing.activations(),
         })
     }
 

@@ -35,7 +35,7 @@ help: the following other types implement trait `waterui::View`
    | / impl<C, F, V> View for VStack<ForEach<C, F, V>>
    | | where
    | |     C: Collection + Clone,
-   | |     C::Item: Identifiable,
+   | |     C::Item: Identifiable + Clone,
    | |     F: 'static + Fn(C::Item) -> V,
    | |     V: View,
    | |____________^ `VStack<ForEach<C, F, V>>`

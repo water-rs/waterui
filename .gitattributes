@@ -10,6 +10,7 @@
 # The Gradle wrapper's Windows launcher is a batch file, which needs CRLF to
 # run at all.
 *.bat text eol=crlf
+*.cmd text eol=crlf
 
 # Binary assets must never be touched.
 *.png binary

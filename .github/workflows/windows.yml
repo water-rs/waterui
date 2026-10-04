@@ -59,8 +59,11 @@ jobs:
       # downloads), so this job owns `cargo-sources-Windows` (retire+save
       # at the bottom). The Windows target archive no longer competes for
       # the budget (#458). Tests still run in every supported shape below.
+      # waterui-cli's `artifact_symbols` tests build a wasm32 rlib
+      # fixture at test time; every leg running its suite needs the target.
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       - name: Restore Cargo sources
         id: cargo-sources
@@ -165,6 +168,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
         with:
+          targets: wasm32-unknown-unknown
           cache: "false"
       # Reads the shared `cargo-sources` archive owned by this OS's single
       # writer job; read-only lanes never save, so they cannot evict caches.

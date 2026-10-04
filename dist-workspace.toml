@@ -1,0 +1,35 @@
+[workspace]
+members = ["cargo:cli"]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.30.2"
+# The installer verifies the archive against the checksum dist embeds in it,
+# and says so on success. The algorithm is pinned here rather than left to
+# dist's default, because the message above states the mechanism as fact.
+checksum = "sha256"
+install-success-msg = "water is installed; the release archive's SHA-256 checksum was verified before it was unpacked."
+# CI backends to support
+ci = "github"
+# Build each app individually instead of `cargo build --workspace`
+precise-builds = true
+# The installers to generate for each app
+installers = ["homebrew", "shell", "powershell"]
+# Homebrew tap published by the dist-generated formula.
+tap = "water-rs/homebrew-water"
+formula = "water"
+publish-jobs = ["homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax). The musl
+# target is what makes Alpine installable: dist offers a `*-linux-musl`
+# archive to `*-linux-musl-dynamic` hosts natively and keeps it as the
+# fallback for `*-linux-gnu` hosts whose glibc is below `min-glibc-version`.
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"]
+# `release.yml` is ours rather than dist-generated: it calls `dist build`
+# per target inside the tag-triggered jobs. Without this, `dist build`
+# refuses to run until release.yml matches dist's own template.
+allow-dirty = ["ci"]
+# The Linux legs of release.yml link inside manylinux_2_28; the installer
+# refuses older hosts instead of installing a binary that cannot start.
+[dist.min-glibc-version]
+"*" = "2.28"

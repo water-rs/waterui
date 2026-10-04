@@ -162,7 +162,7 @@ pub const fn u64_as_usize(v: u64) -> usize {
     clippy::cast_possible_truncation,
     reason = "the values are sizes that fit u32"
 )]
-#[cfg(any(test, hydrolysis_winit))]
+#[cfg(any(test, hydrolysis_wayland_platform))]
 pub const fn u64_as_u32(v: u64) -> u32 {
     v as u32
 }

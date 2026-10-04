@@ -7,9 +7,9 @@ the stable channel distributes, whatever the registry holds for that name, so
 a `stable` manifest withholds its entries from `scaffold` and records the pin
 under `experimental-packages` instead; `nightly` carries it in `scaffold` like any
 other package. The Rust side derives exactly the same tables for a tree
-(`framework_scaffold` in
-https://github.com/water-rs/cli/blob/dev/src/project_model/framework.rs) — the
-two must not drift, so this script never reads anything from the CLI.
+(`framework_scaffold` in `cli/src/project_model/framework.rs` in this
+tree) — the two must not drift, so this script never reads anything from
+the CLI.
 
 `stable` certifies the framework release tag release-plz published
 (`v<version>`), or — under release preflight, where the release does not
