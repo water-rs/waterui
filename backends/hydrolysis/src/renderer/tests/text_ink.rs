@@ -1,11 +1,12 @@
 //! Text measure-versus-paint fidelity on the real font stack.
 //!
-//! `HeadlessRuntime::new_for_tests` shapes text with the bundled deterministic
-//! fonts, which measure snugly; a divergence between the measured advance and
-//! the painted ink extent only shows on the fonts the windowed runners load
-//! (system collection + `resources/fonts`, including fallback). These tests
-//! run the winit runner's font path via
-//! [`HeadlessRuntime::new_for_tests_native_fonts`].
+//! A test runtime shapes through the same collection the windowed runners
+//! load — system font discovery plus the staged `resources/fonts` directory —
+//! so a divergence between the measured advance and the painted ink extent
+//! shows on the faces an application actually draws with. The faces these
+//! tests name (`Pacifico`) must be installed on the host: the runtime
+//! resolves families strictly, so a missing one fails naming it instead of
+//! silently substituting another face.
 
 use std::time::Instant;
 
@@ -167,7 +168,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
         AnyView::new(vstack((pill, twin)).background(Srgb::from_hex("#0000FF")))
     });
 
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         W,
@@ -245,7 +246,7 @@ fn painted_ink_stays_within_measured_frame_single_text() {
         )
     });
 
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         W,
@@ -268,7 +269,7 @@ fn painted_ink_stays_within_measured_frame_single_text() {
 }
 
 /// Same invariant on a face whose outlines genuinely overhang the pen
-/// advance — the bundled Pacifico subset ('p' starts 0.119em left of the
+/// advance — the installed Pacifico face ('p' starts 0.119em left of the
 /// pen origin, 'y'/'f' end ~0.10em right of the advance) — so the check
 /// exercises real overhang on every host, not only where the platform's
 /// default face happens to overhang.
@@ -292,7 +293,7 @@ fn painted_ink_stays_within_measured_frame_overhang_font() {
         )
     });
 
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         W,
@@ -324,8 +325,22 @@ fn glyph_bounds_fast_path_agrees_with_drawn_outline() {
     use skrifa::outline::{DrawSettings, pen::ControlBoundsPen};
     use skrifa::{FontRef, GlyphId, MetadataProvider};
 
-    let font = FontRef::new(include_bytes!("../../../test-fonts/PacificoSubset.ttf"))
-        .expect("bundled Pacifico subset parses");
+    // The installed Pacifico face, found through the font collection by
+    // family name — the same lookup the strict family-resolution gate makes.
+    let mut font_cx = parley::FontContext::new();
+    let family = font_cx.collection.family_by_name("Pacifico").expect(
+        "font family `Pacifico` is not installed; install the style package's fonts \
+         with its font install script",
+    );
+    let face = family
+        .fonts()
+        .first()
+        .expect("the installed Pacifico family carries a face");
+    let index = face.index();
+    let blob = face
+        .load(Some(&mut font_cx.source_cache))
+        .expect("the installed Pacifico face loads");
+    let font = FontRef::from_index(blob.data(), index).expect("installed Pacifico face parses");
     // Both paths read the same font-unit extents; at a scaled size the header
     // path rounds through FreeType's 16.16 fixed-point scale while the pen
     // scales in float, so allow one font unit of rounding in pixels.

@@ -74,7 +74,9 @@ pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
 pub use renderer::accessibility::AccessibilityActivationPointError;
 #[cfg(feature = "frame-profile")]
 pub use renderer::{FrameStageTimes, GpuIdentity};
-pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
+pub use renderer::{
+    FontFamilyResolution, HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext,
+};
 #[cfg(target_os = "android")]
 pub use runner::android;
 // `runner::run` exists on every non-Android shape except bare wasm without

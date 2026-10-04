@@ -146,7 +146,9 @@ use crate::platform::{InputEvent, KeyState, PlatformWindow};
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::readback::readback_texture_rgba8;
-use crate::renderer::{HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome};
+use crate::renderer::{
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisWindowOrigin, KeyDelivery, KeyPressOutcome,
+};
 use crate::renderer::{HydrolysisTextContextMenuMode, MenuShortcutRegistry, PopupWindowManager};
 use crate::time::Instant;
 
@@ -317,7 +319,12 @@ pub fn run(app: App, style: impl crate::Style) {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&theme))
+            HydrolysisRenderer::new(
+                surface.adapter(),
+                surface.device(),
+                Rc::clone(&theme),
+                FontFamilyResolution::Lenient,
+            )
         };
         seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());

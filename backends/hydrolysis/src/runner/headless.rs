@@ -185,9 +185,11 @@ pub struct HeadlessRuntime {
     gpu: OffscreenGpuContext,
     /// The application's font collection, the same one the environment carries.
     /// Popup windows get their own renderer, which is seeded from this so it
-    /// shapes with the same faces as the main one — deterministic bundled fonts
-    /// under a test host, the app's resource fonts everywhere else.
+    /// shapes with the same faces as the main one.
     fonts: FontCollection,
+    /// The family-resolution mode the constructor seeded every renderer with
+    /// — popup windows' renderers are created under the same mode.
+    family_resolution: FontFamilyResolution,
     local_executor: HeadlessMainThreadExecutor,
     /// Declared last so it drops after the runtime state above: consumes any
     /// still-queued spawned work while this thread's locals are intact, so no
@@ -239,12 +241,18 @@ fn default_window(content: AnyViewBuilder<AnyView>) -> Window {
 impl HeadlessRuntime {
     #[must_use]
     /// Creates a headless runtime with `env` and the root view builder.
+    ///
+    /// `family_resolution` decides whether a named font family the collection
+    /// cannot resolve is skipped ([`FontFamilyResolution::Lenient`]) or fails
+    /// the shape naming it ([`FontFamilyResolution::Strict`]); see
+    /// [`FontFamilyResolution`].
     pub fn new(
         env: Environment,
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
         style: impl crate::Style,
+        family_resolution: FontFamilyResolution,
     ) -> Self {
         Self::on_gpu_context(
             pollster::block_on(OffscreenGpuContext::new()),
@@ -253,7 +261,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            |env| native_resource_fonts(waterui_core::ResourceContext::from_environment(env)),
+            family_resolution,
         )
     }
 
@@ -274,6 +282,7 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
         style: impl crate::Style,
+        family_resolution: FontFamilyResolution,
     ) -> Self {
         Self::on_gpu_context(
             pollster::block_on(OffscreenGpuContext::new()),
@@ -282,7 +291,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            |env| native_resource_fonts(waterui_core::ResourceContext::from_environment(env)),
+            family_resolution,
         )
     }
 
@@ -301,8 +310,10 @@ impl HeadlessRuntime {
     ///
     /// This constructor allows compute-capable software adapters for CI-only
     /// semantic testing while keeping [`Self::new`] on production adapter
-    /// selection, and shapes text with the bundled deterministic fonts so
-    /// layout assertions and snapshot goldens hold on every platform's runner.
+    /// selection, and resolves font families strictly
+    /// ([`FontFamilyResolution::Strict`]): a named family the collection
+    /// cannot resolve fails the shape naming it, so a style package's missing
+    /// fonts fail the test instead of silently substituting a face.
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn new_for_tests(
@@ -319,7 +330,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            |_| super::fonts::deterministic_test_fonts(),
+            FontFamilyResolution::Strict,
         )
     }
 
@@ -342,40 +353,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            |_| super::fonts::deterministic_test_fonts(),
-        )
-    }
-
-    /// Same as [`Self::new_for_tests`] but loads the fonts the windowed
-    /// runners use — the system font collection plus the staged fonts
-    /// directory — via [`native_resource_fonts`] instead of the bundled
-    /// deterministic set.
-    ///
-    /// Text-measurement fidelity tests belong here: the deterministic fonts
-    /// shape snugly, so a measure-versus-paint divergence that only appears on
-    /// the real font stack (different advances, fallback runs, hinting) is
-    /// invisible to [`Self::new_for_tests`].
-    #[cfg(any(test, feature = "testing"))]
-    #[must_use]
-    pub fn new_for_tests_native_fonts(
-        env: Environment,
-        content: AnyViewBuilder<AnyView>,
-        width: u32,
-        height: u32,
-        style: impl crate::Style,
-    ) -> Self {
-        Self::on_gpu_context(
-            OffscreenGpuContext::new_for_tests_blocking(),
-            env,
-            default_window(content),
-            width,
-            height,
-            style,
-            |env| {
-                super::fonts::native_test_fonts(waterui_core::ResourceContext::from_environment(
-                    env,
-                ))
-            },
+            FontFamilyResolution::Strict,
         )
     }
 
@@ -387,7 +365,8 @@ impl HeadlessRuntime {
     /// per sample. Such a probe requests one context and passes it to every
     /// runtime. The device is all that is shared — the view tree, the renderer
     /// and the retained scene are still built from scratch per runtime, so what
-    /// a measurement observes is unchanged.
+    /// a measurement observes is unchanged. Family resolution is strict, as
+    /// on [`Self::new_for_tests`].
     #[cfg(any(test, feature = "testing"))]
     #[must_use]
     pub fn new_for_tests_on_context(
@@ -405,7 +384,7 @@ impl HeadlessRuntime {
             width,
             height,
             style,
-            |_| super::fonts::deterministic_test_fonts(),
+            FontFamilyResolution::Strict,
         )
     }
 
@@ -420,7 +399,7 @@ impl HeadlessRuntime {
         width: u32,
         height: u32,
         style: impl crate::Style,
-        build_fonts: fn(&Environment) -> parley::FontContext,
+        family_resolution: FontFamilyResolution,
     ) -> Self {
         let inspector = init_main_thread_executors();
         let inspector_probe = inspector
@@ -438,11 +417,14 @@ impl HeadlessRuntime {
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
         ));
-        // The application's fonts, built once. Every window's renderer is
-        // seeded from this collection, and a self-drawn component that typesets
-        // text itself reads it out of the environment instead of enumerating
-        // the system's fonts for itself.
-        let fonts = FontCollection::new(build_fonts(&env));
+        // The application's fonts, built once: the system collection plus the
+        // staged fonts directory, exactly as the windowed runners load them.
+        // Every window's renderer is seeded from this collection, and a
+        // self-drawn component that typesets text itself reads it out of the
+        // environment instead of enumerating the system's fonts for itself.
+        let fonts = FontCollection::new(native_resource_fonts(
+            waterui_core::ResourceContext::from_environment(&env),
+        ));
         fonts.clone().install(&mut env);
 
         // Headless binaries (preview, tests) have no platform runner to install
@@ -477,7 +459,12 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&theme))
+            HydrolysisRenderer::new(
+                surface.adapter(),
+                surface.device(),
+                Rc::clone(&theme),
+                family_resolution,
+            )
         };
         super::seed_core(&mut renderer, &fonts);
         renderer.set_window_id(
@@ -502,6 +489,7 @@ impl HeadlessRuntime {
             popup_windows: Vec::new(),
             theme,
             fonts,
+            family_resolution,
             _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             _gpu_reclaim: ReclaimGpuOnDrop(gpu.clone()),
             gpu,
@@ -522,7 +510,12 @@ impl HeadlessRuntime {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
+            HydrolysisRenderer::new(
+                surface.adapter(),
+                surface.device(),
+                Rc::clone(&self.theme),
+                self.family_resolution,
+            )
         };
         super::seed_core(&mut renderer, &self.fonts);
         renderer.set_window_id(

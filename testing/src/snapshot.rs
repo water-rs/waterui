@@ -1,7 +1,10 @@
 use std::path::Path;
 use std::rc::Rc;
 
-use hydrolysis::{HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style, WidgetTheme};
+use hydrolysis::{
+    FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
+    WidgetTheme,
+};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
 use waterui::graphics::cherenkov::kurbo;
@@ -99,7 +102,12 @@ impl TestHost {
         );
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
+            HydrolysisRenderer::new(
+                surface.adapter(),
+                surface.device(),
+                Rc::clone(&self.theme),
+                FontFamilyResolution::Strict,
+            )
         };
         let bounds = kurbo::Rect::new(
             0.0,

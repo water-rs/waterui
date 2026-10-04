@@ -9,7 +9,7 @@ use crate::platform::{
     SurfaceFrame, SurfaceProvider,
 };
 use crate::renderer::tests::MinimalTestTheme;
-use crate::renderer::{HydrolysisRenderer, InteractionKey};
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -845,6 +845,7 @@ fn runtime_window_sized(
             surface.adapter(),
             surface.device(),
             Rc::new(MinimalTestTheme::default()),
+            FontFamilyResolution::Strict,
         )
     };
     RuntimeWindow::new(
@@ -954,6 +955,7 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
             surface.adapter(),
             surface.device(),
             Rc::new(MinimalTestTheme::default()),
+            FontFamilyResolution::Strict,
         )
     };
     RuntimeWindow::new(

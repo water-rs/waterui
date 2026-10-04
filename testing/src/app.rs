@@ -7,7 +7,8 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeId as AccessibilityTreeId,
 };
 use hydrolysis::{
-    AccessibilityActivationPointError, HeadlessRuntime, KeyCode, Modifiers, SemanticRuntime, Style,
+    AccessibilityActivationPointError, FontFamilyResolution, HeadlessRuntime, KeyCode, Modifiers,
+    SemanticRuntime, Style,
 };
 use waterui::app::{App, AppParts};
 use waterui::window::Window;
@@ -101,10 +102,12 @@ fn frame_points_as_u32(points: f32) -> u32 {
 /// Which Hydrolysis headless runtime backs a session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RuntimeFlavor {
-    /// Deterministic bundled fonts, software adapters permitted (the default for tests).
+    /// Software adapters permitted (the default for tests). Fonts resolve the
+    /// application's way on every flavor — the system collection plus the
+    /// staged fonts directory.
     #[default]
     Test,
-    /// The application's resource fonts and production adapter selection — what `water run` shows.
+    /// Production adapter selection — what `water run` shows.
     Application,
 }
 
@@ -206,7 +209,10 @@ impl UiBuilder<NoStyle> {
         V: View + 'static,
         F: Fn() -> V + 'static,
     {
-        self.mount_semantic(AnyViewBuilder::new(move || AnyView::new(view_fn())))
+        self.mount_semantic(
+            AnyViewBuilder::new(move || AnyView::new(view_fn())),
+            FontFamilyResolution::Lenient,
+        )
     }
 }
 
@@ -239,10 +245,10 @@ impl<S> UiBuilder<S> {
 
     /// Selects which Hydrolysis headless runtime backs the session.
     ///
-    /// [`RuntimeFlavor::Test`] (the default) mounts on deterministic bundled
-    /// fonts and permits software adapters; [`RuntimeFlavor::Application`]
-    /// mounts the application's resource fonts under production adapter
-    /// selection — the runtime `water run` hosts.
+    /// [`RuntimeFlavor::Test`] (the default) permits software adapters;
+    /// [`RuntimeFlavor::Application`] selects adapters the way `water run`
+    /// does. Fonts resolve the application's way on both — a styled session
+    /// resolves the families its style package names strictly.
     #[must_use]
     pub const fn runtime(mut self, flavor: RuntimeFlavor) -> Self {
         self.flavor = flavor;
@@ -285,17 +291,22 @@ impl<S> UiBuilder<S> {
 
     /// Mounts `content` on the semantic runtime — the construction shared by
     /// both builders' `mount`, whose difference is only how the view builder
-    /// is assembled.
-    fn mount_semantic(self, content: AnyViewBuilder<AnyView>) -> SemanticApp {
+    /// is assembled. `family_resolution` is [`FontFamilyResolution::Lenient`]
+    /// for a style-free mount and [`FontFamilyResolution::Strict`] for a
+    /// styled one: the style package's families must be installed.
+    fn mount_semantic(
+        self,
+        content: AnyViewBuilder<AnyView>,
+        family_resolution: FontFamilyResolution,
+    ) -> SemanticApp {
         let env = self.mount_env();
-        let runtime = match self.flavor {
-            RuntimeFlavor::Test => {
-                SemanticRuntime::new_for_tests(env, content, self.width, self.height)
-            }
-            RuntimeFlavor::Application => {
-                SemanticRuntime::new(env, content, self.width, self.height)
-            }
-        };
+        let runtime = SemanticRuntime::new(
+            env,
+            content,
+            self.width,
+            self.height,
+            family_resolution,
+        );
         SemanticApp::new(runtime, (self.width, self.height))
     }
 }
@@ -369,9 +380,12 @@ impl<S: Style> UiBuilder<Styled<S>> {
     {
         let (builder, style) = self.untheme();
         let style = Rc::new(style);
-        builder.mount_semantic(AnyViewBuilder::new(move || {
-            AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
-        }))
+        builder.mount_semantic(
+            AnyViewBuilder::new(move || {
+                AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
+            }),
+            FontFamilyResolution::Strict,
+        )
     }
 
     /// Mounts a no-arg view builder on the rendered runtime and returns the
@@ -449,9 +463,14 @@ impl<S: Style> UiBuilder<Styled<S>> {
             RuntimeFlavor::Test => {
                 HeadlessRuntime::new_for_tests(env, content, width, height, style.style)
             }
-            RuntimeFlavor::Application => {
-                HeadlessRuntime::new(env, content, width, height, style.style)
-            }
+            RuntimeFlavor::Application => HeadlessRuntime::new(
+                env,
+                content,
+                width,
+                height,
+                style.style,
+                FontFamilyResolution::Strict,
+            ),
         };
         Self::wrap_rendered(runtime, width, height, scale_factor)
     }
@@ -476,9 +495,14 @@ impl<S: Style> UiBuilder<Styled<S>> {
             RuntimeFlavor::Test => {
                 HeadlessRuntime::new_for_tests_with_window(env, window, width, height, style.style)
             }
-            RuntimeFlavor::Application => {
-                HeadlessRuntime::new_with_window(env, window, width, height, style.style)
-            }
+            RuntimeFlavor::Application => HeadlessRuntime::new_with_window(
+                env,
+                window,
+                width,
+                height,
+                style.style,
+                FontFamilyResolution::Strict,
+            ),
         };
         Self::wrap_rendered(runtime, width, height, scale_factor)
     }

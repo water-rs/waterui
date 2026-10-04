@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use hydrolysis::{HeadlessRuntime, SemanticRuntime};
+use hydrolysis::{FontFamilyResolution, HeadlessRuntime, SemanticRuntime};
 use hydrolysis_m3::{Material3, MaterialColorScheme};
 use waterui::app::App;
 use waterui::color::WorkingColor;
@@ -74,7 +74,8 @@ fn headless_probe(
 fn semantic_probe(env: Environment) -> Rc<RefCell<CapturedTokens>> {
     let (probe, captured) = token_probe();
     let content = AnyViewBuilder::new(move || AnyView::new(probe.clone()));
-    let mut runtime = SemanticRuntime::new_for_tests(env, content, 64, 64);
+    let mut runtime =
+        SemanticRuntime::new(env, content, 64, 64, FontFamilyResolution::Strict);
     let _ = runtime.pump();
     captured
 }
