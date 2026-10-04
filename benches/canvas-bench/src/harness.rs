@@ -849,17 +849,25 @@ fn thermal_state_name() -> String {
 // ---- os_signpost -----------------------------------------------------------
 
 type OsLog = core::ffi::c_void;
+
+/// `os_signpost_type_t` values from `<os/signpost.h>`.
+const OS_SIGNPOST_INTERVAL_BEGIN: u8 = 0x01;
+const OS_SIGNPOST_INTERVAL_END: u8 = 0x02;
+
 unsafe extern "C" {
     fn os_log_create(subsystem: *const core::ffi::c_char, category: *const core::ffi::c_char)
         -> *mut OsLog;
-    fn os_signpost_interval_begin(
+    /// The syscall-level emitter behind the `os_signpost_interval_*`
+    /// inlines — a real `libsystem` symbol since iOS 13.
+    fn _os_signpost_emit_with_type(
         log: *mut OsLog,
+        signpost_type: u8,
         signpost_id: u64,
         name: *const core::ffi::c_char,
-        fmt: *const core::ffi::c_char,
-        ...
-    ) -> u64;
-    fn os_signpost_interval_end(log: *mut OsLog, signpost_id: u64, name: *const core::ffi::c_char);
+        format: *const core::ffi::c_char,
+        buf: *const u8,
+        size: usize,
+    );
 }
 
 fn signpost_log() -> *mut OsLog {
@@ -877,24 +885,37 @@ fn signpost_log() -> *mut OsLog {
     .0
 }
 
-/// Opens an `os_signpost` interval named `bench_cell` carrying `cell_name`.
+/// Opens an `os_signpost` interval named `bench_cell` carrying `cell_name`
+/// as its metadata string.
 fn signpost_begin(id: u64, cell_name: &str) {
     let name = CString::new(cell_name).expect("cell name is UTF-8");
+    // SAFETY: log lives for the process; `name` outlives the call.
     unsafe {
-        os_signpost_interval_begin(
+        _os_signpost_emit_with_type(
             signpost_log(),
+            OS_SIGNPOST_INTERVAL_BEGIN,
             id.max(1),
             c"bench_cell".as_ptr(),
-            c"%{public}s".as_ptr(),
             name.as_ptr(),
+            core::ptr::null(),
+            0,
         );
     }
 }
 
 fn signpost_end(id: u64, name: &str) {
     let name = CString::new(name).expect("name is UTF-8");
+    // SAFETY: same as `signpost_begin`.
     unsafe {
-        os_signpost_interval_end(signpost_log(), id.max(1), name.as_ptr());
+        _os_signpost_emit_with_type(
+            signpost_log(),
+            OS_SIGNPOST_INTERVAL_END,
+            id.max(1),
+            name.as_ptr(),
+            c"".as_ptr(),
+            core::ptr::null(),
+            0,
+        );
     }
 }
 
