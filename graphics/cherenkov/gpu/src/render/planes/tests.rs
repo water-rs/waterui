@@ -11,8 +11,22 @@ mod alloc_counter {
     use std::cell::Cell;
 
     thread_local! {
+        // Each initializer is already const; the lint misfires on
+        // Android's emulated-TLS expansion (see `render::diag`'s allow).
+        #[allow(
+            clippy::missing_const_for_thread_local,
+            reason = "the initializer is already const; false positive on clippy 1.99"
+        )]
         pub(super) static TRACKING: Cell<bool> = const { Cell::new(false) };
+        #[allow(
+            clippy::missing_const_for_thread_local,
+            reason = "the initializer is already const; false positive on clippy 1.99"
+        )]
         pub(super) static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+        #[allow(
+            clippy::missing_const_for_thread_local,
+            reason = "the initializer is already const; false positive on clippy 1.99"
+        )]
         pub(super) static REALLOCATIONS: Cell<usize> = const { Cell::new(0) };
     }
 }

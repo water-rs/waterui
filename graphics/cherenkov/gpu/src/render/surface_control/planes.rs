@@ -381,6 +381,8 @@ impl Planes {
             .map_err(|e| unsupported(&e.to_string()))?;
         let mut export = vk::ExportSemaphoreCreateInfo::default()
             .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        // SAFETY: `shared.vk.device` is live and the create chain requests
+        // `SYNC_FD` export, a capability `new` checked above.
         let signal = unsafe {
             shared.vk.device.create_semaphore(
                 &vk::SemaphoreCreateInfo::default().push_next(&mut export),
@@ -615,6 +617,10 @@ impl Planes {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("plane ownership"),
             });
+            // SAFETY: the encoder is recording on the engine's device and
+            // `images` are this surface's live plane buffers, satisfying
+            // `ownership`'s contract; wgpu's tracking of the command buffer
+            // is untouched.
             unsafe {
                 encoder.as_hal_mut::<wgpu::hal::vulkan::Api, _, _>(|hal| {
                     let cb = hal.expect("the engine encoder is Vulkan").raw_handle();
@@ -668,6 +674,9 @@ impl Planes {
         let hand_back = barrier(false);
         {
             let _submit = self.submit_lock.lock().expect("submit guard");
+            // SAFETY: `queue` is the engine's Vulkan queue, and the waits
+            // and signal staged on it are consumed by the `queue.submit`
+            // below on the same queue.
             let hal_queue =
                 unsafe { queue.as_hal::<wgpu::hal::vulkan::Api>() }.expect("vulkan queue");
             for &wait in &waits {
@@ -681,6 +690,9 @@ impl Planes {
             queue.submit([acquire, blits, hand_back]);
         }
         crate::diag::submit(device, queue, "plane present");
+        // SAFETY: `self.signal` is a live semaphore created with `SYNC_FD`
+        // export and carrying the signal the submission above just staged —
+        // the pending-signal state a sync-fd export requires.
         let acquire_fence = unsafe {
             self.shared
                 .vk
@@ -701,6 +713,8 @@ impl Planes {
             let owner = self.shared.vk.device.clone();
             queue.on_submitted_work_done(move || {
                 for wait in waits {
+                    // SAFETY: the callback runs after the submission
+                    // completed, so no queue still waits on `wait`.
                     unsafe { owner.destroy_semaphore(wait, None) };
                 }
             });
@@ -723,6 +737,10 @@ impl Planes {
                     if let Some(at) = chosen[part] {
                         let buffer = &mut this.buffers[at];
                         buffer.state = State::Shown;
+                        // SAFETY: `buffer.ahb` is a live `AHardwareBuffer`
+                        // `buffer::allocate` created with
+                        // `GPU_SAMPLED_IMAGE` usage — `set_buffer`'s
+                        // contract.
                         unsafe {
                             transaction.set_buffer(
                                 &this.surface,
@@ -1067,6 +1085,9 @@ impl SystemPlanes for Planes {
 impl Drop for Planes {
     fn drop(&mut self) {
         self.clear();
+        // SAFETY: `self.signal` is the live semaphore `new` created on this
+        // device, and `clear` retired every plane, so no submission stages
+        // a signal on it again.
         unsafe { self.shared.vk.device.destroy_semaphore(self.signal, None) };
     }
 }

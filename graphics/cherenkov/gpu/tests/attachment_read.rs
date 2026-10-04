@@ -124,9 +124,9 @@ fn attachment_read(producer: &str, consumer: &str, expected: [f32; 4]) {
         "memoryless",
         wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
     );
-    // SAFETY: the guard keeps the wgpu texture alive; this reads its storage
-    // mode without changing any native state or resource ownership.
     {
+        // SAFETY: the guard keeps the wgpu texture alive; this reads its
+        // storage mode without changing any native state or ownership.
         let temporary_hal = unsafe { temporary.as_hal::<wgpu::hal::metal::Api>() }.unwrap();
         assert_eq!(
             temporary_hal.raw_handle().storageMode(),

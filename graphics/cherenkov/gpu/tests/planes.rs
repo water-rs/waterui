@@ -420,7 +420,9 @@ mod macos {
                     format!(
                         "the display layer never became ready: {:?} error={:?} \
                         bounds={:?} hidden={:?}",
+                        // SAFETY: the renderer is read on the main thread.
                         unsafe { r.status() },
+                        // SAFETY: the renderer is read on the main thread.
                         unsafe { r.error() },
                         display.bounds(),
                         display.isHidden(),
@@ -781,6 +783,8 @@ mod macos {
                 assert!(
                     !probes(&self.host())
                         .iter()
+                        // SAFETY: the display layers are read on the main
+                        // thread.
                         .all(|d| unsafe { d.isReadyForDisplay() }),
                     "the probe reported ready but the plan kept the frame \
                     in the engine"
@@ -794,6 +798,8 @@ mod macos {
         /// the platform's "cannot show this"; a synchronous rejection at
         /// the enqueue is instead a `show` panic.
         fn probe_failed(&self) -> bool {
+            // SAFETY: the display layers and their renderers are read on
+            // the main thread.
             probes(&self.host()).iter().any(|d| unsafe {
                 d.sampleBufferRenderer().status()
             } == AVQueuedSampleBufferRenderingStatus::Failed)
@@ -1008,6 +1014,8 @@ mod macos {
                 .expect("displayed")
                 .id()
         );
+        // SAFETY: the attachment keys and expected values are immutable
+        // CoreVideo statics, read on the main thread.
         unsafe {
             assert!(same(
                 &shown,
@@ -1331,8 +1339,8 @@ mod macos {
         let display = displays(&fixture.root()).pop().expect("promoted display");
         let scroll = display.superlayer().expect("scroll layer");
         let node = scroll.superlayer().expect("transform layer");
-        // SAFETY: the layer and its animation are confined to main.
         assert!(
+            // SAFETY: the layer and its animation are confined to main.
             unsafe { node.animationForKey(&objc2_foundation::NSString::from_str("position.x")) }
                 .is_some()
         );
@@ -1376,8 +1384,8 @@ mod macos {
             tx[&video].transform(Affine::translate((8., 4.)));
         });
         fixture.render();
-        // SAFETY: the layer and its animation are confined to main.
         assert!(
+            // SAFETY: the layer and its animation are confined to main.
             unsafe { node.animationForKey(&objc2_foundation::NSString::from_str("position.x")) }
                 .is_none()
         );

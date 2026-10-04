@@ -60,6 +60,9 @@ pub(super) fn build(value: Scalar, path: &NSString) -> Retained<CABasicAnimation
         }
         Animation::Decay(_) => unreachable!("decays never pass animation admission"),
     };
+    // SAFETY: `build` is reached only through `install` for the scalar
+    // properties `position.x`, `position.y` and `opacity`, whose animatable
+    // value type is `NSNumber` — the correct type for both endpoints.
     unsafe {
         animation.setFromValue(Some(&NSNumber::numberWithDouble(value.from)));
         animation.setToValue(Some(&NSNumber::numberWithDouble(value.target)));

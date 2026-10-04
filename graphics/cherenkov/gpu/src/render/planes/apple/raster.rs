@@ -84,9 +84,15 @@ impl Buffer {
         }))
         .expect("extended linear P3");
         let property = space.property_list().expect("serializable colour space");
+        // SAFETY: `surface` is a live IOSurface, the key is the framework's
+        // colour-space constant, and `property` is the colour space's
+        // property-list representation — a value IOSurface accepts.
         unsafe { surface.set_value(objc2_io_surface::kIOSurfaceColorSpace, &property) };
         // SAFETY: Metal is the Apple backend and the descriptor is fully specified.
         let metal = unsafe { device.as_hal::<wgpu::hal::metal::Api>() }.expect("Metal device");
+        // SAFETY: the pixel format is a valid `MTLPixelFormat` and the
+        // dimensions describe the 2D texture the IOSurface created above
+        // backs.
         let descriptor = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
                 MTLPixelFormat::RGBA16Float,
@@ -187,18 +193,22 @@ impl Buffer {
 
 /// `IOSurface` is reference counted and its immutable contents may cross threads.
 pub(super) struct Contents(pub CFRetained<IOSurfaceRef>);
-// SAFETY: the reference holds an immutable IOSurface, shown only after its GPU fence.
 #[expect(
     clippy::non_send_fields_in_send_ty,
     reason = "IOSurface is thread safe; only immutable GPU-completed contents cross to main"
 )]
+// SAFETY: the reference holds an immutable IOSurface, shown only after its
+// GPU fence, so handing it to the main thread races with nothing.
 unsafe impl Send for Contents {}
 
 impl Contents {
     pub fn set(self, layer: &CALayer) {
         // SAFETY: CALayer accepts an IOSurface as contents and retains it.
         let value: &AnyObject = unsafe { &*CFRetained::as_ptr(&self.0).as_ptr().cast() };
+        // SAFETY: `value` is the retained IOSurface above — a type CALayer's
+        // `contents` accepts — and `layer` is touched only on main.
         unsafe { layer.setContents(Some(value)) };
+        // SAFETY: `CADynamicRangeHigh` is an immutable framework static.
         layer.setPreferredDynamicRange(unsafe { objc2_quartz_core::CADynamicRangeHigh });
     }
 }

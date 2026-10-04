@@ -57,6 +57,8 @@ fn setup() -> (SharedDevice, vulkan::Device) {
 
 /// Raw handles the producer side of a test uses.
 fn raw(shared: &SharedDevice) -> (ash::Device, vk::Queue, u32) {
+    // SAFETY: `setup` asserted the adapter is Vulkan; the hal view borrows
+    // `shared`, which outlives the returned handles.
     let hal = unsafe { shared.device.as_hal::<wgpu::hal::vulkan::Api>() };
     let hal = hal.as_ref().expect("vulkan device");
     let device = hal.raw_device().clone();
@@ -82,11 +84,14 @@ fn alloc_ahb(
         rfu0: 0,
         rfu1: 0,
     };
+    // SAFETY: `desc` is a fully initialized descriptor live for the call.
     if unsafe { ndk_sys::AHardwareBuffer_isSupported(&raw const desc) } == 0 {
         eprintln!("AHB format {format:#x} not supported at {width}x{height}");
         return None;
     }
     let mut buffer = std::ptr::null_mut();
+    // SAFETY: `desc` is a valid descriptor and `buffer` a valid
+    // out-pointer that receives one owned reference on success.
     if unsafe { ndk_sys::AHardwareBuffer_allocate(&raw const desc, &raw mut buffer) } != 0 {
         return None;
     }
@@ -106,6 +111,8 @@ fn make_ahb_rgb(w: u32, h: u32, rgba: [u8; 4]) -> *mut ndk_sys::AHardwareBuffer 
     )
     .expect("RGB AHB");
     let mut addr = std::ptr::null_mut();
+    // SAFETY: `buffer` is the caller-owned live AHB, the usage flags match
+    // its allocation, and `addr` is a valid out-pointer for the lock.
     let rc = unsafe {
         ndk_sys::AHardwareBuffer_lock(
             buffer,
@@ -116,8 +123,14 @@ fn make_ahb_rgb(w: u32, h: u32, rgba: [u8; 4]) -> *mut ndk_sys::AHardwareBuffer 
         )
     };
     assert_eq!(rc, 0, "AHB lock");
+    // SAFETY: `AHardwareBuffer_Desc` is a plain C struct; all-zero is a
+    // valid bit pattern the describe call overwrites.
     let mut desc = unsafe { std::mem::zeroed::<ndk_sys::AHardwareBuffer_Desc>() };
+    // SAFETY: `buffer` is the live locked AHB and `desc` a valid
+    // out-struct.
     unsafe { ndk_sys::AHardwareBuffer_describe(buffer, &raw mut desc) };
+    // SAFETY: `addr` names the locked buffer's base until `unlock`, and
+    // every write stays inside `desc`'s stride and dimensions.
     unsafe {
         let stride = desc.stride as usize;
         let base = addr.cast::<u8>();
@@ -154,7 +167,11 @@ fn make_ahb_nv12(
         usage,
     )
     .expect("NV12 AHB");
+    // SAFETY: `AHardwareBuffer_Planes` is a plain C struct; all-zero is a
+    // valid bit pattern `lockPlanes` overwrites.
     let mut planes = unsafe { std::mem::zeroed::<ndk_sys::AHardwareBuffer_Planes>() };
+    // SAFETY: `buffer` is the caller-owned live AHB, the usage flags match
+    // its allocation, and `planes` is a valid out-struct.
     let rc = unsafe {
         ndk_sys::AHardwareBuffer_lockPlanes(
             buffer,
@@ -165,6 +182,9 @@ fn make_ahb_nv12(
         )
     };
     assert_eq!(rc, 0, "AHB lockPlanes");
+    // SAFETY: `lockPlanes` filled `planes`; each entry's `data`/`rowStride`/
+    // `pixelStride` names live mapped memory until `unlock`, and every
+    // write stays inside the plane's stride and dimensions.
     unsafe {
         let luma_plane = planes.planes[0];
         let luma_base = luma_plane.data.cast::<u8>();
@@ -263,6 +283,9 @@ impl ProducerFence {
             .handle_type(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD)
             .push_next(&mut semaphore_type);
         let mut external = vk::ExternalSemaphoreProperties::default();
+        // SAFETY: `instance` and `physical_device` are the engine's live
+        // objects and `info`/`external` are valid in/out structs — a pure
+        // capability query.
         unsafe {
             device
                 .shared
@@ -281,6 +304,9 @@ impl ProducerFence {
         );
         let mut export = vk::ExportSemaphoreCreateInfo::default()
             .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
+        // SAFETY: `dev` is live and the create chain declares `SYNC_FD`
+        // export — the handle type `fire` exports and the capability check
+        // above just proved exportable.
         let binary = unsafe {
             dev.create_semaphore(
                 &vk::SemaphoreCreateInfo::default().push_next(&mut export),
@@ -290,6 +316,8 @@ impl ProducerFence {
         .expect("binary semaphore");
         let mut type_info =
             vk::SemaphoreTypeCreateInfo::default().semaphore_type(vk::SemaphoreType::TIMELINE);
+        // SAFETY: `dev` is live and `type_info` in the create chain makes
+        // this a timeline semaphore — `setup` asserted timeline support.
         let timeline = unsafe {
             dev.create_semaphore(
                 &vk::SemaphoreCreateInfo::default().push_next(&mut type_info),
@@ -313,6 +341,8 @@ impl ProducerFence {
     fn fd(&self) -> OwnedFd {
         let guard = self.fd.lock().expect("fence fd");
         let fd = guard.as_ref().expect("fence exported by fire");
+        // SAFETY: `dup` of the live stored fd returns a fresh descriptor
+        // the caller owns.
         let dup = unsafe { OwnedFd::from_raw_fd(libc::dup(fd.as_raw_fd())) };
         drop(guard);
         dup
@@ -326,6 +356,8 @@ impl ProducerFence {
     fn fire(&self, queue: vk::Queue, family: u32, fills: u32) {
         const FILL_BYTES: u64 = 32 * 1024 * 1024;
         let dev = &self.dev;
+        // SAFETY: `dev` is live and the create info is self-contained —
+        // an exclusive `TRANSFER_DST` buffer.
         let buffer = unsafe {
             dev.create_buffer(
                 &vk::BufferCreateInfo::default()
@@ -336,7 +368,10 @@ impl ProducerFence {
             )
         }
         .expect("delay buffer");
+        // SAFETY: `buffer` is the live buffer just created on `dev`.
         let requirements = unsafe { dev.get_buffer_memory_requirements(buffer) };
+        // SAFETY: `instance` and `physical` are the engine's live objects;
+        // a pure property query.
         let properties = unsafe {
             self.instance
                 .get_physical_device_memory_properties(self.physical)
@@ -349,6 +384,8 @@ impl ProducerFence {
                         .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
             })
             .expect("device-local memory type");
+        // SAFETY: `dev` is live and the type index was selected from the
+        // buffer's requirement mask above.
         let memory = unsafe {
             dev.allocate_memory(
                 &vk::MemoryAllocateInfo::default()
@@ -358,7 +395,11 @@ impl ProducerFence {
             )
             .expect("delay memory")
         };
+        // SAFETY: `buffer` and `memory` are live objects on `dev`; offset
+        // 0 binds the start of the allocation.
         unsafe { dev.bind_buffer_memory(buffer, memory, 0) }.expect("bind delay memory");
+        // SAFETY: `dev` is live and `family` is the engine's queue family
+        // index.
         let pool = unsafe {
             dev.create_command_pool(
                 &vk::CommandPoolCreateInfo::default().queue_family_index(family),
@@ -366,6 +407,8 @@ impl ProducerFence {
             )
         }
         .expect("pool");
+        // SAFETY: `dev` and `pool` are live; one primary buffer is
+        // requested.
         let cb = unsafe {
             dev.allocate_command_buffers(
                 &vk::CommandBufferAllocateInfo::default()
@@ -375,8 +418,13 @@ impl ProducerFence {
             )
         }
         .expect("cb")[0];
+        // SAFETY: `dev` is live and the default create info is valid.
         let fence = unsafe { dev.create_fence(&vk::FenceCreateInfo::default(), None) }
             .expect("producer fence");
+        // SAFETY: `cb` is freshly allocated and records once; `buffer` and
+        // `binary` are live on `dev`; the `queue` is `dev`'s `family` queue;
+        // and the SYNC_FD export runs while the binary semaphore's signal is
+        // pending, which the export requires. The returned fd is owned.
         unsafe {
             dev.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())
                 .expect("begin");
@@ -419,6 +467,7 @@ impl ProducerFence {
             let work = self.work.lock().expect("producer work");
             work.as_ref().expect("producer submitted").fence
         };
+        // SAFETY: `fence` is the live submission fence stored by `fire`.
         matches!(unsafe { self.dev.get_fence_status(fence) }, Ok(false))
     }
 
@@ -430,6 +479,7 @@ impl ProducerFence {
             work.as_ref().expect("producer submitted").fence
         };
         let start = Instant::now();
+        // SAFETY: `fence` is the live submission fence stored by `fire`.
         unsafe {
             self.dev
                 .wait_for_fences(&[fence], true, 30_000_000_000)
@@ -443,6 +493,9 @@ impl Drop for ProducerFence {
     fn drop(&mut self) {
         let work = { self.work.lock().expect("producer work").take() };
         if let Some(work) = work {
+            // SAFETY: every object in `work` was created on `self.dev` by
+            // `fire`, and the fence wait above retires the submission
+            // before its pool, buffer and memory are destroyed.
             unsafe {
                 // The delay must retire before its objects are destroyed;
                 // a host-side fence wait is the producer's own wait.
@@ -455,6 +508,9 @@ impl Drop for ProducerFence {
                 self.dev.free_memory(work.memory, None);
             }
         }
+        // SAFETY: `timeline` and `binary` are this fence's own live
+        // semaphores on `self.dev`; the wait above retired the submit that
+        // signalled `binary`.
         unsafe {
             self.dev.destroy_semaphore(self.timeline, None);
             self.dev.destroy_semaphore(self.binary, None);
@@ -819,6 +875,8 @@ fn two_layers_replace_retire_and_release_fence() {
         events: libc::POLLIN,
         revents: 0,
     };
+    // SAFETY: `pfd` is a valid in/out struct naming the live release-fence
+    // fd for a 1-entry poll.
     let rc = unsafe { libc::poll(&raw mut pfd, 1, 2000) };
     assert_eq!(rc, 1, "release fence did not signal");
 }
@@ -989,6 +1047,8 @@ fn cancellation_and_teardown() {
         .expect("AHB import");
     let generation = frame.generation.clone();
     let (dev, _, family) = raw(&shared);
+    // SAFETY: `dev` is the engine's live raw device and `family` its
+    // queue family index.
     let pool = unsafe {
         dev.create_command_pool(
             &vk::CommandPoolCreateInfo::default().queue_family_index(family),
@@ -996,6 +1056,7 @@ fn cancellation_and_teardown() {
         )
     }
     .expect("pool");
+    // SAFETY: `dev` and `pool` are live; one primary buffer is requested.
     let cb = unsafe {
         dev.allocate_command_buffers(
             &vk::CommandBufferAllocateInfo::default()
@@ -1005,15 +1066,20 @@ fn cancellation_and_teardown() {
         )
     }
     .expect("cb")[0];
+    // SAFETY: `cb` was just allocated from `pool` and records once.
     unsafe {
         dev.begin_command_buffer(cb, &vk::CommandBufferBeginInfo::default())
             .expect("begin");
     }
     let mut native = vulkan::Native::new(device.shared).expect("native");
+    // SAFETY: `cb` is a recording command buffer on the shared device —
+    // `stage_acquire`'s contract.
     if let Some(pending) = unsafe { vulkan::stage_acquire(&generation, cb) }.expect("stage") {
         native.staged.push(pending);
     }
     vulkan::cancel_staged(&mut native);
+    // SAFETY: `pool` is this test's own live pool; `cb` was never
+    // submitted, so destroying the pool frees it with nothing in flight.
     unsafe { dev.destroy_command_pool(pool, None) };
     assert_eq!(
         generation.state(),

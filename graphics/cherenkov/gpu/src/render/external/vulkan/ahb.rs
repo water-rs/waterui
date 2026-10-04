@@ -37,9 +37,13 @@ pub fn import(shared: &Arc<Shared>, desc: Ahb) -> Result<Frame, NativeError> {
         return Err(NativeError::Invalid("null AHardwareBuffer"));
     }
     // The producer lease: retained until the frame retires.
+    // SAFETY: `buffer` is a live `AHardwareBuffer` — non-null above, and the
+    // producer descriptor hands it over as a usable reference.
     unsafe { ndk_sys::AHardwareBuffer_acquire(buffer) };
     let result = import_inner(shared, desc, buffer);
     if result.is_err() {
+        // SAFETY: `buffer` is the reference acquired above; the failed
+        // import kept no other owner.
         unsafe { ndk_sys::AHardwareBuffer_release(buffer) };
     }
     result
@@ -60,6 +64,8 @@ fn import_inner(
         rfu0: 0,
         rfu1: 0,
     };
+    // SAFETY: `buffer` is a live `AHardwareBuffer` (the lease is held) and
+    // `ahb_desc` is a valid out-struct.
     unsafe { ndk_sys::AHardwareBuffer_describe(buffer, &raw mut ahb_desc) };
     if ahb_desc.width == 0 || ahb_desc.height == 0 || ahb_desc.layers != 1 {
         return Err(NativeError::Invalid("buffer must be a single-layer frame"));
@@ -72,6 +78,8 @@ fn import_inner(
     let mut props =
         vk::AndroidHardwareBufferPropertiesANDROID::default().push_next(&mut format_props);
     let ahb_loader = shared.vk.ahb.as_ref().expect("checked at import");
+    // SAFETY: `buffer` is a live `AHardwareBuffer` and `props` a valid
+    // out-struct whose pNext chain carries `format_props`.
     unsafe { ahb_loader.get_android_hardware_buffer_properties(buffer as *const _, &mut props) }
         .map_err(NativeError::from)?;
     // The chained query borrows `format_props` through `props`; lift every
@@ -144,6 +152,9 @@ fn import_inner(
     if external {
         create_info = create_info.push_next(&mut ext_format);
     }
+    // SAFETY: `dev` is the live engine device and `create_info` a valid
+    // chain: the external-memory handle type matches the import below and
+    // `ext_format`, when linked in, names the queried external format.
     let image = unsafe { dev.create_image(&create_info, None) }.map_err(NativeError::from)?;
     let result = bind_and_finish(
         shared,
@@ -163,6 +174,8 @@ fn import_inner(
     match result {
         Ok(frame) => Ok(frame),
         Err(err) => {
+            // SAFETY: `image` is this import's own object; the failed bind
+            // left nothing referencing it.
             unsafe { dev.destroy_image(image, None) };
             Err(err)
         }
@@ -196,6 +209,8 @@ fn bind_and_finish(
     let mut dedicated = vk::MemoryDedicatedRequirements::default();
     let info = vk::ImageMemoryRequirementsInfo2::default().image(image);
     let mut reqs2 = vk::MemoryRequirements2::default().push_next(&mut dedicated);
+    // SAFETY: `image` is a live image on `dev` and `reqs2`, with the
+    // `dedicated` chain linked in, is a valid out-struct.
     unsafe { dev.get_image_memory_requirements2(&info, &mut reqs2) };
     let reqs = reqs2.memory_requirements;
 
@@ -214,8 +229,15 @@ fn bind_and_finish(
     {
         alloc = alloc.push_next(&mut dedicated_alloc);
     }
+    // SAFETY: `alloc` chains the import naming the live `buffer`, an
+    // optional dedicated-allocation hint for `image`, and a memory type the
+    // buffer's and image's masks share.
     let memory = unsafe { dev.allocate_memory(&alloc, None) }?;
+    // SAFETY: `image` and `memory` are live objects on `dev`; offset 0
+    // binds the start of the imported allocation.
     if let Err(err) = unsafe { dev.bind_image_memory(image, memory, 0) } {
+        // SAFETY: `memory` was just allocated and the failed bind attached
+        // nothing to it.
         unsafe { dev.free_memory(memory, None) };
         return Err(err.into());
     }
@@ -239,6 +261,9 @@ fn bind_and_finish(
         };
         let conv = ycbcr::get(shared, key)?;
         let mut conv_info = vk::SamplerYcbcrConversionInfo::default().conversion(conv.conversion);
+        // SAFETY: `image` is the live bound image and the create chain
+        // carries the conversion `ycbcr::get` returned for this buffer's
+        // external format — the pairing an external-format view requires.
         let view = unsafe {
             dev.create_image_view(
                 &vk::ImageViewCreateInfo::default()
@@ -275,6 +300,10 @@ fn bind_and_finish(
         let wgpu_format = vk_format_of(report.vk_format);
         match wgpu_format {
             Some(wgpu_format) => {
+                // SAFETY: `image` is a live bound image on `shared`'s
+                // device; both descriptors mirror its format, extent,
+                // single level and sample count, and `RESOURCE` records its
+                // initialized, sampled-only use.
                 let texture = unsafe {
                     let hal_device = shared
                         .wgpu
@@ -366,6 +395,8 @@ fn bind_and_finish(
             let mut export = vk::ExportSemaphoreCreateInfo::default()
                 .handle_types(vk::ExternalSemaphoreHandleTypeFlags::SYNC_FD);
             let info = vk::SemaphoreCreateInfo::default().push_next(&mut export);
+            // SAFETY: `dev` is live and `info` chains the `SYNC_FD` export
+            // info — a capability checked just above.
             Some(unsafe { dev.create_semaphore(&info, None) }.map_err(NativeError::from)?)
         }
         _ => None,

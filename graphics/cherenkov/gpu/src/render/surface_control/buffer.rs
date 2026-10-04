@@ -106,6 +106,9 @@ pub fn allocate_format(
         rfu1: 0,
     };
     let mut raw = core::ptr::null_mut();
+    // SAFETY: `desc` is a fully initialized descriptor live for the call
+    // and `raw` a valid out-pointer that receives one buffer reference on
+    // success.
     if unsafe { ndk_sys::AHardwareBuffer_allocate(&raw const desc, &raw mut raw) } != 0 {
         return Err(NativeError::Invalid("AHardwareBuffer_allocate failed"));
     }
@@ -113,6 +116,8 @@ pub fn allocate_format(
     let (image, memory, bytes) = match import(shared, loader, ahb, size, format) {
         Ok(imported) => imported,
         Err(err) => {
+            // SAFETY: `raw` is the reference the allocation above
+            // returned; the failed import kept no other owner.
             unsafe { ndk_sys::AHardwareBuffer_release(raw) };
             return Err(err);
         }
@@ -139,6 +144,8 @@ fn import(
 ) -> Result<(vk::Image, vk::DeviceMemory, u64), NativeError> {
     let raw = ahb.as_ptr();
     let mut props = vk::AndroidHardwareBufferPropertiesANDROID::default();
+    // SAFETY: `raw` is a live `AHardwareBuffer` and `props` a valid
+    // `AndroidHardwareBufferPropertiesANDROID` out-struct.
     unsafe { loader.get_android_hardware_buffer_properties(raw.cast_const().cast(), &mut props) }?;
     let dev = &shared.vk.device;
     let mut external = vk::ExternalMemoryImageCreateInfo::default()
@@ -163,7 +170,10 @@ fn import(
         .sharing_mode(vk::SharingMode::EXCLUSIVE)
         .initial_layout(vk::ImageLayout::UNDEFINED)
         .push_next(&mut external);
+    // SAFETY: `dev` is the live engine device and `create` a valid create
+    // chain whose pNext requests AHB external memory for the import below.
     let image = unsafe { dev.create_image(&create, None) }?;
+    // SAFETY: `image` is the live image just created on `dev`.
     let requirements = unsafe { dev.get_image_memory_requirements(image) };
     let types = props.memory_type_bits & requirements.memory_type_bits;
     let mut import = vk::ImportAndroidHardwareBufferInfoANDROID::default().buffer(raw.cast());
@@ -178,12 +188,19 @@ fn import(
             "no memory type imports the plane buffer",
         ))
     } else {
+        // SAFETY: `alloc` chains the import naming the live `raw` buffer
+        // and the dedicated-allocation hint for `image`, and `types` is
+        // nonzero here, so the index names a real memory type.
         unsafe { dev.allocate_memory(&alloc, None) }
             .map_err(NativeError::from)
             .and_then(
+                // SAFETY: `image` and `memory` are live objects on `dev`;
+                // offset 0 binds the start of the imported allocation.
                 |memory| match unsafe { dev.bind_image_memory(image, memory, 0) } {
                     Ok(()) => Ok(memory),
                     Err(err) => {
+                        // SAFETY: `memory` was just allocated and the failed
+                        // bind attached nothing to it.
                         unsafe { dev.free_memory(memory, None) };
                         Err(err.into())
                     }
@@ -193,6 +210,8 @@ fn import(
     match bound {
         Ok(memory) => Ok((image, memory, props.allocation_size)),
         Err(err) => {
+            // SAFETY: `image` is this import's own object; the failed
+            // allocate/bind left nothing referencing it.
             unsafe { dev.destroy_image(image, None) };
             Err(err)
         }
@@ -210,6 +229,9 @@ fn wrap(
     format: wgpu::TextureFormat,
 ) -> wgpu::Texture {
     let owner = shared.vk.device.clone();
+    // SAFETY: wgpu runs the callback once, when the wrapped texture's last
+    // use has retired, so the image, its imported memory and the engine's
+    // `AHardwareBuffer` reference may each be released there.
     let drop_callback: wgpu::hal::DropCallback = Box::new(move || unsafe {
         owner.destroy_image(image, None);
         owner.free_memory(memory, None);
@@ -220,6 +242,10 @@ fn wrap(
         height: size.1,
         depth_or_array_layers: 1,
     };
+    // SAFETY: `image` was imported on `shared`'s device, the hal descriptor
+    // mirrors its format and extent, and `create_texture_from_hal`'s
+    // descriptor repeats them — `COLOR_TARGET` records the layout the
+    // ownership barriers keep the image in.
     unsafe {
         let hal_device = shared
             .wgpu
@@ -322,6 +348,9 @@ pub unsafe fn ownership(
             vk::PipelineStageFlags::BOTTOM_OF_PIPE,
         )
     };
+    // SAFETY: `cb` is a recording command buffer on `shared`'s device per
+    // the caller's contract, and every barrier names a live image of
+    // `images` and the real source and destination queue families.
     unsafe {
         shared.vk.device.cmd_pipeline_barrier(
             cb,

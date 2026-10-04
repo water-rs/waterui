@@ -194,6 +194,8 @@ impl SurfaceControl {
         window: NonNull<ANativeWindow>,
         name: &'static CStr,
     ) -> Result<Self, CreateFailed> {
+        // SAFETY: `window` is a live `ANativeWindow` backed by a surface per
+        // the caller's contract, and `name` is a NUL-terminated C string.
         let raw = unsafe { ASurfaceControl_createFromWindow(window.as_ptr(), name.as_ptr()) };
         NonNull::new(raw).map(Self).ok_or(CreateFailed(name))
     }
@@ -204,6 +206,8 @@ impl SurfaceControl {
     /// # Errors
     /// [`CreateFailed`] when the system refuses.
     pub fn child(&self, name: &'static CStr) -> Result<Self, CreateFailed> {
+        // SAFETY: `self.0` is the live control this wrapper holds a
+        // reference to, and `name` is a NUL-terminated C string.
         let raw = unsafe { ASurfaceControl_create(self.0.as_ptr(), name.as_ptr()) };
         NonNull::new(raw).map(Self).ok_or(CreateFailed(name))
     }
@@ -217,6 +221,8 @@ impl SurfaceControl {
 
 impl Drop for SurfaceControl {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is the live reference this wrapper owns, released
+        // exactly once here.
         unsafe { ASurfaceControl_release(self.0.as_ptr()) };
     }
 }
@@ -233,6 +239,8 @@ impl Transaction {
     #[must_use]
     pub fn new() -> Self {
         Self(
+            // SAFETY: takes no inputs and returns a fresh transaction or
+            // null.
             NonNull::new(unsafe { ASurfaceTransaction_create() })
                 .expect("ASurfaceTransaction_create returned null"),
         )
@@ -252,6 +260,10 @@ impl Transaction {
         acquire: Option<OwnedFd>,
     ) {
         let fence = acquire.map_or(-1, IntoRawFd::into_raw_fd);
+        // SAFETY: `self.0` is a live transaction, `surface` a live control,
+        // `buffer` a live `AHardwareBuffer` with `GPU_SAMPLED_IMAGE` usage
+        // per the caller's contract, and `fence` an owned fd the system
+        // takes, or -1 for none.
         unsafe {
             ASurfaceTransaction_setBuffer(
                 self.0.as_ptr(),
@@ -265,6 +277,9 @@ impl Transaction {
     /// Moves `surface` under `parent`, or off the display with `None` —
     /// which releases its buffer in this transaction's completion.
     pub fn reparent(&mut self, surface: &SurfaceControl, parent: Option<&SurfaceControl>) {
+        // SAFETY: `self.0` is a live transaction, `surface` a live control
+        // and `parent`, when present, another live control; null detaches
+        // the surface from the display.
         unsafe {
             ASurfaceTransaction_reparent(
                 self.0.as_ptr(),
@@ -281,6 +296,10 @@ impl Transaction {
     )]
     pub fn set(&mut self, surface: &SurfaceControl, op: Op) {
         let (t, sc) = (self.0.as_ptr(), surface.as_ptr());
+        // SAFETY: `t` is a live transaction and `sc` a live control; the
+        // setters read each op's value — the `ARect` pointers name stack
+        // values live for the call — and `set_hdr` holds the equivalent
+        // contract.
         unsafe {
             match op {
                 Op::Z(z) => ASurfaceTransaction_setZOrder(t, sc, z),
@@ -333,6 +352,10 @@ impl Transaction {
     /// release fence of every buffer the transaction replaced or removed.
     pub fn apply(self, on_complete: impl FnOnce(&Completion<'_>) + Send + 'static) {
         let context: Box<Callback> = Box::new(Box::new(on_complete));
+        // SAFETY: `self.0` is a live transaction; `context` is a leaked
+        // `Box<Callback>` the `complete` trampoline — which matches
+        // `OnComplete`'s signature — reclaims when the system runs it
+        // exactly once.
         unsafe {
             ASurfaceTransaction_setOnComplete(
                 self.0.as_ptr(),
@@ -352,6 +375,9 @@ impl Default for Transaction {
 
 impl Drop for Transaction {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is the live transaction this wrapper owns — an
+        // applied transaction is still deleted by its owner — deleted
+        // exactly once here.
         unsafe { ASurfaceTransaction_delete(self.0.as_ptr()) };
     }
 }
@@ -382,6 +408,9 @@ impl Completion<'_> {
             self.surfaces.contains(&surface),
             "a release fence query names a surface the transaction did not touch"
         );
+        // SAFETY: `stats` is live for the completion callback and `surface`
+        // is one of the transaction's controls, as asserted above — the
+        // query the NDK aborts on.
         let fd = unsafe {
             ASurfaceTransactionStats_getPreviousReleaseFenceFd(self.stats.as_ptr(), surface)
         };
@@ -402,16 +431,22 @@ unsafe extern "C" fn complete(context: *mut c_void, stats: *mut ASurfaceTransact
     let stats = NonNull::new(stats).expect("the completion carries statistics");
     let mut list: *mut *mut ASurfaceControl = core::ptr::null_mut();
     let mut len = 0usize;
+    // SAFETY: `stats` is live for the callback's duration and `list`/`len`
+    // are valid out-pointers.
     unsafe {
         ASurfaceTransactionStats_getASurfaceControls(stats.as_ptr(), &raw mut list, &raw mut len);
     }
     let surfaces = if list.is_null() {
         &[][..]
     } else {
+        // SAFETY: `list` names an array of `len` surface-control pointers
+        // owned by `stats`, live until released below.
         unsafe { core::slice::from_raw_parts(list, len) }
     };
     callback(&Completion { stats, surfaces });
     if !list.is_null() {
+        // SAFETY: `list` is the array `getASurfaceControls` filled in,
+        // released once here after the callback has read it.
         unsafe { ASurfaceTransactionStats_releaseASurfaceControls(list) };
     }
 }
@@ -477,6 +512,9 @@ unsafe fn set_hdr(t: *mut ASurfaceTransaction, sc: *mut ASurfaceControl, hdr: Hd
         maxFrameAverageLightLevel: l.max_frame_average,
     });
     // A null pointer clears the metadata.
+    // SAFETY: `t` and `sc` are the live transaction and control
+    // `Transaction::set` passed in, and each metadata pointer is either
+    // null or names a stack struct live for the call.
     unsafe {
         ASurfaceTransaction_setHdrMetadata_smpte2086(
             t,

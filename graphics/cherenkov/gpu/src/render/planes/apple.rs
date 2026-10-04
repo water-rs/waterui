@@ -710,6 +710,9 @@ fn pixel_buffer(frame: &ExternalFrame) -> Result<CFRetained<CVPixelBuffer>, Rend
         RenderError::Render("a promoted external frame's planes are not one IOSurface".into())
     })?;
     let mut out = std::ptr::null_mut();
+    // SAFETY: `surface` is a live IOSurface retained by `frame_surface`, and
+    // `out` is a valid out-pointer that receives a +1 pixel buffer on
+    // success.
     let status =
         unsafe { CVPixelBufferCreateWithIOSurface(None, &surface, None, NonNull::from(&mut out)) };
     let buffer = NonNull::new(out)
@@ -731,6 +734,8 @@ fn pixel_buffer(frame: &ExternalFrame) -> Result<CFRetained<CVPixelBuffer>, Rend
 /// A sample buffer the display layer shows as soon as it is enqueued.
 fn sample_buffer(buffer: &CVPixelBuffer) -> Result<CFRetained<CMSampleBuffer>, RenderError> {
     let mut format = std::ptr::null();
+    // SAFETY: `buffer` is a live CVPixelBuffer and `format` a valid
+    // out-pointer that receives a +1 format description on success.
     let status = unsafe {
         CMVideoFormatDescriptionCreateForImageBuffer(None, buffer, NonNull::from(&mut format))
     };
@@ -751,6 +756,9 @@ fn sample_buffer(buffer: &CVPixelBuffer) -> Result<CFRetained<CMSampleBuffer>, R
         decodeTimeStamp: invalid,
     };
     let mut out = std::ptr::null_mut();
+    // SAFETY: `buffer` is a live image buffer, `format` the +1 description
+    // created for it above, and `timing`/`out` are valid pointers — `timing`
+    // supplies one timing record for the single sample.
     let status = unsafe {
         CMSampleBuffer::create_ready_with_image_buffer(
             None,
@@ -767,6 +775,8 @@ fn sample_buffer(buffer: &CVPixelBuffer) -> Result<CFRetained<CMSampleBuffer>, R
     })?;
     // SAFETY: the create call returned a +1 sample buffer.
     let sample = unsafe { CFRetained::from_raw(sample) };
+    // SAFETY: `sample` is a live CMSampleBuffer; `true` has CoreMedia create
+    // the attachments array, and the result is retained.
     let attachments = unsafe { sample.sample_attachments_array(true) }.ok_or_else(|| {
         RenderError::Render("a promoted frame's sample buffer has no attachments".into())
     })?;
@@ -891,6 +901,9 @@ impl LayerScene {
         // SAFETY: creation and every subsequent use are on main.
         let display = unsafe { AVSampleBufferDisplayLayer::new() };
         display.setAnchorPoint(CGPoint::new(0.0, 0.0));
+        // SAFETY: `display` is a live layer touched only on main, and the
+        // gravity argument is the framework's `AVLayerVideoGravityResize`
+        // constant.
         unsafe {
             display.setVideoGravity(AVLayerVideoGravityResize.expect("video gravity"));
             display.setPreventsDisplaySleepDuringVideoPlayback(false);
@@ -1080,11 +1093,16 @@ impl LayerScene {
             sample_buffer(&buffer).expect("an IOSurface pixel buffer is a valid video sample");
         // SAFETY: the layer and its renderer are accessed only on main.
         let renderer = unsafe { shown.display.sampleBufferRenderer() };
+        // SAFETY: `renderer` is this display layer's own renderer, used only
+        // on main, and `sample` is a live CMSampleBuffer it may enqueue.
         unsafe { renderer.enqueueSampleBuffer(&sample) };
         assert_ne!(
+            // SAFETY: same renderer, still on main.
             unsafe { renderer.status() },
             AVQueuedSampleBufferRenderingStatus::Failed,
             "system compositor rejected the frame: {:?}",
+            // SAFETY: same renderer, still on main; `error` is read only on
+            // the failure path this assertion takes.
             unsafe { renderer.error() }
         );
         shown.display.setNeedsLayout();

@@ -889,6 +889,10 @@ pub mod metal {
             height: u32::try_from(raw.height()).expect("plane height fits u32"),
             depth_or_array_layers: 1,
         };
+        // SAFETY: the caller's contract guarantees `raw` is a live
+        // `MTLTexture` on this device's `MTLDevice` or a peer of it, and
+        // `format` is byte-compatible with its pixel format; the 2D,
+        // single-mip, single-sample extent mirrors the texture's own.
         let hal_texture = unsafe {
             wgpu::hal::metal::Device::texture_from_raw(
                 raw,
@@ -900,6 +904,10 @@ pub mod metal {
                 None,
             )
         };
+        // SAFETY: `hal_texture` was just wrapped from `raw` for this device,
+        // the descriptor repeats its format, extent, mip level and sample
+        // count exactly, and the producer's existing contents make
+        // `TextureUses::RESOURCE` its actual state.
         unsafe {
             device.create_texture_from_hal::<wgpu::hal::metal::Api>(
                 hal_texture,
