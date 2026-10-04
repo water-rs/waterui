@@ -284,9 +284,6 @@ pub(crate) async fn build_rust_lib_with_links(
         .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
         .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
-    let (deployment_environment, deployment_target) =
-        apple_deployment_target(project, platform).await?;
-    build = build.with_env(deployment_environment, deployment_target.clone());
     if options.linkage() == RustLinkage::SharedRuntime {
         build = build.with_preferred_dynamic_linking();
     }
@@ -552,6 +549,31 @@ pub async fn apple_deployment_target(
         eyre::eyre!("Platform {platform:?} does not have an Apple deployment target")
     })?;
     Ok((environment, target.to_string()))
+}
+
+/// The `*_DEPLOYMENT_TARGET` environment variable a Cargo compilation for
+/// `triple` must carry, when `triple` names an Apple platform.
+///
+/// Every cargo process the CLI starts whose compilation target is Apple gets
+/// this — including host builds, where the host triple *is* the Apple target.
+/// A simulator triple shares its device variant's setting name and floor, so
+/// `Environment::Sim` never reaches the pair.
+pub(crate) fn apple_deployment_target_env(
+    triple: &target_lexicon::Triple,
+) -> Option<(&'static str, &'static str)> {
+    use target_lexicon::OperatingSystem;
+    let platform = match triple.operating_system {
+        OperatingSystem::Darwin(_) | OperatingSystem::MacOSX(_) => TargetPlatform::MacOS,
+        OperatingSystem::IOS(_) => TargetPlatform::IOS,
+        OperatingSystem::TvOS(_) => TargetPlatform::TvOS,
+        OperatingSystem::WatchOS(_) => TargetPlatform::WatchOS,
+        OperatingSystem::VisionOS(_) | OperatingSystem::XROS(_) => TargetPlatform::VisionOS,
+        _ => return None,
+    };
+    Some((
+        platform.deployment_target_setting()?,
+        apple_deployment_target_for(platform)?,
+    ))
 }
 
 // ============================================================================

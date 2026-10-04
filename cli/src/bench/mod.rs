@@ -107,7 +107,16 @@ pub async fn run_bench_suite(options: BenchRunOptions) -> Result<BenchSuiteRun> 
         .arg("-E")
         .arg(nextest_filter_expression(options.filter.as_deref()))
         .current_dir(&options.path)
-        .env(BENCH_WARMUPS_ENV, options.config.warmups.to_string())
+        .env(BENCH_WARMUPS_ENV, options.config.warmups.to_string());
+    // The bench build's `--target`-less compilation is for the host — an
+    // Apple target on macOS — so it carries the same deployment-target floor
+    // the managed builds do.
+    if let Some((key, value)) =
+        crate::apple::platform::apple_deployment_target_env(&target_lexicon::Triple::host())
+    {
+        command.env(key, value);
+    }
+    command
         .env(BENCH_SAMPLES_ENV, options.config.samples.to_string())
         .env(
             BENCH_REPETITIONS_ENV,
