@@ -41,10 +41,22 @@ use waterui_text::FontCollection;
 
 #[cfg(target_os = "android")]
 pub mod android;
+/// The Android accessibility publish protocol — consecutive-tree event
+/// diffing and explore-by-touch hit testing — compiled on Android for the
+/// JNI bridge and on host for its tests; dead elsewhere.
+#[cfg(all(
+    feature = "accessibility",
+    any(target_os = "android", all(test, not(target_arch = "wasm32")))
+))]
+pub mod android_accessibility;
 // Bare wasm has no window pump to drive these modules' diagnostics, fonts
 // and menu-bar plumbing.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
+/// The `InputConnection` protocol state machine — compiled on Android for the
+/// JNI bridge and on host for its tests; dead elsewhere.
+#[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
+pub mod editing;
 mod executor;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod fonts;
@@ -54,7 +66,7 @@ pub mod ime;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 pub mod menu_bar;
 #[cfg(hydrolysis_winit)]
-pub(crate) mod placement;
+pub mod placement;
 mod semantic;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -82,18 +94,31 @@ pub use headless::{HeadlessPumpResult, HeadlessRuntime};
 pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
-use window::{RuntimeWindow, advance_runtime, handle_input_events, render_window};
+use window::{RuntimeWindow, advance_runtime, handle_input_events};
+// The Android host drives `pump_window_scene` itself; `render_window` is
+// the desktop pump's entry.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+use window::render_window;
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(not(target_arch = "wasm32"))]
 use window::{FrameReader, render_window_with_capture};
-// `runtime_window_origin` is reached only by headless's accessibility-action path.
-#[cfg(all(not(target_arch = "wasm32"), feature = "accessibility"))]
+// `runtime_window_origin` is reached by the winit runner and by headless's
+// accessibility-action path.
+#[cfg(any(
+    hydrolysis_winit,
+    all(not(target_arch = "wasm32"), feature = "accessibility")
+))]
 use window::runtime_window_origin;
+// The winit runner pumps events and window semantics through these.
+#[cfg(hydrolysis_winit)]
+use window::handle_input_events_with;
+#[cfg(any(test, all(not(target_arch = "wasm32"), hydrolysis_winit)))]
+use window::pump_window_semantics;
 // Names the `#[cfg(test)]` suite pulls through `super::`; kept out of the
 // unconditional import so non-test builds report no unused names.
 #[cfg(all(test, any(not(target_arch = "wasm32"), feature = "web")))]
 use window::{
-    FrameMode, acquire_surface_frame, clamp_window_size, pump_window_semantics, reports_ui_idle,
+    FrameMode, acquire_surface_frame, clamp_window_size, reports_ui_idle,
     schedule_animation_update, schedule_redraw_or_refresh, surface_error_requires_reconfigure,
 };
 // Frame and tree profiles are published to the inspector endpoint, which exists
@@ -104,7 +129,7 @@ mod inspector;
 #[cfg(not(target_arch = "wasm32"))]
 pub use window::HeadlessSnapshot;
 #[cfg(hydrolysis_winit)]
-pub(crate) use window::window_requires_transparency;
+pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
@@ -300,6 +325,10 @@ pub fn run(app: App, style: impl crate::Style) {
 ///
 /// Available only when compiling hydrolysis for wasm32 with the `web` feature.
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
+/// Runs `app` on the web runner for this wasm build.
+///
+/// # Panics
+/// Propagates panics from `web_runner::run`.
 pub fn run(app: App, style: impl crate::Style) {
     init_global_executor();
     web_runner::run(app, style);
@@ -309,6 +338,10 @@ pub fn run(app: App, style: impl crate::Style) {
 // winit (no NativeActivity/GameActivity): `run` is absent on Android under
 // every feature combination, so a winit-enabled Android build cannot
 // silently dispatch to a windowing model the host does not have.
+/// Runs `app` on the winit runner.
+///
+/// # Panics
+/// Propagates panics from `winit_runner::run` and tracing initialization.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
 pub fn run(app: App, style: impl crate::Style) {
     initialize_tracing_from_env();

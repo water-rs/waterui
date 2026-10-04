@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -44,19 +45,6 @@ import androidx.compose.ui.unit.dp
 //
 //   Srgb::from_hex("#RRGGBB")      -> Color(0xFFRRGGBB)
 //   .with_opacity(x)               -> copy(alpha = x)
-
-/** The twin for `example`, or null when none is registered. */
-fun twinFor(example: String): (@Composable () -> Unit)? =
-    when (example) {
-        "form" -> ({ FormTwin() })
-        "gesture" -> ({ GestureTwin() })
-        "hover" -> ({ HoverTwin() })
-        "list" -> ({ ListTwin() })
-        "menu" -> ({ MenuTwin() })
-        "picker" -> ({ PickerTwin() })
-        "typography-rtl" -> ({ TypographyRtlTwin() })
-        else -> null
-    }
 
 const val WATERUI_SPACING = 10
 const val WATERUI_PADDING = 14
@@ -126,4 +114,56 @@ fun BoldText(text: String, modifier: Modifier = Modifier) {
         fontWeight = FontWeight.Bold,
         modifier = modifier,
     )
+}
+
+// Shared color-matrix helpers used by the filter and stress twins. Compose's
+// ColorMatrix has no operator times, so multiplication is done by hand in
+// column-vector order: (A times B) * v == A * (B * v).
+internal fun saturationMatrix(s: Float): ColorMatrix = ColorMatrix(
+    floatArrayOf(
+        0.213f + 0.787f * s, 0.715f - 0.715f * s, 0.072f - 0.072f * s, 0f, 0f,
+        0.213f - 0.213f * s, 0.715f + 0.285f * s, 0.072f - 0.072f * s, 0f, 0f,
+        0.213f - 0.213f * s, 0.715f - 0.715f * s, 0.072f + 0.928f * s, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f,
+    ),
+)
+
+internal fun hueMatrix(degrees: Float): ColorMatrix {
+    val rad = Math.toRadians(degrees.toDouble()).toFloat()
+    val cosA = kotlin.math.cos(rad)
+    val sinA = kotlin.math.sin(rad)
+    val lR = 0.213f
+    val lG = 0.715f
+    val lB = 0.072f
+    return ColorMatrix(
+        floatArrayOf(
+            lR + cosA * (1 - lR) + sinA * -lR,
+            lG + cosA * -lG + sinA * -lG,
+            lB + cosA * -lB + sinA * (1 - lB), 0f, 0f,
+            lR + cosA * -lR + sinA * 0.143f,
+            lG + cosA * (1 - lG) + sinA * 0.140f,
+            lB + cosA * -lB + sinA * -0.283f, 0f, 0f,
+            lR + cosA * -lR + sinA * -(1 - lR),
+            lG + cosA * -lG + sinA * lG,
+            lB + cosA * (1 - lB) + sinA * lB, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f,
+        ),
+    )
+}
+
+internal fun colorMatrixTimes(a: ColorMatrix, b: ColorMatrix): ColorMatrix {
+    val out = FloatArray(20)
+    for (r in 0 until 4) {
+        for (c in 0 until 5) {
+            var v = 0f
+            for (k in 0 until 4) {
+                v += a.values[r * 5 + k] * b.values[k * 5 + c]
+            }
+            if (c == 4) {
+                v += a.values[r * 5 + 4]
+            }
+            out[r * 5 + c] = v
+        }
+    }
+    return ColorMatrix(out)
 }

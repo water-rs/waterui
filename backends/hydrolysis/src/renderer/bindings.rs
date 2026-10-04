@@ -29,12 +29,22 @@ impl SemanticCore {
     }
 
     #[cfg(feature = "accessibility")]
-    pub(super) fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
+    pub(crate) fn focused_text_input_accessibility_node(&self) -> Option<AccessibilityNodeId> {
         self.text_editing.focused_target()?.accessibility_node_id
     }
 
+    /// Whether a text input claims this accessibility node — the check the
+    /// Android runner runs before the panicking focus call.
+    #[cfg(all(feature = "accessibility", target_os = "android"))]
+    pub(crate) fn accessibility_node_is_text_input(&self, node_id: AccessibilityNodeId) -> bool {
+        self.text_editing
+            .text_input_targets
+            .iter()
+            .any(|target| target.accessibility_node_id == Some(node_id))
+    }
+
     #[cfg(feature = "accessibility")]
-    pub(super) fn focus_text_input_for_accessibility_node(
+    pub(crate) fn focus_text_input_for_accessibility_node(
         &mut self,
         node_id: AccessibilityNodeId,
     ) -> bool {
@@ -332,6 +342,8 @@ impl SemanticCore {
             text_clip_bounds: data.target.text_clip_bounds,
             content_alpha: data.target.content_alpha,
             layout: data.target.layout,
+            display_text: data.target.display_text,
+            display_layout: data.target.display_layout,
             purpose: data.target.purpose,
             depth: data.depth,
             order,

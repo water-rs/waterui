@@ -11,6 +11,7 @@ mod num_cast;
 #[cfg(hydrolysis_pipeline_cache)]
 mod pipeline_cache;
 mod platform;
+mod platform_view;
 mod readback;
 mod renderer;
 mod runner;
@@ -68,6 +69,7 @@ pub use platform::{
     PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
     TouchPhase, WindowSafeArea,
 };
+pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
 #[cfg(feature = "accessibility")]
 pub use renderer::accessibility::AccessibilityActivationPointError;
 #[cfg(feature = "frame-profile")]

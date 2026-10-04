@@ -36,7 +36,6 @@ use super::fonts::android_fonts;
 use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
-use super::platform_views::PlatformViewTable;
 use crate::engine::WidgetTheme;
 use crate::platform::{
     GpuSurfaceWindow, InputEvent, PlatformWindow, SurfaceProvider, TextInputState,
@@ -55,7 +54,7 @@ use crate::time::Instant;
 /// One coherent metrics snapshot the host pushes — size, density, font scale,
 /// display refresh and the system-bar insets arrive together, never piecemeal.
 #[derive(Clone, Debug)]
-pub(crate) struct MetricsSnapshot {
+pub struct MetricsSnapshot {
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
     /// Physical pixels per logical (dp) unit — the platform scale factor.
@@ -78,7 +77,7 @@ pub(crate) struct MetricsSnapshot {
 /// plus a global reference to the `HydrolysisHostView` that owns this
 /// session. Every call lands on the UI thread (the only thread these
 /// callbacks ever run on) through `get_env`/`attach_current_thread`.
-pub(crate) struct HostBridge {
+pub struct HostBridge {
     vm: JavaVM,
     host_view: GlobalRef,
 }
@@ -110,9 +109,13 @@ impl HostBridge {
     ) {
         if let Err(error) = env.call_method(&self.host_view, name, sig, args) {
             // A pending Java exception (the host's deliberate throw for a
-            // fatal GPU error) surfaces to the Kotlin caller as-is; other
-            // JNI failures are logged, never silently dropped.
+            // fatal GPU error) surfaces to the Kotlin caller as-is — but
+            // describe it first, or the next JNI call aborts the process on
+            // "called with pending exception" and the real trace never
+            // reaches logcat. Other JNI failures are logged, never silently
+            // dropped.
             if env.exception_check().unwrap_or(false) {
+                let _ = env.exception_describe();
                 return;
             }
             tracing::error!(
@@ -129,35 +132,81 @@ impl HostBridge {
         self.call("onNativeRequestRedraw", "()V", &[]);
     }
 
+    /// `call` for a single `String` argument — the JSON pushes serialize
+    /// into a `jstring` inside the env first.
+    fn call_str(&self, name: &'static str, json: &str) {
+        let Ok(mut env) = self.vm.get_env() else {
+            return;
+        };
+        let Ok(value) = env.new_string(json) else {
+            return;
+        };
+        if env
+            .call_method(
+                &self.host_view,
+                name,
+                "(Ljava/lang/String;)V",
+                &[JValue::Object(&value)],
+            )
+            .is_err()
+            && env.exception_check().unwrap_or(false)
+        {
+            let _ = env.exception_describe();
+        }
+    }
+
+    /// `session.onNativeEditingState(json)` — the authoritative editing
+    /// state for the connection's `Editable` mirror.
+    pub(crate) fn editing_state_changed(&self, json: &str) {
+        self.call_str("onNativeEditingState", json);
+    }
+
+    /// `session.onNativeCursorAnchorInfo(json)` — the subscribed cursor
+    /// anchor info, in logical units.
+    pub(crate) fn cursor_anchor_changed(&self, json: &str) {
+        self.call_str("onNativeCursorAnchorInfo", json);
+    }
+
     /// Pushes the focused text-input rect (physical px) and purpose to the
     /// host's IME controller; a negative purpose clears it (keyboard hides).
     fn sync_text_input_state(&self, state: Option<TextInputState>, density: f64) {
-        let args: &[JValue] = match state {
-            Some(state) => &[
-                JValue::Float((state.x * density) as f32),
-                JValue::Float((state.y * density) as f32),
-                JValue::Float((state.width * density) as f32),
-                JValue::Float((state.height * density) as f32),
-                JValue::Int(match state.purpose {
-                    crate::platform::TextInputPurpose::Normal => 0,
-                    crate::platform::TextInputPurpose::Password => 1,
-                }),
-            ],
-            None => &[
+        let args: [JValue; 5] = state.map_or(
+            [
                 JValue::Float(0.0),
                 JValue::Float(0.0),
                 JValue::Float(0.0),
                 JValue::Float(0.0),
                 JValue::Int(-1),
             ],
-        };
-        self.call("onNativeTextInputState", "(FFFFI)V", args);
+            |state| {
+                [
+                    JValue::Float(crate::num_cast::f64_as_f32(state.x * density)),
+                    JValue::Float(crate::num_cast::f64_as_f32(state.y * density)),
+                    JValue::Float(crate::num_cast::f64_as_f32(state.width * density)),
+                    JValue::Float(crate::num_cast::f64_as_f32(state.height * density)),
+                    JValue::Int(match state.purpose {
+                        crate::platform::TextInputPurpose::Normal => 0,
+                        crate::platform::TextInputPurpose::Password => 1,
+                    }),
+                ]
+            },
+        );
+        self.call("onNativeTextInputState", "(FFFFI)V", &args);
     }
 
-    /// Marks the published accessibility snapshot dirty on the host side.
+    /// `session.onNativeAccessibilityTreeChanged(json)` — the JSON event
+    /// list the semantic diff produced for this publish; the host replays
+    /// each entry as the scoped accessibility event it describes.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn accessibility_tree_changed(&self) {
-        self.call("onNativeAccessibilityTreeChanged", "()V", &[]);
+    pub fn accessibility_tree_changed(&self, events_json: &str) {
+        self.call_str("onNativeAccessibilityTreeChanged", events_json);
+    }
+
+    /// Marks the published platform-view placement set dirty on the host
+    /// side — the registry re-reads `nativePlatformViewFrames` and re-lays
+    /// out its slots.
+    pub(crate) fn platform_views_changed(&self) {
+        self.call("onNativePlatformViewsChanged", "()V", &[]);
     }
 
     /// Delivers a fatal error (GPU loss, unrecoverable renderer failure) —
@@ -192,7 +241,7 @@ impl HostBridge {
 /// GPU attachment is a separate object — this type's [`PlatformWindow`] impl
 /// never touches it, and [`GpuSurfaceWindow::surface`] is the only path that
 /// hands it to the painter.
-pub(crate) struct AndroidHostWindow {
+pub struct AndroidHostWindow {
     metrics: MetricsSnapshot,
     events: Vec<InputEvent>,
     pub(crate) surface: AndroidSurface,
@@ -213,7 +262,7 @@ impl AndroidHostWindow {
     /// retained scene is laid out in logical units — the boundary converts,
     /// exactly as the winit runner's `PhysicalPosition::to_logical` does.
     pub(crate) fn push_event(&mut self, mut event: InputEvent) {
-        let density = self.metrics.density as f32;
+        let density = crate::num_cast::f64_as_f32(self.metrics.density);
         match &mut event {
             InputEvent::PointerDown { x, y, .. }
             | InputEvent::PointerUp { x, y, .. }
@@ -254,7 +303,7 @@ impl AndroidHostWindow {
         }
     }
 
-    pub(crate) fn take_redraw_pending(&self) -> bool {
+    pub const fn take_redraw_pending(&self) -> bool {
         self.redraw_pending.replace(false)
     }
 }
@@ -282,7 +331,10 @@ impl PlatformWindow for AndroidHostWindow {
         let logical_height = f64::from(self.metrics.height_px) / self.metrics.density;
         let target = waterui_core::layout::Rect::new(
             waterui_core::layout::Point::new(0.0, 0.0),
-            waterui_core::layout::Size::new(logical_width as f32, logical_height as f32),
+            waterui_core::layout::Size::new(
+                crate::num_cast::f64_as_f32(logical_width),
+                crate::num_cast::f64_as_f32(logical_height),
+            ),
         );
         if current != target {
             window.frame.set(target);
@@ -341,7 +393,7 @@ impl GpuSurfaceWindow for AndroidHostWindow {
 /// coalescing `eventfd` the looper's fd callback watches — work scheduled
 /// from any thread lands on the UI thread without a JNI call per wake.
 #[derive(Clone, Debug)]
-pub(crate) struct AndroidMainThreadExecutor {
+pub struct AndroidMainThreadExecutor {
     runnable_tx: mpsc::Sender<Runnable>,
     runnable_rx: Rc<mpsc::Receiver<Runnable>>,
     pending: Arc<AtomicUsize>,
@@ -390,6 +442,7 @@ impl LocalExecutor for AndroidMainThreadExecutor {
                 Ok(()) => {
                     // Coalesced wake: one counter increment regardless of how
                     // many runnables are already queued.
+                    // SAFETY: `wake_fd` is the executor's live eventfd.
                     unsafe {
                         libc::eventfd_write(wake_fd, 1);
                     }
@@ -421,6 +474,8 @@ impl ExecutorWake {
     fn register(executor: AndroidMainThreadExecutor) -> Result<Self, JniError> {
         // SAFETY: zero flags would let a saturated counter block the looper —
         // NONBLOCK + CLOEXEC it is.
+        // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
+        // the looper and the fd out of child processes.
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
         if fd < 0 {
             return Err(JniError(format!(
@@ -440,7 +495,7 @@ impl ExecutorWake {
                 // SAFETY: fd is the registered eventfd; eventfd_read consumes
                 // every coalesced wake at once.
                 unsafe {
-                    libc::eventfd_read(fd.as_raw_fd(), &mut count);
+                    libc::eventfd_read(fd.as_raw_fd(), &raw mut count);
                 }
                 let drained = executor.drain();
                 tracing::debug!(
@@ -469,7 +524,7 @@ impl Drop for ExecutorWake {
 
 /// Outcome of one frame transaction, decoded by the Kotlin scheduler.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct FrameOutcome {
+pub struct FrameOutcome {
     /// The engine wants another vsync-aligned frame (animations, pending
     /// refresh, a redraw request consumed this pass). False means the window
     /// goes fully idle — no callbacks, no CPU or GPU work.
@@ -485,7 +540,7 @@ pub(crate) struct FrameOutcome {
 /// The mounted app session: one runtime window, its environment, the
 /// executor and the GPU context. Owned by the Kotlin side through a raw
 /// pointer as `jlong`; every entry point runs on the UI thread.
-pub(crate) struct AndroidSession {
+pub struct AndroidSession {
     pub(crate) env: Environment,
     pub(crate) runtime: RuntimeWindow<AndroidHostWindow>,
     executor: AndroidMainThreadExecutor,
@@ -514,7 +569,9 @@ pub(crate) struct AndroidSession {
         expect(dead_code, reason = "read only under the accessibility feature")
     )]
     pub(crate) a11y: AccessibilitySnapshot,
-    pub(crate) platform_views: PlatformViewTable,
+    /// The platform-view sink the window's `PlatformView` leaves record into;
+    /// the published table is serialized for the Kotlin registry.
+    pub(crate) platform_views: crate::platform_view::PlatformViewSink,
     pub(crate) ime: ImeBridge,
     /// The live surface generation, as last reported by the host.
     surface_generation: u64,
@@ -555,6 +612,8 @@ impl AndroidSession {
 
         let bridge = HostBridge { vm, host_view };
 
+        // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
+        // the looper and the fd out of child processes.
         let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
         if fd < 0 {
             return Err(JniError(format!(
@@ -605,6 +664,10 @@ impl AndroidSession {
             .clone();
         let safe_area = nami::binding(waterui_layout::padding::EdgeInsets::default());
         env.insert(crate::platform::WindowSafeArea(safe_area.clone()));
+        // The platform-view sink `PlatformView` leaves record their frames
+        // into; the published table is what `nativePlatformViewFrames` serves.
+        let platform_views = crate::platform_view::PlatformViewSink::new();
+        env.insert(platform_views.clone());
 
         let mut windows = VecDeque::from(windows);
         let window = windows
@@ -650,7 +713,7 @@ impl AndroidSession {
             gpu,
             pending_window_queue,
             a11y: AccessibilitySnapshot::default(),
-            platform_views: PlatformViewTable::default(),
+            platform_views,
             ime: ImeBridge::default(),
             surface_generation: 0,
             frame_deadline_in_nanos: None,
@@ -671,7 +734,7 @@ impl AndroidSession {
             let platform = &mut self.runtime.platform;
             let size_changed = platform.metrics.width_px != metrics.width_px
                 || platform.metrics.height_px != metrics.height_px
-                || platform.metrics.density != metrics.density;
+                || platform.metrics.density.to_bits() != metrics.density.to_bits();
             let insets_changed = platform.metrics.insets_px != insets_px;
             platform.metrics = metrics;
             if size_changed {
@@ -687,12 +750,12 @@ impl AndroidSession {
                 // the explicit requests cover the frames before the first read
                 // landed one.
                 let [leading, top, trailing, bottom] = insets_px;
-                let density = density as f32;
+                let density = crate::num_cast::f64_as_f32(density);
                 self.safe_area.set(waterui_layout::padding::EdgeInsets::new(
-                    top as f32 / density,
-                    bottom as f32 / density,
-                    leading as f32 / density,
-                    trailing as f32 / density,
+                    crate::num_cast::i32_as_f32(top) / density,
+                    crate::num_cast::i32_as_f32(bottom) / density,
+                    crate::num_cast::i32_as_f32(leading) / density,
+                    crate::num_cast::i32_as_f32(trailing) / density,
                 ));
             }
             (size_changed, insets_changed)
@@ -736,12 +799,14 @@ impl AndroidSession {
         let should_close = handle_input_events(&mut self.runtime, &self.env) || self.should_close();
         let now = Instant::now();
         let deadline = advance_runtime(&mut self.runtime, &self.env, now);
+        let mut flushed = false;
         if self.runtime.mode.is_pending()
             && self.runtime.platform.surface.is_attached()
             && !self.runtime.is_hidden()
         {
             let executor = self.executor.clone();
             let presented = render_window(&mut self.runtime, &self.env, &mut || executor.drain());
+            flushed = true;
             if presented {
                 self.presented_once.set(true);
             }
@@ -758,16 +823,16 @@ impl AndroidSession {
             self.runtime.platform.bridge.close_requested();
         }
         super::accessibility::publish_if_pending(self);
-        super::platform_views::publish_if_pending(self);
+        super::platform_views::publish_if_pending(self, flushed);
+        self.editing_sync();
 
         // Popup windows mounting mid-frame land on the pending queue: the
         // host has no second band to put one on, so this is the explicit
         // unsupported-component error the repository contract wants.
-        if !self.pending_window_queue.borrow().is_empty() {
-            panic!(
-                "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session"
-            );
-        }
+        assert!(
+            self.pending_window_queue.borrow().is_empty(),
+            "hydrolysis android: secondary windows are unsupported — the host mounts exactly one window per session"
+        );
 
         // A hidden session reports no continuation: the armed mode stays
         // armed for the restore frame, but the scheduler must not keep

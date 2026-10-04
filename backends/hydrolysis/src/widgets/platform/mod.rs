@@ -1,3 +1,4 @@
+pub mod platform_view;
 pub mod webview;
 
 #[cfg(hydrolysis_macos_system_webview)]
@@ -34,6 +35,9 @@ pub(crate) fn register_web_surface_accessibility(
         ));
         if let Some(label) = renderer.resolve_accessibility_label(env, None) {
             node.set_label(label);
+        }
+        if let Some(value) = renderer.resolve_accessibility_value(env, None) {
+            node.set_value(value);
         }
         let _ = renderer.register_accessibility_node(node, bounds, env, None);
     }

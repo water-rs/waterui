@@ -480,6 +480,8 @@ fn text_input_target(
         text_clip_bounds: Rect::ZERO,
         content_alpha: 1.0,
         layout: std::sync::Arc::new(parley::Layout::default()),
+        display_text: waterui_core::Str::default(),
+        display_layout: std::sync::Arc::new(parley::Layout::default()),
         purpose: TextInputPurpose::Normal,
         depth: 0,
         order: 0,
@@ -1793,6 +1795,92 @@ fn accessibility_identifier_is_consumed_by_only_one_descendant() {
         "an identifier scope must have one nearest consumer"
     );
     assert_eq!(identified[0].1.label(), Some("First"));
+}
+
+/// The value channel rides beside the label on the same node: a labelled
+/// formula keeps its spoken mathematics instead of the name silencing it.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_value_lands_beside_the_label_on_the_same_node() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = text("𝑒^{𝑖𝜋} + 1 = 0")
+        .a11y_label("Euler's identity")
+        .a11y_value("e to the i pi plus 1 equals 0");
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("labelled text must publish an accessibility tree");
+    let carrying = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.value() == Some("e to the i pi plus 1 equals 0"))
+        .collect::<Vec<_>>();
+    assert_eq!(carrying.len(), 1, "the value must land on exactly one node");
+    assert_eq!(carrying[0].1.label(), Some("Euler's identity"));
+}
+
+/// A value on a container describes the container itself; like the label it
+/// must not be pasted onto every leaf inside it.
+#[cfg(feature = "accessibility")]
+#[test]
+fn container_value_describes_the_container_only() {
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let view = vstack((text("First"), text("Second"))).a11y_value("Two settings");
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 160.0, 160.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("valued container render must publish an accessibility tree");
+    let carrying = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.value() == Some("Two settings"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        carrying.len(),
+        1,
+        "only the container may carry the container's value"
+    );
+    let (_, container) = carrying[0];
+    assert_eq!(container.role(), AccessibilityNodeRole::Group);
+    assert_eq!(container.children().len(), 2);
+}
+
+/// A control that publishes its own value keeps it; an explicit `.a11y_value`
+/// is the override, exactly as `.a11y_label` is for the name.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a11y_value_overrides_a_controls_own_value() {
+    use jiff::civil::Date;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let date = Binding::container(Date::new(2025, 1, 10).expect("valid test date"));
+    let plain = DatePicker::new("Date", &date);
+    let overridden = DatePicker::new("Override", &date).a11y_value("January tenth, 2025");
+    let view = vstack((plain, overridden));
+
+    capture_root_window(&mut renderer, view, &env, Rect::new(0.0, 0.0, 240.0, 240.0));
+
+    let update = renderer
+        .take_accessibility_tree_update()
+        .expect("date pickers must publish an accessibility tree");
+    let values = update
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == AccessibilityNodeRole::ComboBox)
+        .map(|(_, node)| node.value())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values,
+        [Some("2025-01-10"), Some("January tenth, 2025")],
+        "the control's own value stands beside an explicit override"
+    );
 }
 
 #[cfg(feature = "accessibility")]

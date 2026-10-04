@@ -76,11 +76,11 @@ impl SceneContent for NaturallySizedContent {
         false
     }
 
+    fn rebuild_for_engine(&mut self) {}
+
     fn intrinsic_size(&self) -> Option<Size> {
         Some(Self::NATURAL)
     }
-
-    fn rebuild_for_engine(&mut self) {}
 }
 
 fn naturally_sized_scene() -> impl View {

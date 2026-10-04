@@ -1,9 +1,12 @@
 //! The accessibility snapshot published to the Kotlin host.
 //!
-//! The renderer's merged `accesskit::TreeUpdate` is serialized once per
-//! change and pushed to `HydrolysisAccessibilityProvider`, which serves
+//! The renderer's merged `accesskit::TreeUpdate` is diffed against the last
+//! one published — [`crate::runner::android_accessibility::diff_events`]
+//! decides which Android events the change owes services — serialized, and
+//! pushed to `HydrolysisAccessibilityProvider`, which serves
 //! `AccessibilityNodeInfo` for explore-by-touch without an invisible view
-//! tree. Actions the provider dispatches come back through
+//! tree. A publish whose semantics did not change produces no events and is
+//! never serialized. Actions the provider dispatches come back through
 //! `nativeAccessibilityAction` and run through
 //! `handle_accessibility_action` — the same code path desktop uses.
 
@@ -12,18 +15,23 @@ use super::jni::JniError;
 /// The host's copy of the accessibility tree — whole-tree publishes only;
 /// `accesskit` updates already carry the minimal node deltas.
 #[derive(Default)]
-pub(crate) struct AccessibilitySnapshot {
+pub struct AccessibilitySnapshot {
     /// Serialized `accesskit::TreeUpdate` JSON for the provider.
     #[cfg(feature = "accessibility")]
     tree_json: Option<String>,
     #[cfg(feature = "accessibility")]
     dirty: bool,
+    /// The update the last publish offered the host — kept in `accesskit`
+    /// form so `nativeAccessibilityHitTest` answers over exactly the tree
+    /// the provider serves.
+    #[cfg(feature = "accessibility")]
+    published: Option<accesskit::TreeUpdate>,
 }
 
 impl AccessibilitySnapshot {
     /// The latest published tree, consumed by `nativeAccessibilityTree`.
     #[cfg(feature = "accessibility")]
-    pub(crate) fn take_json(&mut self) -> Option<&str> {
+    pub fn take_json(&mut self) -> Option<&str> {
         if self.dirty {
             self.dirty = false;
             self.tree_json.as_deref()
@@ -31,12 +39,23 @@ impl AccessibilitySnapshot {
             None
         }
     }
+
+    /// The last update offered to the host — what
+    /// `nativeAccessibilityHitTest` maps pointer coordinates onto.
+    #[cfg(feature = "accessibility")]
+    pub const fn published(&self) -> Option<&accesskit::TreeUpdate> {
+        self.published.as_ref()
+    }
 }
 
-/// Publishes a changed accessibility tree to the host. Called at the end of
-/// the frame transaction so one frame produces at most one snapshot.
+/// Publishes a semantically changed accessibility tree to the host, plus
+/// the per-node events the change owes services. Called at the end of the
+/// frame transaction so one frame produces at most one publish; a frame
+/// whose tree is unchanged publishes nothing — an animating indeterminate
+/// indicator must not cost services a content-changed event per frame
+/// (#246).
 #[cfg(feature = "accessibility")]
-pub(crate) fn publish_if_pending(session: &mut super::host::AndroidSession) {
+pub fn publish_if_pending(session: &mut super::host::AndroidSession) {
     // Popups have no second band on Android — the merged iterator is empty.
     let Some(update) = session
         .runtime
@@ -47,11 +66,28 @@ pub(crate) fn publish_if_pending(session: &mut super::host::AndroidSession) {
     else {
         return;
     };
-    match serde_json::to_string(&update) {
+    // Publish whenever the update differs from what was last served —
+    // including changes no event is emitted for (bounds drift, scroll
+    // metrics). The empty event list below then just marks the provider
+    // dirty so the next query pulls a fresh tree. An identical update
+    // skips the serialize and the JNI crossing entirely.
+    let changed = session.a11y.published.as_ref() != Some(&update);
+    let events =
+        crate::runner::android_accessibility::diff_events(session.a11y.published.as_ref(), &update);
+    session.a11y.published = Some(update);
+    if !changed {
+        return;
+    }
+    let Some(published) = session.a11y.published.as_ref() else {
+        return;
+    };
+    match serde_json::to_string(published) {
         Ok(json) => {
             session.a11y.tree_json = Some(json);
             session.a11y.dirty = true;
-            session.runtime.platform.bridge.accessibility_tree_changed();
+            session.runtime.platform.bridge.accessibility_tree_changed(
+                &crate::runner::android_accessibility::events_json(&events),
+            );
         }
         Err(error) => {
             tracing::error!(
@@ -66,82 +102,233 @@ pub(crate) fn publish_if_pending(session: &mut super::host::AndroidSession) {
 /// Without the `accessibility` feature the module compiles to nothing —
 /// the crate's existing contract is that this feature is a build-time gate.
 #[cfg(not(feature = "accessibility"))]
-pub(crate) fn publish_if_pending(_session: &mut super::host::AndroidSession) {}
+pub const fn publish_if_pending(_session: &mut super::host::AndroidSession) {}
 
-/// The `android.view.accessibility` action constants the provider can
-/// dispatch, mapped onto `accesskit::Action`. Anything else is an explicit
-/// unsupported action — named in the error, never folded into a default.
+/// The `accesskit::Action` bitmask index the provider echoes back. The Kotlin
+/// side decodes a node's serialized `actions`/`childActions` bitmask and
+/// advertises the platform actions each bit implies; a performed action comes
+/// back as the same index, so the JNI edge carries no per-platform constants
+/// at all. The table is `accesskit`'s declaration order — the index IS the
+/// `ActionIndex`.
 #[cfg(feature = "accessibility")]
 fn map_action(action: i32) -> Result<accesskit::Action, JniError> {
-    // android.view.accessibility.AccessibilityNodeInfo constants
-    const ACTION_FOCUS: i32 = 0x00000001;
-    const ACTION_CLEAR_FOCUS: i32 = 0x00000002;
-    const ACTION_CLICK: i32 = 0x00000010;
-    const ACTION_ACCESSIBILITY_FOCUS: i32 = 0x00000040;
-    const ACTION_CLEAR_ACCESSIBILITY_FOCUS: i32 = 0x00000080;
-    const ACTION_SCROLL_FORWARD: i32 = 0x00001000;
-    const ACTION_SCROLL_BACKWARD: i32 = 0x00002000;
-    const ACTION_SET_TEXT: i32 = 0x00200000;
-    const ACTION_EXPAND: i32 = 0x00040000;
-    const ACTION_COLLAPSE: i32 = 0x00080000;
-    const ACTION_SCROLL_UP: i32 = 16908344;
-    const ACTION_SCROLL_DOWN: i32 = 16908345;
-    const ACTION_SCROLL_LEFT: i32 = 16908346;
-    const ACTION_SCROLL_RIGHT: i32 = 16908347;
-    const ACTION_SHOW_TOOLTIP: i32 = 16908373;
-    const ACTION_HIDE_TOOLTIP: i32 = 16908374;
-
     use accesskit::Action;
-    match action {
-        ACTION_FOCUS | ACTION_ACCESSIBILITY_FOCUS => Ok(Action::Focus),
-        ACTION_CLEAR_FOCUS | ACTION_CLEAR_ACCESSIBILITY_FOCUS => Ok(Action::Blur),
-        ACTION_CLICK => Ok(Action::Click),
-        ACTION_EXPAND => Ok(Action::Expand),
-        ACTION_COLLAPSE => Ok(Action::Collapse),
-        ACTION_SET_TEXT => Ok(Action::ReplaceSelectedText),
-        ACTION_SCROLL_FORWARD | ACTION_SCROLL_DOWN => Ok(Action::ScrollDown),
-        ACTION_SCROLL_BACKWARD | ACTION_SCROLL_UP => Ok(Action::ScrollUp),
-        ACTION_SCROLL_LEFT => Ok(Action::ScrollLeft),
-        ACTION_SCROLL_RIGHT => Ok(Action::ScrollRight),
-        ACTION_SHOW_TOOLTIP => Ok(Action::ShowTooltip),
-        ACTION_HIDE_TOOLTIP => Ok(Action::HideTooltip),
-        other => Err(JniError(format!(
-            "hydrolysis android: unsupported accessibility action {other}"
-        ))),
-    }
+    const ACTIONS: &[Action] = &[
+        Action::Click,
+        Action::Focus,
+        Action::Blur,
+        Action::Collapse,
+        Action::Expand,
+        Action::CustomAction,
+        Action::Decrement,
+        Action::Increment,
+        Action::HideTooltip,
+        Action::ShowTooltip,
+        Action::ReplaceSelectedText,
+        Action::ScrollDown,
+        Action::ScrollLeft,
+        Action::ScrollRight,
+        Action::ScrollUp,
+        Action::ScrollIntoView,
+        Action::ScrollToPoint,
+        Action::SetScrollOffset,
+        Action::SetTextSelection,
+        Action::SetSequentialFocusNavigationStartingPoint,
+        Action::SetValue,
+        Action::ShowContextMenu,
+    ];
+    usize::try_from(action)
+        .ok()
+        .and_then(|index| ACTIONS.get(index))
+        .copied()
+        .ok_or_else(|| {
+            JniError(format!(
+                "hydrolysis android: unsupported accessibility action {action}"
+            ))
+        })
 }
 
 /// Routes an action the provider dispatched for `virtual_view_id` (the
 /// accesskit `NodeId` value) back into the renderer — inside the frame
 /// boundary like any other input.
+///
+/// The provider sends the data kind the target's role expects: `arg1`/`arg2`
+/// carry the `SetTextSelection` UTF-16 bounds, `text` the `SetValue`/
+/// `ReplaceSelectedText` string (Android's `ACTION_SET_TEXT` replaces the
+/// full contents), and `numeric` the `SetValue`/`CustomAction` payload on a
+/// range or custom action. A request mixing channels is a provider bug, so
+/// it errors rather than guessing.
+///
+/// Actions on a node a text input claims do not take the generic
+/// `ActionRequest` path: `TalkBack` editing runs over the session's
+/// [`EditingSession`](crate::runner::editing::EditingSession), the same
+/// writer the `InputConnection` mirror uses, so the IME-visible state never
+/// diverges from the semantic tree's value.
 #[cfg(feature = "accessibility")]
-pub(crate) fn perform_action(
+pub fn perform_action(
     session: &mut super::host::AndroidSession,
     virtual_view_id: i64,
     action: i32,
-    value: Option<String>,
+    arg1: i32,
+    arg2: i32,
+    text: Option<String>,
+    numeric: Option<f64>,
 ) -> Result<bool, JniError> {
-    use accesskit::{ActionData, ActionRequest, NodeId, TreeId};
+    use accesskit::{Action, ActionData, ActionRequest, NodeId, TreeId};
 
-    let request = ActionRequest {
-        action: map_action(action)?,
-        target_tree: TreeId::ROOT,
-        target_node: NodeId(virtual_view_id.max(0) as u64),
-        data: value.map(|value| ActionData::Value(value.into_boxed_str())),
+    let action = map_action(action)?;
+    let node = NodeId(crate::num_cast::i64_as_u64(virtual_view_id.max(0)));
+    if let Some(handled) =
+        text_input_action(session, node, action, arg1, arg2, text.as_ref(), numeric)?
+    {
+        return Ok(handled);
+    }
+
+    // The action decides which payload channel is meaningful, so a provider
+    // that sends both (or the wrong one) errors instead of being guessed at.
+    let data = match (action, text, numeric) {
+        (Action::CustomAction, None, Some(index)) => {
+            Some(ActionData::CustomAction(crate::num_cast::f64_as_i32(index)))
+        }
+        (Action::SetValue, Some(text), None) => Some(ActionData::Value(text.into_boxed_str())),
+        (Action::SetValue, None, Some(numeric)) => Some(ActionData::NumericValue(numeric)),
+        (_, None, None) => None,
+        _ => {
+            return Err(JniError(format!(
+                "hydrolysis android: accessibility action {action:?} carries mismatched data"
+            )));
+        }
     };
-    Ok(session
+    if action != Action::SetTextSelection && (arg1 >= 0 || arg2 >= 0) {
+        return Err(JniError(format!(
+            "hydrolysis android: accessibility action {action:?} carries unexpected selection bounds"
+        )));
+    }
+    let request = ActionRequest {
+        action,
+        target_tree: TreeId::ROOT,
+        target_node: node,
+        data,
+    };
+    let handled = session
         .runtime
         .renderer
-        .handle_accessibility_action(request, &session.env))
+        .handle_accessibility_action(request, &session.env);
+    if handled {
+        // A focus the action moved lands in the mirror now — the connection
+        // rebinds while the screen reader's announcement is still live,
+        // not at the next vsync.
+        session.editing_sync();
+    }
+    Ok(handled)
+}
+
+/// The editing-session path for nodes a text input claims. Returns `None`
+/// when the action is not an editing action or the target has no text
+/// input, leaving it to the generic `ActionRequest` dispatch.
+#[cfg(feature = "accessibility")]
+fn text_input_action(
+    session: &mut super::host::AndroidSession,
+    node: accesskit::NodeId,
+    action: accesskit::Action,
+    arg1: i32,
+    arg2: i32,
+    text: Option<&String>,
+    numeric: Option<f64>,
+) -> Result<Option<bool>, JniError> {
+    use accesskit::Action;
+
+    let is_editing_action = matches!(
+        action,
+        Action::Click
+            | Action::Focus
+            | Action::SetValue
+            | Action::ReplaceSelectedText
+            | Action::SetTextSelection
+    );
+    if !is_editing_action
+        || !session
+            .runtime
+            .renderer
+            .accessibility_node_is_text_input(node)
+    {
+        return Ok(None);
+    }
+
+    // An action on an unfocused editable activates it first — the same
+    // transition a tap performs: focus moves, the mirror adopts the new
+    // editor with a fresh generation, and the frame transaction publishes
+    // the text-input target the IME shows against.
+    if session
+        .runtime
+        .renderer
+        .focused_text_input_accessibility_node()
+        != Some(node)
+    {
+        session
+            .runtime
+            .renderer
+            .focus_text_input_for_accessibility_node(node);
+        session.editing_sync();
+    }
+    let editor_id = session.ime.session.editor_id();
+    let editing = &mut session.ime.session;
+    let handled = match action {
+        Action::Click | Action::Focus => true,
+        // ACTION_SET_TEXT replaces the field's whole contents: select
+        // everything (the op clamps to the text length) and commit.
+        Action::SetValue => {
+            let Some(text) = text else {
+                return Err(JniError(
+                    "hydrolysis android: editable SetValue requires a text payload".into(),
+                ));
+            };
+            if numeric.is_some() {
+                return Err(JniError(
+                    "hydrolysis android: editable SetValue carries a numeric payload".into(),
+                ));
+            }
+            editing.set_selection(editor_id, 0, i32::MAX) && editing.commit_text(editor_id, text, 1)
+        }
+        Action::ReplaceSelectedText => {
+            let Some(text) = text else {
+                return Err(JniError(
+                    "hydrolysis android: editable ReplaceSelectedText requires a text payload"
+                        .into(),
+                ));
+            };
+            editing.commit_text(editor_id, text, 1)
+        }
+        Action::SetTextSelection => {
+            if arg1 < 0 || arg2 < 0 {
+                return Err(JniError(
+                    "hydrolysis android: SetTextSelection requires start and end bounds".into(),
+                ));
+            }
+            editing.set_selection(editor_id, arg1, arg2)
+        }
+        _ => unreachable!("filtered above"),
+    };
+    if handled {
+        session.editing_flush_and_sync();
+    }
+    Ok(Some(handled))
 }
 
 /// Without the feature there is no tree to act on.
 #[cfg(not(feature = "accessibility"))]
-pub(crate) fn perform_action(
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "shares the JNI signature with the accessibility-enabled sibling, which does fail"
+)]
+pub fn perform_action(
     _session: &mut super::host::AndroidSession,
     _virtual_view_id: i64,
     _action: i32,
-    _value: Option<String>,
+    _arg1: i32,
+    _arg2: i32,
+    _text: Option<String>,
+    _numeric: Option<f64>,
 ) -> Result<bool, JniError> {
     Ok(false)
 }

@@ -195,6 +195,10 @@ jni = "0.21.1"
 ndk = { version = "0.9.0", features = ["nativewindow"] }
 ndk-sys = "0.6.0"
 libloading = "0.9"
+# The application `Context` for service crates that resolve it through
+# `ndk_context::android_context` — waterkit-clipboard's Android backend
+# panics without it; published once in `nativeCreateSession`.
+ndk-context = "0.1"
 raw-window-handle = "0.6"
 libc = "0.2"
 android_logger = "0.15"

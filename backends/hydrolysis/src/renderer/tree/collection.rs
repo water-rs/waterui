@@ -18,18 +18,21 @@ use waterui_layout::collection_transition::CollectionTransition;
 
 /// Collect into `out` the ids occupying the positions a [`CollectionChange`]
 /// reports as replaced: `change.replaced` names new-snapshot indices, and
-/// `snapshot` is the notified collection snapshot; its `get_id` addresses
-/// positions in collection-wide index space. A producer that knows only a
+/// `snapshot` is the immutable row set the notification carried — index-
+/// parallel with the collection it reported on. A producer that knows only a
 /// whole-value replacement reports `everything`, so an empty change means
 /// nothing needs re-materializing.
-pub fn collect_replaced_ids<Id: Copy + Eq + core::hash::Hash>(
-    snapshot: &impl waterui_core::views::ViewSnapshot<Id = Id>,
+pub fn collect_replaced_ids<S: ViewSnapshot>(
+    snapshot: &S,
     change: &CollectionChange,
-    out: &mut std::collections::HashSet<Id>,
+    out: &mut std::collections::HashSet<S::Id>,
 ) {
     for range in &change.replaced {
-        let end = range.end.min(snapshot.range().end);
-        out.extend((range.start..end).filter_map(|index| snapshot.get_id(index)));
+        for index in range.start..range.end {
+            if let Some(id) = snapshot.get_id(index) {
+                out.insert(id);
+            }
+        }
     }
 }
 
@@ -179,8 +182,11 @@ pub struct CollectionNode {
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     /// The container layout (e.g. `AbsoluteLayout`, `ZStackLayout`).
     pub(super) layout: Box<dyn Layout>,
-    /// The reactive item collection (`len`/`get_view`/`get_id`, watched).
-    pub(super) views: AnyViews<AnyView>,
+    /// The immutable row set `entries` reflects: the membership watcher swaps
+    /// in the snapshot each event carries, so reconcile, measure, and flush
+    /// all read exactly the membership the last applied event reported —
+    /// never the live source mid-notification. Shared with the watcher.
+    pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<AnyView>>>,
     /// Environment captured at build, used to materialize items. Already shielded
     /// when this collection carries accessibility naming metadata — the name
     /// belongs to the collection, not to every item in it.
@@ -242,8 +248,11 @@ pub struct LazyStackNode {
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     /// Stack axis + spacing + cross-axis alignment.
     pub(super) axis: LazyStackAxisConfig,
-    /// The reactive item collection (`len`/`get_view`, watched for membership).
-    pub(super) views: AnyViews<AnyView>,
+    /// The immutable row set the membership watcher last applied: each event
+    /// carries its own snapshot, which the watcher swaps in so the virtual
+    /// window, id keys, and materialization all read one coherent membership
+    /// — never the live source mid-notification. Shared with the watcher.
+    pub(super) snapshot: Rc<RefCell<AnyViewsSnapshot<AnyView>>>,
     /// Environment captured at build, used to materialize and style items. Already
     /// shielded when this stack carries accessibility naming metadata — the name
     /// belongs to the stack, not to every row in it.
@@ -625,14 +634,19 @@ impl CollectionNode {
     pub(super) fn reconcile(&mut self, renderer: &mut SemanticCore) {
         renderer.state.counters.structural_patches += 1;
         let env = self.env.clone();
-        let len = self.views.len().snapshot();
+        // The retained snapshot is immutable: ids and views read here stay
+        // coherent with the membership event that delivered it even when a
+        // nested build mutates the live source mid-reconcile.
+        let snapshot = self.snapshot.borrow().clone();
+        let len = snapshot.len();
         let now = renderer.frame_instant;
         let animated = self.transition.is_some();
 
-        let ids: Vec<CollectionItemId> = (0..len)
-            .map(|index| {
-                self.views
-                    .snapshot()
+        let indices: Vec<usize> = snapshot.range().collect();
+        let ids: Vec<CollectionItemId> = indices
+            .iter()
+            .map(|&index| {
+                snapshot
                     .get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} has no id"))
             })
@@ -673,37 +687,35 @@ impl CollectionNode {
         let mut next = Vec::with_capacity(len + head_dead.len());
         next.extend(head_dead.into_iter().map(begin_exit));
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
-        for (index, id) in ids.into_iter().enumerate() {
-            let entry =
-                if let Some(mut previous) = reuse_by_id.remove(&id) {
-                    previous.phase = next_live_phase(self.transition.as_ref(), previous.phase, now);
-                    if replaced.contains(&id) {
-                        // Same id, changed content: re-materialize this row's
-                        // node from the current item. The entry keeps its
-                        // identity and phase; only the node is rebuilt.
-                        let view = self.views.snapshot().get_view(index).unwrap_or_else(|| {
-                            panic!("hydrolysis collection: item {index} missing")
-                        });
-                        previous.node =
-                            RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
-                    }
-                    previous
-                } else {
-                    let view =
-                        self.views.snapshot().get_view(index).unwrap_or_else(|| {
-                            panic!("hydrolysis collection: item {index} missing")
-                        });
-                    CollectionEntry {
-                        id,
-                        node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
-                        phase: if animated {
-                            EntryPhase::Entering(now)
-                        } else {
-                            EntryPhase::Stable
-                        },
-                        factor: if animated { 0.0 } else { 1.0 },
-                    }
-                };
+        for (index, id) in indices.into_iter().zip(ids) {
+            let entry = if let Some(mut previous) = reuse_by_id.remove(&id) {
+                previous.phase = next_live_phase(self.transition.as_ref(), previous.phase, now);
+                if replaced.contains(&id) {
+                    // Same id, changed content: re-materialize this row's
+                    // node from the current item. The entry keeps its
+                    // identity and phase; only the node is rebuilt.
+                    let view = snapshot
+                        .get_view(index)
+                        .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+                    previous.node =
+                        RenderNode::build(normalize_layout_view(view, &env), &env, renderer);
+                }
+                previous
+            } else {
+                let view = snapshot
+                    .get_view(index)
+                    .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
+                CollectionEntry {
+                    id,
+                    node: RenderNode::build(normalize_layout_view(view, &env), &env, renderer),
+                    phase: if animated {
+                        EntryPhase::Entering(now)
+                    } else {
+                        EntryPhase::Stable
+                    },
+                    factor: if animated { 0.0 } else { 1.0 },
+                }
+            };
             next.push(entry);
             if let Some(dead) = dead_after.remove(&id) {
                 next.extend(dead.into_iter().map(begin_exit));
@@ -781,7 +793,8 @@ impl LazyStackNode {
             renderer.state.counters.structural_patches += 1;
         }
         let mut materialized = false;
-        let count = self.views.len().snapshot();
+        let snapshot = self.snapshot.borrow().clone();
+        let count = snapshot.len();
         if count > 0
             && let Some((visible_start, visible_end)) = self.visible_span.get()
         {
@@ -797,16 +810,15 @@ impl LazyStackNode {
                 .extent_index
                 .borrow()
                 .visible_window(visible_start, visible_end);
-            let views = &self.views;
+            let views = &snapshot;
             let env = &self.env;
             let mut cache = self.item_cache.borrow_mut();
             for index in window.start..window.end.min(count) {
                 let id = views
-                    .snapshot()
                     .get_id(index)
                     .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
                 if cache.get(&id).is_none() {
-                    let view = views.snapshot().get_view(index).unwrap_or_else(|| {
+                    let view = views.get_view(index).unwrap_or_else(|| {
                         panic!("hydrolysis LazyStack failed to materialize item {index}")
                     });
                     // Build now, not at flush: a cached-but-unbuilt entry
@@ -851,18 +863,18 @@ impl LazyStackNode {
         }
     }
 
-    /// Measures item `index` under the given proposal, returning its
+    /// Measures item `index` under the given proposal against `snapshot` —
+    /// the retained row set the current pass is reconciling — returning its
     /// measured size and stretch axis (both needed to place it).
     fn measure_item(
         &self,
+        snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
         theme: &Rc<dyn crate::engine::WidgetTheme>,
         index: usize,
         proposal: ProposalSize,
     ) -> (Size, StretchAxis) {
-        let id = self
-            .views
-            .snapshot()
+        let id = snapshot
             .get_id(index)
             .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
         if let Some(item) = self.item_cache.borrow().get(&id)
@@ -874,10 +886,9 @@ impl LazyStackNode {
             );
         }
 
-        let view =
-            self.views.snapshot().get_view(index).unwrap_or_else(|| {
-                panic!("hydrolysis LazyStack failed to materialize item {index}")
-            });
+        let view = snapshot
+            .get_view(index)
+            .unwrap_or_else(|| panic!("hydrolysis LazyStack failed to materialize item {index}"));
         let view = normalize_layout_view(view, &self.env);
         state.measurement.begin_transient_measurement();
         let result = {
@@ -902,6 +913,7 @@ impl LazyStackNode {
     /// extent here, so the stack overflows instead of collapsing.
     fn ensure_floor(
         &self,
+        snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
         theme: &Rc<dyn crate::engine::WidgetTheme>,
         cross: Option<f32>,
@@ -911,7 +923,7 @@ impl LazyStackNode {
         {
             return floor;
         }
-        let (size, _) = self.measure_item(state, theme, 0, self.item_min_proposal(cross));
+        let (size, _) = self.measure_item(snapshot, state, theme, 0, self.item_min_proposal(cross));
         let floor = self.main_extent(size);
         self.floor_sample.set(Some((cross, floor)));
         floor
@@ -920,6 +932,7 @@ impl LazyStackNode {
     /// Keeps estimates scoped to the cross-axis query and collection lifetime.
     fn ensure_estimate(
         &self,
+        snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
         theme: &Rc<dyn crate::engine::WidgetTheme>,
         cross: Option<f32>,
@@ -930,13 +943,13 @@ impl LazyStackNode {
         {
             return size;
         }
-        let (size, _) = self.measure_item(state, theme, 0, self.item_proposal(cross));
+        let (size, _) = self.measure_item(snapshot, state, theme, 0, self.item_proposal(cross));
         let extent = self.main_extent(size);
         self.estimate.set(extent.max(1.0));
         self.estimate_sample.set(Some((cross, size)));
         self.floor_sample.set(None);
         self.dirty.set(true);
-        self.prepare_extent_index(self.views.len().snapshot());
+        self.prepare_extent_index(snapshot.len());
         self.extent_index.borrow_mut().set_measured(0, extent);
         size
     }
@@ -960,6 +973,7 @@ impl LazyStackNode {
     /// layout pass instead of discovering it later during flush.
     fn refresh_visible_extents(
         &self,
+        snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
         theme: &Rc<dyn crate::engine::WidgetTheme>,
         count: usize,
@@ -968,9 +982,7 @@ impl LazyStackNode {
         let visible = self.visible_range.borrow().clone();
         let cache = self.item_cache.borrow();
         for index in visible.start.min(count)..visible.end.min(count) {
-            let id = self
-                .views
-                .snapshot()
+            let id = snapshot
                 .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let Some(item) = cache.get(&id) else {
@@ -990,7 +1002,10 @@ impl LazyStackNode {
         theme: &Rc<dyn crate::engine::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
-        let count = self.views.len().snapshot();
+        // One snapshot per measure pass: the sampled item, the extent index,
+        // and the visible-window refresh all read the same membership.
+        let snapshot = self.snapshot.borrow().clone();
+        let count = snapshot.len();
         if count == 0 {
             return ViewDimensions::new(Size::zero());
         }
@@ -998,9 +1013,9 @@ impl LazyStackNode {
             LazyStackAxisConfig::Vertical { .. } => (proposal.width, proposal.height),
             LazyStackAxisConfig::Horizontal { .. } => (proposal.height, proposal.width),
         };
-        let sample = self.ensure_estimate(state, theme, cross);
+        let sample = self.ensure_estimate(&snapshot, state, theme, cross);
         self.prepare_extent_index(count);
-        self.refresh_visible_extents(state, theme, count, cross);
+        self.refresh_visible_extents(&snapshot, state, theme, count, cross);
         // The extent index holds the items' intrinsic main extents, so the
         // unclamped total is the stack's ideal, not its minimum: a lazy
         // stack virtualizes — it fits a finite main-axis offer below its
@@ -1011,7 +1026,8 @@ impl LazyStackNode {
         let extent = self.extent_index.borrow().total_extent();
         let floor = self.spacing().mul_add(
             crate::num_cast::usize_as_f64(count - 1),
-            self.ensure_floor(state, theme, cross) * crate::num_cast::usize_as_f64(count),
+            self.ensure_floor(&snapshot, state, theme, cross)
+                * crate::num_cast::usize_as_f64(count),
         );
         let main = match offered {
             Some(offer) if offer.is_finite() => extent.min(f64::from(offer)).max(floor),
@@ -1036,7 +1052,11 @@ impl LazyStackNode {
         ctx: RenderContext,
         _env: &Environment,
     ) {
-        let count = self.views.len().snapshot();
+        // One snapshot for the whole pass: the visible window's ids and
+        // materialized views come from the same membership the watcher last
+        // applied, coherent under a reentrant source mutation.
+        let snapshot = self.snapshot.borrow().clone();
+        let count = snapshot.len();
         if count == 0 {
             return;
         }
@@ -1063,7 +1083,7 @@ impl LazyStackNode {
             }
         };
         let theme = renderer.theme();
-        self.ensure_estimate(&mut renderer.state, &theme, cross);
+        self.ensure_estimate(&snapshot, &mut renderer.state, &theme, cross);
         self.prepare_extent_index(count);
         let total_extent_before = self.extent_index.borrow().total_extent();
         self.item_cache.borrow_mut().begin_frame();
@@ -1099,19 +1119,17 @@ impl LazyStackNode {
         *self.visible_range.borrow_mut() = window.start..window.end;
         let mut cursor = window.leading_offset;
         for index in window.start..window.end {
-            let id = self
-                .views
-                .snapshot()
+            let id = snapshot
                 .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let proposal = self.item_proposal(cross);
             let (size, stretch) = {
                 let env = &self.env;
-                let views = &self.views;
+                let views = &snapshot;
                 let mut cache = self.item_cache.borrow_mut();
                 cache
                     .entry(id, || {
-                        let view = views.snapshot().get_view(index).unwrap_or_else(|| {
+                        let view = views.get_view(index).unwrap_or_else(|| {
                             panic!("hydrolysis LazyStack failed to materialize item {index}")
                         });
                         normalize_layout_view(view, env)
@@ -1126,10 +1144,10 @@ impl LazyStackNode {
             self.extent_index.borrow_mut().set_measured(index, extent);
             {
                 let env = &self.env;
-                let views = &self.views;
+                let views = &snapshot;
                 let mut cache = self.item_cache.borrow_mut();
                 let subview = cache.entry(id, || {
-                    let view = views.snapshot().get_view(index).unwrap_or_else(|| {
+                    let view = views.get_view(index).unwrap_or_else(|| {
                         panic!("hydrolysis LazyStack failed to materialize item {index}")
                     });
                     normalize_layout_view(view, env)
@@ -1165,7 +1183,8 @@ impl LazyStackNode {
     /// the visible window.
     #[cfg(feature = "accessibility")]
     pub(super) fn emit_accessibility(&self, renderer: &mut SemanticCore) {
-        let count = self.views.len().snapshot();
+        let snapshot = self.snapshot.borrow().clone();
+        let count = snapshot.len();
         if count == 0 {
             return;
         }
@@ -1176,17 +1195,15 @@ impl LazyStackNode {
             scope
         });
         self.item_cache.borrow_mut().begin_frame();
-        for index in 0..count {
-            let id = self
-                .views
-                .snapshot()
+        for index in snapshot.range() {
+            let id = snapshot
                 .get_id(index)
                 .unwrap_or_else(|| panic!("hydrolysis LazyStack item {index} has no id"));
             let env = &self.env;
-            let views = &self.views;
+            let views = &snapshot;
             let mut cache = self.item_cache.borrow_mut();
             let subview = cache.entry(id, || {
-                let view = views.snapshot().get_view(index).unwrap_or_else(|| {
+                let view = views.get_view(index).unwrap_or_else(|| {
                     panic!("hydrolysis LazyStack failed to materialize item {index}")
                 });
                 normalize_layout_view(view, env)

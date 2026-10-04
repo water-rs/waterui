@@ -3040,6 +3040,20 @@ impl SemanticCore {
         );
     }
 
+    /// Computes a platform-view leaf's placement in window hit-test space:
+    /// the leaf's rect clipped to the open hit clips (a scrolled-off child
+    /// keeps only its remaining slice) plus the hit-test order claimed on its
+    /// behalf — the same order every interactive target uses, which is what
+    /// makes "placed later" mean "stacked above" for the host.
+    ///
+    /// Returns `(clipped bounds, order)`; an empty clipped rect means the leaf
+    /// is fully clipped away.
+    pub(crate) fn platform_view_placement(&mut self, bounds: kurbo::Rect) -> (kurbo::Rect, usize) {
+        let clipped = self.hit_test.clip_hit_bounds(bounds);
+        let order = self.hit_test.next_hit_test_order();
+        (clipped, order)
+    }
+
     /// Records a native subview that the host platform hit-tests for itself, so
     /// the content drawn above it can take its own clicks back.
     ///

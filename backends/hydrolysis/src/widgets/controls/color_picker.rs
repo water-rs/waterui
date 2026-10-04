@@ -100,7 +100,11 @@ pub fn color_picker_accessibility(
                 AccessibilityNodeRole::Button,
             ));
         node.set_label(label);
-        node.set_value(value);
+        // The formatted color is the default value; an explicit `.a11y_value`
+        // wins the same way `.a11y_label` wins the name.
+        if let Some(value) = renderer.resolve_accessibility_value(env, Some(value)) {
+            node.set_value(value);
+        }
         node.add_action(AccessibilityAction::Focus);
         if disabled {
             node.set_disabled();
