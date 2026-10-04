@@ -32,9 +32,18 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
     /** Which post queued the pending callback; null when nobody did. */
     private var wakeCause: String? = null
 
-    /** Posts the next vsync frame if none is already queued. */
+    /**
+     * Posts the next vsync frame if none is already queued. A pending
+     * deadline frame is not a queued vsync frame: it is replaced, so the
+     * request runs at the next vsync instead of waiting for the deadline.
+     */
     fun requestFrame(cause: String = "redraw-request") {
-        if (posted) return
+        if (deadlinePosted) {
+            choreographer.removeFrameCallback(this)
+            deadlinePosted = false
+        } else if (posted) {
+            return
+        }
         posted = true
         wakeCause = cause
         choreographer.postFrameCallback(this)
@@ -47,6 +56,7 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
 
     override fun doFrame(vsyncNanos: Long) {
         posted = false
+        deadlinePosted = false
         val cause = wakeCause ?: "external"
         wakeCause = null
         val outcome = NativeBridge.nativeOnFrame(session.nativePtr, vsyncNanos)
@@ -64,12 +74,13 @@ internal class FrameScheduler(private val session: HydrolysisSession) :
 
         if (wantsNext) {
             requestFrame("next-frame")
-            deadlinePosted = false
-        } else if (deadlineNanos >= 0) {
+        } else if (deadlineNanos >= 0 && !posted) {
             // The engine's next wake is a deadline, not continuous work — a
             // single delayed frame covers it. An elapsed deadline returns -1
             // from the native side (its tick already ran inside this
-            // transaction) and never reaches here.
+            // transaction) and never reaches here. A vsync frame the
+            // transaction itself requested already covers the deadline: it
+            // runs first and reports the deadline again.
             deadlinePosted = true
             wakeCause = "deadline"
             choreographer.postFrameCallbackDelayed(
