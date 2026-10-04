@@ -31,19 +31,24 @@ use objc2_ui_kit::UIScrollView as PlatformScrollView;
 /// on iOS.
 pub type ScrollView = PlatformScrollView;
 
+/// The [`ScrollView`] ancestors of `view`, lazily walked nearest-first.
+///
+/// One shared chain both the nearest-only query and the all-ancestors
+/// subscription consume: the nearest query stops at the first scroll
+/// view it finds instead of collecting the remaining ancestors, while a
+/// visibility watch can still collect the whole chain.
+fn scroll_ancestors(view: &PlatformView) -> impl Iterator<Item = Retained<ScrollView>> {
+    std::iter::successors(crate::view::superview(view), |candidate| {
+        crate::view::superview(candidate)
+    })
+    .filter_map(|candidate| Retained::downcast::<ScrollView>(candidate).ok())
+}
+
 /// The nearest [`ScrollView`] ancestor of `view`, walking superviews.
 #[must_use]
 #[cfg(target_os = "ios")]
 pub fn enclosing_scroll_view(view: &PlatformView) -> Option<Retained<ScrollView>> {
-    let mut current = view.superview();
-    while let Some(candidate) = current {
-        let next = candidate.superview();
-        if let Ok(scroll) = Retained::downcast::<ScrollView>(candidate) {
-            return Some(scroll);
-        }
-        current = next;
-    }
-    None
+    scroll_ancestors(view).next()
 }
 
 /// The nearest [`ScrollView`] ancestor of `view`, walking superviews.
@@ -51,6 +56,17 @@ pub fn enclosing_scroll_view(view: &PlatformView) -> Option<Retained<ScrollView>
 #[cfg(target_os = "macos")]
 pub fn enclosing_scroll_view(view: &PlatformView) -> Option<Retained<ScrollView>> {
     view.enclosingScrollView()
+}
+
+/// Every [`ScrollView`] ancestor of `view` walking superviews.
+///
+/// Ordered nearest-first. A nested scroll chain can clip a leaf through
+/// any of its ancestors — a foreign outer scroll view emits none of the
+/// emissions the nearest one does — so a visibility watch must observe
+/// the whole chain, not just the nearest.
+#[must_use]
+pub fn enclosing_scroll_views(view: &PlatformView) -> Vec<Retained<ScrollView>> {
+    scroll_ancestors(view).collect()
 }
 
 /// The part of `view`'s coordinate space visible through `scroll`: the scroll
@@ -74,8 +90,12 @@ pub fn scroll_viewport(view: &PlatformView, scroll: &ScrollView) -> Rect {
 /// Calls `handler` whenever `scroll`'s viewport moves — `contentOffset` on
 /// `UIKit`, the clip view's bounds on `AppKit`.
 ///
-/// Drop the returned observation to stop the calls; on `AppKit` dropping also
-/// switches the clip view's `postsBoundsChangedNotifications` back off.
+/// Drop the returned observation to stop the calls. On `AppKit` the
+/// clip view's `postsBoundsChangedNotifications` stays on afterwards:
+/// the flag is `AppKit`'s documented opt-in for these notifications and
+/// restoring it under an unknown set of sibling observers could silence
+/// a live one — the residual cost is notification posts nobody reads,
+/// not a lost wake.
 #[must_use]
 pub fn observe_scroll_viewport(
     scroll: &Retained<ScrollView>,
@@ -175,20 +195,31 @@ mod imp {
         }
     }
 
-    /// A registered key-value observation on a scroll view.
-    #[derive(Debug)]
+    /// A registered key-value observation on a scroll view. The scroll
+    /// view is held weakly: the observation is owned by a descendant,
+    /// so a strong retain would loop the view hierarchy — and a scroll
+    /// view gone before its token has no registration left to remove.
     pub struct Token {
-        scroll: Retained<ScrollView>,
+        scroll: objc2::rc::Weak<ScrollView>,
         observer: Retained<ScrollObserver>,
+    }
+
+    impl std::fmt::Debug for Token {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Token").finish_non_exhaustive()
+        }
     }
 
     impl Drop for Token {
         fn drop(&mut self) {
             use objc2_foundation::NSObjectNSKeyValueObserverRegistration;
-            // SAFETY: pairs the `addObserver` below; the token retained both
-            // parties for the registration's life.
+            let Some(scroll) = self.scroll.load() else {
+                return;
+            };
+            // SAFETY: pairs the `addObserver` below; the scroll view is
+            // still alive, so the registration can be removed cleanly.
             unsafe {
-                self.scroll.removeObserver_forKeyPath_context(
+                scroll.removeObserver_forKeyPath_context(
                     &self.observer,
                     &content_offset(),
                     std::ptr::null_mut(),
@@ -203,8 +234,8 @@ mod imp {
         let mtm = objc2::MainThreadMarker::from(&**scroll);
         let observer = ScrollObserver::new(mtm, handler);
         // SAFETY: `observer` is a live `NSObject` subclass answering
-        // `observeValueForKeyPath`, and the token removes the registration on
-        // drop while it still retains both parties.
+        // `observeValueForKeyPath`, and the token removes the
+        // registration on drop while the observed view is still alive.
         unsafe {
             scroll.addObserver_forKeyPath_options_context(
                 &observer,
@@ -214,7 +245,7 @@ mod imp {
             );
         }
         Token {
-            scroll: scroll.clone(),
+            scroll: objc2::rc::Weak::new(&**scroll),
             observer,
         }
     }
@@ -225,23 +256,26 @@ mod imp {
     use super::ScrollView;
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2_app_kit::{NSClipView, NSViewBoundsDidChangeNotification};
+    use objc2_app_kit::NSViewBoundsDidChangeNotification;
     use std::rc::Rc;
 
     use crate::notification::{NotificationName, NotificationObserver};
 
     /// A registered clip-view bounds observer on a scroll view.
-    #[derive(Debug)]
+    ///
+    /// The clip view is not retained: the observation is owned by a
+    /// descendant, so a strong retain would loop the view hierarchy.
+    /// `postsBoundsChangedNotifications` is left on after drop — the
+    /// flag is the documented opt-in and restoring it could silence a
+    /// sibling observer still watching the same clip view.
     pub struct Token {
-        /// The clip view whose notifications flag is cleared on drop.
-        clip: Retained<NSClipView>,
         /// The notification-center observer.
         _observer: NotificationObserver,
     }
 
-    impl Drop for Token {
-        fn drop(&mut self) {
-            self.clip.setPostsBoundsChangedNotifications(false);
+    impl std::fmt::Debug for Token {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Token").finish_non_exhaustive()
         }
     }
 
@@ -259,7 +293,6 @@ mod imp {
             move || handler(),
         );
         Token {
-            clip,
             _observer: observer,
         }
     }

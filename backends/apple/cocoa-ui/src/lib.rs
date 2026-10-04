@@ -101,6 +101,7 @@ pub mod text;
 #[cfg(target_os = "ios")]
 pub mod uikit;
 pub mod view;
+pub mod visibility;
 #[cfg(feature = "webview")]
 pub mod web_kit;
 

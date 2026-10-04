@@ -27,12 +27,13 @@ use objc2_app_kit::{
     NSEvent, NSEventPhase, NSMagnificationGestureRecognizer, NSResponder, NSTrackingArea,
     NSTrackingAreaOptions, NSView,
 };
-use objc2_foundation::NSRect;
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_quartz_core::CALayer;
 
 use crate::PlatformView;
 use crate::callback::guarded;
 use crate::input::{EventPhase, GesturePhase, PointerInteraction};
+use crate::visibility::VisibilityEmitter;
 
 /// Receives lifecycle events of the view — layout, attachment, visibility.
 type LifecycleHandler = Rc<dyn Fn()>;
@@ -53,6 +54,9 @@ pub struct SurfaceViewIvars {
     /// host layer.
     presentation_layer: RefCell<Option<Retained<CALayer>>>,
     gesture_target: RefCell<Option<Retained<GestureTarget>>>,
+    /// The instance-owned visibility event: fires when this view's hidden,
+    /// alpha, frame, bounds, window or superview state changes.
+    emitter: VisibilityEmitter,
 }
 
 impl fmt::Debug for SurfaceViewIvars {
@@ -177,9 +181,76 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
             let handler = self.ivars().on_window_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView viewDidMoveToWindow visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(viewDidMoveToSuperview))]
+        fn view_did_move_to_superview(&self) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), viewDidMoveToSuperview] };
+            let handler = self.ivars().on_visibility_changed.borrow().clone();
+            guarded("SurfaceView viewDidMoveToSuperview visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameOrigin:))]
+        fn set_frame_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
+            guarded("SurfaceView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setFrameSize:))]
+        fn set_frame_size_override(&self, new_size: NSSize) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
+            guarded("SurfaceView setFrameSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBoundsOrigin:))]
+        fn set_bounds_origin_override(&self, new_origin: NSPoint) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBoundsOrigin: new_origin] };
+            guarded("SurfaceView setBoundsOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setBoundsSize:))]
+        fn set_bounds_size_override(&self, new_size: NSSize) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setBoundsSize: new_size] };
+            guarded("SurfaceView setBoundsSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(setAlphaValue:))]
+        fn set_alpha_value_override(&self, alpha: f64) {
+            // SAFETY: see the module safety note.
+            let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
+            guarded("SurfaceView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -188,9 +259,11 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
             let handler = self.ivars().on_backing_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView viewDidChangeBackingProperties visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -199,9 +272,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidHide] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView viewDidHide visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -210,9 +286,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidUnhide] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView viewDidUnhide visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -451,6 +530,12 @@ impl SurfaceView {
             .replace(Some(Rc::new(handler)));
     }
 
+    /// The visibility event this view fires — see
+    /// [`VisibilityEmitter`](crate::visibility::VisibilityEmitter).
+    pub fn visibility_emitter(&self) -> &VisibilityEmitter {
+        &self.ivars().emitter
+    }
+
     /// Calls `handler` when the backing store properties change — typically
     /// a display move with a different scale factor.
     pub fn set_backing_changed_handler(&self, handler: impl Fn() + 'static) {
@@ -495,9 +580,11 @@ impl SurfaceView {
 
     fn emit_layout(&self) {
         let handler = self.ivars().on_layout.borrow().clone();
-        if let Some(handler) = handler {
-            handler();
-        }
+        guarded("SurfaceView layout handler", || {
+            if let Some(handler) = handler {
+                handler();
+            }
+        });
     }
 
     /// The event position in logical, surface-local points with y growing

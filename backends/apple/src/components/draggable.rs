@@ -120,6 +120,42 @@ fn drag_items(host: &HostView, payload: &DragPayload) -> Vec<kit::DragItemSpec> 
     }
 }
 
+/// Registers the `mouseDown:`/`mouseDragged:` drag-source handlers:
+/// `mouseDown:` stores where the drag might start and `mouseDragged:`
+/// beyond 3pt begins the dragging session.
+#[cfg(target_os = "macos")]
+fn install_drag_handlers(host: &HostView, state: &Rc<RefCell<DraggableLeafState>>) {
+    host.set_mouse_down_handler({
+        let state = Rc::downgrade(state);
+        move |_view, event| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            state.borrow_mut().drag_origin = Some(event.locationInWindow().into());
+        }
+    });
+    host.set_mouse_dragged_handler({
+        let state = Rc::downgrade(state);
+        move |view, event| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            let origin = state.borrow().drag_origin;
+            let Some(origin) = origin else { return };
+            let current: Point = event.locationInWindow().into();
+            let distance = (current.x - origin.x).hypot(current.y - origin.y);
+            if distance <= 3.0 {
+                return;
+            }
+            state.borrow_mut().drag_origin = None;
+            let payload = state.borrow().draggable.payload();
+            let local: Rc<dyn core::any::Any> = Rc::new(payload.clone());
+            let items = drag_items(view, &payload);
+            let _session = kit::begin_drag(view, event, items, Some(local), || {});
+        }
+    });
+}
+
 /// Installs the `draggable` handler on the dispatcher.
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Draggable>>(|metadata, ctx| {
@@ -138,8 +174,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper — `contentView.frame = bounds`.
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }
@@ -154,33 +193,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
 
         #[cfg(target_os = "macos")]
-        {
-            // `mouseDown:` stores where the drag might start.
-            host.set_mouse_down_handler({
-                let state = Rc::clone(&state);
-                move |_view, event| {
-                    state.borrow_mut().drag_origin = Some(event.locationInWindow().into());
-                }
-            });
-            // `mouseDragged:` beyond 3pt begins the dragging session.
-            host.set_mouse_dragged_handler({
-                let state = Rc::clone(&state);
-                move |view, event| {
-                    let origin = state.borrow().drag_origin;
-                    let Some(origin) = origin else { return };
-                    let current: Point = event.locationInWindow().into();
-                    let distance = (current.x - origin.x).hypot(current.y - origin.y);
-                    if distance <= 3.0 {
-                        return;
-                    }
-                    state.borrow_mut().drag_origin = None;
-                    let payload = state.borrow().draggable.payload();
-                    let local: Rc<dyn core::any::Any> = Rc::new(payload.clone());
-                    let items = drag_items(view, &payload);
-                    let _session = kit::begin_drag(view, event, items, Some(local), || {});
-                }
-            });
-        }
+        install_drag_handlers(&host, &state);
 
         #[cfg(target_os = "ios")]
         let drag_source = {

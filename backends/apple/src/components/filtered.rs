@@ -157,14 +157,16 @@ pub struct FilteredState {
     content_changed_since_capture: Cell<bool>,
     /// First-paint waiters — `readyCompletions` in waker form.
     ready_waiters: RefCell<Vec<std::task::Waker>>,
+    /// One outstanding demand reconsideration — queued by
+    /// `reconsider_ready_demand`, cleared inside the enqueued block so a
+    /// burst of wake events coalesces into a single dispatch check.
+    demand_reconsider_queued: Cell<bool>,
     /// The hidden content leaf — `contentView`.
     mounted: RefCell<Option<Mounted>>,
     /// The `ViewCapture` pipeline — `capturePipeline`.
     capture: Rc<cocoa_ui::capture::ViewCapture>,
     /// The frame clock — `frameDriver`.
     clock: cocoa_ui::display_link::FrameClock,
-    /// Window observers — `occlusionObserver`/app-activation watchers.
-    observers: RefCell<Vec<cocoa_ui::notification::NotificationObserver>>,
     /// The context generation `device`/`presenter`/`capture_texture` were
     /// built under — all are recreated when the runtime publishes a new
     /// context.
@@ -176,6 +178,10 @@ pub struct FilteredState {
     /// The in-flight effect setup. Stored so dropping the state cancels a
     /// setup parked on `context_after` instead of leaking the future.
     setup_task: RefCell<Option<executor_core::AnyLocalExecutorTask<()>>>,
+    /// The leaf's owned visibility observation: ancestor-chain wakes
+    /// plus the enclosing scroll-viewport watch, rebound together and
+    /// fully detached on drop.
+    visibility_watch: RefCell<Option<cocoa_ui::visibility::VisibilityWatch>>,
 }
 
 impl fmt::Debug for FilteredState {
@@ -203,22 +209,21 @@ fn output_pixel_format() -> objc2_metal::MTLPixelFormat {
     cocoa_ui::metal::wgpu_to_metal_format(PRESENTATION_FORMAT)
 }
 
-/// `isPresentationOccluded`.
+/// `isPresentationOccluded` — the shared `CocoaUi` visibility primitive:
+/// the view is occluded when `presentable` answers `false`, so a filter
+/// clipped off the window or hidden by an ancestor parks its frame clock
+/// the same way an inactive scene does.
 fn presentation_occluded(view: &PlatformView) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        cocoa_ui::view::window(view).is_none_or(|window| !cocoa_ui::appkit::is_visible(&window))
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = view;
-        !cocoa_ui::uikit::application_is_active()
-    }
+    !cocoa_ui::visibility::presentable(view)
 }
 
-/// `canAttachNow`.
+/// `canAttachNow` — the window-level half: buffers and the capture
+/// texture wait only on a presentable window/scene, not on the view's
+/// clip geometry, so a clipped filter keeps the resources an explicit
+/// offscreen capture may still need.
 fn can_attach_now(view: &PlatformView) -> bool {
-    cocoa_ui::view::window(view).is_some() && !presentation_occluded(view)
+    cocoa_ui::view::window(view)
+        .is_some_and(|window| cocoa_ui::visibility::window_presentable(&window))
 }
 
 /// `configureDynamicRange`.
@@ -297,6 +302,7 @@ fn arm_filtered_context_watch(state: &Rc<FilteredState>, generation: u64) {
             initialize_gpu(&state);
             state.needs_render.set(true);
             schedule_frame_if_needed(&state);
+            reconsider_ready_demand(&state);
         }
     }));
 }
@@ -469,6 +475,11 @@ fn schedule_frame_if_needed(state: &Rc<FilteredState>) {
 fn request_render(state: &Rc<FilteredState>) {
     state.needs_render.set(true);
     schedule_frame_if_needed(state);
+    // Every genuine frame-source event — `setOnRedraw`, descendant
+    // invalidation, geometry changes — also re-drives an outstanding
+    // first-ready demand; the dedup inside keeps a request flood from
+    // flooding the main queue.
+    reconsider_ready_demand(state);
 }
 
 /// `requestRenderIfGeometryChanged` — only a pass that produced new
@@ -485,6 +496,54 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
     }
     *state.laid_out_geometry.borrow_mut() = Some(geometry);
     request_render(state);
+}
+
+/// Dispatches the one off-clock frame an outstanding first-ready waiter
+/// is owed. The demand path bypasses ancestor/clip presentation
+/// occlusion only: a waiter is an explicit consumer contract (the same
+/// contract `GpuSurface`'s first-ready force render honors), while
+/// autonomous work stays parked under occlusion. The weak window-level
+/// `can_attach_now` gate still applies — off-clock frames require a
+/// live attachable owning window/scene, so a demand whose scene
+/// deactivated before async setup landed never renders in the
+/// background. Every gate the frame legitimately blocked on is
+/// re-checked, and the waiters themselves — not `output_revealed` —
+/// own the demand until `complete_ready` drains them, so this can only
+/// ever produce the owed frame — never autonomous offscreen
+/// submissions.
+fn dispatch_ready_demand(state: &Rc<FilteredState>) {
+    if state.ready_waiters.borrow().is_empty()
+        || !state.attached.get()
+        || !can_attach_now(&state.view)
+        || !effects_ready(state)
+        || state.render_in_flight.get()
+        || state.frame_presentation_in_flight.get()
+    {
+        return;
+    }
+    state.needs_render.set(true);
+    render_frame(state);
+}
+
+/// Re-considers the outstanding demand on a fresh main-queue turn —
+/// prerequisite events (setup landing, context publication, an in-flight
+/// frame finishing, a real visibility or redraw wake) whose own call
+/// stack must unwind before the owed frame may run again. At most one
+/// reconsideration stays queued per leaf: animation-driven request
+/// bursts coalesce instead of flooding the queue, and the dispatch
+/// itself decides whether the waiters are still owed.
+fn reconsider_ready_demand(state: &Rc<FilteredState>) {
+    if state.ready_waiters.borrow().is_empty() || state.demand_reconsider_queued.replace(true) {
+        return;
+    }
+    let mtm = cocoa_ui::MainThreadMarker::new().expect("filter events run on the main thread");
+    let weak = Rc::downgrade(state);
+    cocoa_ui::main_queue::enqueue_local(mtm, move |_mtm| {
+        if let Some(state) = weak.upgrade() {
+            state.demand_reconsider_queued.set(false);
+            dispatch_ready_demand(&state);
+        }
+    });
 }
 
 /// `renderFrame` — capture the hidden content into the input-size texture.
@@ -514,6 +573,11 @@ fn render_frame(state: &Rc<FilteredState>) {
     state.needs_render.set(false);
     state.render_in_flight.set(true);
     state.clock.stop();
+    // The snapshot starting now describes current content: a descendant
+    // change landing mid-capture re-flags and owes one more frame; a
+    // flag raised before this point belongs to the superseded snapshot
+    // (the #521 staleness contract is per-snapshot).
+    state.content_changed_since_capture.set(false);
     let frame = CaptureFrame {
         texture: ensure_capture_texture(state, &context, width, height),
         width,
@@ -566,6 +630,10 @@ fn finish_captured_frame(state: &Rc<FilteredState>, frame: CaptureFrame, capture
         if frame.context.device_lost_reason().is_some() {
             arm_filtered_context_watch(state, frame.context.generation());
         }
+        // No queued retry: the child's readiness arrives through
+        // `setOnRedraw` → `request_render`, which re-drives the demand
+        // itself — a re-check enqueued here would spin the main queue
+        // until the child finishes setting up.
         return;
     }
     finish_prepared_frame(state, frame);
@@ -789,6 +857,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, frame: CaptureFrame) {
                 state.frame_presentation_in_flight.set(false);
                 state.render_in_flight.set(false);
                 finish_presented_frame(&state, pending.get(), needs_redraw, &submitted_context);
+                reconsider_ready_demand(&state);
             });
         },
     );
@@ -936,6 +1005,7 @@ fn spawn_setup(state: &Rc<FilteredState>) {
         setup_generation.set(Some(context.generation()));
         if let Some(state) = weak.get().upgrade() {
             schedule_frame_if_needed(&state);
+            reconsider_ready_demand(&state);
         }
         fire_redraw();
     }));
@@ -964,6 +1034,17 @@ fn handle_redraw(state: &Rc<FilteredState>) {
     request_render(state);
 }
 
+/// Rebinds the visibility watches to the host's current hierarchy —
+/// the owned [`cocoa_ui::visibility::VisibilityWatch`] re-walks the
+/// ancestor chain, detaching the links the reparent left behind, and
+/// re-arms the enclosing scroll-viewport observation when the nearest
+/// scroll view changed.
+fn refresh_visibility_watches(state: &Rc<FilteredState>) {
+    if let Some(watch) = state.visibility_watch.borrow().as_ref() {
+        watch.refresh(&state.view);
+    }
+}
+
 /// `handleWindowChange` — leaving the window defers teardown to whichever
 /// half of the frame is still in flight.
 fn handle_window_change(state: &Rc<FilteredState>) {
@@ -973,6 +1054,7 @@ fn handle_window_change(state: &Rc<FilteredState>) {
         state.needs_render.set(false);
         state.pending_dynamic_range.borrow_mut().take();
         complete_ready(state, false);
+        refresh_visibility_watches(state);
         if state.render_in_flight.get() || state.frame_presentation_in_flight.get() {
             state.detach_after_capture.set(true);
         } else {
@@ -984,53 +1066,9 @@ fn handle_window_change(state: &Rc<FilteredState>) {
         return;
     }
     state.detach_after_capture.set(false);
-    update_window_observers(state);
+    refresh_visibility_watches(state);
     initialize_gpu(state);
     request_render(state);
-}
-
-/// `WuiWindowOcclusionObserver` — occlusion/activation changes re-run
-/// attach+schedule. On iOS the attach a launch-time `.inactive` state
-/// deferred is retaken from `didBecomeActive`; without these observers a
-/// filter mounted before activation presents nothing forever.
-fn update_window_observers(state: &Rc<FilteredState>) {
-    let mut observers = state.observers.borrow_mut();
-    observers.clear();
-    let Some(window) = cocoa_ui::view::window(&state.view) else {
-        return;
-    };
-    #[cfg(target_os = "ios")]
-    let _ = &window;
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-    let fire = {
-        let weak = Rc::downgrade(state);
-        move || {
-            if let Some(state) = weak.upgrade() {
-                initialize_gpu(&state);
-                schedule_frame_if_needed(&state);
-            }
-        }
-    };
-    #[cfg(target_os = "macos")]
-    observers.push(cocoa_ui::appkit::watch_occlusion(mtm, &window, move || {
-        fire();
-    }));
-    #[cfg(target_os = "ios")]
-    for notification in [
-        // SAFETY: the notification names are system constants.
-        unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
-        // SAFETY: the notification names are system constants.
-        unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
-    ] {
-        observers.push(cocoa_ui::notification::observe(
-            mtm,
-            &cocoa_ui::notification::NotificationName::framework(notification),
-            {
-                let fire = fire.clone();
-                move || fire()
-            },
-        ));
-    }
 }
 
 /// `layoutSubviews`/`layout`: frame the hidden child, refresh geometry,
@@ -1124,6 +1162,11 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     }
     state.ready_waiters.borrow_mut().push(waker);
     schedule_frame_if_needed(state);
+    // The registered waiter is owed one frame even while the autonomous
+    // clock stays parked: dispatch it off the clock now, and let each
+    // genuine prerequisite event re-drive the same demand until the
+    // output is revealed.
+    dispatch_ready_demand(state);
 }
 
 /// Walks `view`'s subtree calling `f` on every registered filter — the
@@ -1314,13 +1357,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 laid_out_geometry: RefCell::new(None),
                 content_changed_since_capture: Cell::new(false),
                 ready_waiters: RefCell::new(Vec::new()),
+                demand_reconsider_queued: Cell::new(false),
                 mounted: RefCell::new(Some(mounted)),
                 capture,
                 clock,
-                observers: RefCell::new(Vec::new()),
                 gpu_generation: Cell::new(Some(gpu_context.generation())),
                 context_watch: RefCell::new(None),
                 setup_task: RefCell::new(None),
+                visibility_watch: RefCell::new(None),
             }
         });
         *state.effects.borrow_mut() = Some(effects);
@@ -1347,18 +1391,71 @@ pub fn install(dispatcher: &mut Dispatcher) {
             });
         }
 
+        // Every view-owned callback holds the state weakly: the view retains
+        // its handlers, the state retains the view, so a strong capture here
+        // closes `Rc<FilteredState> → HostView → handler → Rc<FilteredState>`
+        // and the leaf's teardown could never release the state (WaterUI
+        // #1567). With the weak edge the guard's teardown drops the last
+        // strong ref and the native view is released with it.
         {
-            let state = state.clone();
-            view.set_layout_handler(move |_| on_layout(&state));
+            let weak = Rc::downgrade(&state);
+            view.set_layout_handler(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    on_layout(&state);
+                }
+            });
         }
         {
-            let state = state.clone();
-            view.set_window_handler(move |_| handle_window_change(&state));
+            let weak = Rc::downgrade(&state);
+            view.set_window_handler(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    handle_window_change(&state);
+                }
+            });
         }
+        {
+            let weak = Rc::downgrade(&state);
+            view.set_superview_handler(move |_| {
+                if let Some(state) = weak.upgrade() {
+                    refresh_visibility_watches(&state);
+                    initialize_gpu(&state);
+                    schedule_frame_if_needed(&state);
+                }
+            });
+        }
+
+        // The single wake every visibility source shares: ancestor
+        // emitters (hidden/alpha/frame/bounds/reparent on `CocoaUi`
+        // classes, this `HostView` included; foreign ancestors report
+        // through the explicit host `updateVisibility` contract) and
+        // the enclosing scroll-viewport observation all land here. The
+        // `VisibilityWatch` owns every registration and detaches them
+        // all when the state drops.
+        let wake: Rc<dyn Fn()> = Rc::new({
+            let weak = Rc::downgrade(&state);
+            move || {
+                if let Some(state) = weak.upgrade() {
+                    refresh_visibility_watches(&state);
+                    initialize_gpu(&state);
+                    schedule_frame_if_needed(&state);
+                    // A real visibility wake — ancestor reveal, scroll
+                    // clip, owning-scene activation — also re-drives a
+                    // demand the last check deferred.
+                    reconsider_ready_demand(&state);
+                }
+            }
+        });
+        *state.visibility_watch.borrow_mut() = Some(cocoa_ui::visibility::VisibilityWatch::new(
+            &state.view,
+            wake,
+        ));
         #[cfg(target_os = "macos")]
         {
-            let state = state.clone();
+            let weak = Rc::downgrade(&state);
             view.set_backing_changed_handler(move |_| {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
                 if cocoa_ui::view::window(&state.view).is_none() {
                     return;
                 }

@@ -109,8 +109,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // against the insets that remain once the ignored edges are erased.
         #[cfg(target_os = "ios")]
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let host_view: &PlatformView = host;
                 let frame = crate::native_layout::content_frame(state.child.view(), host_view);
                 view::set_frame(state.child.view(), frame);
@@ -120,8 +123,11 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // macOS: safe area is less of a concern — `contentView.frame = bounds`.
         #[cfg(target_os = "macos")]
         host.set_layout_handler({
-            let state = Rc::clone(&state);
+            let state = Rc::downgrade(&state);
             move |host| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 view::set_frame(state.child.view(), view::bounds(host));
             }
         });

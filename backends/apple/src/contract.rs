@@ -144,8 +144,18 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            let layout = Rc::clone(layout);
-            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
+            // The view must not keep the leaf alive: a strong layout here
+            // closes a HostView → handler → SubView → leaf-state → HostView
+            // cycle (water-rs/waterui#1567). The leaf retains the layout
+            // for its mounted lifetime — the context-menu panel clones it
+            // through `layout_handle` — so the handler upgrades only for
+            // the measure call, and `detach` clears it before the leaf
+            // can be released.
+            let layout = Rc::downgrade(layout);
+            host.set_measure_handler(move |_host, proposal| {
+                let layout = layout.upgrade().expect("measure handler outlived its leaf");
+                measure_layout(&layout, proposal)
+            });
         }
     }
 
@@ -195,6 +205,13 @@ impl NativeLeaf {
         )
     )]
     fn detach(&mut self) {
+        // The intrinsic-measure handler borrows this leaf's layout weakly;
+        // clear it at the ownership boundary so a platform view that briefly
+        // outlives the leaf falls back to its own intrinsic size instead of
+        // querying dead layout.
+        if let Some(host) = self.view.downcast_ref::<HostView>() {
+            host.clear_measure_handler();
+        }
         #[cfg(target_os = "ios")]
         let controllers = std::mem::take(&mut self.attached_controllers);
         #[cfg(target_os = "ios")]
