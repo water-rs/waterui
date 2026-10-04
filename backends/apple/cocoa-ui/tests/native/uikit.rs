@@ -14,7 +14,7 @@ use cocoa_ui::uikit::{HostView, Label};
 use cocoa_ui::{PlatformView, Rect};
 use libtest_mimic::Trial;
 
-use crate::harness::marker;
+use crate::harness::{capture_target, marker, nonzero_texels};
 
 /// The suite's `UIKit` cases, named after the module and test they moved
 /// from.
@@ -49,6 +49,14 @@ pub fn trials() -> Vec<Trial> {
             an_unpresented_panel_tracks_its_rows_pages_and_focus
         ),
         case!("view", display_immediately_targets_the_layer_not_the_view),
+        case!(
+            "capture",
+            a_capture_claim_restores_containment_and_survives_release
+        ),
+        case!(
+            "capture",
+            a_detached_capture_renders_and_teardown_stays_clean
+        ),
     ])
 }
 
@@ -323,4 +331,205 @@ fn display_immediately_targets_the_layer_not_the_view() {
     assert!(layer_responds.as_bool());
     // Would abort on the unrecognized selector had it been sent to the view.
     cocoa_ui::view::display_immediately(&view);
+}
+
+/// The `CARenderer` root claim is scoped to the frame it encodes: after
+/// `ViewCapture::capture` the view reports the same parent, sibling
+/// order, bounds, center, transform, and hidden flag as before — and it
+/// keeps answering them after the cached renderer is released on a
+/// later main-queue turn.
+fn a_capture_claim_restores_containment_and_survives_release() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_core_foundation::CGAffineTransform;
+    use cocoa_ui::objc2_foundation::NSString;
+    use cocoa_ui::objc2_ui_kit::{UIColor, UILabel};
+
+    let mtm = marker();
+    // SAFETY: `initWithFrame:` is `UIView`'s plain initializer; `mtm` is
+    // the real main thread — same for `UILabel` below.
+    let parent: Retained<UIView> = unsafe {
+        msg_send![
+            UIView::alloc(mtm),
+            initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(400.0, 400.0))
+        ]
+    };
+    let content: Retained<UIView> = unsafe {
+        msg_send![
+            UIView::alloc(mtm),
+            initWithFrame: CGRect::new(CGPoint::new(8.0, 40.0), CGSize::new(200.0, 200.0))
+        ]
+    };
+    content.setBackgroundColor(Some(&UIColor::systemBlueColor()));
+    content.setTransform(CGAffineTransform {
+        a: 1.08,
+        b: 0.05,
+        c: -0.06,
+        d: 0.94,
+        tx: 0.0,
+        ty: 0.0,
+    });
+    let label: Retained<UILabel> = unsafe {
+        msg_send![
+            UILabel::alloc(mtm),
+            initWithFrame: CGRect::new(CGPoint::new(4.0, 30.0), CGSize::new(150.0, 24.0))
+        ]
+    };
+    label.setText(Some(&NSString::from_str("capture-claim")));
+    content.addSubview(&label);
+    parent.addSubview(&content);
+    let sibling: Retained<UIView> = unsafe {
+        msg_send![
+            UIView::alloc(mtm),
+            initWithFrame: CGRect::new(CGPoint::new(8.0, 280.0), CGSize::new(40.0, 40.0))
+        ]
+    };
+    parent.addSubview(&sibling);
+    let _window = attach(mtm, &parent);
+
+    let bounds = content.bounds();
+    let center = content.center();
+    let transform = content.transform();
+
+    let Some(target) = capture_target() else {
+        return; // No Metal on this runner — nothing to check.
+    };
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    capture.set_on_redraw(|| {});
+    let done = Arc::new(AtomicBool::new(false));
+    capture.capture(&target, {
+        let done = Arc::clone(&done);
+        move |ok| done.store(ok, Ordering::Relaxed)
+    });
+
+    // The restore happens inside `capture`: by the time it returns the
+    // claim must already be gone — parent, order, and geometry answer
+    // their recorded values synchronously.
+    let restored_parent = content
+        .superview()
+        .expect("the claim left the view detached from its parent");
+    assert!(std::ptr::eq(
+        &raw const *restored_parent,
+        &raw const *parent
+    ));
+    let order = parent.subviews();
+    assert_eq!(order.count(), 2);
+    assert!(std::ptr::eq(
+        &raw const *order.objectAtIndex(0),
+        std::ptr::from_ref(&*content).cast()
+    ));
+    assert!(std::ptr::eq(
+        &raw const *order.objectAtIndex(1),
+        std::ptr::from_ref(&*sibling).cast()
+    ));
+    assert_eq!(content.bounds(), bounds);
+    assert_eq!(content.center(), center);
+    assert_eq!(content.transform(), transform);
+    assert!(!content.isHidden());
+    let hit = parent.hitTest_withEvent(CGPoint::new(center.x + 20.0, center.y), None);
+    assert!(
+        hit.is_some_and(|hit| std::ptr::eq(
+            std::ptr::from_ref(&*hit).cast::<UIView>(),
+            &raw const *content
+        ) || std::ptr::eq(
+            std::ptr::from_ref(&*hit).cast::<UILabel>(),
+            &raw const *label
+        )),
+        "hit testing must reach the restored subtree"
+    );
+
+    assert!(
+        crate::harness::pump_main_until(5.0, || done.load(Ordering::Relaxed)),
+        "the capture fence never completed"
+    );
+    let texels = nonzero_texels(&target);
+    assert!(
+        texels > 10_000,
+        "the claim must render real content, not an empty frame (nonzero texels: {texels})"
+    );
+
+    // Releasing the cached renderer must not invalidate the layer it
+    // claimed: on the next main-queue turn the same layer answers, still
+    // attached, and the tree tears down normally.
+    capture.shutdown();
+    drop(capture);
+    crate::harness::pump_main_turn();
+    let still_attached = content
+        .superview()
+        .expect("renderer release re-severed the view");
+    assert!(std::ptr::eq(&raw const *still_attached, &raw const *parent));
+    assert!(
+        content.layer().superlayer().is_some(),
+        "the backing layer lost its parent when the renderer dropped"
+    );
+    assert_eq!(content.bounds(), bounds);
+
+    content.removeFromSuperview();
+    sibling.removeFromSuperview();
+    parent.removeFromSuperview();
+}
+
+/// Capturing a view with no superview is supported — the claim restores
+/// nothing, the frame still renders real content, and teardown after
+/// the cached renderer's release stays clean.
+fn a_detached_capture_renders_and_teardown_stays_clean() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_foundation::NSString;
+    use cocoa_ui::objc2_ui_kit::{UIColor, UILabel};
+
+    let mtm = marker();
+    // SAFETY: `initWithFrame:` is `UIView`'s plain initializer; `mtm` is
+    // the real main thread — same for `UILabel` below.
+    let content: Retained<UIView> = unsafe {
+        msg_send![
+            UIView::alloc(mtm),
+            initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(200.0, 200.0))
+        ]
+    };
+    content.setBackgroundColor(Some(&UIColor::systemOrangeColor()));
+    let label: Retained<UILabel> = unsafe {
+        msg_send![
+            UILabel::alloc(mtm),
+            initWithFrame: CGRect::new(CGPoint::new(4.0, 30.0), CGSize::new(150.0, 24.0))
+        ]
+    };
+    label.setText(Some(&NSString::from_str("detached")));
+    content.addSubview(&label);
+    assert!(content.superview().is_none());
+
+    let Some(target) = capture_target() else {
+        return; // No Metal on this runner — nothing to check.
+    };
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    capture.set_on_redraw(|| {});
+    let done = Arc::new(AtomicBool::new(false));
+    capture.capture(&target, {
+        let done = Arc::clone(&done);
+        move |ok| done.store(ok, Ordering::Relaxed)
+    });
+    assert!(
+        content.superview().is_none(),
+        "a detached capture must not invent a parent"
+    );
+
+    assert!(
+        crate::harness::pump_main_until(5.0, || done.load(Ordering::Relaxed)),
+        "the capture fence never completed"
+    );
+    let texels = nonzero_texels(&target);
+    assert!(
+        texels > 10_000,
+        "a detached capture must still render real content (nonzero texels: {texels})"
+    );
+
+    capture.shutdown();
+    drop(capture);
+    crate::harness::pump_main_turn();
+    let _layer = content.layer(); // crashes on an invalidated layer
+    label.removeFromSuperview();
 }
