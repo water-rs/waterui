@@ -4746,7 +4746,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=169c42a810c4662abda184c89c114846877b13ec#169c42a810c4662abda184c89c114846877b13ec"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=cc8be840d96be39dc6f23aeace7310801d7a5f35#cc8be840d96be39dc6f23aeace7310801d7a5f35"
 dependencies = [
  "cherenkov",
  "hydrolysis",
