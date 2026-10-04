@@ -303,7 +303,7 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # scaffolds declare the commit directly while `stable` withholds the packages
 # under `experimental-packages` (water-rs/nami#26). Drop the `git`/`rev` half
 # once each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "9fe7a1f47f64aa1fc26a50c59f6670010559fa71" }
 waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
