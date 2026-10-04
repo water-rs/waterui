@@ -13050,6 +13050,7 @@ dependencies = [
  "serialport",
  "sha1",
  "sha2",
+ "shlex 2.0.1",
  "smol",
  "syn 2.0.119",
  "sysinfo",
