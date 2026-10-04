@@ -876,9 +876,7 @@ impl TemplateContext {
     /// suite — would silently retarget onto the pinned remote release.
     fn compute_member_backend_path(&self, member: FrameworkMember) -> Option<String> {
         self.local_sources.member(member)?;
-        Some(
-            self.backend_relative_path(&self.waterui_path.as_ref()?.join(member.subdirectory)),
-        )
+        Some(self.backend_relative_path(&self.waterui_path.as_ref()?.join(member.subdirectory)))
     }
 
     /// Absolute path of the `WaterUI` workspace root when building against a
@@ -2153,7 +2151,10 @@ mod tests {
             None,
         );
 
-        assert!(ctx.compute_member_backend_path(crate::framework::APPLE_BACKEND).is_none());
+        assert!(
+            ctx.compute_member_backend_path(crate::framework::APPLE_BACKEND)
+                .is_none()
+        );
         let error = ctx.waterui_apple_dependency().err().unwrap().to_string();
         assert!(error.contains("backends/apple"), "{error}");
     }
@@ -5096,10 +5097,9 @@ pub mod winui {
 pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
-        GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        HYDROLYSIS, NativeBackendDependencySource, NativeBackendDependencySpec, Path,
-        TemplateContext, TemplateNamespace, embedded, io, scaffold_dir,
-        write_generated_cargo_toml,
+        GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection, HYDROLYSIS,
+        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
+        TemplateNamespace, embedded, io, scaffold_dir, write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 

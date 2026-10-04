@@ -197,19 +197,9 @@ pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result
                 host_dir.display()
             )
         })?;
-    host.run(
-        "git",
-        [
-            "-C",
-            dir.as_str(),
-            "remote",
-            "add",
-            "origin",
-            url,
-        ],
-    )
-    .await
-    .wrap_err("failed to configure the hydrolysis android host remote")?;
+    host.run("git", ["-C", dir.as_str(), "remote", "add", "origin", url])
+        .await
+        .wrap_err("failed to configure the hydrolysis android host remote")?;
     host.run(
         "git",
         [
@@ -225,9 +215,7 @@ pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result
     )
     .await
     .wrap_err_with(|| {
-        format!(
-            "failed to fetch the hydrolysis android host at revision {revision} from {url}"
-        )
+        format!("failed to fetch the hydrolysis android host at revision {revision} from {url}")
     })?;
     host.run(
         "git",
@@ -782,9 +770,11 @@ mod tests {
             // selected revision — the host lives inside it.
             let revision = "a".repeat(40);
             assert!(checkout.ends_with(&revision));
-            assert!(checkout
-                .join("backends/hydrolysis/android/gpu/build.gradle.kts")
-                .is_file());
+            assert!(
+                checkout
+                    .join("backends/hydrolysis/android/gpu/build.gradle.kts")
+                    .is_file()
+            );
             assert_eq!(
                 std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file"),
                 revision
