@@ -119,6 +119,7 @@ fn trials() -> Vec<Trial> {
     let tests = {
         let mut tests = tests;
         tests.extend(tabs::trials());
+        tests.extend(controller_bounds::trials());
         tests
     };
     let mut tests = tests;
@@ -1149,4 +1150,104 @@ mod window {
     pub use waterui_apple::native_test_support::{
         bind_root_window_wires_a_live_window, manager_installs_into_the_environment,
     };
+}
+
+/// `ViewController` boundary semantics (#1689): an embedded controller's
+/// host view keeps the bounds its native parent assigned through a real
+/// `UIWindow` layout pass — nothing re-proposes the window's bounds to it —
+/// while a `window_root` controller still fills its window.
+#[cfg(target_os = "ios")]
+mod controller_bounds {
+    use cocoa_ui::objc2_ui_kit::UIWindow;
+    use cocoa_ui::uikit::{ViewController, window_root};
+    use cocoa_ui::{PlatformView, view};
+    use objc2::{MainThreadOnly, msg_send};
+
+    use super::{HostView, Retained, mtm};
+
+    /// The `controller_bounds::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "controller_bounds::embedded_host_keeps_parent_bounds",
+                || {
+                    embedded_host_keeps_parent_bounds();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("controller_bounds::window_root_host_fills_window", || {
+                window_root_host_fills_window();
+                Ok(())
+            }),
+        ]
+    }
+
+    /// A real (never shown) `UIWindow` — `UIKit` runs the full layout path
+    /// without a scene.
+    fn window(frame: cocoa_ui::Rect) -> Retained<UIWindow> {
+        // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer and
+        // `mtm` proves the main-thread confinement the harness provides.
+        unsafe {
+            msg_send![
+                UIWindow::alloc(mtm()),
+                initWithFrame: cocoa_ui::objc2_core_foundation::CGRect::from(frame)
+            ]
+        }
+    }
+
+    /// An embedded controller — the `WaterUIHostController` shape — inside a
+    /// native parent smaller than the window: layout must keep the host view
+    /// at the bounds the parent assigned, not the window's.
+    fn embedded_host_keeps_parent_bounds() {
+        let mtm = mtm();
+        let window = window(cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0));
+        let parent = HostView::new(mtm, cocoa_ui::Rect::new(50.0, 140.0, 340.0, 460.0));
+        let embedded = cocoa_ui::Rect::new(0.0, 0.0, 340.0, 460.0);
+        let controller = ViewController::new(mtm, HostView::new(mtm, embedded));
+        let host: &PlatformView = controller.host_view();
+        // UIKit containment sizing: the parent's bounds, not the window's.
+        parent.addSubview(host);
+        window.addSubview(&parent);
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        host.layoutIfNeeded();
+        let frame = view::frame(host);
+        assert_eq!(
+            frame.size, embedded.size,
+            "embedded host must keep the parent-assigned bounds"
+        );
+        // A reparent through the same window changes the frame's origin,
+        // never the proposal.
+        let other = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 200.0));
+        window.addSubview(&other);
+        host.removeFromSuperview();
+        other.addSubview(host);
+        host.setFrame(cocoa_ui::objc2_core_foundation::CGRect::from(
+            cocoa_ui::Rect::new(0.0, 0.0, 300.0, 220.0),
+        ));
+        window.layoutIfNeeded();
+        host.layoutIfNeeded();
+        assert_eq!(
+            view::frame(host).size,
+            cocoa_ui::geometry::Size::new(300.0, 220.0),
+            "reparented embedded host keeps the parent's last assignment"
+        );
+    }
+
+    /// The same controller type at a true window root — a `window_root`
+    /// host view — still fills its window through layout.
+    fn window_root_host_fills_window() {
+        let mtm = mtm();
+        let window = window(cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0));
+        let controller = ViewController::new(mtm, window_root(mtm));
+        window.setRootViewController(Some(&controller));
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let host: &PlatformView = controller.host_view();
+        assert_eq!(
+            view::frame(host).size,
+            cocoa_ui::geometry::Size::new(390.0, 844.0),
+            "window_root host must fill its window"
+        );
+    }
 }
