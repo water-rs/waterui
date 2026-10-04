@@ -941,14 +941,16 @@ impl NativeRenderer {
         });
 
         // The claim ends when encoding does: a bound root is the
-        // renderer's exclusive hold on the layer — it severs the view
-        // from UIKit's containment for the whole claim, and a renderer
-        // dropped with a root still bound invalidates the backing layer
-        // under the live view. Unbind inside the encode so the caller
-        // restores a layer nothing owns. `setLayer` is renderer state,
-        // not a layer-tree edit — nothing here may commit a
-        // `CATransaction` while the caller still holds the renderer
-        // `RefMut`, or a layout callback could re-enter the borrow.
+        // renderer's exclusive hold on the layer — on UIKit it severs
+        // the view from its parent's containment for the whole claim
+        // (AppKit `superview`/`superlayer` survive it — instrumented),
+        // and a renderer dropped with a root still bound invalidates
+        // the backing layer under the live view. Unbind inside the
+        // encode so the caller restores a layer nothing owns. `setLayer`
+        // is renderer state, not a layer-tree edit — nothing here may
+        // commit a `CATransaction` while the caller still holds the
+        // renderer `RefMut`, or a layout callback could re-enter the
+        // borrow.
         renderer.setLayer(None);
 
         // `CARenderer` encodes onto `queue` during `render()` but offers no
@@ -965,10 +967,12 @@ impl NativeRenderer {
 /// A scoped claim on `view`'s backing layer for one native frame.
 ///
 /// `CARenderer.layer` does not borrow the layer it is handed: while a
-/// live view's backing layer stays bound, the view reads detached —
+/// live `UIView`'s backing layer stays bound, the view reads detached —
 /// `superview`, `window`, and the parent's `subviews` all answer as if
 /// it were removed — and a renderer released with the root still bound
-/// invalidates the layer object under the still-live view. `RootBorrow`
+/// invalidates the layer object under the still-live view. On `AppKit`
+/// the claim leaves `superview` and `superlayer` in place; the restore
+/// below fires only when membership actually changed. `RootBorrow`
 /// snapshots the containment and geometry the claim owes the view, holds
 /// the layer for the claim's span, and on drop restores through the
 /// platform's public containment API — after the `RefMut` holding the
@@ -1066,7 +1070,26 @@ impl Drop for RootBorrow {
             let detached = crate::view::superview(&self.view).is_none_or(|current| {
                 !std::ptr::eq(&raw const *current, &raw const *attachment.parent)
             });
-            if detached {
+            // AppKit keeps `superview` through the claim but the renderer
+            // can still orphan the model layer. A lost `superlayer` is a
+            // wrong graph view writes alone cannot flag, so the view is
+            // re-seated through the same public containment path —
+            // `NSView` re-wires its own backing layer on (re)insertion,
+            // where a manual `CALayer` reparent is forbidden.
+            #[cfg(target_os = "macos")]
+            let reseat = {
+                let layer_orphaned = !detached && self.layer.superlayer().is_none();
+                if layer_orphaned {
+                    tracing::warn!(
+                        "native capture claim left the backing layer detached while the view kept its parent; re-seating the view so AppKit re-wires its layer"
+                    );
+                    self.view.removeFromSuperview();
+                }
+                detached || layer_orphaned
+            };
+            #[cfg(target_os = "ios")]
+            let reseat = detached;
+            if reseat {
                 #[cfg(target_os = "ios")]
                 attachment
                     .parent
