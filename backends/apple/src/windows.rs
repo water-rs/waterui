@@ -809,6 +809,7 @@ mod imp {
         _keepalive: KeepAlive,
     }
 
+    #[cfg(feature = "gpu_surface")]
     use objc2::rc::Weak;
 
     /// A scene connected before its declaration landed: `UIKit` asks for a
