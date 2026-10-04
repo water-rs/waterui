@@ -161,9 +161,11 @@ jobs:
   # of the workspace runs under `--all-features` with the root and the dylib
   # excluded, plus the same four exclusions the Linux `all-features` job in
   # test.yml carries for crates whose feature sets are mutually exclusive by
-  # construction (#276), and `skill_snippets`, whose `dev` feature would turn
-  # `dynamic_linking` back on and whose `compile-gate-tests` transcriptions
-  # must never run (see the Linux job). The two excluded crates with
+  # construction (#276), `filtrate` — whose `webgl` feature is a deliberate
+  # `compile_error!` off wasm32 (the wasm job lints it where it is legal) —
+  # and `skill_snippets`, whose `dev` feature would turn `dynamic_linking`
+  # back on and whose `compile-gate-tests` transcriptions must never run
+  # (see the Linux job). The two excluded crates with
   # platform-specific code in their feature shapes run afterwards in the
   # shapes they have.
   all-features:
@@ -208,6 +210,7 @@ jobs:
             --exclude waterui-ffi `
             --exclude waterui-browser-cef `
             --exclude skill_snippets `
+            --exclude filtrate `
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
@@ -248,6 +251,13 @@ jobs:
       # does not store.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      # cherenkov-oracle's glyph tests and cherenkov-gpu's bitmap/browser
+      # test targets `include_bytes!` fonts only `scenes/tools/generate.py`
+      # writes; `--all-targets` compiles them, so the tree must exist
+      # first. The corpus/perf readers (cherenkov-cpu tests,
+      # cherenkov-bench) are runtime readers — this job never runs tests.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here). Clippy, not check (#1441): the
       # pass used to re-check a graph the workspace lint already covers while
