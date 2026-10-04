@@ -1,0 +1,27 @@
+[package]
+name = "cherenkov-record"
+version = "0.0.0"
+description = "Render-target-neutral recording layer of the Cherenkov 2D engine"
+edition.workspace = true
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+serde = ["dep:serde", "color/serde", "kurbo/serde"]
+
+[dependencies]
+color = "0.3.3"
+kurbo = "0.13.1"
+nami-core = { version = "0.3.3", features = ["kurbo"] }
+serde = { version = "1", features = ["derive", "rc"], optional = true }
+thiserror = "2"
+web-time = "1"
+
+[dev-dependencies]
+nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+serde_json = "1"
+
+[lints]
+workspace = true

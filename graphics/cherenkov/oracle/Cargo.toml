@@ -1,0 +1,22 @@
+[package]
+name = "cherenkov-oracle"
+version = "0.0.0"
+description = "Reference rasterizer and error metrics for the Cherenkov cross-engine suite"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+cherenkov-scene = { path = "../scene" }
+half = "2"
+kurbo = "0.13"
+libm = "0.2"
+skrifa = "0.44"
+read-fonts = "0.41"
+png = "0.18"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }

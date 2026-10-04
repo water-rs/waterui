@@ -298,9 +298,10 @@ pub fn render_text_field_parts(
     );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_rect, field_interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_rect, field_interaction);
+            theme.draw_input_field_state_layer(&mut *draw, field_rect, field_interaction);
+        });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();
@@ -675,9 +676,10 @@ pub fn render_secure_field_parts(
     );
     field_interaction = local_interaction_state(field_interaction, hit_transform);
     {
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_rect, field_interaction);
-        theme.draw_input_field_state_layer(&mut draw, field_rect, field_interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_rect, field_interaction);
+            theme.draw_input_field_state_layer(&mut *draw, field_rect, field_interaction);
+        });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
     let value_identity = value_binding.identity();

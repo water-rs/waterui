@@ -285,10 +285,11 @@ pub fn render_date_picker_parts(
             .bind_interaction_target(interaction_key, hit_bounds, env);
     {
         let interaction = local_interaction_state(interaction, ctx.hit_transform);
-        let mut draw = ctx.draw_context();
-        theme.draw_input_field(&mut draw, field_bounds, interaction);
-        theme.draw_picker_indicator(&mut draw, field_bounds);
-        theme.draw_picker_state_layer(&mut draw, field_bounds, interaction);
+        ctx.draw_context(|draw| {
+            theme.draw_input_field(&mut *draw, field_bounds, interaction);
+            theme.draw_picker_indicator(&mut *draw, field_bounds);
+            theme.draw_picker_state_layer(&mut *draw, field_bounds, interaction);
+        });
     }
     let text_bounds = inset_rect(
         field_bounds,

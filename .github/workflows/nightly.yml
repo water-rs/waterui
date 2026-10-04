@@ -151,6 +151,10 @@ jobs:
       # `include_bytes!` the generated fonts — the repository stores none.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
+      # And the Cherenkov test targets the workspace pass compiles: their
+      # scene fonts and corpus are generated, not committed.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
       - name: Prepare coverage target dir
         run: |
           mkdir -p target/llvm-cov-target
@@ -202,7 +206,13 @@ jobs:
       # does not build on its own.
       # `--profile=ci-check` in the `=` form: cargo-hack forwards unknown flags
       # to cargo verbatim, and only `flag=value` survives its parser.
-      - run: cargo hack check --locked --each-feature --profile=ci-check
+      # Two features are excluded by construction, not because they are broken:
+      # cherenkov-bench's `skia-metal` is Apple-only (skia-bindings downloads a
+      # prebuilt Skia and `no-compile` panics on a Linux source fallback — its
+      # own leg in `cherenkov-corpus` lints it on macOS), and filtrate's `webgl`
+      # is an intentional `compile_error!` off wasm32 — the wasm32 job lints it
+      # where it is legal.
+      - run: cargo hack check --locked --each-feature --exclude-features "skia-metal webgl" --profile=ci-check
 
   # The Gradle half of the Android backend (#1429): the host library and the
   # test application, built once a day. It stays out of the per-change gate

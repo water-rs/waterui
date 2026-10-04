@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use cherenkov::{
     BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, Glyph as EngineGlyph, GlyphStyle, Group,
-    ImageColorSpace, ImageData, ImageId, ImagePattern, Interpolation, LinearGradient, Paint,
-    RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
+    ImageColorSpace, ImageData, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient,
+    Paint, RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
 use waterui_graphics::{HeldResources, RecordingResources};
 
@@ -668,18 +668,20 @@ impl Recording {
     /// # Panics
     /// Panics when a layer push has no matching pop — the flush keeps the
     /// invariant on every code path it accepts.
-    pub(crate) fn to_content(&self, resources: &SceneResources) -> (Content, HeldResources) {
+    pub(crate) fn record_on(
+        &self,
+        recorder: &mut Recorder,
+        resources: &SceneResources,
+    ) -> HeldResources {
         let mut names = resources.inner.recording();
-        let content = Content::record(|recorder| {
-            let mut index = 0;
-            lower(&self.ops, &mut index, recorder, resources, &mut names);
-            assert_eq!(
-                index,
-                self.ops.len(),
-                "hydrolysis recording: layer pop without a matching push"
-            );
-        });
-        (content, names.finish())
+        let mut index = 0;
+        lower(&self.ops, &mut index, recorder, resources, &mut names);
+        assert_eq!(
+            index,
+            self.ops.len(),
+            "hydrolysis recording: layer pop without a matching push"
+        );
+        names.finish()
     }
 }
 
@@ -1020,50 +1022,18 @@ fn alpha_scaled_paint(paint: Paint, alpha: f32) -> Paint {
 
 /// The drawing facade widget chrome records through.
 ///
-/// `WidgetTheme` draws take `&mut cherenkov::Recorder`, so the facade *is*
-/// one — call sites pass `&mut draw` and deref coercion hands the theme the
-/// recorder directly. When the facade drops, the recorded ops become one
-/// [`cherenkov::Picture`] appended to the owning [`Recording`] under the
-/// call site's root transform, keeping theme-drawn chrome in the exact op
-/// stream position the widget emitted it.
-pub struct SceneDrawContext<'a> {
-    scene: &'a mut Recording,
-    recorder: Recorder,
-    transform: Affine,
-}
-
-impl<'a> SceneDrawContext<'a> {
-    /// The facade for drawing widget chrome rooted at `transform` in scene
-    /// space.
-    pub(crate) fn with_root_transform(scene: &'a mut Recording, transform: Affine) -> Self {
-        Self {
-            scene,
-            recorder: Recorder::new(),
-            transform,
-        }
-    }
-}
-
-impl core::ops::Deref for SceneDrawContext<'_> {
-    type Target = Recorder;
-
-    fn deref(&self) -> &Self::Target {
-        &self.recorder
-    }
-}
-
-impl core::ops::DerefMut for SceneDrawContext<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.recorder
-    }
-}
-
-impl Drop for SceneDrawContext<'_> {
-    fn drop(&mut self) {
-        let recorder = core::mem::replace(&mut self.recorder, Recorder::new());
-        let picture = recorder.finish().into_picture();
+impl Recording {
+    /// Records `body` into a picture drawn under `transform` — how detached
+    /// chrome (context menus, caret overlays, navigation bars) splices a
+    /// sealed subtree into the scene. A [`Recorder`] exists only inside a
+    /// [`Content::record`] closure under the engine's target contract, so
+    /// `body` runs there and the finished content freezes into the picture.
+    /// Chrome does not bind to a layer's layout size, so the recording reads
+    /// a fresh [`LayoutSize`].
+    pub(crate) fn record_picture(&mut self, transform: Affine, body: impl FnOnce(&mut Recorder)) {
+        let picture = Content::record(&LayoutSize::new(), body).into_picture();
         if !picture.display_list().is_empty() {
-            self.scene.draw_picture(self.transform, picture);
+            self.draw_picture(transform, picture);
         }
     }
 }

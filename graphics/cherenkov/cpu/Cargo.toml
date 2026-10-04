@@ -1,0 +1,28 @@
+[package]
+name = "cherenkov-cpu"
+version = "0.0.0"
+description = "CPU raster backend for the Cherenkov 2D rendering engine"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+cherenkov = { path = ".." }
+filtrate-core = { path = "../../filtrate/core" }
+kurbo = "0.13"
+skrifa = "0.44"
+png = "0.18"
+half = "2"
+rayon = "1"
+rustc-hash = "2"
+tracing = "0.1"
+
+[dev-dependencies]
+cherenkov = { path = "..", features = ["testing"] }
+cherenkov-oracle = { path = "../oracle" }
+filtrate = { path = "../../filtrate" }
+nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+
+[lints]
+workspace = true

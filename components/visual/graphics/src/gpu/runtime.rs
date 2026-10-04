@@ -1068,6 +1068,7 @@ fn target_size(target: &wgpu::Texture) -> OffscreenSize {
 /// — when the runtime's context is rebuilt after device loss.
 pub struct GpuContentRenderer {
     host: LayerHost,
+    producer: cherenkov::GpuProducer<Gpu>,
 }
 
 impl fmt::Debug for GpuContentRenderer {
@@ -1114,10 +1115,11 @@ impl GpuContentRenderer {
 
     fn install(host: LayerHost, content: GpuContentBox, size: OffscreenSize) -> Self {
         let pixels = (size.width(), size.height());
+        let producer = host.engine.gpu_producer(content);
         host.surface.update(|tx| {
-            tx[host.surface.root()].content(host.engine.gpu_content(pixels, content));
+            tx[host.surface.root()].content(producer.at(pixels));
         });
-        Self { host }
+        Self { host, producer }
     }
 
     /// The context generation this renderer was built under.
@@ -1134,7 +1136,8 @@ impl GpuContentRenderer {
     fn resize(&self, size: OffscreenSize) {
         if self.host.resize(size) {
             self.host.surface.update(|tx| {
-                tx[self.host.surface.root()].gpu_content_size((size.width(), size.height()));
+                tx[self.host.surface.root()]
+                    .content(self.producer.at((size.width(), size.height())));
             });
         }
     }
@@ -1208,6 +1211,8 @@ impl GpuContentRenderer {
 pub struct ExternalFrameRenderer {
     host: LayerHost,
     layer: Layer,
+    producer: cherenkov::GpuProducer<Gpu>,
+    sink: cherenkov::FrameSink<Gpu>,
     frames: FrameReceiver,
     /// The plane size of the installed frame, in pixels.
     frame_size: Option<(u32, u32)>,
@@ -1265,6 +1270,7 @@ impl ExternalFrameRenderer {
 
     fn install(host: LayerHost, stream: &ExternalFrameStream, redraw: RedrawHandle) -> Self {
         let layer = host.surface.layer();
+        let (producer, sink) = host.engine.frame_producer();
         host.surface.update(|tx| {
             tx[host.surface.root()].push(&layer);
         });
@@ -1272,6 +1278,8 @@ impl ExternalFrameRenderer {
         Self {
             host,
             layer,
+            producer,
+            sink,
             frames,
             frame_size: None,
         }
@@ -1296,15 +1304,17 @@ impl ExternalFrameRenderer {
             return;
         }
         let surface = &self.host.surface;
-        let engine = &self.host.engine;
         let layer = &self.layer;
         let mut frame_size = self.frame_size;
+        if let Some(frame) = frame {
+            frame_size = Some(plane_size(&frame));
+            self.sink.submit(frame);
+        }
         surface.update(|tx| {
-            if let Some(frame) = frame {
-                frame_size = Some(plane_size(&frame));
-                tx[layer].content(engine.external_frame(frame));
-            }
             if let Some((width, height)) = frame_size {
+                if frame_size != self.frame_size {
+                    tx[layer].content(self.producer.at((width, height)));
+                }
                 tx[layer].transform(Affine::scale_non_uniform(
                     f64::from(size.width()) / f64::from(width),
                     f64::from(size.height()) / f64::from(height),

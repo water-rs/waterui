@@ -36,6 +36,22 @@ members = [
     # The Android debug app's Rust half is a package nested inside the
     # backend's directory, so it joins the workspace explicitly.
     "backends/hydrolysis/android/test-app/rust",
+    # The engine family under `graphics/` (#1449): the `cherenkov` crates in
+    # `graphics/cherenkov/` and the `filtrate` family in `graphics/filtrate/`.
+    # The stand-alone apps under `graphics/cherenkov/gpu/examples/` and the
+    # iOS bench project under `graphics/cherenkov/bench/ios/` carry their own
+    # manifests and are not members, matching upstream's `exclude`.
+    "graphics/cherenkov",
+    "graphics/cherenkov/record",
+    "graphics/cherenkov/shader",
+    "graphics/cherenkov/gpu",
+    "graphics/cherenkov/cpu",
+    "graphics/cherenkov/scene",
+    "graphics/cherenkov/oracle",
+    "graphics/cherenkov/bench",
+    "graphics/filtrate",
+    "graphics/filtrate/core",
+    "graphics/filtrate/derive",
     "tests/layout-twins/waterui",
     "components/icon/*",
 ]
@@ -184,12 +200,12 @@ smallvec = "1.16"
 nami = "=0.11.1"
 nami-core = "0.3.3"
 # The 2D engine WaterUI's self-drawn content records and renders through
-# (water-rs/hydrolysis#205): recording, resource registration, the layer tree
-# and GPU content. None of its crates are published, so the requirement is
-# satisfied by the `[patch.crates-io]` git pin below.
-cherenkov = "0.0.0"
-cherenkov-cpu = "0.0.0"
-cherenkov-gpu = "0.0.0"
+# (water-rs/hydrolysis#205, water-rs/waterui#1449): recording, resource
+# registration, the layer tree and GPU content. The whole `cherenkov` family
+# lives in this repository under `graphics/` — path members, not crates.io.
+cherenkov = { version = "0.0.0", path = "graphics/cherenkov" }
+cherenkov-cpu = { version = "0.0.0", path = "graphics/cherenkov/cpu" }
+cherenkov-gpu = { version = "0.0.0", path = "graphics/cherenkov/gpu" }
 pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -250,9 +266,13 @@ waterkit-codec = { version = "0.1.4", default-features = false }
 waterkit-video = { version = "0.1.4", features = ["streaming"] }
 waterkit-build = "0.1.4"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
-filtrate = { version = "0.2.0", default-features = false }
-filtrate-core = "0.2.0"
-filtrate-derive = "0.1.0"
+# The `filtrate` family — the filter library `.filter(F)`/`.effect(E)` and
+# Cherenkov share — lives in-tree under `graphics/filtrate/` (#1449). Every
+# filtrate in the graph must come from this same source or a filter type
+# built on one side is a different type on the other.
+filtrate = { version = "0.2.1", path = "graphics/filtrate", default-features = false }
+filtrate-core = { version = "0.2.0", path = "graphics/filtrate/core" }
+filtrate-derive = { version = "0.1.0", path = "graphics/filtrate/derive" }
 waterui-barcode = "0.3.0"
 waterui-particle = "0.2.0"
 waterui-chart = "0.3.0"
@@ -604,19 +624,37 @@ block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae8
 nami = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 nami-core = { git = "https://github.com/water-rs/nami", rev = "f1db5017f5d64cb45b9b304c74ff420377258476" }
 
-# The coordinated Cherenkov cutover (water-rs/hydrolysis#205): recording,
-# resource ownership, layers and GPU content move onto the cherenkov
-# workspace, which publishes nothing yet — this rev is the engine the plan
-# fixes. Its `filtrate`/`filtrate-core`/`filtrate-derive` members are the
-# filter library `.filter(F)`/`.effect(E)` and the engine itself agree on:
-# every filtrate in the graph must come from this same revision or a filter
-# type built on one side is a different type on the other.
-cherenkov = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-cherenkov-cpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-cherenkov-gpu = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-filtrate = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-filtrate-core = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
-filtrate-derive = { git = "https://github.com/water-rs/cherenkov", rev = "2cae05177f4ae0252ae225ab9796a016037e8076" }
+# The `cherenkov`/`filtrate` families live in this repository under
+# `graphics/` (water-rs/waterui#1449). Components pinned from sibling
+# repositories declare them as crates.io requirements — `cherenkov` is
+# unpublished and `filtrate`'s published release is an older API — so the
+# requirements resolve to the in-tree sources instead. Every filtrate in the
+# graph must come from one source: a filter type built on the published
+# crate is a different type from one built in-tree.
+cherenkov = { path = "graphics/cherenkov" }
+cherenkov-cpu = { path = "graphics/cherenkov/cpu" }
+cherenkov-gpu = { path = "graphics/cherenkov/gpu" }
+filtrate = { path = "graphics/filtrate" }
+filtrate-core = { path = "graphics/filtrate/core" }
+filtrate-derive = { path = "graphics/filtrate/derive" }
+
+
+# The suite's vello baseline is the fork WaterUI and Hydrolysis actually
+# ship, not crates.io. `vello` carries our Mali Vulkan device-loss fix
+# (linebender/vello#1817, still open upstream) plus the glifo canonical-location
+# hint-cache fix applied to vello_encoding's GlyphCache (branch
+# `glifo-canonical-location-classic`, on the Mali rev), and this rev adds the
+# bump-buffer overflow re-render on top of what cherenkov pinned (7f5e1ca5);
+# it is the rev the rest of the WaterUI graph already resolves. The
+# sparse-strip crates and glifo sit on the same canonical-location fix at
+# `glifo-canonical-location` — without it, an explicit all-default location
+# (`[0, 0, …]`) never matched a stored hint entry and every glyph run repaid
+# a HintingInstance reconfigure. `cherenkov-bench` measures against these.
+vello = { git = "https://github.com/lexoliu/vello", rev = "76292095f408cf04b901023c2053f8d424652f06" }
+vello_hybrid = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+vello_common = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+vello_sparse_shaders = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
+glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6f3708e621056740f49b" }
 
 # wgpu 30.0.1's Metal backend reads the address of the kCGColorSpace* globals
 # instead of their value and crashes in CGColorSpaceCreateWithName whenever a
@@ -637,15 +675,15 @@ wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 
-# TEMP: local path pins of the migrated component repositories for the
-# nami-snapshot migration — converted to git revs of each repo's
-# devin/chore/nami-snapshot head before the branch is pushed.
+# The migrated component repositories ride the nami-snapshot wave
+# (`Signal::get` -> `snapshot`, water-rs/nami#26); each entry pins the
+# repo's current dev head, which this graph is consumed alongside.
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "491ada1c7db31bdab657135338a5bd670adbe61f" }
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "83f004bb1745708cbe9a72395756677c706f1020" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "add3782ece2c48db44f28873dd6e2ce63e50cf9f" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "4f95775bcef3022e6d5a52c2aa09aee02afb628f" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "4266f453bde34be2fb159694a41cb926cc65e9da" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "b07a8e7a950a4590c475edb65dc7abd967f7d820" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "87080fc2e06628eb990af9fdbfbc3b8a28af5acc" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
@@ -669,3 +707,9 @@ waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev =
 # 0.1.2 registry release; this is the rev waterkit pins itself.
 shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "878bfc0284b32ee18c1a50860adf9ba489a4d5ab" }
+# `hydrolysis-m3` declares `cherenkov` as a direct git dependency on the
+# cherenkov repository's old import rev, which a crates-io patch cannot
+# reach. Redirect that source to the in-tree package too, so the engine in
+# this graph is still a single source.
+[patch."https://github.com/water-rs/cherenkov"]
+cherenkov = { path = "graphics/cherenkov" }

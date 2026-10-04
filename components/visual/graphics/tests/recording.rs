@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use cherenkov::kurbo::{Affine, Rect, Shape};
 use cherenkov::{
-    ContentChange, Draw, FontSource, Glyph, GlyphRun, GlyphStyle, ImageColorSpace, ImageData,
-    Recorder, Rgba8, Sampling, StaticRecorder, WorkingColor,
+    Content, ContentChange, Draw, FontSource, Glyph, GlyphRun, GlyphStyle, ImageColorSpace,
+    ImageData, LayoutSize, Recorder, Rgba8, Sampling, StaticRecorder, WorkingColor,
 };
 use nami::{Binding, SignalExt};
 use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
@@ -29,10 +29,8 @@ fn srgb(red: f32, green: f32, blue: f32) -> WorkingColor {
     cherenkov::Color::<cherenkov::Srgb>::new([red, green, blue, 1.0]).into()
 }
 
-fn filled_square(color: WorkingColor) -> Recorder {
-    let mut recorder = Recorder::new();
+fn filled_square(recorder: &mut Recorder, color: WorkingColor) {
     recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), color);
-    recorder
 }
 
 fn pixel(bitmap: &RgbaBitmap, x: usize, y: usize) -> [u8; 4] {
@@ -47,13 +45,14 @@ fn pixel(bitmap: &RgbaBitmap, x: usize, y: usize) -> [u8; 4] {
 
 #[test]
 fn a_fill_is_one_command_in_the_recorded_content() {
-    let mut recorder = filled_square(srgb(1.0, 0.0, 0.0));
-    recorder.stroke(
-        Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
-        cherenkov::Stroke::new(1.0),
-        srgb(0.0, 0.0, 1.0),
-    );
-    let content = recorder.finish();
+    let content = Content::record(&LayoutSize::new(), |recorder| {
+        filled_square(recorder, srgb(1.0, 0.0, 0.0));
+        recorder.stroke(
+            Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
+            cherenkov::Stroke::new(1.0),
+            srgb(0.0, 0.0, 1.0),
+        );
+    });
     assert_eq!(content.len(), 2);
 }
 
@@ -314,9 +313,9 @@ fn an_image_first_drawn_on_the_third_frame_reaches_the_pixels() {
 fn a_signal_operand_updates_the_content_without_recording_again() {
     let color = Binding::container(srgb(1.0, 0.0, 0.0));
     let paint = color.computed();
-    let mut recorder = Recorder::new();
-    recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), paint);
-    let mut content = recorder.finish();
+    let mut content = Content::record(&LayoutSize::new(), |recorder| {
+        recorder.fill(Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05), paint);
+    });
 
     let Some(ContentChange::Replace(_)) = content.take_change() else {
         panic!("a finished recording reports its initial replacement");
