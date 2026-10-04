@@ -73,7 +73,7 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!(
             "capture",
-            a_capture_claim_restores_containment_and_survives_release
+            a_capture_preserves_containment_and_survives_release
         ),
         case!(
             "capture",
@@ -687,15 +687,15 @@ fn the_wrapper_forwards_title_level_size_and_content() {
     window.close();
 }
 
-/// The `CARenderer` root claim is scoped to the frame it encodes: two
-/// cached `ViewCapture`s bound to nested views run child→parent claim
-/// cycles, and after each the views report the same superview, sibling
-/// order, superlayer, frame, and hidden flag as before — and they keep
-/// answering them after both cached renderers are released on a later
-/// main-queue turn. This is the nested-claim shape the production
-/// ownership fix exists for.
+/// The native raster pass reads the live layer tree without claiming it:
+/// two cached `ViewCapture`s bound to nested views run child→parent
+/// capture cycles, and after each the views report the same superview,
+/// sibling order, superlayer, frame, and hidden flag as before — and
+/// they keep answering them after both cached raster frames are released
+/// on a later main-queue turn. This is the nested-capture shape the
+/// containment contract exists for.
 #[allow(clippy::too_many_lines)] // The nested fixture plus the containment contract it checks.
-fn a_capture_claim_restores_containment_and_survives_release() {
+fn a_capture_preserves_containment_and_survives_release() {
     use std::rc::Rc;
 
     use cocoa_ui::capture::ViewCapture;
@@ -782,13 +782,13 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     let child_capture = Rc::new(ViewCapture::new(mtm, child.clone(), |_| None));
     child_capture.set_on_redraw(|| {});
 
-    // Everything the claim owes the tree: superview and ordered
-    // siblings, the model layer's own superlayer, geometry, and the
-    // full transform — checked after every cycle and again after both
-    // cached renderers are released.
+    // Everything the tree must keep through a capture: superview and
+    // ordered siblings, the model layer's own superlayer, geometry, and
+    // the full transform — checked after every cycle and again after
+    // both cached raster frames are released.
     let check = || {
         let restored_parent = cocoa_ui::view::superview(&content)
-            .expect("the claim left the view detached from its parent");
+            .expect("the capture left the view detached from its parent");
         assert!(std::ptr::eq(
             &raw const *restored_parent,
             &raw const *parent
@@ -804,7 +804,7 @@ fn a_capture_claim_restores_containment_and_survives_release() {
             &raw const *sibling
         ));
         let child_parent =
-            cocoa_ui::view::superview(&child).expect("the nested claim left the child detached");
+            cocoa_ui::view::superview(&child).expect("the nested capture left the child detached");
         assert!(std::ptr::eq(&raw const *child_parent, &raw const *content));
         let content_order = content.subviews();
         assert_eq!(content_order.count(), 2);
@@ -826,12 +826,12 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         assert_eq!(child.frame(), child_frame);
         assert!(
             (content.frameRotation() - 30.0).abs() < 1e-6,
-            "the claim must preserve the view's rotation"
+            "the capture must preserve the view's rotation"
         );
         let actual_transform = content.layer().expect("a wanted layer exists").transform();
         assert!(
             actual_transform.equal_to_transform(layer_transform),
-            "the claim must preserve the layer's full transform: {actual_transform:?} vs {layer_transform:?}"
+            "the capture must preserve the layer's full transform: {actual_transform:?} vs {layer_transform:?}"
         );
         assert!(
             content
@@ -848,26 +848,26 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         assert!(!content.isHidden());
     };
 
-    // Three nested cycles: child claim first, then the enclosing content
-    // claim — each against the same cached renderers, each proven by
-    // its own completed, successful fence.
+    // Three nested cycles: child capture first, then the enclosing
+    // content capture — each against the same cached raster frames, each
+    // proven by its own completed, successful fence.
     for _cycle in 0..3 {
         let (flag, complete) = crate::harness::fence_flag();
-        child_capture.capture(&target, complete);
+        child_capture.capture(&target, 0, complete);
         crate::harness::await_fence(&flag, "child");
         let (flag, complete) = crate::harness::fence_flag();
-        content_capture.capture(&target, complete);
+        content_capture.capture(&target, 0, complete);
         crate::harness::await_fence(&flag, "content");
         check();
     }
 
-    // A layer claimed out of a window's render context encodes an empty
+    // A tree outside a window's render context may rasterize an empty
     // frame on a host without an app compositor, so pixel fidelity is
     // proven by the detached arm below; this arm proves the capture
     // completed and the whole containment contract survived it.
 
-    // Releasing the cached renderers must not invalidate the layers
-    // they claimed: on the next real main-queue turn both trees answer,
+    // Releasing the cached raster frames must not invalidate the layers
+    // they drew: on the next real main-queue turn both trees answer,
     // still attached, and tear down normally.
     content_capture.shutdown();
     child_capture.shutdown();
@@ -882,9 +882,9 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     window.close();
 }
 
-/// Capturing a view with no superview is supported — the claim restores
-/// nothing, the frame still renders real content, and teardown after
-/// the cached renderer's release stays clean.
+/// Capturing a view with no superview is supported — no containment is
+/// disturbed, the frame still renders real content, and teardown after
+/// the cached raster frame's release stays clean.
 fn a_detached_capture_renders_and_teardown_stays_clean() {
     use std::rc::Rc;
 
@@ -917,8 +917,8 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
 
     // A parentless view gets no window update cycle, so a brief window
     // residency rasterizes the label's text into its backing layer
-    // first — the renderer composites `layer.contents`, which only a
-    // real display pass fills — before the claim detaches it again.
+    // first — the capture composites `layer.contents`, which only a
+    // real display pass fills — before the view detaches again.
     {
         let window = Window::new(
             mtm,
@@ -942,7 +942,7 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
     capture.set_on_redraw(|| {});
     let (flag, complete) = crate::harness::fence_flag();
-    capture.capture(&target, complete);
+    capture.capture(&target, 0, complete);
     assert!(
         cocoa_ui::view::superview(&content).is_none(),
         "a detached capture must not invent a parent"

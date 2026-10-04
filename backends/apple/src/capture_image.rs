@@ -264,8 +264,9 @@ fn rgba_target(
 /// `view`'s subtree rendered into an owned `RGBA8` raster at `scale`
 /// pixels per point — `ceil(bounds * scale)` physical pixels.
 ///
-/// The compositor's native pass (`CARenderer`) and output pass
-/// (`CapturableSurface` external rendering) write the texture; one
+/// The compositor's native raster pass (`CALayer.renderInContext` into
+/// shared-buffer memory) and output pass (`CapturableSurface` external
+/// rendering) write the texture; one
 /// `getBytes` readback follows. A deferred capture — a GPU surface that
 /// had no current content, or a context lost mid-capture — is honored by
 /// waiting on the surfaces' own redraw wake and recapturing; the future
@@ -349,13 +350,15 @@ pub async fn capture_rgba(
         // The completion is `Send` — it parks on Metal's own queue before
         // hopping to the main queue — so the slots ride `MainThreadBound`.
         let slot = dispatch2::MainThreadBound::new((completion.clone(), landed.clone()), mtm);
-        guard.capture().capture(&target, move |ok| {
-            let mtm = cocoa_ui::MainThreadMarker::new()
-                .expect("the capture completion runs on the main thread");
-            let (completion, landed) = slot.get(mtm);
-            *landed.borrow_mut() = ok;
-            Signal::fire(completion);
-        });
+        guard
+            .capture()
+            .capture(&target, context.generation(), move |ok| {
+                let mtm = cocoa_ui::MainThreadMarker::new()
+                    .expect("the capture completion runs on the main thread");
+                let (completion, landed) = slot.get(mtm);
+                *landed.borrow_mut() = ok;
+                Signal::fire(completion);
+            });
         Signal::wait(&completion).await;
         // A `true` completion from a context that lost or was superseded
         // mid-flight settles stale pixels — never the current target.

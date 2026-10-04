@@ -1440,8 +1440,8 @@ const fn state_format(state: &SurfaceState) -> MTLPixelFormat {
 /// Shows or hides the presentation layer — `setPresentationHidden`.
 ///
 /// Called only inside `ViewCapture`'s outer disabled-actions transaction,
-/// which owns the one commit covering suppression open, the `CARenderer`
-/// encode and suppression close: this setter must not open, commit or
+/// which owns the one commit covering suppression open, the native
+/// raster draw and suppression close: this setter must not open, commit or
 /// flush a transaction of its own — the suppressed state can then never
 /// reach the on-screen tree.
 fn set_presentation_hidden(view: &Retained<SurfaceView>, hidden: bool) {

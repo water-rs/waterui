@@ -8,10 +8,10 @@ using namespace metal;
 // Every texture in the capture pipeline is *top-down*: texel row 0 is the
 // visually topmost row. That is the convention `CAMetalLayer` presents, the
 // convention wgpu renders in, and therefore the convention the filter and
-// view-effect chains consume. the capture side establishes it on the
-// `CARenderer` side by mirroring the captured layer tree vertically (see
-// `captureLayerTransform`), because `CARenderer` otherwise writes its
-// destination bottom-up.
+// view-effect chains consume. The capture side establishes it on the
+// raster side: the `CGContext` draw maps layer space onto the pixel
+// destination through its CTM — scaling plus the platform's orientation
+// normalization — so the buffer lands top-down.
 //
 // Both inputs are therefore already top-down when they reach this shader, so
 // the pass is a plain identity copy. Metal puts NDC y = +1 at texel row 0 and

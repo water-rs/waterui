@@ -2,21 +2,26 @@
 //!
 //! [`ViewCapture`] renders a view subtree — including any GPU surfaces
 //! nested inside it — into a caller-owned texture for the filter and
-//! view-effect pipelines: the layer tree goes through `CARenderer`, each
-//! [`CapturableSurface`] gets its own private texture, and a final pass on a
-//! shared serial queue composites them under the captured overlay.
+//! view-effect pipelines: the layer tree is rasterized synchronously by
+//! `CALayer.renderInContext` into a `CGContext` whose backing store is a
+//! shared `MTLBuffer`, a Metal texture view over that buffer lets the
+//! compositor sample the native pixels with no CPU→GPU upload, each
+//! [`CapturableSurface`] gets its own private texture, and a final pass on
+//! a shared serial queue composites them under the captured overlay. The
+//! raster itself is still CPU work — sharing storage makes the upload
+//! free, not the drawing.
 //!
 //! # Orientation and scale contract
 //!
-//! The destination texture is top-down and sized in device pixels.
-//! `CARenderer` draws bottom-up and takes its destination rect in pixels, so
-//! [`with_capture_transform`] scales the layer tree for the duration of the
-//! frame — without mirroring: the kit's views are already flipped, and a
-//! second inversion would count the flip twice.
+//! The destination texture is top-down and sized in device pixels: texel
+//! row 0 is the visually topmost row. The context's CTM maps the layer's
+//! point space onto the pixel destination — scaling plus the
+//! platform's orientation normalization — so the live layer transform
+//! is never touched.
 //!
 //! # Safety
 //!
-//! The `unsafe` here calls `CARenderer`/`CATransaction`/`MTLCommandBuffer`
+//! The `unsafe` here calls `CGContext`/`CATransaction`/`MTLCommandBuffer`
 //! entry points on objects this module owns or the caller has lent it, on
 //! the threads the module contract names: every `ViewCapture` method and
 //! every [`CapturableSurface`] call is main-thread only; `Compositor`
@@ -25,7 +30,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -34,16 +39,21 @@ use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBou
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2_core_foundation::CFRetained;
+use objc2_core_graphics::{
+    CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
+};
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLBlendFactor, MTLBlendOperation, MTLClearColor, MTLCommandBuffer, MTLCommandBufferStatus,
-    MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary, MTLLoadAction, MTLOrigin,
-    MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor,
-    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource, MTLSamplerAddressMode,
-    MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerState, MTLScissorRect, MTLSize,
-    MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
+    MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
+    MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLibrary,
+    MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResource,
+    MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor, MTLSamplerMinMagFilter,
+    MTLSamplerState, MTLScissorRect, MTLSize, MTLStorageMode, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
 };
-use objc2_quartz_core::{CALayer, CARenderer, CATransaction, CATransform3D};
+use objc2_quartz_core::{CALayer, CATransaction};
 
 use crate::PlatformView;
 use crate::core_animation::flush_transaction;
@@ -64,11 +74,11 @@ struct QueueSend<T>(
 );
 
 // SAFETY: the value is moved to the serial queue once and accessed nowhere
-// else — exactly the confinement `CARenderer` work needs.
+// else — the confinement capture work needs.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T> Send for QueueSend<T> {
     // SAFETY: the value is moved to the serial queue once and accessed nowhere
-    // else — exactly the confinement `CARenderer` work needs.
+    // else — the confinement capture work needs.
 }
 
 impl<T> QueueSend<T> {
@@ -108,99 +118,6 @@ impl CaptureGeometry {
             scale_x: width as f64 / bounds.size.width,
             scale_y: height as f64 / bounds.size.height,
         }
-    }
-}
-
-/// Runs `body` with `layer`'s transform scaled so its point space lands on
-/// the pixel destination, restored before returning.
-///
-/// The scaled position folds into the transform — not `layer.position` — so
-/// the only property touched is one the host's layout never writes.
-///
-/// The transform is a model-layer mutation only: it must run inside the
-/// caller's one outer disabled-actions transaction that covers suppression
-/// open, the `CARenderer` encode and suppression close. This function does
-/// no transaction work of its own — committing or flushing here would push
-/// the suppressed, transformed tree to the render server mid-capture and
-/// flicker the on-screen tree.
-pub fn with_capture_transform<T>(
-    layer: &CALayer,
-    geometry: CaptureGeometry,
-    body: impl FnOnce() -> T,
-) -> T {
-    let saved_transform = layer.transform();
-    let saved_position = layer.position();
-
-    layer.setTransform(saved_transform.concat(
-        CATransform3D::new_scale(geometry.scale_x, geometry.scale_y, 1.0).concat(
-            CATransform3D::new_translation(
-                saved_position.x * (geometry.scale_x - 1.0),
-                saved_position.y * (geometry.scale_y - 1.0),
-                0.0,
-            ),
-        ),
-    ));
-
-    let restore = TransformRestore {
-        layer,
-        transform: saved_transform,
-    };
-    let result = body();
-    drop(restore);
-    result
-}
-
-/// Restores a layer's transform when the capture frame ends.
-struct TransformRestore<'a> {
-    layer: &'a CALayer,
-    transform: CATransform3D,
-}
-
-impl Drop for TransformRestore<'_> {
-    fn drop(&mut self) {
-        // See `with_capture_transform`: the restore is a model-layer
-        // mutation inside the caller's outer transaction — no transaction,
-        // commit or flush of its own.
-        self.layer.setTransform(self.transform);
-    }
-}
-
-/// Builds the `CARenderer` creation options: the destination's colour space
-/// and the Metal command queue the renderer shares.
-///
-/// `kCARendererColorSpace` must carry the live `CGColorSpace` object —
-/// `CARenderer` type-checks its option values, and a plist-serialized
-/// `CFData` makes the render crash at first use.
-fn car_renderer_options(
-    color_space: &objc2_core_foundation::CFRetained<objc2_core_graphics::CGColorSpace>,
-    queue: &ProtocolObject<dyn MTLCommandQueue>,
-) -> Retained<objc2_foundation::NSDictionary<objc2::runtime::AnyObject, objc2::runtime::AnyObject>>
-{
-    // SAFETY: `CARenderer`'s option keys are system statics.
-    let keys: [&NSString; 2] = unsafe {
-        [
-            objc2_quartz_core::kCARendererColorSpace,
-            objc2_quartz_core::kCARendererMetalCommandQueue,
-        ]
-    };
-    // SAFETY: `CGColorSpace` is toll-free bridged to NSObject and every
-    // Metal object descends NSObject; CARenderer expects exactly these
-    // key/value pairs.
-    let color_space_obj: &objc2_foundation::NSObject = unsafe {
-        objc2_core_foundation::CFRetained::as_ptr(color_space)
-            .cast::<objc2_foundation::NSObject>()
-            .as_ref()
-    };
-    // SAFETY: see above.
-    let queue_obj: &objc2_foundation::NSObject =
-        unsafe { &*std::ptr::from_ref(queue).cast::<objc2_foundation::NSObject>() };
-    let objects: [&objc2_foundation::NSObject; 2] = [color_space_obj, queue_obj];
-    let options = objc2_foundation::NSDictionary::from_slices(&keys, &objects);
-    // SAFETY: `NSDictionary`'s generic parameters are markers — the
-    // retained elements are the same objects either way.
-    unsafe {
-        Retained::from_raw(Retained::into_raw(options).cast())
-            .expect("a fresh dictionary is non-null")
     }
 }
 
@@ -811,337 +728,293 @@ impl CompositorGuard<'_> {
     }
 }
 
-/// The `CARenderer` half of a capture, confined to the main thread: one
-/// command queue and one renderer per (device, pixel format) pair.
-#[derive(Debug, Default)]
-struct NativeRenderer {
-    command_queue: Option<Retained<ProtocolObject<dyn MTLCommandQueue>>>,
-    pixel_format: Option<MTLPixelFormat>,
-    renderer: Option<Retained<CARenderer>>,
-    overlay: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
+/// One native raster destination: a shared `MTLBuffer` the CPU and GPU
+/// both address, the `CGContext` the layer tree draws into, and the
+/// Metal texture view over the same storage the compositor samples — so
+/// native pixels reach the composite pass with no upload.
+///
+/// A frame is bound to its exact generation and geometry: the caller's
+/// context-generation token, the capture device, the destination pixel
+/// format, and the pixel size. Any change to those rebuilds it, because
+/// the buffer stride, the context's bitmap layout, and the texture view
+/// are baked at creation — and because storage issued under one context
+/// generation is invalid for another even when the device object is
+/// identical.
+#[derive(Debug)]
+struct NativeRasterFrame {
+    /// The capture device — retained so the buffer and texture outlive a
+    /// teardown; device identity alone is NOT the generation key.
+    _device: Retained<ProtocolObject<dyn MTLDevice>>,
+    /// The shared pixel storage the context draws into — owned here so
+    /// the context's target memory stays valid for the frame's lifetime.
+    _buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
+    /// The texture view over the buffer the compositor samples.
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
+    /// The raster context drawing into the buffer.
+    context: CFRetained<CGContext>,
+    /// The caller's context-generation token this frame was issued for.
+    generation: u64,
+    /// Destination width in pixels.
+    pixel_width: usize,
+    /// Destination height in pixels.
+    pixel_height: usize,
+    /// The destination's pixel format.
+    pixel_format: MTLPixelFormat,
 }
 
-impl NativeRenderer {
-    /// The private overlay texture for `target` — reused when size and
-    /// format match.
+/// The (bits per component, `CGBitmapInfo`, bytes per pixel) a capture
+/// pixel format maps to — the context and the texture view must agree on
+/// one layout or the sampled pixels are garbage.
+fn raster_layout(pixel_format: MTLPixelFormat) -> (usize, u32, usize) {
+    match pixel_format {
+        MTLPixelFormat::BGRA8Unorm | MTLPixelFormat::BGRA8Unorm_sRGB => (
+            8,
+            CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
+            4,
+        ),
+        MTLPixelFormat::RGBA8Unorm | MTLPixelFormat::RGBA8Unorm_sRGB => (
+            8,
+            CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+            4,
+        ),
+        // 64-bit half-float RGBA: `kCGBitmapFloatComponents` + little-endian
+        // 16-bit words is the layout `RGBA16Float` shares.
+        MTLPixelFormat::RGBA16Float => (
+            16,
+            CGImageAlphaInfo::PremultipliedLast.0
+                | CGImageComponentInfo::Float.0
+                | CGImageByteOrderInfo::Order16Little.0,
+            8,
+        ),
+        other => panic!("the native raster destination has no bitmap layout for {other:?}"),
+    }
+}
+
+impl NativeRasterFrame {
+    /// Builds a raster destination on `device` for `width` × `height`
+    /// pixels of `pixel_format`.
     ///
     /// # Panics
     ///
-    /// When the device cannot allocate the texture.
-    fn overlay_texture(
+    /// When the device cannot allocate the shared buffer or its texture
+    /// view, or CoreGraphics refuses the destination's bitmap layout — a
+    /// capture target of a format `raster_layout` rejects never reaches
+    /// here, and every other failure means the pixel contract could not
+    /// be met, so there is nothing to degrade to.
+    fn new(
+        device: &ProtocolObject<dyn MTLDevice>,
+        pixel_format: MTLPixelFormat,
+        pixel_width: usize,
+        pixel_height: usize,
+        generation: u64,
+    ) -> Self {
+        let (bits_per_component, bitmap_info, bytes_per_pixel) = raster_layout(pixel_format);
+        // The texture view and the context must stride-identically agree
+        // with the device: rows are padded to the minimum linear-texture
+        // alignment for the format.
+        let alignment = device.minimumLinearTextureAlignmentForPixelFormat(pixel_format);
+        assert!(
+            alignment > 0,
+            "the device reported no linear texture alignment for {pixel_format:?}"
+        );
+        let row_bytes = (pixel_width * bytes_per_pixel).div_ceil(alignment) * alignment;
+        let buffer = device
+            .newBufferWithLength_options(
+                row_bytes * pixel_height,
+                MTLResourceOptions::StorageModeShared,
+            )
+            .expect("failed to allocate the native capture raster buffer");
+        // SAFETY: a 2D texture descriptor is always valid to construct.
+        let descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                pixel_format,
+                pixel_width,
+                pixel_height,
+                false,
+            )
+        };
+        // The composite pass only samples the overlay — but keeping the
+        // render-target bit mirrors every other capture texture's usage.
+        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+        let texture = buffer
+            .newTextureWithDescriptor_offset_bytesPerRow(&descriptor, 0, row_bytes)
+            .expect("failed to create the buffer-backed native capture texture");
+        let color_space = crate::metal::color_space(pixel_format);
+        // SAFETY: `buffer.contents()` is valid for the buffer's whole
+        // length — `row_bytes * pixel_height` — for the context's entire
+        // lifetime, which `self` bounds by owning the buffer; the layout
+        // arguments are the same `row_bytes`/format pair the texture view
+        // was created with.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                buffer.contents().as_ptr(),
+                pixel_width,
+                pixel_height,
+                bits_per_component,
+                row_bytes,
+                Some(&color_space),
+                bitmap_info,
+            )
+        }
+        .expect("failed to create the native raster CGContext");
+        Self {
+            _device: device.retain(),
+            _buffer: buffer,
+            texture,
+            context,
+            generation,
+            pixel_width,
+            pixel_height,
+            pixel_format,
+        }
+    }
+
+    /// Rasterizes `layer`'s tree into the shared buffer at `geometry`'s
+    /// scale — a synchronous CPU draw, completed when it returns.
+    ///
+    /// Geometry is expressed through the context's CTM alone: the live
+    /// layer tree is never transformed or reparented. The CTM is applied
+    /// after clearing and restored before returning, so a reused context
+    /// carries no state across frames. The output obeys the composite
+    /// pass's contract — texel row 0 is the view's top edge: a bitmap
+    /// context is bottom-left-origin like `AppKit`'s layer space, so on
+    /// macOS a plain scale lands each layer row on its matching texel
+    /// row (the kit's flipped views already compensate the y-up draw,
+    /// and mirroring again would count the flip twice); `UIKit`'s layer
+    /// space is top-left-origin, so the iOS CTM translates then flips to
+    /// put the view's top on row 0.
+    fn draw(&self, layer: &CALayer, geometry: CaptureGeometry) {
+        let context: &CGContext = &self.context;
+        // SAFETY: the casts stay representable — a capture destination is
+        // at most a few thousand pixels on a side.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a capture texture is at most a few thousand pixels on a side"
+        )]
+        let (width, height) = (self.pixel_width as f64, self.pixel_height as f64);
+        CGContext::clear_rect(Some(context), Rect::new(0.0, 0.0, width, height).into());
+        CGContext::save_g_state(Some(context));
+        #[cfg(target_os = "ios")]
+        {
+            CGContext::translate_ctm(Some(context), 0.0, height);
+            CGContext::scale_ctm(Some(context), geometry.scale_x, -geometry.scale_y);
+        }
+        #[cfg(target_os = "macos")]
+        CGContext::scale_ctm(Some(context), geometry.scale_x, geometry.scale_y);
+        layer.renderInContext(context);
+        CGContext::restore_g_state(Some(context));
+        CGContext::flush(Some(context));
+    }
+}
+
+/// A leased raster frame: the destination is owned outright from the
+/// moment it is drawn until the GPU work sampling it has settled, so a
+/// later raster can never overwrite memory a consumer still reads. The
+/// pool takes the frame back only through [`NativeRenderer::return_frame`],
+/// driven by the compositor's completed handler on the main queue; any
+/// other drop — cancellation, a superseded generation — releases the
+/// storage without returning it.
+#[derive(Debug)]
+struct RasterLease {
+    frame: Option<NativeRasterFrame>,
+}
+
+impl RasterLease {
+    /// The texture the compositor samples.
+    fn texture(&self) -> &Retained<ProtocolObject<dyn MTLTexture>> {
+        &self.frame.as_ref().expect("a lease owns its frame").texture
+    }
+
+    /// Hands the frame back — only the settle path may call this.
+    fn into_frame(mut self) -> NativeRasterFrame {
+        self.frame.take().expect("a lease owns its frame")
+    }
+}
+
+/// The native raster half of a capture, confined to the main thread: a
+/// small pool of `NativeRasterFrame`s leased per capture and returned
+/// when the GPU settles. The pool retires on the caller's generation
+/// token — a context replacement still invalidates every frame even when
+/// it wraps the same physical device.
+#[derive(Debug, Default)]
+struct NativeRenderer {
+    /// The caller-supplied generation token the pool issues for. A
+    /// mismatch drains the pool: storage from an old generation can
+    /// never answer a new one's capture.
+    generation: u64,
+    /// Frames whose consumers have settled and may be reissued.
+    available: Vec<NativeRasterFrame>,
+}
+
+impl NativeRenderer {
+    /// Issues a frame for (`generation`, `target`'s device, format, size),
+    /// rasterizes `layer` into it at `geometry`'s scale, and returns the
+    /// lease owning it through consumption.
+    ///
+    /// The draw is synchronous CPU work writing shared memory: it has
+    /// completed before this returns, so no GPU fence stands in for it —
+    /// the lease, not a fence, is the write/read safety contract.
+    ///
+    /// # Panics
+    ///
+    /// When the frame cannot be created (see [`NativeRasterFrame::new`]).
+    fn draw_layer(
+        &mut self,
+        layer: &CALayer,
+        target: &ProtocolObject<dyn MTLTexture>,
+        geometry: CaptureGeometry,
+        generation: u64,
+    ) -> RasterLease {
+        let device = target.device();
+        let (width, height, format) = (target.width(), target.height(), target.pixelFormat());
+        let mut lease = self.issue(&device, format, width, height, generation);
+        lease
+            .frame
+            .as_mut()
+            .expect("a lease owns its frame")
+            .draw(layer, geometry);
+        lease
+    }
+
+    /// Issues a frame for (`generation`, `device`, `format`, `width` ×
+    /// `height`) without drawing — the lease half of [`draw_layer`], so
+    /// the pool contract is exercisable without a layer tree.
+    ///
+    /// # Panics
+    ///
+    /// When the frame cannot be created (see [`NativeRasterFrame::new`]).
+    fn issue(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         format: MTLPixelFormat,
         width: usize,
         height: usize,
-    ) -> Retained<ProtocolObject<dyn MTLTexture>> {
-        if let Some(overlay) = &self.overlay
-            && overlay.width() == width
-            && overlay.height() == height
-            && overlay.pixelFormat() == format
-            && Retained::as_ptr(&overlay.device()) == core::ptr::from_ref(device)
-        {
-            return overlay.clone();
+        generation: u64,
+    ) -> RasterLease {
+        if self.generation != generation {
+            self.generation = generation;
+            self.available.clear();
         }
-        // SAFETY: a 2D texture descriptor is always valid to construct.
-        let descriptor = unsafe {
-            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
-                format, width, height, false,
-            )
-        };
-        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
-        descriptor.setStorageMode(MTLStorageMode::Private);
-        let texture = device
-            .newTextureWithDescriptor(&descriptor)
-            .expect("failed to create the native capture overlay texture");
-        self.overlay = Some(texture.clone());
-        texture
-    }
-
-    /// Renders `layer` into `texture` at `geometry`'s scale, returning the
-    /// uncommitted fence the caller attaches its completion to, then commits.
-    ///
-    /// `CARenderer` never clears, so a private destination carries stale
-    /// memory: one clear pass precedes the render, on the same queue, in
-    /// commit order.
-    ///
-    /// # Panics
-    ///
-    /// When a command queue, encoder or buffer cannot be created.
-    fn render_layer(
-        &mut self,
-        layer: &CALayer,
-        texture: &ProtocolObject<dyn MTLTexture>,
-        geometry: CaptureGeometry,
-    ) -> Retained<ProtocolObject<dyn MTLCommandBuffer>> {
-        let device = texture.device();
-        let stale = self.pixel_format != Some(texture.pixelFormat())
-            || self
-                .command_queue
-                .as_ref()
-                .is_none_or(|queue| Retained::as_ptr(&queue.device()) != Retained::as_ptr(&device));
-        if stale {
-            self.command_queue = device.newCommandQueue();
-            self.pixel_format = Some(texture.pixelFormat());
-            self.renderer = None;
-        }
-        let queue = self
-            .command_queue
-            .as_ref()
-            .expect("failed to create the native Metal capture command queue");
-
-        let renderer = if let Some(existing) = &self.renderer {
-            let renderer = existing.clone();
-            // SAFETY: `texture` is on the renderer's queue's device — the
-            // (device, format) key above guarantees it.
-            unsafe { renderer.setDestination(texture) };
-            renderer
-        } else {
-            let color_space = crate::metal::color_space(texture.pixelFormat());
-            let options = car_renderer_options(&color_space, queue);
-            // SAFETY: `rendererWithMTLTexture:options:` retains its inputs
-            // for the call; the renderer is owned through `self.renderer`.
-            let renderer =
-                unsafe { CARenderer::rendererWithMTLTexture_options(texture, Some(&options)) };
-            self.renderer = Some(renderer.clone());
-            renderer
-        };
-
-        let clear = MTLRenderPassDescriptor::new();
-        // SAFETY: index 0 is the single color attachment.
-        let attachment = unsafe { clear.colorAttachments().objectAtIndexedSubscript(0) };
-        attachment.setTexture(Some(texture));
-        attachment.setLoadAction(MTLLoadAction::Clear);
-        attachment.setStoreAction(MTLStoreAction::Store);
-        attachment.setClearColor(MTLClearColor {
-            red: 0.0,
-            green: 0.0,
-            blue: 0.0,
-            alpha: 0.0,
+        let position = self.available.iter().position(|frame| {
+            frame.pixel_width == width
+                && frame.pixel_height == height
+                && frame.pixel_format == format
+                && Retained::as_ptr(&frame.texture.device()) == core::ptr::from_ref(device).cast()
         });
-        let clear_buffer = queue
-            .commandBuffer()
-            .expect("failed to create the clear command buffer");
-        clear_buffer
-            .renderCommandEncoderWithDescriptor(&clear)
-            .expect("failed to encode the native capture clear pass")
-            .endEncoding();
-        clear_buffer.commit();
-
-        renderer.setLayer(Some(layer));
-        // The destination rect is in pixels; the transform maps the
-        // point-space tree onto it.
-        renderer.setBounds(
-            Rect::new(
-                0.0,
-                0.0,
-                f64::from(u32::try_from(texture.width()).unwrap_or(u32::MAX)),
-                f64::from(u32::try_from(texture.height()).unwrap_or(u32::MAX)),
-            )
-            .into(),
+        let frame = position.map_or_else(
+            || NativeRasterFrame::new(device, format, width, height, generation),
+            |position| self.available.swap_remove(position),
         );
-        with_capture_transform(layer, geometry, || {
-            // SAFETY: a null timestamp is the documented default clock.
-            unsafe {
-                renderer.beginFrameAtTime_timeStamp(
-                    objc2_quartz_core::CACurrentMediaTime(),
-                    core::ptr::null_mut(),
-                );
-            }
-            renderer.addUpdateRect(renderer.bounds());
-            renderer.render();
-            renderer.endFrame();
-        });
-
-        // The claim ends when encoding does: a bound root is the
-        // renderer's exclusive hold on the layer — on UIKit it severs
-        // the view from its parent's containment for the whole claim;
-        // on AppKit `superview` survives while `superlayer` can still be
-        // orphaned — and a renderer dropped with a root still bound
-        // invalidates the backing layer under the live view. Unbind inside
-        // the encode so the caller restores a layer nothing owns. `setLayer`
-        // is renderer state, not a layer-tree edit. The caller ends its
-        // renderer `RefMut` before restoring native containment and
-        // flushing that restoration, whose lifecycle callbacks must not
-        // re-enter a borrowed renderer.
-        renderer.setLayer(None);
-
-        // `CARenderer` encodes onto `queue` during `render()` but offers no
-        // completion, so an empty buffer committed right behind it stands in
-        // as the fence — in-order execution on one queue means this
-        // completes only once the capture has. Returned uncommitted: Metal
-        // refuses a handler on a committed buffer.
-        queue
-            .commandBuffer()
-            .expect("failed to create the native Metal capture command buffer")
+        RasterLease { frame: Some(frame) }
     }
-}
 
-/// A scoped claim on `view`'s backing layer for one native frame.
-///
-/// `CARenderer.layer` does not borrow the layer it is handed: while a
-/// live `UIView`'s backing layer stays bound, the view reads detached —
-/// `superview`, `window`, and the parent's `subviews` all answer as if
-/// it were removed — and a renderer released with the root still bound
-/// invalidates the layer object under the still-live view. On `AppKit`
-/// the claim leaves `superview` in place but can still orphan the model
-/// layer's `superlayer`; the restore below fires when either membership
-/// was actually lost. `RootBorrow`
-/// snapshots the containment and geometry the claim owes the view, holds
-/// the layer for the claim's span, and on drop restores through the
-/// platform's public containment API — after the `RefMut` holding the
-/// renderer has ended and the root is unbound, so a lifecycle callback
-/// in the re-attach cannot re-enter a borrowed renderer.
-///
-/// A view with no superview stays detached: capturing a detached tree
-/// is supported and restores nothing.
-struct RootBorrow {
-    view: Retained<PlatformView>,
-    /// The view's model layer, owned for the claim's span — the claim's
-    /// teardown can never free the backing layer out from under the
-    /// view — and the writer the layer transform is restored through:
-    /// `UIView.transform` is affine-only, so restoring through the view
-    /// would flatten a perspective `CATransform3D`.
-    layer: Retained<CALayer>,
-    /// `Some` only when the view reported a parent at claim; a detached
-    /// view captures normally and restores nothing.
-    attachment: Option<Attachment>,
-    /// The hidden flag as the encode saw it — the claim runs while the
-    /// content is temporarily unhidden; `HiddenRestore`, dropped after
-    /// this in `prepare`, owns the caller's original flag.
-    hidden: bool,
-    bounds: Rect,
-    /// The model layer's full transform at claim — restored after the
-    /// geometry writes so a non-affine transform survives the claim.
-    layer_transform: CATransform3D,
-    #[cfg(target_os = "ios")]
-    center: crate::geometry::Point,
-    #[cfg(target_os = "macos")]
-    frame: Rect,
-}
-
-/// Where the view sat inside its parent at claim — the restore re-adds
-/// only the claimed view, so children other views added while the claim
-/// was open keep their membership.
-struct Attachment {
-    parent: Retained<PlatformView>,
-    /// The view's index inside the parent's subviews.
-    #[cfg(target_os = "ios")]
-    index: isize,
-    /// The sibling that followed the view at claim; the restore seats
-    /// the view directly under it, recovering the recorded order without
-    /// rewriting the parent's whole child list.
-    #[cfg(target_os = "macos")]
-    next_sibling: Option<Retained<PlatformView>>,
-}
-
-impl RootBorrow {
-    /// Retains `view`'s backing layer and records what the restore owes:
-    /// the parent, the view's place inside it, and its geometry — read
-    /// before the renderer claim severs any of it.
-    fn claim(view: &PlatformView, layer: &CALayer) -> Self {
-        let attachment = crate::view::superview(view).map(|parent| {
-            let subviews = crate::view::subviews(&parent);
-            let position = subviews
-                .iter()
-                .position(|sibling| {
-                    std::ptr::eq(&raw const **sibling, std::ptr::from_ref(view).cast())
-                })
-                .expect("a view reporting a superview must appear in its subviews");
-            Attachment {
-                parent,
-                #[cfg(target_os = "ios")]
-                index: isize::try_from(position).expect("fewer than `isize::MAX` subviews"),
-                #[cfg(target_os = "macos")]
-                next_sibling: subviews
-                    .get(position + 1)
-                    .map(|sibling| Retained::from(&**sibling)),
-            }
-        });
-        Self {
-            view: Retained::from(view),
-            layer: layer.retain(),
-            attachment,
-            hidden: crate::view::is_hidden(view),
-            bounds: crate::view::bounds(view),
-            layer_transform: layer.transform(),
-            #[cfg(target_os = "ios")]
-            center: view.center().into(),
-            #[cfg(target_os = "macos")]
-            frame: crate::view::frame(view),
+    /// Takes a settled frame back — main thread only, called from the
+    /// compositor's completion path once the GPU stopped sampling it. A
+    /// frame issued under a superseded generation is dropped instead.
+    fn return_frame(&mut self, frame: NativeRasterFrame) {
+        if frame.generation == self.generation {
+            self.available.push(frame);
         }
-    }
-}
-
-impl Drop for RootBorrow {
-    /// Puts `view` back where the claim found it while `layer` is still
-    /// owned, inside one disabled-actions transaction: re-attach through
-    /// the platform's ordered containment APIs — never a manual
-    /// `CALayer` reparent — then restore the recorded geometry and
-    /// hidden flag. The fields release only after this body runs, so
-    /// the layer borrow outlives the re-attach itself.
-    fn drop(&mut self) {
-        // The whole restore — reattachment included — runs inside one
-        // disabled-actions transaction so the claim's native tree
-        // restoration can never become a visible implicit animation.
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
-        if let Some(attachment) = &self.attachment {
-            let detached = crate::view::superview(&self.view).is_none_or(|current| {
-                !std::ptr::eq(&raw const *current, &raw const *attachment.parent)
-            });
-            // AppKit keeps `superview` through the claim but the renderer
-            // can still orphan the model layer. A lost `superlayer` is a
-            // wrong graph view writes alone cannot flag, so the view is
-            // re-seated through the same public containment path —
-            // `NSView` re-wires its own backing layer on (re)insertion,
-            // where a manual `CALayer` reparent is forbidden.
-            #[cfg(target_os = "macos")]
-            let reseat = {
-                let layer_orphaned = !detached && self.layer.superlayer().is_none();
-                if layer_orphaned {
-                    tracing::trace!(
-                        "native capture claim left the backing layer detached while the view kept its parent; re-seating the view so AppKit re-wires its layer"
-                    );
-                    self.view.removeFromSuperview();
-                }
-                detached || layer_orphaned
-            };
-            #[cfg(target_os = "ios")]
-            let reseat = detached;
-            if reseat {
-                #[cfg(target_os = "ios")]
-                attachment
-                    .parent
-                    .insertSubview_atIndex(&self.view, attachment.index);
-                #[cfg(target_os = "macos")]
-                match &attachment.next_sibling {
-                    // The view was mid-order at claim: seat it directly
-                    // under the sibling it preceded — children added
-                    // while the claim was open are untouched.
-                    Some(sibling) => attachment.parent.addSubview_positioned_relativeTo(
-                        &self.view,
-                        objc2_app_kit::NSWindowOrderingMode::Below,
-                        Some(&**sibling),
-                    ),
-                    // The view was the parent's last child at claim:
-                    // appending restores exactly that.
-                    None => attachment.parent.addSubview(&self.view),
-                }
-            }
-        }
-        crate::view::set_bounds(&self.view, self.bounds);
-        #[cfg(target_os = "ios")]
-        crate::view::set_center(&self.view, self.center);
-        #[cfg(target_os = "macos")]
-        crate::view::set_frame(&self.view, self.frame);
-        // The layer transform last: `TransformRestore` already undid the
-        // encode scale, and an affine-only write here would flatten a
-        // perspective transform the claim found.
-        self.layer.setTransform(self.layer_transform);
-        crate::view::set_hidden(&self.view, self.hidden);
-        CATransaction::commit();
-        flush_transaction();
     }
 }
 
@@ -1152,10 +1025,12 @@ struct CapturedSnapshot {
 }
 
 /// Everything [`ViewCapture::capture`] decided on the main thread that the
-/// compositor's queue needs — all `Send`.
+/// compositor's queue needs. `raster` is the leased native output: it must
+/// outlive the last GPU read of its texture, so the preparation only
+/// releases it through the composite buffer's completion.
 struct Preparation {
     target: Retained<ProtocolObject<dyn MTLTexture>>,
-    overlay: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
+    raster: RasterLease,
     device: Retained<ProtocolObject<dyn MTLDevice>>,
 }
 
@@ -1207,7 +1082,11 @@ impl ViewCapture {
     }
 
     /// Captures `content` into `target`; `completion` runs on the main
-    /// thread with whether the frame landed.
+    /// thread with whether the frame landed. `generation` is the caller's
+    /// context-generation token: it must come from the exact retained
+    /// context `target` was allocated under — a later replacement must
+    /// not relabel old storage, and a replacement that wraps the same
+    /// physical device still invalidates every pooled frame.
     ///
     /// # Panics
     ///
@@ -1215,104 +1094,47 @@ impl ViewCapture {
     pub fn capture(
         self: &Rc<Self>,
         target: &ProtocolObject<dyn MTLTexture>,
+        generation: u64,
         completion: impl Fn(bool) + Send + 'static,
     ) {
         let mtm = objc2::MainThreadMarker::new().expect("capture runs on the main thread");
-        let (preparation, fence, specs) = self.prepare(target);
-        let completion = Mutex::new(Some(Box::new(completion) as Box<dyn Fn(bool) + Send>));
+        let (preparation, specs) = self.prepare(target, generation);
 
-        if specs.is_empty() {
-            // No external surfaces to compose: the handler only runs the
-            // completion on the main queue. It must not own anything that
-            // ever hops back to the main thread — Metal releases the block
-            // on its own completion queue, and `MainThreadBound`'s drop
-            // dispatches *synchronously* to the main queue. With the main
-            // thread blocked on the GPU submission this completion answers
-            // (it holds the device lock the submission needs), that turns
-            // capture into a three-thread deadlock.
-            let handler = RcBlock::new(
-                move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-                    // SAFETY: the handler's buffer is alive for the call.
-                    let buffer = unsafe { buffer.as_ref() };
-                    assert!(
-                        buffer.status() == MTLCommandBufferStatus::Completed,
-                        "native Metal capture failed: {:?}",
-                        buffer.error()
-                    );
-                    let completion = completion.lock().expect("capture lock").take();
-                    if let Some(completion) = completion {
-                        enqueue(move |_mtm| {
-                            completion(true);
-                        });
-                    }
-                },
-            );
-            // SAFETY: Metal copies the block for the buffer's lifetime.
-            unsafe {
-                fence.addCompletedHandler(RcBlock::as_ptr(&handler));
-            }
-            fence.commit();
-            return;
-        }
-
-        // Everything leaving the main thread is `Send`: the specs are Copy,
-        // the compositor is shareable, `completion` is Send — and `this`
-        // rides a `MainThreadBound`, only ever upgraded on the main queue.
+        // The raster pass lands its pixels in the leased frame's shared
+        // buffer, not `target` — and it is synchronous: no GPU fence
+        // stands in for it. Every capture still runs the composition
+        // pass to draw the overlay over `target`, external surfaces or
+        // not.
+        //
+        // Everything leaving the main thread is `Send`: the specs are
+        // Copy, the compositor is shareable, `completion` is Send — and
+        // `this` rides a `MainThreadBound`, only ever upgraded on the
+        // main queue.
         let compositor = self.compositor.clone();
-        let this = Mutex::new(Some(MainThreadBound::new(Rc::downgrade(self), mtm)));
-        let preparation = Mutex::new(Some(QueueSend(preparation)));
-        let specs = Mutex::new(Some(specs));
+        let this = MainThreadBound::new(Rc::downgrade(self), mtm);
+        let preparation = QueueSend(preparation);
+        let mut completion = Some(Box::new(completion) as Box<dyn Fn(bool) + Send>);
 
-        let handler = RcBlock::new(
-            move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
-                // SAFETY: the handler's buffer is alive for the call.
-                let buffer = unsafe { buffer.as_ref() };
-                assert!(
-                    buffer.status() == MTLCommandBufferStatus::Completed,
-                    "native Metal capture failed: {:?}",
-                    buffer.error()
-                );
-                let specs = specs
-                    .lock()
-                    .expect("capture lock")
-                    .take()
-                    .expect("native capture fires once");
-                let this = this.lock().expect("capture lock").take();
-                let completion = completion.lock().expect("capture lock").take();
-                let preparation = preparation.lock().expect("capture lock").take();
-                compositor.perform(move |guard| {
-                    let rendered = QueueSend(
-                        guard.prepare_surface_textures(
-                            &specs,
-                            &preparation
-                                .as_ref()
-                                .expect("native capture fires once")
-                                .get()
-                                .device,
-                        ),
-                    );
-                    enqueue(move |mtm| {
-                        // Whole-binding move keeps the `QueueSend` wrapper —
-                        // capturing `rendered.0` would capture the bare Vec.
-                        let rendered = rendered;
-                        // The capture pipeline outlives its owner no one: a
-                        // dropped effect view drops the frame.
-                        if let (Some(capture), Some(completion), Some(preparation)) = (
-                            this.and_then(|this| this.get(mtm).upgrade()),
-                            completion,
-                            preparation.map(|preparation| preparation.0),
-                        ) {
-                            capture.submit_surfaces(&rendered.0, preparation, completion);
-                        }
-                    });
-                });
-            },
-        );
-        // SAFETY: Metal copies the block for the buffer's lifetime.
-        unsafe {
-            fence.addCompletedHandler(RcBlock::as_ptr(&handler));
-        }
-        fence.commit();
+        compositor.perform(move |guard| {
+            let rendered =
+                QueueSend(guard.prepare_surface_textures(&specs, &preparation.get().device));
+            let mut preparation = Some(preparation);
+            enqueue(move |mtm| {
+                // Whole-binding move keeps the `QueueSend` wrapper —
+                // capturing `rendered.0` would capture the bare Vec.
+                let rendered = rendered;
+                // The capture pipeline outlives its owner no one: a
+                // dropped effect view drops the frame — the lease is
+                // released unreturned, which is always safe.
+                if let (Some(capture), Some(completion), Some(preparation)) = (
+                    this.get(mtm).upgrade(),
+                    completion.take(),
+                    preparation.take(),
+                ) {
+                    capture.submit_surfaces(&rendered.0, preparation.0, completion);
+                }
+            });
+        });
     }
 
     /// Ends every external surface's presentation and releases GPU state.
@@ -1331,16 +1153,14 @@ impl ViewCapture {
         self.compositor.discard_resources();
     }
 
-    /// Everything `capture` needs decided on the main thread, plus the
-    /// uncommitted native fence.
+    /// Everything `capture` needs decided on the main thread: the
+    /// preparation — its lease owns the rastered native output — and
+    /// the surface spec list.
     fn prepare(
         &self,
         target: &ProtocolObject<dyn MTLTexture>,
-    ) -> (
-        Preparation,
-        Retained<ProtocolObject<dyn MTLCommandBuffer>>,
-        Vec<SurfaceSpec>,
-    ) {
+        generation: u64,
+    ) -> (Preparation, Vec<SurfaceSpec>) {
         let content = &*self.content;
         let was_hidden = crate::view::is_hidden(content);
         self.set_content_hidden(false);
@@ -1359,64 +1179,44 @@ impl ViewCapture {
         let snapshots = self.collect_snapshots(target, geometry);
         self.update_external_surfaces(&snapshots);
 
-        let native_target = if snapshots.is_empty() {
-            target.retain()
-        } else {
-            self.renderer.borrow_mut().overlay_texture(
-                &target.device(),
-                target.pixelFormat(),
-                target.width(),
-                target.height(),
-            )
-        };
-
-        // INVARIANT: the synchronous native pass is one outer
-        // disabled-actions `CATransaction` — suppression open, the capture
-        // transform, the `CARenderer` encode, transform restore and
-        // suppression close all happen inside it, then a single commit
-        // pushes every model change at once. Nothing inside may open,
-        // commit or flush a transaction of its own: a mid-pass commit would
-        // push the suppressed or transformed state to the render server and
-        // flicker the on-screen tree. The suppression setters
-        // (`CapturableSurface::begin/end_capture_suppression`) and
-        // `with_capture_transform` are plain model mutations for exactly
-        // this reason.
-        let native_fence = {
-            // The borrow outlives the `RefMut`: dropped after it, so
-            // `RootBorrow`'s restore runs only once the renderer is
-            // unbound and unborrowed — a lifecycle callback in the
-            // re-attach can never re-enter a borrowed renderer.
-            let borrow = RootBorrow::claim(content, &layer);
+        // INVARIANT: the synchronous native raster pass runs inside one
+        // outer disabled-actions `CATransaction` — suppression open, the
+        // `renderInContext` draw, and suppression close all happen inside
+        // it, then a single commit pushes every model change at once.
+        // Nothing inside may open, commit or flush a transaction of its
+        // own: a mid-pass commit would push the suppressed state to the
+        // render server and flicker the on-screen tree. The suppression
+        // setters (`CapturableSurface::begin/end_capture_suppression`)
+        // are plain model mutations for exactly this reason, and
+        // suppression is always restored synchronously before the sole
+        // commit. The layer tree itself is never transformed or
+        // reparented — the destination geometry lives in the context's
+        // CTM.
+        let raster = {
             let mut renderer = self.renderer.borrow_mut();
             CATransaction::begin();
             CATransaction::setDisableActions(true);
-            let fence = if snapshots.is_empty() {
-                renderer.render_layer(&layer, &native_target, geometry)
-            } else {
-                for snapshot in &snapshots {
-                    snapshot.surface.begin_capture_suppression();
-                }
-                let fence = renderer.render_layer(&layer, &native_target, geometry);
-                for snapshot in snapshots.iter().rev() {
-                    snapshot.surface.end_capture_suppression();
-                }
-                fence
-            };
+            for snapshot in &snapshots {
+                snapshot.surface.begin_capture_suppression();
+            }
+            let raster = renderer.draw_layer(&layer, target, geometry, generation);
+            for snapshot in snapshots.iter().rev() {
+                snapshot.surface.end_capture_suppression();
+            }
             drop(renderer);
-            drop(borrow);
             CATransaction::commit();
             flush_transaction();
-            fence
+            raster
         };
 
         let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();
         let preparation = Preparation {
-            overlay: (!snapshots.is_empty()).then_some(native_target),
+            raster,
             target: target.retain(),
             device: target.device(),
         };
         drop(restore);
-        (preparation, native_fence, specs)
+        (preparation, specs)
     }
 
     /// Shows or re-hides the captured content without anything else seeing
@@ -1516,6 +1316,20 @@ impl ViewCapture {
         preparation: Preparation,
         completion: Box<dyn Fn(bool) + Send>,
     ) {
+        let mtm = objc2::MainThreadMarker::new().expect("capture flow runs on the main thread");
+        let return_to = MainThreadBound::new(Rc::downgrade(self), mtm);
+        if rendered.is_empty() {
+            // No external surfaces to fence on: the overlay is already
+            // rastered — straight to composition.
+            Self::compose(
+                &self.compositor,
+                QueueSend(preparation),
+                QueueSend(Vec::new()),
+                completion,
+                return_to,
+            );
+            return;
+        }
         let surfaces: Vec<Rc<dyn CapturableSurface>> = rendered
             .iter()
             .map(|item| {
@@ -1539,9 +1353,10 @@ impl ViewCapture {
             let rendered = QueueSend(rendered.to_owned());
             let preparation = QueueSend(preparation);
             move |outcome| match outcome {
-                Ok(()) => Self::compose(&compositor, preparation, rendered, completion),
+                Ok(()) => Self::compose(&compositor, preparation, rendered, completion, return_to),
                 // No usable pixels: the prepared frame drops with the
-                // closure and the capture reports failure.
+                // closure — its lease releases unreturned — and the
+                // capture reports failure.
                 Err(_) => completion(false),
             }
         }));
@@ -1556,25 +1371,34 @@ impl ViewCapture {
         }
     }
 
-    /// The composition pass — deliberately free of `self` so it still lands
-    /// if the owning view is torn down meanwhile.
+    /// The composition pass — deliberately free of `self` so it still
+    /// lands if the owning view is torn down meanwhile. `return_to`
+    /// returns the raster lease to its pool once the GPU is actually
+    /// done sampling it.
     fn compose(
         compositor: &Compositor,
         preparation: QueueSend<Preparation>,
         rendered: QueueSend<Vec<RenderedSurface>>,
         completion: Box<dyn Fn(bool) + Send>,
+        return_to: MainThreadBound<Weak<Self>>,
     ) {
         compositor.perform(move |guard| {
-            let preparation = preparation.get();
-            let command_buffer = guard.make_command_buffer(&preparation.device);
+            let command_buffer = guard.make_command_buffer(&preparation.get().device);
             guard.encode_composition(
                 rendered.get(),
-                preparation.overlay.as_deref(),
-                &preparation.target,
+                Some(preparation.get().raster.texture()),
+                &preparation.get().target,
                 &command_buffer,
-                &preparation.device,
+                &preparation.get().device,
             );
+            // The lease is held until this command buffer completes:
+            // only then has the GPU stopped sampling the shared buffer,
+            // and only then may the frame return to the pool. Dropping
+            // the preparation any earlier could hand the next raster
+            // memory still being read.
+            let held = Mutex::new(Some(preparation));
             let completion = Mutex::new(Some(completion));
+            let return_to = Mutex::new(Some(return_to));
             let handler = RcBlock::new(
                 move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
                     // SAFETY: the buffer is alive for the handler call.
@@ -1584,6 +1408,23 @@ impl ViewCapture {
                         "Metal view composition failed: {:?}",
                         buffer.error()
                     );
+                    let settled = held.lock().expect("capture lock").take();
+                    if let Some(preparation) = settled {
+                        let Preparation { raster, .. } = preparation.0;
+                        let frame = QueueSend(raster.into_frame());
+                        let return_to = return_to.lock().expect("capture lock").take();
+                        enqueue(move |mtm| {
+                            // Whole-binding move keeps the `QueueSend`
+                            // wrapper — `frame.0` alone would move the
+                            // bare frame off the queue thread.
+                            let frame = frame;
+                            if let Some(capture) =
+                                return_to.and_then(|return_to| return_to.get(mtm).upgrade())
+                            {
+                                capture.renderer.borrow_mut().return_frame(frame.0);
+                            }
+                        });
+                    }
                     let completion = completion.lock().expect("capture lock").take();
                     if let Some(completion) = completion {
                         enqueue(move |_mtm| {
@@ -1620,65 +1461,54 @@ impl Drop for HiddenRestore<'_> {
 
 #[cfg(test)]
 mod tests {
-    use core::ffi::c_void;
-
     use objc2::rc::Retained;
-    use objc2_core_foundation::{CFRetained, ConcreteType};
-    use objc2_core_graphics::CGColorSpace;
-    use objc2_foundation::NSString;
     use objc2_metal::{
-        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDevice, MTLOrigin, MTLPixelFormat,
-        MTLResource, MTLSize, MTLTexture,
+        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLOrigin, MTLPixelFormat, MTLResource,
+        MTLSize, MTLTexture,
     };
 
-    use super::{CaptureDeferred, CompositorState, FenceBatch, SurfaceSpec, car_renderer_options};
+    use super::{CaptureDeferred, CompositorState, FenceBatch, NativeRenderer, SurfaceSpec};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    // `CFGetTypeID` distinguishes a live Core Foundation object from any
-    // serialization of one. Declared here because `objc2-core-foundation`
-    // keeps the symbol private.
-    unsafe extern "C" {
-        fn CFGetTypeID(object: *const c_void) -> usize;
-    }
-
-    /// Regression test for the colour-space defect: `kCARendererColorSpace`
-    /// must carry the live `CGColorSpace`, not a `CFData` serialization of
-    /// it — `CARenderer` type-checks its options and crashed on the data
-    /// form.
+    /// The lease contract, exercised behaviorally: while a frame's lease
+    /// is outstanding the pool issues *different* storage — so the CPU
+    /// raster can never overwrite pixels a delayed consumer still reads —
+    /// a settled same-generation frame returns and is reissued, and a
+    /// caller-generation bump retires the pool even on the same device.
     #[test]
-    fn the_car_renderer_options_carry_a_live_color_space() {
+    fn an_outstanding_raster_lease_is_never_reissued_across_captures_or_generations() {
         let Some(device) = MTLCreateSystemDefaultDevice() else {
             return; // No Metal on this runner — nothing to check.
         };
-        let queue = device
-            .newCommandQueue()
-            .expect("failed to create a Metal command queue");
-        let color_space: CFRetained<CGColorSpace> =
-            crate::metal::color_space(MTLPixelFormat::BGRA8Unorm);
-        let options = car_renderer_options(&color_space, &queue);
-
-        // SAFETY: the option key is a system static.
-        let key: &NSString = unsafe { objc2_quartz_core::kCARendererColorSpace };
-        // SAFETY: the static's storage is `NSString`, a subclass of
-        // `NSObject`, so the pointer re-interpretation stays in bounds.
-        let key: &objc2::runtime::AnyObject =
-            unsafe { &*std::ptr::from_ref::<NSString>(key).cast() };
-        let value = options
-            .objectForKey(key)
-            .expect("the options must set kCARendererColorSpace");
-        // SAFETY: `value` is a live `NSObject` — a valid `CFTypeRef`.
-        let type_id = unsafe {
-            CFGetTypeID(
-                Retained::as_ptr(&value)
-                    .cast::<objc2::runtime::AnyObject>()
-                    .cast(),
-            )
-        };
+        let mut renderer = NativeRenderer::default();
+        let first = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 0);
+        // A second capture issued before `first` settles must not share
+        // its storage — two overlapping consumers can never alias.
+        let second = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 0);
+        assert_ne!(
+            Retained::as_ptr(first.texture()),
+            Retained::as_ptr(second.texture()),
+            "two outstanding captures must not share one raster destination"
+        );
+        // Once `first`'s consumer settles it goes back and is reused.
+        let first_texture = Retained::as_ptr(first.texture());
+        renderer.return_frame(first.into_frame());
+        let reissued = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 0);
         assert_eq!(
-            type_id,
-            CGColorSpace::type_id(),
-            "kCARendererColorSpace must carry a CGColorSpace, not a serialization",
+            Retained::as_ptr(reissued.texture()),
+            first_texture,
+            "a settled same-generation frame returns to the pool"
+        );
+        // A context replacement — possibly wrapping the same physical
+        // device — retires the pool: the still-outstanding `second` can
+        // never answer a new generation, and a stale return is dropped
+        // rather than repopulating it.
+        let _next = renderer.issue(&device, MTLPixelFormat::BGRA8Unorm, 64, 48, 1);
+        renderer.return_frame(second.into_frame());
+        assert!(
+            renderer.available.is_empty(),
+            "a superseded generation's frame must never rejoin the pool"
         );
     }
 

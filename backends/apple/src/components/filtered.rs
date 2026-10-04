@@ -659,6 +659,7 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     state.needs_render.set(false);
     state.render_in_flight.set(true);
     let input = ensure_capture_texture(state, &context, width, height);
+    let generation = context.generation();
     let work = PresentWork {
         frame,
         context,
@@ -670,17 +671,19 @@ fn render_frame(state: &Rc<FilteredState>, frame: DrawableFrame) {
     let weak = Sendable(Rc::downgrade(state));
     // The capture completion is `Fn` — the work crosses it inside a slot.
     let work = std::sync::Mutex::new(Some(Sendable(work)));
-    state.capture.capture(&capture_input, move |captured| {
-        if let Some(state) = weak.get().upgrade() {
-            let work = work.lock().expect("capture fires once").take();
-            if let Some(work) = work {
-                finish_captured_frame(&state, work.0, captured);
+    state
+        .capture
+        .capture(&capture_input, generation, move |captured| {
+            if let Some(state) = weak.get().upgrade() {
+                let work = work.lock().expect("capture fires once").take();
+                if let Some(work) = work {
+                    finish_captured_frame(&state, work.0, captured);
+                }
             }
-        }
-        // A dropped state's slot drops the frame here — the lease releases
-        // unpresented on the main thread the completion contract
-        // guarantees.
-    });
+            // A dropped state's slot drops the frame here — the lease releases
+            // unpresented on the main thread the completion contract
+            // guarantees.
+        });
 }
 
 /// `finishCapturedFrame`.
@@ -1546,97 +1549,102 @@ impl CapturableSurface for FilteredCapturable {
         let output_slot = std::sync::Mutex::new(Some(output));
         let input_slot = std::sync::Mutex::new(Some(input));
         let submitted = std::sync::Mutex::new(Some(context.clone()));
-        state.capture.capture(&input_native, move |captured| {
-            let completion = completion.lock().expect("capture completion lock").take();
-            let Some(completion) = completion else {
-                return;
-            };
-            let Some(state) = weak.get().upgrade() else {
-                completion(Err(CaptureDeferred));
-                return;
-            };
-            let output = output_slot
-                .lock()
-                .expect("external render fires once")
-                .take();
-            let input = input_slot
-                .lock()
-                .expect("external render fires once")
-                .take();
-            let context = submitted.lock().expect("external render fires once").take();
-            let (Some(output), Some(input), Some(context)) = (output, input, context) else {
-                completion(Err(CaptureDeferred));
-                return;
-            };
-            if !captured {
-                // The deferred frame produced no pixels — the fence
-                // reports it once; the child's readiness replays through
-                // the redraw contract, not a retry.
-                completion(Err(CaptureDeferred));
-                if context.device_lost_reason().is_some() {
-                    arm_filtered_context_watch(&state, context.generation());
+        state
+            .capture
+            .capture(&input_native, context.generation(), move |captured| {
+                let completion = completion.lock().expect("capture completion lock").take();
+                let Some(completion) = completion else {
+                    return;
+                };
+                let Some(state) = weak.get().upgrade() else {
+                    completion(Err(CaptureDeferred));
+                    return;
+                };
+                let output = output_slot
+                    .lock()
+                    .expect("external render fires once")
+                    .take();
+                let input = input_slot
+                    .lock()
+                    .expect("external render fires once")
+                    .take();
+                let context = submitted.lock().expect("external render fires once").take();
+                let (Some(output), Some(input), Some(context)) = (output, input, context) else {
+                    completion(Err(CaptureDeferred));
+                    return;
+                };
+                if !captured {
+                    // The deferred frame produced no pixels — the fence
+                    // reports it once; the child's readiness replays through
+                    // the redraw contract, not a retry.
+                    completion(Err(CaptureDeferred));
+                    if context.device_lost_reason().is_some() {
+                        arm_filtered_context_watch(&state, context.generation());
+                    }
+                    return;
                 }
-                return;
-            }
-            if context.device_lost_reason().is_some()
-                || state.runtime.context().generation() != context.generation()
-                || !effects_ready(&state)
-            {
-                // Lost mid-capture or superseded — nothing encodes onto a
-                // generation this target was never prepared for.
-                completion(Err(CaptureDeferred));
-                if context.device_lost_reason().is_some() {
-                    arm_filtered_context_watch(&state, context.generation());
+                if context.device_lost_reason().is_some()
+                    || state.runtime.context().generation() != context.generation()
+                    || !effects_ready(&state)
+                {
+                    // Lost mid-capture or superseded — nothing encodes onto a
+                    // generation this target was never prepared for.
+                    completion(Err(CaptureDeferred));
+                    if context.device_lost_reason().is_some() {
+                        arm_filtered_context_watch(&state, context.generation());
+                    }
+                    return;
                 }
-                return;
-            }
-            let timing = {
-                let mut frame_clock = state.frame_clock.borrow_mut();
-                if state.timeline_parked.replace(false) {
-                    let _ = frame_clock.tick();
+                let timing = {
+                    let mut frame_clock = state.frame_clock.borrow_mut();
+                    if state.timeline_parked.replace(false) {
+                        let _ = frame_clock.tick();
+                    }
+                    frame_clock.tick()
+                };
+                let (needs_redraw, encoder) =
+                    encode_effects(&state, &context, &input, &output, width, height, timing);
+                drop(input);
+                drop(output);
+                if needs_redraw {
+                    request_render(&state);
                 }
-                frame_clock.tick()
-            };
-            let (needs_redraw, encoder) =
-                encode_effects(&state, &context, &input, &output, width, height, timing);
-            drop(input);
-            drop(output);
-            if needs_redraw {
-                request_render(&state);
-            }
-            let weak = Sendable(Rc::downgrade(&state));
-            let completion = std::sync::Mutex::new(Some(completion));
-            let submitted_context = context.clone();
-            crate::gpu_completion::submit_with_completion(
-                cocoa_ui::MainThreadMarker::new()
-                    .expect("FilteredView external renders complete on the main thread"),
-                encoder,
-                &context,
-                move || {
-                    cocoa_ui::main_queue::enqueue(move |_mtm| {
-                        let completion =
-                            completion.lock().expect("external completion lock").take();
-                        let Some(completion) = completion else {
-                            return;
-                        };
-                        if submitted_context.device_lost_reason().is_some() {
-                            // The fence settled on a dead queue: no usable
-                            // pixels to composite — deferred, and the
-                            // publication watch re-arms the redraw.
-                            if let Some(state) = weak.get().upgrade() {
-                                arm_filtered_context_watch(&state, submitted_context.generation());
+                let weak = Sendable(Rc::downgrade(&state));
+                let completion = std::sync::Mutex::new(Some(completion));
+                let submitted_context = context.clone();
+                crate::gpu_completion::submit_with_completion(
+                    cocoa_ui::MainThreadMarker::new()
+                        .expect("FilteredView external renders complete on the main thread"),
+                    encoder,
+                    &context,
+                    move || {
+                        cocoa_ui::main_queue::enqueue(move |_mtm| {
+                            let completion =
+                                completion.lock().expect("external completion lock").take();
+                            let Some(completion) = completion else {
+                                return;
+                            };
+                            if submitted_context.device_lost_reason().is_some() {
+                                // The fence settled on a dead queue: no usable
+                                // pixels to composite — deferred, and the
+                                // publication watch re-arms the redraw.
+                                if let Some(state) = weak.get().upgrade() {
+                                    arm_filtered_context_watch(
+                                        &state,
+                                        submitted_context.generation(),
+                                    );
+                                }
+                                completion(Err(CaptureDeferred));
+                                return;
                             }
-                            completion(Err(CaptureDeferred));
-                            return;
-                        }
-                        // Offscreen capture completion is not a
-                        // `PresentedFrame` receipt — productive-generation
-                        // accounting consumes on-screen receipts only.
-                        completion(Ok(()));
-                    });
-                },
-            );
-        });
+                            // Offscreen capture completion is not a
+                            // `PresentedFrame` receipt — productive-generation
+                            // accounting consumes on-screen receipts only.
+                            completion(Ok(()));
+                        });
+                    },
+                );
+            });
     }
 
     /// The readiness-participation query the registry's first-frame walk
