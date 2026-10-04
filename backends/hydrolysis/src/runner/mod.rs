@@ -139,8 +139,6 @@ pub use window::window_requires_transparency;
 pub use window::{FrameCounters, FramePhases, FrameProfile};
 
 use crate::env::{parse_bool_env, parse_optional_positive_u64_env, parse_positive_u64_env};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::platform::GpuSurfaceWindow;
 use crate::platform::{InputEvent, KeyState, PlatformWindow};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::platform::{OffscreenGpuContext, OffscreenWindow};
@@ -315,10 +313,7 @@ pub fn run(app: App, style: impl crate::Style) {
         let mut platform = OffscreenWindow::new(width, height, wgpu::TextureFormat::Rgba8Unorm)
             .with_scale_factor(offscreen_scale_factor());
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), Rc::clone(&theme))
-        };
+        let mut renderer = HydrolysisRenderer::new(Rc::clone(&theme));
         seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(window, platform, renderer, render_diagnostics_config);

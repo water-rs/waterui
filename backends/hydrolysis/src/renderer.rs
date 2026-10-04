@@ -464,13 +464,8 @@ impl SemanticCore {
 
 impl HydrolysisRenderer {
     /// A renderer drawing with `theme`.
-    ///
-    /// The adapter is not a formality: the engine for the frame's GPU context
-    /// is created against what `adapter` can actually run, and an adapter
-    /// without the engine's required features fails inside the engine rather
-    /// than degrading.
     #[must_use]
-    pub fn new(_adapter: &wgpu::Adapter, theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
+    pub fn new(theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
         let frame_instant = Instant::now();
         Self {
             core: SemanticCore::new(frame_instant),

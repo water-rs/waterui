@@ -97,10 +97,7 @@ impl TestHost {
             self.height.max(1),
             wgpu::TextureFormat::Rgba8Unorm,
         );
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), Rc::clone(&self.theme))
-        };
+        let mut renderer = HydrolysisRenderer::new(Rc::clone(&self.theme));
         let bounds = kurbo::Rect::new(
             0.0,
             0.0,

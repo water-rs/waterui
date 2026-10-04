@@ -839,10 +839,7 @@ fn runtime_window_sized(
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
-    let renderer = {
-        let surface = platform.surface();
-        HydrolysisRenderer::new(surface.adapter(), Rc::new(MinimalTestTheme::default()))
-    };
+    let renderer = HydrolysisRenderer::new(Rc::new(MinimalTestTheme::default()));
     RuntimeWindow::new(
         window,
         platform,
@@ -944,10 +941,7 @@ fn test_runtime_window() -> RuntimeWindow<HeadlessPlatformWindow> {
     let mut platform =
         HeadlessPlatformWindow::new_for_tests(16, 16, wgpu::TextureFormat::Rgba8Unorm);
     platform.apply_properties(&window);
-    let renderer = {
-        let surface = platform.surface();
-        HydrolysisRenderer::new(surface.adapter(), Rc::new(MinimalTestTheme::default()))
-    };
+    let renderer = HydrolysisRenderer::new(Rc::new(MinimalTestTheme::default()));
     RuntimeWindow::new(
         window,
         platform,
