@@ -4,13 +4,16 @@
 //! a type-safe substitution API for generating Apple and Android backend projects.
 
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
 };
 
 use askama::Template;
 
-use crate::framework::ResolvedFramework;
+use crate::framework::{
+    APPLE_BACKEND, FRAMEWORK_MEMBERS, FrameworkMember, HYDROLYSIS, ResolvedFramework,
+};
 use crate::project::ResolvedWebViewBackend;
 
 use include_dir::{Dir, include_dir};
@@ -863,16 +866,19 @@ impl TemplateContext {
         normalize_path_for_config(&backend_path)
     }
 
-    /// The path to the local Apple backend checkout at
-    /// `waterui_path/backends/apple`, resolved from the generated project's
-    /// directory. `None` consumes the pinned remote Rust backend instead.
+    /// The path to the local checkout `member`'s canonical slot supplies —
+    /// `waterui_path/<member.subdirectory>` resolved from the generated
+    /// project's directory. `None` consumes the pinned remote source
+    /// instead.
     ///
     /// The canonical checkout slot is the only local source: without the
     /// probe every local-checkout build — including the backend's own e2e
     /// suite — would silently retarget onto the pinned remote release.
-    fn compute_apple_backend_path(&self) -> Option<String> {
-        self.local_sources.apple()?;
-        Some(self.backend_relative_path(&self.waterui_path.as_ref()?.join("backends/apple")))
+    fn compute_member_backend_path(&self, member: FrameworkMember) -> Option<String> {
+        self.local_sources.member(member)?;
+        Some(
+            self.backend_relative_path(&self.waterui_path.as_ref()?.join(member.subdirectory)),
+        )
     }
 
     /// Absolute path of the `WaterUI` workspace root when building against a
@@ -923,19 +929,19 @@ impl TemplateContext {
         (0..depth).map(|_| "..").collect::<Vec<_>>().join("/")
     }
 
-    /// The `waterui-apple` dependency the generated FFI crate declares: a
-    /// `path` into the `waterui_path/backends/apple` checkout when one is
-    /// staged, and the framework's own repository at the selected revision
-    /// otherwise — the backend is a framework workspace member, so the
-    /// channel's `(repository, revision)` pins it the same way the Rust
-    /// packages and the root `Package.swift` are pinned.
+    /// The dependency a generated crate declares for `member` — an in-tree
+    /// framework workspace crate: a `path` into the `waterui_path` checkout's
+    /// canonical slot when one is staged, and the framework's own repository
+    /// at the selected revision otherwise — the member is a framework
+    /// workspace crate, so the channel's `(repository, revision)` pins it
+    /// the same way the Rust packages are pinned.
     ///
-    /// A `waterui_path` checkout that carries no `backends/apple` cannot
-    /// supply the crate — there is no remote fallback for a missing local
-    /// backend — and a selected framework revision that declares no
-    /// `apple-backend-path` carries no native backend either.
-    fn waterui_apple_dependency(&self) -> io::Result<GeneratedDependencyDetail> {
-        if let Some(backend_path) = self.compute_apple_backend_path() {
+    /// A `waterui_path` checkout that carries no `member.subdirectory`
+    /// cannot supply the crate — there is no remote fallback for a missing
+    /// local member — and a selected framework revision that declares no
+    /// `member.path_key` carries no such member either.
+    fn member_dependency(&self, member: FrameworkMember) -> io::Result<GeneratedDependencyDetail> {
+        if let Some(backend_path) = self.compute_member_backend_path(member) {
             return Ok(GeneratedDependencyDetail {
                 path: Some(backend_path),
                 ..GeneratedDependencyDetail::default()
@@ -943,14 +949,17 @@ impl TemplateContext {
         }
         if let Some(waterui_path) = &self.waterui_path {
             return Err(io::Error::other(format!(
-                "the WaterUI checkout `{}` carries no `backends/apple` crate — \
-                 the native Apple backend cannot be resolved",
-                waterui_path.display()
+                "the WaterUI checkout `{}` carries no `{}` crate — \
+                 the `{}` dependency cannot be resolved",
+                waterui_path.display(),
+                member.subdirectory,
+                member.package
             )));
         }
-        let source = self.framework.apple_backend_source().map_err(|error| {
+        let source = self.framework.member_source(member).map_err(|error| {
             io::Error::other(format!(
-                "the selected framework supplies no native Apple backend: {error:#}"
+                "the selected framework supplies no `{}` member: {error:#}",
+                member.package
             ))
         })?;
         Ok(GeneratedDependencyDetail {
@@ -958,6 +967,12 @@ impl TemplateContext {
             rev: source.rev,
             ..GeneratedDependencyDetail::default()
         })
+    }
+
+    /// The `waterui-apple` dependency the generated FFI crate declares —
+    /// the `apple-backend-path` member of the selected framework.
+    fn waterui_apple_dependency(&self) -> io::Result<GeneratedDependencyDetail> {
+        self.member_dependency(APPLE_BACKEND)
     }
 }
 
@@ -1007,21 +1022,26 @@ impl TemplateNamespace {
 /// Resolved once when a [`crate::project::Project`] opens or is created,
 /// before any template or backend generation runs; the resolved paths are
 /// absolute (a relative `waterui_path` is joined onto the project root).
-/// An absent slot is `None` — Android consumes the declared remote
-/// coordinate while the Apple member has no remote fallback: a checkout
-/// without `backends/apple` fails the generated dependency instead.
-/// A present-but-malformed slot is an error at resolution, never a silent
-/// remote fallback.
+/// An absent slot is `None` — a `*-path` framework member has no remote
+/// fallback: a checkout without the member's canonical directory fails the
+/// generated dependency instead. A present-but-malformed slot is an error at
+/// resolution, never a silent remote fallback.
 #[derive(Debug, Clone, Default)]
 pub struct LocalBackendSources {
-    apple: Option<PathBuf>,
+    members: BTreeMap<&'static str, PathBuf>,
 }
 
 impl LocalBackendSources {
+    /// The validated checkout `member`'s canonical slot supplies, when
+    /// present.
+    pub(crate) fn member(&self, member: FrameworkMember) -> Option<&Path> {
+        self.members.get(member.subdirectory).map(PathBuf::as_path)
+    }
+
     /// The validated `backends/apple` checkout, when present.
     #[must_use]
     pub fn apple(&self) -> Option<&Path> {
-        self.apple.as_deref()
+        self.member(APPLE_BACKEND)
     }
 }
 
@@ -1039,8 +1059,8 @@ pub struct SupportAppIdentity {
 }
 
 /// Resolve the canonical local backend sources under a `WaterUI` checkout
-/// root: `backends/apple` must hold a Rust manifest. The slot is an explicit
-/// source choice when present —
+/// root: every `*-path` framework member's canonical directory must hold a
+/// Rust manifest. A slot is an explicit source choice when present —
 /// an absent slot is `None`, a malformed one an error naming the slot and
 /// the manifest it lacks.
 ///
@@ -1049,8 +1069,15 @@ pub struct SupportAppIdentity {
 /// directory containing the required manifest — a dangling symlink, a
 /// non-directory, an unreadable path, or a checkout missing `Cargo.toml`.
 pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBackendSources> {
-    let apple = canonical_backend_source(waterui_root, "backends/apple", "Cargo.toml").await?;
-    Ok(LocalBackendSources { apple })
+    let mut members = BTreeMap::new();
+    for member in FRAMEWORK_MEMBERS {
+        if let Some(path) =
+            canonical_backend_source(waterui_root, member.subdirectory, "Cargo.toml").await?
+        {
+            members.insert(member.subdirectory, path);
+        }
+    }
+    Ok(LocalBackendSources { members })
 }
 
 /// Resolve the canonical local backend sources a project's `waterui_path`
@@ -2052,7 +2079,7 @@ mod tests {
         );
 
         let path = ctx
-            .compute_apple_backend_path()
+            .compute_member_backend_path(crate::framework::APPLE_BACKEND)
             .expect("expected relative backend path");
         let expected =
             pathdiff::diff_paths(&backend_dir, project_root.join("managed_backends/apple"))
@@ -2079,7 +2106,7 @@ mod tests {
             None,
         );
         let path = ctx
-            .compute_apple_backend_path()
+            .compute_member_backend_path(crate::framework::APPLE_BACKEND)
             .expect("expected backend path");
 
         assert_eq!(path, normalize_path_for_config(&backend_dir));
@@ -2104,7 +2131,7 @@ mod tests {
         );
 
         let path = ctx
-            .compute_apple_backend_path()
+            .compute_member_backend_path(crate::framework::APPLE_BACKEND)
             .expect("waterui_path/backends/apple must resolve");
         assert!(
             path.ends_with("backends/apple"),
@@ -2126,7 +2153,7 @@ mod tests {
             None,
         );
 
-        assert!(ctx.compute_apple_backend_path().is_none());
+        assert!(ctx.compute_member_backend_path(crate::framework::APPLE_BACKEND).is_none());
         let error = ctx.waterui_apple_dependency().err().unwrap().to_string();
         assert!(error.contains("backends/apple"), "{error}");
     }
@@ -2219,7 +2246,7 @@ mod tests {
         );
 
         let path = ctx
-            .compute_apple_backend_path()
+            .compute_member_backend_path(crate::framework::APPLE_BACKEND)
             .expect("expected backend path");
         assert_eq!(path, normalize_path_for_config(&backend_dir));
 
@@ -2811,18 +2838,24 @@ mod tests {
 
     #[test]
     fn path_pinned_hydrolysis_manifest_uses_the_checkouts_own_sources() {
-        // A project pinned to a local checkout resolves `hydrolysis` and
-        // `hydrolysis-m3` the way the checkout's root manifest does — the
-        // `[patch.crates-io]` git pin here — never a `backends/` directory the
-        // tree no longer carries (#699).
+        // A project pinned to a local checkout resolves `hydrolysis` as the
+        // checkout's own in-tree member — a `path` into
+        // `backends/hydrolysis`, never the independent repository (#1635) —
+        // and `hydrolysis-m3` through the checkout's declared source, the
+        // `[patch.crates-io]` git pin here.
         let tempdir = tempdir().expect("temporary checkout dir");
         let checkout = tempdir.path().join("waterui");
-        std::fs::create_dir_all(&checkout).expect("checkout dir");
+        std::fs::create_dir_all(checkout.join("backends/hydrolysis")).expect("checkout dirs");
         std::fs::write(
             checkout.join("Cargo.toml"),
             include_str!("../../tests/fixtures/local_checkout_patches.toml"),
         )
         .expect("checkout manifest");
+        std::fs::write(
+            checkout.join("backends/hydrolysis/Cargo.toml"),
+            "[package]\nname = \"hydrolysis\"\n",
+        )
+        .expect("member manifest");
 
         let hydrolysis_ctx = ctx(
             Some(checkout.clone()),
@@ -2851,16 +2884,13 @@ mod tests {
         ] {
             let dependencies = &manifest["target"][cfg]["dependencies"];
             let hydrolysis = &dependencies["hydrolysis"];
-            assert_eq!(
-                hydrolysis["git"].as_str(),
-                Some("https://github.com/water-rs/hydrolysis"),
-                "{cfg} hydrolysis must name the checkout's patched git source"
+            assert!(
+                hydrolysis["path"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("backends/hydrolysis")),
+                "{cfg} hydrolysis must resolve the checkout's own member by path"
             );
-            assert_eq!(
-                hydrolysis["rev"].as_str(),
-                Some("e0cab32d0302877bbc9852cf504538fcf1534cb7"),
-            );
-            assert!(hydrolysis.get("path").is_none());
+            assert!(hydrolysis.get("git").is_none());
             assert!(hydrolysis.get("version").is_none());
             let m3 = &dependencies["hydrolysis-m3"];
             assert_eq!(
@@ -4196,10 +4226,14 @@ enum NativeBackendDependencySource<'a> {
     /// The source the checkout's own manifest resolves the crate to: its
     /// `[patch.crates-io]` override when the declared `[workspace.dependencies]`
     /// requirement goes to the registry, the declared entry otherwise. For the
-    /// crates extracted out of the `WaterUI` tree — `hydrolysis`,
-    /// `hydrolysis-m3`, `waterui-dew`, `waterui-gtk` — which the checkout
-    /// consumes as versioned or git dependencies, not directories.
+    /// crates released from their own repositories — `hydrolysis-m3`,
+    /// `waterui-dew`, `waterui-gtk` — which the checkout consumes as versioned
+    /// or git dependencies, not directories.
     WorkspaceDependency,
+    /// An in-tree framework workspace member resolved through its
+    /// `{name}-path` metadata — `hydrolysis` — the same member source on
+    /// every channel, a `path` into a `waterui_path` checkout (#1635).
+    FrameworkMember(FrameworkMember),
 }
 
 #[derive(Clone, Copy)]
@@ -4561,6 +4595,12 @@ fn generated_dependency_from_spec(
     spec: NativeBackendDependencySpec<'_>,
 ) -> io::Result<GeneratedDependencyDetail> {
     let mut detail = match (&ctx.waterui_path, spec.source) {
+        // A `*-path` member resolves identically with or without
+        // `waterui_path` — `member_dependency` reads the local probe and the
+        // channel source itself.
+        (_, NativeBackendDependencySource::FrameworkMember(member)) => {
+            ctx.member_dependency(member)?
+        }
         (Some(_), NativeBackendDependencySource::WorkspaceDependency) => {
             local_checkout_dependency(ctx, spec.crate_name)?
         }
@@ -5057,8 +5097,9 @@ pub mod hydrolysis {
     use super::{
         GeneratedBinSection, GeneratedCargoManifest, GeneratedDependencyDetail,
         GeneratedDependencyValue, GeneratedTargetSection, GeneratedWorkspaceSection,
-        NativeBackendDependencySource, NativeBackendDependencySpec, Path, TemplateContext,
-        TemplateNamespace, embedded, io, scaffold_dir, write_generated_cargo_toml,
+        HYDROLYSIS, NativeBackendDependencySource, NativeBackendDependencySpec, Path,
+        TemplateContext, TemplateNamespace, embedded, io, scaffold_dir,
+        write_generated_cargo_toml,
     };
     use std::collections::BTreeMap;
 
@@ -5302,7 +5343,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
                             &["accessibility"],
-                            NativeBackendDependencySource::WorkspaceDependency,
+                            NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
                     .with_default_features(false),
@@ -5375,7 +5416,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
                             &hydrolysis_features,
-                            NativeBackendDependencySource::WorkspaceDependency,
+                            NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
                     .with_default_features(false),
@@ -5519,7 +5560,7 @@ pub mod hydrolysis {
                         NativeBackendDependencySpec::new(
                             "hydrolysis",
                             &["web"],
-                            NativeBackendDependencySource::WorkspaceDependency,
+                            NativeBackendDependencySource::FrameworkMember(HYDROLYSIS),
                         ),
                     )?
                     .with_default_features(false),
@@ -5983,20 +6024,25 @@ fn workspace_member_packages(root: &Path) -> io::Result<Vec<(String, PathBuf)>> 
     Ok(packages)
 }
 
-/// [`collect_workspace_patches`] plus a `{ path }` entry for every `waterui*`
+/// [`collect_workspace_patches`] plus a `{ path }` entry for every framework
 /// member package the checkout's own patch table leaves out — the workspace's
-/// glob members (`waterui-ffi`, `waterui-preview`, …) carry no entry of their
-/// own, and without one a generated crate resolves their registry copies
-/// beside the patched siblings (#197). The member set is read off the
-/// checkout's workspace globs, the same source of truth channel resolution
-/// reads from the framework lockfile. Additions ride every table the set
-/// already carries, `crates-io` and the repository-source mirror alike.
+/// glob members (`waterui-ffi`, `waterui-preview`, …) and the `*-path` members
+/// (`hydrolysis`) carry no entry of their own, and without one a generated
+/// crate resolves their registry copies beside the patched siblings (#197,
+/// #1635). The member set is read off the checkout's workspace globs, the
+/// same source of truth channel resolution reads from the framework
+/// lockfile. Additions ride every table the set already carries, `crates-io`
+/// and the repository-source mirror alike.
 pub fn collect_framework_checkout_patches(
     workspace_root: &Path,
 ) -> io::Result<cargo_toml::PatchSet> {
     let mut patches = collect_workspace_patches(workspace_root)?;
     for (name, dir) in workspace_member_packages(workspace_root)? {
-        if !name.starts_with("waterui") {
+        if !(name.starts_with("waterui")
+            || FRAMEWORK_MEMBERS
+                .iter()
+                .any(|member| member.package == name))
+        {
             continue;
         }
         let path = normalize_path_for_config(&dir);
@@ -6146,10 +6192,17 @@ pub fn local_framework_patches(
     }
     patch_framework_git_source(&mut patches);
     // The checkout's glob members carry no patch entry of their own; pin each
-    // `waterui*` member's directory the same relative way (#197).
+    // framework member's directory the same relative way (#197) — the `*-path`
+    // members included, so an independent dependent's crates.io requirement
+    // (`hydrolysis-m3`'s `hydrolysis` edge) resolves into the checkout too.
     let checkout_root = project_root.join(waterui_path);
     for (name, dir) in workspace_member_packages(&checkout_root)? {
-        if !name.starts_with("waterui") || !dir.starts_with(&checkout_root) {
+        if !(name.starts_with("waterui")
+            || FRAMEWORK_MEMBERS
+                .iter()
+                .any(|member| member.package == name))
+            || !dir.starts_with(&checkout_root)
+        {
             continue;
         }
         let path = waterui_path.join(dir.strip_prefix(&checkout_root).unwrap_or(&dir));
@@ -6171,10 +6224,11 @@ pub fn local_framework_patches(
 /// `[patch.crates-io]` override when the `[workspace.dependencies]` requirement
 /// goes to the registry, the declared entry itself otherwise.
 ///
-/// Crates extracted out of the `WaterUI` tree — `hydrolysis`, `hydrolysis-m3`,
+/// Crates released from their own repositories — `hydrolysis-m3`,
 /// `waterui-dew`, `waterui-gtk` — are consumed by the checkout as versioned or
 /// git dependencies, so a generated backend manifest names that same source
-/// rather than a directory the tree no longer carries.
+/// rather than a directory the tree does not carry. In-tree members like
+/// `hydrolysis` resolve through their `{name}-path` member source instead.
 fn local_checkout_dependency(
     ctx: &TemplateContext,
     crate_name: &str,
