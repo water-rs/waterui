@@ -857,17 +857,39 @@ const OS_SIGNPOST_INTERVAL_END: u8 = 0x02;
 unsafe extern "C" {
     fn os_log_create(subsystem: *const core::ffi::c_char, category: *const core::ffi::c_char)
         -> *mut OsLog;
-    /// The syscall-level emitter behind the `os_signpost_interval_*`
-    /// inlines — a real `libsystem` symbol since iOS 13.
-    fn _os_signpost_emit_with_type(
-        log: *mut OsLog,
-        signpost_type: u8,
-        signpost_id: u64,
-        name: *const core::ffi::c_char,
-        format: *const core::ffi::c_char,
-        buf: *const u8,
-        size: usize,
-    );
+}
+
+type EmitWithType = unsafe extern "C" fn(
+    log: *mut OsLog,
+    signpost_type: u8,
+    signpost_id: u64,
+    name: *const core::ffi::c_char,
+    format: *const core::ffi::c_char,
+    buf: *const u8,
+    size: usize,
+);
+
+/// The syscall-level emitter behind the `os_signpost_interval_*` SDK
+/// inlines — present in `libsystem` since iOS 13 but SPI, so `dlsym`
+/// resolves it where the linker's `.tbd` stub hides it.
+fn emit_with_type() -> Option<EmitWithType> {
+    struct FSend(Option<EmitWithType>);
+    // SAFETY: the resolved function pointer is valid for the process
+    // lifetime and called from any thread.
+    unsafe impl Send for FSend {}
+    unsafe impl Sync for FSend {}
+    static EMIT: std::sync::OnceLock<FSend> = std::sync::OnceLock::new();
+    EMIT.get_or_init(|| {
+        FSend(unsafe {
+            let ptr = libc::dlsym(libc::RTLD_DEFAULT, c"_os_signpost_emit_with_type".as_ptr());
+            if ptr.is_null() {
+                None
+            } else {
+                Some(core::mem::transmute::<*mut core::ffi::c_void, EmitWithType>(ptr))
+            }
+        })
+    })
+    .0
 }
 
 fn signpost_log() -> *mut OsLog {
@@ -888,10 +910,14 @@ fn signpost_log() -> *mut OsLog {
 /// Opens an `os_signpost` interval named `bench_cell` carrying `cell_name`
 /// as its metadata string.
 fn signpost_begin(id: u64, cell_name: &str) {
+    let Some(emit) = emit_with_type() else {
+        tracing::warn!("os_signpost emit unavailable");
+        return;
+    };
     let name = CString::new(cell_name).expect("cell name is UTF-8");
     // SAFETY: log lives for the process; `name` outlives the call.
     unsafe {
-        _os_signpost_emit_with_type(
+        emit(
             signpost_log(),
             OS_SIGNPOST_INTERVAL_BEGIN,
             id.max(1),
@@ -904,10 +930,13 @@ fn signpost_begin(id: u64, cell_name: &str) {
 }
 
 fn signpost_end(id: u64, name: &str) {
+    let Some(emit) = emit_with_type() else {
+        return;
+    };
     let name = CString::new(name).expect("name is UTF-8");
     // SAFETY: same as `signpost_begin`.
     unsafe {
-        _os_signpost_emit_with_type(
+        emit(
             signpost_log(),
             OS_SIGNPOST_INTERVAL_END,
             id.max(1),
