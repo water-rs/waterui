@@ -1917,15 +1917,10 @@ mod tests {
         let start_args = build_android_start_args("100.76.86.48:5555", &artifact, &env_vars)
             .expect("start args build");
 
-        assert_eq!(
-            start_args,
-            vec![
-                "-s".to_string(),
-                "100.76.86.48:5555".to_string(),
-                "shell".to_string(),
-                "am start -S -n dev.waterui.app/.MainActivity --es waterui.env.WATERUI_APP_NAME 'Logs Repro' --es waterui.env.WATERUI_LOG \"o'clock\" --es waterui.env.WATERUI_PATH 'say \"hi\" $HOME'".to_string(),
-            ]
-        );
+        // The device shell receives one command word after `shell`; what it
+        // re-splits that into is the contract, not the quoting style.
+        assert_eq!(start_args[..3], ["-s", "100.76.86.48:5555", "shell"]);
+        assert_eq!(start_args.len(), 4);
 
         let words = shlex::split(&start_args[3]).expect("quoted command re-splits");
         assert_eq!(
