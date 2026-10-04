@@ -757,11 +757,12 @@ async fn write_cef_sbom(path: &Path, version: &str, created: &str) -> eyre::Resu
 }
 
 /// The WPE runtime is built and published by the framework repository's
-/// `WPE Runtime` workflow on a `wpe-runtime-v<version>` tag, so the manifest
-/// is bound to the WPE version this CLI expects, not to the CLI release.
+/// `WPE Runtime` workflow on a `browser-wpe-runtime/v<version>` tag, so the
+/// manifest is bound to the WPE version this CLI expects, not to the CLI
+/// release.
 fn runtime_manifest_url(configuration: &SourceConfiguration) -> String {
     format!(
-        "{}/wpe-runtime-v{}/browser-runtime-manifest.json",
+        "{}/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
         configuration.release_base_url, configuration.wpe_version
     )
 }
@@ -868,7 +869,7 @@ mod tests {
         assert_eq!(
             runtime_manifest_url(&configuration),
             format!(
-                "https://github.com/water-rs/waterui/releases/download/wpe-runtime-v{}/browser-runtime-manifest.json",
+                "https://github.com/water-rs/waterui/releases/download/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
                 configuration.wpe_version
             )
         );
