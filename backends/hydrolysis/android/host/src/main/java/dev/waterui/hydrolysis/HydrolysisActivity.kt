@@ -28,7 +28,7 @@ abstract class HydrolysisActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        NativeBridge.load(nativeLibraryName)
+        NativeBridge.load(nativeLibraryName, intent.getStringExtra(LOG_LEVEL_EXTRA))
         @Suppress("DEPRECATION")
         val retained = lastCustomNonConfigurationInstance as? HydrolysisSession
         val session = retained ?: HydrolysisSession(this)
@@ -62,5 +62,15 @@ abstract class HydrolysisActivity : ComponentActivity() {
         }
         session = null
         super.onDestroy()
+    }
+
+    private companion object {
+        /**
+         * The launch-intent extra the CLI's `--logs` level arrives in
+         * (`adb shell am start --es waterui.log.level debug`). It goes to the
+         * native logging setup through [NativeBridge.load] — unlike the
+         * `waterui.env.*` extras it never becomes an environment variable.
+         */
+        const val LOG_LEVEL_EXTRA = "waterui.log.level"
     }
 }

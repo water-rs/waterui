@@ -14,8 +14,10 @@ pub fn start() {
     hydrolysis::run(app, hydrolysis_m3::Material3::defaults());
 }
 
-/// Android entry point: the Kotlin host's `NativeBridge.load` lands here,
-/// installs logging and registers the app factory each new session mounts.
+/// Android entry point: the Kotlin host's `NativeBridge.load` lands here and
+/// registers the app factory each new session mounts. Logging installs at
+/// `nativeInit` — the host hands it the launch intent's `waterui.log.level`
+/// extra (the CLI's `--logs` level).
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(
@@ -24,7 +26,6 @@ pub extern "system" fn JNI_OnLoad(
 ) -> i32 {
     use std::rc::Rc;
 
-    hydrolysis::android::init_logging();
     hydrolysis::android::register_app(|| {
         let env = waterui::configure_environment!(waterui::env::Environment::new());
         (

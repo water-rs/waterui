@@ -82,14 +82,14 @@ fn build_app() -> App {
     )
 }
 
-/// Entry from the JVM: installs logging, registers the app factory the
-/// Kotlin host mounts per session create.
+/// Entry from the JVM: registers the app factory the Kotlin host mounts per
+/// session create. Logging installs at `nativeInit`, fed the launch intent's
+/// `waterui.log.level` extra.
 #[unsafe(no_mangle)]
 pub extern "system" fn JNI_OnLoad(
     _vm: *mut std::ffi::c_void,
     _reserved: *mut std::ffi::c_void,
 ) -> i32 {
-    hydrolysis::android::init_logging();
     hydrolysis::android::register_app(|| {
         (
             build_app(),

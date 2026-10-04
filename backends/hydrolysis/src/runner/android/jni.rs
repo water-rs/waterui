@@ -29,8 +29,10 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// takes the accesskit action index plus selection-bounds, text and numeric
 /// payload channels; 5 = `onNativeAccessibilityTreeChanged` carries the
 /// diffed event-list JSON and `nativeAccessibilityHitTest` maps a point to
-/// the served virtual node for explore-by-touch.
-pub const JNI_SCHEMA: jint = 5;
+/// the served virtual node for explore-by-touch; 6 = `nativeInit` carries
+/// the launch intent's `waterui.log.level` extra (the CLI's `--logs`
+/// level) and logging init moves out of the app cdylib's `JNI_OnLoad`.
+pub const JNI_SCHEMA: jint = 6;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -125,15 +127,36 @@ pub fn get_string(env: &mut JNIEnv, value: &JString) -> Result<String, JniError>
         .map_err(JniError::from)
 }
 
+/// `log_level` is the `waterui.log.level` launch extra (a `tracing` level
+/// name), or null when the launch carried none — [`super::init_logging`]
+/// keeps its INFO default then. An unrecognized name is a contract breach,
+/// not something to guess around: it throws.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
     mut env: JNIEnv,
     _class: JClass,
     _version: jint,
+    log_level: JString,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
         let _ = JAVA_VM.set(vm);
+        let level = if log_level.as_raw().is_null() {
+            None
+        } else {
+            let level = get_string(env, &log_level)?;
+            Some(
+                level
+                    .parse::<tracing::level_filters::LevelFilter>()
+                    .map_err(|_| {
+                        JniError(format!(
+                            "hydrolysis android: unrecognized log level {level:?} \
+                             in the launch intent"
+                        ))
+                    })?,
+            )
+        };
+        super::init_logging(level);
         Ok(JNI_SCHEMA)
     })
 }

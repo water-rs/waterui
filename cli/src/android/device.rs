@@ -39,6 +39,12 @@ enum AndroidRuntimeEvent {
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
+/// The launch-intent extra carrying the `--logs` level to a Hydrolysis
+/// Android app — `HydrolysisActivity` reads it and hands it to the native
+/// logging setup. Unlike `waterui.env.*` extras it never becomes an
+/// environment variable.
+const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
+
 /// An `adb` device command could not be spawned, timed out, or exited unsuccessfully.
 #[derive(Debug, thiserror::Error)]
 enum AdbCommandError {
@@ -287,7 +293,7 @@ async fn run_on_android(
     launch_android_app(
         host,
         &adb,
-        build_android_start_args(device_id, &artifact, &env_vars),
+        build_android_start_args(device_id, &artifact, &env_vars, options.log_level()),
     )
     .await?;
 
@@ -358,11 +364,15 @@ async fn install_android_artifact(
 
 /// The environment the app process starts with, delivered as `waterui.env.*`
 /// intent extras; the generated `MainActivity` applies each of them with
-/// `Os.setenv` before loading the native library.
+/// `Os.setenv` before loading the native library. The `--logs` level rides
+/// alongside as its own extra (`waterui.log.level`): a Hydrolysis host reads
+/// it straight from the intent, no `Os.setenv` detour, so its tracing filter
+/// is set by the flag rather than by the build's debug assertions.
 fn build_android_start_args(
     device_id: &str,
     artifact: &Artifact,
     env_vars: &[(String, String)],
+    log_level: Option<LogLevel>,
 ) -> Vec<String> {
     let mut start_args = vec![
         "-s".to_string(),
@@ -379,6 +389,12 @@ fn build_android_start_args(
         start_args.push("--es".to_string());
         start_args.push(format!("waterui.env.{key}"));
         start_args.push(value.clone());
+    }
+
+    if let Some(level) = log_level {
+        start_args.push("--es".to_string());
+        start_args.push(ANDROID_LOG_LEVEL_EXTRA.to_string());
+        start_args.push(level.to_tracing_level().to_string());
     }
 
     start_args
@@ -1780,13 +1796,34 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::PathBuf;
 
     use super::{
-        AndroidRuntimeEvent, adb_reports_device_ready, android_log_looks_like_crash,
-        android_runtime_event_from_log_line, command_targets_avd, log_level_allows,
-        log_mentions_pid,
+        ANDROID_LOG_LEVEL_EXTRA, AndroidRuntimeEvent, adb_reports_device_ready,
+        android_log_looks_like_crash, android_runtime_event_from_log_line,
+        build_android_start_args, command_targets_avd, log_level_allows, log_mentions_pid,
     };
-    use crate::device::LogLevel;
+    use crate::device::{Artifact, LogLevel};
+
+    #[test]
+    fn android_start_args_carry_log_level_extra() {
+        let artifact = Artifact::new("com.example.app", PathBuf::from("/tmp/app.apk"));
+        let args = build_android_start_args(
+            "emulator-5554",
+            &artifact,
+            &[],
+            Some(LogLevel::Debug),
+        );
+        let position = args
+            .iter()
+            .position(|arg| arg == ANDROID_LOG_LEVEL_EXTRA)
+            .expect("log level extra missing");
+        assert_eq!(args[position - 1], "--es");
+        assert_eq!(args[position + 1], "debug");
+
+        let args = build_android_start_args("emulator-5554", &artifact, &[], None);
+        assert!(!args.iter().any(|arg| arg == ANDROID_LOG_LEVEL_EXTRA));
+    }
 
     #[test]
     fn detects_pid_mentions_in_threadtime_lines() {
