@@ -12,7 +12,7 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_foundation::{NSBundle, NSObjectProtocol, NSString};
 use objc2_ui_kit::{UIView, UIViewController};
 
-use super::host_view::{HostView, window_root};
+use super::host_view::HostView;
 use crate::callback::guarded;
 
 /// The state a [`ViewController`] keeps.
@@ -30,13 +30,15 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     #[ivars = ViewControllerIvars]
     #[derive(Debug)]
-    /// A view controller hosting one [`HostView`] that always fills the
-    /// window.
+    /// A view controller hosting one [`HostView`].
     ///
-    /// The host view reports the window's safe-area insets, so content laid
-    /// out in it can keep clear of bars and screen corners while backgrounds
-    /// extend under them, and it still delivers touches to subviews placed
-    /// outside its bounds.
+    /// At a window's root site the host view is a [`window_root`], which fills
+    /// the window, reports its safe-area insets, and still delivers touches to
+    /// subviews placed outside its bounds. At an embedded site the host view
+    /// keeps the bounds its native parent assigned, and `UIKit` sizes it
+    /// through ordinary controller containment.
+    ///
+    /// [`window_root`]: crate::uikit::window_root
     pub struct ViewController;
 
     // SAFETY: `NSObjectProtocol` asks nothing of a `UIViewController`
@@ -52,28 +54,20 @@ define_class!(
             });
         }
 
-        // SAFETY: see the module safety note.
-        #[unsafe(method(viewWillLayoutSubviews))]
-        fn view_will_layout_subviews_override(&self) {
-            guarded("ViewController viewWillLayoutSubviews", || {
-                // SAFETY: see the module safety note.
-                let _: () = unsafe { msg_send![super(self), viewWillLayoutSubviews] };
-                let view = &self.ivars().view;
-                if let Some(window) = view.window() {
-                    view.setFrame(window.bounds());
-                }
-            });
-        }
     }
 );
 
 impl ViewController {
-    /// A view controller with an empty host view.
+    /// A view controller owning `view` as its root host view.
+    ///
+    /// Window sites pass [`window_root`]; an embedded parent passes
+    /// `HostView::new(mtm, bounds)` carrying the bounds its native container
+    /// assigned.
+    ///
+    /// [`window_root`]: crate::uikit::window_root
     #[must_use]
-    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(ViewControllerIvars {
-            view: window_root(mtm),
-        });
+    pub fn new(mtm: MainThreadMarker, view: Retained<HostView>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ViewControllerIvars { view });
         // SAFETY: `initWithNibName:bundle:` is `UIViewController`'s designated
         // initializer; no nib means the view comes from `loadView`.
         unsafe {
@@ -85,7 +79,7 @@ impl ViewController {
         }
     }
 
-    /// The view filling the window, into which content is placed.
+    /// The controller's root host view, into which content is placed.
     #[must_use]
     pub fn host_view(&self) -> &HostView {
         &self.ivars().view

@@ -585,6 +585,10 @@ impl Renderer for RasterRenderer {
             }
         }
     }
+
+    /// A CPU renderer imports no native frames — retirements queue no
+    /// native releases, so there is nothing to submit.
+    fn submit_native_releases(&mut self) {}
 }
 
 impl RasterRenderer {

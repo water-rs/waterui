@@ -21,7 +21,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f"
+source = "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#a6318b38c54b31cbfbc518b75bd9de737e229ff6"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -83,4 +83,3 @@ checksum = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 dependencies = [
  "objc2 0.5.2",
 ]
-
