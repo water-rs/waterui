@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WaterUI Bench Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f4;
+      --ink: #161712;
+      --muted: #65685e;
+      --line: #dedfd7;
+      --surface: #ffffff;
+      --surface-2: #eeeee7;
+      --accent: #245f4f;
+      --accent-2: #b9d8cc;
+      --warn: #9b4d1d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    main {
+      width: min(1320px, calc(100vw - 20px));
+      margin: 0 auto;
+      padding: 14px 0 28px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 14px;
+      font-weight: 680;
+      letter-spacing: 0;
+      margin-bottom: 6px;
+    }
+
+    h3 {
+      font-size: 16px;
+      font-weight: 650;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .summary {
+      display: flex;
+      gap: 14px;
+      align-items: baseline;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .measurement {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+
+    .summary div {
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+    }
+
+    .summary span,
+    .metrics span,
+    .resources span,
+    .bars label,
+    .cache {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .summary strong {
+      display: inline;
+      margin-top: 0;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 720;
+    }
+
+    .reports {
+      display: grid;
+      gap: 12px;
+    }
+
+    .measurements {
+      display: grid;
+      gap: 16px;
+    }
+
+    .measurement {
+      padding: 10px;
+      display: grid;
+      gap: 9px;
+    }
+
+    .measurement-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .measurement-head span {
+      color: var(--accent);
+      background: var(--accent-2);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 2px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .tabs button {
+      appearance: none;
+      border: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 680;
+      letter-spacing: 0;
+      padding: 7px 10px 6px;
+    }
+
+    .tabs button:hover,
+    .tabs button:focus {
+      color: var(--ink);
+      outline: none;
+    }
+
+    .tabs button.active {
+      border-bottom-color: var(--accent);
+      color: var(--ink);
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: grid;
+      gap: 9px;
+    }
+
+    .metrics,
+    .diagnosis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .diagnosis {
+      grid-template-columns: 1.1fr 1.1fr 1fr 1fr 1.2fr;
+      gap: 4px;
+    }
+
+    .resources {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 4px;
+    }
+
+    .diagnosis div,
+    .metrics div,
+    .resources div {
+      background: var(--surface-2);
+      border-radius: 4px;
+      padding: 6px 8px;
+      min-width: 0;
+    }
+
+    .diagnosis span,
+    .metrics strong,
+    .resources strong {
+      display: block;
+    }
+
+    .diagnosis span {
+      color: var(--muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .diagnosis strong,
+    .metrics strong,
+    .resources strong {
+      margin-top: 5px;
+      font-size: 13px;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    .diagnosis small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .bars {
+      display: grid;
+      gap: 9px;
+    }
+
+    .bars div {
+      display: grid;
+      grid-template-columns: 64px 1fr 64px;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .bars span {
+      height: 10px;
+      background: var(--surface-2);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .bars i {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      border-radius: inherit;
+    }
+
+    .bars b {
+      text-align: right;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .cache {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+
+    .timeline-grid,
+    .trend-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 9px;
+    }
+
+    .trend-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .line-chart,
+    .phase-stack {
+      display: grid;
+      gap: 6px;
+    }
+
+    .line-chart > div:first-child,
+    .phase-stack > div:first-child {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: baseline;
+    }
+
+    .line-chart h4,
+    .phase-stack h4 {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .line-chart > div:first-child span,
+    .phase-stack > div:first-child span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .phase-bar {
+      min-height: 28px;
+      display: flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-2);
+      overflow: hidden;
+    }
+
+    .phase-bar i {
+      min-width: 2px;
+      display: flex;
+      align-items: center;
+      padding-left: 8px;
+      color: #ffffff;
+      font-style: normal;
+      font-size: 11px;
+      font-weight: 650;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .phase-input { background: #6e837a; }
+    .phase-animation { background: #7e725d; }
+    .phase-rebuild { background: #9b4d1d; }
+    .phase-render { background: #245f4f; }
+
+    .line-chart svg {
+      display: block;
+      width: 100%;
+      height: 180px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface-2);
+      overflow: visible;
+    }
+
+    .line-chart polyline,
+    .line-chart line {
+      fill: none;
+      vector-effect: non-scaling-stroke;
+    }
+
+    .line-chart polyline {
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .line-total {
+      stroke: #102a24;
+    }
+
+    .line-gpu {
+      stroke: #245f4f;
+    }
+
+    .line-render {
+      stroke: #6e837a;
+    }
+
+    .line-rebuild {
+      stroke: #9b4d1d;
+    }
+
+    .line-fps {
+      stroke: #3f5f9f;
+    }
+
+    .line-cpu {
+      stroke: #8b4c89;
+    }
+
+    .line-memory {
+      stroke: #6c6f35;
+    }
+
+    .line-layers {
+      stroke: #5b5f66;
+    }
+
+    .line-clip {
+      stroke: #a05d27;
+    }
+
+    .budget {
+      stroke: #c4c6bd;
+      stroke-width: 1;
+      stroke-dasharray: 3 3;
+    }
+
+    .sample-points circle {
+      fill: transparent;
+      opacity: 0;
+      cursor: crosshair;
+      pointer-events: all;
+    }
+
+    .sample-points circle:hover,
+    .sample-points circle:focus,
+    .sample-points circle.active {
+      outline: none;
+    }
+
+    .hover-inspector {
+      min-height: 28px;
+      display: flex;
+      align-items: center;
+      padding: 5px 8px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--ink);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-right: 6px;
+      border-radius: 2px;
+      vertical-align: -1px;
+      background: #102a24;
+    }
+
+    .legend .gpu::before {
+      background: #245f4f;
+    }
+
+    .legend .render::before {
+      background: #6e837a;
+    }
+
+    .legend .rebuild::before {
+      background: #9b4d1d;
+    }
+
+    .legend .fps::before {
+      background: #3f5f9f;
+    }
+
+    .legend .budget-label::before {
+      background: #c4c6bd;
+    }
+
+    @media (max-width: 760px) {
+      main {
+        width: min(100vw - 24px, 1120px);
+        padding-top: 24px;
+      }
+
+      header,
+      .summary,
+      .diagnosis,
+      .metrics,
+      .resources,
+      .timeline-grid,
+      .trend-grid {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+      font-size: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>WaterUI Bench Report</h1>
+        <p>Hydrolysis offscreen GPU pipeline</p>
+      </div>
+      <section class="summary" aria-label="Summary">
+        <div><span>worst p95</span><strong>{{ worst_p95 }}</strong></div>
+        <div><span>missed 120fps</span><strong>{{ missed_120 }}</strong></div>
+      </section>
+    </header>
+    <section class="reports">
+      {{ reports|safe }}
+    </section>
+  </main>
+  <script>
+    const formatSample = (element) => [
+      `frame ${element.dataset.frame}`,
+      `total ${element.dataset.total}`,
+      `FPS ${element.dataset.fps}`,
+      `GPU ${element.dataset.gpu}`,
+      `render ${element.dataset.render}`,
+      `rebuild ${element.dataset.rebuild}`,
+      element.dataset.build ? `build ${element.dataset.build}` : "",
+      element.dataset.dispatch ? `dispatch ${element.dataset.dispatch}` : "",
+      element.dataset.finish ? `finish ${element.dataset.finish}` : "",
+      `CPU ${element.dataset.cpu}`,
+      `memory ${element.dataset.memory}`,
+      element.dataset.layers ? `layers ${element.dataset.layers}` : "",
+      element.dataset.clipLayers ? `clip ${element.dataset.clipLayers}` : "",
+      element.dataset.clipDepth ? `clip depth ${element.dataset.clipDepth}` : "",
+      element.dataset.value ? `value ${element.dataset.value}` : "",
+    ].filter(Boolean).join("  ");
+
+    const clearActiveSamples = (root) => {
+      root.querySelectorAll("[data-frame].active").forEach((element) => {
+        element.classList.remove("active");
+      });
+    };
+
+    const activateSample = (element) => {
+      const measurement = element.closest(".measurement");
+      if (!measurement) {
+        return;
+      }
+      clearActiveSamples(measurement);
+      element.classList.add("active");
+      const frame = element.dataset.frame;
+      measurement
+        .querySelectorAll(`[data-frame="${frame}"]`)
+        .forEach((peer) => peer.classList.add("active"));
+      const inspector = measurement.querySelector(".hover-inspector");
+      if (inspector) {
+        inspector.textContent = formatSample(element);
+      }
+    };
+
+    document.querySelectorAll("[data-frame]").forEach((element) => {
+      element.addEventListener("mouseenter", () => activateSample(element));
+      element.addEventListener("focus", () => activateSample(element));
+    });
+
+    document.querySelectorAll(".tabs button").forEach((button) => {
+      button.addEventListener("click", () => {
+        const measurement = button.closest(".measurement");
+        if (!measurement) {
+          return;
+        }
+        measurement.querySelectorAll(".tabs button").forEach((tab) => {
+          const selected = tab === button;
+          tab.classList.toggle("active", selected);
+          tab.setAttribute("aria-selected", selected ? "true" : "false");
+        });
+        measurement.querySelectorAll(".tab-panel").forEach((panel) => {
+          panel.classList.toggle(
+            "active",
+            panel.dataset.tabPanel === button.dataset.tabTarget
+          );
+        });
+      });
+    });
+  </script>
+</body>
+</html>

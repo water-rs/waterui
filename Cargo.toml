@@ -18,6 +18,7 @@ members = [
     "components/visual/*",
     "utils/*",
     "src",
+    "cli",
     "testing",
     "ffi",
     "ffi/generator",
@@ -524,6 +525,13 @@ lto = true
 codegen-units = 1
 opt-level = "z"    # Optimize for size
 strip = true       # Strip symbols
+
+# cargo-dist builds release binaries with `--profile=dist`; the profile must
+# exist in the root manifest or every `dist build` leg fails. This is the
+# profile `dist init` generates.
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
