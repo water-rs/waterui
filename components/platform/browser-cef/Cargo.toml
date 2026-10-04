@@ -63,13 +63,27 @@ objc2-core-foundation = { version = "0.3", features = [
     "CFNumber",
     "CFString",
 ] }
+# The CEF frame sink's IOSurface pool: pixel-buffer allocation, the
+# surface's retain count as the release observation, and the MTLTexture
+# wrap each presented generation takes.
+objc2-core-video = { version = "0.3", features = [
+    "std",
+    "objc2-io-surface",
+    "CVBase",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVPixelBufferIOSurface",
+    "CVReturn",
+] }
+objc2-io-surface = "0.3"
+objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 objc2-security = { version = "0.3", features = [
     "CSCommon",
     "SecCode",
     "SecStaticCode",
 ] }
 wgpu.workspace = true
-wgpu-external-frame.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wgpu.workspace = true

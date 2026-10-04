@@ -1,90 +1,23 @@
 //! CEF's Linux GPU path.
 //!
-//! Chromium hands each accelerated paint over as a DMA-BUF shared image
-//! whose contents return to CEF's pool when `on_accelerated_paint`
-//! returns — the handle cannot be cached or accessed afterwards, so the
-//! sink copies: inside the callback the plane is imported transiently
-//! and one `copy_texture_to_texture` (or one composite draw while a
-//! popup is open) lands it in a texture the engine owns. That owned
-//! texture presents through [`FrameOutput`] as the view layer's content,
-//! and a pooled texture is reused only after the engine has released the
-//! frame that showed it. No reference to CEF's shared image — no
-//! duplicated fd, no imported object — survives the callback.
+//! Chromium's Linux shared images are DMA-BUFs, imported on the engine's
+//! Vulkan device. The pooled destination of the inside-the-callback copy
+//! is an engine-owned dma-buf from [`vulkan::Device::alloc_dmabuf`],
+//! re-imported once per present; a pooled buffer hosts a new generation
+//! only after [`Generation::state`] reports `Released`.
 
-use std::cell::RefCell;
 use std::os::fd::{BorrowedFd, OwnedFd};
 
-use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
-use num_traits::ToPrimitive as _;
+use cef::{AcceleratedPaintInfo, ColorType};
 use waterui_graphics::cherenkov_gpu::interop::vulkan::{
     self, DmaBuf, DmaBufPlane, FrameSource, QueueFamily, State,
 };
 use waterui_graphics::cherenkov_gpu::interop::{ExternalFrame, FrameColor, RgbAlpha};
-use waterui_graphics::gpu::{ExternalFrameSource, ExternalFrameView, FrameOutput};
+use waterui_graphics::gpu::{ExternalFrameView, FrameOutput};
 use wgpu_external_frame::dma_buf::DmaBufFormat;
 
-use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
-
-/// The format of the owned texture a popup composite renders into: what
-/// Chromium's BGRA/XBGRA shared images decode to, in premultiplied alpha.
-const COMPOSITE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
-
-/// How many owned textures the presentation pool holds before it stops
-/// absorbing paints: one on screen, one pending in the engine, one being
-/// written, plus headroom so a resize or a slow release does not stall
-/// Chromium's compositor.
-const POOL_LIMIT: usize = 4;
-
-/// One CEF page's [`ExternalFrameSource`]: installs the page's frame sink on
-/// `start`, and on each host frame keeps Chromium's logical viewport in step
-/// with the presented extent and asks for the next compositor frame.
-struct CefExternalSource {
-    page: CefPageHandle,
-    output: Option<FrameOutput>,
-}
-
-impl ExternalFrameSource for CefExternalSource {
-    fn start(&mut self, output: FrameOutput) {
-        // Native import needs the engine's Vulkan device: this path is
-        // DMA-BUF-only, so the host must run on it — a `FrameOutput` on any
-        // other backend cannot take these frames.
-        let native = vulkan::Device::new(output.shared_device())
-            .expect("CEF DMA-BUF import requires WaterUI's Vulkan backend");
-        // `set_frame_sink` re-shows the page, resizes it and invalidates the
-        // view — on a restart after device loss that is exactly the repaint
-        // onto the new output the issue asks for.
-        self.page
-            .set_frame_sink(LinuxFrameSink::new(output.clone(), native));
-        self.output = Some(output);
-    }
-
-    /// # Panics
-    ///
-    /// Panics when the logical viewport does not fit a `u32`.
-    fn frame(&mut self) {
-        let Some(output) = &self.output else {
-            return;
-        };
-        if output.is_retired() {
-            return;
-        }
-        let (width, height, scale) = output.presented_size();
-        if width > 0 && height > 0 {
-            let logical_width = (f64::from(width) / f64::from(scale))
-                .round()
-                .max(1.0)
-                .to_u32()
-                .expect("CEF logical width exceeds u32");
-            let logical_height = (f64::from(height) / f64::from(scale))
-                .round()
-                .max(1.0)
-                .to_u32()
-                .expect("CEF logical height exceeds u32");
-            self.page.set_viewport(logical_width, logical_height, scale);
-        }
-        self.page.request_frame();
-    }
-}
+use super::sink::{Backend, external_view};
+use crate::CefPageHandle;
 
 /// One engine-owned texture: the allocation's import descriptor — built
 /// once by [`vulkan::Device::alloc_dmabuf`] — and the generation the last
@@ -94,286 +27,150 @@ struct OwnedTarget {
     frame: Option<vulkan::Frame>,
 }
 
-impl OwnedTarget {
-    /// Whether the engine has released the last frame presented from this
-    /// allocation, so it may host a new generation. The engine's
-    /// retirement state is the observation — never a CPU wait.
-    fn released(&self) -> bool {
-        self.frame
-            .as_ref()
-            .is_none_or(|frame| frame.generation.state() == State::Released)
-    }
+/// What a pooled target is reused on: the pixel extent, the pixel format
+/// and the Vulkan layout class it was allocated in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TargetKey {
+    size: (u32, u32),
+    fourcc: u32,
+    layout: u32,
 }
 
-/// The owned state of one [`FrameOutput`]: the texture pool presented
-/// frames come from, the open popup's owned texture and rect, and the
-/// compositor for while it is open.
-struct SinkState {
-    pool: Vec<OwnedTarget>,
-    popup: Option<OwnedTarget>,
-    popup_rect: Option<CefPopupRect>,
-    compositor: Option<PopupCompositor>,
-    retired: bool,
+/// A transient import of one paint's shared DMA-BUF and the pixel format
+/// it declared — dropped inside the callback, never retained.
+struct LinuxImport {
+    frame: vulkan::Frame,
+    fourcc: u32,
 }
 
-/// Chromium's paint callback: imports each element's DMA-BUF transiently,
-/// copies it once on the GPU into an owned texture, and presents that.
-struct LinuxFrameSink {
-    output: FrameOutput,
+/// The Linux [`Backend`]: imports on the output's Vulkan device.
+struct LinuxBackend {
     native: vulkan::Device,
-    state: RefCell<SinkState>,
 }
 
-impl LinuxFrameSink {
-    const fn new(output: FrameOutput, native: vulkan::Device) -> Self {
+impl Backend for LinuxBackend {
+    type Key = TargetKey;
+    type Import = LinuxImport;
+    type Target = OwnedTarget;
+
+    const COPIES: bool = true;
+
+    fn open(output: &FrameOutput) -> Self {
+        // Native import needs the engine's Vulkan device: this path is
+        // DMA-BUF-only, so the host must run on it — a `FrameOutput` on any
+        // other backend cannot take these frames.
         Self {
-            output,
-            native,
-            state: RefCell::new(SinkState {
-                pool: Vec::new(),
-                popup: None,
-                popup_rect: None,
-                compositor: None,
-                retired: false,
-            }),
+            native: vulkan::Device::new(output.shared_device())
+                .expect("CEF DMA-BUF import requires WaterUI's Vulkan backend"),
         }
     }
 
-    /// Copies the view's transient import into a pooled owned texture —
-    /// compositing the open popup over it in the same pass — and presents
-    /// the result.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the pool allocation or import fails, and when either
-    /// texture is not an RGB image.
-    fn present_view(&self, state: &mut SinkState, source: &vulkan::Frame, fourcc: u32) {
-        let source_texture = source
-            .generation
-            .rgb_wrap
-            .as_ref()
-            .expect("a CEF view DMA-BUF imports as an RGB frame");
-        let size = source.size();
-        let popup = match (state.popup_rect, &state.popup) {
-            (Some(rect), Some(target)) => target.frame.as_ref().map(|frame| {
-                (
-                    rect,
-                    frame
-                        .generation
-                        .rgb_wrap
-                        .as_ref()
-                        .expect("a CEF popup DMA-BUF imports as an RGB frame"),
-                )
-            }),
-            _ => None,
-        };
-        // A composited target renders BGRA through the blit pipeline and
-        // ends the pass in COLOR_ATTACHMENT_OPTIMAL; a plain copy keeps the
-        // source's own format and ends in TRANSFER_DST_OPTIMAL.
-        let (fourcc, layout) = if popup.is_some() {
-            (
-                DmaBufFormat::Bgra8.fourcc(),
-                vulkan::LAYOUT_COLOR_ATTACHMENT,
-            )
-        } else {
-            (fourcc, vulkan::LAYOUT_TRANSFER_DST)
-        };
-        let index = state
-            .pool
-            .iter()
-            .position(|target| {
-                target.descriptor.size == size
-                    && target.descriptor.fourcc == fourcc
-                    && target.released()
-            })
-            .or_else(|| {
-                if state.pool.len() >= POOL_LIMIT {
-                    return None;
-                }
-                let descriptor = self
-                    .native
-                    .alloc_dmabuf(
-                        size,
-                        fourcc,
-                        layout,
-                        FrameColor::SRGB,
-                        RgbAlpha::Premultiplied,
-                    )
-                    .expect("CEF pool texture allocation failed");
-                state.pool.push(OwnedTarget {
-                    descriptor,
-                    frame: None,
-                });
-                Some(state.pool.len() - 1)
-            });
-        let Some(index) = index else {
-            // The engine holds every pooled texture longer than Chromium's
-            // frame interval — transient backpressure, not an error; the
-            // next paint presents normally.
-            tracing::warn!(
-                size = ?size,
-                "CEF frame pool is saturated; dropping this paint"
-            );
-            return;
-        };
-        let target = self
+    fn import(&self, frame: &AcceleratedPaintInfo) -> Self::Import {
+        let fourcc = format_of(frame).fourcc();
+        let frame = self
             .native
-            .import(FrameSource::DmaBuf(Box::new(
-                state.pool[index]
-                    .descriptor
-                    .reopen()
-                    .expect("pool DMA-BUF duplication failed"),
-            )))
-            .expect("CEF pool texture import failed");
-        let target_texture = target
+            .import(FrameSource::DmaBuf(Box::new(dmabuf_of(frame))))
+            .expect("CEF DMA-BUF import failed");
+        LinuxImport { frame, fourcc }
+    }
+
+    fn texture(import: &Self::Import) -> &wgpu::Texture {
+        import
+            .frame
             .generation
             .rgb_wrap
             .as_ref()
-            .expect("a pool DMA-BUF imports as an RGB frame");
-        if let Some((rect, popup_texture)) = popup {
-            let compositor = state
-                .compositor
-                .get_or_insert_with(|| PopupCompositor::new(&self.output));
-            let (_, _, scale) = self.output.presented_size();
-            compositor.composite(
-                self.output.device(),
-                self.output.queue(),
-                source_texture,
-                popup_texture,
-                target_texture,
-                size,
-                rect,
-                f64::from(scale),
-            );
-        } else {
-            copy_plane(
-                self.output.device(),
-                self.output.queue(),
-                source_texture,
-                target_texture,
-                size,
-            );
-        }
-        let frame = ExternalFrame::native(target.clone())
-            .expect("a pool texture frame is a valid external frame");
-        state.pool[index].frame = Some(target);
-        // `RetiredOutput` is the documented stop signal: the host is gone,
-        // so this sink stops importing and presenting until `start` hands
-        // the page a fresh output.
-        if self.output.present(frame).is_err() {
-            state.retired = true;
+            .expect("a CEF DMA-BUF imports as an RGB frame")
+    }
+
+    fn size(import: &Self::Import) -> (u32, u32) {
+        import.frame.size()
+    }
+
+    fn source_uv(_import: &Self::Import) -> [f32; 4] {
+        // The dmabuf import wraps the declared visible extent, so the
+        // whole texture is the frame.
+        [0.0, 0.0, 1.0, 1.0]
+    }
+
+    fn key(import: &Self::Import) -> Self::Key {
+        TargetKey {
+            size: import.frame.size(),
+            fourcc: import.fourcc,
+            layout: vulkan::LAYOUT_TRANSFER_DST,
         }
     }
 
-    /// Copies the popup's transient import into its dedicated owned
-    /// texture, which lives for as long as the popup is open and feeds the
-    /// composite in `present_view`.
-    ///
-    /// # Panics
-    ///
-    /// Panics when the allocation or import fails, and when the texture is
-    /// not an RGB image.
-    fn write_popup(&self, state: &mut SinkState, source: &vulkan::Frame, fourcc: u32) {
-        let source_texture = source
-            .generation
-            .rgb_wrap
-            .as_ref()
-            .expect("a CEF popup DMA-BUF imports as an RGB frame");
-        let size = source.size();
-        let rebuild = match &state.popup {
-            Some(target) => target.descriptor.size != size || target.descriptor.fourcc != fourcc,
-            None => true,
-        };
-        if rebuild {
-            let descriptor = self
-                .native
-                .alloc_dmabuf(
-                    size,
-                    fourcc,
-                    vulkan::LAYOUT_TRANSFER_DST,
-                    FrameColor::SRGB,
-                    RgbAlpha::Premultiplied,
-                )
-                .expect("CEF popup texture allocation failed");
-            state.popup = Some(OwnedTarget {
-                descriptor,
-                frame: None,
-            });
+    fn view_key(key: Self::Key, composited: bool) -> Self::Key {
+        if composited {
+            // A composited target renders BGRA through the blit pipeline
+            // and ends the pass in COLOR_ATTACHMENT_OPTIMAL; a plain copy
+            // keeps the source's own format and ends in
+            // TRANSFER_DST_OPTIMAL.
+            TargetKey {
+                fourcc: DmaBufFormat::Bgra8.fourcc(),
+                layout: vulkan::LAYOUT_COLOR_ATTACHMENT,
+                ..key
+            }
+        } else {
+            key
         }
-        let target = state
-            .popup
-            .as_mut()
-            .expect("the popup target was ensured above");
-        let texture = self
+    }
+
+    fn alloc(&self, key: Self::Key) -> Self::Target {
+        let descriptor = self
+            .native
+            .alloc_dmabuf(
+                key.size,
+                key.fourcc,
+                key.layout,
+                FrameColor::SRGB,
+                RgbAlpha::Premultiplied,
+            )
+            .expect("CEF pool texture allocation failed");
+        OwnedTarget {
+            descriptor,
+            frame: None,
+        }
+    }
+
+    fn materialize<'a>(&self, target: &'a mut Self::Target) -> &'a wgpu::Texture {
+        let frame = self
             .native
             .import(FrameSource::DmaBuf(Box::new(
                 target
                     .descriptor
                     .reopen()
-                    .expect("popup DMA-BUF duplication failed"),
+                    .expect("pool DMA-BUF duplication failed"),
             )))
-            .expect("CEF popup texture import failed");
-        copy_plane(
-            self.output.device(),
-            self.output.queue(),
-            source_texture,
-            texture
-                .generation
-                .rgb_wrap
+            .expect("CEF pool texture import failed");
+        target.frame = Some(frame);
+        Self::current(target).expect("a pool DMA-BUF imports as an RGB frame")
+    }
+
+    fn current(target: &Self::Target) -> Option<&wgpu::Texture> {
+        target
+            .frame
+            .as_ref()
+            .and_then(|frame| frame.generation.rgb_wrap.as_ref())
+    }
+
+    fn released(target: &mut Self::Target) -> bool {
+        target
+            .frame
+            .as_ref()
+            .is_none_or(|frame| frame.generation.state() == State::Released)
+    }
+
+    fn frame(&self, target: &mut Self::Target) -> ExternalFrame {
+        ExternalFrame::native(
+            target
+                .frame
                 .as_ref()
-                .expect("a pool DMA-BUF imports as an RGB frame"),
-            size,
-        );
-        // Replacing the slot drops the previous popup generation; its
-        // image destruction is queued behind this copy on the engine's
-        // ordered queue.
-        target.frame = Some(texture);
-    }
-}
-
-impl AcceleratedFrameSink for LinuxFrameSink {
-    /// # Panics
-    ///
-    /// Panics when the frame's DMA-BUF cannot be imported on the engine's
-    /// device, and on a paint element this sink does not draw.
-    fn import(
-        &self,
-        element: PaintElementType,
-        _dirty_rects: &[Rect],
-        frame: &AcceleratedPaintInfo,
-    ) {
-        if self.state.borrow().retired || self.output.is_retired() {
-            return;
-        }
-        // Transient: `imported` is dropped at the end of this callback —
-        // the GPU copy it feeds is the only thing that keeps the pixels.
-        let imported = self
-            .native
-            .import(FrameSource::DmaBuf(Box::new(dmabuf_of(frame))))
-            .expect("CEF DMA-BUF import failed");
-        let fourcc = format_of(frame).fourcc();
-        let mut state = self.state.borrow_mut();
-        match element {
-            PaintElementType::VIEW => self.present_view(&mut state, &imported, fourcc),
-            PaintElementType::POPUP => self.write_popup(&mut state, &imported, fourcc),
-            element => panic!("CEF returned unsupported paint element {element:?}"),
-        }
-        // `imported` drops here, inside the callback: the imported image's
-        // destruction is queued behind the copy on the engine's ordered
-        // queue, and no reference to CEF's shared handle — no duplicated
-        // fd, no import — outlives it.
-    }
-
-    fn set_popup_rect(&self, rect: Option<CefPopupRect>) {
-        let mut state = self.state.borrow_mut();
-        state.popup_rect = rect;
-        if rect.is_none() {
-            state.popup = None;
-        }
-        // No re-present is possible here: the shared images were transient,
-        // so nothing remains to composite from. A closing popup uncovers the
-        // page and a moving popup moves over it — Chromium repaints both,
-        // and the next view frame presents.
+                .expect("materialize ran first")
+                .clone(),
+        )
+        .expect("a pool texture frame is a valid external frame")
     }
 }
 
@@ -391,42 +188,6 @@ fn format_of(frame: &AcceleratedPaintInfo) -> DmaBufFormat {
     } else {
         panic!("CEF returned unsupported Linux accelerated color format")
     }
-}
-
-/// Copies `source` into `target` on `queue` — the single GPU copy the CEF
-/// contract requires inside the paint callback. Submissions on the
-/// output's queue serialize with the engine's own, so the texture is
-/// written before the frame that presents it is consumed.
-fn copy_plane(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    source: &wgpu::Texture,
-    target: &wgpu::Texture,
-    size: (u32, u32),
-) {
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("waterui_cef_frame_copy"),
-    });
-    encoder.copy_texture_to_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: source,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyTextureInfo {
-            texture: target,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::Extent3d {
-            width: size.0,
-            height: size.1,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
 }
 
 /// Builds the transient [`DmaBuf`] descriptor for one accelerated paint —
@@ -497,229 +258,9 @@ fn dmabuf_of(frame: &AcceleratedPaintInfo) -> DmaBuf {
     }
 }
 
-/// Draws the view plane and an open popup plane into one owned texture.
-///
-/// An [`ExternalFrame`] describes one image, and the popup is a second
-/// plane: compositing them here is the only way the pair presents as the
-/// layer's content. The shader is the same `cef_blit` the macOS and Windows
-/// presenters draw with; the render target is the pooled texture the frame
-/// presents, so there is no second pass into a producer buffer.
-struct PopupCompositor {
-    pipeline: wgpu::RenderPipeline,
-    bind_group_layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
-    view_rect_buffer: wgpu::Buffer,
-    popup_rect_buffer: wgpu::Buffer,
-}
-
-impl PopupCompositor {
-    fn new(output: &FrameOutput) -> Self {
-        let device = output.device();
-        let shader = device.create_shader_module(wgpu::include_wgsl!("cef_blit.wgsl"));
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("waterui_cef_bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: std::num::NonZeroU64::new(16),
-                    },
-                },
-            ],
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("waterui_cef_pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("waterui_cef_composite_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: COMPOSITE_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("waterui_cef_sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        Self {
-            pipeline,
-            bind_group_layout,
-            sampler,
-            view_rect_buffer: rect_buffer(device, "waterui_cef_view_rect"),
-            popup_rect_buffer: rect_buffer(device, "waterui_cef_popup_rect"),
-        }
-    }
-
-    /// Renders `view` under `popup` into `target` at the view frame's
-    /// extent.
-    fn composite(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        view: &wgpu::Texture,
-        popup: &wgpu::Texture,
-        target: &wgpu::Texture,
-        size: (u32, u32),
-        rect: CefPopupRect,
-        scale: f64,
-    ) {
-        let (width, height) = size;
-        write_rect(queue, &self.view_rect_buffer, [0.0, 0.0, 1.0, 1.0]);
-        // The popup's rect arrives in view-logical points; `scale` is the
-        // device-pixel ratio the layer presents at.
-        write_rect(
-            queue,
-            &self.popup_rect_buffer,
-            [
-                (f64::from(rect.x) * scale / f64::from(width))
-                    .to_f32()
-                    .expect("CEF popup x exceeds f32"),
-                (f64::from(rect.y) * scale / f64::from(height))
-                    .to_f32()
-                    .expect("CEF popup y exceeds f32"),
-                (f64::from(rect.width) * scale / f64::from(width))
-                    .to_f32()
-                    .expect("CEF popup width exceeds f32"),
-                (f64::from(rect.height) * scale / f64::from(height))
-                    .to_f32()
-                    .expect("CEF popup height exceeds f32"),
-            ],
-        );
-        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("waterui_cef_composite"),
-        });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("waterui_cef_composite_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(
-                0,
-                &self.bind_group(device, view, &self.view_rect_buffer),
-                &[],
-            );
-            pass.draw(0..6, 0..1);
-            pass.set_bind_group(
-                0,
-                &self.bind_group(device, popup, &self.popup_rect_buffer),
-                &[],
-            );
-            pass.draw(0..6, 0..1);
-        }
-        queue.submit([encoder.finish()]);
-    }
-
-    fn bind_group(
-        &self,
-        device: &wgpu::Device,
-        source: &wgpu::Texture,
-        rect: &wgpu::Buffer,
-    ) -> wgpu::BindGroup {
-        let view = source.create_view(&wgpu::TextureViewDescriptor::default());
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("waterui_cef_bind_group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: rect.as_entire_binding(),
-                },
-            ],
-        })
-    }
-}
-
-fn rect_buffer(device: &wgpu::Device, label: &'static str) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size: 16,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
-
-fn write_rect(queue: &wgpu::Queue, buffer: &wgpu::Buffer, rect: [f32; 4]) {
-    let mut bytes = [0; 16];
-    for (source, destination) in rect.into_iter().zip(bytes.as_chunks_mut::<4>().0) {
-        destination.copy_from_slice(&source.to_ne_bytes());
-    }
-    queue.write_buffer(buffer, 0, &bytes);
-}
-
 /// Creates the GPU view for one visible CEF page on Linux: an
 /// [`ExternalFrameView`] whose source imports the page's shared DMA-BUF
 /// frames on the layer's own device.
 pub(super) fn gpu_view(page: CefPageHandle) -> ExternalFrameView {
-    // No pump here. Chromium's message loop belongs to
-    // `CefRuntime::start_message_pump`, which Chromium itself paces; running
-    // `do_message_loop_work` inside the frame callback put whatever the
-    // browser had queued — parsing, script, compositing — on the main thread
-    // inside one frame's budget, which is what tripped the stall probe every
-    // few seconds on an idle page. The source's tick installs the sink,
-    // keeps the viewport in step and requests the next compositor frame,
-    // nothing else.
-    ExternalFrameView::new(CefExternalSource { page, output: None })
+    external_view::<LinuxBackend>(page)
 }

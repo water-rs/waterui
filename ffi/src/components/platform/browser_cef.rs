@@ -15,9 +15,9 @@ use waterui_webview::WebView;
 
 #[cfg(any(feature = "webview-cef", feature = "cef-header"))]
 use crate::WuiAnyView;
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "windows"))]
 use crate::components::visual::gpu_content::WuiExternalFrame;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 use crate::components::visual::gpu_content::WuiGpuContent;
 use crate::{IntoFFI, IntoRust};
 
@@ -38,18 +38,18 @@ pub(crate) fn configure_environment(env: &mut Environment) {
 /// GPU presenter plus retained CEF input and semantic state.
 ///
 /// The presenter's FFI type follows the platform's view: a
-/// [`WuiGpuContent`] on the targets that still draw through `GpuContent`,
-/// and a [`WuiExternalFrame`] on Linux, where the page's shared DMA-BUF
-/// frames are presented in place.
+/// [`WuiGpuContent`] on Windows, which still draws through `GpuContent`,
+/// and a [`WuiExternalFrame`] where the page's shared frames present as
+/// external frames.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiCefSurface {
     /// GPU presenter consumed by `WaterUI`'s native GPU content host.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
     pub gpu_content: WuiGpuContent,
     /// External-frame presenter consumed by `WaterUI`'s native GPU content
-    /// host on Linux.
-    #[cfg(target_os = "linux")]
+    /// host.
+    #[cfg(not(target_os = "windows"))]
     pub external_frame: WuiExternalFrame,
     /// Opaque input state retained until [`waterui_cef_surface_drop`].
     pub state: *mut WuiCefSurfaceState,
@@ -91,7 +91,7 @@ impl fmt::Debug for WuiCefSurfaceState {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 fn surface(page: CefPageHandle, source: impl Any) -> WuiCefSurface {
     let gpu_content = gpu_view_with_input(page.clone()).into_ffi();
     WuiCefSurface {
@@ -103,7 +103,7 @@ fn surface(page: CefPageHandle, source: impl Any) -> WuiCefSurface {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "windows"))]
 fn surface(page: CefPageHandle, source: impl Any) -> WuiCefSurface {
     let external_frame = gpu_view_with_input(page.clone()).into_ffi();
     WuiCefSurface {

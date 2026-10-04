@@ -149,7 +149,7 @@ impl TexturePresenter {
                             ty: wgpu::BindingType::Buffer {
                                 ty: wgpu::BufferBindingType::Uniform,
                                 has_dynamic_offset: false,
-                                min_binding_size: std::num::NonZeroU64::new(16),
+                                min_binding_size: std::num::NonZeroU64::new(32),
                             },
                             count: None,
                         },
@@ -345,16 +345,23 @@ impl TexturePresenter {
 fn create_rect_buffer(device: &wgpu::Device, label: &'static str) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: 16,
+        size: 32,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
 }
 
+/// Writes the draw's destination rect and its full-extent source rect as
+/// the `DrawRect` uniform `cef_blit` reads — the owned mailbox textures
+/// are already cropped, so the source always spans the whole plane.
 fn write_rect(queue: &wgpu::Queue, buffer: &wgpu::Buffer, rect: [f32; 4]) {
-    let mut bytes = [0; 16];
-    for (source, destination) in rect.into_iter().zip(bytes.as_chunks_mut::<4>().0) {
-        destination.copy_from_slice(&source.to_ne_bytes());
+    let mut bytes = [0; 32];
+    for (value, chunk) in rect
+        .into_iter()
+        .chain([0.0, 0.0, 1.0, 1.0])
+        .zip(bytes.as_chunks_mut::<4>().0)
+    {
+        chunk.copy_from_slice(&value.to_ne_bytes());
     }
     queue.write_buffer(buffer, 0, &bytes);
 }

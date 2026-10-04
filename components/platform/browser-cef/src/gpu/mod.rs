@@ -1,40 +1,42 @@
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use num_traits::ToPrimitive as _;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use std::sync::{Arc, Mutex};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use waterui_graphics::gpu::ExternalFrameView;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use waterui_graphics::gpu::GpuContentView;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use waterui_graphics::gpu::{Context, Frame, GpuContent};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use crate::AcceleratedFrameSink;
 use crate::CefPageHandle;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use crate::input::CefSurfaceInput;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 use presenter::{GpuHandles, OwnedFrameMailbox, TexturePresenter};
 
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub mod presenter;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod sink;
 #[cfg(target_os = "windows")]
 mod windows;
 
 /// The physical size and device-pixel ratio of the last rendered frame,
 /// published to the UI side so it can keep Chromium's logical viewport in
 /// step. Nothing renders at `(0, 0)`, so it also marks "no frame yet".
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 type BrowserViewport = (u32, u32, f32);
 
 /// The state the UI hook and the render-side [`CefGpuContent`] share.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub struct CefShared {
     pub mailbox: Arc<OwnedFrameMailbox>,
     pub viewport: Arc<Mutex<BrowserViewport>>,
@@ -46,14 +48,14 @@ pub struct CefShared {
 /// It owns only `Send` state: `CefPageHandle` is confined to the UI thread, so
 /// every page call lives in [`CefUiBridge`] and the two sides exchange data
 /// through [`OwnedFrameMailbox`] and the shared viewport cell.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub struct CefGpuContent {
     mailbox: Arc<OwnedFrameMailbox>,
     viewport: Arc<Mutex<BrowserViewport>>,
     presenter: Option<TexturePresenter>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 impl CefGpuContent {
     fn new() -> (Self, CefShared) {
         let shared = CefShared {
@@ -71,7 +73,7 @@ impl CefGpuContent {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 impl GpuContent for CefGpuContent {
     fn setup(&mut self, context: &Context<'_>) {
         self.mailbox.set_gpu_handles(GpuHandles {
@@ -88,10 +90,7 @@ impl GpuContent for CefGpuContent {
         *self.viewport.lock().expect("CEF browser viewport poisoned") =
             (frame.width, frame.height, frame.scale);
         // On Windows the host paces the compositor itself; asking for the
-        // next frame here keeps `page.request_frame()` pumping. macOS relies
-        // on Chromium's own pacing instead — see `request_browser_frame` in
-        // the pre-Cherenkov revision of this module for why.
-        #[cfg(not(target_os = "macos"))]
+        // next frame here keeps `page.request_frame()` pumping.
         frame.request_redraw();
         let presenter = self
             .presenter
@@ -112,7 +111,7 @@ impl GpuContent for CefGpuContent {
 /// once the render thread publishes its device handles, keeps Chromium's
 /// logical viewport in step with the last rendered size, and asks Chromium
 /// for the next compositor frame.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 pub struct CefUiBridge<S: AcceleratedFrameSink> {
     page: CefPageHandle,
     shared: CefShared,
@@ -120,7 +119,7 @@ pub struct CefUiBridge<S: AcceleratedFrameSink> {
     make_sink: fn(GpuHandles, Arc<OwnedFrameMailbox>) -> S,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 impl<S: AcceleratedFrameSink> CefUiBridge<S> {
     pub fn new(
         page: CefPageHandle,
@@ -166,19 +165,15 @@ impl<S: AcceleratedFrameSink> CefUiBridge<S> {
                 .expect("CEF logical height exceeds u32");
             self.page.set_viewport(logical_width, logical_height, scale);
         }
-        // `external_begin_frame_enabled` is off on macOS — `request_frame`
-        // does not exist there; paints arrive on vsync and damage at
-        // `windowless_frame_rate` and wake the surface through the mailbox.
-        #[cfg(not(target_os = "macos"))]
         self.page.request_frame();
     }
 }
 
 /// Creates the target-specific GPU-only presenter for one visible CEF page.
 ///
-/// On Linux the page's DMA-BUF frames import in place on the engine's
-/// Vulkan device and the view is an [`ExternalFrameView`]; other targets
-/// return a [`GpuContentView`].
+/// The page's shared frames import on the layer's own device and present
+/// through [`FrameOutput`](waterui_graphics::gpu::FrameOutput) — the view
+/// is an [`ExternalFrameView`].
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn gpu_view(page: CefPageHandle) -> ExternalFrameView {
@@ -186,9 +181,14 @@ pub fn gpu_view(page: CefPageHandle) -> ExternalFrameView {
 }
 
 /// Creates the target-specific GPU-only presenter for one visible CEF page.
+///
+/// The page's shared `IOSurface` frames import on the layer's own device
+/// and present through
+/// [`FrameOutput`](waterui_graphics::gpu::FrameOutput) — the view is an
+/// [`ExternalFrameView`].
 #[cfg(target_os = "macos")]
 #[must_use]
-pub fn gpu_view(page: CefPageHandle) -> GpuContentView {
+pub fn gpu_view(page: CefPageHandle) -> ExternalFrameView {
     macos::gpu_view(page)
 }
 
@@ -208,7 +208,7 @@ pub fn gpu_view(page: CefPageHandle) -> GpuContentView {
 /// through [`CefSurfaceInput`]. A backend whose input arrives somewhere
 /// else entirely — GTK delivers it to the `GtkGLArea`'s event controllers —
 /// uses [`gpu_view`] and owns a [`CefSurfaceInput`] beside it instead.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn gpu_view_with_input(page: CefPageHandle) -> ExternalFrameView {
     let input = std::cell::RefCell::new(CefSurfaceInput::new(page.clone()));
@@ -226,7 +226,7 @@ pub fn gpu_view_with_input(page: CefPageHandle) -> ExternalFrameView {
 /// somewhere else entirely — GTK delivers it to the `GtkGLArea`'s event
 /// controllers — uses [`gpu_view`] and owns a [`CefSurfaceInput`] beside it
 /// instead.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 #[must_use]
 pub fn gpu_view_with_input(page: CefPageHandle) -> GpuContentView {
     let input = std::cell::RefCell::new(CefSurfaceInput::new(page.clone()));
