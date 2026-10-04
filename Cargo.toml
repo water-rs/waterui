@@ -536,7 +536,7 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
-# Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
+# Extracted crates on crates.io (waterui-canvas #185, waterui-chart #1627, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
 # is a different type on either side. Publishing ignores this table, so the

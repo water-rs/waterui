@@ -83,7 +83,7 @@ fn smoke_theme_foreground_slot_snapshot_preserves_semantic_labels() {
 
 /// A view that draws widget chrome mounts under the default theme: the scroll
 /// view's scrollbar and the button both read a widget theme from the
-/// environment, and `ui()` used to install none (#290).
+/// environment, and `ui()` used to install none (#1618).
 ///
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]

@@ -161,7 +161,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// A view that draws widget chrome mounts on the semantic pipeline: the scroll
 /// view's container and the button's node are products of the view tree and
-/// the widgets' semantics — no style package is installed (#290).
+/// the widgets' semantics — no style package is installed (#1618).
 #[test]
 fn scroll_view_and_button_structure_mounts_without_a_style() {
     let mut app = ui().viewport(240, 160).mount(|| {
