@@ -300,13 +300,17 @@ mod imp {
         window.display_if_needed();
         #[cfg(feature = "gpu_surface")]
         {
-            let window = window.clone();
+            // The reveal task is owned by the window's `KeepAlive` — dropping
+            // the handle cancels it — and holds the window weakly: a task
+            // must never retain the window that owns it.
+            let window = Rc::downgrade(&window);
             let env = env.clone();
-            executor_core::spawn_local(async move {
+            keepalive.keep(executor_core::spawn_local(async move {
                 crate::components::gpu_surface::wait_for_first_frames(&reveal_view, &env).await;
-                window.fade_in(0.12);
-            })
-            .detach();
+                if let Some(window) = window.upgrade() {
+                    window.fade_in(0.12);
+                }
+            }));
         }
         #[cfg(not(feature = "gpu_surface"))]
         window.fade_in(0.12);
@@ -805,6 +809,8 @@ mod imp {
         _keepalive: KeepAlive,
     }
 
+    use objc2::rc::Weak;
+
     /// A scene connected before its declaration landed: `UIKit` asks for a
     /// window eagerly at connection, so the platform objects exist already
     /// and the content arrives when [`declare`] runs.
@@ -1084,13 +1090,16 @@ mod imp {
         #[cfg(feature = "gpu_surface")]
         {
             pending.window.setAlpha(0.0);
-            let window = pending.window.clone();
+            // Owned by the scene `KeepAlive` (drop cancels); the window edge
+            // is weak for the same reason as the macOS reveal.
+            let window = Weak::from_retained(&pending.window);
             let env = env.clone();
-            executor_core::spawn_local(async move {
+            keepalive.keep(executor_core::spawn_local(async move {
                 crate::components::gpu_surface::wait_for_first_frames(&reveal_view, &env).await;
-                window.setAlpha(1.0);
-            })
-            .detach();
+                if let Some(window) = window.load() {
+                    window.setAlpha(1.0);
+                }
+            }));
         }
 
         crate::inspector::install(&host, env, &mut keepalive);

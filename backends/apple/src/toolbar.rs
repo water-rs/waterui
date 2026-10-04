@@ -234,6 +234,13 @@ impl IconJobs {
         if let Some(image) = &slot.image {
             return Some(image.clone());
         }
+        // An empty view publishes no icon: scheduling a capture of a
+        // zero-bounds view mints a blank capsule, which is the failure the
+        // empty contract exists to prevent.
+        let bounds = cocoa_ui::view::bounds(view);
+        if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+            return None;
+        }
         if slot.task.is_none() {
             let view = cocoa_ui::view::retain_base(view);
             let env = self.env.clone();

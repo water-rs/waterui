@@ -91,12 +91,12 @@ impl Signal {
 /// drop. `None` while the view already has a window.
 struct WindowHost {
     /// The temporary window — kept alive for the capture's duration; the
-    /// struct's drop restores the view before the window dies.
+    /// struct's drop hides it and restores the view before the window dies.
     #[cfg(target_os = "macos")]
-    _window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
+    window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
     /// See the macOS field.
     #[cfg(target_os = "ios")]
-    _window: Retained<cocoa_ui::bitmap::CaptureWindow>,
+    window: Retained<cocoa_ui::bitmap::CaptureWindow>,
     /// The view's parent before the re-host, restored on drop.
     superview: Option<Retained<cocoa_ui::PlatformView>>,
     /// The sibling the view preceded in `superview` — `AppKit` has no
@@ -147,6 +147,10 @@ impl WindowHost {
             let window = cocoa_ui::bitmap::make_offscreen_window(mtm, size);
             let content = window.contentView().expect("offscreen window content");
             cocoa_ui::view::add_subview(&content, view);
+            cocoa_ui::bitmap::show_capture_window(&window);
+            // Text fields stay out of a capture unless marked dirty — the
+            // existing bitmap path's preparation.
+            cocoa_ui::bitmap::force_text_fields_display(view);
             window
         };
         #[cfg(target_os = "ios")]
@@ -154,11 +158,14 @@ impl WindowHost {
             let scene = cocoa_ui::bitmap::any_window_scene()
                 .expect("a detached capture needs a connected UIWindowScene");
             let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, size);
-            cocoa_ui::view::add_subview(&window, view);
+            // The `UIViewController` containment + unhide + layout is the
+            // only correct UIKit mount — a bare `addSubview` leaves the
+            // window without a root controller.
+            cocoa_ui::bitmap::show_capture_window(&window, view, size);
             window
         };
         Some(Self {
-            _window: window,
+            window,
             superview,
             #[cfg(target_os = "macos")]
             next_sibling,
@@ -175,6 +182,12 @@ impl Drop for WindowHost {
     /// frame — appending would silently reorder the host's z-order, and a
     /// resized frame would linger.
     fn drop(&mut self) {
+        // The capture window hides first — a re-hosted view must never be
+        // left visible inside it — then the view returns to its parent.
+        #[cfg(target_os = "macos")]
+        cocoa_ui::bitmap::close_capture_window(&self.window);
+        #[cfg(target_os = "ios")]
+        cocoa_ui::bitmap::close_capture_window(&self.window);
         cocoa_ui::view::remove_from_superview(&self.view);
         if let Some(superview) = &self.superview {
             #[cfg(target_os = "ios")]
@@ -194,8 +207,10 @@ impl Drop for WindowHost {
                 ),
                 None => superview.addSubview(&self.view),
             }
-            cocoa_ui::view::set_frame(&self.view, self.frame);
         }
+        // The offscreen layout may have resized the view — restore its frame
+        // whether or not it had a parent to return to.
+        cocoa_ui::view::set_frame(&self.view, self.frame);
     }
 }
 
