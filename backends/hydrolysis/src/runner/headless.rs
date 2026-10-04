@@ -1461,12 +1461,21 @@ mod generation_tests {
             &[255, 0, 64, 255],
             "registered image texel renders on the replacement device"
         );
-        // The glyph band collected outlines from the registered font.
+        // The glyph band is painted opaque blue; count pixels that are
+        // actually blue — strong B, weak R and G — so a red fill, the
+        // registered image's texels, or an opaque black background cannot
+        // satisfy the check.
         let glyph_ink = (26..42)
             .flat_map(|y| (8..80).map(move |x| (x, y)))
-            .filter(|&(x, y)| pixel(x, y) != &[0, 0, 0, 0])
+            .filter(|&(x, y)| {
+                let px = pixel(x, y);
+                px[3] > 0 && px[2] > 100 && px[0] < 100 && px[1] < 100
+            })
             .count();
-        assert!(glyph_ink > 0, "registered font's glyphs render visibly");
+        assert!(
+            glyph_ink > 0,
+            "registered font's blue glyphs render visibly"
+        );
 
         // Ordinary later frames and captures never rebuild again.
         runtime.pump_at(false, t0 + Duration::from_millis(32));
