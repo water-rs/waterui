@@ -947,10 +947,10 @@ impl NativeRenderer {
         // orphaned — and a renderer dropped with a root still bound
         // invalidates the backing layer under the live view. Unbind inside
         // the encode so the caller restores a layer nothing owns. `setLayer`
-        // is renderer state, not a layer-tree edit — nothing here may
-        // commit a `CATransaction` while the caller still holds the
-        // renderer `RefMut`, or a layout callback could re-enter the
-        // borrow.
+        // is renderer state, not a layer-tree edit. The caller ends its
+        // renderer `RefMut` before restoring native containment and
+        // flushing that restoration, whose lifecycle callbacks must not
+        // re-enter a borrowed renderer.
         renderer.setLayer(None);
 
         // `CARenderer` encodes onto `queue` during `render()` but offers no
