@@ -789,7 +789,12 @@ fn measure_end(inner: Rc<RefCell<Inner>>, config: MatrixConfig) {
     if borrowed.done {
         return;
     }
-    signpost_end(borrowed.signpost_id, "bench_cell");
+    let end_name = borrowed
+        .cell
+        .as_ref()
+        .map(CellSpec::name)
+        .unwrap_or_else(|| "unknown".into());
+    signpost_end(borrowed.signpost_id, &end_name);
     borrowed.signpost_id += 1;
     let measured = CACurrentMediaTime() - borrowed.measure_start;
     let (rows_delta, producers_delta) = borrowed
@@ -963,7 +968,14 @@ const OS_SIGNPOST_INTERVAL_END: u8 = 0x02;
 unsafe extern "C" {
     fn os_log_create(subsystem: *const core::ffi::c_char, category: *const core::ffi::c_char)
         -> *mut OsLog;
+    /// The `oslog` crate's non-variadic wrapper over `os_log_with_type` —
+    /// already linked into the app through the backend's log channel.
+    fn wrapped_os_log_with_type(log: *mut OsLog, log_type: u8, message: *const core::ffi::c_char);
 }
+
+/// `OS_LOG_TYPE_INFO` — cell markers must be visible in Instruments
+/// traces without debug filtering.
+const OS_LOG_TYPE_INFO: u8 = 0x02;
 
 type EmitWithType = unsafe extern "C" fn(
     log: *mut OsLog,
@@ -1013,9 +1025,22 @@ fn signpost_log() -> *mut OsLog {
     .0
 }
 
+/// Emits the cell boundary also as an `os_log` marker — Instruments
+/// captures the os-log stream under `--all-processes` even when the
+/// signpost emitter is SPI-hidden, so per-cell trace attribution always
+/// has a delimiter to hang on.
+fn log_marker(prefix: &str, cell_name: &str) {
+    let msg = CString::new(format!("BENCH_CELL_{prefix} {cell_name}"))
+        .expect("marker is UTF-8");
+    unsafe {
+        wrapped_os_log_with_type(signpost_log(), OS_LOG_TYPE_INFO, msg.as_ptr());
+    }
+}
+
 /// Opens an `os_signpost` interval named `bench_cell` carrying `cell_name`
 /// as its metadata string.
 fn signpost_begin(id: u64, cell_name: &str) {
+    log_marker("BEGIN", cell_name);
     let Some(emit) = emit_with_type() else {
         tracing::warn!("os_signpost emit unavailable");
         return;
@@ -1035,11 +1060,13 @@ fn signpost_begin(id: u64, cell_name: &str) {
     }
 }
 
-fn signpost_end(id: u64, name: &str) {
+fn signpost_end(id: u64, cell_name: &str) {
+    log_marker("END", cell_name);
     let Some(emit) = emit_with_type() else {
         return;
     };
-    let name = CString::new(name).expect("name is UTF-8");
+    // The signpost interval's name must match the begin call's.
+    let name = c"bench_cell".to_owned();
     // SAFETY: same as `signpost_begin`.
     unsafe {
         emit(
