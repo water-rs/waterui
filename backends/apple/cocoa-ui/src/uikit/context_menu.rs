@@ -1,11 +1,10 @@
-//! Contextual menus: a [`UIContextMenuInteraction`] on a view, and the
-//! accessory window that may float above it while the menu is displayed.
+//! Contextual menus without an accessory: a [`UIContextMenuInteraction`]
+//! installed on a view.
 //!
 //! [`ContextMenu`] installs the interaction with delegate answers the
-//! handler supplies: which menu to show, which preview to lift, and the
-//! open/close hooks the accessory presentation hangs off.
-//! [`AccessoryOverlay`] is the pass-through window an accessory is
-//! presented in, anchored to the lifted preview.
+//! handler supplies: which menu to show and which preview to lift. A menu
+//! carrying an accessory is realized by [`crate::uikit::menu_panel`]
+//! instead — the interaction offers no interactive accessory surface.
 //!
 //! # Safety
 //!
@@ -23,26 +22,12 @@ use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    UIContextMenuConfiguration, UIContextMenuInteraction, UIContextMenuInteractionAnimating,
-    UIContextMenuInteractionDelegate, UIInteraction, UIMenu, UIPreviewParameters, UIPreviewTarget,
-    UITargetedPreview, UIView, UIViewController, UIWindow,
+    UIContextMenuConfiguration, UIContextMenuInteraction, UIContextMenuInteractionDelegate,
+    UIInteraction, UIMenu, UITargetedPreview, UIView, UIViewController,
 };
 
-use std::ptr;
-
-use objc2_core_foundation::CGPoint;
-#[cfg(feature = "native-test")]
-use objc2_core_foundation::CGRect;
-use objc2_ui_kit::UIEvent;
-
 use crate::callback::guarded;
-use crate::geometry::{Point, Rect, Size, anchored_frame};
-use crate::uikit::host_view::{HitTest, HostView};
-
-/// The air around an accessory, between it and the preview or the window
-/// edge.
-const GAP: f64 = 8.0;
-const EDGE_MARGIN: f64 = 8.0;
+use crate::geometry::Size;
 
 /// What [`ContextMenu`] asks its owner when the interaction begins: the
 /// menu to show and, optionally, the view controller to lift as preview.
@@ -65,10 +50,6 @@ pub struct ContextMenuHandlers {
     pub configuration: ConfigurationHandler,
     /// The preview lifted while the menu highlights or dismisses.
     pub preview: PreviewHandler,
-    /// Called as the menu begins displaying.
-    pub will_display: Rc<dyn Fn(&UIView)>,
-    /// Called as the menu ends.
-    pub will_end: Rc<dyn Fn(&UIView)>,
 }
 
 impl fmt::Debug for ContextMenuHandlers {
@@ -175,42 +156,6 @@ define_class!(
                 (handlers.preview)(&view)
             })
         }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(contextMenuInteraction:willDisplayMenuForConfiguration:animator:))]
-        fn will_display(
-            &self,
-            interaction: &UIContextMenuInteraction,
-            _configuration: &UIContextMenuConfiguration,
-            _animator: Option<&ProtocolObject<dyn UIContextMenuInteractionAnimating>>,
-        ) {
-            guarded("ContextMenuDelegate willDisplay", || {
-                let Some(handlers) = self.ivars().handlers.borrow().clone() else {
-                    return;
-                };
-                if let Some(view) = interaction.view() {
-                    (handlers.will_display)(&view);
-                }
-            });
-        }
-
-        // SAFETY: see the module safety note.
-        #[unsafe(method(contextMenuInteraction:willEndForConfiguration:animator:))]
-        fn will_end(
-            &self,
-            interaction: &UIContextMenuInteraction,
-            _configuration: &UIContextMenuConfiguration,
-            _animator: Option<&ProtocolObject<dyn UIContextMenuInteractionAnimating>>,
-        ) {
-            guarded("ContextMenuDelegate willEnd", || {
-                let Some(handlers) = self.ivars().handlers.borrow().clone() else {
-                    return;
-                };
-                if let Some(view) = interaction.view() {
-                    (handlers.will_end)(&view);
-                }
-            });
-        }
     }
 );
 
@@ -228,8 +173,9 @@ impl ContextMenuDelegate {
 /// that answers it.
 ///
 /// `UIKit` holds the delegate weakly; keep this value for as long as the
-/// menu can be presented.
-#[derive(Debug)]
+/// menu can be presented. A clone shares the same installed interaction —
+/// the owner keeps one for borrowing-free dismissal.
+#[derive(Debug, Clone)]
 pub struct ContextMenu {
     interaction: Retained<UIContextMenuInteraction>,
     _delegate: Retained<ContextMenuDelegate>,
@@ -343,167 +289,4 @@ pub fn targeted_preview(view: &UIView) -> Retained<UITargetedPreview> {
     let mtm = MainThreadMarker::from(view);
     // `view` is a live view.
     UITargetedPreview::initWithView(UITargetedPreview::alloc(mtm), view)
-}
-
-/// A targeted preview lifting `view`, retargeted to `center` in
-/// `container`'s coordinates.
-#[must_use]
-pub fn targeted_preview_at(
-    view: &UIView,
-    container: &UIView,
-    center: Point,
-) -> Retained<UITargetedPreview> {
-    let mtm = MainThreadMarker::from(view);
-    let parameters = UIPreviewParameters::new(mtm);
-    // The target names a live container view and a point in its
-    // coordinates.
-    let target = {
-        UIPreviewTarget::initWithContainer_center(
-            UIPreviewTarget::alloc(mtm),
-            container,
-            center.into(),
-        )
-    };
-    // `view` is a live view and `parameters`/`target` are valid.
-    {
-        UITargetedPreview::initWithView_parameters_target(
-            UITargetedPreview::alloc(mtm),
-            view,
-            &parameters,
-            &target,
-        )
-    }
-}
-
-/// `view`'s bounds in window coordinates.
-#[must_use]
-pub fn bounds_in_window(view: &UIView) -> Rect {
-    view.convertRect_toView(view.bounds(), None).into()
-}
-
-define_class!(
-    // SAFETY: `UIWindow` asks a subclass to support its designated
-    // initializers — `AccessoryOverlay::present` goes through
-    // `initWithWindowScene:` — and the class does not implement `Drop`.
-    #[unsafe(super(UIWindow))]
-    #[name = "CocoaUiAccessoryOverlayWindow"]
-    #[thread_kind = MainThreadOnly]
-    #[derive(Debug)]
-    /// The overlay's window: a hit that resolves to the window itself is
-    /// mapped to `nil`, so unclaimed points fall through to the host
-    /// window — the menu container reads them as item taps or dismiss
-    /// taps — while real accessory descendants keep their hits.
-    struct AccessoryOverlayWindow;
-
-    // SAFETY: `NSObjectProtocol` asks nothing of a `UIWindow` subclass.
-    unsafe impl NSObjectProtocol for AccessoryOverlayWindow {}
-
-    impl AccessoryOverlayWindow {
-        // SAFETY: see the module safety note.
-        #[unsafe(method_id(hitTest:withEvent:))]
-        fn hit_test_override(
-            &self,
-            point: CGPoint,
-            event: Option<&UIEvent>,
-        ) -> Option<Retained<UIView>> {
-            guarded("AccessoryOverlayWindow hitTest:withEvent:", || {
-                // SAFETY: see the module safety note.
-                let hit: Option<Retained<UIView>> =
-                    unsafe { msg_send![super(self), hitTest: point, withEvent: event] };
-                let this: &UIView = self;
-                hit.filter(|view| !ptr::eq(&raw const **view, this))
-            })
-        }
-    }
-);
-
-/// Builds the overlay's window for the `native` test suite, which has no
-/// `UIWindowScene` to present into. Exists only under `native-test` —
-/// the private class keeps no construction API.
-#[cfg(feature = "native-test")]
-#[must_use]
-pub fn accessory_overlay_window_for_test(
-    frame: CGRect,
-    mtm: MainThreadMarker,
-) -> Retained<UIWindow> {
-    // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer for a
-    // window that is not attached to a scene; `mtm` is the main thread.
-    let window: Retained<AccessoryOverlayWindow> =
-        unsafe { msg_send![AccessoryOverlayWindow::alloc(mtm), initWithFrame: frame] };
-    window.into_super()
-}
-
-/// A window above the context menu's that only the accessory hit-tests:
-/// hits on the platter's own surface fall through to the host window, where
-/// the menu container reads them as dismiss taps.
-#[derive(Debug)]
-pub struct AccessoryOverlay {
-    window: Retained<UIWindow>,
-    _platter: Retained<HostView>,
-}
-
-impl AccessoryOverlay {
-    /// Presents `accessory` in a window above `source`'s, anchored to
-    /// `preview_frame` (in window coordinates). `ideal_size` measures the
-    /// accessory on every layout pass, so a view that changes size
-    /// re-anchors itself.
-    #[must_use]
-    pub fn present(
-        source: &UIView,
-        accessory: &UIView,
-        preview_frame: Rect,
-        ideal_size: impl Fn() -> Size + 'static,
-    ) -> Option<Self> {
-        let mtm = MainThreadMarker::from(source);
-        let host_window = source.window()?;
-        let scene = host_window.windowScene()?;
-        // SAFETY: `initWithWindowScene:` is `UIWindow`'s designated
-        // initializer for a scene it presents in.
-        let window: Retained<AccessoryOverlayWindow> =
-            unsafe { msg_send![AccessoryOverlayWindow::alloc(mtm), initWithWindowScene: &*scene] };
-        window.setFrame(host_window.frame());
-        window.setWindowLevel(host_window.windowLevel() + 1.0);
-        window.setBackgroundColor(Some(&objc2_ui_kit::UIColor::clearColor()));
-
-        let controller = UIViewController::new(mtm);
-        window.setRootViewController(Some(&controller));
-
-        let platter = HostView::new(mtm, window.bounds().into());
-        platter.set_hit_test_handler(|view, _point| {
-            let _ = view;
-            HitTest::PassIfSelf
-        });
-        platter.set_layout_handler({
-            let accessory: Retained<UIView> = Retained::from(accessory);
-            move |view| {
-                accessory.setFrame(
-                    anchored_frame(
-                        preview_frame,
-                        ideal_size(),
-                        view.bounds().into(),
-                        GAP,
-                        EDGE_MARGIN,
-                    )
-                    .into(),
-                );
-            }
-        });
-        crate::view::add_subview(&platter, accessory);
-        // The platter is the window's root view: its PassIfSelf hit test makes
-        // the whole window transparent except where an accessory descendant
-        // claims the touch, so the host window below still receives menu-item
-        // taps and backdrop dismissal.
-        controller.setView(Some(&platter));
-        window.setHidden(false);
-        Some(Self {
-            // An `AccessoryOverlayWindow` is a `UIWindow`.
-            window: window.into_super(),
-            _platter: platter,
-        })
-    }
-
-    /// Takes the overlay off screen.
-    pub fn dismiss(&self) {
-        self.window.setHidden(true);
-    }
 }

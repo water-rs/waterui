@@ -46,6 +46,7 @@ impl fmt::Debug for Command {
 }
 
 /// One node of a menu tree.
+#[derive(Clone)]
 pub enum MenuTreeNode {
     /// A command and its action.
     Command(Command, Rc<dyn Fn()>),
