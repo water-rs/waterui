@@ -15,7 +15,7 @@
 mod oklch;
 pub use oklch::Oklch;
 pub mod working;
-pub use cherenkov::WorkingColor;
+pub use crate::draw::WorkingColor;
 mod p3;
 pub use p3::P3;
 mod srgb;

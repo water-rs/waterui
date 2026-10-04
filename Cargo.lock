@@ -13214,6 +13214,7 @@ dependencies = [
  "cherenkov",
  "cherenkov-cpu",
  "cherenkov-gpu",
+ "cherenkov-record",
  "color",
  "event-listener",
  "filtrate",

@@ -1,8 +1,8 @@
-//! Engine-scoped resource registration for scene content.
+//! Target-scoped resource registration for scene content.
 //!
-//! A host builds one [`SceneResources`] over the engine it already selected —
-//! the GPU engine its surfaces render through, or the CPU raster engine an
-//! offscreen rasterizer owns — and keeps it for as long as that engine lives.
+//! A host builds one [`SceneResources`] over the render target it already
+//! selected — the `SceneBackend` its `cherenkov` engine fills, or another
+//! target's own registry — and keeps it for as long as that target lives.
 //! Each recording of scene content borrows it as [`RecordingResources`],
 //! which is what [`SceneContent::build_scene`] receives.
 //!
@@ -23,19 +23,21 @@
 //!
 //! The table itself holds nothing: it keeps a weak entry per registration for
 //! deduplication, and when the last holder lets go the entry leaves the table
-//! and the engine's own handle drops, which unregisters the resource. So
+//! and the target's own handle drops, which unregisters the resource. So
 //! content can drop a handle in the very call that records a drawing without
 //! the resource: the recording still installed keeps it until the host
 //! installs the one that no longer names it — even when the host renders in
 //! between, or discards the new recording instead of installing it.
 //!
 //! The type deliberately carries no drawing methods, no layer operations and
-//! no backend choice: the engine is the host's, selected before this exists.
-//! What this adds on top of `Engine` is ownership that follows what is drawn,
-//! exact deduplication — two contents drawing the same font or image while
-//! both hold it share one registration — and a uniform surface for backends
-//! with differing capabilities: a shader paint on a backend without shader
-//! support is an explicit [`ResourceError::Unsupported`], never a silent miss.
+//! no backend choice: the target is the host's, selected before this exists.
+//! What this adds on top of `SceneBackend` is ownership that follows what is
+//! drawn, exact deduplication — two contents drawing the same font or image
+//! while both hold it share one registration — and a uniform surface for
+//! targets with differing capabilities: a shader paint on a target without
+//! shader support is an explicit [`ResourceError::Unsupported`], never a
+//! silent miss; a source in a language the target does not draw is a
+//! [`ResourceError::Shader`] naming the language it got.
 //!
 //! [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 //! [`SceneResources`]: crate::resources::SceneResources
@@ -43,7 +45,8 @@
 //! [`RecordingResources::name`]: crate::resources::RecordingResources::name
 //! [`Registered`]: crate::resources::Registered
 //! [`HeldResources`]: crate::resources::HeldResources
-//! [`ResourceError::Unsupported`]: cherenkov::ResourceError::Unsupported
+//! [`ResourceError::Unsupported`]: crate::source::ResourceError::Unsupported
+//! [`ResourceError::Shader`]: crate::source::ResourceError::Shader
 
 use alloc::borrow::Cow;
 use alloc::rc::{Rc, Weak};
@@ -51,14 +54,16 @@ use alloc::sync::Arc;
 use core::cell::RefCell;
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use core::marker::PhantomData;
 use core::mem::discriminant;
 use core::ptr;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 
-use cherenkov::{
-    Backend, Engine, Font, FontId, FontSource, Format, Image, ImageColorSpace, ImageData, ImageId,
-    ResourceError, Rgba8, Rgba16F, Shader, ShaderId, ShaderPaintCapability, ShaderSource, Uploads,
+use crate::draw::{FontId, ImageId, ResourceId, ShaderId};
+use crate::scene::source::{
+    FontSource, Format, ImageColorSpace, ImageData, ResourceError, Rgba8, Rgba16F, ShaderLanguage,
+    ShaderSource,
 };
 
 /// The bytes a registration was made from, kept by its entry so that a later
@@ -172,8 +177,28 @@ impl Hash for ImageShape {
     }
 }
 
+/// Everything besides its bytes that makes a font source a different font:
+/// the face's index in a byte-backed collection, or that the source names a
+/// system family rather than bytes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum FontShape {
+    /// A face index into a font file or collection.
+    Face(u32),
+    /// A system-font reference; the bytes slot carries the family name.
+    System,
+}
+
+/// Everything besides its text that makes a shader source a different
+/// shader: the same text in another language or with the other `animated`
+/// flag compiles to a different program.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct ShaderShape {
+    animated: bool,
+    language: ShaderLanguage,
+}
+
 /// A registration's exact identity: its source's shape — a font's index in
-/// its collection, an image's [`ImageShape`], a shader's `animated` flag, any
+/// its collection, an image's [`ImageShape`], a shader's [`ShaderShape`], any
 /// of which makes the same bytes a different resource — and its bytes.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key<S> {
@@ -184,158 +209,117 @@ struct Key<S> {
 /// Which table entry a registration occupies, so its last handle can take
 /// the entry out when it drops.
 enum EntryKey {
-    Font(Key<u32>),
+    Font(Key<FontShape>),
     Rgba8(Key<ImageShape>),
     Rgba16F(Key<ImageShape>),
-    Shader(Key<bool>),
+    Shader(Key<ShaderShape>),
 }
 
-/// The registration an engine always provides: fonts and image uploads.
+/// The registration a render target always provides: fonts and image
+/// uploads.
 ///
-/// Implemented for `cherenkov::Engine<B>` where `B` uploads both image
-/// formats; `SceneResources` holds it as a trait object so the table's
-/// deduplication is backend-agnostic.
-pub trait SceneBackend {
-    /// Registers `source` with the engine, minting a live [`Font`] handle.
+/// A target returns a [`Handle`] for each registered resource — a font
+/// object, a texture — naming the plain id a recording draws with.
+/// `SceneResources` keeps the registry behind its private storage so the
+/// table's deduplication is target-agnostic, and the [`Registered`] that
+/// wraps the [`Handle`], so the resource lives exactly as long as the
+/// sharing handles and the recordings that name it do.
+pub trait SceneBackend: 'static {
+    /// Registers `source` with the target.
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Font`] when the data cannot be used,
-    /// [`ResourceError::Lost`] when the render thread is gone.
-    fn register_font(&self, source: FontSource) -> Result<Font, ResourceError>;
+    /// [`ResourceError::Font`] when the data cannot be used — a `System`
+    /// source on a target without a platform font stack, or bytes the
+    /// target cannot parse — [`ResourceError::Lost`] when the renderer is
+    /// gone.
+    fn register_font(&self, source: FontSource) -> Result<Handle<FontId>, ResourceError>;
 
-    /// Uploads `data`, minting a live [`Image`] handle.
+    /// Uploads `data` as an `Rgba8` image.
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Image`] when the backend rejects the upload,
-    /// [`ResourceError::Lost`] when the render thread is gone.
-    fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Image<Rgba8>, ResourceError>;
+    /// [`ResourceError::Image`] when the target rejects the upload,
+    /// [`ResourceError::Lost`] when the renderer is gone.
+    fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError>;
 
-    /// Uploads `data` in the HDR/linear format, minting a live [`Image`]
-    /// handle.
+    /// Uploads `data` in the HDR/linear format.
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Image`] when the backend rejects the upload,
-    /// [`ResourceError::Lost`] when the render thread is gone.
-    fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Image<Rgba16F>, ResourceError>;
+    /// [`ResourceError::Image`] when the target rejects the upload,
+    /// [`ResourceError::Lost`] when the renderer is gone.
+    fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError>;
 }
 
-impl<B> SceneBackend for Engine<B>
-where
-    B: Backend + Uploads<Rgba8> + Uploads<Rgba16F>,
-{
-    fn register_font(&self, source: FontSource) -> Result<Font, ResourceError> {
-        Self::font(self, source)
-    }
-
-    fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Image<Rgba8>, ResourceError> {
-        Self::image(self, data)
-    }
-
-    fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Image<Rgba16F>, ResourceError> {
-        Self::image(self, data)
-    }
-}
-
-/// The registration only a shader-paint backend provides.
+/// The registration only a target that draws shader paints provides.
+///
+/// A source whose [`ShaderLanguage`] the target does not draw is rejected
+/// here, at registration — the error names the language it got — never
+/// dropped silently into a paint that renders nothing.
 pub trait ShaderBackend: SceneBackend {
-    /// Registers `source` with the engine, minting a live [`Shader`] handle.
+    /// Registers `source` with the target.
     ///
     /// # Errors
     ///
-    /// [`ResourceError::Shader`] when the source fails validation,
-    /// [`ResourceError::Lost`] when the render thread is gone.
-    fn register_shader(&self, source: ShaderSource) -> Result<Shader, ResourceError>;
+    /// [`ResourceError::Shader`] when the source is not in a language the
+    /// target draws or fails its validation, [`ResourceError::Lost`] when
+    /// the renderer is gone.
+    fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError>;
 }
 
-impl<B> ShaderBackend for Engine<B>
-where
-    B: Backend + Uploads<Rgba8> + Uploads<Rgba16F> + ShaderPaintCapability,
-{
-    fn register_shader(&self, source: ShaderSource) -> Result<Shader, ResourceError> {
-        Self::shader(self, source)
-    }
-}
+/// A target's own handle to a registered resource — what [`Handle::new`]
+/// wraps.
+///
+/// A `cherenkov::Font`, a platform font object, a texture — whatever its
+/// registration returns. The registration behind a handle lives exactly as
+/// long as the handle does, and a handle names the plain id a recording
+/// draws the resource by.
+pub trait ResourceHandle: 'static {
+    /// The plain id a recording names this resource by.
+    type Id: PlainId;
 
-/// What a backend offers beyond the unconditional registration, resolved on
-/// the backend type so one `SceneResources::new` serves every engine.
-mod sealed {
-    use alloc::rc::Rc;
-
-    use cherenkov::{Backend, Engine};
-
-    /// Per-backend capabilities [`SceneResources`](super::SceneResources)
-    /// surfaces.
-    ///
-    /// A backend declares them here; under-declaring simply reports
-    /// `Unsupported` at registration.
-    pub trait SceneCaps: Backend {
-        /// The shader registry, when `Self` accepts shader paints.
-        fn shaders(engine: &Rc<Engine<Self>>) -> Option<Rc<dyn super::ShaderBackend>> {
-            let _ = engine;
-            None
-        }
-    }
-}
-
-pub use sealed::SceneCaps;
-
-#[cfg(feature = "gpu")]
-impl SceneCaps for cherenkov_gpu::Gpu {
-    fn shaders(engine: &Rc<Engine<Self>>) -> Option<Rc<dyn ShaderBackend>> {
-        let shaders: Rc<dyn ShaderBackend> = Rc::<Engine<Self>>::clone(engine);
-        Some(shaders)
-    }
-}
-
-#[cfg(feature = "cpu")]
-impl SceneCaps for cherenkov_cpu::Raster {}
-
-#[cfg(test)]
-impl SceneCaps for cherenkov::testing::Null {
-    fn shaders(engine: &Rc<Engine<Self>>) -> Option<Rc<dyn ShaderBackend>> {
-        let shaders: Rc<dyn ShaderBackend> = Rc::<Engine<Self>>::clone(engine);
-        Some(shaders)
-    }
-}
-
-/// One live registration: the engine's handle plus the table entry that
-/// dedupes it. Dropping it takes the entry out of the table, then drops the
-/// engine handle, which unregisters the resource.
-struct Entry<H> {
-    handle: H,
-    key: EntryKey,
-    table: Weak<Table>,
-}
-
-impl<H> Drop for Entry<H> {
-    fn drop(&mut self) {
-        if let Some(table) = self.table.upgrade() {
-            table.unlist(&self.key);
-        }
-    }
-}
-
-/// An engine handle whose id a recording can name: [`Font`], [`Image`] or
-/// [`Shader`].
-pub trait EngineResource: sealed_resource::Sealed + 'static {
-    /// The id a recording names this resource by.
-    type Id: Copy;
-
-    /// This resource's id.
+    /// This resource's plain id.
     fn id(&self) -> Self::Id;
 }
 
-mod sealed_resource {
-    pub trait Sealed {}
-    impl Sealed for cherenkov::Font {}
-    impl<F: cherenkov::Format> Sealed for cherenkov::Image<F> {}
-    impl Sealed for cherenkov::Shader {}
+/// A registration on its target — what `SceneBackend`'s methods return
+/// and what the [`Registered`] a request shares holds.
+///
+/// `I` is the plain id a recording names the resource by. The target's own
+/// handle lives inside behind a private trait object, so the type names no
+/// target type in the public signature; dropping it releases the
+/// registration on the target.
+pub struct Handle<I: PlainId> {
+    id: I,
+    _owner: Box<dyn sealed::AnyHandle>,
 }
 
-impl EngineResource for Font {
+impl<I: PlainId> Handle<I> {
+    /// Wraps the target's own `handle`, keeping its plain id.
+    pub fn new<H: ResourceHandle<Id = I>>(handle: H) -> Self {
+        Self {
+            id: handle.id(),
+            _owner: Box::new(handle),
+        }
+    }
+
+    /// The plain id a recording names this registration by.
+    pub const fn id(&self) -> I {
+        self.id
+    }
+}
+
+impl<I: PlainId> fmt::Debug for Handle<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Handle")
+            .field(&self.id.into_resource_id())
+            .finish()
+    }
+}
+
+#[cfg(any(feature = "cherenkov", test))]
+impl ResourceHandle for cherenkov::Font {
     type Id = FontId;
 
     fn id(&self) -> FontId {
@@ -343,7 +327,8 @@ impl EngineResource for Font {
     }
 }
 
-impl<F: Format> EngineResource for Image<F> {
+#[cfg(any(feature = "cherenkov", test))]
+impl<F: cherenkov::Format> ResourceHandle for cherenkov::Image<F> {
     type Id = ImageId;
 
     fn id(&self) -> ImageId {
@@ -351,7 +336,8 @@ impl<F: Format> EngineResource for Image<F> {
     }
 }
 
-impl EngineResource for Shader {
+#[cfg(any(feature = "cherenkov", test))]
+impl ResourceHandle for cherenkov::Shader {
     type Id = ShaderId;
 
     fn id(&self) -> ShaderId {
@@ -359,42 +345,271 @@ impl EngineResource for Shader {
     }
 }
 
+#[cfg(any(feature = "cherenkov", test))]
+const fn engine_color_space(color_space: ImageColorSpace) -> cherenkov::ImageColorSpace {
+    match color_space {
+        ImageColorSpace::Srgb => cherenkov::ImageColorSpace::Srgb,
+        ImageColorSpace::DisplayP3 => cherenkov::ImageColorSpace::DisplayP3,
+        ImageColorSpace::LinearSrgb => cherenkov::ImageColorSpace::LinearSrgb,
+        ImageColorSpace::LinearP3 => cherenkov::ImageColorSpace::LinearP3,
+    }
+}
+
+/// `ImageData` rebuilt as the engine's typed upload: same texels, same
+/// colour space and alpha convention, its own format marker.
+#[cfg(any(feature = "cherenkov", test))]
+fn engine_image<F: Format, E: cherenkov::Format>(data: ImageData<F>) -> cherenkov::ImageData<E> {
+    let upload = cherenkov::ImageData::<E>::new(data.width, data.height, data.data)
+        .expect("a validated ImageData stays valid")
+        .color_space(engine_color_space(data.color_space));
+    if data.premultiplied {
+        upload.premultiplied()
+    } else {
+        upload
+    }
+}
+
+#[cfg(any(feature = "cherenkov", test))]
+impl<B> SceneBackend for cherenkov::Engine<B>
+where
+    B: cherenkov::Backend
+        + cherenkov::Uploads<cherenkov::Rgba8>
+        + cherenkov::Uploads<cherenkov::Rgba16F>,
+{
+    fn register_font(&self, source: FontSource) -> Result<Handle<FontId>, ResourceError> {
+        match source {
+            FontSource::Bytes { data, index } => {
+                let font = Self::font(self, cherenkov::FontSource { data, index })?;
+                Ok(Handle::new(font))
+            }
+            FontSource::System { family } => Err(ResourceError::Font(format!(
+                "system font '{family}' is not registered: the Cherenkov engine registers fonts from bytes"
+            ))),
+        }
+    }
+
+    fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError> {
+        let image = Self::image(self, engine_image::<Rgba8, cherenkov::Rgba8>(data))?;
+        Ok(Handle::new(image))
+    }
+
+    fn register_rgba16f(
+        &self,
+        data: ImageData<Rgba16F>,
+    ) -> Result<Handle<ImageId>, ResourceError> {
+        let image = Self::image(self, engine_image::<Rgba16F, cherenkov::Rgba16F>(data))?;
+        Ok(Handle::new(image))
+    }
+}
+
+#[cfg(any(feature = "cherenkov", test))]
+impl<B> ShaderBackend for cherenkov::Engine<B>
+where
+    B: cherenkov::Backend
+        + cherenkov::Uploads<cherenkov::Rgba8>
+        + cherenkov::Uploads<cherenkov::Rgba16F>
+        + cherenkov::ShaderPaintCapability,
+{
+    fn register_shader(&self, source: ShaderSource) -> Result<Handle<ShaderId>, ResourceError> {
+        match source.language {
+            ShaderLanguage::Wgsl => {
+                let shader = Self::shader(
+                    self,
+                    cherenkov::ShaderSource {
+                        source: source.source,
+                        animated: source.animated,
+                    },
+                )?;
+                Ok(Handle::new(shader))
+            }
+            language @ ShaderLanguage::Agsl => Err(ResourceError::Shader(format!(
+                "{language} shader source is not registered: the Cherenkov engine draws WGSL shader paint"
+            ))),
+        }
+    }
+}
+
+/// What a Cherenkov backend offers beyond the unconditional registration,
+/// resolved on the backend type so a host's `SceneResources` construction
+/// carries no `Option` decision of its own.
+#[cfg(feature = "cherenkov")]
+mod sealed_caps {
+    use alloc::rc::Rc;
+
+    use cherenkov::{Backend, Engine};
+
+    /// Per-backend capabilities [`SceneResources`](super::SceneResources)
+    /// surfaces: which registry the backend's engine offers.
+    ///
+    /// A backend declares them here; under-declaring simply reports
+    /// `Unsupported` at registration.
+    pub trait SceneCaps: Backend {
+        /// The registration table over `engine`. The default registers
+        /// fonts and image uploads but no shader paints; a backend that
+        /// draws them overrides it with
+        /// [`SceneResources::with_shaders`](super::SceneResources::with_shaders).
+        fn resources(engine: Rc<Engine<Self>>) -> super::SceneResources
+        where
+            Self: cherenkov::Uploads<cherenkov::Rgba8> + cherenkov::Uploads<cherenkov::Rgba16F>,
+        {
+            super::SceneResources::new(engine)
+        }
+    }
+}
+
+#[cfg(feature = "cherenkov")]
+pub use sealed_caps::SceneCaps;
+
+#[cfg(feature = "gpu")]
+impl SceneCaps for cherenkov_gpu::Gpu {
+    fn resources(engine: Rc<cherenkov::Engine<Self>>) -> SceneResources {
+        SceneResources::with_shaders(engine.clone(), engine)
+    }
+}
+
+#[cfg(feature = "cpu")]
+impl SceneCaps for cherenkov_cpu::Raster {}
+
+/// One live registration: the target's handle, erased to its kind, plus the
+/// table entry that dedupes it. Dropping it takes the entry out of the
+/// table, then drops the target handle, which unregisters the resource.
+struct Entry {
+    handle: Box<dyn sealed::HeldHandle>,
+    key: EntryKey,
+    table: Weak<Table>,
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        if let Some(table) = self.table.upgrade() {
+            table.unlist(&self.key);
+        }
+    }
+}
+
+mod sealed {
+    /// Seals [`PlainId`](super::PlainId) to the kinds the registry has.
+    pub trait Sealed {}
+    impl Sealed for crate::draw::FontId {}
+    impl Sealed for crate::draw::ImageId {}
+    impl Sealed for crate::draw::ShaderId {}
+
+    /// The erased target handle a [`Handle`](super::Handle) owns: dropping
+    /// the object releases the registration. A marker only — the wrapper
+    /// reads the plain id once, when it is built.
+    pub trait AnyHandle: 'static {}
+    impl<T: super::ResourceHandle> AnyHandle for T {}
+
+    /// The erased handle an `Entry` keeps: a [`Handle`](super::Handle) the
+    /// registry returned.
+    pub trait HeldHandle {
+        /// The plain id the erased handle names.
+        fn id(&self) -> crate::draw::ResourceId;
+    }
+}
+
+impl<I: PlainId> sealed::HeldHandle for Handle<I> {
+    fn id(&self) -> ResourceId {
+        self.id.into_resource_id()
+    }
+}
+
+/// The plain resource identifier a [`Registered`] names — one of `FontId`,
+/// `ImageId` or `ShaderId`, the ids recordings draw with.
+///
+/// Sealed: only the kinds [`SceneResources`] registers exist.
+pub trait PlainId: sealed::Sealed + Copy + 'static {
+    /// Wraps this id in its [`ResourceId`] variant.
+    fn into_resource_id(self) -> ResourceId;
+
+    /// Reads this id back out of its [`ResourceId`] variant.
+    ///
+    /// The entry always stores the matching variant — a `Registered` is
+    /// made by the registration method for its kind — so a mismatch is a
+    /// bug in the table, not a condition a caller checks.
+    fn from_resource_id(id: ResourceId) -> Self;
+}
+
+impl PlainId for FontId {
+    fn into_resource_id(self) -> ResourceId {
+        ResourceId::Font(self)
+    }
+
+    fn from_resource_id(id: ResourceId) -> Self {
+        match id {
+            ResourceId::Font(id) => id,
+            _ => unreachable!("the entry stores a font id"),
+        }
+    }
+}
+
+impl PlainId for ImageId {
+    fn into_resource_id(self) -> ResourceId {
+        ResourceId::Image(self)
+    }
+
+    fn from_resource_id(id: ResourceId) -> Self {
+        match id {
+            ResourceId::Image(id) => id,
+            _ => unreachable!("the entry stores an image id"),
+        }
+    }
+}
+
+impl PlainId for ShaderId {
+    fn into_resource_id(self) -> ResourceId {
+        ResourceId::Shader(self)
+    }
+
+    fn from_resource_id(id: ResourceId) -> Self {
+        match id {
+            ResourceId::Shader(id) => id,
+            _ => unreachable!("the entry stores a shader id"),
+        }
+    }
+}
+
 /// A resource registered through [`SceneResources`], shared by everyone who
 /// asked for the same source while it was held.
 ///
-/// This is the content's share of the registration: cloning it shares the
-/// registration, and once the last clone and every recording holding it are
-/// gone, the table's entry leaves and the engine unregisters the resource.
+/// `I` is the plain id the registration names — `FontId`, `ImageId` or
+/// `ShaderId` — the id a recording draws the resource by. The handle
+/// inside is the target's own, so this is the content's share of the
+/// registration: cloning it shares the registration, and once the last
+/// clone and every recording holding it are gone, the table's entry leaves
+/// and the target unregisters the resource.
 ///
 /// It deliberately does not hand out the resource's id. A recording names the
 /// resource through [`RecordingResources::name`], which holds the
 /// registration for as long as that recording may be drawn — so the id a
 /// recorder draws with never outlives the registration behind it. Two handles
 /// compare equal when they share one registration.
-pub struct Registered<H> {
-    entry: Rc<Entry<H>>,
+pub struct Registered<I: PlainId> {
+    entry: Rc<Entry>,
+    marker: PhantomData<I>,
 }
 
-impl<H> Clone for Registered<H> {
+impl<I: PlainId> Clone for Registered<I> {
     fn clone(&self) -> Self {
         Self {
             entry: Rc::clone(&self.entry),
+            marker: PhantomData,
         }
     }
 }
 
-impl<H> PartialEq for Registered<H> {
+impl<I: PlainId> PartialEq for Registered<I> {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.entry, &other.entry)
     }
 }
 
-impl<H> Eq for Registered<H> {}
+impl<I: PlainId> Eq for Registered<I> {}
 
-impl<H: fmt::Debug> fmt::Debug for Registered<H> {
+impl<I: PlainId> fmt::Debug for Registered<I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Registered")
-            .field(&self.entry.handle)
+            .field(&self.entry.handle.id())
             .finish()
     }
 }
@@ -402,7 +617,7 @@ impl<H: fmt::Debug> fmt::Debug for Registered<H> {
 /// A registration a recording holds, whatever its kind.
 trait HeldEntry {}
 
-impl<H> HeldEntry for Entry<H> {}
+impl HeldEntry for Entry {}
 
 /// Where a held registration lives, which identifies it.
 fn entry_address<T: ?Sized>(entry: &Rc<T>) -> usize {
@@ -415,8 +630,8 @@ fn entry_address<T: ?Sized>(entry: &Rc<T>) -> usize {
 /// [`RecordingResources::finish`] produces it beside the recording it belongs
 /// to. The host keeps it for as long as that recording is installed and drops
 /// it only once a recording that replaces it has been installed, for example
-/// right after the [`Surface::update`](cherenkov::Surface::update) that
-/// installs the replacement: the engine applies an install before it draws
+/// right after the `Surface::update` that installs the replacement: the
+/// target applies an install before it draws
 /// again, so no frame draws the replaced recording after its resources are
 /// released. A recording that is discarded rather than installed takes its
 /// set with it and releases nothing the installed recording draws.
@@ -455,9 +670,9 @@ impl fmt::Debug for HeldResources {
 /// be held only by a set that nobody installs:
 ///
 /// ```compile_fail
-/// # use waterui_graphics::cherenkov::{Image, Rgba8};
+/// # use waterui_graphics::draw::ImageId;
 /// # use waterui_graphics::{RecordingResources, Registered};
-/// fn stale_id(resources: &RecordingResources<'_>, image: &Registered<Image<Rgba8>>) {
+/// fn stale_id(resources: &RecordingResources<'_>, image: &Registered<ImageId>) {
 ///     // The id would be held by a temporary that drops at the semicolon.
 ///     let _ = resources.recording().name(image);
 /// }
@@ -486,20 +701,20 @@ impl RecordingResources<'_> {
     ///
     /// # Panics
     ///
-    /// When `resource` was registered through another engine's
+    /// When `resource` was registered through another target's
     /// [`SceneResources`]: its id means nothing, or something else, on this
     /// one.
-    pub fn name<H: EngineResource>(&mut self, resource: &Registered<H>) -> H::Id {
+    pub fn name<I: PlainId>(&mut self, resource: &Registered<I>) -> I {
         assert!(
             ptr::eq(
                 resource.entry.table.as_ptr(),
                 Rc::as_ptr(&self.resources.table)
             ),
-            "a resource registered on another engine was named in this recording"
+            "a resource registered on another target was named in this recording"
         );
-        let entry: Rc<dyn HeldEntry> = Rc::<Entry<H>>::clone(&resource.entry);
+        let entry: Rc<dyn HeldEntry> = Rc::<Entry>::clone(&resource.entry);
         self.held.entry(entry_address(&entry)).or_insert(entry);
-        resource.entry.handle.id()
+        I::from_resource_id(resource.entry.handle.id())
     }
 
     /// Holds every registration in `held` for this recording too — for a
@@ -508,14 +723,14 @@ impl RecordingResources<'_> {
     ///
     /// # Panics
     ///
-    /// When `held` belongs to another engine's [`SceneResources`].
+    /// When `held` belongs to another target's [`SceneResources`].
     pub fn hold(&mut self, held: &HeldResources) {
         if held.entries.is_empty() {
             return;
         }
         assert!(
             ptr::eq(held.table.as_ptr(), Rc::as_ptr(&self.resources.table)),
-            "a recording naming another engine's resources was drawn in this recording"
+            "a recording naming another target's resources was drawn in this recording"
         );
         for entry in held.entries.iter() {
             self.held
@@ -529,7 +744,7 @@ impl RecordingResources<'_> {
     /// # Errors
     ///
     /// As [`SceneResources::font`].
-    pub fn font(&self, source: FontSource) -> Result<Registered<Font>, ResourceError> {
+    pub fn font(&self, source: FontSource) -> Result<Registered<FontId>, ResourceError> {
         self.resources.font(source)
     }
 
@@ -538,7 +753,7 @@ impl RecordingResources<'_> {
     /// # Errors
     ///
     /// As [`SceneResources::image`].
-    pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<Image<Rgba8>>, ResourceError> {
+    pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
         self.resources.image(data)
     }
 
@@ -547,19 +762,16 @@ impl RecordingResources<'_> {
     /// # Errors
     ///
     /// As [`SceneResources::image16f`].
-    pub fn image16f(
-        &self,
-        data: ImageData<Rgba16F>,
-    ) -> Result<Registered<Image<Rgba16F>>, ResourceError> {
+    pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
         self.resources.image16f(data)
     }
 
-    /// Registers a shader paint's WGSL source; see [`SceneResources::shader`].
+    /// Registers a shader paint's source; see [`SceneResources::shader`].
     ///
     /// # Errors
     ///
     /// As [`SceneResources::shader`].
-    pub fn shader(&self, source: ShaderSource) -> Result<Registered<Shader>, ResourceError> {
+    pub fn shader(&self, source: ShaderSource) -> Result<Registered<ShaderId>, ResourceError> {
         self.resources.shader(source)
     }
 
@@ -585,12 +797,12 @@ impl fmt::Debug for RecordingResources<'_> {
 /// The live registrations of one kind, found either by the allocation their
 /// source bytes live in — a request that hands over a source the table already
 /// holds costs one lookup, without reading its bytes — or by exact content.
-struct Listing<S, H> {
-    by_address: HashMap<(S, Address), Weak<Entry<H>>>,
-    by_content: HashMap<Key<S>, Weak<Entry<H>>>,
+struct Listing<S> {
+    by_address: HashMap<(S, Address), Weak<Entry>>,
+    by_content: HashMap<Key<S>, Weak<Entry>>,
 }
 
-impl<S: Copy + Eq + Hash, H> Listing<S, H> {
+impl<S: Copy + Eq + Hash> Listing<S> {
     fn new() -> RefCell<Self> {
         RefCell::new(Self {
             by_address: HashMap::new(),
@@ -598,17 +810,17 @@ impl<S: Copy + Eq + Hash, H> Listing<S, H> {
         })
     }
 
-    fn find_address(&self, shape: S, address: Address) -> Option<Rc<Entry<H>>> {
+    fn find_address(&self, shape: S, address: Address) -> Option<Rc<Entry>> {
         self.by_address
             .get(&(shape, address))
             .and_then(Weak::upgrade)
     }
 
-    fn find_content(&self, key: &Key<S>) -> Option<Rc<Entry<H>>> {
+    fn find_content(&self, key: &Key<S>) -> Option<Rc<Entry>> {
         self.by_content.get(key).and_then(Weak::upgrade)
     }
 
-    fn list(&mut self, key: Key<S>, entry: &Rc<Entry<H>>) {
+    fn list(&mut self, key: Key<S>, entry: &Rc<Entry>) {
         let address = Address::of(key.content.bytes.as_slice());
         self.by_address
             .insert((key.shape, address), Rc::downgrade(entry));
@@ -639,10 +851,10 @@ impl<S: Copy + Eq + Hash, H> Listing<S, H> {
 struct Table {
     backend: Rc<dyn SceneBackend>,
     shaders: Option<Rc<dyn ShaderBackend>>,
-    fonts: RefCell<Listing<u32, Font>>,
-    images_rgba8: RefCell<Listing<ImageShape, Image<Rgba8>>>,
-    images_rgba16f: RefCell<Listing<ImageShape, Image<Rgba16F>>>,
-    shaders_cache: RefCell<Listing<bool, Shader>>,
+    fonts: RefCell<Listing<FontShape>>,
+    images_rgba8: RefCell<Listing<ImageShape>>,
+    images_rgba16f: RefCell<Listing<ImageShape>>,
+    shaders_cache: RefCell<Listing<ShaderShape>>,
 }
 
 impl Table {
@@ -657,14 +869,17 @@ impl Table {
     }
 }
 
-/// Resource registration over one engine, shared by the content drawn on it.
+/// Resource registration over one render target, shared by the content
+/// drawn on it.
 ///
-/// Constructed once from the host's already-selected engine and lent, as
-/// [`RecordingResources`], to every [`SceneContent::build_scene`] on that
-/// engine; see the module documentation for the ownership contract. The table
-/// holds the engine strongly and its registrations weakly: it never keeps a
-/// resource alive, so it can live as long as the engine does without pinning
-/// anything that is no longer drawn.
+/// Constructed once from the host's already-selected target — the
+/// `SceneBackend` its registry fills, with its `ShaderBackend` when the
+/// target draws shader paints — and lent, as [`RecordingResources`], to
+/// every [`SceneContent::build_scene`] on that target; see the module
+/// documentation for the ownership contract. The table holds the registry
+/// strongly and its registrations weakly: it never keeps a resource alive,
+/// so it can live as long as the target does without pinning anything that
+/// is no longer drawn.
 ///
 /// Deduplication is exact. Each live registration keeps the bytes it was made
 /// from — the `Arc` the request handed over, not a copy; owned shader text is
@@ -677,17 +892,16 @@ impl Table {
 /// # Blocking
 ///
 /// A request for a source whose registration is live returns without
-/// touching the engine. Any other request — [`font`](Self::font),
+/// touching the renderer. Any other request — [`font`](Self::font),
 /// [`image`](Self::image), [`image16f`](Self::image16f) or
-/// [`shader`](Self::shader) — is a round trip to the engine's render
-/// thread, and blocks the calling thread until the
-/// render thread has parsed the font, converted and uploaded the image, or
-/// compiled and validated the shader. Called from
-/// [`SceneContent::build_scene`], that is the host's frame: a first-time
-/// registration stalls the frame that first draws the resource, by as long
-/// as that work takes. The blocking is what makes the id valid the moment it
-/// is recorded, with no frame in which the recording names a resource the
-/// engine does not have yet.
+/// [`shader`](Self::shader) — is a round trip into the target's renderer,
+/// and blocks the calling thread until it has parsed the font, converted
+/// and uploaded the image, or compiled and validated the shader. Called
+/// from [`SceneContent::build_scene`], that is the host's frame: a
+/// first-time registration stalls the frame that first draws the resource,
+/// by as long as that work takes. The blocking is what makes the id valid
+/// the moment it is recorded, with no frame in which the recording names a
+/// resource the target does not have yet.
 ///
 /// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 pub struct SceneResources {
@@ -695,20 +909,32 @@ pub struct SceneResources {
 }
 
 impl SceneResources {
-    /// Resource registration over `engine`, the host's already-selected one.
+    /// Resource registration over `backend`, the registry of the host's
+    /// already-selected render target — fonts and image uploads, no shader
+    /// paints: a shader source reports [`ResourceError::Unsupported`] at
+    /// registration. A target that draws them is built with
+    /// [`with_shaders`](Self::with_shaders).
     ///
-    /// `B` declares which optional registries exist through its capability
-    /// implementations: an engine that accepts shader paints gets them, an
-    /// engine without the capability reports
-    /// [`ResourceError::Unsupported`] instead.
-    pub fn new<B>(engine: Rc<Engine<B>>) -> Self
-    where
-        B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>,
-    {
-        let shaders = B::shaders(&engine);
+    /// [`ResourceError::Unsupported`]: crate::source::ResourceError::Unsupported
+    pub fn new<B: SceneBackend>(backend: Rc<B>) -> Self {
+        Self::over(backend, None)
+    }
+
+    /// Registration over `backend`, with `shaders` as the registry shader
+    /// paints register through — usually the target's same object as
+    /// `backend`. For a Cherenkov engine the `SceneCaps` bound builds this
+    /// on the backend type: `Gpu` hands its engine over, `Raster` takes
+    /// the default [`new`](Self::new).
+    pub fn with_shaders<B: SceneBackend, S: ShaderBackend>(backend: Rc<B>, shaders: Rc<S>) -> Self {
+        Self::over(backend, Some(shaders))
+    }
+
+    /// The table's storage: the erased registry objects the friendly
+    /// constructors take concretely.
+    fn over(backend: Rc<dyn SceneBackend>, shaders: Option<Rc<dyn ShaderBackend>>) -> Self {
         Self {
             table: Rc::new(Table {
-                backend: engine,
+                backend,
                 shaders,
                 fonts: Listing::new(),
                 images_rgba8: Listing::new(),
@@ -734,23 +960,27 @@ impl SceneResources {
     /// A source the table already holds is found by its address alone; any
     /// other source is hashed once and, on a hash match, compared byte for
     /// byte, so only identical sources ever share a registration.
-    fn intern<S, H>(
+    fn intern<S, I>(
         &self,
-        listing: fn(&Table) -> &RefCell<Listing<S, H>>,
+        listing: fn(&Table) -> &RefCell<Listing<S>>,
         shape: S,
         bytes: SourceBytes,
         entry_key: fn(Key<S>) -> EntryKey,
-        register: impl FnOnce(&Table) -> Result<H, ResourceError>,
-    ) -> Result<Registered<H>, ResourceError>
+        register: impl FnOnce(&Table) -> Result<Handle<I>, ResourceError>,
+    ) -> Result<Registered<I>, ResourceError>
     where
         S: Copy + Eq + Hash,
+        I: PlainId,
     {
         let listing = listing(&self.table);
         let held = listing
             .borrow()
             .find_address(shape, Address::of(bytes.as_slice()));
         if let Some(entry) = held {
-            return Ok(Registered { entry });
+            return Ok(Registered {
+                entry,
+                marker: PhantomData,
+            });
         }
         let key = Key {
             shape,
@@ -758,15 +988,21 @@ impl SceneResources {
         };
         let identical = listing.borrow().find_content(&key);
         if let Some(entry) = identical {
-            return Ok(Registered { entry });
+            return Ok(Registered {
+                entry,
+                marker: PhantomData,
+            });
         }
         let entry = Rc::new(Entry {
-            handle: register(&self.table)?,
+            handle: Box::new(register(&self.table)?),
             key: entry_key(key.clone()),
             table: Rc::downgrade(&self.table),
         });
         listing.borrow_mut().list(key, &entry);
-        Ok(Registered { entry })
+        Ok(Registered {
+            entry,
+            marker: PhantomData,
+        })
     }
 
     /// Registers `source` with the engine, returning the shared handle.
@@ -783,11 +1019,21 @@ impl SceneResources {
     ///
     /// [`ResourceError::Font`] when the data cannot be used,
     /// [`ResourceError::Lost`] when the render thread is gone.
-    pub fn font(&self, source: FontSource) -> Result<Registered<Font>, ResourceError> {
+    pub fn font(&self, source: FontSource) -> Result<Registered<FontId>, ResourceError> {
+        let (shape, bytes) = match &source {
+            FontSource::Bytes { data, index } => (
+                FontShape::Face(*index),
+                SourceBytes::Shared(Arc::clone(data)),
+            ),
+            FontSource::System { family } => (
+                FontShape::System,
+                SourceBytes::Shared(Arc::from(family.as_bytes())),
+            ),
+        };
         self.intern(
             |table| &table.fonts,
-            source.index,
-            SourceBytes::Shared(Arc::clone(&source.data)),
+            shape,
+            bytes,
             EntryKey::Font,
             |table| table.backend.register_font(source),
         )
@@ -808,7 +1054,7 @@ impl SceneResources {
     ///
     /// [`ResourceError::Image`] when the backend rejects the upload,
     /// [`ResourceError::Lost`] when the render thread is gone.
-    pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<Image<Rgba8>>, ResourceError> {
+    pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
         self.intern(
             |table| &table.images_rgba8,
             ImageShape::of(&data),
@@ -828,10 +1074,7 @@ impl SceneResources {
     ///
     /// [`ResourceError::Image`] when the backend rejects the upload,
     /// [`ResourceError::Lost`] when the render thread is gone.
-    pub fn image16f(
-        &self,
-        data: ImageData<Rgba16F>,
-    ) -> Result<Registered<Image<Rgba16F>>, ResourceError> {
+    pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
         self.intern(
             |table| &table.images_rgba16f,
             ImageShape::of(&data),
@@ -855,7 +1098,7 @@ impl SceneResources {
     /// [`ResourceError::Unsupported`] when the engine's backend does not draw
     /// shader paints, [`ResourceError::Shader`] when the source fails
     /// validation, [`ResourceError::Lost`] when the render thread is gone.
-    pub fn shader(&self, source: ShaderSource) -> Result<Registered<Shader>, ResourceError> {
+    pub fn shader(&self, source: ShaderSource) -> Result<Registered<ShaderId>, ResourceError> {
         let Some(backend) = self.table.shaders.clone() else {
             return Err(ResourceError::Unsupported("shader paint"));
         };
@@ -865,7 +1108,10 @@ impl SceneResources {
         };
         self.intern(
             |table| &table.shaders_cache,
-            source.animated,
+            ShaderShape {
+                animated: source.animated,
+                language: source.language,
+            },
             bytes,
             EntryKey::Shader,
             move |_| backend.register_shader(source),
@@ -901,13 +1147,14 @@ pub(crate) mod tests {
     use std::collections::HashSet;
     use std::sync::mpsc::{Receiver, channel};
 
-    use cherenkov::kurbo::Rect;
     use cherenkov::testing::{Event, Null, NullConfig};
-    use cherenkov::{
-        Command, Content as Recording, Draw as _, Engine, FrameTime, Image, ImageColorSpace,
-        ImageData, ImageId, Offscreen, OffscreenFormat, Recorder, Rgba8, Sampling, Surface,
-        WorkingColor,
+    use cherenkov::{Engine, FrameTime, Offscreen, OffscreenFormat, Surface};
+
+    use crate::draw::{
+        Command, Content as Recording, Draw as _, ImageId, Recorder, Sampling, WorkingColor,
+        kurbo::Rect,
     };
+    use crate::scene::source::{ImageColorSpace, ImageData, Rgba8};
 
     use super::{
         Content, HeldResources, RecordingResources, Registered, SceneResources, SourceBytes,
@@ -928,7 +1175,7 @@ pub(crate) mod tests {
     /// probe, for tests that draw content without caring about pixels.
     pub fn null_resources() -> (SceneResources, Receiver<Event>) {
         let (engine, probe) = null_engine();
-        (SceneResources::new(engine), probe)
+        (SceneResources::with_shaders(engine.clone(), engine), probe)
     }
 
     pub fn one_pixel() -> ImageData<Rgba8> {
@@ -1015,7 +1262,7 @@ pub(crate) mod tests {
     struct LateImage {
         frame: u32,
         last: u32,
-        image: Option<Registered<Image<Rgba8>>>,
+        image: Option<Registered<ImageId>>,
     }
 
     impl LateImage {
@@ -1111,7 +1358,7 @@ pub(crate) mod tests {
                 .expect("surface");
             let _ = probe.try_iter().count();
             Self {
-                resources: SceneResources::new(Rc::clone(&engine)),
+                resources: SceneResources::with_shaders(engine.clone(), engine.clone()),
                 engine,
                 probe,
                 surface,
@@ -1334,8 +1581,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "registered on another engine")]
-    fn a_resource_from_another_engine_cannot_be_named() {
+    #[should_panic(expected = "registered on another target")]
+    fn a_resource_from_another_target_cannot_be_named() {
         let (theirs, _events) = null_resources();
         let (ours, _events) = null_resources();
         let image = theirs.image(one_pixel()).expect("image registration");

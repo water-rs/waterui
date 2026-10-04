@@ -31,7 +31,7 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
-use cherenkov::kurbo::Point;
+use crate::draw::kurbo::Point;
 use waterui_core::Str;
 
 /// A pointer button, in the W3C UI Events button vocabulary.

@@ -5,13 +5,12 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::cherenkov::{
-    Content, Display, Draw, Engine, FrameTime, Next, Surface, kurbo,
-};
+use waterui_graphics::cherenkov::{Display, Engine, FrameTime, Next, Surface};
 use waterui_graphics::cherenkov_gpu::{
     Gpu,
     interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
 };
+use waterui_graphics::draw::{Content, Draw, kurbo};
 use waterui_graphics::gpu::{GpuRuntime, RedrawHandle, SharedGpuContext};
 use waterui_graphics::input::SurfaceInputEvent;
 use waterui_graphics::offscreen::OffscreenSize;
@@ -194,7 +193,7 @@ impl SceneRenderer {
         let wake = redraw.clone();
         // Bound recorder operands wake the engine without rebuilding the scene.
         engine.set_waker(move || wake.request_redraw());
-        let resources = SceneResources::new(engine.clone());
+        let resources = SceneResources::with_shaders(engine.clone(), engine.clone());
         let (target, textures) = TextureTarget::new((size.width(), size.height()));
         let surface = engine
             .surface(target)
@@ -347,7 +346,7 @@ mod tests {
 
     use waterui::{Binding, SignalExt, binding};
     use waterui_core::{AnyView, Environment, View};
-    use waterui_graphics::cherenkov::{Command, Draw, Paint, Recorder, WorkingColor};
+    use waterui_graphics::draw::{Command, Draw, Paint, Recorder, WorkingColor};
     use waterui_graphics::resources::RecordingResources;
     use waterui_graphics::scene_view::{SceneContent, SceneViewMergeToParent};
     use waterui_graphics::{Picture, PictureRecording};

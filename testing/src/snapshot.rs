@@ -4,7 +4,7 @@ use std::rc::Rc;
 use hydrolysis::{HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style, WidgetTheme};
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
-use waterui::graphics::cherenkov::kurbo;
+use waterui::graphics::draw::kurbo;
 use waterui_core::{AnyView, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};

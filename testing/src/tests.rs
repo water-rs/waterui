@@ -10,7 +10,7 @@ use waterui::Binding;
 use waterui::ViewExt as _;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{text, vstack};
-use waterui::graphics::cherenkov::{self, Draw as _, Recorder, kurbo};
+use waterui::graphics::draw::{self, Draw as _, Recorder, kurbo};
 use waterui::graphics::color::Srgb;
 use waterui::graphics::scene_view::SceneViewMergeToParent;
 use waterui::graphics::{RecordingResources, SceneContent, SceneView, WorkingColor};
@@ -204,7 +204,7 @@ mod token_probe {
     use waterui::component::{ControlSize, button::ButtonStyle};
     use waterui::env::use_env;
     use waterui::form::picker::PickerStyle;
-    use waterui::graphics::cherenkov::{Paint, Recorder};
+    use waterui::graphics::draw::{Paint, Recorder};
     use waterui::reactive::constant;
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
@@ -991,7 +991,7 @@ impl SceneContent for TestSceneContent {
             (8.0, 8.0),
             (f64::from(width.min(40.0)), f64::from(height.min(24.0))),
         );
-        let red = cherenkov::Color::<cherenkov::Srgb>::new([1.0, 0.0, 0.0, 1.0]);
+        let red = draw::Color::<draw::Srgb>::new([1.0, 0.0, 0.0, 1.0]);
         recorder.fill(rect, WorkingColor::from(red));
         false
     }

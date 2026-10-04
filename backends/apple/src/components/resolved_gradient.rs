@@ -7,7 +7,7 @@
 
 use cocoa_ui::gradient::{GradientKind, GradientLayer, GradientStop};
 use waterui::graphics::Gradient;
-use waterui::graphics::cherenkov::Paint;
+use waterui::graphics::draw::Paint;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::NativeLeaf;
@@ -27,7 +27,7 @@ use platform::HostView;
 
 /// A Cherenkov working color as a `CGColor` in extended linear Display-P3.
 fn cg_color(
-    color: &waterui::graphics::cherenkov::WorkingColor,
+    color: &waterui::graphics::draw::WorkingColor,
 ) -> cocoa_ui::objc2_core_foundation::CFRetained<cocoa_ui::objc2_core_graphics::CGColor> {
     let [red, green, blue, alpha] = color.components;
     cocoa_ui::color::cg_extended_linear_display_p3(

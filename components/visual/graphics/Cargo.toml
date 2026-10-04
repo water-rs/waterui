@@ -18,16 +18,23 @@ default = ["gpu"]
 # device, so a render target that lowers filters into its own primitives builds
 # it without the GPU stack.
 effects = ["dep:filtrate", "dep:arc-swap"]
+# The Cherenkov engine itself: `Engine<B>` as the `SceneBackend`/`ShaderBackend`
+# registry, `cherenkov-cpu`'s raster path, `cherenkov-gpu`'s surfaces, and the
+# `cherenkov` re-export a host that owns its engine needs. With it off the crate
+# is the recording layer alone — `draw`, scenes, pictures, colours, gradients,
+# filters and the `SceneResources` registration contract — for a render target
+# that is not a Cherenkov backend.
+cherenkov = ["dep:cherenkov"]
 # GPU-only surfaces: user GPU content, running filters through `filtrate`'s
 # executor, arbitrary GPU effects on views, offscreen rendering through
 # `Engine<Gpu>`, and image decoding. Everything else — colours, gradients,
 # scenes, pictures and shader paints — records Cherenkov `Content` and needs no
 # device here.
 gpu = [
+    "cherenkov",
     "effects",
     "filtrate/gpu",
     "dep:cherenkov-gpu",
-    "dep:thiserror",
     "dep:wgpu",
     "dep:bytemuck",
     "dep:image",
@@ -39,13 +46,18 @@ gpu = [
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
-cpu = ["dep:cherenkov-cpu", "dep:thiserror", "dep:image"]
+cpu = ["cherenkov", "dep:cherenkov-cpu", "dep:image"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
 nami.workspace = true
-cherenkov.workspace = true
+# The render-target-neutral recorder: always on — `draw`, `SceneContent`,
+# `Picture` and the `SceneResources` contract are all spelled in its types.
+cherenkov-record.workspace = true
+# The engine behind `SceneBackend`/`ShaderBackend` impls and the `cherenkov`
+# re-export; a target that is not a Cherenkov backend leaves it out.
+cherenkov = { workspace = true, optional = true }
 cherenkov-gpu = { workspace = true, optional = true }
 cherenkov-cpu = { workspace = true, optional = true }
 color.workspace = true
@@ -54,7 +66,7 @@ pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
 keyboard-types.workspace = true
-thiserror = { workspace = true, optional = true }
+thiserror.workspace = true
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
 # (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the
 # patched container to the platform decoder, so the encoder was pure weight.

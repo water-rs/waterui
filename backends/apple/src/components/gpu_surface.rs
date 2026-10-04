@@ -26,7 +26,8 @@ use objc2::MainThreadMarker;
 use objc2_metal::{MTLPixelFormat, MTLTexture};
 use waterui_core::NativeView;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
-use waterui_graphics::cherenkov::{Display, Next, kurbo};
+use waterui_graphics::cherenkov::{Display, Next};
+use waterui_graphics::draw::kurbo;
 use waterui_graphics::gpu::{
     ExternalFrameRenderer, ExternalFrameStream, ExternalFrameView, GpuContentRenderer,
     GpuContentView, GpuRuntime, RedrawHandle, SharedGpuContext,

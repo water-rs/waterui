@@ -11,13 +11,14 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cherenkov::kurbo::{Affine, Rect, Shape};
-use cherenkov::{
-    Content, ContentChange, Draw, FontSource, Glyph, GlyphRun, GlyphStyle, ImageColorSpace,
-    ImageData, LayoutSize, Recorder, Rgba8, Sampling, StaticRecorder, WorkingColor,
-};
 use nami::{Binding, SignalExt};
+use waterui_graphics::draw::kurbo::{Affine, Rect, Shape};
+use waterui_graphics::draw::{
+    Content, ContentChange, Draw, Glyph, GlyphRun, GlyphStyle, ImageId, LayoutSize, Recorder,
+    Sampling, StaticRecorder, WorkingColor,
+};
 use waterui_graphics::raster::{Rasterizer, RgbaBitmap};
+use waterui_graphics::{FontSource, ImageColorSpace, ImageData, Rgba8};
 use waterui_graphics::{
     Picture, PictureSource, RecordingResources, Registered, SceneContent, SceneView,
 };
@@ -26,7 +27,8 @@ use waterui_graphics::{
 /// Display P3 components directly, which sRGB cannot hold, so pixel
 /// expectations come from converting a named sRGB colour.
 fn srgb(red: f32, green: f32, blue: f32) -> WorkingColor {
-    cherenkov::Color::<cherenkov::Srgb>::new([red, green, blue, 1.0]).into()
+    waterui_graphics::draw::Color::<waterui_graphics::draw::Srgb>::new([red, green, blue, 1.0])
+        .into()
 }
 
 fn filled_square(recorder: &mut Recorder, color: WorkingColor) {
@@ -49,7 +51,7 @@ fn a_fill_is_one_command_in_the_recorded_content() {
         filled_square(recorder, srgb(1.0, 0.0, 0.0));
         recorder.stroke(
             Rect::new(0.0, 0.0, 4.0, 4.0).to_path(0.05),
-            cherenkov::Stroke::new(1.0),
+            waterui_graphics::draw::Stroke::new(1.0),
             srgb(0.0, 0.0, 1.0),
         );
     });
@@ -244,7 +246,7 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
 /// image on its third, registering it in the frame that draws it.
 struct LateImage {
     frame: u32,
-    image: Option<Registered<cherenkov::Image<Rgba8>>>,
+    image: Option<Registered<ImageId>>,
 }
 
 impl SceneContent for LateImage {
