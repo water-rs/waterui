@@ -325,7 +325,7 @@ pub fn run(
     // `MainThreadMarker` contract needs.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     let native_menu_bar = crate::platform::native_menu_bar::NativeMenuBar::install(
-        super::menu_bar::register_menu_bar(&menu_bar, &env),
+        &super::menu_bar::register_menu_bar(&menu_bar, &env),
         &env,
     );
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

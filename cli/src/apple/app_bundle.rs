@@ -142,7 +142,7 @@ pub fn apple_info_plist(
     if platform == TargetPlatform::MacOS {
         apply_macos_plist_entries(&mut dict, ctx, project);
     } else {
-        apply_mobile_plist_entries(&mut dict, ctx, project, deployment_target);
+        apply_mobile_plist_entries(&mut dict, ctx, project, platform, deployment_target);
     }
     dict
 }
@@ -199,11 +199,22 @@ fn apply_mobile_plist_entries(
     dict: &mut plist::Dictionary,
     ctx: &TemplateContext,
     project: &Project,
+    platform: TargetPlatform,
     deployment_target: &str,
 ) {
     let mut insert = |key: &str, value: plist::Value| {
         dict.insert(key.to_string(), value);
     };
+    // iOS caps `CADisplayLink` and `CAMetalLayer` presentation at 60 Hz on
+    // ProMotion iPhones unless the app declares this key; WaterUI owns frame
+    // pacing per view, so generated apps opt out of the cap. iPad ProMotion
+    // and the other mobile platforms are not capped this way.
+    if matches!(platform, TargetPlatform::IOS | TargetPlatform::IOSSimulator) {
+        insert(
+            "CADisableMinimumFrameDurationOnPhone",
+            plist::Value::Boolean(true),
+        );
+    }
     // `MinimumOSVersion` is the floor `installd` enforces; it must not exceed
     // the simulator runtime the bundle installs onto.
     insert(

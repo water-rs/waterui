@@ -244,20 +244,20 @@ pub fn resolve_placement_monitor(
 /// Whether the event loop's display connection is Wayland — the only
 /// platform family here with neither a global pointer query nor a primary
 /// monitor concept.
+#[cfg(hydrolysis_wayland_platform)]
 fn event_loop_is_wayland(event_loop: &ActiveEventLoop) -> bool {
-    #[cfg(hydrolysis_wayland_platform)]
-    {
-        use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-        return matches!(
-            event_loop.display_handle().map(|handle| handle.as_raw()),
-            Ok(RawDisplayHandle::Wayland(_))
-        );
-    }
-    #[allow(unreachable_code)]
-    {
-        let _ = event_loop;
-        false
-    }
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    matches!(
+        event_loop.display_handle().map(|handle| handle.as_raw()),
+        Ok(RawDisplayHandle::Wayland(_))
+    )
+}
+
+/// Whether the event loop's display connection is Wayland — off the
+/// Wayland-capable platforms it never is.
+#[cfg(not(hydrolysis_wayland_platform))]
+const fn event_loop_is_wayland(_event_loop: &ActiveEventLoop) -> bool {
+    false
 }
 
 /// The pointer position in the same coordinate space `resolve_selector` is

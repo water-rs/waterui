@@ -34,7 +34,7 @@ note: required by a bound in `waterui::component::lazy::Lazy::for_each`
    |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
    |            -------- required by a bound in this associated function
 ...
-   |         C::Item: Identifiable,
+   |         C::Item: Identifiable + Clone,
    |                  ^^^^^^^^^^^^ required by this bound in `Lazy::for_each`
 
 error[E0277]: `Row` has no stable WaterUI identity
@@ -71,7 +71,7 @@ note: required by a bound in `waterui::component::lazy::Lazy::for_each`
    |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
    |            -------- required by a bound in this associated function
 ...
-   |         C::Item: Identifiable,
+   |         C::Item: Identifiable + Clone,
    |                  ^^^^^^^^^^^^ required by this bound in `Lazy::for_each`
 
 error[E0277]: `Row` has no stable WaterUI identity
@@ -108,5 +108,5 @@ note: required by a bound in `waterui::component::lazy::Lazy::for_each`
    |     pub fn for_each<C, F, V>(collection: C, generator: F) -> impl View
    |            -------- required by a bound in this associated function
 ...
-   |         C::Item: Identifiable,
+   |         C::Item: Identifiable + Clone,
    |                  ^^^^^^^^^^^^ required by this bound in `Lazy::for_each`
