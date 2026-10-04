@@ -925,60 +925,65 @@ impl RasterLease {
         &self.frame.as_ref().expect("a lease owns its frame").texture
     }
 
+    /// Rasterizes `layer`'s tree into the leased destination — the draw
+    /// half of a capture, infallible once the frame exists.
+    fn draw(&self, layer: &CALayer, geometry: CaptureGeometry) {
+        self.frame
+            .as_ref()
+            .expect("a lease owns its frame")
+            .draw(layer, geometry);
+    }
+
     /// Hands the frame back — only the settle path may call this.
     fn into_frame(mut self) -> NativeRasterFrame {
         self.frame.take().expect("a lease owns its frame")
     }
 }
 
+/// The full key a raster frame is pooled under: the caller's generation
+/// token plus the destination's device, pixel format and pixel size. Any
+/// key change retires the whole pool — a `NativeRenderer` represents one
+/// current capture destination, not a cache of every geometry it has
+/// ever seen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RasterKey {
+    generation: u64,
+    device: *const std::ffi::c_void,
+    pixel_format: MTLPixelFormat,
+    pixel_width: usize,
+    pixel_height: usize,
+}
+
+impl fmt::Debug for RasterKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RasterKey")
+            .field("generation", &self.generation)
+            .field("device", &self.device)
+            .field("pixel_format", &self.pixel_format)
+            .field("pixel_width", &self.pixel_width)
+            .field("pixel_height", &self.pixel_height)
+            .finish()
+    }
+}
+
 /// The native raster half of a capture, confined to the main thread: a
 /// small pool of `NativeRasterFrame`s leased per capture and returned
-/// when the GPU settles. The pool retires on the caller's generation
-/// token — a context replacement still invalidates every frame even when
-/// it wraps the same physical device.
+/// when the GPU settles, all under one current [`RasterKey`].
 #[derive(Debug, Default)]
 struct NativeRenderer {
-    /// The caller-supplied generation token the pool issues for. A
-    /// mismatch drains the pool: storage from an old generation can
-    /// never answer a new one's capture.
-    generation: u64,
-    /// Frames whose consumers have settled and may be reissued.
+    /// The key the pool currently issues for. Any mismatch drains
+    /// `available`: storage from another key — an old generation, a
+    /// replaced device, a different size or format — can never answer
+    /// this key's capture.
+    key: Option<RasterKey>,
+    /// Settled frames under `key`, ready to reissue.
     available: Vec<NativeRasterFrame>,
 }
 
 impl NativeRenderer {
-    /// Issues a frame for (`generation`, `target`'s device, format, size),
-    /// rasterizes `layer` into it at `geometry`'s scale, and returns the
-    /// lease owning it through consumption.
-    ///
-    /// The draw is synchronous CPU work writing shared memory: it has
-    /// completed before this returns, so no GPU fence stands in for it —
-    /// the lease, not a fence, is the write/read safety contract.
-    ///
-    /// # Panics
-    ///
-    /// When the frame cannot be created (see [`NativeRasterFrame::new`]).
-    fn draw_layer(
-        &mut self,
-        layer: &CALayer,
-        target: &ProtocolObject<dyn MTLTexture>,
-        geometry: CaptureGeometry,
-        generation: u64,
-    ) -> RasterLease {
-        let device = target.device();
-        let (width, height, format) = (target.width(), target.height(), target.pixelFormat());
-        let mut lease = self.issue(&device, format, width, height, generation);
-        lease
-            .frame
-            .as_mut()
-            .expect("a lease owns its frame")
-            .draw(layer, geometry);
-        lease
-    }
-
-    /// Issues a frame for (`generation`, `device`, `format`, `width` ×
-    /// `height`) without drawing — the lease half of [`draw_layer`], so
-    /// the pool contract is exercisable without a layer tree.
+    /// Issues a frame for the full (`generation`, `device`, `format`,
+    /// `width` × `height`) key and returns the lease owning it through
+    /// consumption.
     ///
     /// # Panics
     ///
@@ -991,28 +996,40 @@ impl NativeRenderer {
         height: usize,
         generation: u64,
     ) -> RasterLease {
-        if self.generation != generation {
-            self.generation = generation;
+        let key = RasterKey {
+            generation,
+            device: core::ptr::from_ref(device).cast(),
+            pixel_format: format,
+            pixel_width: width,
+            pixel_height: height,
+        };
+        if self.key != Some(key) {
+            self.key = Some(key);
             self.available.clear();
         }
-        let position = self.available.iter().position(|frame| {
-            frame.pixel_width == width
-                && frame.pixel_height == height
-                && frame.pixel_format == format
-                && Retained::as_ptr(&frame.texture.device()) == core::ptr::from_ref(device).cast()
-        });
-        let frame = position.map_or_else(
-            || NativeRasterFrame::new(device, format, width, height, generation),
-            |position| self.available.swap_remove(position),
-        );
+        let frame = self
+            .available
+            .pop()
+            .unwrap_or_else(|| NativeRasterFrame::new(device, format, width, height, generation));
         RasterLease { frame: Some(frame) }
     }
 
     /// Takes a settled frame back — main thread only, called from the
     /// compositor's completion path once the GPU stopped sampling it. A
-    /// frame issued under a superseded generation is dropped instead.
+    /// frame whose full key no longer matches the pool's current key is
+    /// dropped instead: outstanding old-key storage never joins the new
+    /// pool.
     fn return_frame(&mut self, frame: NativeRasterFrame) {
-        if frame.generation == self.generation {
+        let key = self
+            .key
+            .as_ref()
+            .expect("a returned frame was issued under a key");
+        if frame.generation == key.generation
+            && frame.pixel_width == key.pixel_width
+            && frame.pixel_height == key.pixel_height
+            && frame.pixel_format == key.pixel_format
+            && Retained::as_ptr(&frame.texture.device()) == key.device.cast()
+        {
             self.available.push(frame);
         }
     }
@@ -1024,14 +1041,83 @@ struct CapturedSnapshot {
     surface: Rc<dyn CapturableSurface>,
 }
 
+/// One live external-render registration: a surface whose
+/// `begin_external_rendering` has been paired once. The `Rc` is held by
+/// the capture's `active` map AND by every outstanding `Preparation`
+/// that snapshotted it, so the external render ends only when the map
+/// parted the surface AND its last outstanding frame has settled —
+/// always on the main thread, where every drop path lands.
+struct SurfaceRegistration {
+    surface: Rc<dyn CapturableSurface>,
+}
+
+impl Drop for SurfaceRegistration {
+    fn drop(&mut self) {
+        self.surface.end_external_rendering(true);
+    }
+}
+
 /// Everything [`ViewCapture::capture`] decided on the main thread that the
-/// compositor's queue needs. `raster` is the leased native output: it must
-/// outlive the last GPU read of its texture, so the preparation only
-/// releases it through the composite buffer's completion.
+/// compositor's queue needs. `raster` is the leased native output and
+/// `surfaces` the registrations this capture's immutable snapshot owns:
+/// both must outlive the last GPU read, so the preparation only releases
+/// them through the composite buffer's completion.
 struct Preparation {
     target: Retained<ProtocolObject<dyn MTLTexture>>,
     raster: RasterLease,
     device: Retained<ProtocolObject<dyn MTLDevice>>,
+    /// The registrations this capture's snapshot owns — kept alive past
+    /// any membership change in `active` until the frame settles.
+    surfaces: HashMap<usize, Rc<SurfaceRegistration>>,
+}
+
+/// Restores capture suppression on exactly the subset of `snapshots`
+/// whose `begin_capture_suppression` completed — `begun` increments only
+/// after each begin returns, so unwind-safe restoration on the main
+/// thread can never end more than was opened. Suppression is restored
+/// explicitly before the sole transaction commit, and again by Drop if
+/// the pass exits early.
+struct SuppressionGuard<'a> {
+    snapshots: &'a [CapturedSnapshot],
+    begun: usize,
+}
+
+impl<'a> SuppressionGuard<'a> {
+    const fn new(snapshots: &'a [CapturedSnapshot]) -> Self {
+        Self {
+            snapshots,
+            begun: 0,
+        }
+    }
+
+    /// Opens suppression for every snapshot.
+    ///
+    /// # Panics
+    ///
+    /// When a surface's `begin_capture_suppression` panics — `Drop` then
+    /// restores only the entries already begun.
+    fn begin(&mut self) {
+        while self.begun < self.snapshots.len() {
+            self.snapshots[self.begun]
+                .surface
+                .begin_capture_suppression();
+            self.begun += 1;
+        }
+    }
+
+    /// Restores every opened snapshot, last-opened first.
+    fn end(&mut self) {
+        while self.begun > 0 {
+            self.begun -= 1;
+            self.snapshots[self.begun].surface.end_capture_suppression();
+        }
+    }
+}
+
+impl Drop for SuppressionGuard<'_> {
+    fn drop(&mut self) {
+        self.end();
+    }
 }
 
 /// The one-shot capsule the composite completion owns through the
@@ -1057,7 +1143,7 @@ pub struct ViewCapture {
     compositor: Compositor,
     on_redraw: RefCell<Option<Rc<dyn Fn()>>>,
     renderer: RefCell<NativeRenderer>,
-    active: RefCell<HashMap<usize, Rc<dyn CapturableSurface>>>,
+    active: RefCell<HashMap<usize, Rc<SurfaceRegistration>>>,
 }
 
 impl fmt::Debug for ViewCapture {
@@ -1134,15 +1220,18 @@ impl ViewCapture {
                 // Whole-binding move keeps the `QueueSend` wrapper —
                 // capturing `rendered.0` would capture the bare Vec.
                 let rendered = rendered;
-                // The capture pipeline outlives its owner no one: a
-                // dropped effect view drops the frame — the lease is
-                // released unreturned, which is always safe.
-                if let (Some(capture), Some(completion), Some(preparation)) = (
-                    this.get(mtm).upgrade(),
-                    completion.take(),
-                    preparation.take(),
-                ) {
-                    capture.submit_surfaces(&rendered.0, preparation.0, completion);
+                // The caller settles exactly once even when the owner is
+                // gone: teardown mid-capture is a deferral, never a
+                // silent drop that could hang a parent fence batch.
+                let (Some(completion), Some(preparation)) = (completion.take(), preparation.take())
+                else {
+                    return;
+                };
+                match this.get(mtm).upgrade() {
+                    Some(capture) => {
+                        capture.submit_surfaces(&rendered.0, preparation.0, completion);
+                    }
+                    None => completion(false),
                 }
             });
         });
@@ -1151,14 +1240,9 @@ impl ViewCapture {
     /// Ends every external surface's presentation and releases GPU state.
     /// Call before the owning view drops.
     ///
-    /// # Panics
-    ///
-    /// It is a precondition violation to drop the capture with external
-    /// surfaces still registered — `shutdown` clears them.
+    /// Dropping a registration ends its external rendering — a capture
+    /// that still owns one keeps it until that capture settles.
     pub fn shutdown(&self) {
-        for surface in self.active.borrow().values() {
-            surface.end_external_rendering(true);
-        }
         self.active.borrow_mut().clear();
         *self.renderer.borrow_mut() = NativeRenderer::default();
         self.compositor.discard_resources();
@@ -1189,6 +1273,33 @@ impl ViewCapture {
         );
         let snapshots = self.collect_snapshots(target, geometry);
         self.update_external_surfaces(&snapshots);
+        // The registrations this capture owns — the immutable snapshot
+        // of who must stay external until its frame settles.
+        let surfaces: HashMap<usize, Rc<SurfaceRegistration>> = {
+            let active = self.active.borrow();
+            snapshots
+                .iter()
+                .map(|s| {
+                    (
+                        s.spec.surface_id,
+                        active
+                            .get(&s.spec.surface_id)
+                            .expect("a just-joined surface is registered")
+                            .clone(),
+                    )
+                })
+                .collect()
+        };
+
+        // Fallible work happens BEFORE any suppression mutation: a frame
+        // allocation panic leaves the live tree untouched.
+        let raster = self.renderer.borrow_mut().issue(
+            &target.device(),
+            target.pixelFormat(),
+            target.width(),
+            target.height(),
+            generation,
+        );
 
         // INVARIANT: the synchronous native raster pass runs inside one
         // outer disabled-actions `CATransaction` — suppression open, the
@@ -1198,33 +1309,28 @@ impl ViewCapture {
         // own: a mid-pass commit would push the suppressed state to the
         // render server and flicker the on-screen tree. The suppression
         // setters (`CapturableSurface::begin/end_capture_suppression`)
-        // are plain model mutations for exactly this reason, and
-        // suppression is always restored synchronously before the sole
-        // commit. The layer tree itself is never transformed or
-        // reparented — the destination geometry lives in the context's
-        // CTM.
-        let raster = {
-            let mut renderer = self.renderer.borrow_mut();
+        // are plain model mutations for exactly this reason, and the
+        // guard restores exactly the subset it opened — synchronously
+        // before the sole commit on success, from Drop on an early exit.
+        // The layer tree itself is never transformed or reparented — the
+        // destination geometry lives in the context's CTM.
+        {
             CATransaction::begin();
             CATransaction::setDisableActions(true);
-            for snapshot in &snapshots {
-                snapshot.surface.begin_capture_suppression();
-            }
-            let raster = renderer.draw_layer(&layer, target, geometry, generation);
-            for snapshot in snapshots.iter().rev() {
-                snapshot.surface.end_capture_suppression();
-            }
-            drop(renderer);
+            let mut suppression = SuppressionGuard::new(&snapshots);
+            suppression.begin();
+            raster.draw(&layer, geometry);
+            suppression.end();
             CATransaction::commit();
             flush_transaction();
-            raster
-        };
+        }
 
         let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();
         let preparation = Preparation {
             raster,
             target: target.retain(),
             device: target.device(),
+            surfaces,
         };
         drop(restore);
         (preparation, specs)
@@ -1301,22 +1407,21 @@ impl ViewCapture {
             .borrow()
             .clone()
             .expect("a view capture's redraw hook must be installed before capture");
-        let next: HashMap<usize, Rc<dyn CapturableSurface>> = snapshots
-            .iter()
-            .map(|s| (s.spec.surface_id, s.surface.clone()))
-            .collect();
         let mut active = self.active.borrow_mut();
-        for (id, surface) in active.iter() {
-            if !next.contains_key(id) {
-                surface.end_external_rendering(true);
-            }
+        // Part first: a surface absent from this snapshot leaves the map
+        // — its registration ends when the last owner (the map or an
+        // outstanding capture's snapshot) drops on this thread.
+        active.retain(|id, _| snapshots.iter().any(|s| s.spec.surface_id == *id));
+        // Join: one registration per surface, begun once, `Rc`-shared by
+        // the map and every capture that snapshots it.
+        for snapshot in snapshots {
+            active.entry(snapshot.spec.surface_id).or_insert_with(|| {
+                snapshot.surface.begin_external_rendering(on_redraw.clone());
+                Rc::new(SurfaceRegistration {
+                    surface: snapshot.surface.clone(),
+                })
+            });
         }
-        for (id, surface) in &next {
-            if !active.contains_key(id) {
-                surface.begin_external_rendering(on_redraw.clone());
-            }
-        }
-        *active = next;
     }
 
     /// Final GPU half: each surface renders into its private texture, then a
@@ -1341,18 +1446,22 @@ impl ViewCapture {
             );
             return;
         }
-        let surfaces: Vec<Rc<dyn CapturableSurface>> = rendered
+        // The surfaces come from THIS capture's owned snapshot, never
+        // the mutable `active` map: a second capture or a changed
+        // subtree cannot un-register a surface an outstanding frame
+        // still depends on.
+        let surfaces: Vec<Rc<SurfaceRegistration>> = rendered
             .iter()
             .map(|item| {
-                self.active
-                    .borrow()
+                preparation
+                    .surfaces
                     .get(&item.spec.surface_id)
                     .cloned()
-                    .expect("a rendered surface must still be active")
+                    .expect("the capture's snapshot owns every rendered surface")
             })
             .collect();
-        for (item, surface) in rendered.iter().zip(&surfaces) {
-            if !surface.prepare_external_render(&item.texture) {
+        for (item, registration) in rendered.iter().zip(&surfaces) {
+            if !registration.surface.prepare_external_render(&item.texture) {
                 // Setup still pending: the frame defers.
                 completion(false);
                 return;
@@ -1363,17 +1472,24 @@ impl ViewCapture {
             let compositor = self.compositor.clone();
             let rendered = QueueSend(rendered.to_owned());
             let preparation = QueueSend(preparation);
-            move |outcome| match outcome {
-                Ok(()) => Self::compose(&compositor, preparation, rendered, completion, return_to),
-                // No usable pixels: the prepared frame drops with the
-                // closure — its lease releases unreturned — and the
-                // capture reports failure.
-                Err(_) => completion(false),
+            move |outcome| {
+                if outcome.is_ok() {
+                    Self::compose(&compositor, preparation, rendered, completion, return_to);
+                } else {
+                    // No usable pixels: the frame never submitted —
+                    // release its lease unreturned. Destruction still
+                    // happens on the main queue where the preparation's
+                    // CG/Metal objects belong, then the failure reports.
+                    enqueue(move |_| {
+                        drop(preparation);
+                    });
+                    completion(false);
+                }
             }
         }));
-        for (item, surface) in rendered.iter().zip(&surfaces) {
+        for (item, registration) in rendered.iter().zip(&surfaces) {
             let batch = Arc::clone(&batch);
-            surface.render_prepared_external_texture(
+            registration.surface.render_prepared_external_texture(
                 &item.texture,
                 u32::try_from(item.spec.size.width).expect("a surface is smaller than u32"),
                 u32::try_from(item.spec.size.height).expect("a surface is smaller than u32"),
@@ -1419,11 +1535,21 @@ impl ViewCapture {
                 move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
                     // SAFETY: the buffer is alive for the handler call.
                     let buffer = unsafe { buffer.as_ref() };
-                    assert!(
-                        buffer.status() == MTLCommandBufferStatus::Completed,
-                        "Metal view composition failed: {:?}",
-                        buffer.error()
-                    );
+                    // Read the buffer's real outcome — a device loss or
+                    // cancellation completes it with `Error`, and a
+                    // callback must never unwind into Objective-C. The
+                    // same one-shot capsule settles on the main queue on
+                    // either result; only a completed frame may return
+                    // to the pool, and an error frame is reported and
+                    // dropped, never pretended to have submitted.
+                    let completed = buffer.status() == MTLCommandBufferStatus::Completed;
+                    let error = (!completed)
+                        .then(|| {
+                            buffer
+                                .error()
+                                .map(|error| error.localizedDescription().to_string())
+                        })
+                        .flatten();
                     let settle = settle.lock().expect("capture lock").take();
                     if let Some(settle) = settle {
                         enqueue(move |mtm| {
@@ -1432,13 +1558,22 @@ impl ViewCapture {
                                 return_to,
                                 completion,
                             } = settle;
-                            if let Some(capture) = return_to.get(mtm).upgrade() {
+                            let preparation = preparation.0;
+                            if completed && let Some(capture) = return_to.get(mtm).upgrade() {
                                 capture
                                     .renderer
                                     .borrow_mut()
-                                    .return_frame(preparation.0.raster.into_frame());
+                                    .return_frame(preparation.raster.into_frame());
+                            } else if let Some(error) = error {
+                                tracing::error!(
+                                    error = %error,
+                                    "native view composition command buffer failed"
+                                );
                             }
-                            completion(true);
+                            // Whatever `preparation` still holds drops
+                            // here on the main thread on every outcome —
+                            // a failed frame's lease releases unreturned.
+                            completion(completed);
                         });
                     }
                 },
