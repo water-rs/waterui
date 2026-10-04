@@ -79,6 +79,9 @@ anstyle = "1"                 # ANSI styling without manual escape codes
 ctrlc = { version = "3.5", features = ["termination"] }
 whoami = "2.1"
 heck = "0.5"                  # Case conversion (kebab-case, snake_case, etc.)
+# `cargo`'s package-name grammar is defined over Unicode XID characters
+# (`xid_start`/`xid_continue`); this is the check it ships.
+unicode-ident = "1"
 
 # Asset/font downloading dependencies
 dirs = "7"                    # Platform-specific directories (cache, config, etc.)

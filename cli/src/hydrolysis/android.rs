@@ -1,13 +1,15 @@
 //! The Hydrolysis Android host integration.
 //!
-//! The framework pins the Kotlin host (URL, revision and the subdirectory
-//! the Gradle project lives in) through `hydrolysis-android-host-*`
-//! scaffold metadata. The CLI clones that checkout into the managed backend
-//! directory, renders the generated Gradle app against it, and drives the
-//! same NDK/Gradle/ABI/signing/asset machinery the Android platform backend
-//! uses — the launcher crate `templates::hydrolysis` already produces is the
-//! cdylib the Kotlin activity loads. Nothing here routes through the widget
-//! FFI companion.
+//! The Kotlin host lives in the framework tree itself —
+//! `hydrolysis-android-host-subdirectory` names the Gradle composite root
+//! inside the selected framework source (#1428). The CLI materializes that
+//! source: a managed shallow clone of the framework repository at the
+//! selected revision for a channel project, the `waterui_path` checkout
+//! itself for a local one. It renders the generated Gradle app against the
+//! host inside it, and drives the same NDK/Gradle/ABI/signing/asset
+//! machinery the Android platform backend uses — the launcher crate
+//! `templates::hydrolysis` already produces is the cdylib the Kotlin
+//! activity loads. Nothing here routes through the widget FFI companion.
 
 use std::path::{Path, PathBuf};
 
@@ -148,13 +150,17 @@ fn android_dir(backend_path: &Path) -> PathBuf {
     backend_path.join("android")
 }
 
-/// Ensure the pinned Hydrolysis Android host checkout exists and return it.
+/// Ensure the checkout the Hydrolysis Android host lives inside exists and
+/// return its root.
 ///
-/// The checkout is a shallow clone of `hydrolysis-android-host-url` at
-/// `hydrolysis-android-host-revision`, materialized under
-/// `<backend>/android-host/<revision>` — the framework's pin is the only
-/// source; a stamp file records the revision a directory was produced for
-/// so a repin replaces it.
+/// The host is a subdirectory of the selected framework source —
+/// `hydrolysis-android-host-subdirectory` names the Gradle root inside the
+/// checkout this returns. For a channel selection the source is a shallow
+/// clone of the framework repository at the selected revision, materialized
+/// under `<backend>/android-host/<revision>` — a stamp file records the
+/// revision a directory was produced for so a repin replaces it. For a
+/// `waterui_path` project the framework checkout itself is the host
+/// checkout; no clone exists for a filesystem source.
 ///
 /// # Errors
 ///
@@ -162,15 +168,18 @@ fn android_dir(backend_path: &Path) -> PathBuf {
 /// the git fetch fails.
 pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result<PathBuf> {
     let resolved = project.resolved_framework().await?;
-    let coordinates = resolved.hydrolysis_android_host()?;
+    let (url, revision) = match resolved.hydrolysis_android_host()? {
+        crate::framework::HydrolysisAndroidHost::Git { url, revision } => (url, revision),
+        crate::framework::HydrolysisAndroidHost::Local { root } => return Ok(root.to_path_buf()),
+    };
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    let host_dir = android_host_dir(&backend_path, coordinates.revision);
+    let host_dir = android_host_dir(&backend_path, revision);
 
     let stamped = fs::read_to_string(host_dir.join(HOST_STAMP_FILE))
         .await
         .ok()
         .map(|contents| contents.trim().to_string());
-    if stamped.as_deref() == Some(coordinates.revision) {
+    if stamped.as_deref() == Some(revision) {
         return Ok(host_dir);
     }
 
@@ -188,19 +197,9 @@ pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result
                 host_dir.display()
             )
         })?;
-    host.run(
-        "git",
-        [
-            "-C",
-            dir.as_str(),
-            "remote",
-            "add",
-            "origin",
-            coordinates.url,
-        ],
-    )
-    .await
-    .wrap_err("failed to configure the hydrolysis android host remote")?;
+    host.run("git", ["-C", dir.as_str(), "remote", "add", "origin", url])
+        .await
+        .wrap_err("failed to configure the hydrolysis android host remote")?;
     host.run(
         "git",
         [
@@ -211,15 +210,12 @@ pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result
             "--depth",
             "1",
             "origin",
-            coordinates.revision,
+            revision,
         ],
     )
     .await
     .wrap_err_with(|| {
-        format!(
-            "failed to fetch the hydrolysis android host at revision {} from {}",
-            coordinates.revision, coordinates.url
-        )
+        format!("failed to fetch the hydrolysis android host at revision {revision} from {url}")
     })?;
     host.run(
         "git",
@@ -235,10 +231,10 @@ pub async fn ensure_android_host(project: &Project, host: &Host) -> eyre::Result
     .await
     .wrap_err("failed to check out the pinned hydrolysis android host")?;
 
-    fs::write(host_dir.join(HOST_STAMP_FILE), coordinates.revision).await?;
+    fs::write(host_dir.join(HOST_STAMP_FILE), revision).await?;
     info!(
         "Checked out hydrolysis android host {} into {}",
-        coordinates.revision,
+        revision,
         host_dir.display()
     );
     Ok(host_dir)
@@ -259,8 +255,8 @@ async fn require_painter_module(
 ) -> eyre::Result<PathBuf> {
     let host_root = ensure_android_host(project, host).await?;
     let resolved = project.resolved_framework().await?;
-    let coordinates = resolved.hydrolysis_android_host()?;
-    let host_project_dir = host_root.join(coordinates.subdirectory);
+    let subdirectory = resolved.hydrolysis_android_host_subdirectory()?;
+    let host_project_dir = host_root.join(subdirectory);
     let module_dir = host_project_dir.join(painter.host_module());
     if !module_dir.is_dir() {
         bail!(
@@ -712,14 +708,15 @@ mod tests {
         (temporary, project)
     }
 
-    /// A host whose `git` materializes `staged` — a fake checkout root
-    /// carrying `android/<module>` directories as the host subdirectory — on
-    /// checkout, as `ensure_android_host`'s fetch sequence would produce.
+    /// A host whose `git` materializes `staged` — a fake framework checkout
+    /// root carrying `backends/hydrolysis/android/<module>` directories as
+    /// the host subdirectory — on checkout, as `ensure_android_host`'s fetch
+    /// sequence would produce.
     fn machine_with_staged_host(staged: &Path, modules: &[&str]) -> (TestMachine, Host) {
         let machine = TestMachine::new();
         machine.install("git");
         for module in modules {
-            let module_dir = machine.dir(staged.join("android").join(module));
+            let module_dir = machine.dir(staged.join("backends/hydrolysis/android").join(module));
             std::fs::write(module_dir.join("build.gradle.kts"), "// host module\n")
                 .expect("staged gradle file");
         }
@@ -769,9 +766,15 @@ mod tests {
             let checkout = ensure_android_host(&project, &host)
                 .await
                 .expect("host materializes");
-            let revision = "d".repeat(40);
+            // The checkout clones the framework repository itself at the
+            // selected revision — the host lives inside it.
+            let revision = "a".repeat(40);
             assert!(checkout.ends_with(&revision));
-            assert!(checkout.join("android/gpu/build.gradle.kts").is_file());
+            assert!(
+                checkout
+                    .join("backends/hydrolysis/android/gpu/build.gradle.kts")
+                    .is_file()
+            );
             assert_eq!(
                 std::fs::read_to_string(checkout.join(HOST_STAMP_FILE)).expect("stamp file"),
                 revision

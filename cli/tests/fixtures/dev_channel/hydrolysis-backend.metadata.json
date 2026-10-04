@@ -26,12 +26,12 @@
   {
    "name": "hydrolysis",
    "version": "0.3.1",
-   "id": "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#0.3.1",
-   "source": "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f",
+   "id": "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#hydrolysis@0.3.1",
+   "source": "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#a6318b38c54b31cbfbc518b75bd9de737e229ff6",
    "dependencies": [],
    "targets": [],
    "features": {},
-   "manifest_path": "/home/ubuntu/.cargo/git/checkouts/hydrolysis-c7d6b1fabf6f55cd/9d3c6fa/Cargo.toml",
+   "manifest_path": "/home/ubuntu/.cargo/git/checkouts/waterui-2308096a1ebd3ee0/a6318b3/backends/hydrolysis/Cargo.toml",
    "edition": "2024"
   },
   {
@@ -131,7 +131,7 @@
     "deps": []
    },
    {
-    "id": "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#0.3.1",
+    "id": "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#hydrolysis@0.3.1",
     "dependencies": [
      "registry+https://github.com/rust-lang/crates.io-index#accesskit@0.25.0",
      "registry+https://github.com/rust-lang/crates.io-index#accesskit_winit@0.34.0",
@@ -170,7 +170,7 @@
    {
     "id": "path+file:///home/ubuntu/repro/repro-app/backends/hydrolysis#repro_app-hydrolysis-dfbff848@0.1.0",
     "dependencies": [
-     "git+https://github.com/water-rs/hydrolysis?rev=9d3c6fa4c3a7e58c138c835c6e5c0f0ad261352f#0.3.1",
+     "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#hydrolysis@0.3.1",
      "path+file:///home/ubuntu/repro/repro-app#repro_app@0.1.0",
      "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#0.5.2"
     ],

@@ -26,8 +26,8 @@ and hydrolysis-backend.metadata.json — keeping only:
   package whose edge pulls the additive `objc2` line),
 - `objc2` at both resolved versions (one canonical pin, one addition) with
   its `objc2-encode` edge,
-- `hydrolysis` and `waterui`, the extracted crates at their sanctioned git
-  sources, and
+- `hydrolysis` and `waterui`, the framework members at their sanctioned
+  framework-repository source, and
 - the two path packages (the app and the generated backend).
 
 Dependency edges are trimmed to targets inside the kept set; a dep entry
