@@ -723,9 +723,14 @@ jobs:
   # dependency it reaches is pure Rust. Both feature extremes, as its own CI
   # ran them: the checked set proves `winit` stays inert on Android, and the
   # bare pass catches call sites a feature gates out.
+  #
+  # The nightly sweeps it under `full`; the fast gate also runs it when the
+  # affected scope can reach the crate — `hydrolysis` or one of its reverse
+  # dependencies in the package set — so the Android runner cannot regress
+  # between nightlies (#1582).
   hydrolysis-android:
     name: aarch64-linux-android
-    if: inputs.full
+    if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
