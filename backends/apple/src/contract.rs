@@ -153,9 +153,7 @@ impl NativeLeaf {
             // can be released.
             let layout = Rc::downgrade(layout);
             host.set_measure_handler(move |_host, proposal| {
-                let layout = layout
-                    .upgrade()
-                    .expect("measure handler outlived its leaf");
+                let layout = layout.upgrade().expect("measure handler outlived its leaf");
                 measure_layout(&layout, proposal)
             });
         }
