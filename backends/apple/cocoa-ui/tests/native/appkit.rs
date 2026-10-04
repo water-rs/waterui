@@ -47,6 +47,10 @@ pub fn trials() -> Vec<Trial> {
             "appkit::input_view",
             valid_attributes_for_marked_text_returns_attribute_names
         ),
+        case!(
+            "appkit::display_link",
+            a_window_without_a_screen_drives_no_frame_clock
+        ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
             "appkit::window",
@@ -56,6 +60,14 @@ pub fn trials() -> Vec<Trial> {
         case!(
             "appkit::window",
             the_wrapper_forwards_title_level_size_and_content
+        ),
+        case!(
+            "capture",
+            a_capture_claim_restores_containment_and_survives_release
+        ),
+        case!(
+            "capture",
+            a_detached_capture_renders_and_teardown_stays_clean
         ),
     ])
 }
@@ -188,6 +200,120 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
     assert!(attributes.count() >= 3);
 }
 
+/// Native attachment lifecycle: a window that is truly off every screen
+/// reports `screen() == nil`, so `start` leaves the clock disarmed and the
+/// bounded run-loop drain stays silent — the screenless safety the removed
+/// run-loop arm (a queued raw-pointer hop) violated by ticking anyway.
+/// Moving the same window onto a real display lets `reselect` re-arm the
+/// still-active request; `stop`/`drop` leave nothing queued.
+fn a_window_without_a_screen_drives_no_frame_clock() {
+    use cocoa_ui::display_link::FrameClock;
+    use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = marker();
+    // A point strictly beyond every real screen's frame, derived from the
+    // display layout — a borderless window accepts the position verbatim
+    // because AppKit's keep-on-screen constraint only applies to windows
+    // with a title bar.
+    let screens = NSScreen::screens(mtm);
+    let offscreen_x = screens
+        .iter()
+        .map(|screen| screen.frame().origin.x + screen.frame().size.width)
+        .fold(0.0, f64::max)
+        + 10_000.0;
+    let window = Window::new(
+        mtm,
+        Rect::new(offscreen_x, 0.0, 200.0, 200.0),
+        WindowStyle::empty(),
+    );
+    let frame = window.native().frame();
+    let overlaps = |a: NSRect, b: NSRect| {
+        a.origin.x < b.origin.x + b.size.width
+            && b.origin.x < a.origin.x + a.size.width
+            && a.origin.y < b.origin.y + b.size.height
+            && b.origin.y < a.origin.y + a.size.height
+    };
+    assert!(
+        screens.iter().all(|s| !overlaps(s.frame(), frame)),
+        "the fixture window must sit outside every screen: {frame:?}"
+    );
+    assert!(
+        window.native().screen().is_none(),
+        "a window outside every screen frame must report no screen"
+    );
+    let view = NSView::new(mtm);
+    view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    window.native().setContentView(Some(&view));
+
+    let ticks = Rc::new(Cell::new(0u32));
+    let clock = FrameClock::new(mtm, {
+        let ticks = Rc::clone(&ticks);
+        move || ticks.set(ticks.get() + 1)
+    });
+
+    // No screen: `start` leaves the clock disarmed, and a bounded run-loop
+    // drain must deliver nothing — no fallback and nothing queued.
+    clock.start(&view);
+    assert!(
+        !clock.is_running(),
+        "a screenless window must not arm the clock"
+    );
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert_eq!(ticks.get(), 0, "a screenless clock must not tick");
+
+    // Re-attach to the actual display: move the window onto a real screen's
+    // frame and `reselect` the same clock — the request stayed active, so
+    // the link arms without a second `start`.
+    let main = NSScreen::screens(mtm)
+        .iter()
+        .next()
+        .expect("the suite requires a real screen")
+        .frame();
+    window
+        .native()
+        .setFrameOrigin(NSPoint::new(main.origin.x + 40.0, main.origin.y + 40.0));
+    assert!(window.native().screen().is_some());
+    clock.reselect(&view);
+    assert!(
+        clock.is_running(),
+        "attaching to a screen must arm the same clock's display link"
+    );
+    // A visible window's link ticks under the run loop the suite pumps.
+    window.native().orderFrontRegardless();
+    let fired = crate::harness::pump_main_until(2.0, || ticks.get() > 0);
+    assert!(
+        fired,
+        "a display link on a real visible screen must tick within 2s"
+    );
+
+    // `stop`, then `drop`: the queue stays quiet — the removed run-loop arm
+    // is where a pending hop could outlive the clock before.
+    clock.stop();
+    let at_stop = ticks.get();
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert!(!clock.is_running());
+    assert_eq!(
+        ticks.get(),
+        at_stop,
+        "a stopped clock must deliver no further ticks"
+    );
+    drop(clock);
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert_eq!(
+        ticks.get(),
+        at_stop,
+        "a dropped clock must leave nothing queued"
+    );
+    window.close();
+}
+
 /// The `labelWithString:` factory allocs through `self` without running
 /// `set_ivars`: `setFrameSize:` — delivered during the factory's own
 /// layout — must not trip the debug initialized-ivars check, and every
@@ -275,4 +401,283 @@ fn the_wrapper_forwards_title_level_size_and_content() {
     assert!(std::ptr::eq(&raw const *reported, window.native()));
 
     window.close();
+}
+
+/// The `CARenderer` root claim is scoped to the frame it encodes: two
+/// cached `ViewCapture`s bound to nested views run child→parent claim
+/// cycles, and after each the views report the same superview, sibling
+/// order, superlayer, frame, and hidden flag as before — and they keep
+/// answering them after both cached renderers are released on a later
+/// main-queue turn. This is the nested-claim shape the production
+/// ownership fix exists for.
+#[allow(clippy::too_many_lines)] // The nested fixture plus the containment contract it checks.
+fn a_capture_claim_restores_containment_and_survives_release() {
+    use std::rc::Rc;
+
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{NSColor, NSView};
+    use cocoa_ui::objc2_foundation::NSSize;
+
+    let mtm = marker();
+    // AppKit only materializes the layer hierarchy under a window: a
+    // detached view tree leaves `layer.superlayer` unwired, so the
+    // containment-restore contract needs a real host window.
+    let window = Window::new(
+        mtm,
+        Rect::new(0.0, 0.0, 400.0, 400.0),
+        WindowStyle::all() - WindowStyle::FULL_SCREEN,
+    );
+    let parent = NSView::new(mtm);
+    parent.setFrameSize(NSSize::new(400.0, 400.0));
+    parent.setWantsLayer(true);
+    window.native().setContentView(Some(&parent));
+    window.native().orderFrontRegardless();
+    crate::harness::pump_main_turn();
+
+    let content = NSView::new(mtm);
+    content.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(8.0, 40.0),
+        NSSize::new(200.0, 200.0),
+    ));
+    content.setWantsLayer(true);
+    content
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::blueColor().CGColor()));
+    // A non-identity transform is the preservation case. AppKit owns the
+    // backing layer's transform and re-syncs it from `frameRotation`
+    // during layout, so the fixture uses the view-level rotation the
+    // platform persists rather than a raw `CATransform3D` AppKit would
+    // revert on the next layout pass — the claim's restore must coexist
+    // with that, not fight it.
+    content.setFrameRotation(30.0);
+    let label = Label::new(mtm);
+    label.set_text("capture-claim");
+    label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(4.0, 8.0),
+        NSSize::new(160.0, 24.0),
+    ));
+    content.addSubview(&label);
+    // The nested claim: a second capturable subtree inside `content`.
+    let child = NSView::new(mtm);
+    child.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(20.0, 60.0),
+        NSSize::new(120.0, 120.0),
+    ));
+    child.setWantsLayer(true);
+    child
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::orangeColor().CGColor()));
+    let child_label = Label::new(mtm);
+    child_label.set_text("nested");
+    child_label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(4.0, 8.0),
+        NSSize::new(100.0, 24.0),
+    ));
+    child.addSubview(&child_label);
+    content.addSubview(&child);
+    parent.addSubview(&content);
+    let sibling = NSView::new(mtm);
+    sibling.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(8.0, 280.0),
+        NSSize::new(40.0, 40.0),
+    ));
+    parent.addSubview(&sibling);
+    // Let AppKit's layout pass wire the view hierarchy into the layer
+    // hierarchy before the snapshots the claim will be held to.
+    crate::harness::pump_main_turn();
+
+    let frame = content.frame();
+    let layer_transform = content.layer().expect("a wanted layer exists").transform();
+    let child_frame = child.frame();
+
+    let target = crate::harness::capture_target();
+    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    content_capture.set_on_redraw(|| {});
+    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone(), |_| None));
+    child_capture.set_on_redraw(|| {});
+
+    // Everything the claim owes the tree: superview and ordered
+    // siblings, the model layer's own superlayer, geometry, and the
+    // full transform — checked after every cycle and again after both
+    // cached renderers are released.
+    let check = || {
+        let restored_parent = cocoa_ui::view::superview(&content)
+            .expect("the claim left the view detached from its parent");
+        assert!(std::ptr::eq(
+            &raw const *restored_parent,
+            &raw const *parent
+        ));
+        let order = parent.subviews();
+        assert_eq!(order.count(), 2);
+        assert!(std::ptr::eq(
+            &raw const *order.objectAtIndex(0),
+            &raw const *content
+        ));
+        assert!(std::ptr::eq(
+            &raw const *order.objectAtIndex(1),
+            &raw const *sibling
+        ));
+        let child_parent =
+            cocoa_ui::view::superview(&child).expect("the nested claim left the child detached");
+        assert!(std::ptr::eq(&raw const *child_parent, &raw const *content));
+        let content_order = content.subviews();
+        assert_eq!(content_order.count(), 2);
+        assert!(std::ptr::eq(
+            &raw const *content_order.objectAtIndex(0),
+            std::ptr::from_ref(&*label).cast()
+        ));
+        assert!(std::ptr::eq(
+            &raw const *content_order.objectAtIndex(1),
+            &raw const *child
+        ));
+        let child_order = child.subviews();
+        assert_eq!(child_order.count(), 1);
+        assert!(std::ptr::eq(
+            &raw const *child_order.objectAtIndex(0),
+            std::ptr::from_ref(&*child_label).cast()
+        ));
+        assert_eq!(content.frame(), frame);
+        assert_eq!(child.frame(), child_frame);
+        assert!(
+            (content.frameRotation() - 30.0).abs() < 1e-6,
+            "the claim must preserve the view's rotation"
+        );
+        let actual_transform = content.layer().expect("a wanted layer exists").transform();
+        assert!(
+            actual_transform.equal_to_transform(layer_transform),
+            "the claim must preserve the layer's full transform: {actual_transform:?} vs {layer_transform:?}"
+        );
+        assert!(
+            content
+                .layer()
+                .is_some_and(|layer| layer.superlayer().is_some()),
+            "the model layer must keep its superlayer"
+        );
+        assert!(
+            child
+                .layer()
+                .is_some_and(|layer| layer.superlayer().is_some()),
+            "the nested model layer must keep its superlayer"
+        );
+        assert!(!content.isHidden());
+    };
+
+    // Three nested cycles: child claim first, then the enclosing content
+    // claim — each against the same cached renderers, each proven by
+    // its own completed, successful fence.
+    for _cycle in 0..3 {
+        let (flag, complete) = crate::harness::fence_flag();
+        child_capture.capture(&target, complete);
+        crate::harness::await_fence(&flag, "child");
+        let (flag, complete) = crate::harness::fence_flag();
+        content_capture.capture(&target, complete);
+        crate::harness::await_fence(&flag, "content");
+        check();
+    }
+
+    // A layer claimed out of a window's render context encodes an empty
+    // frame on a host without an app compositor, so pixel fidelity is
+    // proven by the detached arm below; this arm proves the capture
+    // completed and the whole containment contract survived it.
+
+    // Releasing the cached renderers must not invalidate the layers
+    // they claimed: on the next real main-queue turn both trees answer,
+    // still attached, and tear down normally.
+    content_capture.shutdown();
+    child_capture.shutdown();
+    drop(content_capture);
+    drop(child_capture);
+    crate::harness::pump_main_turn();
+    check();
+
+    content.removeFromSuperview();
+    sibling.removeFromSuperview();
+    parent.removeFromSuperview();
+    window.close();
+}
+
+/// Capturing a view with no superview is supported — the claim restores
+/// nothing, the frame still renders real content, and teardown after
+/// the cached renderer's release stays clean.
+fn a_detached_capture_renders_and_teardown_stays_clean() {
+    use std::rc::Rc;
+
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{NSColor, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = marker();
+    let content = NSView::new(mtm);
+    content.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(200.0, 200.0),
+    ));
+    content.setWantsLayer(true);
+    content
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::orangeColor().CGColor()));
+    let label = Label::new(mtm);
+    // A contrasting glyph color so the readback can tell real label
+    // rendering from a flat filled frame.
+    label.setTextColor(Some(&NSColor::whiteColor()));
+    label.set_text("detached");
+    label.setWantsLayer(true);
+    label.setFrame(NSRect::new(
+        NSPoint::new(4.0, 60.0),
+        NSSize::new(150.0, 24.0),
+    ));
+    content.addSubview(&label);
+
+    // A parentless view gets no window update cycle, so a brief window
+    // residency rasterizes the label's text into its backing layer
+    // first — the renderer composites `layer.contents`, which only a
+    // real display pass fills — before the claim detaches it again.
+    {
+        let window = Window::new(
+            mtm,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            WindowStyle::all() - WindowStyle::FULL_SCREEN,
+        );
+        let host = NSView::new(mtm);
+        host.setFrameSize(NSSize::new(200.0, 200.0));
+        host.setWantsLayer(true);
+        window.native().setContentView(Some(&host));
+        host.addSubview(&content);
+        window.native().orderFrontRegardless();
+        crate::harness::pump_main_turn();
+        content.removeFromSuperview();
+        window.close();
+    }
+
+    assert!(cocoa_ui::view::superview(&content).is_none());
+
+    let target = crate::harness::capture_target();
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    capture.set_on_redraw(|| {});
+    let (flag, complete) = crate::harness::fence_flag();
+    capture.capture(&target, complete);
+    assert!(
+        cocoa_ui::view::superview(&content).is_none(),
+        "a detached capture must not invent a parent"
+    );
+    crate::harness::await_fence(&flag, "detached");
+
+    let texels = crate::harness::readback(&target);
+    assert!(
+        crate::harness::count_pixels(&texels, [0, 110, 220, 255], [60, 200, 255, 255]) > 5_000,
+        "a detached capture must render the view's own color"
+    );
+    assert!(
+        crate::harness::count_pixels(&texels, [220, 220, 220, 255], [255, 255, 255, 255]) > 20,
+        "a detached capture must render real label glyphs"
+    );
+
+    capture.shutdown();
+    drop(capture);
+    crate::harness::pump_main_turn();
+    let _layer = content.layer(); // crashes on an invalidated layer
+    label.removeFromSuperview();
 }

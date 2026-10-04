@@ -1705,6 +1705,7 @@ version = "0.0.0"
 dependencies = [
  "arc-swap",
  "cherenkov-record",
+ "crossbeam-channel",
  "filtrate-core",
  "kurbo 0.13.1",
  "libm",
@@ -13062,6 +13063,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ttf-parser",
+ "unicode-ident",
  "url",
  "walkdir",
  "waterui-assets-core",

@@ -940,6 +940,19 @@ impl NativeRenderer {
             renderer.endFrame();
         });
 
+        // The claim ends when encoding does: a bound root is the
+        // renderer's exclusive hold on the layer — on UIKit it severs
+        // the view from its parent's containment for the whole claim;
+        // on AppKit `superview` survives while `superlayer` can still be
+        // orphaned — and a renderer dropped with a root still bound
+        // invalidates the backing layer under the live view. Unbind inside
+        // the encode so the caller restores a layer nothing owns. `setLayer`
+        // is renderer state, not a layer-tree edit. The caller ends its
+        // renderer `RefMut` before restoring native containment and
+        // flushing that restoration, whose lifecycle callbacks must not
+        // re-enter a borrowed renderer.
+        renderer.setLayer(None);
+
         // `CARenderer` encodes onto `queue` during `render()` but offers no
         // completion, so an empty buffer committed right behind it stands in
         // as the fence — in-order execution on one queue means this
@@ -948,6 +961,174 @@ impl NativeRenderer {
         queue
             .commandBuffer()
             .expect("failed to create the native Metal capture command buffer")
+    }
+}
+
+/// A scoped claim on `view`'s backing layer for one native frame.
+///
+/// `CARenderer.layer` does not borrow the layer it is handed: while a
+/// live `UIView`'s backing layer stays bound, the view reads detached —
+/// `superview`, `window`, and the parent's `subviews` all answer as if
+/// it were removed — and a renderer released with the root still bound
+/// invalidates the layer object under the still-live view. On `AppKit`
+/// the claim leaves `superview` in place but can still orphan the model
+/// layer's `superlayer`; the restore below fires when either membership
+/// was actually lost. `RootBorrow`
+/// snapshots the containment and geometry the claim owes the view, holds
+/// the layer for the claim's span, and on drop restores through the
+/// platform's public containment API — after the `RefMut` holding the
+/// renderer has ended and the root is unbound, so a lifecycle callback
+/// in the re-attach cannot re-enter a borrowed renderer.
+///
+/// A view with no superview stays detached: capturing a detached tree
+/// is supported and restores nothing.
+struct RootBorrow {
+    view: Retained<PlatformView>,
+    /// The view's model layer, owned for the claim's span — the claim's
+    /// teardown can never free the backing layer out from under the
+    /// view — and the writer the layer transform is restored through:
+    /// `UIView.transform` is affine-only, so restoring through the view
+    /// would flatten a perspective `CATransform3D`.
+    layer: Retained<CALayer>,
+    /// `Some` only when the view reported a parent at claim; a detached
+    /// view captures normally and restores nothing.
+    attachment: Option<Attachment>,
+    /// The hidden flag as the encode saw it — the claim runs while the
+    /// content is temporarily unhidden; `HiddenRestore`, dropped after
+    /// this in `prepare`, owns the caller's original flag.
+    hidden: bool,
+    bounds: Rect,
+    /// The model layer's full transform at claim — restored after the
+    /// geometry writes so a non-affine transform survives the claim.
+    layer_transform: CATransform3D,
+    #[cfg(target_os = "ios")]
+    center: crate::geometry::Point,
+    #[cfg(target_os = "macos")]
+    frame: Rect,
+}
+
+/// Where the view sat inside its parent at claim — the restore re-adds
+/// only the claimed view, so children other views added while the claim
+/// was open keep their membership.
+struct Attachment {
+    parent: Retained<PlatformView>,
+    /// The view's index inside the parent's subviews.
+    #[cfg(target_os = "ios")]
+    index: isize,
+    /// The sibling that followed the view at claim; the restore seats
+    /// the view directly under it, recovering the recorded order without
+    /// rewriting the parent's whole child list.
+    #[cfg(target_os = "macos")]
+    next_sibling: Option<Retained<PlatformView>>,
+}
+
+impl RootBorrow {
+    /// Retains `view`'s backing layer and records what the restore owes:
+    /// the parent, the view's place inside it, and its geometry — read
+    /// before the renderer claim severs any of it.
+    fn claim(view: &PlatformView, layer: &CALayer) -> Self {
+        let attachment = crate::view::superview(view).map(|parent| {
+            let subviews = crate::view::subviews(&parent);
+            let position = subviews
+                .iter()
+                .position(|sibling| {
+                    std::ptr::eq(&raw const **sibling, std::ptr::from_ref(view).cast())
+                })
+                .expect("a view reporting a superview must appear in its subviews");
+            Attachment {
+                parent,
+                #[cfg(target_os = "ios")]
+                index: isize::try_from(position).expect("fewer than `isize::MAX` subviews"),
+                #[cfg(target_os = "macos")]
+                next_sibling: subviews
+                    .get(position + 1)
+                    .map(|sibling| Retained::from(&**sibling)),
+            }
+        });
+        Self {
+            view: Retained::from(view),
+            layer: layer.retain(),
+            attachment,
+            hidden: crate::view::is_hidden(view),
+            bounds: crate::view::bounds(view),
+            layer_transform: layer.transform(),
+            #[cfg(target_os = "ios")]
+            center: view.center().into(),
+            #[cfg(target_os = "macos")]
+            frame: crate::view::frame(view),
+        }
+    }
+}
+
+impl Drop for RootBorrow {
+    /// Puts `view` back where the claim found it while `layer` is still
+    /// owned, inside one disabled-actions transaction: re-attach through
+    /// the platform's ordered containment APIs — never a manual
+    /// `CALayer` reparent — then restore the recorded geometry and
+    /// hidden flag. The fields release only after this body runs, so
+    /// the layer borrow outlives the re-attach itself.
+    fn drop(&mut self) {
+        // The whole restore — reattachment included — runs inside one
+        // disabled-actions transaction so the claim's native tree
+        // restoration can never become a visible implicit animation.
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        if let Some(attachment) = &self.attachment {
+            let detached = crate::view::superview(&self.view).is_none_or(|current| {
+                !std::ptr::eq(&raw const *current, &raw const *attachment.parent)
+            });
+            // AppKit keeps `superview` through the claim but the renderer
+            // can still orphan the model layer. A lost `superlayer` is a
+            // wrong graph view writes alone cannot flag, so the view is
+            // re-seated through the same public containment path —
+            // `NSView` re-wires its own backing layer on (re)insertion,
+            // where a manual `CALayer` reparent is forbidden.
+            #[cfg(target_os = "macos")]
+            let reseat = {
+                let layer_orphaned = !detached && self.layer.superlayer().is_none();
+                if layer_orphaned {
+                    tracing::trace!(
+                        "native capture claim left the backing layer detached while the view kept its parent; re-seating the view so AppKit re-wires its layer"
+                    );
+                    self.view.removeFromSuperview();
+                }
+                detached || layer_orphaned
+            };
+            #[cfg(target_os = "ios")]
+            let reseat = detached;
+            if reseat {
+                #[cfg(target_os = "ios")]
+                attachment
+                    .parent
+                    .insertSubview_atIndex(&self.view, attachment.index);
+                #[cfg(target_os = "macos")]
+                match &attachment.next_sibling {
+                    // The view was mid-order at claim: seat it directly
+                    // under the sibling it preceded — children added
+                    // while the claim was open are untouched.
+                    Some(sibling) => attachment.parent.addSubview_positioned_relativeTo(
+                        &self.view,
+                        objc2_app_kit::NSWindowOrderingMode::Below,
+                        Some(&**sibling),
+                    ),
+                    // The view was the parent's last child at claim:
+                    // appending restores exactly that.
+                    None => attachment.parent.addSubview(&self.view),
+                }
+            }
+        }
+        crate::view::set_bounds(&self.view, self.bounds);
+        #[cfg(target_os = "ios")]
+        crate::view::set_center(&self.view, self.center);
+        #[cfg(target_os = "macos")]
+        crate::view::set_frame(&self.view, self.frame);
+        // The layer transform last: `TransformRestore` already undid the
+        // encode scale, and an affine-only write here would flatten a
+        // perspective transform the claim found.
+        self.layer.setTransform(self.layer_transform);
+        crate::view::set_hidden(&self.view, self.hidden);
+        CATransaction::commit();
+        flush_transaction();
     }
 }
 
@@ -1177,8 +1358,13 @@ impl ViewCapture {
         };
 
         let native_fence = {
+            // The borrow outlives the `RefMut`: dropped after it, so
+            // `RootBorrow`'s restore runs only once the renderer is
+            // unbound and unborrowed — a lifecycle callback in the
+            // re-attach can never re-enter a borrowed renderer.
+            let borrow = RootBorrow::claim(content, &layer);
             let mut renderer = self.renderer.borrow_mut();
-            if snapshots.is_empty() {
+            let fence = if snapshots.is_empty() {
                 renderer.render_layer(&layer, &native_target, geometry)
             } else {
                 for snapshot in &snapshots {
@@ -1189,7 +1375,10 @@ impl ViewCapture {
                     snapshot.surface.end_capture_suppression();
                 }
                 fence
-            }
+            };
+            drop(renderer);
+            drop(borrow);
+            fence
         };
 
         let specs: Vec<SurfaceSpec> = snapshots.iter().map(|s| s.spec).collect();

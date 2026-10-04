@@ -935,6 +935,16 @@ pub struct SceneViewNode {
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
     pub(super) content: Rc<RefCell<Box<dyn waterui_graphics::SceneContent>>>,
+    /// The semantic invalidator installed at build — the compositor re-installs
+    /// it after a `rebuild_for_engine` clears the content's engine-bound hooks,
+    /// so signal-driven frame requests keep working across a device swap.
+    pub(super) invalidator: waterui_graphics::SceneInvalidator,
+    /// The engine resource-table identity `content` last recorded against —
+    /// `None` until its first mount, a `Weak` that expires with the pooled
+    /// engine's table. Shared into each frame's `SceneContentLayer` so every
+    /// mount sees the same recorded identity.
+    pub(super) association:
+        Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
 }
 
 /// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node

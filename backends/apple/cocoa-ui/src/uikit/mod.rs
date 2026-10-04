@@ -12,14 +12,14 @@
 //!
 //! ```no_run
 //! use cocoa_ui::MainThreadMarker;
-//! use cocoa_ui::uikit::{self, ApplicationHandlers, ViewController, Window};
+//! use cocoa_ui::uikit::{self, ApplicationHandlers, ViewController, Window, window_root};
 //!
 //! let mtm = MainThreadMarker::new().expect("main runs on the main thread");
 //! uikit::run(
 //!     mtm,
 //!     ApplicationHandlers::new(|scene| {
 //!         let window = Window::new(scene);
-//!         let controller = ViewController::new(scene.main_thread());
+//!         let controller = ViewController::new(scene.main_thread(), window_root(scene.main_thread()));
 //!         controller.host_view().set_layout_handler(|_view| {
 //!             // Give the subviews their frames here.
 //!         });
@@ -73,7 +73,7 @@ pub use color_view::ColorView;
 pub use colors::UiColor;
 pub use date_picker::{DatePicker, DatePickerMode};
 pub use gesture::GestureAttachment;
-pub use host_view::{HitTest, HostView};
+pub use host_view::{HitTest, HostView, window_root};
 pub use image::ImageView;
 pub mod label;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement};
