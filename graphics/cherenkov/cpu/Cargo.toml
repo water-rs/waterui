@@ -14,12 +14,9 @@ kurbo = "0.13"
 skrifa = "0.44"
 png = "0.18"
 half = "2"
-thiserror = "2"
 rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
-
-libm = "0.2"
 
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }

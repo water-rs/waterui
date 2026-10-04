@@ -25,7 +25,6 @@ half = "2"
 thiserror = "2"
 tracing = "0.1"
 rustc-hash = "2"
-libm = "0.2"
 # Caller-side validation of user shaders, at the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 

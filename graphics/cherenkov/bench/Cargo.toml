@@ -30,7 +30,7 @@ cherenkov = [
     "dep:cherenkov", "dep:cherenkov-gpu", "cherenkov-gpu/bench", "dep:wgpu", "dep:ash",
     "dep:half", "dep:filtrate", "cherenkov-scene/text",
     "dep:objc2", "dep:objc2-metal", "dep:objc2-core-video",
-    "dep:objc2-io-surface", "dep:objc2-core-foundation", "dep:ndk-sys",
+    "dep:objc2-core-foundation", "dep:ndk-sys",
 ]
 cherenkov-cpu = ["dep:cherenkov", "dep:cherenkov-cpu", "dep:filtrate", "cherenkov-scene/text"]
 
@@ -71,7 +71,6 @@ pollster = { version = "0.4", optional = true }
 peniko = "0.6"
 skrifa = "0.44"
 read-fonts = "0.41"
-png = "0.18"
 bytemuck = "1"
 half = { version = "2", optional = true }
 glifo = { version = "0.3", optional = true }
@@ -102,7 +101,6 @@ objc2-core-video = { version = "0.3", optional = true, default-features = false,
     "std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer",
     "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn",
 ] }
-objc2-io-surface = { version = "0.3", optional = true }
 objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
     "std", "CFBase", "CFString", "CFNumber", "CFDictionary",
 ] }

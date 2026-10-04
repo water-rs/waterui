@@ -59,7 +59,6 @@ objc2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFString", "CFDictionary", "CFArray", "CFNumber"] }
 objc2-core-video = { version = "0.3", default-features = false, features = ["std", "objc2-io-surface", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferIOSurface", "CVReturn"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSProcessInfo", "NSThread"] }
-objc2-io-surface = "0.3"
 objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
 objc2-ui-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "UIScreen", "UIView", "UIWindow"] }
 
