@@ -2180,6 +2180,21 @@ Automatic meson installation failed: {install_err}\n\n{}",
         Ok(framework.is_some())
     }
 
+    /// Environment every cargo compilation gets before caller-provided
+    /// `self.envs` (which therefore still overrides it): the managed tools'
+    /// `PATH` entry, and the framework's deployment-target floor when
+    /// `self.triple` names an Apple platform — the triple is the compilation
+    /// target whether the build crosses or the host is the Apple target
+    /// itself.
+    fn apply_default_envs(&self, cmd: &mut Command) {
+        with_managed_tools_path(cmd);
+        if let Some((key, value)) =
+            crate::apple::platform::apple_deployment_target_env(&self.triple)
+        {
+            cmd.env(key, value);
+        }
+    }
+
     async fn cargo_build_output(
         &self,
         release: bool,
@@ -2241,7 +2256,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         if let Some(target_dir) = &self.target_dir {
             cmd = cmd.arg("--target-dir").arg(target_dir);
         }
-        with_managed_tools_path(cmd);
+        self.apply_default_envs(cmd);
         // Apply extra environment variables (caller-provided values override defaults).
         for (key, value) in &self.envs {
             cmd.env(key, value);

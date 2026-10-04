@@ -309,12 +309,11 @@ async fn configure_preview_module_build(
         let browser_runtime = support_project
             .browser_runtime_plan(target, crate::platform::TargetBackend::Apple)
             .await?;
-        let (key, value) =
-            crate::apple::platform::apple_deployment_target(&support_project, target)
-                .await
-                .wrap_err("Failed to resolve the preview support deployment target")?;
+        // The deployment-target env the module once carried explicitly now
+        // comes from the triple inside `cargo_build_output`, so a module and
+        // the support app it loads into cannot drift on it.
         Ok((
-            rust_build.with_env(key, value).with_features(
+            rust_build.with_features(
                 crate::apple::platform::apple_dependency_features(
                     &support_project,
                     browser_runtime,
