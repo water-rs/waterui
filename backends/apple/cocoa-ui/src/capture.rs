@@ -1034,6 +1034,17 @@ struct Preparation {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
 }
 
+/// The one-shot capsule the composite completion owns through the
+/// command buffer's life: the whole `Preparation` — its raster lease
+/// and every CoreGraphics/Metal object in it stays untouched until it
+/// settles on the main queue — the pool return target, and the caller's
+/// completion. One pre-existing `Mutex` slot, nothing else.
+struct Settle {
+    preparation: QueueSend<Preparation>,
+    return_to: MainThreadBound<Weak<ViewCapture>>,
+    completion: Box<dyn Fn(bool) + Send>,
+}
+
 /// Answers the capturable GPU surface `view` presents, if any — the leaf-side
 /// registry.
 type SurfaceResolver = Rc<dyn Fn(&PlatformView) -> Option<Rc<dyn CapturableSurface>>>;
@@ -1392,13 +1403,18 @@ impl ViewCapture {
                 &preparation.get().device,
             );
             // The lease is held until this command buffer completes:
-            // only then has the GPU stopped sampling the shared buffer,
-            // and only then may the frame return to the pool. Dropping
-            // the preparation any earlier could hand the next raster
-            // memory still being read.
-            let held = Mutex::new(Some(preparation));
-            let completion = Mutex::new(Some(completion));
-            let return_to = Mutex::new(Some(return_to));
+            // only then has the GPU stopped sampling the shared buffer.
+            // The completed handler's contract is once, on Metal's
+            // completion queue — a single pre-existing `Mutex` slot
+            // holds the whole capsule through it, and one `enqueue`
+            // settles everything on the main thread in order: the frame
+            // returns to the pool, then the completion fires. Nothing
+            // CG/Metal-owned drops on the completion queue.
+            let settle = Mutex::new(Some(Settle {
+                preparation,
+                return_to,
+                completion,
+            }));
             let handler = RcBlock::new(
                 move |buffer: std::ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
                     // SAFETY: the buffer is alive for the handler call.
@@ -1408,26 +1424,20 @@ impl ViewCapture {
                         "Metal view composition failed: {:?}",
                         buffer.error()
                     );
-                    let settled = held.lock().expect("capture lock").take();
-                    if let Some(preparation) = settled {
-                        let Preparation { raster, .. } = preparation.0;
-                        let frame = QueueSend(raster.into_frame());
-                        let return_to = return_to.lock().expect("capture lock").take();
+                    let settle = settle.lock().expect("capture lock").take();
+                    if let Some(settle) = settle {
                         enqueue(move |mtm| {
-                            // Whole-binding move keeps the `QueueSend`
-                            // wrapper — `frame.0` alone would move the
-                            // bare frame off the queue thread.
-                            let frame = frame;
-                            if let Some(capture) =
-                                return_to.and_then(|return_to| return_to.get(mtm).upgrade())
-                            {
-                                capture.renderer.borrow_mut().return_frame(frame.0);
+                            let Settle {
+                                preparation,
+                                return_to,
+                                completion,
+                            } = settle;
+                            if let Some(capture) = return_to.get(mtm).upgrade() {
+                                capture
+                                    .renderer
+                                    .borrow_mut()
+                                    .return_frame(preparation.0.raster.into_frame());
                             }
-                        });
-                    }
-                    let completion = completion.lock().expect("capture lock").take();
-                    if let Some(completion) = completion {
-                        enqueue(move |_mtm| {
                             completion(true);
                         });
                     }
