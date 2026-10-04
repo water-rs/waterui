@@ -35,19 +35,19 @@ class ProtocolTests(unittest.TestCase):
         self.stack.enter_context(patch.object(d.time, "sleep", side_effect=AssertionError("sleep prohibited")))
 
     def locked_state(self):
-        return {"resolved_pins": {
-            side: {name: cfg[name].get("sha") or "a" * 40
-                   for name in d.pin_names(self.m, side)}
-            for side, cfg in self.m["sides"].items()},
+        pins = {side: {name: cfg[name].get("sha") or "a" * 40
+                       for name in d.pin_names(self.m, side)}
+                for side, cfg in self.m["sides"].items()}
+        return {"resolved_pins": pins,
             "lockfile_sha256": {f"{side}/{subject}": "b" * 64
                                 for side in self.m["sides"] for subject in self.m["subjects"]},
             "form_src_sha256": {"old": "c" * 64, "new": "c" * 64},
             "source_sha256": {f"{side}/{subject}": "d" * 64
                               for side in self.m["sides"] for subject in self.m["subjects"]},
             "inputs_finalized": True,
-            "tools": {side: {"source_sha": cfg["cli"].get("sha") or "a" * 40,
+            "tools": {side: {"source_sha": d.cli_source_sha(side, pins[side]),
                              "binary_sha256": "e" * 64}
-                      for side, cfg in self.m["sides"].items()},
+                      for side in self.m["sides"]},
             "parity_passed": True, "toolchain": {"rustc": "test-toolchain"}}
 
     def report_records(self):
@@ -153,22 +153,25 @@ class ProtocolTests(unittest.TestCase):
 
     def new_waterui_fixture(self):
         """The owned new-side checkout: the waterui root tracking its own
-        backends/apple member — one HEAD owns framework and backend."""
+        backends/apple and cli members — one HEAD owns framework, backend
+        and CLI source."""
         waterui = d.waterui_dir("new")
-        member = waterui / "backends" / "apple"
-        member.mkdir(parents=True)
-        (member / "Cargo.toml").write_text(
-            '[package]\nname = "waterui-apple"\nversion = "0.1.0"\n')
+        for path, package in (("backends/apple", "waterui-apple"),
+                              ("cli", "waterui-cli")):
+            member = waterui / path
+            member.mkdir(parents=True, exist_ok=True)
+            (member / "Cargo.toml").write_text(
+                f'[package]\nname = "{package}"\nversion = "0.1.0"\n')
         (waterui / "Cargo.toml").write_text(
-            '[workspace]\nmembers = ["backends/*"]\n')
+            '[workspace]\nmembers = ["backends/*", "cli"]\n')
         (waterui / "Package.swift").write_text("// swift-tools-version:6.0\n")
         return waterui
 
     def tracked_member(self):
-        """The git index reports the member's files as tracked."""
+        """The git index reports the queried member's files as tracked."""
         return self.stack.enter_context(patch.object(
             d, "checked_output",
-            side_effect=lambda argv: "backends/apple/Cargo.toml\n"
+            side_effect=lambda argv: f"{argv[-1]}/Cargo.toml\n"
             if "ls-files" in argv else ""))
 
     def test_new_manifest_uses_waterui_path_and_tracked_member(self):
@@ -240,6 +243,67 @@ class ProtocolTests(unittest.TestCase):
         (waterui / "Package.swift").unlink()
         with self.assertRaisesRegex(d.BenchError, "Swift package"):
             d.validate_backend_member(self.m, "new")
+
+    def test_new_cli_member_rejects_missing_link_foreign_and_untracked(self):
+        """The new-side CLI is the tracked `cli` member of the same waterui
+        checkout — a link, nested clone, untracked path, wrong package or
+        non-member fails the source gate exactly like the backend member."""
+        waterui = self.new_waterui_fixture()
+        member = waterui / "cli"
+        tracked = self.tracked_member()
+        d.validate_source_members(self.m, "new")
+        with self.subTest(broken="cli symlink"):
+            member.rename(self.root / "moved")
+            member.symlink_to(self.root / "moved", target_is_directory=True)
+            with self.assertRaises(d.BenchError):
+                d.validate_source_members(self.m, "new")
+            member.unlink()
+            (self.root / "moved").rename(member)
+        with self.subTest(broken="cli nested clone"):
+            (member / ".git").mkdir()
+            with self.assertRaises(d.BenchError):
+                d.validate_source_members(self.m, "new")
+            (member / ".git").rmdir()
+        with self.subTest(broken="cli untracked"):
+            tracked.side_effect = lambda argv: "backends/apple/Cargo.toml\n" \
+                if "ls-files" in argv and argv[-1] == "backends/apple" else ""
+            with self.assertRaisesRegex(d.BenchError, "not tracked"):
+                d.validate_source_members(self.m, "new")
+            tracked.side_effect = lambda argv: f"{argv[-1]}/Cargo.toml\n" \
+                if "ls-files" in argv else ""
+        with self.subTest(broken="cli wrong package"):
+            (member / "Cargo.toml").write_text('[package]\nname = "other"\n')
+            with self.assertRaisesRegex(d.BenchError, "waterui-cli"):
+                d.validate_source_members(self.m, "new")
+            (member / "Cargo.toml").write_text('[package]\nname = "waterui-cli"\n')
+        with self.subTest(broken="cli not a member"):
+            (waterui / "Cargo.toml").write_text('[workspace]\nmembers = ["backends/*"]\n')
+            with self.assertRaisesRegex(d.BenchError, "workspace member"):
+                d.validate_source_members(self.m, "new")
+            (waterui / "Cargo.toml").write_text(
+                '[workspace]\nmembers = ["backends/*", "cli"]\n')
+
+    def test_new_cli_install_sources_the_waterui_member(self):
+        """`prepare_cli` installs `waterui-cli` from the tracked member of
+        the waterui checkout — never from the retired standalone path."""
+        sha = "a" * 40
+        ctx = {"home": self.root, "uid": os.getuid()}
+        source = d.cli_source_dir(self.m, "new")
+        self.assertEqual(source, d.waterui_dir("new") / "cli")
+        calls = []
+        def preparation(argv, *args, **kwargs):
+            calls.append(argv)
+            return {"stdout": "water\n"}
+        with patch.object(d, "checked_output", side_effect=[sha, ""]), \
+                patch.object(d, "file_sha256", return_value="e" * 64), \
+                patch.object(d, "preparation_command", side_effect=preparation):
+            state = {}
+            d.prepare_cli(self.m, ctx, state, "new", sha, {})
+        install = calls[0]
+        self.assertEqual(install[:4],
+                         ["cargo", "install", "--locked", "--path"])
+        self.assertEqual(Path(install[4]), source)
+        self.assertEqual(state["tools"]["new"]["source_sha"], sha)
 
     def test_form_manifest_schemas_and_source_parity(self):
         origin = self.root / "checkouts/old/waterui/examples/form/src"
@@ -434,9 +498,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse((project / "target").exists())
 
     def test_required_new_pins_reject_missing_malformed_and_old_override(self):
-        """The new side has exactly two required pins — waterui (owning
-        backends/apple in-tree) and cli; there is no backend pin to supply."""
-        self.assertEqual(d.pin_names(self.m, "new"), ("waterui", "cli"))
+        """The new side has exactly one required pin — waterui (owning
+        backends/apple and cli in-tree); there is no backend or CLI pin to
+        supply."""
+        self.assertEqual(d.pin_names(self.m, "new"), ("waterui",))
         self.assertEqual(d.pin_names(self.m, "old"), ("apple_backend", "waterui", "cli"))
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(d.BenchError, "no pinned SHA"):
@@ -450,20 +515,25 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(d.BenchError, "cannot be overridden"):
                 d.resolve_pin(self.m["sides"]["old"], "cli", "old")
 
-    def test_new_side_rejects_contradictory_backend_pin(self):
-        """A leftover BENCH282_NEW_APPLE_BACKEND_SHA must not create a
-        contradictory second backend pin on the new side; the backend
-        identity is derived coherently inside the waterui pin."""
+    def test_new_side_rejects_contradictory_backend_and_cli_pins(self):
+        """Leftover BENCH282_NEW_APPLE_BACKEND_SHA / BENCH282_NEW_CLI_SHA
+        variables must not create contradictory second pins on the new side;
+        backend and CLI identity are derived coherently inside the waterui
+        pin."""
         env = {"BENCH282_NEW_APPLE_BACKEND_SHA": "f" * 40,
                "BENCH282_NEW_WATERUI_SHA": "2" * 40,
                "BENCH282_NEW_CLI_SHA": "3" * 40}
         with patch.dict(os.environ, env):
             requested = d.requested_pins(self.m)
         self.assertNotIn("apple_backend", requested["new"])
-        self.assertEqual(set(requested["new"]), {"waterui", "cli"})
+        self.assertNotIn("cli", requested["new"])
+        self.assertEqual(set(requested["new"]), {"waterui"})
         self.assertEqual(requested["new"]["waterui"], "2" * 40)
         self.assertEqual(d.backend_dir(self.m, "new"),
                          d.waterui_dir("new") / "backends" / "apple")
+        self.assertEqual(d.cli_source_dir(self.m, "new"),
+                         d.waterui_dir("new") / "cli")
+        self.assertEqual(d.cli_source_sha("new", requested["new"]), "2" * 40)
 
     def test_no_measurement_before_frozen_inputs(self):
         """Unfrozen inputs refuse every measured gate — the manifest's null
@@ -481,19 +551,17 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(d.BenchError):
                 d.cmd_parity(self.m)
         # Supplying frozen pins still must match the immutable resolved set.
-        env = {"BENCH282_NEW_WATERUI_SHA": "2" * 40,
-               "BENCH282_NEW_CLI_SHA": "3" * 40}
+        env = {"BENCH282_NEW_WATERUI_SHA": "2" * 40}
         state = self.locked_state()
         with patch.dict(os.environ, env), \
                 patch.object(d, "file_sha256", return_value="e" * 64):
             with self.assertRaisesRegex(d.BenchError, "differ from immutable"):
                 d.require_finalized(self.m, state)
-            state["resolved_pins"]["new"] = {"waterui": "2" * 40, "cli": "3" * 40}
-            state["tools"]["new"]["source_sha"] = "3" * 40
+            state["resolved_pins"]["new"] = {"waterui": "2" * 40}
+            state["tools"]["new"]["source_sha"] = "2" * 40
             d.require_finalized(self.m, state)
-        self.assertNotIn(
-            "BENCH282_NEW_APPLE_BACKEND_SHA",
-            json.dumps(self.m["sides"]["new"]))
+        for retired in ("BENCH282_NEW_APPLE_BACKEND_SHA", "BENCH282_NEW_CLI_SHA"):
+            self.assertNotIn(retired, json.dumps(self.m["sides"]["new"]))
 
     def test_finalization_refuses_any_started_run_before_mutating(self):
         state = self.locked_state()
@@ -521,7 +589,7 @@ class ProtocolTests(unittest.TestCase):
         previous = copy.deepcopy(requested)
         previous["new"]["waterui"] = "7088fd966688eaa0ac0f5f567ca3e9e4247b9e76"
         tools = {"old": {"source_sha": previous["old"]["cli"]},
-                 "new": {"source_sha": previous["new"]["cli"]}}
+                 "new": {"source_sha": previous["new"]["waterui"]}}
         d.save_state({"resolved_pins": previous, "tools": tools,
                       "source_sha256": {"new/form": "stale"}, "packaged": {"stale": {}}})
         with patch.object(d, "dedicated_ctx", return_value={}), \
@@ -610,19 +678,23 @@ class ProtocolTests(unittest.TestCase):
             d.require_clean_checkout(old_waterui, backend)
         link.unlink()
         link.symlink_to(backend, target_is_directory=True)
-        # New side: the member directory is tracked input — anything untracked
-        # inside the checkout, including a foreign backends/apple, is dirt.
+        # New side: the member directories are tracked input — anything
+        # untracked inside the waterui checkout, including a foreign
+        # backends/apple or cli source file, is dirt.
         self.new_waterui_fixture()
         for dirty in (None, "backends/apple", "waterui", "cli"):
             def output(argv):
-                name = {"waterui": "waterui", "cli": "cli"}[Path(argv[2]).name]
+                name = {"waterui": "waterui"}[Path(argv[2]).name]
                 if argv[3:] == ["rev-parse", "HEAD"]:
                     return state["resolved_pins"]["new"][name]
                 if argv[3:5] == ["ls-files", "--"]:
-                    return "backends/apple/Cargo.toml\n"
+                    return f"{argv[-1]}/Cargo.toml\n"
                 self.assertEqual(argv[3:], ["status", "--porcelain", "--untracked-files=all"])
-                if dirty == "backends/apple" and name == "waterui":
-                    return "?? backends/apple\n"
+                if name == "waterui":
+                    if dirty == "backends/apple":
+                        return "?? backends/apple\n"
+                    if dirty == "cli":
+                        return "?? cli/injected.rs\n"
                 return "?? src/injected.rs\n" if name == dirty else ""
             with self.subTest(side="new", dirty=dirty), patch.object(d, "checked_output", side_effect=output):
                 if dirty:
@@ -708,7 +780,10 @@ class ProtocolTests(unittest.TestCase):
         member = d.waterui_dir("new") / "backends" / "apple"
         member.mkdir(parents=True)
         (member / "Cargo.toml").write_text('[package]\nname = "waterui-apple"\n')
-        (d.waterui_dir("new") / "Cargo.toml").write_text('[workspace]\nmembers = ["backends/*"]\n')
+        cli_member = d.waterui_dir("new") / "cli"
+        cli_member.mkdir(parents=True)
+        (cli_member / "Cargo.toml").write_text('[package]\nname = "waterui-cli"\n')
+        (d.waterui_dir("new") / "Cargo.toml").write_text('[workspace]\nmembers = ["backends/*", "cli"]\n')
         (d.waterui_dir("new") / "Package.swift").write_text("// swift\n")
         replaced = False
         def output(argv, *args, **kwargs):
@@ -728,7 +803,7 @@ class ProtocolTests(unittest.TestCase):
             if operation == ["status", "--porcelain", "--untracked-files=all"]:
                 return ""
             if operation[:2] == ["ls-files", "--"]:
-                return "backends/apple/Cargo.toml\n"
+                return f"{argv[-1]}/Cargo.toml\n"
             self.fail(f"unexpected command: {argv}")
         commands = []
         def prepare(argv, *args, **kwargs):
@@ -763,10 +838,14 @@ class ProtocolTests(unittest.TestCase):
 
     def reconciliation_fixture(self):
         """Old side: three checkouts + the owned backend link. New side: the
-        two remaining pins — the waterui checkout tracks its own member."""
+        single waterui pin owning backend and cli members in-tree. The
+        persisted new-side state carries the retired independent cli pin and
+        its receipt — the historical preparation this transition retires,
+        never deletes or pretends current."""
         previous = self.locked_state()["resolved_pins"]
+        previous["new"]["cli"] = "7" * 40  # retired independent-cli provenance
         requested = copy.deepcopy(previous)
-        requested["new"] = {"waterui": "2" * 40, "cli": "3" * 40}
+        requested["new"] = {"waterui": "2" * 40}
         state = {"prepared_pins": previous, "resolved_pins": copy.deepcopy(previous),
                  "inputs_finalized": True, "tools": {}}
         for side in self.m["sides"]:
@@ -784,7 +863,10 @@ class ProtocolTests(unittest.TestCase):
             state["tools"][side] = {"source_sha": previous[side]["cli"],
                                     "binary_sha256": d.file_sha256(binary)}
         state["tools"]["new"]["binary_sha256"] = "f" * 64
-        supplied = {"new": {"source_sha": requested["new"]["cli"],
+        # The retired standalone cli checkout stays on disk as owned
+        # historical preparation — never reset, deleted or adopted.
+        (self.root / "checkouts" / "new" / "cli" / ".git").mkdir(parents=True)
+        supplied = {"new": {"source_sha": requested["new"]["waterui"],
                             "binary_sha256": d.file_sha256(d.water_bin("new"))}}
         ctx = {"home": self.root, "uid": os.getuid()}
         return state, requested, supplied, ctx
@@ -808,9 +890,14 @@ class ProtocolTests(unittest.TestCase):
             self.assertNotIn("cargo", argv)
             return {"stdout": "water\n"}
         def output(argv):
+            path = Path(argv[2])
             if "ls-files" in argv:
-                return "backends/apple/Cargo.toml\n"
-            return heads[Path(argv[2]).parent.name]["cli"] if "HEAD" in argv else ""
+                return f"{argv[-1]}/Cargo.toml\n"
+            if "HEAD" in argv:
+                return (heads["new"]["waterui"]
+                        if path == d.cli_source_dir(self.m, "new")
+                        else heads[path.parent.name]["cli"])
+            return ""
         receipt_path = self.root / "receipts.json"
         receipt_path.write_text(json.dumps(supplied))
         d.save_state(state)
@@ -829,16 +916,22 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(actual["tool_history"]["new"], [original["tools"]["new"]])
         self.assertEqual(actual["input_history"][-1]["previous"]["prepared_pins"], original["prepared_pins"])
         self.assertEqual(actual["input_history"][-1]["status"], "finalized")
-        self.assertEqual(len([argv for argv in commands if "checkout" in argv]), 2)
+        # Only the new waterui checkout was replaced — the retired
+        # checkouts/new/cli was never planned, fetched or touched.
+        self.assertEqual(len([argv for argv in commands if "checkout" in argv]), 1)
+        self.assertTrue((self.root / "checkouts" / "new" / "cli" / ".git").is_dir())
 
     def test_reconciliation_preflight_rejects_old_started_wrong_receipt_and_dirty(self):
         state, requested, supplied, ctx = self.reconciliation_fixture()
         def owned(ctx, path, url, backend=None):
             name = {v: k for k, v in d.CHECKOUT_FOLDERS.items()}[path.name]
             return state["prepared_pins"][path.parent.name][name]
-        for case in ("old", "started", "setup", "missing-receipt", "wrong-sha", "wrong-hash", "dirty"):
+        for case in ("old", "started", "setup", "missing-receipt", "wrong-sha",
+                     "wrong-hash", "dirty", "unknown-old", "unknown-new",
+                     "retire-without-finalize"):
             with self.subTest(case=case):
                 current, pins, receipts = copy.deepcopy(state), copy.deepcopy(requested), copy.deepcopy(supplied)
+                finalize = case not in ("setup", "retire-without-finalize")
                 if case == "old":
                     pins["old"]["cli"] = "9" * 40
                 elif case == "started":
@@ -849,12 +942,21 @@ class ProtocolTests(unittest.TestCase):
                     receipts["new"]["source_sha"] = state["prepared_pins"]["new"]["cli"]
                 elif case == "wrong-hash":
                     receipts["new"]["binary_sha256"] = "0" * 64
+                elif case == "unknown-old":
+                    current["prepared_pins"]["old"]["foreign"] = "8" * 40
+                elif case == "unknown-new":
+                    current["prepared_pins"]["new"]["apple_backend"] = "8" * 40
+                elif case == "retire-without-finalize":
+                    # Only the retirement itself is contested: the waterui
+                    # pin already matches, so the retired cli name is what
+                    # must fail without explicit finalization.
+                    current["prepared_pins"]["new"]["waterui"] = pins["new"]["waterui"]
                 error = d.BenchError("dirty checkout: untracked input") if case == "dirty" else owned
                 with patch.object(d, "owned_checkout", side_effect=error), \
                         patch.object(d, "preparation_command") as mutate, \
                         patch.object(d, "save_state") as save:
                     with self.assertRaises(d.BenchError):
-                        d.preflight_inputs(self.m, ctx, current, pins, case != "setup", receipts)
+                        d.preflight_inputs(self.m, ctx, current, pins, finalize, receipts)
                     mutate.assert_not_called()
                     save.assert_not_called()
 
