@@ -355,18 +355,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      # Its own key, like Android FFI: another leg that compiles the
-      # dependency graph for an Android target shares no artifacts with the
-      # host legs, and storing under theirs would evict a tarball nothing
-      # else can use.
       - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-linux-android
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
       # Same NDK prologue the Android FFI leg runs — this leg's graph also
       # reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
@@ -538,3 +535,4 @@ jobs:
           fi
 
           echo "nightly line healthy: ${tag} certifies ${certified}, and the latest nightly run is certified"
+

@@ -218,10 +218,11 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-linux-android
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job; read-only lanes never save, so they cannot evict caches.
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       - uses: ./.github/actions/setup-linux-deps
       # Same NDK prologue the ci.yml Android legs run — this job's graph
       # also reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.

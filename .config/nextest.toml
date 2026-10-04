@@ -34,7 +34,13 @@ slow-timeout = { period = "300s", terminate-after = 8 }
 # break into one CI round trip per failure.
 fail-fast = false
 failure-output = "immediate-final"
-status-level = "retry"
+# `slow` prints each test's name as it crosses the slow-timeout threshold
+# and `pass` prints one line per finished test binary, so a dominant test
+# or binary is identifiable from the log alone — `retry` showed only
+# retried tests, which is how a 24-minute Windows phase named none of
+# its seven slow tests.
+status-level = "slow"
+final-status-level = "pass"
 slow-timeout = { period = "120s", terminate-after = 5 }
 
 # Same bench exemption as the default profile: smoke-mode benches are cheap,
@@ -67,9 +73,11 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 # another process on a developer machine — so they get a retry, and the retry
 # is reported. Everything else is deterministic: a failure there is real, and
 # an unconditional retry would only double the runtime of a genuinely broken
-# suite while hiding the first failure's evidence. The set is the same one the
-# `gpu-device` test group below is built from: every package whose tests mount
-# a `waterui-testing` host or create a `wgpu` device.
+# suite while hiding the first failure's evidence. The set is the `gpu-device`
+# test group below minus `hydrolysis`: the backend mounts
+# a GPU per test and is the suite most tempted by a retry, but retrying a GPU
+# test hides flakiness rather than fixing it — a red hydrolysis leg is the
+# honest state until the device race is fixed (#1441 review).
 [[profile.ci.overrides]]
 filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
@@ -97,8 +105,8 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 # Metal.
 #
 # The package list is the workspace's direct dependents of `waterui-testing`,
-# `wgpu`, `hydrolysis` and `hydrolysis-m3` — the only ways a test binary here
-# can hold a device — minus the ones whose test code cannot run it:
+# `wgpu` and `hydrolysis` — the only ways a test binary here can hold a
+# device — minus the ones whose test code cannot run it:
 # `waterui-macros` carries `trybuild` compilers and pure derive tests,
 # `skill_snippets`' host-mounting transcriptions are compile-gated and never
 # run, and `waterkit-camera-filters-example` has no tests at all.
@@ -106,6 +114,10 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 # dev-dependency edges transitively, which pulls in the whole workspace
 # through `waterui`'s dev-dependency. Keep the list in sync when a package's
 # dependency on the GPU stack changes.
+#
+# `hydrolysis-m3` is not named: while it stays an external dependency rather
+# than a workspace member, `package(hydrolysis-m3)` fails the whole
+# expression at parse time — add it if the crate ever lands in-tree.
 [test-groups.gpu-device]
 max-threads = 2
 
@@ -151,5 +163,5 @@ test-group = 'metal-shader-compile'
 
 [[profile.ci.overrides]]
 platform = 'cfg(target_os = "windows")'
-filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
+filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example) or package(hydrolysis)'
 test-group = 'gpu-device'

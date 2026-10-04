@@ -252,6 +252,10 @@ jobs:
         with:
           families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.lint-target.outputs.cache-primary-key }}
+          # One live entry per cache purpose on this ref — the shared sweep
+          # covers families no single job owns (install-tool pins, apt
+          # packages, in-tree tool builds) (#1441).
+          sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save Cargo sources
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
@@ -523,8 +527,10 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      # Writes the macOS `~/.cargo` tarball for the macOS jobs that store no
-      # target directory (see the cache budget note in ci.yml).
+      # Restore-only (#1441): this job only runs in the nightly (`full`),
+      # and nightly jobs save no cache entries of their own — the 10 GB
+      # budget belongs to the gate. The macOS `~/.cargo` tarball stays
+      # whatever the last gate-side write left.
       - uses: ./.github/actions/setup-rust
         with:
           cache: "false"
@@ -586,8 +592,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      # Restore-only reader of the shared macOS `~/.cargo` tarball, written by
-      # `macos-all-features` (see the cache budget note in ci.yml). clippy is
+      # Restore-only reader of the shared macOS `~/.cargo` tarball — nightly
+      # legs save nothing of their own (#1441). clippy is
       # needed by the CEF real-engine target, which cannot be linted on Linux
       # because CEF requires a macOS application bundle.
       - uses: ./.github/actions/setup-rust
@@ -711,10 +717,14 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job (the lint lane above); read-only lanes never save. The
+      # `cargo-home-*` rust-cache family this replaced had no writer at
+      # all — every restore was a guaranteed miss on content identical to
+      # this archive (#1441).
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # Build scripts still run on the host; cherenkov-gpu's optimizes its
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies

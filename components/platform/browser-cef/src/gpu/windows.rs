@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::ptr::NonNull;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
