@@ -835,7 +835,8 @@ impl EditingSession {
 
     /// Delete `before`/`after` UTF-16 units around the protected region,
     /// mapping spans through each remove exactly as the host `Editable` does
-    /// (selection endpoints are POINTs, composing endpoints MARKs).
+    /// (selection endpoints are `SPAN_POINT` spans, composing endpoints
+    /// `SPAN_MARK` spans).
     fn delete_around_protected(&mut self, before: usize, after: usize) {
         let (a, _b) = self.protected_region();
         let start = a.saturating_sub(before);
