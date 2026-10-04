@@ -63,6 +63,31 @@ struct AppleTarget {
     deployment_version: String,
 }
 
+/// Every Apple deployment-target variable the Metal compiler reads. It picks
+/// its target platform from whichever of these is set, so an environment that
+/// sets several (a workspace `[env]` table, for one) would compile an
+/// iOS-simulator shader for macOS.
+const DEPLOYMENT_VARIABLES: [&str; 5] = [
+    "MACOSX_DEPLOYMENT_TARGET",
+    "IPHONEOS_DEPLOYMENT_TARGET",
+    "TVOS_DEPLOYMENT_TARGET",
+    "WATCHOS_DEPLOYMENT_TARGET",
+    "XROS_DEPLOYMENT_TARGET",
+];
+
+impl AppleTarget {
+    /// An `xcrun` invocation that sees this target's deployment variable and
+    /// no other platform's.
+    fn xcrun(&self) -> Command {
+        let mut command = Command::new("xcrun");
+        for variable in DEPLOYMENT_VARIABLES {
+            command.env_remove(variable);
+        }
+        command.env(self.deployment_variable, &self.deployment_version);
+        command
+    }
+}
+
 /// Passthrough shaders carry no naga runtime checks: the source is
 /// controlled and validated here at build time.
 const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolicies {
@@ -727,8 +752,8 @@ fn compile_metal(out_dir: &Path, name: &str, input: &Path, apple: &AppleTarget, 
         "ios-metal"
     };
     run(
-        Command::new("xcrun")
-            .env(apple.deployment_variable, &apple.deployment_version)
+        apple
+            .xcrun()
             .args(["-sdk", sdk, "metal", "-c", "-o"])
             .arg(&air)
             // Match the language naga emitted instead of inheriting
@@ -743,8 +768,8 @@ fn compile_metal(out_dir: &Path, name: &str, input: &Path, apple: &AppleTarget, 
              targets: engine shaders are precompiled (issue #57).",
     );
     run(
-        Command::new("xcrun")
-            .env(apple.deployment_variable, &apple.deployment_version)
+        apple
+            .xcrun()
             .args(["-sdk", sdk, "metallib", "-o"])
             .arg(&metallib)
             .arg(&air),
