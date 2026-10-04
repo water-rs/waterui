@@ -17,20 +17,21 @@
 //! full observation — that token set plus the enclosing scroll-viewport
 //! watch — and rebinds both together.
 //!
-//! Ancestors outside the `CocoaUi` classes cannot emit. On `AppKit` the
-//! public `NSViewFrameDidChangeNotification` /
-//! `NSViewBoundsDidChangeNotification` pair is enabled on every foreign
-//! ancestor for the subscription's lifetime, so host-owned containers
-//! still wake descendants when their frames or bounds move. On `UIKit`
-//! a foreign non-scroll ancestor's hidden, alpha, frame, transform or
-//! reparent inside the same window publishes nothing a descendant can
-//! observe — `UIView`'s geometry and hidden key paths carry no
-//! documented KVO guarantee — so embedding hosts that mutate such a
-//! container must refresh the mounted instance explicitly (the
-//! `WaterUIHostController` contract). Scroll ancestors on either
-//! platform wake through [`crate::scroll::observe_scroll_viewport`],
-//! which covers `UIScrollView`/`NSScrollView` subclasses and third-party
-//! scroll views alike.
+//! Ancestors outside the `CocoaUi` classes cannot emit, on either
+//! platform. `UIKit`'s geometry and hidden key paths carry no
+//! documented KVO guarantee, and toggling `AppKit`'s documented
+//! `postsFrameChangedNotifications`/`postsBoundsChangedNotifications`
+//! opt-in on a foreign `NSView` is unsound once several mounted leaves
+//! share that ancestor — one leaf's detach could silence another's
+//! stream. A foreign non-scroll ancestor's hidden, alpha, frame,
+//! transform or reparent inside the same window therefore publishes
+//! nothing a descendant can observe: embedding hosts that mutate such a
+//! container must refresh the mounted instance explicitly — the
+//! `WaterUIHostController.updateVisibility` contract on both platforms
+//! (`waterui_apple_update_visibility` natively). Scroll ancestors wake
+//! through [`crate::scroll::observe_scroll_viewport`], which covers
+//! `UIScrollView`/`NSScrollView` subclasses and third-party scroll
+//! views alike.
 //!
 //! # Safety
 //!

@@ -106,7 +106,9 @@ define_class!(
         fn view_did_move_to_window_override(&self) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
-            self.ivars().emitter.emit();
+            guarded("ScrollView viewDidMoveToWindow visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -114,7 +116,9 @@ define_class!(
         fn view_did_move_to_superview_override(&self) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidMoveToSuperview] };
-            self.ivars().emitter.emit();
+            guarded("ScrollView viewDidMoveToSuperview visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -122,7 +126,9 @@ define_class!(
         fn set_frame_origin_override(&self, new_origin: NSPoint) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
-            self.ivars().emitter.emit();
+            guarded("ScrollView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -130,7 +136,9 @@ define_class!(
         fn set_frame_size_override(&self, new_size: NSSize) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
-            self.ivars().emitter.emit();
+            guarded("ScrollView setFrameSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -138,7 +146,9 @@ define_class!(
         fn set_hidden_override(&self, hidden: bool) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
-            self.ivars().emitter.emit();
+            guarded("ScrollView setHidden: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -146,7 +156,9 @@ define_class!(
         fn set_alpha_value_override(&self, alpha: f64) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
-            self.ivars().emitter.emit();
+            guarded("ScrollView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
     }
 );

@@ -269,7 +269,9 @@ define_class!(
         fn set_frame_origin_override(&self, new_origin: NSPoint) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
-            self.ivars().emitter.emit();
+            guarded("HostView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -277,7 +279,9 @@ define_class!(
         fn set_bounds_size_override(&self, new_size: NSSize) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setBoundsSize: new_size] };
-            self.ivars().emitter.emit();
+            guarded("HostView setBoundsSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -285,7 +289,9 @@ define_class!(
         fn set_bounds_origin_override(&self, new_origin: NSPoint) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setBoundsOrigin: new_origin] };
-            self.ivars().emitter.emit();
+            guarded("HostView setBoundsOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -293,7 +299,9 @@ define_class!(
         fn set_alpha_value_override(&self, alpha: f64) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
-            self.ivars().emitter.emit();
+            guarded("HostView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.

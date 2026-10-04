@@ -1150,6 +1150,18 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     }
     state.ready_waiters.borrow_mut().push(waker);
     schedule_frame_if_needed(state);
+    // An explicit ready demand outranks autonomous parking: a clipped or
+    // ancestor-hidden filter's clock correctly stays stopped, but the
+    // registered waiter still needs one frame — run it off the clock,
+    // the same contract `GpuSurface`'s first-ready force render uses.
+    // `render_frame` itself re-checks need/in-flight, so this can only
+    // produce the frame the waiter is owed, never duplicate work.
+    if !state.output_revealed.get()
+        && presentation_occluded(&state.view)
+        && state.needs_render.get()
+    {
+        render_frame(state);
+    }
 }
 
 /// Walks `view`'s subtree calling `f` on every registered filter — the

@@ -181,10 +181,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidMoveToWindow] };
             let handler = self.ivars().on_window_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView viewDidMoveToWindow visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -193,10 +195,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidMoveToSuperview] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView viewDidMoveToSuperview visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -204,7 +208,9 @@ define_class!(
         fn set_frame_origin_override(&self, new_origin: NSPoint) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setFrameOrigin: new_origin] };
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setFrameOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -212,7 +218,9 @@ define_class!(
         fn set_frame_size_override(&self, new_size: NSSize) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setFrameSize: new_size] };
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setFrameSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -220,7 +228,9 @@ define_class!(
         fn set_bounds_origin_override(&self, new_origin: NSPoint) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setBoundsOrigin: new_origin] };
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setBoundsOrigin: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -228,7 +238,9 @@ define_class!(
         fn set_bounds_size_override(&self, new_size: NSSize) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setBoundsSize: new_size] };
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setBoundsSize: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -236,7 +248,9 @@ define_class!(
         fn set_alpha_value_override(&self, alpha: f64) {
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setAlphaValue: alpha] };
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setAlphaValue: visibility emit", || {
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -245,9 +259,11 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidChangeBackingProperties] };
             let handler = self.ivars().on_backing_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView viewDidChangeBackingProperties visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -256,10 +272,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidHide] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView viewDidHide visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -268,10 +286,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), viewDidUnhide] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView viewDidUnhide visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -560,9 +580,11 @@ impl SurfaceView {
 
     fn emit_layout(&self) {
         let handler = self.ivars().on_layout.borrow().clone();
-        if let Some(handler) = handler {
-            handler();
-        }
+        guarded("SurfaceView ? visibility handler", || {
+            if let Some(handler) = handler {
+                handler();
+            }
+        });
     }
 
     /// The event position in logical, surface-local points with y growing

@@ -244,9 +244,11 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), layoutSubviews] };
             let handler = self.ivars().on_layout.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView layoutSubviews visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -255,9 +257,11 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
             let handler = self.ivars().on_window_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView didMoveToWindow visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -266,10 +270,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), didMoveToSuperview] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView didMoveToSuperview visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -278,10 +284,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setHidden: hidden] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setHidden: visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -290,10 +298,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setAlpha: alpha] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setAlpha: visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -302,10 +312,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setFrame: frame] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setFrame: visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -314,10 +326,12 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
             let handler = self.ivars().on_visibility_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
-            self.ivars().emitter.emit();
+            guarded("SurfaceView setBounds: visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+                self.ivars().emitter.emit();
+            });
         }
 
         // SAFETY: see the module safety note.
@@ -326,9 +340,11 @@ define_class!(
             // SAFETY: see the module safety note.
             let _: () = unsafe { msg_send![super(self), traitCollectionDidChange: previous] };
             let handler = self.ivars().on_backing_changed.borrow().clone();
-            if let Some(handler) = handler {
-                handler();
-            }
+            guarded("SurfaceView traitCollectionDidChange: visibility handler", || {
+                if let Some(handler) = handler {
+                    handler();
+                }
+            });
         }
 
         // SAFETY: see the module safety note.
