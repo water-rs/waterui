@@ -942,11 +942,11 @@ impl NativeRenderer {
 
         // The claim ends when encoding does: a bound root is the
         // renderer's exclusive hold on the layer — on UIKit it severs
-        // the view from its parent's containment for the whole claim
-        // (AppKit `superview`/`superlayer` survive it — instrumented),
-        // and a renderer dropped with a root still bound invalidates
-        // the backing layer under the live view. Unbind inside the
-        // encode so the caller restores a layer nothing owns. `setLayer`
+        // the view from its parent's containment for the whole claim;
+        // on AppKit `superview` survives while `superlayer` can still be
+        // orphaned — and a renderer dropped with a root still bound
+        // invalidates the backing layer under the live view. Unbind inside
+        // the encode so the caller restores a layer nothing owns. `setLayer`
         // is renderer state, not a layer-tree edit — nothing here may
         // commit a `CATransaction` while the caller still holds the
         // renderer `RefMut`, or a layout callback could re-enter the
@@ -971,8 +971,9 @@ impl NativeRenderer {
 /// `superview`, `window`, and the parent's `subviews` all answer as if
 /// it were removed — and a renderer released with the root still bound
 /// invalidates the layer object under the still-live view. On `AppKit`
-/// the claim leaves `superview` and `superlayer` in place; the restore
-/// below fires only when membership actually changed. `RootBorrow`
+/// the claim leaves `superview` in place but can still orphan the model
+/// layer's `superlayer`; the restore below fires when either membership
+/// was actually lost. `RootBorrow`
 /// snapshots the containment and geometry the claim owes the view, holds
 /// the layer for the claim's span, and on drop restores through the
 /// platform's public containment API — after the `RefMut` holding the
@@ -1086,7 +1087,7 @@ impl Drop for RootBorrow {
             let reseat = {
                 let layer_orphaned = !detached && self.layer.superlayer().is_none();
                 if layer_orphaned {
-                    tracing::warn!(
+                    tracing::trace!(
                         "native capture claim left the backing layer detached while the view kept its parent; re-seating the view so AppKit re-wires its layer"
                     );
                     self.view.removeFromSuperview();
