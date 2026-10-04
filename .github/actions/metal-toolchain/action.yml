@@ -16,9 +16,16 @@ runs:
         set -euo pipefail
         # The stub Xcode ships without the toolchain answers `--version`; only
         # a real compile tells whether shaders can be built.
+        # Every SDK a WaterUI build compiles shaders for is probed: a toolchain
+        # can compile for macOS and still lack the simulator runtime library.
         probe="${{ github.action_path }}/probe.metal"
-        if xcrun metal -c "${probe}" -o "${RUNNER_TEMP}/probe.air" >/dev/null 2>&1; then
+        compiles() {
+          for sdk in macosx iphoneos iphonesimulator; do
+            xcrun -sdk "${sdk}" metal -c "${probe}" -o "${RUNNER_TEMP}/probe-${sdk}.air" || return 1
+          done
+        }
+        if compiles >/dev/null 2>&1; then
           exit 0
         fi
         xcodebuild -downloadComponent MetalToolchain
-        xcrun metal -c "${probe}" -o "${RUNNER_TEMP}/probe.air"
+        compiles

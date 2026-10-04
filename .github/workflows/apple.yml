@@ -285,6 +285,10 @@ jobs:
           key: apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             apple-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-
+      # cherenkov-gpu's build script compiles its shaders with `xcrun metal`
+      # for every Apple target the clippy legs below check.
+      - name: Metal toolchain
+        uses: ./.github/actions/metal-toolchain
       - name: Format
         run: cargo fmt -p waterui-apple -p cocoa-ui -- --check
       # `native-test` is on for these legs because the `native`
