@@ -277,6 +277,7 @@ impl SemanticCore {
             || self.animations_active()
             || self.next_gesture_deadline().is_some()
             || self.has_gliding_smooth_scrolls()
+            || self.has_active_touch_fling()
     }
 
     pub(crate) const fn measurement_cache_stats(&self) -> (u32, u32) {

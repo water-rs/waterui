@@ -21,6 +21,10 @@ pub(super) struct HeadlessPlatformWindow {
     /// knows a position it delivered no event for (an OS drag suppresses
     /// cursor events on some platforms).
     pointer_position: Option<(f32, f32)>,
+    /// The touch-gesture parameters this host publishes — a test sets them
+    /// through [`HeadlessRuntime::set_touch_scroll_config`], like a real
+    /// touch platform pushing its `ViewConfiguration` values.
+    touch_scroll_config: Cell<Option<crate::platform::TouchScrollConfig>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,7 +51,15 @@ impl HeadlessPlatformWindow {
             redraw_requested: Cell::new(false),
             occluded: Cell::new(false),
             pointer_position: None,
+            touch_scroll_config: Cell::new(None),
         }
+    }
+
+    /// The touch-gesture parameters [`PlatformWindow::touch_scroll_config`]
+    /// reports — `None` until a test supplies the platform's values.
+    #[cfg(any(test, feature = "testing"))]
+    pub(super) fn set_touch_scroll_config(&self, config: crate::platform::TouchScrollConfig) {
+        self.touch_scroll_config.set(Some(config));
     }
 
     pub(super) fn set_scale_factor(&mut self, scale_factor: f64) {
@@ -98,6 +110,10 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
     fn pointer_position(&self) -> Option<(f32, f32)> {
         self.pointer_position
+    }
+
+    fn touch_scroll_config(&self) -> Option<crate::platform::TouchScrollConfig> {
+        self.touch_scroll_config.get()
     }
 
     fn request_redraw(&self) {
@@ -809,6 +825,14 @@ impl HeadlessRuntime {
     /// Pumps one frame and captures a snapshot.
     pub fn pump_snapshot(&mut self) -> HeadlessPumpResult {
         self.pump_at(true, Instant::now())
+    }
+
+    /// The touch-gesture parameters this runtime's host reports — a test's
+    /// stand-in for the platform's `ViewConfiguration` push, applied by the
+    /// next input dispatch.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_touch_scroll_config(&mut self, config: crate::platform::TouchScrollConfig) {
+        self.runtime.platform.set_touch_scroll_config(config);
     }
 
     /// The main window's renderer, for tests that assert on frame internals.

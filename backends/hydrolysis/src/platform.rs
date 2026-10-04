@@ -325,6 +325,47 @@ pub enum TextInputPurpose {
 
 pub use waterui_backend_core::input::TouchPhase;
 
+/// The touch-drag scroll gesture's parameters for one window, supplied by
+/// the platform host.
+///
+/// These are platform values, never renderer constants: on Android they are
+/// `ViewConfiguration`'s scaled values and `OverScroller`'s physics, another
+/// touch platform supplies its own through the same struct. Every distance
+/// and speed is in logical units — the space [`InputEvent`] pointer
+/// positions already arrive in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TouchScrollConfig {
+    /// How far a touch may travel from its down point before a scroll view
+    /// claims the gesture — the platform's scaled touch slop, in logical
+    /// units.
+    pub touch_slop: f32,
+    /// The release speed under which the gesture settles without a fling, in
+    /// logical units per second.
+    pub min_fling_velocity: f32,
+    /// The release speed a fling starts at at most, in logical units per
+    /// second.
+    pub max_fling_velocity: f32,
+    /// The deceleration model and the coefficients the platform defines for
+    /// it.
+    pub fling: FlingDeceleration,
+}
+
+/// The fling's deceleration model: Android `OverScroller`'s spline, whose
+/// math the renderer ports
+/// (`frameworks/base/core/java/android/widget/OverScroller.java`,
+/// `SplineScroller`). The platform computes the coefficients for its own
+/// display and feel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlingDeceleration {
+    /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
+    /// scale the spline's distance and duration derive from, in logical
+    /// units per second².
+    pub physical_coeff: f64,
+    /// `SplineScroller`'s `mFlingFriction` —
+    /// `ViewConfiguration.getScrollFriction()` on Android.
+    pub friction: f64,
+}
+
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TextInputState {
@@ -896,6 +937,18 @@ pub trait PlatformWindow: 'static {
     /// never polled.
     fn is_occluded(&self) -> bool {
         false
+    }
+    /// The window's touch-drag scroll gesture parameters, when the host
+    /// delivers touch input: the platform's own slop, fling velocity bounds
+    /// and deceleration coefficients, by value — the renderer carries no
+    /// defaults for them.
+    ///
+    /// The default `None` is for platforms with no platform-published
+    /// touch-gesture parameters to carry — a host that cannot source the
+    /// values reports none rather than inventing them, and a touch drag
+    /// then never claims a scroll view.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+        None
     }
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
