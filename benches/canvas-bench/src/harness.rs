@@ -80,10 +80,32 @@ impl CellSpec {
     }
 }
 
-/// The whole matrix: scenario-1 pairs at N=50 and N=200 plus the
+/// The safe matrix: scenario-1 variant `a` at N=50 and N=200 plus the
 /// scenario-3 `GpuContentView` densities. Pass `p` walks the list
 /// rotated left by `p`, so thermal drift spreads over every variant.
+/// Scenario-1 variant `b` (one `SceneView` per element) is deliberately
+/// excluded: at fling speed its thread-spawn rate panics inside a
+/// plain-C callback the harness cannot catch, so the driver measures
+/// those cells in their own launches.
 pub fn matrix_cells() -> Vec<CellSpec> {
+    [
+        (1, "a", 50),
+        (1, "a", 200),
+        (3, "gpu", 1),
+        (3, "gpu", 8),
+        (3, "gpu", 32),
+    ]
+    .into_iter()
+    .map(|(scenario, variant, n)| CellSpec {
+        scenario,
+        variant: variant.to_string(),
+        n,
+    })
+    .collect()
+}
+
+/// Every cell the bench knows, by name — for `WATERUI_BENCH_CELLS` filtering.
+pub fn all_cells() -> Vec<CellSpec> {
     [
         (1, "a", 50),
         (1, "b", 50),
@@ -141,23 +163,37 @@ pub struct MatrixConfig {
     pub run_id: String,
     pub commit: String,
     pub passes: u32,
+    /// Cell-name filter from `WATERUI_BENCH_CELLS` (`s1-b-n50,s1-b-n200`);
+    /// `None` means the default safe matrix.
+    pub cells: Vec<CellSpec>,
 }
 
 impl MatrixConfig {
     pub fn from_env() -> Self {
         let get = |key: &str| std::env::var(key).ok();
+        let cells = get("WATERUI_BENCH_CELLS")
+            .map(|names| {
+                let names: std::collections::HashSet<&str> =
+                    names.split(',').map(str::trim).collect();
+                all_cells()
+                    .into_iter()
+                    .filter(|cell| names.contains(cell.name().as_str()))
+                    .collect()
+            })
+            .unwrap_or_else(matrix_cells);
         Self {
             run_id: get("WATERUI_BENCH_RUN_ID").unwrap_or_else(|| "manual".into()),
             commit: get("WATERUI_BENCH_COMMIT").unwrap_or_else(|| "unknown".into()),
             passes: get("WATERUI_BENCH_PASSES")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3),
+            cells,
         }
     }
 }
 
 /// One display-link sample inside a cell's measured window.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct FrameSample {
     /// Seconds (mach continuous time) when the tick fired.
     t: f64,
@@ -169,7 +205,7 @@ struct FrameSample {
 }
 
 /// Memory + allocator sample for one cell.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct MemSample {
     t: f64,
     phys_footprint: u64,
@@ -182,7 +218,7 @@ struct MemSample {
 }
 
 /// One cell's measured result.
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct CellResult {
     name: String,
     scenario: u32,
@@ -387,7 +423,7 @@ pub fn install(
 ) -> Harness {
     let mut queue = std::collections::VecDeque::new();
     for pass in 0..config.passes {
-        let mut cells = matrix_cells();
+        let mut cells = config.cells.clone();
         let n_cells = cells.len();
         cells.rotate_left((pass as usize) % n_cells);
         queue.extend(cells);
@@ -645,10 +681,11 @@ fn start_cell(inner: Rc<RefCell<Inner>>, config: MatrixConfig) {
         return;
     };
     // The pass this cell belongs to: the queue holds `passes` blocks of
-    // `matrix_cells()` back to back, so remaining-count maps to a pass.
+    // `config.cells` back to back, so remaining-count maps to a pass.
+    let n_cells = config.cells.len().max(1) as u32;
     let pass_index = config
         .passes
-        .saturating_sub(((borrowed.queue.len() + 1) as u32).div_ceil(7));
+        .saturating_sub(((borrowed.queue.len() + 1) as u32).div_ceil(n_cells));
     borrowed.pass = pass_index;
     borrowed.thermal_current = thermal_state_name();
     borrowed.cell = Some(cell.clone());
@@ -803,6 +840,8 @@ fn measure_end(inner: Rc<RefCell<Inner>>, config: MatrixConfig) {
     borrowed.cell_binding.set(None);
     borrowed.phase = Phase::Teardown;
     drop(borrowed);
+    // A crash in a later cell must not lose earlier cells' data.
+    flush(&inner, &config, "in_progress");
     run_after(&inner, config, TEARDOWN_S, TimerStep::TeardownDone);
 }
 
@@ -847,7 +886,41 @@ fn fail_current(inner: &Rc<RefCell<Inner>>, where_in: &str) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         binding.set(None);
     }));
+    flush(inner, &config, "in_progress");
     run_after(inner, config, TEARDOWN_S, TimerStep::TeardownDone);
+}
+
+/// Writes the accumulated cells to `Documents/bench-<run_id>.json`
+/// mid-round — a fatal crash in a later cell loses only that cell.
+fn flush(inner: &Rc<RefCell<Inner>>, config: &MatrixConfig, status: &str) {
+    let result = {
+        let borrowed = inner.borrow();
+        MatrixResult {
+            run_id: config.run_id.clone(),
+            scenario: "matrix".into(),
+            commit: config.commit.clone(),
+            bundle_id: NSBundle::mainBundle()
+                .bundleIdentifier()
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            pid: std::process::id(),
+            launch_time_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            argv: std::env::args().collect(),
+            thermal_state_start: borrowed.thermal_current.clone(),
+            device_model: device_model(),
+            os_version: NSProcessInfo::processInfo()
+                .operatingSystemVersionString()
+                .to_string(),
+            passes: config.passes,
+            status: status.to_string(),
+            cells: borrowed.results.iter().cloned().collect(),
+        }
+    };
+    let json = serde_json::to_string_pretty(&result).expect("result serialization");
+    write_result(&json, &config.run_id);
 }
 
 /// Round over: write `bench-<run_id>.json`.
@@ -859,32 +932,8 @@ fn finish(inner: Rc<RefCell<Inner>>, config: MatrixConfig) {
     borrowed.done = true;
     borrowed.phase = Phase::Done;
     let status = borrowed.status.clone();
-    let result = MatrixResult {
-        run_id: config.run_id.clone(),
-        scenario: "matrix".into(),
-        commit: config.commit.clone(),
-        bundle_id: NSBundle::mainBundle()
-            .bundleIdentifier()
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "unknown".into()),
-        pid: std::process::id(),
-        launch_time_unix: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-        argv: std::env::args().collect(),
-        thermal_state_start: thermal_state_name(),
-        device_model: device_model(),
-        os_version: NSProcessInfo::processInfo()
-            .operatingSystemVersionString()
-            .to_string(),
-        passes: config.passes,
-        status,
-        cells: std::mem::take(&mut borrowed.results),
-    };
     drop(borrowed);
-    let json = serde_json::to_string_pretty(&result).expect("result serialization");
-    write_result(&json, &config.run_id);
+    flush(&inner, &config, &status);
     info!(run_id = %config.run_id, "BENCH_DONE");
 }
 
