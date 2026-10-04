@@ -95,9 +95,15 @@ pub use semantic::{SemanticPumpResult, SemanticRuntime};
 // Bare wasm has no window model until `web` compiles the browser runner.
 #[cfg(any(not(target_arch = "wasm32"), feature = "web"))]
 use window::{RuntimeWindow, advance_runtime, handle_input_events};
-// The Android host drives `pump_window_scene` itself; `render_window` is
-// the desktop pump's entry.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+// One frame's entry is shared by the winit pump, the headless `run`, the
+// `#[cfg(test)]` suite, and the browser runner; the Android host reaches it
+// through `window::` itself, so it stays out of this re-export.
+#[cfg(any(
+    hydrolysis_winit,
+    all(test, not(target_arch = "wasm32")),
+    all(not(target_arch = "wasm32"), not(target_os = "android")),
+    all(target_arch = "wasm32", feature = "web")
+))]
 use window::render_window;
 // Only the native headless/capture paths read frames back; the browser surface presents directly.
 #[cfg(not(target_arch = "wasm32"))]
