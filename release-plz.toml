@@ -249,7 +249,7 @@ git_tag_name = "hydrolysis-v{{ version }}"
 # Tooling
 
 # The CLI releases on its own version line — it is not in the waterui
-# version group — under `waterui-cli-v*` tags (bare `v*` belongs to the
+# version group — under `cli/v*` tags (bare `v*` belongs to the
 # facade, `hydrolysis-v*` to Hydrolysis). Publishing stays in-band: this
 # repository's `release` job runs on the `main` push itself, so crates.io
 # trusted publishing issues it an OIDC token, and release-plz publishes
@@ -260,5 +260,5 @@ git_tag_name = "hydrolysis-v{{ version }}"
 # the `water` binary builds.
 [[package]]
 name = "waterui-cli"
-git_release_name = "waterui-cli-v{{ version }}"
-git_tag_name = "waterui-cli-v{{ version }}"
+git_release_name = "cli/v{{ version }}"
+git_tag_name = "cli/v{{ version }}"

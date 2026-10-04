@@ -382,7 +382,7 @@ Hydrolysis's own `AGENTS.md` carries its engine contract: the GPU and microcontr
 
 ### CLI (`cli/`, crate `waterui-cli`)
 
-The `water` CLI orchestrates builds across platforms and is a workspace member here — it moved in from water-rs/cli in #1446 and keeps its crate name and its own release line (`waterui-cli-v*` tags, the `cli-dist`/`cli-release-assets` legs of `release.yml`):
+The `water` CLI orchestrates builds across platforms and is a workspace member here — it moved in from water-rs/cli in #1446 and keeps its crate name and its own release line (`cli/v*` tags, the `cli-dist`/`cli-release-assets` legs of `release.yml`):
 
 - `water create` - Scaffold new project
 - `water run` - Build and deploy to device/simulator
