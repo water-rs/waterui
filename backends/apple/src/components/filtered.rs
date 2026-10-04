@@ -1401,7 +1401,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let weak = Rc::downgrade(&state);
             view.set_layout_handler(move |_| {
                 if let Some(state) = weak.upgrade() {
-                    on_layout(&state)
+                    on_layout(&state);
                 }
             });
         }
@@ -1409,7 +1409,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let weak = Rc::downgrade(&state);
             view.set_window_handler(move |_| {
                 if let Some(state) = weak.upgrade() {
-                    handle_window_change(&state)
+                    handle_window_change(&state);
                 }
             });
         }
