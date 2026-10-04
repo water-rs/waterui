@@ -100,7 +100,11 @@ jobs:
   # a released patch.
   msrv:
     name: MSRV
-    uses: ./.github/workflows/msrv.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/msrv
 
   coverage:
     name: Coverage

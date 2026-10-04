@@ -286,15 +286,23 @@ jobs:
       - name: Compile the DX12 backend against the committed lockfile
         run: cargo check --locked --profile ci-check -p waterui-graphics --no-default-features --features wgpu/dx12 --target x86_64-pc-windows-msvc
 
-  # MSRV moved into `msrv.yml` so the nightly can run the identical check:
-  # here it is gated on the diff touching a toolchain boundary, there it
-  # sweeps the whole workspace nightly — the signal moves, it does not
-  # disappear.
+  # The shared steps live in `.github/actions/msrv` so the nightly can run
+  # the identical check: here it is gated on the diff touching a toolchain
+  # boundary, there it sweeps the whole workspace nightly — the signal
+  # moves, it does not disappear.
   msrv:
     name: MSRV
     needs: [changes, scope]
     if: needs.scope.outputs.msrv == 'true'
-    uses: ./.github/workflows/msrv.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # An ordinary job, not a workflow_call: `MSRV` is a required status
+    # check, and a reusable workflow would report `MSRV / MSRV` — the
+    # required context never fires. The shared steps live in the
+    # `.github/actions/msrv` composite.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/msrv
 
   android-ffi:
     name: Android FFI
