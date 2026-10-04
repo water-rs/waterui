@@ -471,17 +471,18 @@ impl RenderNode {
             }
             Self::ExternalFrame(node) => {
                 renderer.state.counters.recorded_view_contents += 1;
-                let (content_label, content_value) = {
+                let (content_label, content_value, wants_input) = {
                     let view = &node.runtime.borrow().view;
                     (
                         view.accessibility_label().map(str::to_owned),
                         view.accessibility_value().map(str::to_owned),
+                        view.wants_input_events(),
                     )
                 };
                 renderer.push_render_owner(&node.accessibility_identity);
                 #[allow(
                     clippy::let_unit_value,
-                    reason = "without the accessibility feature the stub returns ()"
+                    reason = "without the accessibility feature the stub returns (); with it the binding carries the focus id into node.flush below"
                 )]
                 let _focus_node = emit_graphics_image_accessibility(
                     renderer,
@@ -489,7 +490,7 @@ impl RenderNode {
                     env,
                     content_label,
                     content_value,
-                    false,
+                    wants_input,
                 );
                 renderer.pop_render_owner();
                 renderer.flush_scene_layer();
@@ -506,6 +507,15 @@ impl RenderNode {
                         bounds: ctx.bounds,
                         active_layers: renderer.compositor.active_scene_layers.clone(),
                     }));
+                if wants_input {
+                    renderer.register_surface_input_target(
+                        ctx.bounds,
+                        ctx.hit_transform,
+                        Rc::clone(&node.runtime),
+                        #[cfg(feature = "accessibility")]
+                        _focus_node,
+                    );
+                }
             }
             Self::Filtered(node) => {
                 // Ancestor clips and opacity belong on the filtered mount

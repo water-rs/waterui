@@ -1065,7 +1065,7 @@ fn create_device(
 /// would be too late — then hands the opened device back through
 /// `create_device_from_hal` with wgpu's requirements intact.
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
-fn create_vulkan_device(
+pub fn create_vulkan_device(
     adapter: &wgpu::Adapter,
     features: wgpu::Features,
     limits: &wgpu::Limits,

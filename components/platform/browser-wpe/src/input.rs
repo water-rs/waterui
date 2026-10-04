@@ -37,7 +37,7 @@
 use std::str::FromStr as _;
 use std::time::Instant;
 
-use waterui_graphics::gpu::GpuContentView;
+use waterui_graphics::gpu::ExternalFrameView;
 use waterui_graphics::input::{
     Code, Key, Modifiers, NamedKey, ScrollUnit, SurfaceInputEvent, SurfacePointerButton,
 };
@@ -229,13 +229,13 @@ impl WpeSurfaceInput {
 
 /// A WPE presenter that also consumes the input landing on its surface.
 ///
-/// The presenter and the input adapter are separate concerns — one composites
+/// The presenter and the input adapter are separate concerns — one presents
 /// the dma-buf stream, the other owns `WPEPlatform`'s event ABI — but a backend
 /// that routes input to GPU views by
-/// [`wants_input_events`](GpuContentView::wants_input_events) needs them as
+/// [`wants_input_events`](ExternalFrameView::wants_input_events) needs them as
 /// one object. See [`gpu_view_with_input`](crate::gpu_view_with_input).
 pub struct WpeInputGpuView {
-    view: GpuContentView,
+    view: ExternalFrameView,
     input: WpeSurfaceInput,
 }
 
@@ -251,7 +251,7 @@ impl core::fmt::Debug for WpeInputGpuView {
 impl WpeInputGpuView {
     /// Pairs a presenter with the adapter that feeds its page.
     #[must_use]
-    pub const fn new(view: GpuContentView, input: WpeSurfaceInput) -> Self {
+    pub const fn new(view: ExternalFrameView, input: WpeSurfaceInput) -> Self {
         Self { view, input }
     }
 
@@ -261,7 +261,7 @@ impl WpeInputGpuView {
     /// presenter reports one today: the bridge exposes no input-method
     /// context, so the page's caret never crosses it.
     #[must_use]
-    pub fn into_view(self) -> GpuContentView {
+    pub fn into_view(self) -> ExternalFrameView {
         let input = std::cell::RefCell::new(self.input);
         self.view
             .on_input(move |event| input.borrow_mut().handle(event))

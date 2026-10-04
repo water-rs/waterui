@@ -26,12 +26,14 @@ use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use cherenkov_gpu::interop::ExternalFrame;
+use cherenkov::kurbo;
+use cherenkov_gpu::interop::{ExternalFrame, SharedDevice};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
 use waterui_core::{Environment, Native, NativeView, View};
 use wgpu::{Device, Queue};
 
-use super::{RedrawHandle, Shared, measure_by_intrinsic_size};
+use super::{CaretQuery, FrameHook, InputHandler, RedrawHandle, Shared, measure_by_intrinsic_size};
+use crate::input::SurfaceInputEvent;
 
 /// A producer of [`ExternalFrame`]s: a video decoder, a camera, a web view.
 ///
@@ -48,6 +50,17 @@ pub trait ExternalFrameSource: 'static {
     /// [`FrameOutput::device`]; an output whose host is gone refuses frames
     /// with [`RetiredOutput`], which is the signal to stop producing for it.
     fn start(&mut self, output: FrameOutput);
+
+    /// Runs one UI-thread tick once per presented frame, before the host's
+    /// engine pass.
+    ///
+    /// Producers confined to the UI thread — a browser engine whose objects
+    /// are not `Send` — pump their work here: they read
+    /// [`FrameOutput::presented_size`] for the pixels and scale the layer
+    /// presents at, drive their engine, and publish what it produced. It runs
+    /// before any [`start`](Self::start) output exists too; a source with no
+    /// live output does nothing.
+    fn frame(&mut self) {}
 
     /// Whether every pixel of every frame is opaque.
     fn is_opaque(&self) -> bool {
@@ -98,8 +111,7 @@ pub struct RetiredOutput;
 /// single-slot mailbox.
 #[derive(Clone)]
 pub struct FrameOutput {
-    device: Device,
-    queue: Queue,
+    device: SharedDevice,
     mailbox: Shared<Mailbox>,
 }
 
@@ -116,13 +128,41 @@ impl FrameOutput {
     /// imported onto it.
     #[must_use]
     pub const fn device(&self) -> &Device {
-        &self.device
+        &self.device.device
     }
 
     /// The device's queue.
     #[must_use]
     pub const fn queue(&self) -> &Queue {
-        &self.queue
+        &self.device.queue
+    }
+
+    /// All four handles of the device chain, for a producer whose import
+    /// needs the shared device — `cherenkov_gpu`'s native-plane import does.
+    #[must_use]
+    pub const fn shared_device(&self) -> &SharedDevice {
+        &self.device
+    }
+
+    /// Wakes the host for another frame without publishing one.
+    ///
+    /// An engine that produces between presents — a browser's frame
+    /// callback arriving on the UI thread — wakes the host through this so
+    /// its next [`frame`](ExternalFrameSource::frame) tick runs; publishing
+    /// the frame itself already wakes it.
+    pub fn request_redraw(&self) {
+        self.mailbox.redraw.request_redraw();
+    }
+
+    /// The physical pixel extent and display scale this output's layer
+    /// presents at, reported by the host through
+    /// [`FrameReceiver::set_presented_size`].
+    ///
+    /// `(0, 0, _)` until the host's first pass: nothing presents at zero
+    /// size, so it also marks "no pass yet".
+    #[must_use]
+    pub fn presented_size(&self) -> (u32, u32, f32) {
+        *self.mailbox.presented()
     }
 
     /// Publishes `frame` as the layer's next content and wakes the host.
@@ -160,12 +200,21 @@ impl FrameOutput {
 struct Mailbox {
     frame: Mutex<Option<ExternalFrame>>,
     retired: AtomicBool,
+    /// The extent and scale the host presents at, mirrored into every
+    /// `FrameOutput` clone for the producing thread to read.
+    presented: Mutex<(u32, u32, f32)>,
     redraw: RedrawHandle,
 }
 
 impl Mailbox {
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<ExternalFrame>> {
         self.frame
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn presented(&self) -> std::sync::MutexGuard<'_, (u32, u32, f32)> {
+        self.presented
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -191,6 +240,17 @@ impl FrameReceiver {
     #[must_use]
     pub fn take(&self) -> Option<ExternalFrame> {
         self.mailbox.slot().take()
+    }
+
+    /// Reports the physical pixel extent and display scale the layer is
+    /// presented at this pass; the producing side reads it back through
+    /// [`FrameOutput::presented_size`].
+    ///
+    /// The report travels the mailbox like a frame does: the newest value
+    /// replaces an unread one, and a source that was never resized sees the
+    /// initial `(0, 0, _)`.
+    pub fn set_presented_size(&self, size: (u32, u32), scale: f32) {
+        *self.mailbox.presented() = (size.0, size.1, scale);
     }
 }
 
@@ -225,18 +285,24 @@ impl ExternalFrameStream {
     /// receiver, if the host still holds one, keeps its own output until it
     /// is dropped.
     #[must_use]
-    pub fn start(&self, device: &Device, queue: &Queue, redraw: RedrawHandle) -> FrameReceiver {
+    pub fn start(&self, device: &SharedDevice, redraw: RedrawHandle) -> FrameReceiver {
         let mailbox = Shared::new(Mailbox {
             frame: Mutex::new(None),
             retired: AtomicBool::new(false),
+            presented: Mutex::new((0, 0, 1.0)),
             redraw,
         });
         self.0.borrow_mut().start(FrameOutput {
             device: device.clone(),
-            queue: queue.clone(),
             mailbox: Shared::clone(&mailbox),
         });
         FrameReceiver { mailbox }
+    }
+
+    /// Runs the source's per-presented-frame tick — the UI thread's turn
+    /// before the host's engine pass.
+    pub fn frame(&self) {
+        self.0.borrow_mut().frame();
     }
 
     /// Measures the source against a layout proposal.
@@ -266,6 +332,9 @@ pub struct ExternalFrameView {
     intrinsic_size: Option<Size>,
     opaque: bool,
     surface_prefers_hdr: Option<bool>,
+    input: Option<InputHandler>,
+    frame: Option<FrameHook>,
+    caret: Option<CaretQuery>,
     label: Option<String>,
     value: Option<String>,
 }
@@ -289,8 +358,62 @@ impl ExternalFrameView {
             opaque: source.is_opaque(),
             stream: ExternalFrameStream(Rc::new(RefCell::new(Box::new(source)))),
             surface_prefers_hdr: None,
+            input: None,
+            frame: None,
+            caret: None,
             label: None,
             value: None,
+        }
+    }
+
+    /// Receives pointer, keyboard and gesture events the backend routes to
+    /// this view.
+    #[must_use]
+    pub fn on_input(mut self, handler: impl Fn(&SurfaceInputEvent) + 'static) -> Self {
+        self.input = Some(Rc::new(handler));
+        self
+    }
+
+    /// Runs `hook` on the UI thread once per presented frame, after the
+    /// source's own [`frame`](ExternalFrameSource::frame) tick.
+    #[must_use]
+    pub fn on_frame(mut self, hook: impl Fn() + 'static) -> Self {
+        self.frame = Some(Rc::new(hook));
+        self
+    }
+
+    /// Answers where the frames' text caret is, for input-method panels.
+    #[must_use]
+    pub fn on_ime_caret(mut self, query: impl Fn() -> Option<kurbo::Rect> + 'static) -> Self {
+        self.caret = Some(Rc::new(query));
+        self
+    }
+
+    /// The frames' text caret, if they have one right now.
+    #[must_use]
+    pub fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.caret.as_ref().and_then(|query| query())
+    }
+
+    /// Runs the per-frame UI turn: the source's
+    /// [`frame`](ExternalFrameSource::frame) tick, then the installed hook.
+    pub fn frame(&self) {
+        self.stream.frame();
+        if let Some(hook) = &self.frame {
+            hook();
+        }
+    }
+
+    /// Whether this view takes input events.
+    #[must_use]
+    pub const fn wants_input_events(&self) -> bool {
+        self.input.is_some()
+    }
+
+    /// Routes an input event to the view's handler.
+    pub fn input(&self, event: &SurfaceInputEvent) {
+        if let Some(handler) = &self.input {
+            handler(event);
         }
     }
 

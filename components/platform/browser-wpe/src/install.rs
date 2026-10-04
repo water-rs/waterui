@@ -3,8 +3,7 @@
 //! Which browser engine draws a `WebView` is the application's choice, not the
 //! renderer's: an app that wants WPE depends on this crate and calls
 //! [`install`] from its composition root. The renderer stays engine-agnostic —
-//! it draws the `GpuContentView` this hook returns exactly like any other —
-//! and a
+//! it draws the GPU view this hook returns exactly like any other — and a
 //! build that never asks for WPE links none of it.
 
 use waterui_core::accessibility::{AccessibilityRole, default_role};

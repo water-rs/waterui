@@ -40,6 +40,13 @@ pub use sync::{Generation, PendingAcquire, PendingWait, State, cancel_staged, st
 pub use sync::{PlaneAcquire, PlaneSource, import_sync_fd};
 pub use sync::{Release, drain_destroys, drain_releases, mark_owned, mark_submitted, submit_waits};
 
+/// `VkImageLayout::GENERAL`, as [`DmaBuf::layout`] takes it.
+///
+/// The handoff layout of a producer whose image was never a Vulkan image —
+/// a GL-backed shared image, a dma-buf pool — and the layout every engine
+/// release barrier hands back to such a producer.
+pub const LAYOUT_GENERAL: u32 = vk::ImageLayout::GENERAL.as_raw().cast_unsigned();
+
 /// `QueueFamily` the producer released the image on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueueFamily {
@@ -398,22 +405,58 @@ pub struct Caps {
 
 /// The extension names the engine adds to `vkCreateDevice` when supported.
 ///
-/// `wgpu-hal` already enables the FD external-memory, dma-buf modifier,
-/// DRM modifier and timeline-semaphore extensions when the physical device
-/// offers them; the callback adds the YCbCr conversion and
-/// semaphore-fd extensions and — on Android — the hardware-buffer import
-/// extension, plus the feature bit wgpu leaves off. The design's release
-/// fences are semaphores exported as `SYNC_FD`, so no
-/// `VK_KHR_external_fence_fd` device extension is needed.
+/// The callback adds the dma-buf import contract itself — fd external
+/// memory, DRM format modifiers, and the khr2 requirements/bind/dedicated
+/// entry points the importer calls — alongside the YCbCr conversion and
+/// semaphore-fd extensions and, on Android, the hardware-buffer import
+/// extension. `wgpu-hal` does not enable the dma-buf extensions on a
+/// headless device, so asking for them here is what makes
+/// `vulkan::Device` usable. The design's release fences are semaphores
+/// exported as `SYNC_FD`, so no `VK_KHR_external_fence_fd` device
+/// extension is needed.
 pub fn extra_device_extensions() -> Vec<&'static CStr> {
     #[allow(unused_mut)]
     let mut exts = vec![
         ash::khr::sampler_ycbcr_conversion::NAME,
         ash::khr::external_semaphore_fd::NAME,
+        // The dma-buf import contract: fd memory import, drm format
+        // modifiers on images, and the khr2 entry points the importer's
+        // requirements/bind path calls.
+        ash::khr::external_memory_fd::NAME,
+        ash::ext::external_memory_dma_buf::NAME,
+        ash::ext::image_drm_format_modifier::NAME,
+        ash::khr::get_memory_requirements2::NAME,
+        ash::khr::bind_memory2::NAME,
+        ash::khr::dedicated_allocation::NAME,
     ];
     #[cfg(target_os = "android")]
     exts.push(ash::android::external_memory_android_hardware_buffer::NAME);
     exts
+}
+
+/// Opens `adapter`'s device with the external-frame extension set enabled
+/// on top of `features`/`limits`.
+///
+/// A device a host intends to import through [`Device`] — typically the
+/// one behind [`crate::interop::SharedDevice`] — must be created with the
+/// import contract's extensions; a plain `Adapter::request_device`
+/// leaves them off and every import then fails
+/// [`NativeError::Unsupported`]. [`SharedDevice::create`] already opens
+/// its device this way; hosts that build the adapter and device
+/// themselves (waterui-graphics' GPU context does) call this instead of
+/// `request_device` on the Vulkan branch.
+///
+/// [`SharedDevice::create`]: crate::interop::SharedDevice::create
+///
+/// # Errors
+/// [`EngineError`] when `adapter` is not a Vulkan adapter or the device
+/// request fails — other backends take the caller's own path.
+pub fn open_device(
+    adapter: &wgpu::Adapter,
+    features: wgpu::Features,
+    limits: &wgpu::Limits,
+) -> Result<(wgpu::Device, wgpu::Queue), cherenkov::EngineError> {
+    crate::render::create_vulkan_device(adapter, features, limits)
 }
 
 /// Why a native import or frame operation failed.

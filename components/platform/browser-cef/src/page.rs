@@ -1453,6 +1453,10 @@ impl CefController {
         configuration: CefPageConfiguration,
         mode: CefPageMode,
     ) -> CefPageHandle {
+        // The pump is the first executor work a page needs and cannot start
+        // earlier: `install` runs before the backend installs its local
+        // executor, while every page opens on the UI thread after it.
+        self.runtime.start_message_pump();
         CefPageHandle::create(&self.runtime, configuration, mode)
     }
 }

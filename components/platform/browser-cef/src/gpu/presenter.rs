@@ -4,6 +4,8 @@ use cef::PaintElementType;
 use num_traits::ToPrimitive as _;
 use waterui_graphics::gpu::{Context, Frame};
 
+pub(super) use waterui_graphics::gpu::copy_source_texture;
+
 use crate::CefPopupRect;
 
 /// The device handles the render thread's [`Context`] hands to the UI side, so
@@ -105,50 +107,6 @@ impl OwnedFrameMailbox {
     pub(super) fn popup_rect(&self) -> Option<CefPopupRect> {
         self.lock().popup_rect
     }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-/// Copies the visible part of an imported browser frame into a texture
-/// `WaterUI` owns.
-///
-/// `size` is the *visible* extent, which is not always the extent of the shared
-/// texture: Chromium allocates the shared image at a `coded_size` that may carry
-/// alignment padding beyond `visible_rect`. Copying the whole coded texture and
-/// then sampling it edge to edge stretched the page and drew the padding gutter
-/// at every window size where the rounding applied, so only the visible region
-/// is taken here and the destination is exactly that size.
-pub(super) fn copy_source_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    source: &wgpu::Texture,
-    size: wgpu::Extent3d,
-    format: wgpu::TextureFormat,
-) -> wgpu::Texture {
-    let destination = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("waterui_cef_owned_frame"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("waterui_cef_frame_copy"),
-    });
-    encoder.copy_texture_to_texture(source.as_image_copy(), destination.as_image_copy(), size);
-    queue.submit([encoder.finish()]);
-    // Deliberately no `device.poll(Wait)`. This runs inside CEF's
-    // `OnAcceleratedPaint`, which is dispatched from `do_message_loop_work()` on
-    // the WaterUI main thread, so blocking on a GPU fence here stalled the whole
-    // UI loop once per browser frame — sixty times a second for an animating
-    // page, which is exactly what the frame budget cannot afford. The wait buys
-    // nothing: submissions on one queue complete in order, so the later pass
-    // that samples `destination` is already ordered after this copy, and wgpu
-    // keeps `source` alive until the submission it is referenced by has
-    // finished.
-    destination
 }
 
 pub(super) struct TexturePresenter {

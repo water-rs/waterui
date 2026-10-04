@@ -157,6 +157,16 @@ impl SurfaceInputReceiver for GpuContentRuntime {
     }
 }
 
+impl SurfaceInputReceiver for crate::gpu_view::ExternalFrameRuntime {
+    fn input(&mut self, event: &SurfaceInputEvent) {
+        self.view.input(event);
+    }
+
+    fn ime_caret(&self) -> Option<kurbo::Rect> {
+        self.view.ime_caret()
+    }
+}
+
 /// Scene content redraws through the invalidator it was handed at build time,
 /// so delivering an event requests no frame here: content whose drawing the
 /// event changed calls that invalidator itself.

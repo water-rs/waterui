@@ -332,10 +332,9 @@ struct FrameInstall<'a> {
     /// The host's display-link wake, installed on `GpuContent` producers and
     /// external-frame streams.
     wake: Option<RedrawHandle>,
-    /// The frame's device and queue, for starting external-frame sources —
+    /// The frame's device chain, for starting external-frame sources —
     /// planes are imported on the device the window presents through.
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
+    shared_device: &'a cherenkov_gpu::interop::SharedDevice,
     /// Whether segment recordings re-install their content this frame.
     rasterize: bool,
     /// Device pixels per logical unit on the target's display.
@@ -469,6 +468,8 @@ impl FrameInstall<'_> {
                     order.push(slot);
                     self.live_keys.insert(layer.key);
                     self.mounts.layer(self.surface, slot);
+                    let pixels =
+                        gpu_content_pixels(layer.transform, layer.bounds, self.display_scale);
                     let scopes = ancestry_scopes(&layer.active_layers);
                     self.mounts
                         .set_ancestry(self.surface, tx, layer.key, &scopes);
@@ -485,8 +486,12 @@ impl FrameInstall<'_> {
                             runtime.producer = Some(producer);
                             runtime.sink = Some(sink);
                             runtime.receiver =
-                                Some(runtime.view.stream().start(self.device, self.queue, redraw));
+                                Some(runtime.view.stream().start(self.shared_device, redraw));
                             self.installs += 1;
+                        }
+                        if let Some(receiver) = &runtime.receiver {
+                            #[allow(clippy::cast_possible_truncation)]
+                            receiver.set_presented_size(pixels, self.display_scale as f32);
                         }
                         // The mailbox keeps only the newest published frame:
                         // drain it here so one engine pass presents at most
@@ -508,6 +513,10 @@ impl FrameInstall<'_> {
                                 runtime.bound_size = Some(pixels);
                             }
                         }
+                        // The UI-thread tick runs once per presented frame —
+                        // the source's viewport sync and engine pump live in
+                        // it.
+                        runtime.view.frame();
                         if let Some(pixels) = runtime.frame_pixels {
                             tx[target].transform(gpu_frame_transform(
                                 layer.transform,
@@ -836,8 +845,7 @@ impl HydrolysisRenderer {
             metrics: &self.applied_filter_metrics,
             resources: &window.resources,
             wake: host_wake,
-            device: target.device,
-            queue: target.queue,
+            shared_device: &target.shared_device,
             rasterize: rasterize_scene_layers,
             display_scale: target.display_scale,
             needs_redraw: false,

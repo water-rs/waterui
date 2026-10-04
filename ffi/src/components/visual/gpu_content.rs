@@ -106,8 +106,8 @@ ffi_view!(GpuContentView, WuiGpuContent, gpu_content);
 ///
 /// The native backend consumes it with `waterui_external_frame_create`, which
 /// returns the same [`WuiGpuContentState`] a `GpuContentView` gets; every other
-/// `waterui_gpu_content_*` entry point then drives it. An external-frame view
-/// takes no input.
+/// `waterui_gpu_content_*` entry point then drives it — including
+/// `waterui_gpu_content_wants_input_events` and the input routing behind it.
 #[repr(C)]
 #[derive(Debug)]
 pub struct WuiExternalFrame {
@@ -250,18 +250,20 @@ impl HostedView for ExternalFrameView {
     }
 
     fn wants_input_events(&self) -> bool {
-        false
+        Self::wants_input_events(self)
     }
 
-    fn input(&self, _event: &SurfaceInputEvent) {
-        unreachable!("an ExternalFrameView takes no input; hosts check wants_input_events first");
+    fn input(&self, event: &SurfaceInputEvent) {
+        Self::input(self, event);
     }
 
     fn ime_caret(&self) -> Option<kurbo::Rect> {
-        None
+        Self::ime_caret(self)
     }
 
-    fn before_frame(&self) {}
+    fn before_frame(&self) {
+        self.frame();
+    }
 
     fn renderer(
         &mut self,

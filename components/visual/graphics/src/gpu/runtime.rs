@@ -44,6 +44,10 @@ pub enum GpuRuntimeError {
     /// The adapter refused the device.
     #[error(transparent)]
     Device(#[from] wgpu::RequestDeviceError),
+    /// The device could not be opened with the external-frame extension
+    /// set it imports through.
+    #[error("external-frame device open: {0}")]
+    ExternalDevice(String),
 }
 
 /// A handle that answers whether its device has been reported lost.
@@ -211,6 +215,32 @@ impl SharedGpuContext {
         {
             return Err(GpuRuntimeError::PassthroughShadersUnsupported { backend });
         }
+        // On Vulkan the device must be opened with the external-frame
+        // import contract's extensions enabled — a plain `request_device`
+        // leaves them off and every `vulkan::Device` import through this
+        // context's `SharedDevice` fails `Unsupported`.
+        #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+        let (device, queue) = if backend == wgpu::Backend::Vulkan {
+            cherenkov_gpu::interop::vulkan::open_device(
+                &adapter,
+                required_features,
+                &adapter.limits(),
+            )
+            .map_err(|e| GpuRuntimeError::ExternalDevice(e.to_string()))?
+        } else {
+            adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    label: Some("waterui GpuRuntime"),
+                    required_features,
+                    // The adapter's own limits, not wgpu's defaults: a default
+                    // that exceeds the adapter's ceiling fails the request
+                    // outright (iOS simulator: default 16 > adapter 15).
+                    required_limits: adapter.limits(),
+                    ..Default::default()
+                })
+                .await?
+        };
+        #[cfg(not(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32"))))]
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("waterui GpuRuntime"),
@@ -265,6 +295,18 @@ impl SharedGpuContext {
     #[must_use]
     pub const fn queue(&self) -> &Queue {
         &self.queue
+    }
+
+    /// All four handles of this context's device chain, for consumers that
+    /// need the shared device — `cherenkov_gpu`'s native-plane import does.
+    #[must_use]
+    pub fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
+        cherenkov_gpu::interop::SharedDevice {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
     }
 
     /// The device-lost reason recorded by the callback, once the driver reports
@@ -1274,7 +1316,7 @@ impl ExternalFrameRenderer {
         host.surface.update(|tx| {
             tx[host.surface.root()].push(&layer);
         });
-        let frames = stream.start(host.context.device(), host.context.queue(), redraw);
+        let frames = stream.start(&host.context.shared_device(), redraw);
         Self {
             host,
             layer,
@@ -1297,8 +1339,15 @@ impl ExternalFrameRenderer {
 
     /// Resizes the surface, installs the newest published frame, and keeps
     /// the frame stretched to the surface.
-    fn prepare(&mut self, size: OffscreenSize) {
+    ///
+    /// The producer reads the extent and `scale` back through
+    /// [`FrameOutput::presented_size`](super::external::FrameOutput::presented_size)
+    /// — the source's own viewport tracking runs on the UI thread, so it
+    /// learns the presented size here, not from the view.
+    fn prepare(&mut self, size: OffscreenSize, scale: f32) {
         let resized = self.host.resize(size);
+        self.frames
+            .set_presented_size((size.width(), size.height()), scale);
         let frame = self.frames.take();
         if frame.is_none() && !resized {
             return;
@@ -1330,7 +1379,8 @@ impl ExternalFrameRenderer {
     /// When resizing, display configuration, or rendering fails.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn render(&mut self, size: OffscreenSize, display: Display) -> Next {
-        self.prepare(size);
+        #[allow(clippy::cast_possible_truncation)]
+        self.prepare(size, display.scale as f32);
         self.host.render(display)
     }
 
@@ -1344,7 +1394,8 @@ impl ExternalFrameRenderer {
         reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
     )]
     pub async fn render(&mut self, size: OffscreenSize, display: Display) -> Next {
-        self.prepare(size);
+        #[allow(clippy::cast_possible_truncation)]
+        self.prepare(size, display.scale as f32);
         self.host.render(display).await
     }
 

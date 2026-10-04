@@ -1062,17 +1062,14 @@ impl OffscreenGpuContext {
                     | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
                     | wgpu::Features::PIPELINE_CACHE
                     | wgpu::Features::PASSTHROUGH_SHADERS));
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("hydrolysis-offscreen-device"),
-                required_features,
-                required_limits,
-                memory_hints: wgpu::MemoryHints::Performance,
-                experimental_features: wgpu::ExperimentalFeatures::default(),
-                trace: wgpu::Trace::default(),
-            })
-            .await
-            .expect("hydrolysis offscreen surface: failed to request wgpu device");
+        let (device, queue) = request_gpu_device(
+            &adapter,
+            "hydrolysis-offscreen-device",
+            required_features,
+            required_limits,
+        )
+        .await
+        .expect("hydrolysis offscreen surface: failed to request wgpu device");
         let context_id = next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance: instance.clone(),
@@ -1617,6 +1614,61 @@ pub fn required_device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     base_limits
         .using_resolution(adapter_limits.clone())
         .using_alignment(adapter_limits)
+}
+
+/// Requests `adapter`'s device for a hydrolysis GPU context.
+///
+/// On Vulkan the request goes through cherenkov's `vulkan::open_device`,
+/// which enables the external-frame import extensions at `vkCreateDevice`
+/// — a `shared_device` built from a plain `request_device` device leaves
+/// them off and every producer import on it fails `Unsupported`. Every
+/// other backend keeps the plain request.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+pub async fn request_gpu_device(
+    adapter: &wgpu::Adapter,
+    label: &'static str,
+    required_features: wgpu::Features,
+    required_limits: wgpu::Limits,
+) -> Result<(wgpu::Device, wgpu::Queue), String> {
+    if adapter.get_info().backend == wgpu::Backend::Vulkan {
+        return cherenkov_gpu::interop::vulkan::open_device(
+            adapter,
+            required_features,
+            &required_limits,
+        )
+        .map_err(|error| error.to_string());
+    }
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some(label),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::default(),
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Requests `adapter`'s device for a hydrolysis GPU context.
+#[cfg(not(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32"))))]
+pub async fn request_gpu_device(
+    adapter: &wgpu::Adapter,
+    label: &'static str,
+    required_features: wgpu::Features,
+    required_limits: wgpu::Limits,
+) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+    adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some(label),
+            required_features,
+            required_limits,
+            memory_hints: wgpu::MemoryHints::Performance,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+            trace: wgpu::Trace::default(),
+        })
+        .await
 }
 
 pub fn ensure_compute_capable_adapter(
@@ -2334,17 +2386,14 @@ mod winit_impl {
                         | (adapter.features()
                             & (wgpu::Features::PIPELINE_CACHE
                                 | wgpu::Features::PASSTHROUGH_SHADERS));
-                let (device, queue) = adapter
-                    .request_device(&wgpu::DeviceDescriptor {
-                        label: Some("hydrolysis-winit-device"),
-                        required_features,
-                        required_limits,
-                        memory_hints: wgpu::MemoryHints::Performance,
-                        experimental_features: wgpu::ExperimentalFeatures::default(),
-                        trace: wgpu::Trace::default(),
-                    })
-                    .await
-                    .expect("hydrolysis winit surface: failed to request device");
+                let (device, queue) = super::request_gpu_device(
+                    &adapter,
+                    "hydrolysis-winit-device",
+                    required_features,
+                    required_limits,
+                )
+                .await
+                .expect("hydrolysis winit surface: failed to request device");
                 let context_id = super::next_gpu_context_id();
                 let shared_device = cherenkov_gpu::interop::SharedDevice {
                     instance: instance.clone(),

@@ -229,6 +229,46 @@ fn measure_by_intrinsic_size(intrinsic: Option<Size>, proposal: ProposalSize) ->
     }))
 }
 
+/// Copies the visible part of an imported shared frame into a texture the
+/// caller owns.
+///
+/// `size` is the *visible* extent, which is not always the extent of the
+/// shared texture: a producer may allocate at a coded size with alignment
+/// padding beyond the visible rect. Copying the whole coded texture and
+/// then sampling it edge to edge stretches the picture and draws the
+/// padding gutter, so only the visible region is taken and the destination
+/// is exactly that size.
+///
+/// Deliberately no `device.poll(Wait)`: submissions on one queue complete
+/// in order, so the later pass that samples the destination is already
+/// ordered after this copy, and wgpu keeps `source` alive until the
+/// submission referencing it has finished.
+#[must_use]
+pub fn copy_source_texture(
+    device: &Device,
+    queue: &Queue,
+    source: &Texture,
+    size: wgpu::Extent3d,
+    format: TextureFormat,
+) -> Texture {
+    let destination = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("waterui_owned_frame"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("waterui_frame_copy"),
+    });
+    encoder.copy_texture_to_texture(source.as_image_copy(), destination.as_image_copy(), size);
+    queue.submit([encoder.finish()]);
+    destination
+}
+
 /// A UI-side handler for input the backend routes to a [`GpuContentView`].
 pub type InputHandler = Rc<dyn Fn(&SurfaceInputEvent)>;
 

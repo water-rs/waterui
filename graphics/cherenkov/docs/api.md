@@ -914,6 +914,12 @@ engine's shared `VkDevice` and queue, zero-copy, synchronised on the GPU.
   device and reports `Caps` — the capability record every fd, modifier,
   conversion and foreign-family claim is checked against. Missing
   capabilities are `NativeError::Unsupported`, never an emulation.
+- **`open_device(adapter, features, limits)`** opens a `wgpu` device with
+  the import contract's extensions already enabled — `SharedDevice::create`
+  runs the same path, and a host that builds its own device
+  (waterui-graphics' `SharedGpuContext`) calls this instead of
+  `Adapter::request_device`, which leaves the extensions off and makes
+  every import `Unsupported`.
 - **`Device::import(FrameSource)`** takes a `DmaBuf`/`Ahb` descriptor with
   `Wait` and `ReleaseSync` contracts and returns a `Frame`.
 - **`Wait::{OpaqueFd, SyncFd, Timeline}`** names the producer fence. fd

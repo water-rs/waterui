@@ -3,8 +3,8 @@
 //! Which browser engine draws a `WebView` is the application's choice, not the
 //! renderer's: an app that wants Chromium depends on this crate and calls
 //! [`install`] from its composition root. The renderer stays engine-agnostic —
-//! it draws the `GpuContentView` this hook returns exactly like any other —
-//! and a build that never asks for CEF links none of it.
+//! it draws the GPU view this hook returns exactly like any other — and a
+//! build that never asks for CEF links none of it.
 
 use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
@@ -12,15 +12,14 @@ use waterui_core::{AnyView, Environment, Metadata, Retain, view::Hook};
 use crate::{CefRuntime, CefRuntimeConfiguration};
 
 /// Returns the process-owned CEF runtime, starting one if the environment has
-/// none, and makes sure its message pump is running.
+/// none. Its message pump starts when the first page opens: `install` runs
+/// before the backend's executor exists, and the pump is a local task.
 fn ensure_runtime(env: &mut Environment) -> CefRuntime {
-    let runtime = env.get::<CefRuntime>().cloned().unwrap_or_else(|| {
+    env.get::<CefRuntime>().cloned().unwrap_or_else(|| {
         let runtime = CefRuntime::initialize(CefRuntimeConfiguration::packaged());
         env.insert(runtime.clone());
         runtime
-    });
-    runtime.start_message_pump();
-    runtime
+    })
 }
 
 /// Installs the CEF realization of the standard [`WebView`](waterui_webview::WebView).
