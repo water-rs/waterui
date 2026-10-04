@@ -91,15 +91,27 @@ pub(crate) use cfg_async_fn;
 /// rendering stack or a runtime-selected one.
 pub type GpuEngine = cherenkov::Engine<cherenkov_gpu::Gpu>;
 
+/// The private engine state pooled per GPU context: the `Rc<GpuEngine>` and
+/// the ONE `Rc<SceneResources>` registration table every window and capture
+/// mount on this context's device shares. Retained `SceneContent` associates
+/// its engine-bound state with this table's identity, so the pair is created
+/// together and expires together — a replacement context makes a fresh pair.
+pub struct SharedEngineState {
+    pub engine: Rc<GpuEngine>,
+    pub resources: Rc<crate::renderer::recording::SceneResources>,
+}
+
 thread_local! {
     /// Engines alive on this thread, keyed by GPU-context identity. Weak so a
     /// context whose surfaces have all dropped releases its engine instead of
     /// pinning it for the thread's lifetime.
-    static ENGINES: RefCell<FxHashMap<u64, Weak<GpuEngine>>> = RefCell::new(FxHashMap::default());
+    static ENGINES: RefCell<FxHashMap<u64, Weak<SharedEngineState>>> = RefCell::new(FxHashMap::default());
 }
 
 cfg_async_fn! {
-    /// The shared engine for `context_id`'s GPU context, created on first use.
+    /// The shared engine state for `context_id`'s GPU context, created on
+    /// first use: one engine and one resource table, alive while any window
+    /// or capture mount on this context holds it.
     ///
     /// `wake` is the host's display-link wake: it may be invoked from any thread
     /// the engine or its producers run on. The callback passed on the creating
@@ -107,16 +119,16 @@ cfg_async_fn! {
     /// window on the shared context wakes the same event loop.
     ///
     /// Async on wasm32, where `Engine::new` awaits the browser's GPU device.
-    pub fn shared_engine(
+    pub fn shared_engine_state(
         context_id: u64,
         adapter: &wgpu::Adapter,
         shared_device: cherenkov_gpu::interop::SharedDevice,
         wake: impl Fn() + Send + Sync + 'static,
-    ) -> Rc<GpuEngine> {
+    ) -> Rc<SharedEngineState> {
         let pooled =
             ENGINES.with(|pool| pool.borrow().get(&context_id).and_then(Weak::upgrade));
-        if let Some(engine) = pooled {
-            return engine;
+        if let Some(state) = pooled {
+            return state;
         }
         let config = cherenkov_gpu::GpuConfig {
             device: Some(shared_device),
@@ -128,8 +140,12 @@ cfg_async_fn! {
             engine_await!(GpuEngine::new(config))
                 .expect("hydrolysis renderer: failed to create the Cherenkov engine"),
         );
-        ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&engine)));
-        engine
+        let state = Rc::new(SharedEngineState {
+            engine: Rc::clone(&engine),
+            resources: Rc::new(crate::renderer::recording::SceneResources::new(engine)),
+        });
+        ENGINES.with(|pool| pool.borrow_mut().insert(context_id, Rc::downgrade(&state)));
+        state
     }
 }
 

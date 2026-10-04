@@ -1007,13 +1007,16 @@ impl RenderNode {
     fn build_scene_view_node(scene_view: Native<SceneView>, renderer: &mut SemanticCore) -> Self {
         let mut content = scene_view.into_inner().into_content();
         let signals = renderer.signals.clone();
-        content.set_invalidator(Some(Rc::new(move || {
+        let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || {
             signals.request_refresh();
-        })));
+        });
+        content.set_invalidator(Some(Rc::clone(&invalidator)));
         Self::SceneView(Box::new(SceneViewNode {
             accessibility_identity: Rc::new(()),
             render_id: RenderId::next(),
             content: Rc::new(RefCell::new(content)),
+            invalidator,
+            association: Rc::new(RefCell::new(None)),
         }))
     }
 
