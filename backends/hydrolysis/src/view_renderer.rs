@@ -7,7 +7,7 @@ use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 use crate::platform::{OffscreenSurface, SurfaceProvider};
 use crate::readback::readback_texture_rgba8;
-use crate::renderer::HydrolysisRenderer;
+use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 
 /// `ViewRenderer` implementation backed by Hydrolysis offscreen rendering.
 pub struct HydrolysisViewRenderer {
@@ -95,7 +95,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
                 let queue = &queue;
                 let device_loss = device_loss;
                 let mut renderer =
-                    HydrolysisRenderer::new(&adapter, device, Rc::clone(&self.theme));
+                    HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
                 renderer.reset_scene();
                 renderer.begin_rebuild_frame();
 

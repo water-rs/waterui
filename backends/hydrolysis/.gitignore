@@ -1,7 +1,7 @@
 # Generated test fixture — see tests/fixtures/generate-live-photo-motion.py
 tests/fixtures/live-photo-motion.mp4
 
-# Fetched binary assets — see scripts/fetch-gradle-wrapper.py and test-fonts/generate.py
+# Fetched binary assets — see scripts/fetch-gradle-wrapper.py and test-fonts/install.py
 android/gradle/wrapper/gradle-wrapper.jar
 bench/android/reference/gradle/wrapper/gradle-wrapper.jar
 

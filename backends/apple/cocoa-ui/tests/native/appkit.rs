@@ -9,8 +9,14 @@ use cocoa_ui::appkit::{HostView, Label, Window, WindowLevel, WindowStyle};
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::Bool;
 use cocoa_ui::objc2::{msg_send, sel};
-use cocoa_ui::objc2_foundation::{NSArray, NSNotFound, NSRange, NSString};
-use cocoa_ui::{Rect, Size};
+use cocoa_ui::objc2_app_kit::{
+    NSBitmapFormat, NSColor, NSTextAlignment, NSTextField, NSTextFieldCell, NSView,
+};
+use cocoa_ui::objc2_foundation::{
+    NSAlignmentOptions, NSArray, NSAttributedString, NSNotFound, NSPoint, NSRange, NSRect, NSSize,
+    NSString,
+};
+use cocoa_ui::{MainThreadMarker, Rect, Size, bitmap, font, text, view};
 use libtest_mimic::Trial;
 
 use crate::harness::marker;
@@ -47,7 +53,15 @@ pub fn trials() -> Vec<Trial> {
             "appkit::input_view",
             valid_attributes_for_marked_text_returns_attribute_names
         ),
+        case!(
+            "appkit::display_link",
+            a_window_without_a_screen_drives_no_frame_clock
+        ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
+        case!(
+            "appkit::label",
+            a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds
+        ),
         case!(
             "appkit::window",
             a_window_starts_hidden_with_the_requested_style
@@ -196,6 +210,120 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
     assert!(attributes.count() >= 3);
 }
 
+/// Native attachment lifecycle: a window that is truly off every screen
+/// reports `screen() == nil`, so `start` leaves the clock disarmed and the
+/// bounded run-loop drain stays silent — the screenless safety the removed
+/// run-loop arm (a queued raw-pointer hop) violated by ticking anyway.
+/// Moving the same window onto a real display lets `reselect` re-arm the
+/// still-active request; `stop`/`drop` leave nothing queued.
+fn a_window_without_a_screen_drives_no_frame_clock() {
+    use cocoa_ui::display_link::FrameClock;
+    use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = marker();
+    // A point strictly beyond every real screen's frame, derived from the
+    // display layout — a borderless window accepts the position verbatim
+    // because AppKit's keep-on-screen constraint only applies to windows
+    // with a title bar.
+    let screens = NSScreen::screens(mtm);
+    let offscreen_x = screens
+        .iter()
+        .map(|screen| screen.frame().origin.x + screen.frame().size.width)
+        .fold(0.0, f64::max)
+        + 10_000.0;
+    let window = Window::new(
+        mtm,
+        Rect::new(offscreen_x, 0.0, 200.0, 200.0),
+        WindowStyle::empty(),
+    );
+    let frame = window.native().frame();
+    let overlaps = |a: NSRect, b: NSRect| {
+        a.origin.x < b.origin.x + b.size.width
+            && b.origin.x < a.origin.x + a.size.width
+            && a.origin.y < b.origin.y + b.size.height
+            && b.origin.y < a.origin.y + a.size.height
+    };
+    assert!(
+        screens.iter().all(|s| !overlaps(s.frame(), frame)),
+        "the fixture window must sit outside every screen: {frame:?}"
+    );
+    assert!(
+        window.native().screen().is_none(),
+        "a window outside every screen frame must report no screen"
+    );
+    let view = NSView::new(mtm);
+    view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    window.native().setContentView(Some(&view));
+
+    let ticks = Rc::new(Cell::new(0u32));
+    let clock = FrameClock::new(mtm, {
+        let ticks = Rc::clone(&ticks);
+        move || ticks.set(ticks.get() + 1)
+    });
+
+    // No screen: `start` leaves the clock disarmed, and a bounded run-loop
+    // drain must deliver nothing — no fallback and nothing queued.
+    clock.start(&view);
+    assert!(
+        !clock.is_running(),
+        "a screenless window must not arm the clock"
+    );
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert_eq!(ticks.get(), 0, "a screenless clock must not tick");
+
+    // Re-attach to the actual display: move the window onto a real screen's
+    // frame and `reselect` the same clock — the request stayed active, so
+    // the link arms without a second `start`.
+    let main = NSScreen::screens(mtm)
+        .iter()
+        .next()
+        .expect("the suite requires a real screen")
+        .frame();
+    window
+        .native()
+        .setFrameOrigin(NSPoint::new(main.origin.x + 40.0, main.origin.y + 40.0));
+    assert!(window.native().screen().is_some());
+    clock.reselect(&view);
+    assert!(
+        clock.is_running(),
+        "attaching to a screen must arm the same clock's display link"
+    );
+    // A visible window's link ticks under the run loop the suite pumps.
+    window.native().orderFrontRegardless();
+    let fired = crate::harness::pump_main_until(2.0, || ticks.get() > 0);
+    assert!(
+        fired,
+        "a display link on a real visible screen must tick within 2s"
+    );
+
+    // `stop`, then `drop`: the queue stays quiet — the removed run-loop arm
+    // is where a pending hop could outlive the clock before.
+    clock.stop();
+    let at_stop = ticks.get();
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert!(!clock.is_running());
+    assert_eq!(
+        ticks.get(),
+        at_stop,
+        "a stopped clock must deliver no further ticks"
+    );
+    drop(clock);
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert_eq!(
+        ticks.get(),
+        at_stop,
+        "a dropped clock must leave nothing queued"
+    );
+    window.close();
+}
+
 /// The `labelWithString:` factory allocs through `self` without running
 /// `set_ivars`: `setFrameSize:` — delivered during the factory's own
 /// layout — must not trip the debug initialized-ivars check, and every
@@ -206,6 +334,335 @@ fn a_factory_label_survives_debug_ivar_checks() {
     label.set_text("world");
     assert!(label.source_text().is_some());
     label.set_line_limit(1);
+}
+
+/// `Label`'s cell anchors its interior's origin on the control view's
+/// backing pixels: text at a fractional backing origin must raster onto
+/// pixel bounds rather than smearing across them. A stock `NSTextField`
+/// pair is the un-anchored reference; a `Label` pair must produce
+/// byte-identical glyph rasters translated by exactly the aligned
+/// amount — matching at any other translation, or not at all, means
+/// glyphs straddle pixels again.
+fn a_label_at_a_fractional_origin_rasters_text_on_pixel_bounds() {
+    let mtm = marker();
+    let (host_w, host_h) = (140.0, 170.0);
+    let window = bitmap::make_offscreen_window(mtm, Size::new(host_w, host_h));
+    let host = window
+        .contentView()
+        .expect("the offscreen window's content");
+    bitmap::show_capture_window(&window);
+    let scale = window.backingScaleFactor();
+    assert!(scale > 0.0, "the fixture requires a positive backing scale");
+    // Exactly half a device pixel: the worst raster phase at any scale.
+    let frac = 0.5 / scale;
+    let face = font::system(mtm, 13.0, 0.0);
+    let fields = raster_fields(mtm, &host, frac, &face);
+    assert_eq!(
+        fields.label_frac.frame().origin,
+        NSPoint::new(8.0 + frac, 20.0),
+        "the fractional frame must stay exactly as set — nothing may snap it"
+    );
+
+    // The expected ink translation comes from the view's own backing
+    // anchor — the same native API the cell uses — not an assumed
+    // rounding rule.
+    let anchor = fields.label_frac.backingAlignedRect_options(
+        NSRect::new(NSPoint::ZERO, NSSize::ZERO),
+        NSAlignmentOptions::AlignMinXNearest
+            | NSAlignmentOptions::AlignMinYNearest
+            | NSAlignmentOptions::AlignWidthNearest
+            | NSAlignmentOptions::AlignHeightNearest,
+    );
+    let shift = device_px((anchor.origin.x * scale).round());
+    let (field_w, field_h) = (
+        device_px((FIELD_SIZE.0 * scale).round()),
+        device_px((FIELD_SIZE.1 * scale).round()),
+    );
+
+    let raster = HostRaster::capture(&host, host_w, host_h, scale);
+    let stock_int_crop = raster.crop(fields.stock_int.frame());
+    let stock_frac_crop = raster.crop(fields.stock_frac.frame());
+    let label_int_crop = raster.crop(fields.label_int.frame());
+    let label_frac_crop = raster.crop(fields.label_frac.frame());
+    for (name, bytes) in [
+        ("stock_int", &stock_int_crop),
+        ("stock_frac", &stock_frac_crop),
+        ("label_int", &label_int_crop),
+        ("label_frac", &label_frac_crop),
+    ] {
+        assert!(
+            glyph_ink(bytes) > 0,
+            "the {name} crop must contain actual blue glyph ink"
+        );
+    }
+
+    // The anchored cell must produce the identical glyph raster at a
+    // fractional backing origin — byte-for-byte the integer raster
+    // translated by the anchor's actual amount.
+    assert_eq!(
+        shifted_diffs(&label_frac_crop, &label_int_crop, field_w, field_h, shift),
+        0,
+        "fractional-origin ink must equal integer-origin ink translated \
+         by the anchor's {shift} device pixel(s)"
+    );
+    // Negative control: the unfixed stock cell must still smear — if the
+    // stock pair ever matches, the fixture stopped measuring raster phase
+    // and the assertion above proves nothing.
+    assert!(
+        shifted_diffs(&stock_frac_crop, &stock_int_crop, field_w, field_h, shift) > 100,
+        "the stock control must still show the unfixed smear"
+    );
+
+    // A text update re-renders through the same anchored interior: new ink
+    // must differ from the old render's.
+    let updated_content = text::build(
+        mtm,
+        &[blue_run("Updated wrapped content draws differently", &face)],
+    );
+    fields.label_frac.set_attributed_text(&updated_content);
+    let updated = HostRaster::capture(&host, host_w, host_h, scale);
+    let updated_crop = updated.crop(fields.label_frac.frame());
+    assert!(
+        glyph_ink(&updated_crop) > 0 && updated_crop != label_frac_crop,
+        "a replaced attributed string must change the raster"
+    );
+
+    // A rotated host transform preserves the label's own layout — the
+    // anchor rides the native transform rather than snapping geometry —
+    // and the text still draws.
+    fields.label_frac.setFrameRotation(30.0);
+    let bounds_before = fields.label_frac.bounds().size;
+    let rotated = HostRaster::capture(&host, host_w, host_h, scale);
+    assert_eq!(
+        fields.label_frac.bounds().size,
+        bounds_before,
+        "rotation must not disturb the label's own bounds"
+    );
+    assert!(
+        glyph_ink(&rotated.crop(fields.label_frac.frame())) > 0,
+        "a rotated label must still raster ink"
+    );
+    fields.label_frac.setFrameRotation(0.0);
+
+    bitmap::close_capture_window(&window);
+}
+
+/// The frame size every fixture field shares.
+const FIELD_SIZE: (f64, f64) = (96.0, 30.0);
+
+/// The text run every fixture field draws.
+const fn blue_run<'a>(content: &'a str, face: &'a font::Font) -> text::TextRun<'a> {
+    text::TextRun {
+        text: content,
+        font: face,
+        foreground: None,
+        background: None,
+        underline: false,
+        strikethrough: false,
+        letter_spacing: 0.0,
+        line_height: 0.0,
+    }
+}
+
+/// An already-rounded device-pixel count as `usize`. The fixture's device
+/// extents are a few hundred pixels by construction; `f64` has no checked
+/// `usize` conversion, so the bound is asserted by hand before the cast.
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "no checked f64-to-usize conversion exists; the asserted bound proves the cast exact"
+)]
+const fn device_px(px: f64) -> usize {
+    assert!(
+        px >= 0.0 && px <= 1_000_000.0,
+        "a fixture extent must land on a small nonnegative device pixel count"
+    );
+    px as usize
+}
+
+/// The four identically configured fields of the raster fixture.
+struct RasterFields {
+    stock_int: Retained<NSTextField>,
+    stock_frac: Retained<NSTextField>,
+    label_int: Retained<Label>,
+    label_frac: Retained<Label>,
+}
+
+/// The identical configuration on every field — the same string, font,
+/// color, alignment and wrapping, so crops differ only in raster phase.
+/// Left alignment keeps every glyph's pen a pure translation of the
+/// interior's origin — a centered line would place each glyph at its own
+/// fractional phase and defeat the shifted-equality check.
+fn configure_field(field: &NSTextField, content: &NSAttributedString, blue: &NSColor) {
+    field.setAlignment(NSTextAlignment::Left);
+    field.setAttributedStringValue(content);
+    field.setTextColor(Some(blue));
+    let cell = field
+        .cell()
+        .and_then(|cell| cell.downcast::<NSTextFieldCell>().ok())
+        .expect("a label-style field carries a text cell");
+    cell.setWraps(true);
+    cell.setScrollable(false);
+}
+
+/// Builds the four-field fixture on `host`: a stock `NSTextField` pair —
+/// the unfixed reference, whose smear proves the fixture sees raster
+/// phase at all — and a `Label` pair, one of each at an integer and a
+/// `frac`-device-pixel origin, stacked in disjoint vertical rows.
+fn raster_fields(
+    mtm: MainThreadMarker,
+    host: &NSView,
+    frac: f64,
+    face: &font::Font,
+) -> RasterFields {
+    let content = text::build(
+        mtm,
+        &[blue_run(
+            "Fractional origins still raster on pixel bounds",
+            face,
+        )],
+    );
+    let blue = NSColor::systemBlueColor();
+    let fields = RasterFields {
+        stock_int: NSTextField::labelWithString(&NSString::from_str(""), mtm),
+        stock_frac: NSTextField::labelWithString(&NSString::from_str(""), mtm),
+        label_int: Label::label_with_string(mtm, ""),
+        label_frac: Label::label_with_string(mtm, ""),
+    };
+    let all: [&NSTextField; 4] = [
+        &fields.stock_int,
+        &fields.stock_frac,
+        &fields.label_int,
+        &fields.label_frac,
+    ];
+    for field in all {
+        configure_field(field, &content, &blue);
+    }
+    let (width, height) = FIELD_SIZE;
+    let rows: [(&NSTextField, f64, f64); 4] = [
+        (&fields.stock_int, 8.0, 134.0),
+        (&fields.stock_frac, 8.0 + frac, 96.0),
+        (&fields.label_int, 8.0, 58.0),
+        (&fields.label_frac, 8.0 + frac, 20.0),
+    ];
+    for (field, x, y) in rows {
+        field.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)));
+        host.addSubview(field);
+    }
+    fields
+}
+
+/// A rendered host's raw device pixels plus the crop helper the raster
+/// assertions are stated over.
+struct HostRaster {
+    pixels: Vec<u8>,
+    pixel_w: usize,
+    scale: f64,
+    host_h: f64,
+}
+
+impl HostRaster {
+    /// `cacheDisplay`s `host` into its own rep and returns the raw bytes,
+    /// top-down RGBA — no CGImage/context redraw, so comparisons read
+    /// exactly what the native paint path wrote. The rep's declared
+    /// geometry and byte layout are verified before a byte is read.
+    fn capture(host: &NSView, host_w: f64, host_h: f64, scale: f64) -> Self {
+        bitmap::force_text_fields_display(host);
+        let rep = view::bitmap_rep_for_caching_display(host).expect("a caching rep");
+        view::cache_display(host, &rep);
+        let pixel_w = device_px((host_w * scale).round());
+        let pixel_h = device_px((host_h * scale).round());
+        assert_eq!(
+            (
+                usize::try_from(rep.pixelsWide()),
+                usize::try_from(rep.pixelsHigh()),
+            ),
+            (Ok(pixel_w), Ok(pixel_h)),
+            "the rep must cover the host's whole device rect"
+        );
+        assert_eq!(
+            (
+                usize::try_from(rep.samplesPerPixel()),
+                usize::try_from(rep.bitsPerPixel()),
+            ),
+            (Ok(4), Ok(32)),
+            "the rep must be interleaved 8-bit RGBA"
+        );
+        assert!(!rep.isPlanar(), "the rep must be interleaved, not planar");
+        assert!(
+            !rep.bitmapFormat().contains(NSBitmapFormat::AlphaFirst),
+            "the rep must lay out alpha last — the ink predicate reads RGBA"
+        );
+        let row_bytes =
+            usize::try_from(rep.bytesPerRow()).expect("the rep's row stride is nonnegative");
+        assert!(
+            row_bytes >= pixel_w * 4,
+            "the rep's stride must cover a full RGBA row"
+        );
+        let data = rep.bitmapData();
+        assert!(!data.is_null(), "the rep must expose its raw pixels");
+        let mut pixels = vec![0u8; pixel_w * pixel_h * 4];
+        for row in 0..pixel_h {
+            // SAFETY: `data` is the rep's live bitmap storage; `row_bytes`
+            // spans `pixel_w * 4` bytes and `row` stays inside `pixelsHigh`.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.add(row * row_bytes),
+                    pixels.as_mut_ptr().add(row * pixel_w * 4),
+                    pixel_w * 4,
+                );
+            }
+        }
+        Self {
+            pixels,
+            pixel_w,
+            scale,
+            host_h,
+        }
+    }
+
+    /// A field's device rect as a top-down row/column crop (view y is
+    /// bottom-up).
+    fn crop(&self, frame: NSRect) -> Vec<u8> {
+        let (crop_w, crop_h) = (
+            device_px((frame.size.width * self.scale).round()),
+            device_px((frame.size.height * self.scale).round()),
+        );
+        let x0 = device_px((frame.origin.x * self.scale).floor());
+        let y0 =
+            device_px(((self.host_h - frame.origin.y - frame.size.height) * self.scale).round());
+        (0..crop_h)
+            .flat_map(|row| {
+                let start = (y0 + row) * self.pixel_w * 4 + x0 * 4;
+                self.pixels[start..start + crop_w * 4].to_vec()
+            })
+            .collect()
+    }
+}
+
+/// Known-color glyph ink inside a crop: the explicit blue text color — a
+/// bare alpha count would pass on an opaque background too. A presence
+/// count only: coverage scales with backing density, so it carries no
+/// fixed minimum.
+fn glyph_ink(pixels: &[u8]) -> usize {
+    crate::harness::count_pixels(pixels, [0, 80, 180, 200], [80, 170, 255, 255])
+}
+
+/// Two equal-size crops compared under a device-pixel x-translation: the
+/// number of byte-differing pixels.
+fn shifted_diffs(a: &[u8], b: &[u8], width: usize, height: usize, dx: usize) -> usize {
+    (0..height)
+        .map(|row| {
+            let start = row * width * 4;
+            a[start + dx * 4..start + width * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(b[start..start + width * 4 - dx * 4].as_chunks::<4>().0)
+                .filter(|(pa, pb)| pa != pb)
+                .count()
+        })
+        .sum()
 }
 
 /// The case the old harness excluded: `-[NSWindow initWithContentRect:]`

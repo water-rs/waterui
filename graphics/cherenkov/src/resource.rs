@@ -373,7 +373,7 @@ impl BackdropShader {
 /// The channel a [`FrameSink`] submits through — the engine's bounded
 /// transaction stream, so a decoder thread's submits keep backpressure.
 #[cfg(not(target_arch = "wasm32"))]
-type ProducerChannel<B> = std::sync::mpsc::SyncSender<crate::message::Message<B>>;
+type ProducerChannel<B> = crossbeam_channel::Sender<crate::message::Message<B>>;
 #[cfg(target_arch = "wasm32")]
 type ProducerChannel<B> = crate::local::Sender<crate::message::Message<B>>;
 
@@ -383,13 +383,15 @@ type ProducerChannel<B> = crate::local::Sender<crate::message::Message<B>>;
 /// surface destroy or `drain_gpu_producers` — so it can never ride the
 /// bounded transaction channel: a render thread blocking on `send`
 /// waits on a channel it alone drains. On native the retirement is an
-/// unbounded `mpsc` message the render loop drains after each applied
-/// batch; on wasm the local sender is already unbounded. Ordering is
-/// safe: every pending bind closure holds a clone, so the last drop
-/// follows every bind of the producer, and the renderer records a
-/// retirement that beats the producer's registration to the stream.
+/// unbounded channel the render loop waits on alongside the transaction
+/// stream — a retirement wakes the loop by itself — and still drains
+/// after each applied batch; on wasm the local sender is already
+/// unbounded. Ordering is safe: every pending bind closure holds a
+/// clone, so the last drop follows every bind of the producer, and the
+/// renderer records a retirement that beats the producer's registration
+/// to the stream.
 #[cfg(not(target_arch = "wasm32"))]
-type RetireChannel<B> = std::sync::mpsc::Sender<crate::message::ResOp<B>>;
+type RetireChannel<B> = crossbeam_channel::Sender<crate::message::ResOp<B>>;
 #[cfg(target_arch = "wasm32")]
 type RetireChannel<B> = crate::local::Sender<crate::message::Message<B>>;
 

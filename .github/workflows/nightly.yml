@@ -147,8 +147,9 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The instrumented build compiles hydrolysis's test targets, which
-      # `include_bytes!` the generated fonts — the repository stores none.
+      # The instrumented run executes the styled test targets, which
+      # resolve the installed test-font families and read the generated
+      # fixtures — the repository stores none of them.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       # And the Cherenkov test targets the workspace pass compiles: their
@@ -194,10 +195,6 @@ jobs:
         with:
           tool: cargo-hack@0.6.45
           path: ~/.cargo/bin/cargo-hack*
-      # `--each-feature` compiles hydrolysis with `testing` on its own; that
-      # feature's font table is generated, not committed.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
       # `--feature-powerset` is deliberately absent. The workspace has ~33_800
       # feature combinations (waterui alone has 14 features = 16_384), so the
       # sweep either ran for 105 minutes or was cancelled at ~27 minutes having

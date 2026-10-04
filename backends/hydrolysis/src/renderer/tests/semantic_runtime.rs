@@ -44,6 +44,7 @@ use waterui_navigation::tab::{Tab, Tabs};
 use waterui_navigation::{NavigationLink, NavigationSplitView, NavigationStack};
 use waterui_text::text;
 
+use crate::FontFamilyResolution;
 use crate::runner::SemanticRuntime;
 use crate::{InputEvent, KeyCode, KeyState, Modifiers, keyboard_types};
 
@@ -52,7 +53,13 @@ use crate::{InputEvent, KeyCode, KeyState, Modifiers, keyboard_types};
 /// seeds the framework tokens, fonts, native hooks and window managers a
 /// semantic tree needs; a style is never involved.
 fn mount(builder: AnyViewBuilder<AnyView>) -> SemanticRuntime {
-    SemanticRuntime::new_for_tests(Environment::new(), builder, 800, 600)
+    SemanticRuntime::new(
+        Environment::new(),
+        builder,
+        800,
+        600,
+        FontFamilyResolution::Strict,
+    )
 }
 
 /// Pumps until the runtime settles and returns the merged tree as of that

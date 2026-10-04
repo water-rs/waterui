@@ -14,13 +14,19 @@ pub struct HydroState {
     pub(crate) counters: FrameWorkCounters,
 }
 
-impl Default for HydroState {
-    fn default() -> Self {
+impl HydroState {
+    pub(crate) fn new(family_resolution: FontFamilyResolution) -> Self {
         Self {
-            text: Arc::new(TextMeasureService::new()),
+            text: Arc::new(TextMeasureService::new(family_resolution)),
             measurement: MeasurementCaches::default(),
             counters: FrameWorkCounters::default(),
         }
+    }
+}
+
+impl Default for HydroState {
+    fn default() -> Self {
+        Self::new(FontFamilyResolution::Lenient)
     }
 }
 

@@ -1,20 +1,23 @@
-name: Generate test assets
+name: Install test fonts, generate test assets
 description: >
-  Regenerates the binary test assets test and dev code compiles from
-  `include_bytes!` — the fonts under backends/hydrolysis/test-fonts/, the
-  live-photo fixture under backends/hydrolysis/tests/fixtures/, and the
-  cli's Roboto fixture under cli/tests/fixtures/fonts/ — from their
-  pinned, hash-verified sources. The repository carries no binary files,
-  so any job that compiles `#[cfg(test)]` or dev paths (the `--all-targets`
-  clippy passes, nextest, doctests) must run this first.
+  Prepares the uncommitted assets test code needs, all from pinned,
+  hash-verified sources: installs Hydrolysis's test fonts into the
+  runner's user font location (Hydrolysis's rendering tests and the
+  styled `waterui-testing` suites resolve the families through system
+  font discovery — no font bytes are compiled into any crate), and
+  regenerates the fixtures the repository does not store — the
+  live-photo clip under backends/hydrolysis/tests/fixtures/ and the
+  cli's `include_bytes!`d Roboto fixture under cli/tests/fixtures/fonts/.
+  The repository carries no binary files, so any job that compiles or
+  runs `#[cfg(test)]` or dev paths must run this first.
 
 runs:
   using: composite
   steps:
     - uses: astral-sh/setup-uv@v6
-    - name: Generate fonts and fixtures
+    - name: Install fonts and generate fixtures
       shell: bash
       run: |
-        uv run backends/hydrolysis/test-fonts/generate.py
+        uv run backends/hydrolysis/test-fonts/install.py
         uv run backends/hydrolysis/tests/fixtures/generate-live-photo-motion.py
         uv run cli/tests/fixtures/fonts/generate.py

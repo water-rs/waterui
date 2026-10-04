@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::preview_symbol;
-use hydrolysis::{HeadlessRuntime, InputEvent, PointerButton, PointerKind};
+use hydrolysis::{FontFamilyResolution, HeadlessRuntime, InputEvent, PointerButton, PointerKind};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview::{RenderResult, RenderResultExt as _};
 use waterui_preview_protocol::hydrolysis::{
@@ -50,6 +50,9 @@ fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
         dimension_to_u32(width),
         dimension_to_u32(height),
         preview_symbol::preview_style(),
+        // A preview host is an application: an uninstalled named family
+        // resolves the way it does under `water run`.
+        FontFamilyResolution::Lenient,
     )
     .with_scale_factor(PREVIEW_SCALE_FACTOR)
 }

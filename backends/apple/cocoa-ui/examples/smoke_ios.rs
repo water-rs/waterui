@@ -5,7 +5,7 @@
 #[cfg(target_os = "ios")]
 use cocoa_ui::MainThreadMarker;
 #[cfg(target_os = "ios")]
-use cocoa_ui::uikit::{ApplicationHandlers, ViewController, Window, run};
+use cocoa_ui::uikit::{ApplicationHandlers, ViewController, Window, run, window_root};
 
 #[cfg(target_os = "ios")]
 fn main() {
@@ -15,7 +15,8 @@ fn main() {
         ApplicationHandlers::new(|scene| {
             println!("smoke-ios: scene connected");
             let window = Window::new(scene);
-            let controller = ViewController::new(scene.main_thread());
+            let controller =
+                ViewController::new(scene.main_thread(), window_root(scene.main_thread()));
             controller.host_view().set_layout_handler(|view| {
                 println!(
                     "smoke-ios: layout pass (safe_area_insets={:?}, display_scale={:?})",

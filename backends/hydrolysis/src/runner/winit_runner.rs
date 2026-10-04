@@ -34,10 +34,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, DeviceEvents, EventLoop};
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::window::{Window as NativeWindow, WindowId};
 
-use crate::platform::{GpuSurfaceWindow, PlatformWindow, WinitGpuContext, WinitWindow};
+use crate::platform::{PlatformWindow, WinitGpuContext, WinitWindow};
 use crate::renderer::{
-    HydrolysisRenderer, HydrolysisTextContextMenuMode, HydrolysisWindowOrigin,
-    MenuShortcutRegistry, PopupWindowManager,
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode,
+    HydrolysisWindowOrigin, MenuShortcutRegistry, PopupWindowManager,
 };
 #[cfg(hydrolysis_wayland_platform)]
 use crate::runner::x11_state_watch::{self, X11StateWatch};
@@ -693,10 +693,8 @@ impl WinitRunner {
             self.gpu_context = Some(gpu_context);
         }
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
-        };
+        let mut renderer =
+            HydrolysisRenderer::new(Rc::clone(&self.theme), FontFamilyResolution::Lenient);
         super::seed_core(&mut renderer, &self.fonts);
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);

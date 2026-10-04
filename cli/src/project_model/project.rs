@@ -1020,6 +1020,20 @@ pub enum FailToCreateProject {
         "{0} already contains a Cargo.toml; merge the generated scaffold manually or remove it first"
     )]
     CargoManifestExists(PathBuf),
+    /// The display name derives a crate name Cargo rejects as a package
+    /// name — a leading digit is the common case. The derivation runs ahead
+    /// of every scaffold write, so a rejected name leaves nothing behind.
+    #[error(
+        "the crate name '{derived}' derived from the project name '{name}' is not usable: {reason}"
+    )]
+    UnderivableCrateName {
+        /// The project display name.
+        name: String,
+        /// The crate name the derivation produced.
+        derived: String,
+        /// Why Cargo rejects it as a package name.
+        reason: String,
+    },
     /// Failed to create project directory.
     #[error("Failed to create directory: {0}")]
     CreateDir(std::io::Error),
@@ -1100,11 +1114,12 @@ impl CreateOptions {
                 }
             })
             .collect::<String>();
-        CrateName::try_from(name).map_err(|error| {
-            FailToCreateProject::Scaffold(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                error,
-            ))
+        CrateName::try_from(name.clone()).map_err(|reason| {
+            FailToCreateProject::UnderivableCrateName {
+                name: self.name.clone(),
+                derived: name,
+                reason,
+            }
         })
     }
 
@@ -2816,6 +2831,34 @@ mod scaffold_tests {
     use std::path::{Path, PathBuf};
 
     use super::{BundleIdentifier, CreateOptions, ManagedBackends, Project};
+
+    /// `water create "1573 App"` derives `1573_app` — a name Cargo rejects
+    /// as a package name because it cannot start with a digit. The
+    /// derivation refuses it before any scaffold output, naming the derived
+    /// name and the rule rather than inventing a mangled name.
+    #[test]
+    fn a_digit_led_display_name_derives_no_crate_name() {
+        let options = CreateOptions {
+            name: "1573 App".to_string(),
+            bundle_identifier: BundleIdentifier::try_from("dev.waterui.app1573")
+                .expect("bundle identifier"),
+            waterui_path: None,
+            channel: None,
+            framework_manifest: None,
+            framework: None,
+            framework_lock: None,
+            author: "water test".to_string(),
+            web: None,
+        };
+        let error = options
+            .crate_name()
+            .expect_err("the derived name is rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("1573_app") && message.contains("digit"),
+            "the error names the derived name and Cargo's rule: {message}"
+        );
+    }
 
     /// The documented `assets!` workflow requires the assets root to exist: the
     /// planner walks it recursively, so a missing directory fails the first

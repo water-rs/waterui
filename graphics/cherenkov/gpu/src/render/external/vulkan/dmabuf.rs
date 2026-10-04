@@ -21,11 +21,17 @@ use rustc_hash::FxHashMap;
 use super::{Frame, NativeError, Shared, sync};
 
 // DRM fourcc codes (`drm_fourcc.h`), kept as named constants so the import
-// table reads `NV12`, not a magic dword.
-const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
-const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
-const DRM_FORMAT_ABGR8888: u32 = 0x3432_4241;
-const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
+// table reads `NV12`, not a magic dword. The single-plane RGBA fourccs are
+// `pub`: `interop::dmabuf` re-exports them for hosts declaring the formats
+// they can import (#1687).
+/// `DRM_FORMAT_ARGB8888` — 8-bit BGRA, alpha filled 1 on `X` variants.
+pub const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
+/// `DRM_FORMAT_XRGB8888` — 8-bit BGRA without alpha.
+pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258;
+/// `DRM_FORMAT_ABGR8888` — 8-bit RGBA, alpha filled 1 on `X` variants.
+pub const DRM_FORMAT_ABGR8888: u32 = 0x3432_4241;
+/// `DRM_FORMAT_XBGR8888` — 8-bit RGBA without alpha.
+pub const DRM_FORMAT_XBGR8888: u32 = 0x3432_4258;
 const DRM_FORMAT_NV12: u32 = 0x3231_564E;
 const DRM_FORMAT_P010: u32 = 0x3031_3050;
 
