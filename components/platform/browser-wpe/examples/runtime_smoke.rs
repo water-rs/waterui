@@ -116,9 +116,10 @@ mod linux {
         let size = OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
             .expect("WPE smoke viewport must be non-zero");
         let mut view = DmaBufGpuView::new(source).into_view();
-        let content = view.take_engine_content(|| {});
+        let engine_content = view.take_engine_content(|| {});
         let context = gpu_runtime.context();
-        let mut renderer = GpuContentRenderer::new(&gpu_runtime, context.clone(), content, size);
+        let mut renderer =
+            GpuContentRenderer::new(&gpu_runtime, context.clone(), engine_content, size);
         // The UI hook feeds the content's mailbox; run it before presenting so
         // the smoke frame is queued for the render.
         view.frame();
@@ -177,12 +178,12 @@ mod linux {
             .expect("WPE smoke readback wait failed");
         let rgba8 = buffer.slice(..).get_mapped_range().to_vec();
         buffer.unmap();
-        let rendered = OffscreenImage {
+        let image = OffscreenImage {
             width: WIDTH,
             height: HEIGHT,
             rgba8,
         };
-        rendered
+        image
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));
     }
