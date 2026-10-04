@@ -32,7 +32,9 @@ use web_sys::Response;
 
 use super::fonts::ResourceFontFamilies;
 use crate::platform::{BrowserWindow, PlatformWindow};
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+use crate::renderer::{
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
+};
 use crate::runner::web_accessibility::WebAccessibilityBridge;
 use crate::runner::{
     RenderDiagnosticsConfig, RuntimeWindow, advance_runtime, handle_input_events, render_window,
@@ -427,7 +429,7 @@ pub fn run(app: App, style: impl crate::Style) {
             load_web_fonts()
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(theme);
+        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
         let fonts = FontCollection::new(font_cx);
         fonts.clone().install(&mut env);
         super::fonts::seed_core(&mut renderer, &fonts);

@@ -41,7 +41,9 @@ use crate::platform::{
     GpuSurfaceWindow, InputEvent, PlatformWindow, SurfaceProvider, TextInputState,
     validated_window_frame,
 };
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+use crate::renderer::{
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
+};
 use crate::runner::window::{
     RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
 };
@@ -688,7 +690,7 @@ impl AndroidSession {
             soft_input: None,
         };
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(theme);
+        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
         crate::runner::fonts::seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(

@@ -41,6 +41,7 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_layout::stack::hstack;
 
 use super::{MinimalTestTheme, test_environment};
+use crate::FontFamilyResolution;
 use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};
 use crate::runner::SemanticRuntime;
 use crate::{HeadlessRuntime, keyboard_types};
@@ -502,7 +503,7 @@ fn repeated_state_binding_order_is_identical_in_both_placements() {
 
 fn semantic_runtime_with(view: AnyView) -> SemanticRuntime {
     let view = RefCell::new(Some(view));
-    SemanticRuntime::new_for_tests(
+    SemanticRuntime::new(
         Environment::new(),
         AnyViewBuilder::<AnyView>::new(move || {
             view.borrow_mut()
@@ -511,6 +512,7 @@ fn semantic_runtime_with(view: AnyView) -> SemanticRuntime {
         }),
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
+        FontFamilyResolution::Strict,
     )
 }
 

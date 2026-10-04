@@ -65,9 +65,9 @@ fn row_label(row: i32) -> String {
 }
 
 /// Mounts a fixture's rendered twin on a headless runtime — the surface
-/// `accessibility_activation_point` resolves against. The deterministic fonts
-/// keep this mount's geometry identical to the `ui()` app's, so a point
-/// resolved on one lands on the other.
+/// `accessibility_activation_point` resolves against. Both mounts shape
+/// through the same font collection, so a point resolved on one lands on the
+/// other.
 fn headless(content: AnyViewBuilder<AnyView>, width: u32, height: u32) -> HeadlessRuntime {
     HeadlessRuntime::new_for_tests(
         Environment::new(),

@@ -121,7 +121,7 @@ fn test_renderer() -> HydrolysisRenderer {
 }
 
 fn test_renderer_with_theme(theme: MinimalTestTheme) -> HydrolysisRenderer {
-    HydrolysisRenderer::new(Rc::new(theme))
+    HydrolysisRenderer::new(Rc::new(theme), FontFamilyResolution::Strict)
 }
 
 /// Emits the semantic node a real widget emits for an interaction identity:
@@ -205,6 +205,29 @@ impl LocalExecutor for TestLocalExecutor {
         runnable.schedule();
         task
     }
+}
+
+/// Raw data of the default face of an installed font `family`, resolved
+/// through system font discovery as a runtime resolves a named family. The
+/// repository commits no fonts: `backends/hydrolysis/test-fonts/install.py`
+/// installs the fixtures, and a family that is not installed fails naming it.
+pub fn installed_font_bytes(family: &str) -> std::sync::Arc<[u8]> {
+    let mut collection =
+        parley::fontique::Collection::new(parley::fontique::CollectionOptions::default());
+    let info = collection.family_by_name(family).unwrap_or_else(|| {
+        panic!(
+            "font family `{family}` is not installed; install the test fonts with \
+             `uv run backends/hydrolysis/test-fonts/install.py`"
+        )
+    });
+    let face = info
+        .default_font()
+        .unwrap_or_else(|| panic!("the installed `{family}` family carries no face"));
+    std::sync::Arc::from(
+        face.load(None)
+            .unwrap_or_else(|| panic!("the installed `{family}` face failed to load"))
+            .as_ref(),
+    )
 }
 
 pub fn test_environment() -> Environment {
@@ -507,7 +530,7 @@ fn measure_layout_dimensions_collects_alignment_keys_from_wrapper_layouts() {
         alignment: HorizontalAlignment::Leading,
         spacing: Computed::constant(0.0),
     };
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let dimensions = measure_layout_dimensions(
         &layout,
         [&child],
@@ -558,11 +581,11 @@ fn scale_metadata_is_layout_transparent() {
         &env,
     );
 
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let initial = measure_view_dimensions(&view, &mut state, &env, &theme).size;
 
     scale.set(2.0);
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let scaled = measure_view_dimensions(&view, &mut state, &env, &theme).size;
 
     assert_eq!(initial, LayoutSize::new(80.0, 120.0));
@@ -578,7 +601,7 @@ fn hydro_subview_preserves_stretch_control_minimum_under_zero_width_proposal() {
         AnyView::new(slider("Playback position", &value).hide_label()),
         &env,
     );
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -595,7 +618,7 @@ fn hydro_subview_preserves_non_stretch_button_intrinsic_under_zero_width_proposa
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let view = normalize_layout_view(AnyView::new(button("Medium (0.7)").action(|| {})), &env);
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -623,7 +646,7 @@ fn state_wrapped_button_remains_non_stretch_for_layout() {
         ),
         &env,
     );
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let state = RefCell::new(&mut state);
     let subview = HydroSubview::from_view(&view, &state, &env, &theme);
 
@@ -945,7 +968,10 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
         }
     };
 
-    let mut renderer = HydrolysisRenderer::new(Rc::new(MinimalTestTheme::default()));
+    let mut renderer = HydrolysisRenderer::new(
+        Rc::new(MinimalTestTheme::default()),
+        FontFamilyResolution::Strict,
+    );
     let env = test_environment();
     let bounds = kurbo::Rect::new(0.0, 0.0, 160.0, 160.0);
     capture_root_window(&mut renderer, view, &env, bounds);
@@ -968,7 +994,7 @@ fn renderer_magnification_targets_outer_observer_in_stacked_gesture_chain() {
 fn string_views_measure_through_body_recursion() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let proposal = ProposalSize::UNSPECIFIED;
 
     let raw = measure_view_dimensions_with_proposal(
@@ -3070,7 +3096,7 @@ fn shaped_text_input_target(
     selection: &Rc<RefCell<TextSelectionSlot>>,
     env: &Environment,
 ) -> TextInputTarget {
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,
         StyledStr::plain(value.to_owned()),
@@ -3279,7 +3305,7 @@ fn bare_str_at_window_root_renders_into_scene() {
 #[test]
 fn text_shaping_produces_nonzero_intrinsic_in_tests() {
     let env = test_environment();
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let size = HydrolysisRenderer::measure_text_intrinsic_size(
         &mut state,
         waterui_text::styled::StyledStr::plain("probe"),
@@ -3306,7 +3332,7 @@ fn resolved_text_fast_path_matches_the_recursive_measure() {
     let string_view = AnyView::new(String::from("hello world"));
 
     for view in [&str_view, &string_view] {
-        let mut state = HydroState::default();
+        let mut state = HydroState::new(FontFamilyResolution::Strict);
         let state_cell = RefCell::new(&mut state);
         let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
         let fast_path = HydroSubview::from_view(view, &state_cell, &env, &theme).measure(proposal);
@@ -3353,7 +3379,7 @@ fn bare_str_renders_into_scene() {
 #[test]
 fn render_path_text_layout_has_lines() {
     let env = test_environment();
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let layout = HydrolysisRenderer::build_text_layout(
         &mut state,
         waterui_text::styled::StyledStr::plain("probe"),
@@ -3419,7 +3445,7 @@ fn every_view_answers_the_three_point_probe_consistently() {
         // The layout path measures normalized views, so the contract is about
         // those, not about raw bodies.
         let view = normalize_layout_view(view, &env);
-        let mut state = HydroState::default();
+        let mut state = HydroState::new(FontFamilyResolution::Strict);
         let cell = RefCell::new(&mut state);
         let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
         let subview = HydroSubview::from_view(&view, &cell, &env, &theme);
@@ -3558,7 +3584,7 @@ fn badge_indicator_anchors_to_the_content_trailing_edge() {
 fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(AnyView::new(button("OK").padding_with(8.0)), &env),
         ProposalSize::new(Some(160.0), Some(160.0)),
@@ -3608,7 +3634,7 @@ fn a_collapsed_naming_scope_reports_the_containers_resolved_extent() {
 fn a_collapsed_naming_scope_centres_the_resolved_extent_on_the_assigned_frame() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let measured = measure_view_dimensions_with_proposal(
         &normalize_layout_view(
             AnyView::new(button("OK").padding_with([0.0, 0.0, 20.0, 0.0])),

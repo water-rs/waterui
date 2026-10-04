@@ -50,8 +50,13 @@ struct SemanticWindow {
 }
 
 impl SemanticWindow {
-    fn new(window: Window, fonts: &FontCollection, window_id: WindowId) -> Self {
-        let mut core = SemanticCore::new(Instant::now());
+    fn new(
+        window: Window,
+        fonts: &FontCollection,
+        window_id: WindowId,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
+        let mut core = SemanticCore::new(Instant::now(), family_resolution);
         core.set_window_id(window_id);
         seed_core(&mut core, fonts);
         #[cfg(feature = "accessibility")]
@@ -91,6 +96,9 @@ pub struct SemanticRuntime {
     /// The application's font collection: popup windows' cores are seeded
     /// from it so they shape with the same faces as the main window.
     fonts: FontCollection,
+    /// The family-resolution mode the constructor seeded every window's core
+    /// with — popup windows' cores are created under the same mode.
+    family_resolution: FontFamilyResolution,
     local_executor: HeadlessMainThreadExecutor,
     /// Declared last so it drops after the runtime state above: consumes any
     /// still-queued spawned work while this thread's locals are intact, so no
@@ -116,31 +124,18 @@ impl SemanticRuntime {
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
+        family_resolution: FontFamilyResolution,
     ) -> Self {
         // A native app loads the fonts its `ResourceContext` stages; a browser
         // page has no synchronous resource directory to scan, so the semantic
         // runtime there shapes with the default collection alone.
         #[cfg(not(target_arch = "wasm32"))]
-        return Self::on_env(env, content, width, height, |env| {
+        return Self::on_env(env, content, width, height, family_resolution, |env| {
             native_resource_fonts(waterui_core::ResourceContext::from_environment(env))
         });
         #[cfg(target_arch = "wasm32")]
-        Self::on_env(env, content, width, height, |_| parley::FontContext::new())
-    }
-
-    /// Creates a semantic runtime for `WaterUI` test hosts: the same runtime
-    /// [`Self::new`] builds, but text shapes with the bundled deterministic
-    /// fonts so caret and selection behaviour is identical on every runner.
-    #[cfg(any(test, feature = "testing"))]
-    #[must_use]
-    pub fn new_for_tests(
-        env: Environment,
-        content: AnyViewBuilder<AnyView>,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        Self::on_env(env, content, width, height, |_| {
-            super::fonts::deterministic_test_fonts()
+        Self::on_env(env, content, width, height, family_resolution, |_| {
+            parley::FontContext::new()
         })
     }
 
@@ -153,6 +148,7 @@ impl SemanticRuntime {
         content: AnyViewBuilder<AnyView>,
         width: u32,
         height: u32,
+        family_resolution: FontFamilyResolution,
         build_fonts: fn(&Environment) -> parley::FontContext,
     ) -> Self {
         // The inspector endpoint is a TCP server a browser page cannot host —
@@ -219,10 +215,11 @@ impl SemanticRuntime {
             .mint_window_id();
         Self {
             env,
-            window: SemanticWindow::new(window, &fonts, window_id),
+            window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
             pending_window_queue,
             popup_windows: Vec::new(),
             fonts,
+            family_resolution,
             _executor_teardown: DrainExecutorOnDrop::new(local_executor.clone()),
             local_executor,
         }
@@ -424,8 +421,12 @@ impl SemanticRuntime {
                 .get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id();
-            self.popup_windows
-                .push(SemanticWindow::new(window, &fonts, window_id));
+            self.popup_windows.push(SemanticWindow::new(
+                window,
+                &fonts,
+                window_id,
+                self.family_resolution,
+            ));
         }
     }
 
@@ -743,7 +744,13 @@ mod tests {
                 button("Tap").action(move || fired.set(true)),
             )))
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -779,7 +786,13 @@ mod tests {
                 ],
             ),)))
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -846,7 +859,13 @@ mod tests {
                 .state(&store),
             )
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -876,7 +895,13 @@ mod tests {
                 &value_for_field,
             ),)))
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
 
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
@@ -954,7 +979,13 @@ mod tests {
 
     /// Builds the runtime, focuses the single text field, and returns both.
     fn focused_field_runtime(builder: AnyViewBuilder<AnyView>) -> (SemanticRuntime, NodeId) {
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
         let (field, _) = update
@@ -1266,7 +1297,13 @@ mod tests {
                     .on_key_press(counting_handler(hits, KeyHandling::Handled)),
             )
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
         let update =
             pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
         let (button_node, _) = update
@@ -1327,7 +1364,13 @@ mod tests {
                 .on_key_press(counting_handler(root, KeyHandling::Handled)),
             )
         });
-        let mut runtime = SemanticRuntime::new(semantic_environment(), builder, 800, 600);
+        let mut runtime = SemanticRuntime::new(
+            semantic_environment(),
+            builder,
+            800,
+            600,
+            FontFamilyResolution::Strict,
+        );
         let _ = pump_until_settled(&mut runtime).expect("the initial pump emitted no tree update");
         assert_eq!(
             runtime.focused_ui_node(),

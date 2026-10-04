@@ -396,9 +396,9 @@ impl SemanticCore {
             .and_then(|link| link.parent.clone());
     }
 
-    pub(crate) fn new(frame_instant: Instant) -> Self {
+    pub(crate) fn new(frame_instant: Instant, family_resolution: FontFamilyResolution) -> Self {
         Self {
-            state: HydroState::default(),
+            state: HydroState::new(family_resolution),
             hit_test: HitTestState::default(),
             gesture_engine: GestureEngine::default(),
             gesture_group_ids: BTreeMap::new(),
@@ -463,12 +463,18 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    /// A renderer drawing with `theme`.
+    /// A renderer drawing with `theme`. `family_resolution` decides whether a
+    /// named font family the collection cannot resolve is skipped
+    /// ([`FontFamilyResolution::Lenient`], applications) or fails the shape
+    /// naming it ([`FontFamilyResolution::Strict`], test hosts).
     #[must_use]
-    pub fn new(theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
+    pub fn new(
+        theme: Rc<dyn crate::engine::WidgetTheme>,
+        family_resolution: FontFamilyResolution,
+    ) -> Self {
         let frame_instant = Instant::now();
         Self {
-            core: SemanticCore::new(frame_instant),
+            core: SemanticCore::new(frame_instant, family_resolution),
             theme,
             scene: Recording::new(),
             transient_scene: None,
@@ -520,6 +526,5 @@ impl HydrolysisRenderer {
 }
 
 pub use render::HydroState;
-use render::HydroSubview;
 pub use render::RenderContext;
 pub use render::{HydrolysisTextContextMenuMode, HydrolysisWindowOrigin};
