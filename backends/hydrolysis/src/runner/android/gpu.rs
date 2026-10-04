@@ -230,7 +230,7 @@ pub struct AndroidSurface {
 }
 
 impl AndroidSurface {
-    pub const fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
+    pub fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
         Self {
             gpu,
             generation: 0,
