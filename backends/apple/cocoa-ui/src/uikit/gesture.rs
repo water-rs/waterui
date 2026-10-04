@@ -94,8 +94,10 @@ define_class!(
     /// Rejects events whose `UIEvent.buttonMask` does not intersect the
     /// gesture's button mask, for recognizers that cannot carry the mask
     /// themselves: `UIGestureRecognizer.buttonMask` is read-only and only
-    /// `UITapGestureRecognizer` exposes `buttonMaskRequired`. Touches report
-    /// `.primary`, so a primary mask still accepts a finger.
+    /// `UITapGestureRecognizer` exposes `buttonMaskRequired`. A touches
+    /// event carries no button bits — the contact itself is the press —
+    /// so a finger acts as the primary button; hover, motion and key
+    /// presses also report an empty mask and stay rejected.
     ///
     // SAFETY: `NSObject` has no subclassing requirements; the class holds a
     // mask and does not implement `Drop`.
@@ -114,8 +116,20 @@ define_class!(
         #[unsafe(method(gestureRecognizer:shouldReceiveEvent:))]
         fn should_receive_event(&self, _recognizer: &UIGestureRecognizer, event: &UIEvent) -> bool {
             guarded("CocoaUiGestureButtonFilter shouldReceiveEvent:", || {
-                ButtonMask::from_bits(u8::try_from(event.buttonMask().0 & 0xff).unwrap_or_default())
-                    .intersects(self.ivars().buttons)
+                let mask = event.buttonMask().0;
+                let buttons = if mask == 0 {
+                    // Touches carry no button bits: the contact is the
+                    // primary press. Other mask-less events — hover,
+                    // motion, key presses — are not clicks.
+                    if event.r#type() == objc2_ui_kit::UIEventType::Touches {
+                        ButtonMask::PRIMARY
+                    } else {
+                        ButtonMask::from_bits(0)
+                    }
+                } else {
+                    ButtonMask::from_bits(u8::try_from(mask & 0xff).unwrap_or_default())
+                };
+                buttons.intersects(self.ivars().buttons)
             })
         }
     }
