@@ -33,7 +33,7 @@ private func mountCreate(
 @_extern(c, "waterui_apple_mount_drop")
 private func mountDrop(_ _: UnsafeMutableRawPointer)
 @_extern(c, "waterui_apple_update_visibility")
-private func updateVisibilityNative(_ mount: UnsafeRawPointer)
+private func updateVisibilityNative(_ _: UnsafeRawPointer)
 
 /// Resources supplied by the native application or the embedding package.
 public struct WaterUIResourceContext: Sendable {
