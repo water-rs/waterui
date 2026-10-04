@@ -116,22 +116,19 @@ impl TryFrom<String> for CrateName {
         if let Some(first) = chars.next() {
             if first.is_ascii_digit() {
                 return Err(format!(
-                    "invalid character '{first}' in package name '{value}': the name cannot start \
-                 with a digit"
+                    "invalid character '{first}' in package name '{value}': the name cannot start with a digit"
                 ));
             }
             if !unicode_ident::is_xid_start(first) && first != '_' {
                 return Err(format!(
-                    "invalid character '{first}' in package name '{value}': the first character must be a Unicode XID start character \
-                 (most letters or '_')"
+                    "invalid character '{first}' in package name '{value}': the first character must be a Unicode XID start character (most letters or '_')"
                 ));
             }
         }
         for character in chars {
             if !unicode_ident::is_xid_continue(character) && character != '-' {
                 return Err(format!(
-                    "invalid character '{character}' in package name '{value}': characters must be Unicode XID characters \
-                 (numbers, '-', '_', or most letters)"
+                    "invalid character '{character}' in package name '{value}': characters must be Unicode XID characters (numbers, '-', '_', or most letters)"
                 ));
             }
         }
