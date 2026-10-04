@@ -110,6 +110,10 @@ These are the target architecture and acceptance criteria for repository changes
 - **TUI, GTK, and WinUI are experimental backends, with no stability or feature-completeness guarantees.** Their nightlies are informational. Failures or missing functionality in these backends must not block mainline backend integration or releases. Record defects in the owning backend repository with the run ID and evidence, and proceed with the mainline work. Experimental backends may ship in the satellite wave when their manifests are ready, but never hold the framework or the other satellites back; do not dispatch control runs or debug them on the release's critical path.
 - **Framework revisions own their minimum compatible CLI version.** Declare it in the root `Cargo.toml` under `[package.metadata.waterui].minimum-cli-version`, using a concrete SemVer version. Raise it when a framework change requires newer CLI behavior, not automatically for every CLI release. The library checks local source metadata, resolved `waterui` package metadata, and the requirement persisted with a channel before backend scaffolding or builds. Every published `framework.json` carries the same declaration. Rejection names the installed and required versions and gives an update command for the selected source; it never silently switches framework channels or upgrades the executable. Previously released CLIs without this check still need a one-time manual update.
 
+## Cross-platform behaviour
+
+Layout and gestures behave identically on every backend. Layout is specified in [`docs/layout-spec.md`](docs/layout-spec.md) (below). For gestures, which input a `Gesture` recognizes, its thresholds and timing, how composed and competing gestures resolve, and the event it delivers are the same everywhere. A backend whose native recognizer differs is non-conforming and is fixed in the backend, not documented as a platform difference.
+
 ## Layout Is Frozen
 
 The layout system — the proposal protocol, `StretchAxis`, stack sizing and
