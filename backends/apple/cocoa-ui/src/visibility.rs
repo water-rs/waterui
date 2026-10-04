@@ -383,10 +383,13 @@ impl VisibilityWatch {
 
     /// Rebinds against `view`'s current hierarchy: the old chain's
     /// tokens drop (detaching ancestors the view left behind), the new
-    /// walk subscribes fresh, and the scroll and window watches re-arm
-    /// only when the object each binds changed. The whole sequence is
-    /// synchronous on the main thread, so no wake can be lost between
-    /// the detach and the re-subscribe.
+    /// walk subscribes fresh, and the scroll and window watches each
+    /// re-arm only when the object they bind changed. Each binding is
+    /// decided independently — an unchanged scroll binding must not skip
+    /// the window rebind (a leaf with no scroll ancestor would never
+    /// subscribe the window watch at all), and vice versa. The whole
+    /// sequence is synchronous on the main thread, so no wake can be
+    /// lost between the detach and the re-subscribe.
     ///
     /// # Panics
     ///
@@ -395,30 +398,30 @@ impl VisibilityWatch {
     pub fn refresh(&self, view: &PlatformView) {
         self.wakes.borrow_mut().take();
         *self.wakes.borrow_mut() = Some(subscribe_visibility_wakes(view, &self.handler));
+
         let scroll = crate::scroll::enclosing_scroll_view(view);
         let mut slot = self.scroll.borrow_mut();
-        let unchanged = match (slot.as_ref(), scroll.as_ref()) {
+        let scroll_unchanged = match (slot.as_ref(), scroll.as_ref()) {
             (Some(binding), Some(scroll)) => {
                 binding.view.load().as_ref().map(Retained::as_ptr) == Some(Retained::as_ptr(scroll))
             }
             (None, None) => true,
             _ => false,
         };
-        if unchanged {
-            return;
+        if !scroll_unchanged {
+            *slot = scroll.map(|scroll| ScrollBinding {
+                _observation: crate::scroll::observe_scroll_viewport(&scroll, {
+                    let handler = self.handler.clone();
+                    move || handler()
+                }),
+                view: objc2::rc::Weak::new(&*scroll),
+            });
         }
-        *slot = scroll.map(|scroll| ScrollBinding {
-            _observation: crate::scroll::observe_scroll_viewport(&scroll, {
-                let handler = self.handler.clone();
-                move || handler()
-            }),
-            view: objc2::rc::Weak::new(&*scroll),
-        });
         drop(slot);
 
         let owner = imp::window_watch_owner(view);
         let mut window_slot = self.window.borrow_mut();
-        let unchanged = match (window_slot.as_ref(), owner.as_ref()) {
+        let window_unchanged = match (window_slot.as_ref(), owner.as_ref()) {
             (Some(binding), Some(owner)) => {
                 binding.object.load().as_ref().map(Retained::as_ptr)
                     == Some(Retained::as_ptr(owner))
@@ -426,25 +429,24 @@ impl VisibilityWatch {
             (None, None) => true,
             _ => false,
         };
-        if unchanged {
-            return;
-        }
-        *window_slot = owner.map(|owner| {
-            let mtm =
-                crate::MainThreadMarker::new().expect("visibility refresh runs on the main thread");
-            WindowBinding {
-                _observers: imp::window_lifecycle_names()
-                    .iter()
-                    .map(|name| {
-                        crate::notification::observe_object(mtm, name, &owner, {
-                            let handler = self.handler.clone();
-                            move || handler()
+        if !window_unchanged {
+            *window_slot = owner.map(|owner| {
+                let mtm = crate::MainThreadMarker::new()
+                    .expect("visibility refresh runs on the main thread");
+                WindowBinding {
+                    _observers: imp::window_lifecycle_names()
+                        .iter()
+                        .map(|name| {
+                            crate::notification::observe_object(mtm, name, &owner, {
+                                let handler = self.handler.clone();
+                                move || handler()
+                            })
                         })
-                    })
-                    .collect(),
-                object: objc2::rc::Weak::new(&*owner),
-            }
-        });
+                        .collect(),
+                    object: objc2::rc::Weak::new(&*owner),
+                }
+            });
+        }
     }
 }
 

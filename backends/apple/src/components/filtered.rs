@@ -157,6 +157,10 @@ pub struct FilteredState {
     content_changed_since_capture: Cell<bool>,
     /// First-paint waiters — `readyCompletions` in waker form.
     ready_waiters: RefCell<Vec<std::task::Waker>>,
+    /// One outstanding demand reconsideration — queued by
+    /// `reconsider_ready_demand`, cleared inside the enqueued block so a
+    /// burst of wake events coalesces into a single dispatch check.
+    demand_reconsider_queued: Cell<bool>,
     /// The hidden content leaf — `contentView`.
     mounted: RefCell<Option<Mounted>>,
     /// The `ViewCapture` pipeline — `capturePipeline`.
@@ -473,6 +477,11 @@ fn schedule_frame_if_needed(state: &Rc<FilteredState>) {
 fn request_render(state: &Rc<FilteredState>) {
     state.needs_render.set(true);
     schedule_frame_if_needed(state);
+    // Every genuine frame-source event — `setOnRedraw`, descendant
+    // invalidation, geometry changes — also re-drives an outstanding
+    // first-ready demand; the dedup inside keeps a request flood from
+    // flooding the main queue.
+    reconsider_ready_demand(state);
 }
 
 /// `requestRenderIfGeometryChanged` — only a pass that produced new
@@ -492,16 +501,22 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
 }
 
 /// Dispatches the one off-clock frame an outstanding first-ready waiter
-/// is owed. The demand path deliberately skips the presentation gate:
-/// a waiter is an explicit consumer contract (the same contract
-/// `GpuSurface`'s first-ready force render honors), while autonomous
-/// work stays parked under occlusion. Every gate the frame legitimately
-/// blocked on is re-checked, so this can only ever produce the owed
-/// frame — never autonomous offscreen submissions.
+/// is owed. The demand path bypasses ancestor/clip presentation
+/// occlusion only: a waiter is an explicit consumer contract (the same
+/// contract `GpuSurface`'s first-ready force render honors), while
+/// autonomous work stays parked under occlusion. The weak window-level
+/// `can_attach_now` gate still applies — off-clock frames require a
+/// live attachable owning window/scene, so a demand whose scene
+/// deactivated before async setup landed never renders in the
+/// background. Every gate the frame legitimately blocked on is
+/// re-checked, and the waiters themselves — not `output_revealed` —
+/// own the demand until `complete_ready` drains them, so this can only
+/// ever produce the owed frame — never autonomous offscreen
+/// submissions.
 fn dispatch_ready_demand(state: &Rc<FilteredState>) {
     if state.ready_waiters.borrow().is_empty()
-        || state.output_revealed.get()
         || !state.attached.get()
+        || !can_attach_now(&state.view)
         || !effects_ready(state)
         || state.render_in_flight.get()
         || state.frame_presentation_in_flight.get()
@@ -514,14 +529,22 @@ fn dispatch_ready_demand(state: &Rc<FilteredState>) {
 
 /// Re-considers the outstanding demand on a fresh main-queue turn —
 /// prerequisite events (setup landing, context publication, an in-flight
-/// frame finishing) whose own call stack must unwind before the owed
-/// frame may run again. Each event enqueues exactly one reconsideration;
-/// the dispatch itself decides whether the waiters are still owed.
+/// frame finishing, a real visibility or redraw wake) whose own call
+/// stack must unwind before the owed frame may run again. At most one
+/// reconsideration stays queued per leaf: animation-driven request
+/// bursts coalesce instead of flooding the queue, and the dispatch
+/// itself decides whether the waiters are still owed.
 fn reconsider_ready_demand(state: &Rc<FilteredState>) {
+    if state.ready_waiters.borrow().is_empty()
+        || state.demand_reconsider_queued.replace(true)
+    {
+        return;
+    }
     let mtm = cocoa_ui::MainThreadMarker::new().expect("filter events run on the main thread");
     let weak = Rc::downgrade(state);
     cocoa_ui::main_queue::enqueue_local(mtm, move |_mtm| {
         if let Some(state) = weak.upgrade() {
+            state.demand_reconsider_queued.set(false);
             dispatch_ready_demand(&state);
         }
     });
@@ -554,6 +577,11 @@ fn render_frame(state: &Rc<FilteredState>) {
     state.needs_render.set(false);
     state.render_in_flight.set(true);
     state.clock.stop();
+    // The snapshot starting now describes current content: a descendant
+    // change landing mid-capture re-flags and owes one more frame; a
+    // flag raised before this point belongs to the superseded snapshot
+    // (the #521 staleness contract is per-snapshot).
+    state.content_changed_since_capture.set(false);
     let frame = CaptureFrame {
         texture: ensure_capture_texture(state, &context, width, height),
         width,
@@ -606,7 +634,10 @@ fn finish_captured_frame(state: &Rc<FilteredState>, frame: CaptureFrame, capture
         if frame.context.device_lost_reason().is_some() {
             arm_filtered_context_watch(state, frame.context.generation());
         }
-        reconsider_ready_demand(state);
+        // No queued retry: the child's readiness arrives through
+        // `setOnRedraw` → `request_render`, which re-drives the demand
+        // itself — a re-check enqueued here would spin the main queue
+        // until the child finishes setting up.
         return;
     }
     finish_prepared_frame(state, frame);
@@ -1385,6 +1416,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 laid_out_geometry: RefCell::new(None),
                 content_changed_since_capture: Cell::new(false),
                 ready_waiters: RefCell::new(Vec::new()),
+                demand_reconsider_queued: Cell::new(false),
                 mounted: RefCell::new(Some(mounted)),
                 capture,
                 clock,
@@ -1450,6 +1482,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     refresh_visibility_watches(&state);
                     initialize_gpu(&state);
                     schedule_frame_if_needed(&state);
+                    // A real visibility wake — ancestor reveal, scroll
+                    // clip, owning-scene activation — also re-drives a
+                    // demand the last check deferred.
+                    reconsider_ready_demand(&state);
                 }
             }
         });
