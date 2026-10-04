@@ -145,10 +145,11 @@ differs after comments, doc comments, lint attributes (`must_use`, `expect`,
 `allow`, `warn`, `deny`, `inline`, `doc`) and `#[cfg(test)]` items are removed;
 `.github/scripts/layout_gate.py` makes that comparison. Lint-only,
 documentation-only and test-only edits cannot change semantics, so they do
-not need the label. Only the maintainer applies that label; an agent never
-adds it, including to a pull request the maintainer approved in conversation.
-It records his decision that the change is either a conformance fix (the code
-now matches the document) or an approved amendment of the document.
+not need the label. An agent asks the maintainer and applies the label once
+he approves that specific change; it never applies the label on its own
+judgement. The label records his decision that the change is either a
+conformance fix (the code now matches the document) or an approved amendment
+of the document.
 
 A case the document does not decide is not a licence to pick a behaviour in
 code. Every freeze break so far came from such a case found by a dogfood app;
