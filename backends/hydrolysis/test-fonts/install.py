@@ -26,6 +26,17 @@ The verified fonts are then installed into the current user's font location:
 - Windows: `%LOCALAPPDATA%\\Microsoft\\Windows\\Fonts`, registered per-user
   under `HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Fonts`
 
+On Windows the script returns only after DirectWrite's system font collection
+resolves every installed family. The files and the per-user registry values
+can be visible before that collection is, and a test that starts in between
+fails its family lookup. Family names come from each font's name table: the
+weight-stretch-style family (name ID 21, otherwise 16, otherwise 1), which is
+the name `GetSystemFontCollection` groups by. The script polls
+`IDWriteFactory::GetSystemFontCollection` with `checkForUpdates` true
+and `IDWriteFontCollection::FindFamilyName` about every 250 ms, for up to
+120 seconds, and prints how long it waited. If the deadline passes it exits
+non-zero, naming each family still unresolved.
+
 Re-running is idempotent: a font already installed byte-identically is left
 in place; anything else is replaced. Any other platform is a hard error.
 """
@@ -243,10 +254,187 @@ def broadcast_windows_font_change() -> None:
     )
 
 
+def font_family_name(path: Path) -> str:
+    """Weight-stretch-style family name of `path`, in Windows English.
+
+    `IDWriteFactory::GetSystemFontCollection` groups by that name: name ID 21
+    when the font has one, otherwise the typographic family (name ID 16),
+    otherwise the font family (name ID 1). name ID 1 alone is the GDI family,
+    which for these faces is `Roboto Medium` and `Bungee Color Regular`.
+    Records are platform 3, encoding 1, language 0x409 — the record Test
+    Variable ABC's rename writes.
+    """
+    face = TTFont(str(path), lazy=True)
+    try:
+        names = face["name"]
+        for name_id in (21, 16, 1):
+            record = names.getName(name_id, 3, 1, 0x409)
+            if record is None:
+                continue
+            family = record.toUnicode()
+            if family:
+                return family
+        raise SystemExit(
+            f"{path.name}: name table has no Windows English family name "
+            "(name ID 21, 16, or 1)"
+        )
+    finally:
+        face.close()
+
+
+def wait_for_directwrite_families(paths: list[Path]) -> None:
+    """Return once DirectWrite resolves every family name in `paths`.
+
+    Polls a shared factory's system font collection, with checkForUpdates,
+    about every 250 ms for up to 120 s.
+    """
+    import ctypes
+    import time
+
+    families: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        family = font_family_name(path)
+        if family not in seen:
+            seen.add(family)
+            families.append(family)
+    print(f"waiting for DirectWrite to resolve: {', '.join(families)}")
+
+    # Windows LLP64: BOOL is int and HRESULT is LONG, both 32-bit. WCHAR is
+    # UTF-16, so ctypes.c_wchar_p is LPCWSTR on Windows.
+    HRESULT = ctypes.c_int32
+    BOOL = ctypes.c_int32
+    UINT32 = ctypes.c_uint32
+    # dwrite.h. IUnknown is QueryInterface, AddRef, Release (slot 2).
+    # IDWriteFactory's first method is GetSystemFontCollection (slot 3).
+    # IDWriteFontCollection is GetFontFamilyCount, GetFontFamily,
+    # FindFamilyName (slot 5), GetFontFromFontFace.
+    RELEASE = 2
+    GET_SYSTEM_FONT_COLLECTION = 3
+    FIND_FAMILY_NAME = 5
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", ctypes.c_uint32),
+            ("Data2", ctypes.c_uint16),
+            ("Data3", ctypes.c_uint16),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    def check(hr: int, action: str) -> None:
+        if hr < 0:
+            raise SystemExit(f"{action} failed: HRESULT 0x{hr & 0xFFFFFFFF:08X}")
+
+    def com_call(interface, index, restype, argtypes, args):
+        vtable = ctypes.cast(
+            interface, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+        )[0]
+        address = vtable[index]
+        if not address:
+            raise SystemExit(f"DirectWrite vtable slot {index} is null")
+        prototype = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)
+        return prototype(address)(interface, *args)
+
+    def release(interface) -> None:
+        if not interface:
+            return
+        com_call(interface, RELEASE, ctypes.c_uint32, [], [])
+
+    def unresolved(factory) -> list[str]:
+        collection = ctypes.c_void_p()
+        try:
+            hr = com_call(
+                factory,
+                GET_SYSTEM_FONT_COLLECTION,
+                HRESULT,
+                [ctypes.POINTER(ctypes.c_void_p), BOOL],
+                [ctypes.byref(collection), 1],
+            )
+            check(hr, "IDWriteFactory::GetSystemFontCollection")
+            if not collection:
+                raise SystemExit(
+                    "IDWriteFactory::GetSystemFontCollection returned a null "
+                    "collection"
+                )
+            missing: list[str] = []
+            for family in families:
+                index = UINT32()
+                exists = BOOL()
+                hr = com_call(
+                    collection,
+                    FIND_FAMILY_NAME,
+                    HRESULT,
+                    [
+                        ctypes.c_wchar_p,
+                        ctypes.POINTER(UINT32),
+                        ctypes.POINTER(BOOL),
+                    ],
+                    [family, ctypes.byref(index), ctypes.byref(exists)],
+                )
+                # A missing family is S_OK with exists == FALSE.
+                check(hr, f"IDWriteFontCollection::FindFamilyName({family})")
+                if not exists.value:
+                    missing.append(family)
+            return missing
+        finally:
+            release(collection)
+
+    # IID_IDWriteFactory, dwrite.h: b859ee5a-d838-4b5b-a2e8-1adc7d93db48.
+    iid = GUID()
+    iid.Data1 = 0xB859EE5A
+    iid.Data2 = 0xD838
+    iid.Data3 = 0x4B5B
+    iid.Data4[:] = (0xA2, 0xE8, 0x1A, 0xDC, 0x7D, 0x93, 0xDB, 0x48)
+
+    try:
+        dwrite = ctypes.WinDLL("dwrite")
+    except OSError as error:
+        raise SystemExit(f"failed to load dwrite.dll: {error}") from error
+    # DWRITE_FACTORY_TYPE_SHARED is 0.
+    create = dwrite.DWriteCreateFactory
+    create.argtypes = [
+        ctypes.c_int32,
+        ctypes.POINTER(GUID),
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    create.restype = HRESULT
+    factory = ctypes.c_void_p()
+    hr = create(0, ctypes.byref(iid), ctypes.byref(factory))
+    check(hr, "DWriteCreateFactory")
+    if not factory:
+        raise SystemExit("DWriteCreateFactory returned a null factory")
+
+    deadline_s = 120
+    interval_s = 0.25
+    started = time.monotonic()
+    deadline = started + deadline_s
+    try:
+        while True:
+            missing = unresolved(factory)
+            if not missing:
+                elapsed = time.monotonic() - started
+                print(
+                    "DirectWrite resolved every installed family "
+                    f"in {elapsed:.2f}s"
+                )
+                return
+            now = time.monotonic()
+            if now >= deadline:
+                listed = "\n".join(f"  {name}" for name in missing)
+                raise SystemExit(
+                    "DirectWrite did not resolve these font families within "
+                    f"{deadline_s:.0f}s:\n{listed}"
+                )
+            time.sleep(min(interval_s, deadline - now))
+    finally:
+        release(factory)
+
+
 def install() -> None:
     """Install every font in `EXPECTED` into the current user's font location.
 
-    Idempotent: a file already installed byte-identically is left alone.
+    Idempotent: a file already installed byte-identically is left alone. On
+    Windows, returns only after DirectWrite resolves every installed family.
     """
     target = user_font_dir()
     target.mkdir(parents=True, exist_ok=True)
@@ -273,6 +461,7 @@ def install() -> None:
             raise SystemExit(f"fc-cache -f {target} failed: {error}")
     elif sys.platform == "win32":
         broadcast_windows_font_change()
+        wait_for_directwrite_families([target / name for name in sorted(EXPECTED)])
 
 
 def main() -> None:
