@@ -93,19 +93,20 @@ def test_stable_withholds_git_pinned_packages_from_the_scaffold_table():
     # dependency's shape alone, so a synthetic pin exercises it on every tree.
     name = SCAFFOLD_PACKAGES[-1]
     pinned = with_git_pin(FRAMEWORK, name)
-    dependency = pinned["workspace"]["dependencies"][name]
-
     scaffold, experimental = framework_manifest.channel_scaffold(pinned, "stable")
 
     assert not any(key.startswith(f"{name}-") for key in scaffold), (
         f"stable must not scaffold git-pinned {name}"
     )
+    pinned_dependencies = pinned["workspace"]["dependencies"]
     assert experimental == {
-        name: {
-            "version": dependency["version"],
-            "git": dependency["git"],
-            "rev": dependency["rev"],
+        package: {
+            "version": pinned_dependencies[package]["version"],
+            "git": pinned_dependencies[package]["git"],
+            "rev": pinned_dependencies[package]["rev"],
         }
+        for package in SCAFFOLD_PACKAGES
+        if package == name or git_pinned(package)
     }
     for other in SCAFFOLD_PACKAGES:
         if other != name and not git_pinned(other):
@@ -126,22 +127,21 @@ def test_nightly_carries_git_pinned_packages_in_the_scaffold_table():
     assert experimental == {}
 
 
-def test_nami_pinned_backends_resolve_through_patch_pins():
+def test_nami_pinned_backends_are_git_pinned_scaffold_packages():
     """A scaffolded graph carries this workspace's nami pin, which the
     published `waterui-dew`/`waterui-gtk`/`waterui-winui` cannot satisfy —
     their releases still require the nami line that kept `Signal::get`
     (nami#26). Until each backend releases a migrated version, its
-    `[patch.crates-io]` pin is what keeps a generated project resolving;
-    without it `water fetch` fails resolution before scaffolding finishes.
-    Drop this test with the pins."""
-    patches = FRAMEWORK["patch"]["crates-io"]
+    `[workspace.dependencies]` requirement pins the nami-migration head, so
+    `dev` and `nightly` scaffold that commit and `stable` withholds the
+    package under `experimental-packages`. Drop this test with the pins."""
     for name in ("waterui-dew", "waterui-gtk", "waterui-winui"):
-        dependency = patches.get(name)
-        assert isinstance(dependency, dict), (
-            f"[patch.crates-io] must pin {name} to its nami-migration head"
+        assert git_pinned(name), (
+            f"[workspace.dependencies].{name} must pin its nami-migration head"
         )
+        dependency = WORKSPACE[name]
         rev = dependency.get("rev", "")
         assert len(rev) == 40 and all(c in "0123456789abcdef" for c in rev), (
-            f"[patch.crates-io].{name} must pin an immutable revision"
+            f"[workspace.dependencies].{name} must pin an immutable revision"
         )
         assert dependency["git"].startswith("https://github.com/water-rs/")
