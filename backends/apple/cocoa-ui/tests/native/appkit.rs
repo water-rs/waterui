@@ -47,6 +47,10 @@ pub fn trials() -> Vec<Trial> {
             "appkit::input_view",
             valid_attributes_for_marked_text_returns_attribute_names
         ),
+        case!(
+            "appkit::display_link",
+            a_window_without_a_screen_drives_no_frame_clock
+        ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
             "appkit::window",
@@ -194,6 +198,120 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
         // SAFETY: `validAttributesForMarkedText` is the view's own getter.
         unsafe { msg_send![&*view, validAttributesForMarkedText] };
     assert!(attributes.count() >= 3);
+}
+
+/// Native attachment lifecycle: a window that is truly off every screen
+/// reports `screen() == nil`, so `start` leaves the clock disarmed and the
+/// bounded run-loop drain stays silent — the screenless safety the removed
+/// run-loop arm (a queued raw-pointer hop) violated by ticking anyway.
+/// Moving the same window onto a real display lets `reselect` re-arm the
+/// still-active request; `stop`/`drop` leave nothing queued.
+fn a_window_without_a_screen_drives_no_frame_clock() {
+    use cocoa_ui::display_link::FrameClock;
+    use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = marker();
+    // A point strictly beyond every real screen's frame, derived from the
+    // display layout — a borderless window accepts the position verbatim
+    // because AppKit's keep-on-screen constraint only applies to windows
+    // with a title bar.
+    let screens = NSScreen::screens(mtm);
+    let offscreen_x = screens
+        .iter()
+        .map(|screen| screen.frame().origin.x + screen.frame().size.width)
+        .fold(0.0, f64::max)
+        + 10_000.0;
+    let window = Window::new(
+        mtm,
+        Rect::new(offscreen_x, 0.0, 200.0, 200.0),
+        WindowStyle::empty(),
+    );
+    let frame = window.native().frame();
+    let overlaps = |a: NSRect, b: NSRect| {
+        a.origin.x < b.origin.x + b.size.width
+            && b.origin.x < a.origin.x + a.size.width
+            && a.origin.y < b.origin.y + b.size.height
+            && b.origin.y < a.origin.y + a.size.height
+    };
+    assert!(
+        screens.iter().all(|s| !overlaps(s.frame(), frame)),
+        "the fixture window must sit outside every screen: {frame:?}"
+    );
+    assert!(
+        window.native().screen().is_none(),
+        "a window outside every screen frame must report no screen"
+    );
+    let view = NSView::new(mtm);
+    view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    window.native().setContentView(Some(&view));
+
+    let ticks = Rc::new(Cell::new(0u32));
+    let clock = FrameClock::new(mtm, {
+        let ticks = Rc::clone(&ticks);
+        move || ticks.set(ticks.get() + 1)
+    });
+
+    // No screen: `start` leaves the clock disarmed, and a bounded run-loop
+    // drain must deliver nothing — no fallback and nothing queued.
+    clock.start(&view);
+    assert!(
+        !clock.is_running(),
+        "a screenless window must not arm the clock"
+    );
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert_eq!(ticks.get(), 0, "a screenless clock must not tick");
+
+    // Re-attach to the actual display: move the window onto a real screen's
+    // frame and `reselect` the same clock — the request stayed active, so
+    // the link arms without a second `start`.
+    let main = NSScreen::screens(mtm)
+        .iter()
+        .next()
+        .expect("the suite requires a real screen")
+        .frame();
+    window
+        .native()
+        .setFrameOrigin(NSPoint::new(main.origin.x + 40.0, main.origin.y + 40.0));
+    assert!(window.native().screen().is_some());
+    clock.reselect(&view);
+    assert!(
+        clock.is_running(),
+        "attaching to a screen must arm the same clock's display link"
+    );
+    // A visible window's link ticks under the run loop the suite pumps.
+    window.native().orderFrontRegardless();
+    let fired = crate::harness::pump_main_until(2.0, || ticks.get() > 0);
+    assert!(
+        fired,
+        "a display link on a real visible screen must tick within 2s"
+    );
+
+    // `stop`, then `drop`: the queue stays quiet — the removed run-loop arm
+    // is where a pending hop could outlive the clock before.
+    clock.stop();
+    let at_stop = ticks.get();
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert!(!clock.is_running());
+    assert_eq!(
+        ticks.get(),
+        at_stop,
+        "a stopped clock must deliver no further ticks"
+    );
+    drop(clock);
+    for _ in 0..10 {
+        crate::harness::pump_main_turn();
+    }
+    assert_eq!(
+        ticks.get(),
+        at_stop,
+        "a dropped clock must leave nothing queued"
+    );
+    window.close();
 }
 
 /// The `labelWithString:` factory allocs through `self` without running
