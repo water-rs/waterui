@@ -717,10 +717,14 @@ jobs:
         with:
           targets: aarch64-linux-android
           components: clippy
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job (the lint lane above); read-only lanes never save. The
+      # `cargo-home-*` rust-cache family this replaced had no writer at
+      # all — every restore was a guaranteed miss on content identical to
+      # this archive (#1441).
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
       # Build scripts still run on the host; cherenkov-gpu's optimizes its
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies
