@@ -153,7 +153,7 @@ impl ContinuousRect {
     /// subdivided until within `tolerance` of its chord.
     ///
     /// A `smoothing` of 0 gives circular-arc corners, equivalent to
-    /// [`RoundedRect::to_path`]; larger values extend the curvature
+    /// [`kurbo::Shape::to_path`]; larger values extend the curvature
     /// transition into the straight edges. Each corner is a quarter Lamé
     /// curve `x = r·|cos t|^e`, `y = r·|sin t|^e` with `e = 2/n` and
     /// `n = 2 + 2·smoothing`, recursively bisected in `t` until flat.

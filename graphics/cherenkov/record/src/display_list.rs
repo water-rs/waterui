@@ -697,8 +697,9 @@ const fn operand_count(command: &Command) -> u8 {
     }
 }
 
-/// The live operands of one command, yielded by
-/// [`DisplayListView::operands`]: every [`Slot`] the command exposes —
+/// The live operands of one command.
+///
+/// Yielded by [`DisplayListView::operands`]: every [`Slot`] the command exposes —
 /// the operand kinds [`DisplayList::apply`] accepts for it — each with
 /// the value currently recorded.
 #[derive(Debug)]
