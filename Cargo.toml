@@ -692,7 +692,7 @@ waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "83f004bb17
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "bc1ffc4cf0cc4884b6104883f2c537e246ba2c7e" }
 waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "add3782ece2c48db44f28873dd6e2ce63e50cf9f" }
 waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "4f95775bcef3022e6d5a52c2aa09aee02afb628f" }
-waterui-particle = { git = "https://github.com/water-rs/particle", rev = "b07a8e7a950a4590c475edb65dc7abd967f7d820" }
+waterui-particle = { git = "https://github.com/water-rs/particle", rev = "ae7bcb7f5260b22723dcb5892fb28f5d776c03eb" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "87080fc2e06628eb990af9fdbfbc3b8a28af5acc" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "50a87217658e9cf40024bf50619c4d7555a6415b" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
@@ -713,8 +713,10 @@ waterkit-video-core = { git = "https://github.com/water-rs/waterkit", rev = "925
 waterkit-video-player = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", rev = "925f2e1bdc1eab6c7eea62711ffd4bcef8113c96" }
 # codec@d266ae57 asks for shaderloom's `runtime` feature, added after the
-# 0.1.2 registry release; this is the rev waterkit pins itself.
-shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "84c37c8314f1bb6d228fce30f78d94872247a18f" }
+# 0.1.2 registry release. This rev is shaderloom's dev with
+# water-rs/shaderloom#24, whose default enables only `runtime`, so no
+# consumer links the build-script code generator into its runtime.
+shaderloom = { git = "https://github.com/water-rs/shaderloom", rev = "b0b6870c8b560d902c1de9a4d039c3a921b18b92" }
 waterui-math = { git = "https://github.com/water-rs/math", rev = "878bfc0284b32ee18c1a50860adf9ba489a4d5ab" }
 # `hydrolysis-m3` declares `cherenkov` as a direct git dependency on the
 # cherenkov repository's old import rev, which a crates-io patch cannot
