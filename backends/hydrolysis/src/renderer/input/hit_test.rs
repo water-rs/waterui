@@ -12,6 +12,7 @@ use waterui_backend_core::widget::{
 };
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::ScrollUnit;
+use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DropTargetKey {
@@ -339,6 +340,18 @@ pub struct HitTestState {
     /// still receives hit state through `GpuFrame::pointer`.
     pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
+    /// The host's touch-drag scroll parameters, pushed by the runner each
+    /// input dispatch — `None` on platforms that carry none, where a
+    /// [`PointerKind::Touch`] drag never claims a scroll view.
+    pub(crate) touch_scroll_config: Option<crate::platform::TouchScrollConfig>,
+    /// The touch-drag scroll gesture's in-flight claim, kept across frames
+    /// like `active_pointer` — driven only by `PointerKind::Touch`
+    /// sequences; mouse and pen pointers never arm it.
+    pub(crate) touch_scroll: TouchScrollGesture,
+    /// A fling running after a claimed touch released — it outlives the
+    /// gesture state and stops only when it settles or a new touch down
+    /// grabs the content.
+    pub(crate) touch_fling: Option<TouchFling>,
     pub(crate) hit_test_opacity: f32,
     pub(crate) hit_test_order: usize,
     /// The tree order of the candidate keyboard focus last rested on —
@@ -1032,6 +1045,9 @@ impl HydrolysisRenderer {
         self.hit_test.pointer_position = Some(point);
         self.hit_test.pointer_press_origin = Some(point);
         let at = self.frame_instant();
+        if pointer_kind == PointerKind::Touch {
+            self.arm_touch_scroll(point, button, at);
+        }
         let mut refresh_requested = false;
         let mut visual_changed = false;
         self.hit_test.active_pointer_drag_target = None;
@@ -1563,6 +1579,7 @@ impl HydrolysisRenderer {
             target.sink.pointer_button(false, button, position);
             self.hit_test.active_pointer = None;
             self.hit_test.active_pointer_button = None;
+            self.hit_test.touch_scroll = TouchScrollGesture::Idle;
             return true;
         }
         let at = self.frame_instant();
@@ -1570,6 +1587,9 @@ impl HydrolysisRenderer {
         // release, so it runs before the pending press is drained.
         #[allow(clippy::useless_let_if_seq)]
         let mut changed = self.handle_pointer_move_inner(x, y, env, pointer_kind);
+        if pointer_kind == PointerKind::Touch {
+            changed |= self.finish_touch_scroll(at);
+        }
         if let Some(pending) = self.hit_test.pending_pointer_press.take() {
             self.hit_test
                 .interaction
@@ -1671,6 +1691,11 @@ impl HydrolysisRenderer {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.pointer_position = Some(point);
         let at = self.frame_instant();
+        // A claimed touch-drag scroll owns the sequence: the move drives
+        // its one-to-one tracking and nothing else sees it.
+        if pointer_kind == PointerKind::Touch && self.handle_touch_scroll_move(point, at, env) {
+            return true;
+        }
         // The hold dies when the press leaves the recognizer's slop — the
         // same move check `LongPressDetector` applies.
         if let Some(hold) = self.hit_test.pending_context_menu_hold
@@ -2864,6 +2889,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
+        self.hit_test.touch_scroll = TouchScrollGesture::Idle;
         refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         if press_clear.chrome_changed {
@@ -2998,6 +3024,188 @@ impl HydrolysisRenderer {
             return true;
         }
         self.handle_scroll(x, y, dx, dy, false)
+    }
+
+    /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: a
+    /// running fling stops where it is, and the new press watches for a
+    /// slop crossing while its press still lands on the content under it.
+    fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
+        self.hit_test.touch_fling = None;
+        self.hit_test.touch_scroll = if button == PointerButton::Primary
+            && self.hit_test.touch_scroll_config.is_some()
+        {
+            TouchScrollGesture::Pending(TouchScrollPending {
+                origin: point,
+                tracker: VelocityTracker::new(at, point),
+            })
+        } else {
+            TouchScrollGesture::Idle
+        };
+    }
+
+    /// Drives the touch-drag scroll gesture for a `PointerKind::Touch`
+    /// move and reports whether the sequence is the gesture's: while a
+    /// scroll view owns the drag every delta scrolls it one to one; while
+    /// the sequence is still pending, the first move past the touch slop
+    /// lets the innermost enclosing scroll view able to scroll along the
+    /// movement's dominant axis claim it — cancelling the content's press,
+    /// never completing it.
+    fn handle_touch_scroll_move(
+        &mut self,
+        point: kurbo::Point,
+        at: Instant,
+        env: &Environment,
+    ) -> bool {
+        let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        match gesture {
+            TouchScrollGesture::Dragging(mut drag) => {
+                drag.tracker.record(at, point);
+                let changed = drag.handle.apply_scroll_delta(
+                    crate::num_cast::f64_as_f32(point.x - drag.last.x),
+                    crate::num_cast::f64_as_f32(point.y - drag.last.y),
+                    false,
+                );
+                drag.last = point;
+                self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
+                if changed {
+                    self.request_refresh();
+                }
+                true
+            }
+            TouchScrollGesture::Pending(mut pending) => {
+                pending.tracker.record(at, point);
+                let displacement_x = point.x - pending.origin.x;
+                let displacement_y = point.y - pending.origin.y;
+                let (dominant, dominant_x) = if displacement_x.abs() > displacement_y.abs() {
+                    (displacement_x, true)
+                } else {
+                    (displacement_y, false)
+                };
+                let slop = self
+                    .hit_test
+                    .touch_scroll_config
+                    .map_or(0.0, |config| f64::from(config.touch_slop));
+                if dominant.abs() <= slop {
+                    self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
+                    return false;
+                }
+                if self.hit_test.active_embedded_target.is_some() {
+                    // The press landed on a surface that owns its input; a
+                    // scroll view never steals a sequence from it.
+                    return false;
+                }
+                let Some(handle) =
+                    self.touch_scroll_claimant(pending.origin, displacement_x, displacement_y)
+                else {
+                    return false;
+                };
+                // The claim steals the sequence: the content's press is
+                // cancelled — never completed — through the same teardown a
+                // context-menu hold commits with.
+                self.hit_test.pending_pointer_press = None;
+                self.hit_test.active_pointer_target = None;
+                self.hit_test.active_pointer_drag_target = None;
+                self.hit_test.active_pointer_drag_signature = None;
+                self.clear_scrollbar_drag();
+                self.text_editing.active_text_selection_drag = None;
+                self.hit_test.active_press_bounds = None;
+                self.hit_test.active_press_origin = None;
+                self.hit_test.pending_context_menu_hold = None;
+                let press_clear = self.hit_test.interaction.clear_all_presses(at);
+                if press_clear.chrome_changed {
+                    self.request_refresh();
+                } else if press_clear.visual_changed {
+                    self.request_redraw();
+                }
+                let _ = self.gesture_engine.handle_pointer_cancel(at, env);
+                // The crossing move applies its excess over the slop at
+                // once — the content slides under the finger with no jump,
+                // anchored where the dominant axis left the slop.
+                let anchor = if dominant_x {
+                    kurbo::Point::new(pending.origin.x + slop.copysign(dominant), pending.origin.y)
+                } else {
+                    kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
+                };
+                let changed = handle.apply_scroll_delta(
+                    crate::num_cast::f64_as_f32(point.x - anchor.x),
+                    crate::num_cast::f64_as_f32(point.y - anchor.y),
+                    false,
+                );
+                self.hit_test.touch_scroll = TouchScrollGesture::Dragging(TouchScrollDrag {
+                    handle,
+                    last: point,
+                    tracker: pending.tracker,
+                });
+                if changed {
+                    self.request_refresh();
+                }
+                true
+            }
+            TouchScrollGesture::Idle => false,
+        }
+    }
+
+    /// The innermost scroll view under the touch-down point able to move
+    /// along the drag's dominant axis and direction — the claimant of a
+    /// past-slop touch drag. Newest-registered first, the same hit order
+    /// [`Self::handle_scroll`] walks.
+    fn touch_scroll_claimant(
+        &self,
+        origin: kurbo::Point,
+        displacement_x: f64,
+        displacement_y: f64,
+    ) -> Option<crate::scroll::ScrollHandle> {
+        const EPSILON: f64 = 0.000_01;
+        let dominant_x = displacement_x.abs() > displacement_y.abs();
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .rev()
+            .find_map(|target| {
+                if !target.bounds.contains(origin) {
+                    return None;
+                }
+                let metrics = target.handle.metrics();
+                // The finger's sign flips into the offset's: a drag up
+                // (dy < 0) pushes the offset toward its max, so the view
+                // can claim only while that room remains.
+                let able = match (target.handle.axis(), dominant_x) {
+                    (ScrollAxis::Horizontal | ScrollAxis::All, true) => {
+                        if displacement_x > 0.0 {
+                            metrics.offset_x > EPSILON
+                        } else {
+                            metrics.offset_x < metrics.max_x - EPSILON
+                        }
+                    }
+                    (ScrollAxis::Vertical | ScrollAxis::All, false) => {
+                        if displacement_y > 0.0 {
+                            metrics.offset_y > EPSILON
+                        } else {
+                            metrics.offset_y < metrics.max_y - EPSILON
+                        }
+                    }
+                    (ScrollAxis::Horizontal, false) | (ScrollAxis::Vertical, true) => false,
+                    _ => panic!("scroll axis variant is not supported by hydrolysis"),
+                };
+                able.then(|| target.handle.clone())
+            })
+    }
+
+    /// Releases the touch-drag scroll gesture: a claimed drag whose
+    /// release velocity earns a fling starts it on the claimed handle;
+    /// anything else ends the gesture plainly. Returns whether the gesture
+    /// changed something the frame must show.
+    fn finish_touch_scroll(&mut self, at: Instant) -> bool {
+        let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        let TouchScrollGesture::Dragging(drag) = gesture else {
+            return false;
+        };
+        let Some(config) = self.hit_test.touch_scroll_config else {
+            return false;
+        };
+        let fling = TouchFling::start(drag.handle, drag.tracker.velocity(at), &config, at);
+        self.hit_test.touch_fling = fling;
+        self.hit_test.touch_fling.is_some()
     }
 }
 
@@ -3796,6 +4004,34 @@ impl SemanticCore {
             .scroll_targets
             .iter()
             .any(|target| target.handle.is_smooth_scrolling())
+    }
+
+    /// The host's touch-drag scroll parameters for this window, carried by
+    /// value from `PlatformWindow::touch_scroll_config` each input
+    /// dispatch — `None` where the platform supplies none.
+    pub(crate) const fn set_touch_scroll_config(
+        &mut self,
+        config: Option<crate::platform::TouchScrollConfig>,
+    ) {
+        self.hit_test.touch_scroll_config = config;
+    }
+
+    /// Whether a touch fling is still decelerating toward rest.
+    pub(crate) const fn has_active_touch_fling(&self) -> bool {
+        self.hit_test.touch_fling.is_some()
+    }
+
+    /// Advances a running touch fling to `now`; returns whether its write
+    /// or its continuation needs another frame.
+    pub(crate) fn tick_touch_scroll(&mut self, now: Instant) -> bool {
+        let Some(fling) = self.hit_test.touch_fling.take() else {
+            return false;
+        };
+        let tick = fling.tick(now);
+        if tick.running {
+            self.hit_test.touch_fling = Some(fling);
+        }
+        tick.changed || tick.running
     }
 }
 

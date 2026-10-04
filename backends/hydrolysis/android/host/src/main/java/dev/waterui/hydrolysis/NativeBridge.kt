@@ -20,9 +20,11 @@ object NativeBridge {
      * accesskit action index plus selection-bounds, text and numeric
      * payload channels; 5 = `onNativeAccessibilityTreeChanged` carries the
      * diffed event-list JSON and [nativeAccessibilityHitTest] maps a point
-     * to the served virtual node for explore-by-touch.
+     * to the served virtual node for explore-by-touch; 6 =
+     * `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
+     * parameters (slop, min/max fling velocity, scroll friction).
      */
-    private const val SCHEMA: Int = 5
+    private const val SCHEMA: Int = 6
 
     private var initialized = false
 
@@ -69,6 +71,10 @@ object NativeBridge {
         insetTop: Int,
         insetRight: Int,
         insetBottom: Int,
+        touchSlopPx: Float,
+        minFlingVelocityPx: Float,
+        maxFlingVelocityPx: Float,
+        scrollFriction: Float,
     )
 
     /**

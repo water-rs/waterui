@@ -29,8 +29,10 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// takes the accesskit action index plus selection-bounds, text and numeric
 /// payload channels; 5 = `onNativeAccessibilityTreeChanged` carries the
 /// diffed event-list JSON and `nativeAccessibilityHitTest` maps a point to
-/// the served virtual node for explore-by-touch.
-pub const JNI_SCHEMA: jint = 5;
+/// the served virtual node for explore-by-touch; 6 = `nativeSetMetrics`
+/// carries the `ViewConfiguration` touch-scroll parameters (slop, min/max
+/// fling velocity, scroll friction).
+pub const JNI_SCHEMA: jint = 6;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -171,6 +173,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             font_scale: 1.0,
             refresh_hz: None,
             insets_px: [0; 4],
+            touch_slop_px: 0.0,
+            min_fling_velocity_px: 0.0,
+            max_fling_velocity_px: 0.0,
+            scroll_friction: 0.0,
         };
         let session = AndroidSession::create(vm, host_view, metrics, sdk_int)?;
         Ok(Box::into_raw(session) as jlong)
@@ -207,6 +213,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     inset_t: jint,
     inset_r: jint,
     inset_b: jint,
+    touch_slop: jfloat,
+    min_fling_velocity: jfloat,
+    max_fling_velocity: jfloat,
+    scroll_friction: jfloat,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).set_metrics(MetricsSnapshot {
@@ -216,6 +226,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             font_scale: f64::from(font_scale).max(f64::EPSILON),
             refresh_hz: (refresh_hz > 0.0).then_some(f64::from(refresh_hz)),
             insets_px: [inset_l, inset_t, inset_r, inset_b],
+            touch_slop_px: touch_slop,
+            min_fling_velocity_px: min_fling_velocity,
+            max_fling_velocity_px: max_fling_velocity,
+            scroll_friction: f64::from(scroll_friction),
         });
         Ok(())
     });

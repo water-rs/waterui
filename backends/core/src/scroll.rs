@@ -191,6 +191,13 @@ impl ScrollHandle {
         state.metrics()
     }
 
+    /// The axis the bound scroll view scrolls along.
+    #[must_use]
+    pub fn axis(&self) -> Axis {
+        let state = self.state.borrow();
+        state.axis
+    }
+
     /// Applies a wheel/trackpad delta along the scroll view's axis and
     /// returns whether it changed anything that needs a frame.
     ///

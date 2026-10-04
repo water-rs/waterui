@@ -10,6 +10,7 @@ mod menu_shortcuts;
 mod popup_menu;
 mod surface;
 pub mod text_editing;
+mod touch_scroll;
 
 pub use anchored_overlay::*;
 pub use context_menu::*;
@@ -19,3 +20,4 @@ pub use menu_shortcuts::*;
 pub use popup_menu::*;
 pub use surface::*;
 pub use text_editing::*;
+pub use touch_scroll::*;
