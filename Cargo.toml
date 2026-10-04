@@ -176,6 +176,7 @@ blocking = "1.7.0"
 # props contract hash needs: the same hash is computed by the compiler into the
 # binary and by the CLI from the artifact.
 const-fnv1a-hash = "1.1.0"
+crossbeam-channel = "0.5"
 executor-core = { version = "0.7.1", features = ["std"]}
 # No crate in this workspace runs a future on `futures`' own executor — every
 # host installs its own `LocalExecutor` — so the default `executor` feature is
@@ -303,7 +304,7 @@ waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }
 # scaffolds declare the commit directly while `stable` withholds the packages
 # under `experimental-packages` (water-rs/nami#26). Drop the `git`/`rev` half
 # once each backend releases a migrated version.
-waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "fd2284f2a997ee8f31923fe8774e95450167bb0d" }
+waterui-gtk = { version = "0.2.1", git = "https://github.com/water-rs/gtk-backend", rev = "9fe7a1f47f64aa1fc26a50c59f6670010559fa71" }
 waterui-winui = { version = "0.1.0", git = "https://github.com/water-rs/waterui-winui", rev = "830932ce5f0a3d316d225da207c88ae9e66ff946" }
 waterui-testing = { path = "testing" }
 waterui-internal = { version = "0.5.1", path = "src", default-features = false }
@@ -605,7 +606,7 @@ waterui-webview = { path = "components/platform/webview" }
 # revision carries the icon-button contract (water-rs/hydrolysis#115). Drop
 # the git pin once a release has the change.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "169c42a810c4662abda184c89c114846877b13ec" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "cc8be840d96be39dc6f23aeace7310801d7a5f35" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.

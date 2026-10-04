@@ -35,10 +35,14 @@ fn stepper_updates(ui: UiBuilder) {
 
 ## Design
 
-- **Theme and render mode are orthogonal.** `.theme(installer)` swaps the theme package
-  (Material 3 by default, the theme a generated project installs); `mount()` is the fast
-  semantic runtime,
+- **Theme and render mode are orthogonal.** `ui()` mounts with no style package;
+  `.theme(installer)` carries one into the builder (the theme a generated project
+  installs); `mount()` is the fast semantic runtime,
   `mount_offscreen()` the GPU-backed one. Any theme works in either mode.
+- **Style-package fonts resolve strictly.** A styled test resolves the font
+  families its style package names against the host's installed fonts, exactly
+  as the application does. A named family that is not installed fails the test
+  naming it — install the style package's fonts with its font install script.
 - **Interactions are assertions.** `tap`, `set_text`, `increment`, `focus`, drags and key
   presses return `()` and panic when the runtime reports the accessibility action
   unhandled. Tests for disabled/clamped controls assert the panic (`catch_unwind`).

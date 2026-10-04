@@ -41,7 +41,9 @@ use crate::platform::{
     GpuSurfaceWindow, InputEvent, PlatformWindow, SurfaceProvider, TextInputState,
     validated_window_frame,
 };
-use crate::renderer::{HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry};
+use crate::renderer::{
+    FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
+};
 use crate::runner::window::{
     RuntimeWindow, advance_runtime, handle_input_events, render_window, reports_ui_idle,
 };
@@ -71,6 +73,16 @@ pub struct MetricsSnapshot {
     /// Window-inset edges in physical px: `[left, top, right, bottom]` —
     /// the combined system-bar/cutout/IME insets the safe-area contract reads.
     pub(crate) insets_px: [i32; 4],
+    /// `ViewConfiguration.getScaledTouchSlop()`, in physical px.
+    pub(crate) touch_slop_px: f32,
+    /// `ViewConfiguration.getScaledMinimumFlingVelocity()`, in physical px/s.
+    pub(crate) min_fling_velocity_px: f32,
+    /// `ViewConfiguration.getScaledMaximumFlingVelocity()`, in physical px/s.
+    pub(crate) max_fling_velocity_px: f32,
+    /// `ViewConfiguration.getScrollFriction()` — always positive on a real
+    /// host, so the creation-time snapshot's `0.0` reads as "not yet
+    /// populated" until the first `nativeSetMetrics` lands.
+    pub(crate) scroll_friction: f64,
 }
 
 /// The session's JNI handle back into the Kotlin host — a cached `JavaVM`
@@ -348,6 +360,39 @@ impl PlatformWindow for AndroidHostWindow {
 
     fn scale_factor(&self) -> f64 {
         self.metrics.density
+    }
+
+    /// The touch-drag scroll gesture's parameters, converted from the
+    /// metrics snapshot's physical px to logical units — the fling's spline
+    /// model is AOSP `frameworks/base/core/java/android/widget/OverScroller.java`
+    /// (`SplineScroller`): `mPhysicalCoeff = GRAVITY_EARTH * 39.37 * ppi *
+    /// 0.84` in physical px/s², carried here per logical unit so the
+    /// renderer's logical-unit math reproduces the same run.
+    fn touch_scroll_config(&self) -> Option<crate::platform::TouchScrollConfig> {
+        let metrics = &self.metrics;
+        // The session's creation-time snapshot carries no `ViewConfiguration`
+        // values — friction is always positive on a real push — and a
+        // window still waiting on its first metrics dispatches no input
+        // these would apply to.
+        if metrics.scroll_friction <= 0.0 {
+            return None;
+        }
+        let density = metrics.density;
+        let ppi = density * 160.0;
+        let physical_coeff_px = 9.806_65 * 39.37 * ppi * 0.84;
+        Some(crate::platform::TouchScrollConfig {
+            touch_slop: crate::num_cast::f64_as_f32(f64::from(metrics.touch_slop_px) / density),
+            min_fling_velocity: crate::num_cast::f64_as_f32(
+                f64::from(metrics.min_fling_velocity_px) / density,
+            ),
+            max_fling_velocity: crate::num_cast::f64_as_f32(
+                f64::from(metrics.max_fling_velocity_px) / density,
+            ),
+            fling: crate::platform::FlingDeceleration {
+                physical_coeff: physical_coeff_px / density,
+                friction: metrics.scroll_friction,
+            },
+        })
     }
 
     fn refresh_rate_hz(&self) -> Option<f64> {
@@ -688,10 +733,7 @@ impl AndroidSession {
             soft_input: None,
         };
         platform.apply_properties(&window);
-        let mut renderer = {
-            let surface = &platform.surface;
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), theme)
-        };
+        let mut renderer = HydrolysisRenderer::new(theme, FontFamilyResolution::Lenient);
         crate::runner::fonts::seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());
         let mut runtime = RuntimeWindow::new(

@@ -4,8 +4,11 @@
 
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
+
+#[cfg(not(target_arch = "wasm32"))]
+use crossbeam_channel::Receiver;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -334,8 +337,11 @@ fn samples_backdrop_shader(tree: &SurfaceTree, id: BackdropShaderId) -> bool {
 /// queue — a binding's last handle can die inside this thread's own
 /// work (`unbind`, surface destroy, `drain_gpu_producers`), and a
 /// retirement sent on the bounded `rx` channel would block this loop
-/// on a channel it alone drains. The queue drains after each applied
-/// message.
+/// on a channel it alone drains. The loop waits on both queues — a
+/// retirement wakes it by itself — and drains after each applied
+/// message. `rx`'s disconnect alone ends the loop: `retire_rx` stays
+/// connected for the engine's lifetime, so its senders only outlive
+/// `rx`'s and never the loop's.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run<B: Backend>(
     config: B::Config,
@@ -354,104 +360,131 @@ pub fn run<B: Backend>(
     let mut surfaces: FxHashMap<SurfaceId, SurfaceState> = FxHashMap::default();
     let mut resources = Resources::<B>::default();
     let mut next_frame = 0u64;
-    while let Ok(message) = rx.recv() {
-        match message {
-            Message::CreateSurface {
-                id,
-                target,
-                waker,
-                reply,
-            } => {
-                let _ = reply.send(create_surface::<B>(
-                    &mut renderer,
-                    &mut surfaces,
-                    id,
-                    target,
-                    waker,
-                ));
-            }
-            Message::ResizeSurface { id, size } => {
-                resize_surface::<B>(&mut renderer, &mut surfaces, id, size);
-            }
-            Message::DestroySurface { id } => {
-                destroy_surface::<B>(&mut renderer, &mut surfaces, &mut resources, id);
-            }
-            Message::Display { id, display } => set_display(&mut surfaces, id, display),
-            Message::DisplayMoved { id } => set_display_moved(&mut surfaces, id),
-            Message::Visibility { id, visibility } => {
-                set_visibility::<B>(&mut renderer, &mut surfaces, id, visibility);
-            }
-            Message::Resource(op) => op(&mut renderer),
-            Message::ProducerFrame { opaque, apply, .. } => {
-                producer_frame::<B>(&mut renderer, &mut surfaces, opaque, apply);
-            }
-            Message::Register { resource, op } => {
-                resources.register(resource, op(&mut renderer));
-            }
-            Message::Release { resource, op } => {
-                resources.release(&mut renderer, &surfaces, resource, op);
-            }
-            Message::ReplaceImage { id, image } => {
-                replace_image::<B>(&mut renderer, &mut surfaces, &mut resources, id, image);
-            }
-            Message::Apply { id, mut changes } => apply_hidden::<B>(
-                &mut renderer,
-                &mut surfaces,
-                &mut resources,
-                id,
-                &mut changes,
-            ),
-            Message::Render {
-                time,
-                mut commits,
-                reply,
-            } => {
-                let id = FrameId(next_frame);
-                next_frame += 1;
-                let result = render::<B>(
+    loop {
+        crossbeam_channel::select! {
+            recv(rx) -> message => {
+                // `rx`'s disconnect ends the loop as `recv()` failing
+                // did before the select.
+                let Ok(message) = message else { break };
+                if !apply_message::<B>(
+                    message,
                     &mut renderer,
                     &mut surfaces,
                     &mut resources,
-                    id,
-                    time.0,
-                    &mut commits,
-                );
-                // This frame's queued retirements belong to its batch.
+                    &mut next_frame,
+                    retire_rx,
+                ) {
+                    break;
+                }
                 drain_retire::<B>(retire_rx, &mut renderer);
-                let sender = reply.clone();
-                let _ = sender.send(crate::message::RenderReply {
-                    result,
-                    commits,
-                    sender: reply,
-                });
             }
-            Message::FinishTimings { reply } => {
-                let _ = reply.send(renderer.finish_timings());
+            recv(retire_rx) -> retire => {
+                // A retirement wakes the loop by itself so its queued
+                // native release is submitted at once, idle or not — it
+                // never waits for a frame to carry it (#1691).
+                if let Ok(retire) = retire {
+                    retire(&mut renderer);
+                }
+                drain_retire::<B>(retire_rx, &mut renderer);
             }
-            Message::Readback { surface, reply } => {
-                let _ = reply.send(renderer.readback(surface));
-            }
-            Message::Memory { reply } => {
-                let sender = reply.clone();
-                let _ = sender.send(crate::message::MemoryReply {
-                    usage: renderer.memory(),
-                    sender: reply,
-                });
-            }
-            Message::Trim(pressure) => renderer.trim(pressure),
-            Message::Shutdown => break,
         }
-        drain_retire::<B>(retire_rx, &mut renderer);
     }
 }
 
-/// Applies every queued producer retirement (`thread::run`'s `retire_rx`
-/// drain after each applied message).
+/// Applies one transaction message; `false` ends the render loop
+/// ([`Message::Shutdown`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn apply_message<B: Backend>(
+    message: Message<B>,
+    renderer: &mut B::Renderer,
+    surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
+    resources: &mut Resources<B>,
+    next_frame: &mut u64,
+    retire_rx: &Receiver<crate::message::ResOp<B>>,
+) -> bool {
+    match message {
+        Message::CreateSurface {
+            id,
+            target,
+            waker,
+            reply,
+        } => {
+            let _ = reply.send(create_surface::<B>(renderer, surfaces, id, target, waker));
+        }
+        Message::ResizeSurface { id, size } => {
+            resize_surface::<B>(renderer, surfaces, id, size);
+        }
+        Message::DestroySurface { id } => {
+            destroy_surface::<B>(renderer, surfaces, resources, id);
+        }
+        Message::Display { id, display } => set_display(surfaces, id, display),
+        Message::DisplayMoved { id } => set_display_moved(surfaces, id),
+        Message::Visibility { id, visibility } => {
+            set_visibility::<B>(renderer, surfaces, id, visibility);
+        }
+        Message::Resource(op) => op(renderer),
+        Message::ProducerFrame { opaque, apply, .. } => {
+            producer_frame::<B>(renderer, surfaces, opaque, apply);
+        }
+        Message::Register { resource, op } => {
+            resources.register(resource, op(renderer));
+        }
+        Message::Release { resource, op } => {
+            resources.release(renderer, surfaces, resource, op);
+        }
+        Message::ReplaceImage { id, image } => {
+            replace_image::<B>(renderer, surfaces, resources, id, image);
+        }
+        Message::Apply { id, mut changes } => {
+            apply_hidden::<B>(renderer, surfaces, resources, id, &mut changes);
+        }
+        Message::Render {
+            time,
+            mut commits,
+            reply,
+        } => {
+            let id = FrameId(*next_frame);
+            *next_frame += 1;
+            let result = render::<B>(renderer, surfaces, resources, id, time.0, &mut commits);
+            // This frame's queued retirements belong to its batch.
+            drain_retire::<B>(retire_rx, renderer);
+            let sender = reply.clone();
+            let _ = sender.send(crate::message::RenderReply {
+                result,
+                commits,
+                sender: reply,
+            });
+        }
+        Message::FinishTimings { reply } => {
+            let _ = reply.send(renderer.finish_timings());
+        }
+        Message::Readback { surface, reply } => {
+            let _ = reply.send(renderer.readback(surface));
+        }
+        Message::Memory { reply } => {
+            let sender = reply.clone();
+            let _ = sender.send(crate::message::MemoryReply {
+                usage: renderer.memory(),
+                sender: reply,
+            });
+        }
+        Message::Trim(pressure) => renderer.trim(pressure),
+        Message::Shutdown => return false,
+    }
+    true
+}
+
+/// Applies every queued producer retirement, then submits the native
+/// releases they queued: a retirement applied outside a render still
+/// releases on the GPU at once — the release never waits for a frame
+/// to flush it (#1691). `thread::run` calls this after each applied
+/// message and when a retirement itself wakes the loop.
 #[cfg(not(target_arch = "wasm32"))]
 fn drain_retire<B: Backend>(rx: &Receiver<crate::message::ResOp<B>>, renderer: &mut B::Renderer) {
     while let Ok(retire) = rx.try_recv() {
         retire(renderer);
     }
+    renderer.submit_native_releases();
 }
 
 /// The submitted frame applied on the renderer names the layers it lands

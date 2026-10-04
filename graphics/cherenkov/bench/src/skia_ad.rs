@@ -1490,6 +1490,16 @@ mod graphite_metal {
         counters: Counters,
     }
 
+    impl std::fmt::Debug for SkiaMtl {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("SkiaMtl")
+                .field("info", &self.info)
+                .field("size", &self.size)
+                .field("counters", &self.counters)
+                .finish_non_exhaustive()
+        }
+    }
+
     impl SkiaMtl {
         /// Adapter key.
         pub const NAME: &'static str = "skia-metal";

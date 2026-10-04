@@ -168,15 +168,37 @@ fn an_image_draws_where_the_recording_put_it() {
     assert!(right[2] > 200 && right[0] < 40, "right texel: {right:?}");
 }
 
+/// Raw data of an installed font face: a [`FontSource`] carries font bytes,
+/// and the repository commits none, so the recording tests resolve a family
+/// through system font discovery — the same lookup a test runtime makes for
+/// a named family. `backends/hydrolysis/test-fonts/install.py` installs the
+/// fixtures; a missing family fails naming it and the script.
+fn installed_font_bytes(family_name: &str) -> Arc<[u8]> {
+    let mut collection = fontique::Collection::new(fontique::CollectionOptions::default());
+    let family = collection.family_by_name(family_name).unwrap_or_else(|| {
+        panic!(
+            "font family `{family_name}` is not installed; install the test fonts \
+             with `uv run backends/hydrolysis/test-fonts/install.py`"
+        )
+    });
+    let font = family
+        .default_font()
+        .expect("the resolved family carries no default face");
+    Arc::from(
+        font.load(None)
+            .expect("the resolved face failed to load")
+            .as_ref(),
+    )
+}
+
 #[test]
 fn a_glyph_run_draws_its_glyphs() {
-    const FONT: &[u8] = include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf");
+    let source = installed_font_bytes("Roboto");
 
-    let face = ttf_parser::Face::parse(FONT, 0).expect("test font did not parse");
+    let face = ttf_parser::Face::parse(source.as_ref(), 0).expect("test font did not parse");
     let glyph = face.glyph_index('A').expect("the test font has no 'A'").0;
 
     let mut rasterizer = Rasterizer::new(32, 32).expect("engine failed to start");
-    let source = Arc::<[u8]>::from(FONT);
     let recording = Picture::record_with(
         rasterizer.resources(),
         GlyphSource {
@@ -195,16 +217,16 @@ fn a_glyph_run_draws_its_glyphs() {
 
 #[test]
 fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
-    const FONT: &[u8] = include_bytes!("../../../../testing/fonts/Roboto-Regular.ttf");
+    let font_bytes = installed_font_bytes("Roboto");
 
     let rasterizer = Rasterizer::new(8, 8).expect("engine failed to start");
     let resources = rasterizer.resources();
     let (first_id, image_id) = {
         let first = resources
-            .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
+            .font(FontSource::bytes(Arc::clone(&font_bytes)))
             .expect("font registration failed");
         let second = resources
-            .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
+            .font(FontSource::bytes(Arc::<[u8]>::from(&font_bytes[..])))
             .expect("font registration failed");
         assert_eq!(
             first, second,
@@ -228,7 +250,7 @@ fn a_held_source_registers_once_and_a_released_one_registers_fresh() {
     // The table outlives the handles but never kept them: the released
     // registrations are gone, so the same sources register fresh.
     let third = resources
-        .font(FontSource::bytes(Arc::<[u8]>::from(FONT)))
+        .font(FontSource::bytes(Arc::clone(&font_bytes)))
         .expect("font registration failed");
     let image_c = resources
         .image(tiny_image())

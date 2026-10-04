@@ -306,9 +306,9 @@ fn glyph_only_scene_counts() {
 
 /// One text run each on the three colour/vector font technologies the
 /// boundary must keep working: a variable face (wght axis set by `.weight`),
-/// a `COLRv0` colour face, and a colour-bitmap emoji face. They run on the
-/// native font loader because the deterministic collection pins generic
-/// families; named-family resolution is what the fixture needs.
+/// a `COLRv0` colour face, and a colour-bitmap emoji face. The named faces
+/// must be installed on the host — the runtime resolves families strictly, so
+/// a missing one fails naming it instead of substituting another face.
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn variable_colr_bitmap_fonts_count() {
@@ -320,7 +320,7 @@ fn variable_colr_bitmap_fonts_count() {
                 .family("Test Variable ABC")
                 .weight(FontWeight::Black),
         ),
-        text("COLR").font(Font::new(Body).family("Bungee Color Regular")),
+        text("COLR").font(Font::new(Body).family("Bungee Color")),
         text("\u{1f600}\u{1f680}").font(Font::new(Body)),
     )))));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -328,7 +328,7 @@ fn variable_colr_bitmap_fonts_count() {
             .take()
             .expect("the fixture view is built once")
     });
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         WINDOW,

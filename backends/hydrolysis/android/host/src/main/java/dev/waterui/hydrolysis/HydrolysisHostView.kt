@@ -6,6 +6,7 @@ import android.util.SparseArray
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.ViewStructure
 import android.view.WindowInsets
@@ -59,6 +60,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastFontScale = Float.NaN
     private var lastRefreshHz = Float.NaN
     private var lastInsets = intArrayOf(0, 0, 0, 0)
+    private var lastTouchSlop = Float.NaN
+    private var lastMinFlingVelocity = Float.NaN
+    private var lastMaxFlingVelocity = Float.NaN
+    private var lastScrollFriction = Float.NaN
     private var lastRootInsets: WindowInsetsCompat? = null
 
     /**
@@ -137,12 +142,21 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 intArrayOf(0, 0, 0, 0)
             }
         val refreshHz = display?.refreshRate ?: 0f
+        val viewConfiguration = ViewConfiguration.get(context)
+        val touchSlop = viewConfiguration.scaledTouchSlop.toFloat()
+        val minFlingVelocity = viewConfiguration.scaledMinimumFlingVelocity.toFloat()
+        val maxFlingVelocity = viewConfiguration.scaledMaximumFlingVelocity.toFloat()
+        val scrollFriction = ViewConfiguration.getScrollFriction()
         if (width == lastMetricsWidth &&
             height == lastMetricsHeight &&
             metrics.density == lastDensity &&
             configuration.fontScale == lastFontScale &&
             refreshHz == lastRefreshHz &&
-            edges.contentEquals(lastInsets)
+            edges.contentEquals(lastInsets) &&
+            touchSlop == lastTouchSlop &&
+            minFlingVelocity == lastMinFlingVelocity &&
+            maxFlingVelocity == lastMaxFlingVelocity &&
+            scrollFriction == lastScrollFriction
         ) {
             return
         }
@@ -152,6 +166,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         lastFontScale = configuration.fontScale
         lastRefreshHz = refreshHz
         lastInsets = edges
+        lastTouchSlop = touchSlop
+        lastMinFlingVelocity = minFlingVelocity
+        lastMaxFlingVelocity = maxFlingVelocity
+        lastScrollFriction = scrollFriction
         NativeBridge.nativeSetMetrics(
             session.nativePtr,
             width,
@@ -163,6 +181,10 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             edges[1],
             edges[2],
             edges[3],
+            touchSlop,
+            minFlingVelocity,
+            maxFlingVelocity,
+            scrollFriction,
         )
     }
 

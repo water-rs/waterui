@@ -49,7 +49,7 @@ fn row_long_wrap() -> AnyView {
 fn lazy_view_path_answers_what_its_item_answers() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
 
     let shapes: [(&str, RowFactory); 6] = [
         ("one-line", row_one_line),
@@ -96,7 +96,7 @@ fn lazy_view_path_answers_what_its_item_answers() {
 fn scroll_shell_answers_its_proposal() {
     let env = test_environment();
     let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
-    let mut state = HydroState::default();
+    let mut state = HydroState::new(FontFamilyResolution::Strict);
     let shell = normalize_layout_view(
         AnyView::new(scroll(vstack((VStack::for_each(
             (0..40).map(SelfId::new).collect::<Vec<_>>(),

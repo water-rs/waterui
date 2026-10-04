@@ -1705,6 +1705,7 @@ version = "0.0.0"
 dependencies = [
  "arc-swap",
  "cherenkov-record",
+ "crossbeam-channel",
  "filtrate-core",
  "kurbo 0.13.1",
  "libm",
@@ -4667,7 +4668,6 @@ dependencies = [
  "kurbo 0.13.1",
  "libc",
  "libloading 0.9.0",
- "log",
  "lru 0.18.5",
  "muda",
  "nami",
@@ -4745,7 +4745,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=169c42a810c4662abda184c89c114846877b13ec#169c42a810c4662abda184c89c114846877b13ec"
+source = "git+https://github.com/water-rs/hydrolysis-m3?rev=cc8be840d96be39dc6f23aeace7310801d7a5f35#cc8be840d96be39dc6f23aeace7310801d7a5f35"
 dependencies = [
  "cherenkov",
  "hydrolysis",
@@ -13049,6 +13049,7 @@ dependencies = [
  "serialport",
  "sha1",
  "sha2",
+ "shlex 2.0.1",
  "smol",
  "syn 2.0.119",
  "sysinfo",
@@ -13218,6 +13219,7 @@ dependencies = [
  "color",
  "event-listener",
  "filtrate",
+ "fontique",
  "half",
  "image",
  "keyboard-types",

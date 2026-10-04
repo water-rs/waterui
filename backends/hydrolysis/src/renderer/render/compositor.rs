@@ -786,8 +786,6 @@ impl HydrolysisRenderer {
 
         let _render_span = tracing::debug_span!("hydrolysis_render_scene").entered();
         self.flush_scene_layer();
-        #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(target.device, target.queue, 0);
 
         let render_layers = core::mem::take(&mut self.compositor.render_layers);
         let transient = self.transient_scene.take().filter(scene_has_content);
@@ -809,10 +807,10 @@ impl HydrolysisRenderer {
 
         // One window surface per GPU context this renderer presents through.
         // Entries whose device was reported lost are dropped — their engine
-        // surface, mounts and resources all die with the dead device — and a
-        // context change mid-session replaces the previous window's mount
-        // state with a fresh one. The map leaves `self` for the frame so the
-        // layer walk may borrow the renderer's other state.
+        // surface, mounts, resources and profiler all die with the dead
+        // device — and a context change mid-session replaces the previous
+        // window's mount state with a fresh one. The map leaves `self` for
+        // the frame so the layer walk may borrow the renderer's other state.
         let mut windows = core::mem::take(&mut self.cherenkov_windows);
         windows.retain(|_, window| !window.device_loss.is_lost());
         let backend = target.adapter.get_info().backend;
@@ -843,6 +841,12 @@ impl HydrolysisRenderer {
                 target.device_loss.clone(),
             )))
         };
+
+        // The first marker lands after context resolution because the
+        // profiler is device-owned like the window it rides on: a replaced
+        // device writes into its own query set, not the dead context's.
+        #[cfg(feature = "frame-profile")]
+        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 0);
 
         window.surface.resize((target.width, target.height));
         window
@@ -908,7 +912,7 @@ impl HydrolysisRenderer {
         self.state.counters.image_registrations += images;
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(target.device, target.queue, 1);
+        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 1);
 
         self.applied_filter_metrics.reset();
         let next = crate::engine::engine_await!(window.surface.render());
@@ -929,7 +933,7 @@ impl HydrolysisRenderer {
         );
 
         #[cfg(feature = "frame-profile")]
-        self.gpu_profile_mark(target.device, target.queue, 2);
+        self.gpu_profile_mark(window.gpu_profiler.as_ref(), target.device, target.queue, 2);
 
         self.compositor.render_layers = render_layers;
         self.cherenkov_windows = windows;
@@ -954,6 +958,13 @@ pub struct CherenkovWindow {
     /// dead token prunes the entry so a recovered context gets a fresh mount
     /// set instead of reusing a surface on a dead device.
     device_loss: crate::platform::DeviceLoss,
+    /// Timestamp-query state for the frame's GPU spans on this context's
+    /// device; `None` when the device lacks `TIMESTAMP_QUERY` — GPU stages
+    /// then report absent, never a guess. Dies with the window, so device
+    /// replacement rebuilds it on the new device instead of leaving a query
+    /// set registered on the dead one.
+    #[cfg(feature = "frame-profile")]
+    pub(crate) gpu_profiler: Option<GpuFrameProfiler>,
 }
 
 crate::engine::cfg_async_fn! {
@@ -975,6 +986,8 @@ crate::engine::cfg_async_fn! {
                 mounts: crate::renderer::retained::Mounts::new(),
                 state,
                 device_loss,
+                #[cfg(feature = "frame-profile")]
+                gpu_profiler: GpuFrameProfiler::new(device),
             }
         }
     }

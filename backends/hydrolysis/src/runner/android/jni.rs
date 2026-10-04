@@ -29,8 +29,12 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// takes the accesskit action index plus selection-bounds, text and numeric
 /// payload channels; 5 = `onNativeAccessibilityTreeChanged` carries the
 /// diffed event-list JSON and `nativeAccessibilityHitTest` maps a point to
-/// the served virtual node for explore-by-touch.
-pub const JNI_SCHEMA: jint = 5;
+/// the served virtual node for explore-by-touch; 6 = `nativeInit` carries
+/// the launch intent's `waterui.log.level` extra (the CLI's `--logs`
+/// level) and logging init moves out of the app cdylib's `JNI_OnLoad`; 7 =
+/// `nativeSetMetrics` carries the `ViewConfiguration` touch-scroll
+/// parameters (slop, min/max fling velocity, scroll friction).
+pub const JNI_SCHEMA: jint = 7;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -125,15 +129,36 @@ pub fn get_string(env: &mut JNIEnv, value: &JString) -> Result<String, JniError>
         .map_err(JniError::from)
 }
 
+/// `log_level` is the `waterui.log.level` launch extra (a `tracing` level
+/// name), or null when the launch carried none — [`super::init_logging`]
+/// keeps its INFO default then. An unrecognized name is a contract breach,
+/// not something to guess around: it throws.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
     mut env: JNIEnv,
     _class: JClass,
     _version: jint,
+    log_level: JString,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
         let _ = JAVA_VM.set(vm);
+        let level = if log_level.as_raw().is_null() {
+            None
+        } else {
+            let level = get_string(env, &log_level)?;
+            Some(
+                level
+                    .parse::<tracing::level_filters::LevelFilter>()
+                    .map_err(|_| {
+                        JniError(format!(
+                            "hydrolysis android: unrecognized log level {level:?} \
+                             in the launch intent"
+                        ))
+                    })?,
+            )
+        };
+        super::init_logging(level);
         Ok(JNI_SCHEMA)
     })
 }
@@ -171,6 +196,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             font_scale: 1.0,
             refresh_hz: None,
             insets_px: [0; 4],
+            touch_slop_px: 0.0,
+            min_fling_velocity_px: 0.0,
+            max_fling_velocity_px: 0.0,
+            scroll_friction: 0.0,
         };
         let session = AndroidSession::create(vm, host_view, metrics, sdk_int)?;
         Ok(Box::into_raw(session) as jlong)
@@ -207,6 +236,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
     inset_t: jint,
     inset_r: jint,
     inset_b: jint,
+    touch_slop: jfloat,
+    min_fling_velocity: jfloat,
+    max_fling_velocity: jfloat,
+    scroll_friction: jfloat,
 ) {
     guard(&mut env, |_env| {
         session(session_ptr).set_metrics(MetricsSnapshot {
@@ -216,6 +249,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetMetrics
             font_scale: f64::from(font_scale).max(f64::EPSILON),
             refresh_hz: (refresh_hz > 0.0).then_some(f64::from(refresh_hz)),
             insets_px: [inset_l, inset_t, inset_r, inset_b],
+            touch_slop_px: touch_slop,
+            min_fling_velocity_px: min_fling_velocity,
+            max_fling_velocity_px: max_fling_velocity,
+            scroll_friction: f64::from(scroll_friction),
         });
         Ok(())
     });

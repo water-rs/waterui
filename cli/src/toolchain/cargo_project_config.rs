@@ -64,8 +64,8 @@ pub fn cargo_config_args(project_root: &Path, build_dir: &Path) -> Result<Vec<Os
 /// `$CARGO_HOME/config.toml` needs no entry: Cargo reads it for every
 /// invocation regardless of working directory.
 ///
-/// Resolvers that mirror Cargo's layering — like
-/// [`crate::toolchain::cargo_rustflags`] — need this file list itself, not
+/// Resolvers that mirror Cargo's layering — the rustflags resolution
+/// inside [`crate::build::RustBuild`] — need this file list itself, not
 /// just the argument pairs.
 ///
 /// # Errors
@@ -315,6 +315,24 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
+    /// A fresh `CARGO_HOME` under `root`, installed in the test's
+    /// environment so every `cargo` the test spawns is hermetic with
+    /// respect to the machine's global Cargo configuration. A
+    /// `target.<triple|cfg>.rustflags` table in `$CARGO_HOME/config.toml`
+    /// — e.g. a linker selection like `-C link-arg=-fuse-ld=mold` —
+    /// outranks the fixture's own `[build] rustflags` (Cargo's rustflags
+    /// sources are mutually exclusive and `target.*` wins), silently
+    /// discarding the flags under test. The toolchain still resolves
+    /// through rustup's `RUSTUP_HOME`, which `CARGO_HOME` does not affect.
+    fn hermetic_cargo_home(root: &Path) {
+        let home = root.join("cargo-home");
+        std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
+        // SAFETY: nextest runs each test in its own process, and this runs
+        // on the test's only thread before it spawns anything that could
+        // read the environment concurrently.
+        unsafe { std::env::set_var("CARGO_HOME", home) };
+    }
+
     /// The probe crate whose build fails unless the `--cfg
     /// water_config_probe` marker reaches rustc.
     fn probe_crate(dir: &Path) {
@@ -435,6 +453,7 @@ mod tests {
     #[test]
     fn managed_build_receives_the_project_rustflags() {
         let (_temp, root) = temp_root();
+        hermetic_cargo_home(&root);
         let project = root.join("proj");
         write(
             &project.join(".cargo").join("config.toml"),

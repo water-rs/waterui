@@ -39,6 +39,12 @@ enum AndroidRuntimeEvent {
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
+/// The launch-intent extra carrying the `--logs` level to a Hydrolysis
+/// Android app — `HydrolysisActivity` reads it and hands it to the native
+/// logging setup. Unlike `waterui.env.*` extras it never becomes an
+/// environment variable.
+const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
+
 /// An `adb` device command could not be spawned, timed out, or exited unsuccessfully.
 #[derive(Debug, thiserror::Error)]
 enum AdbCommandError {
@@ -284,12 +290,9 @@ async fn run_on_android(
     }
 
     install_android_artifact(host, &adb, device_id, artifact.path()).await?;
-    launch_android_app(
-        host,
-        &adb,
-        build_android_start_args(device_id, &artifact, &env_vars),
-    )
-    .await?;
+    let start_args =
+        build_android_start_args(device_id, &artifact, &env_vars, options.log_level())?;
+    launch_android_app(host, &adb, start_args).await?;
 
     // Wait for the process to start and get its PID
     let pid = wait_for_app_pid(host, &adb, device_id, artifact.bundle_id()).await?;
@@ -316,7 +319,7 @@ async fn run_on_android(
         });
     }
 
-    spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
+    let logcat = spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
         host,
         adb: &adb,
         device_id,
@@ -325,6 +328,9 @@ async fn run_on_android(
         log_level: options.log_level(),
         sender,
     });
+    if let Some(logcat) = logcat {
+        running.retain(logcat);
+    }
 
     Ok(running)
 }
@@ -358,16 +364,17 @@ async fn install_android_artifact(
 
 /// The environment the app process starts with, delivered as `waterui.env.*`
 /// intent extras; the generated `MainActivity` applies each of them with
-/// `Os.setenv` before loading the native library.
+/// `Os.setenv` before loading the native library. The `--logs` level rides
+/// alongside as its own extra (`waterui.log.level`): a Hydrolysis host reads
+/// it straight from the intent, no `Os.setenv` detour, so its tracing filter
+/// is set by the flag rather than by the build's debug assertions.
 fn build_android_start_args(
     device_id: &str,
     artifact: &Artifact,
     env_vars: &[(String, String)],
-) -> Vec<String> {
-    let mut start_args = vec![
-        "-s".to_string(),
-        device_id.to_string(),
-        "shell".to_string(),
+    log_level: Option<LogLevel>,
+) -> Result<Vec<String>, FailToRun> {
+    let mut words = vec![
         "am".to_string(),
         "start".to_string(),
         "-S".to_string(),
@@ -376,12 +383,34 @@ fn build_android_start_args(
     ];
 
     for (key, value) in env_vars {
-        start_args.push("--es".to_string());
-        start_args.push(format!("waterui.env.{key}"));
-        start_args.push(value.clone());
+        words.push("--es".to_string());
+        words.push(format!("waterui.env.{key}"));
+        words.push(value.clone());
     }
 
-    start_args
+    if let Some(level) = log_level {
+        words.push("--es".to_string());
+        words.push(ANDROID_LOG_LEVEL_EXTRA.to_string());
+        words.push(level.to_tracing_level().to_string());
+    }
+
+    // `adb shell` flattens its arguments into a single command line that the
+    // device's `/system/bin/sh` re-parses; quoting each word keeps every one
+    // of them intact as exactly one `am` argument no matter what the value
+    // contains — a space would otherwise split the value and make `am` stop
+    // reading options at the resulting bare word.
+    let command = shlex::try_join(words.iter().map(String::as_str)).map_err(|_| {
+        FailToRun::Launch(eyre!(
+            "an environment variable for the Android app contains a NUL byte"
+        ))
+    })?;
+
+    Ok(vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "shell".to_string(),
+        command,
+    ])
 }
 
 /// `adb -s <device> forward tcp:<port> tcp:<port>` maps a host loopback port
@@ -565,7 +594,9 @@ struct AndroidRuntimeTaskContext<'a> {
     sender: Sender<DeviceEvent>,
 }
 
-fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
+fn spawn_android_runtime_tasks(
+    context: AndroidRuntimeTaskContext<'_>,
+) -> Option<smol::process::Child> {
     let AndroidRuntimeTaskContext {
         host,
         adb,
@@ -596,7 +627,7 @@ fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
     })
     .detach();
 
-    let runtime_event_rx =
+    let (runtime_event_rx, logcat) =
         start_android_log_stream(host, adb, device_id, pid, log_level, sender_for_logs);
     spawn(async move {
         if let Ok(event) = runtime_event_rx.recv().await {
@@ -622,6 +653,8 @@ fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
         }
     })
     .detach();
+
+    logcat
 }
 
 fn format_android_panic(info: &PanicInfo) -> String {
@@ -1028,7 +1061,15 @@ fn contains_tombstone_backtrace_marker(line: &str) -> bool {
 /// Start log streaming from an Android process using logcat.
 ///
 /// Always streams at minimum info level to capture lifecycle completion and panics.
-/// Returns a receiver that fires when the Activity finishes or the runtime crashes.
+/// Returns the receiver that fires when the Activity finishes or the runtime
+/// crashes, alongside the `logcat` child itself.
+///
+/// The child is spawned with `kill_on_drop` and the reader task only holds its
+/// stdout, so whoever owns the returned handle owns the process's lifetime —
+/// the caller retains it in the [`Running`] so `logcat --pid` dies when the
+/// run does, on every exit path. `logcat` does not exit on its own when the
+/// app process it filters on dies; a child the detached reader task owned
+/// would be re-parented to launchd and outlive `water run`.
 fn start_android_log_stream(
     host: &Host,
     adb: &Adb,
@@ -1036,7 +1077,7 @@ fn start_android_log_stream(
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
-) -> Receiver<AndroidRuntimeEvent> {
+) -> (Receiver<AndroidRuntimeEvent>, Option<smol::process::Child>) {
     use futures_util::StreamExt;
     use futures_util::io::{AsyncBufReadExt, BufReader};
 
@@ -1058,18 +1099,19 @@ fn start_android_log_stream(
         .arg(pid_arg)
         .arg(format!("*:{priority}"))
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to spawn logcat: {e}");
-            return runtime_event_rx;
+            return (runtime_event_rx, None);
         }
     };
 
     let Some(stdout) = child.stdout.take() else {
-        return runtime_event_rx;
+        return (runtime_event_rx, None);
     };
 
     let reader = BufReader::new(stdout);
@@ -1102,13 +1144,10 @@ fn start_android_log_stream(
                 }
             }
         }
-
-        // Clean up child process
-        let _ = child.kill();
     })
     .detach();
 
-    runtime_event_rx
+    (runtime_event_rx, Some(child))
 }
 
 fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent> {
@@ -1780,13 +1819,43 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::PathBuf;
 
     use super::{
-        AndroidRuntimeEvent, adb_reports_device_ready, android_log_looks_like_crash,
-        android_runtime_event_from_log_line, command_targets_avd, log_level_allows,
-        log_mentions_pid,
+        ANDROID_LOG_LEVEL_EXTRA, AndroidRuntimeEvent, adb_reports_device_ready,
+        android_log_looks_like_crash, android_runtime_event_from_log_line,
+        build_android_start_args, command_targets_avd, log_level_allows, log_mentions_pid,
     };
-    use crate::device::LogLevel;
+    use crate::device::{Artifact, LogLevel};
+
+    /// The `am` words ride in `start_args[3]` as a single quoted command line;
+    /// splitting it back yields the argv `am` sees on the device.
+    fn device_words(start_args: &[String]) -> Vec<String> {
+        shlex::split(&start_args[3]).expect("quoted command re-splits")
+    }
+
+    #[test]
+    fn android_start_args_carry_log_level_extra() {
+        let artifact = Artifact::new("com.example.app", PathBuf::from("/tmp/app.apk"));
+        let start_args =
+            build_android_start_args("emulator-5554", &artifact, &[], Some(LogLevel::Debug))
+                .expect("start args build");
+        let words = device_words(&start_args);
+        let position = words
+            .iter()
+            .position(|word| word == ANDROID_LOG_LEVEL_EXTRA)
+            .expect("log level extra missing");
+        assert_eq!(words[position - 1], "--es");
+        assert_eq!(words[position + 1], "debug");
+
+        let start_args = build_android_start_args("emulator-5554", &artifact, &[], None)
+            .expect("start args build");
+        assert!(
+            !device_words(&start_args)
+                .iter()
+                .any(|word| word == ANDROID_LOG_LEVEL_EXTRA)
+        );
+    }
 
     #[test]
     fn detects_pid_mentions_in_threadtime_lines() {
@@ -1889,5 +1958,47 @@ mod tests {
         let output = "List of devices attached\nemulator-5554 offline transport_id:1\n";
 
         assert!(!adb_reports_device_ready(output, "emulator-5554"));
+    }
+
+    #[test]
+    fn android_start_args_quote_every_word_for_the_device_shell() {
+        // `adb shell` joins its arguments into one command line the device's
+        // `/system/bin/sh` parses again; values with spaces, quotes or
+        // metacharacters must each come back out as exactly one word.
+        let artifact = Artifact::new("dev.waterui.app", PathBuf::from("/tmp/app.apk"));
+        let env_vars = vec![
+            ("WATERUI_APP_NAME".to_string(), "Logs Repro".to_string()),
+            ("WATERUI_LOG".to_string(), "o'clock".to_string()),
+            ("WATERUI_PATH".to_string(), "say \"hi\" $HOME".to_string()),
+        ];
+
+        let start_args = build_android_start_args("100.76.86.48:5555", &artifact, &env_vars, None)
+            .expect("start args build");
+
+        // The device shell receives one command word after `shell`; what it
+        // re-splits that into is the contract, not the quoting style.
+        assert_eq!(start_args[..3], ["-s", "100.76.86.48:5555", "shell"]);
+        assert_eq!(start_args.len(), 4);
+
+        let words = device_words(&start_args);
+        assert_eq!(
+            words,
+            vec![
+                "am",
+                "start",
+                "-S",
+                "-n",
+                "dev.waterui.app/.MainActivity",
+                "--es",
+                "waterui.env.WATERUI_APP_NAME",
+                "Logs Repro",
+                "--es",
+                "waterui.env.WATERUI_LOG",
+                "o'clock",
+                "--es",
+                "waterui.env.WATERUI_PATH",
+                "say \"hi\" $HOME",
+            ]
+        );
     }
 }

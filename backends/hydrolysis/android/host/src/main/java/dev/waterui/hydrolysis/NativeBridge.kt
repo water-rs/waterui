@@ -20,29 +20,36 @@ object NativeBridge {
      * accesskit action index plus selection-bounds, text and numeric
      * payload channels; 5 = `onNativeAccessibilityTreeChanged` carries the
      * diffed event-list JSON and [nativeAccessibilityHitTest] maps a point
-     * to the served virtual node for explore-by-touch.
+     * to the served virtual node for explore-by-touch; 6 = [nativeInit]
+     * carries the launch intent's `waterui.log.level` extra (the CLI's
+     * `--logs` level) and logging init moves out of the app cdylib's
+     * `JNI_OnLoad`; 7 = `nativeSetMetrics` carries the `ViewConfiguration`
+     * touch-scroll parameters (slop, min/max fling velocity, scroll
+     * friction).
      */
-    private const val SCHEMA: Int = 5
+    private const val SCHEMA: Int = 7
 
     private var initialized = false
 
     /**
      * Loads the app's Hydrolysis-backed shared library and verifies the JNI
      * schema. The application names its own `cdylib` — the host never picks
-     * one for it.
+     * one for it. `logLevel` is the `tracing` level name the launch intent's
+     * `waterui.log.level` extra carried, or null when the launch asked for
+     * no level — the native logging setup keeps its own default then.
      */
     @Synchronized
-    fun load(libraryName: String) {
+    fun load(libraryName: String, logLevel: String?) {
         if (initialized) return
         System.loadLibrary(libraryName)
-        val nativeSchema = nativeInit(SCHEMA)
+        val nativeSchema = nativeInit(SCHEMA, logLevel)
         check(nativeSchema == SCHEMA) {
             "hydrolysis JNI schema mismatch: host expects $SCHEMA, native library reports $nativeSchema"
         }
         initialized = true
     }
 
-    @JvmStatic private external fun nativeInit(schema: Int): Int
+    @JvmStatic private external fun nativeInit(schema: Int, logLevel: String?): Int
 
     /**
      * `context` is the application context — the native side publishes it
@@ -69,6 +76,10 @@ object NativeBridge {
         insetTop: Int,
         insetRight: Int,
         insetBottom: Int,
+        touchSlopPx: Float,
+        minFlingVelocityPx: Float,
+        maxFlingVelocityPx: Float,
+        scrollFriction: Float,
     )
 
     /**

@@ -824,7 +824,7 @@ crate::engine::cfg_async_fn! {
         // The timestamp resolve blocks until the frame's submits finish — the
         // headless frame's "present wait", kept separate from the CPU submit
         // time `render` measures.
-        renderer.finish_gpu_frame_profile(surface.device(), surface.queue());
+        renderer.finish_gpu_frame_profile(context.context_id, surface.device(), surface.queue());
     }
     #[cfg(not(target_arch = "wasm32"))]
     let snapshot = {
@@ -1259,9 +1259,9 @@ crate::engine::cfg_async_fn! {
     RenderWindowResult {
         rebuilt,
         snapshot,
+        profile,
         #[cfg(feature = "frame-profile")]
         stages,
-        profile,
     }
     }
 }
@@ -1365,6 +1365,12 @@ where
     F: Fn(&RuntimeWindow<P>, &Environment) -> Environment,
 {
     let mut should_close = runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
+    // The platform's touch-gesture parameters ride the event drain: a host
+    // update (metrics, configuration) reaches the gesture before the
+    // events it applies to.
+    runtime
+        .renderer
+        .set_touch_scroll_config(runtime.platform.touch_scroll_config());
     let events = runtime.platform.drain_events();
     // Platform IMEs mark their own keystrokes by what they emit: ownership
     // follows the event order inside the batch (see `ime_owned_events`), so
@@ -1850,6 +1856,12 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
     // redraw cadence.
     if runtime.renderer.tick_smooth_scrolls(now) {
         tracing::debug!("wake cause: smooth scroll still gliding");
+        runtime.request_refresh();
+    }
+    // A touch fling decelerates the same way — offsets advance per frame
+    // until the spline settles or a touch down has stopped it.
+    if runtime.renderer.tick_touch_scroll(now) {
+        tracing::debug!("wake cause: touch fling still gliding");
         runtime.request_refresh();
     }
     let animations_active = runtime.renderer.advance_animations();

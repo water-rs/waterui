@@ -1723,7 +1723,7 @@ mod background_tests {
 
     fn rendered_fill_colours(styled: StyledStr, width: f64) -> Vec<u32> {
         let env = test_environment();
-        let mut state = HydroState::default();
+        let mut state = HydroState::new(FontFamilyResolution::Strict);
         let mut scene = Recording::new();
         let ctx = RenderContext::with_transforms(
             kurbo::Rect::new(0.0, 0.0, width, 200.0),

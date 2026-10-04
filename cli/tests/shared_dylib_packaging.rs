@@ -40,6 +40,26 @@ fn write(path: &Path, contents: &str) {
     std::fs::write(path, contents).expect("write file");
 }
 
+/// A fresh `CARGO_HOME` under `root`, installed in the test's
+/// environment so every `cargo` the fixture spawns — directly or inside
+/// the CLI, which inherits this environment — is hermetic with respect
+/// to the machine's global Cargo configuration. A
+/// `target.<triple|cfg>.rustflags` table in `$CARGO_HOME/config.toml`
+/// — e.g. a linker selection like `-C link-arg=-fuse-ld=mold` —
+/// outranks the fixture's own `[build] rustflags` (Cargo's rustflags
+/// sources are mutually exclusive and `target.*` wins), silently
+/// discarding the flags the fixture relies on. The toolchain still
+/// resolves through rustup's `RUSTUP_HOME`, which `CARGO_HOME` does not
+/// affect.
+fn hermetic_cargo_home(root: &Path) {
+    let home = root.join("cargo-home");
+    std::fs::create_dir_all(&home).expect("create hermetic CARGO_HOME");
+    // SAFETY: nextest runs each test in its own process, and this runs
+    // on the test's only thread before `smol::block_on` spawns the
+    // executor threads that could read the environment concurrently.
+    unsafe { std::env::set_var("CARGO_HOME", home) };
+}
+
 /// Run a fixture command to success or fail the test with its output.
 fn run(command: &mut Command, what: &str) -> Output {
     let output = command
@@ -408,8 +428,9 @@ fn assert_binary_runs_in_place(executable: &Path, runtime_dir: &Path) {
 /// binary's own dynamic records name — then run the staged binary.
 #[test]
 fn packaged_binary_finds_every_shared_library_it_records() {
+    let temporary: TempDir = tempdir().expect("tempdir");
+    hermetic_cargo_home(temporary.path());
     smol::block_on(async {
-        let temporary: TempDir = tempdir().expect("tempdir");
         let root = temporary.path();
         let app_dir = scaffold_fixture(root);
 
@@ -455,8 +476,9 @@ fn packaged_binary_finds_every_shared_library_it_records() {
 /// staged binary (water-rs/cli#161).
 #[test]
 fn run_built_binary_finds_every_shared_library_it_records() {
+    let temporary: TempDir = tempdir().expect("tempdir");
+    hermetic_cargo_home(temporary.path());
     smol::block_on(async {
-        let temporary: TempDir = tempdir().expect("tempdir");
         let root = temporary.path();
         let (app_dir, backend_dir) = scaffold_run_fixture(root);
 
@@ -493,8 +515,9 @@ fn run_built_binary_finds_every_shared_library_it_records() {
 /// section carries when the dependency comes from git (water-rs/cli#162).
 #[test]
 fn a_second_shared_runtime_build_finds_the_dylib_dep_info() {
+    let temporary: TempDir = tempdir().expect("tempdir");
+    hermetic_cargo_home(temporary.path());
     smol::block_on(async {
-        let temporary: TempDir = tempdir().expect("tempdir");
         let root = temporary.path();
         let (_app_dir, backend_dir) = scaffold_run_fixture(root);
 
@@ -583,8 +606,9 @@ fn staged_waterui_names(dir: &Path) -> Vec<String> {
 /// hash the first stage left (water-rs/cli#176).
 #[test]
 fn restaging_replaces_a_stale_hashed_shared_runtime() {
+    let temporary: TempDir = tempdir().expect("tempdir");
+    hermetic_cargo_home(temporary.path());
     smol::block_on(async {
-        let temporary: TempDir = tempdir().expect("tempdir");
         let root = temporary.path();
         let (app_dir, backend_dir) = scaffold_run_fixture(root);
         let triple = Triple::host();
