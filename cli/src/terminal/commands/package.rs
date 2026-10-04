@@ -14,7 +14,7 @@ use waterui_cli::{
         platform::{build_rust_lib, package_apple, stage_packaged_host_library},
         toolchain::AppleSdk,
     },
-    build::{BuildOptions, BuildProfile, BuiltTarget},
+    build::{BuildOptions, BuildProfile, BuiltTarget, stage_dxc_runtime},
     device::Artifact,
     gtk4::platform::{build_gtk4, package_gtk4},
     hydrolysis::{
@@ -555,6 +555,21 @@ async fn package_artifact(
         && let Some(dir) = artifact.path().parent()
     {
         stage_packaged_host_library(built, dir).await?;
+    }
+    // A packaged Windows hydrolysis binary is statically linked, but wgpu's
+    // DirectX 12 backend still `LoadLibrary`s `dxcompiler.dll` and `dxil.dll`
+    // by name at run time; the pair has to ship beside the artifact.
+    if cfg!(windows)
+        && context.backend == TargetBackend::Hydrolysis
+        && args.platform == TargetPlatform::Windows
+    {
+        let destination = artifact.path().parent().ok_or_else(|| {
+            eyre::eyre!(
+                "packaged artifact {} has no parent directory",
+                artifact.path().display()
+            )
+        })?;
+        stage_dxc_runtime(destination).await?;
     }
     if let Some(pb) = spinner {
         pb.finish_and_clear();

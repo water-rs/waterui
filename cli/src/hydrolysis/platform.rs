@@ -12,12 +12,14 @@ use smol::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use target_lexicon::Triple;
+use target_lexicon::{OperatingSystem, Triple};
 use tracing::info;
 
 use crate::{
     assets, browser_runtime,
-    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage},
+    build::{
+        BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries, RustLinkage, stage_dxc_runtime,
+    },
     device::Artifact,
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetPlatform},
@@ -535,7 +537,14 @@ async fn synchronize_shared_runtime(
     triple: &Triple,
 ) -> eyre::Result<()> {
     if let Some(libraries) = libraries {
-        libraries.stage(destination).await
+        libraries.stage(destination).await?;
+        // A shared-runtime hydrolysis binary renders through wgpu, whose
+        // DirectX 12 backend `LoadLibrary`s `dxcompiler.dll` and `dxil.dll`
+        // by name at run time; the pair has to sit beside the executable.
+        if triple.operating_system == OperatingSystem::Windows {
+            stage_dxc_runtime(destination).await?;
+        }
+        Ok(())
     } else {
         RustDynamicLibraries::remove_staged(destination, triple).await
     }

@@ -545,10 +545,16 @@ impl RustDynamicLibraries {
             let file_name = file_name.to_string_lossy();
             let has_dynamic_extension =
                 entry.path().extension().and_then(|value| value.to_str()) == Some(extension);
+            // A Windows shared-runtime staging also ships the dxc runtime
+            // pair wgpu's DirectX 12 backend `LoadLibrary`s; static packaging
+            // clears them here so the dist directory is left clean.
+            let is_shader_compiler = triple.operating_system == OperatingSystem::Windows
+                && matches!(file_name.as_ref(), "dxcompiler.dll" | "dxil.dll");
             // `waterui_dylib` matches with or without a `-<metadata>` suffix
             // so a superseded hashed staging is removed with the unhashed one.
             if has_dynamic_extension
                 && (is_waterui_dylib_file_name(&file_name)
+                    || is_shader_compiler
                     || file_name.starts_with(standard_library_prefix))
             {
                 smol::fs::remove_file(entry.path()).await?;
@@ -556,6 +562,83 @@ impl RustDynamicLibraries {
         }
         Ok(())
     }
+}
+
+/// The shader-compiler runtime libraries a Windows binary `LoadLibrary`s by
+/// name, resolved beside the `dxc` tool that ships them.
+const DXC_RUNTIME_LIBRARIES: [&str; 2] = ["dxcompiler.dll", "dxil.dll"];
+
+/// Resolve the `dxc` runtime pair to the copies installed beside the `dxc`
+/// executable (on `PATH` or under the managed tool directory).
+async fn resolve_dxc_runtime() -> eyre::Result<Vec<PathBuf>> {
+    let host = crate::toolchain::Host::current();
+    let dxc = crate::toolchain::dxc::Dxc
+        .path(&host)
+        .await
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "the dxc tool is not installed; run `water doctor` to install it, then build again"
+            )
+        })?;
+    let dxc_dir = dxc.parent().ok_or_else(|| {
+        eyre::eyre!(
+            "the resolved dxc path {} has no parent directory",
+            dxc.display()
+        )
+    })?;
+    resolve_dxc_runtime_in(dxc_dir)
+        .map_err(|error| eyre::eyre!("{}; run `water doctor` to reinstall dxc", error))
+}
+
+/// Collect [`DXC_RUNTIME_LIBRARIES`] from `dxc_dir`; a missing directory or
+/// library is `NotFound`.
+fn resolve_dxc_runtime_in(dxc_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    DXC_RUNTIME_LIBRARIES
+        .iter()
+        .map(|name| {
+            let path = dxc_dir.join(name);
+            path.is_file().then_some(path).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "the dxc installation at {} is missing {name}",
+                        dxc_dir.display()
+                    ),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Stage the DirectX Shader Compiler runtime into `destination` for a Windows
+/// binary whose wgpu DirectX 12 backend `LoadLibrary`s `dxcompiler.dll` and
+/// `dxil.dll` by name at run time.
+///
+/// Windows resolves those names against the executable's directory before
+/// `PATH`, so a staged copy always wins over a same-named library elsewhere
+/// on `PATH` — and makes the binary self-contained on a machine without the
+/// `dxc` tool installed.
+///
+/// # Errors
+/// Returns an error when `dxc` is not installed, a runtime library is missing
+/// beside it, or the destination cannot be created or written.
+pub async fn stage_dxc_runtime(destination: &Path) -> eyre::Result<()> {
+    smol::fs::create_dir_all(destination).await?;
+    for source in resolve_dxc_runtime().await? {
+        let file_name = source.file_name().ok_or_else(|| {
+            eyre::eyre!("dxc runtime path has no file name: {}", source.display())
+        })?;
+        crate::utils::copy_file(&source, &destination.join(file_name))
+            .await
+            .wrap_err_with(|| {
+                format!(
+                    "Failed to stage {} to {}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+    }
+    Ok(())
 }
 
 /// The file name a recorded dynamic dependency carries: the basename for a
@@ -3460,7 +3543,8 @@ mod tests {
         BuildOptions, BuildProfile, BuiltTarget, CargoTarget, CompileEvent, RustBuild,
         RustDynamicLibraries, RustLinkage, classify_compile_line, combined_build_output,
         dynamic_library_file_name, executable_suffix, lib_extension_for_triple,
-        marked_binary_deps_path, reported_shared_runtime, resolve_rust_standard_library_in,
+        marked_binary_deps_path, reported_shared_runtime, resolve_dxc_runtime_in,
+        resolve_rust_standard_library_in,
     };
 
     fn shared_runtime_artifact_json(
@@ -5213,6 +5297,65 @@ mod tests {
                 "release build stages a non-empty mount at {}",
                 staged.display()
             );
+        });
+    }
+
+    #[test]
+    fn dxc_runtime_resolution_collects_the_pair_beside_dxc() {
+        let directory = tempdir().expect("temporary dxc directory");
+        for name in ["dxcompiler.dll", "dxil.dll"] {
+            std::fs::write(directory.path().join(name), []).expect("write runtime stub");
+        }
+
+        assert_eq!(
+            resolve_dxc_runtime_in(directory.path()).expect("resolve dxc runtime pair"),
+            vec![
+                directory.path().join("dxcompiler.dll"),
+                directory.path().join("dxil.dll"),
+            ]
+        );
+    }
+
+    #[test]
+    fn dxc_runtime_resolution_names_the_missing_library() {
+        let directory = tempdir().expect("temporary dxc directory");
+        std::fs::write(directory.path().join("dxcompiler.dll"), []).expect("write runtime stub");
+
+        let error = resolve_dxc_runtime_in(directory.path())
+            .expect_err("a missing dxil.dll must fail resolution");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("dxil.dll"), "{error}");
+    }
+
+    #[test]
+    fn static_packaging_removes_staged_shader_compiler_libraries() {
+        smol::block_on(async {
+            let directory = tempdir().expect("temporary Windows runtime directory");
+            let windows_triple = triple("x86_64-pc-windows-msvc");
+            for file_name in [
+                "waterui_dylib.dll",
+                "std-1234567890abcdef.dll",
+                "dxcompiler.dll",
+                "dxil.dll",
+                "keep.dll",
+            ] {
+                std::fs::write(directory.path().join(file_name), [])
+                    .expect("write staged runtime test file");
+            }
+
+            RustDynamicLibraries::remove_staged(directory.path(), &windows_triple)
+                .await
+                .expect("remove shared Rust runtime libraries");
+
+            for file_name in [
+                "waterui_dylib.dll",
+                "std-1234567890abcdef.dll",
+                "dxcompiler.dll",
+                "dxil.dll",
+            ] {
+                assert!(!directory.path().join(file_name).exists(), "{file_name}");
+            }
+            assert!(directory.path().join("keep.dll").exists());
         });
     }
 }
