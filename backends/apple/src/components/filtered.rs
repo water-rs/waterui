@@ -272,9 +272,25 @@ fn configure_dynamic_range(state: &FilteredState, mode: cocoa_ui::dynamic_range:
         "FilteredView dynamic range cannot change while attached"
     );
     cocoa_ui::dynamic_range::apply_to_view(mode, &state.view);
+    apply_presentation_contract(state, mode);
     state.capture_texture.borrow_mut().take();
     hide_output(state);
     state.configured_range.set(Some(mode));
+}
+
+/// The `CAMetalLayer`'s colour contract for `mode` — the colour space of
+/// the actual output pixel format and the EDR-content flag (distinct from
+/// the preferred-dynamic-range tags `apply_to_view` writes). Applying it to
+/// a live presenter retires frames the old configuration issued.
+fn apply_presentation_contract(state: &FilteredState, mode: cocoa_ui::dynamic_range::DynamicRange) {
+    let colorspace = cocoa_ui::metal::color_space(output_pixel_format());
+    state.presentation_layer.setColorspace(Some(&colorspace));
+    state
+        .presentation_layer
+        .setWantsExtendedDynamicRangeContent(mode == cocoa_ui::dynamic_range::DynamicRange::High);
+    if let Some(presenter) = state.presenter.borrow().as_ref() {
+        presenter.advance_generation();
+    }
 }
 
 /// `prepareDynamicRange` — parks the change while a frame is in flight.
@@ -400,6 +416,18 @@ fn attach_if_needed(
         presenter.set_display_rate(rate);
     }
     *state.presenter.borrow_mut() = Some(presenter);
+    // A fresh presenter carries the latched colour contract — the layer is
+    // persistent across attaches, but `advance_generation` above does not
+    // reapply contract properties.
+    if let Some(mode) = state.configured_range.get() {
+        let colorspace = cocoa_ui::metal::color_space(output_pixel_format());
+        state.presentation_layer.setColorspace(Some(&colorspace));
+        state
+            .presentation_layer
+            .setWantsExtendedDynamicRangeContent(
+                mode == cocoa_ui::dynamic_range::DynamicRange::High,
+            );
+    }
     state.attached.set(true);
     // Only a first-paint participant owes the reveal frame: a filter
     // mounted behind hidden or zero-alpha ancestors parks until shown.

@@ -257,6 +257,10 @@ fn rgba_target(
 /// only completes once a frame really landed, so no bogus-ready blank
 /// ships.
 #[allow(clippy::future_not_send)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the deferred-retry loop, generation parking and the single readback stay in one pass"
+)]
 pub async fn capture_rgba(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
@@ -315,6 +319,13 @@ pub async fn capture_rgba(
     let runtime = crate::gpu_runtime::runtime(env);
     let target = loop {
         let context = runtime.context();
+        // A lost context cannot produce pixels: park on the next
+        // publication before allocating anything against it — the
+        // destination must never be allocated on a dead device.
+        if context.device_lost_reason().is_some() {
+            runtime.context_after(context.generation()).await;
+            continue;
+        }
         let device = crate::gpu_runtime::raw_metal_device(&context);
         let target = rgba_target(&device, width, height);
 
@@ -331,7 +342,12 @@ pub async fn capture_rgba(
             Signal::fire(completion);
         });
         Signal::wait(&completion).await;
-        if *landed.borrow() {
+        // A `true` completion from a context that lost or was superseded
+        // mid-flight settles stale pixels — never the current target.
+        if *landed.borrow()
+            && context.device_lost_reason().is_none()
+            && runtime.context().generation() == context.generation()
+        {
             break target;
         }
         // Deferred. If the context was replaced mid-attempt the loop's top
