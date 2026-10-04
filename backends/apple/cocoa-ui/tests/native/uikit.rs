@@ -359,6 +359,7 @@ fn a_capture_claim_restores_containment_and_survives_release() {
             initWithFrame: CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(400.0, 400.0))
         ]
     };
+    // SAFETY: `initWithFrame:` initializes this test-owned view on the main thread.
     let content: Retained<UIView> = unsafe {
         msg_send![
             UIView::alloc(mtm),
