@@ -45,12 +45,13 @@ use crate::surface::{Shared, Surface};
 /// assert_send::<cherenkov::Engine<cherenkov::testing::Null>>();
 /// ```
 pub struct Engine<B: Backend> {
-    tx: SyncSender<Message<B>>,
+    tx: crossbeam_channel::Sender<Message<B>>,
     /// A producer's last `Arc` drop posts its retirement here — an
-    /// unbounded queue the render loop drains after each applied
-    /// message, so a drop on the render thread itself never blocks on
-    /// the bounded transaction channel.
-    retire: std::sync::mpsc::Sender<ResOp<B>>,
+    /// unbounded queue the render loop waits on alongside `tx` and
+    /// drains after each applied message, so a drop on the render
+    /// thread itself never blocks on the bounded transaction channel
+    /// and a retirement wakes the loop by itself.
+    retire: crossbeam_channel::Sender<ResOp<B>>,
     info: B::Info,
     stats: RefCell<FrameStats>,
     render_reply: RefCell<Option<SyncSender<RenderReply<B>>>>,
@@ -93,8 +94,8 @@ impl<B: Backend> Engine<B> {
     /// [`EngineError`] when the backend fails to initialize or the render
     /// thread cannot start.
     pub fn new(config: B::Config) -> Result<Self, EngineError> {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Message<B>>(64);
-        let (retire_tx, retire_rx) = std::sync::mpsc::channel::<ResOp<B>>();
+        let (tx, rx) = crossbeam_channel::bounded::<Message<B>>(64);
+        let (retire_tx, retire_rx) = crossbeam_channel::unbounded::<ResOp<B>>();
         let (init_tx, init_rx) = std::sync::mpsc::channel();
         let (render_reply, render_reply_rx) = std::sync::mpsc::sync_channel(1);
         let (memory_reply, memory_reply_rx) = std::sync::mpsc::sync_channel(1);
@@ -704,7 +705,7 @@ mod tests {
         // receives a completion after submission but before its reply.
         engine.tx.send(Message::Shutdown).unwrap();
         engine.thread.take().unwrap().join().unwrap();
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let (tx, rx) = crossbeam_channel::bounded(1);
         engine.tx = tx;
         let wake_count = Arc::new(AtomicUsize::new(0));
         engine.set_waker({

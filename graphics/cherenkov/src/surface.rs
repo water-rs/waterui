@@ -7,13 +7,13 @@
 
 #[cfg(target_arch = "wasm32")]
 use crate::local::Sender;
+#[cfg(not(target_arch = "wasm32"))]
+use crossbeam_channel::Sender;
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::mpsc::SyncSender as Sender;
 
 use kurbo::{Affine, Size, Vec2};
 use nami_core::watcher::Context;

@@ -3653,6 +3653,18 @@ impl Renderer for GpuRenderer {
             pixels,
         })
     }
+
+    /// The release queued by a retirement rides its own submission, so
+    /// an idle engine still releases the frame's lease at once (#1691).
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    fn submit_native_releases(&mut self) {
+        self.flush_native_releases();
+    }
+
+    /// This platform keeps no native-release queue — retirements queue
+    /// nothing to submit.
+    #[cfg(not(all(unix, not(target_vendor = "apple"))))]
+    fn submit_native_releases(&mut self) {}
 }
 
 /// The queue's retirement frontier as the engine sees it. Every
