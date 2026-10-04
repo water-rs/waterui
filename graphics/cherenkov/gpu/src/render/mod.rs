@@ -48,7 +48,7 @@ use cherenkov::{
     SurfaceId, SurfaceInfo, Visibility,
 };
 /// The export pool's platform type: the bounded dma-buf pool on Linux
-/// (#1687), uninhabited elsewhere — the `planes::Platform` precedent.
+/// (#1687), an uninhabited stand-in elsewhere.
 #[cfg(target_os = "linux")]
 use dmabuf_export::Pool as ExportPool;
 use glyph::{Atlas, FontData, PendingRaster, PreparedFont};
@@ -56,9 +56,12 @@ use lower::{
     BackdropGroupInfo, ContentData, Frame as LoweredFrame, GlyphContext, Lowered, Lowering,
     PipelineKind, ShaderVariant, Source, Target,
 };
-#[cfg(not(target_os = "linux"))]
-use planes::NoPlanes as ExportPool;
 use shaders::backdrop_effect_text;
+
+/// Stands in for the dma-buf export pool where dma-buf does not exist: no
+/// value exists, so no surface there has an export pool.
+#[cfg(not(target_os = "linux"))]
+enum ExportPool {}
 
 /// The pipeline bound for a pass range: engine pipelines and the external
 /// frame pipeline are mutually exclusive, so an engine range always rebinds
@@ -2126,6 +2129,13 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             native_error: None,
             #[cfg(all(unix, not(target_vendor = "apple")))]
             submit_lock: std::sync::Arc::new(std::sync::Mutex::new(())),
+            #[cfg_attr(
+                not(target_os = "linux"),
+                expect(
+                    clippy::zero_sized_map_values,
+                    reason = "no export pool exists on this platform, so the map stays empty"
+                )
+            )]
             exports: FxHashMap::default(),
             bound_atlas: 0,
             bound_instance_size: 272 * 16,
@@ -2433,6 +2443,13 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         dummy_uint_view,
         ext_layout: None,
         external_pipes: [None, None],
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                clippy::zero_sized_map_values,
+                reason = "no export pool exists on this platform, so the map stays empty"
+            )
+        )]
         exports: FxHashMap::default(),
         bound_atlas: 0,
         bound_instance_size: 272 * 16,
@@ -5159,19 +5176,40 @@ impl GpuRenderer {
                 )?;
             }
             if surface.present_pending {
-                let presentation = Self::present_surface(
-                    self.planes.get_mut(&sf.id),
-                    self.exports.get_mut(&sf.id),
-                    self.plane_only.contains(&sf.id),
-                    (
-                        &self.device,
-                        &self.queue,
-                        self.presenter.as_mut().expect("checked above"),
-                    ),
-                    surface,
-                    sf,
-                    &currents,
-                )?;
+                // A dma-buf surface presents a fresh pool image per
+                // presented frame; `Retry` keeps `present_pending` for the
+                // next frame (#1687).
+                #[cfg(target_os = "linux")]
+                let exported = self
+                    .exports
+                    .get_mut(&sf.id)
+                    .map(|export| {
+                        export.present(
+                            &self.device,
+                            &self.queue,
+                            self.presenter.as_mut().expect("checked above"),
+                            &surface.view,
+                            sf.display.headroom,
+                        )
+                    })
+                    .transpose()?;
+                #[cfg(not(target_os = "linux"))]
+                let exported = None;
+                let presentation = match exported {
+                    Some(presentation) => presentation,
+                    None => Self::present_surface(
+                        self.planes.get_mut(&sf.id),
+                        self.plane_only.contains(&sf.id),
+                        (
+                            &self.device,
+                            &self.queue,
+                            self.presenter.as_mut().expect("checked above"),
+                        ),
+                        surface,
+                        sf,
+                        &currents,
+                    )?,
+                };
                 surface.present_pending = presentation != planes::Presentation::Presented;
                 if presentation == planes::Presentation::Presented {
                     for capture in surface
@@ -5232,11 +5270,11 @@ impl GpuRenderer {
 
     /// Presents `sf`'s surface: through its plane system when it has one —
     /// the frame-swap refresh when this render admitted frames only, a
-    /// full compose otherwise — through its dma-buf export pool when it
-    /// has one, and through the window presenter when it has none.
+    /// full compose otherwise — and through the window presenter when it
+    /// has none. A dma-buf surface presents through its export pool
+    /// before this is reached.
     fn present_surface(
         system: Option<&mut planes::Platform>,
-        export: Option<&mut ExportPool>,
         frames_only: bool,
         present: (&wgpu::Device, &wgpu::Queue, &mut present::Presenter),
         surface: &SurfaceState,
@@ -5244,15 +5282,6 @@ impl GpuRenderer {
         currents: &FxHashMap<ProducerId, &external::Slot>,
     ) -> Result<planes::Presentation, RenderError> {
         let (device, queue, presenter) = present;
-        // A dma-buf surface presents a fresh pool image per presented
-        // frame; `Retry` keeps `present_pending` for the next frame
-        // (#1687).
-        #[cfg(target_os = "linux")]
-        if let Some(export) = export {
-            return export.present(device, queue, presenter, &surface.view, sf.display.headroom);
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = export;
         match system {
             Some(system) => {
                 // The frame's own `plane_frames` carries the update set —
