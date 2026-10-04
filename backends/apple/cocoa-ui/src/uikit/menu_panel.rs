@@ -113,9 +113,7 @@ pub enum PanelSlot {
 /// What a row is: a separator, or a button carrying a command.
 enum PanelRowKind {
     /// A hairline between row groups; kept so a palette change re-tints it.
-    Separator {
-        hairline: Retained<UIView>,
-    },
+    Separator { hairline: Retained<UIView> },
     Activatable {
         button: Retained<UIButton>,
         command: Command,
@@ -370,8 +368,7 @@ impl MenuPanelController {
         let mut height = EDGE_PAD;
         let mut sections = false;
         for part in &parts {
-            height += if sections { SECTION_GAP } else { 0.0 }
-                + measure_height_at(part, width);
+            height += if sections { SECTION_GAP } else { 0.0 } + measure_height_at(part, width);
             sections = true;
         }
         if let Some(page) = pages.last() {
@@ -428,11 +425,7 @@ impl MenuPanelController {
             y += height + SECTION_GAP;
         }
         if let Some(page) = ivars.pages.borrow().last() {
-            let page_height: f64 = page
-                .rows
-                .iter()
-                .map(|row| row_height_for(row, width))
-                .sum();
+            let page_height: f64 = page.rows.iter().map(|row| row_height_for(row, width)).sum();
             page.container.setFrame(CGRect::new(
                 CGPoint::new(0.0, y),
                 CGSize::new(width, page_height),
@@ -665,10 +658,7 @@ impl MenuPanelController {
                     let hairline = UIView::new(mtm);
                     hairline.setBackgroundColor(Some(&separator_color(self)));
                     separator.add_subview(&hairline);
-                    push_row(
-                        separator.into_super(),
-                        PanelRowKind::Separator { hairline },
-                    );
+                    push_row(separator.into_super(), PanelRowKind::Separator { hairline });
                 }
                 MenuTreeNode::Command(command, run) => {
                     let row = row_button(
@@ -768,9 +758,9 @@ impl MenuPanelController {
             let width = view.bounds().size.width;
             let mut y = 0.0;
             for (row, button) in &placements {
-                let height = button.as_ref().map_or(SEPARATOR_HEIGHT, |button| {
-                    row_height_at(button, width)
-                });
+                let height = button
+                    .as_ref()
+                    .map_or(SEPARATOR_HEIGHT, |button| row_height_at(button, width));
                 row.setFrame(CGRect::new(
                     CGPoint::new(0.0, y),
                     CGSize::new(width, height),
@@ -813,8 +803,7 @@ impl MenuPanelController {
                 return;
             }
             let old = pages.pop().map(|page| page.container);
-            if let (Some(column), Some(top)) =
-                (self.ivars().column.borrow().as_ref(), pages.last())
+            if let (Some(column), Some(top)) = (self.ivars().column.borrow().as_ref(), pages.last())
             {
                 column.add_subview(&top.container);
             }
