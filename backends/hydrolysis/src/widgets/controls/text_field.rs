@@ -374,6 +374,26 @@ pub fn render_text_field_parts(
     } else {
         label_target
     };
+    // The prompt-as-label is sized the way a label view is: its own laid-out
+    // height floored at the theme's minimum label height. The minimum alone
+    // shrinks the Material line box and drops the resting prompt below
+    // centre (#1705).
+    let prompt_styled = prompt_as_label
+        .then(|| StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color()));
+    let prompt_label_height = prompt_styled.as_ref().map_or(0.0, |styled| {
+        material_input_label_height(
+            HydrolysisRenderer::measure_text_dimensions(
+                ctx.state_mut(),
+                styled.clone(),
+                HorizontalAlignment::Leading,
+                env,
+                None,
+                Some(1),
+            )
+            .size,
+            input_metrics.label_height,
+        )
+    });
     if label_height > 0.0 {
         flush_material_label(
             ctx,
@@ -384,14 +404,14 @@ pub fn render_text_field_parts(
             label_height,
             label_progress,
         );
-    } else if prompt_as_label {
+    } else if let Some(prompt_styled) = prompt_styled {
         flush_material_prompt_label(
             ctx,
             env,
-            StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color()),
+            prompt_styled,
             field_rect,
             input_metrics.horizontal_inset,
-            input_metrics.label_height,
+            prompt_label_height,
             label_progress,
         );
     }
@@ -417,7 +437,7 @@ pub fn render_text_field_parts(
         styled
     };
     let effective_label_height = if prompt_as_label {
-        input_metrics.label_height
+        prompt_label_height
     } else {
         label_height
     };
