@@ -33,7 +33,7 @@ private func mountCreate(
 @_extern(c, "waterui_apple_mount_drop")
 private func mountDrop(_ _: UnsafeMutableRawPointer)
 @_extern(c, "waterui_apple_update_visibility")
-private func updateVisibility(_ mount: UnsafeRawPointer)
+private func updateVisibilityNative(_ mount: UnsafeRawPointer)
 
 /// Resources supplied by the native application or the embedding package.
 public struct WaterUIResourceContext: Sendable {
@@ -166,7 +166,7 @@ public final class WaterUIHostController: UIViewController {
   /// for visibility re-check and resume.
   public func updateVisibility() {
     guard let mount else { return }
-    updateVisibility(UnsafeRawPointer(mount.pointer))
+    updateVisibilityNative(UnsafeRawPointer(mount.pointer))
   }
 
   public var sceneOwner: WaterUISceneOwner {
@@ -212,14 +212,16 @@ public final class WaterUIHostController: NSViewController {
   /// Re-evaluates presentation visibility across the mounted tree.
   ///
   /// WaterUI-owned layout, scroll and window transitions reach surfaces
-  /// on their own, and AppKit ancestors publish frame/bounds
-  /// notifications the surfaces subscribe to. Mutations on containers
-  /// between the window and this controller's `view` — `isHidden`,
-  /// `alphaValue`, or reparenting it inside the same window — do not;
-  /// call this so surfaces parked for visibility re-check and resume.
+  /// on their own. Mutations on containers between the window and this
+  /// controller's `view` — `isHidden`, `alphaValue`, clipping bounds,
+  /// frame/transform changes, or reparenting it inside the same window —
+  /// publish nothing a mounted surface can observe; foreign `NSView`
+  /// ancestors never gain posting flags or subscriptions, so call this
+  /// whenever the host mutates one of them and surfaces parked for
+  /// visibility re-check and resume.
   public func updateVisibility() {
     guard let mount else { return }
-    updateVisibility(UnsafeRawPointer(mount.pointer))
+    updateVisibilityNative(UnsafeRawPointer(mount.pointer))
   }
 }
 

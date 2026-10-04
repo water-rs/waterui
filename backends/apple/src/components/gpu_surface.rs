@@ -308,8 +308,6 @@ struct SurfaceState {
     ready_waiters: RefCell<Vec<std::task::Waker>>,
     /// Whether content accessibility republishes after the next frame.
     needs_a11y_refresh: Cell<bool>,
-    /// Window/app observers re-arming presentation edges.
-    observers: RefCell<Vec<cocoa_ui::notification::NotificationObserver>>,
     /// The proposal the surface was last measured under.
     last_proposal: Cell<Option<ProposalSize>>,
     /// The last measurement the renderer answered — reused while setup
@@ -409,7 +407,6 @@ impl SurfaceState {
             current_scale: Cell::new(1.0),
             ready_waiters: RefCell::new(Vec::new()),
             needs_a11y_refresh: Cell::new(true),
-            observers: RefCell::new(Vec::new()),
             last_proposal: Cell::new(None),
             last_resolved_size: RefCell::new(None),
             gpu_generation: Cell::new(None),
@@ -1022,85 +1019,6 @@ fn complete_ready(state: &SurfaceState, _presented: bool) {
     }
 }
 
-// MARK: - Window observers (WuiWindowOcclusion)
-
-/// (Re)arms the occlusion / miniaturization / activation observers for the
-/// window `view` now sits in — `updateWindowObservers`.
-fn update_window_observers(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let mut observers = state.observers.borrow_mut();
-    observers.clear();
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
-        return;
-    };
-    #[cfg(target_os = "ios")]
-    let _ = &window;
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-    let fire = {
-        let weak = Rc::downgrade(state);
-        let view = view.clone();
-        move || {
-            if let Some(state) = weak.upgrade() {
-                update_display_link_state(&state, &view);
-            }
-        }
-    };
-    #[cfg(target_os = "macos")]
-    {
-        observers.push(cocoa_ui::appkit::watch_occlusion(mtm, &window, {
-            let fire = fire.clone();
-            move || fire()
-        }));
-        for notification in [
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidMiniaturizeNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidDeminiaturizeNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidChangeScreenNotification },
-        ] {
-            let name = notification;
-            observers.push(cocoa_ui::notification::observe_object(
-                mtm,
-                &cocoa_ui::notification::NotificationName::framework(name),
-                window.as_ref(),
-                {
-                    let fire = fire.clone();
-                    move || fire()
-                },
-            ));
-        }
-    }
-    #[cfg(target_os = "ios")]
-    {
-        for notification in [
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
-            // SAFETY: the notification names are system constants — the
-            // owning scene's activation transitions, which a multi-scene
-            // session needs beyond the application-level pair (#1327).
-            unsafe { cocoa_ui::objc2_ui_kit::UISceneDidActivateNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UISceneWillDeactivateNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UISceneWillEnterForegroundNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UISceneDidEnterBackgroundNotification },
-        ] {
-            let name = notification;
-            observers.push(cocoa_ui::notification::observe(
-                mtm,
-                &cocoa_ui::notification::NotificationName::framework(name),
-                {
-                    let fire = fire.clone();
-                    move || fire()
-                },
-            ));
-        }
-    }
-}
-
 // MARK: - Input (WuiGpuSurfaceInput)
 
 /// The input responder overlay `wants_input_events` installs — the kit's
@@ -1393,7 +1311,6 @@ impl fmt::Debug for RegistryGuard {
 impl Drop for RegistryGuard {
     fn drop(&mut self) {
         self.state.clock.stop();
-        self.state.observers.borrow_mut().clear();
         self.state.view.borrow_mut().unmount();
         drop(self.state.renderer.borrow_mut().take());
         if let Some(input) = &self.input {
@@ -1585,7 +1502,6 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
                 complete_ready(&state, false);
                 state.keep_redrawing.set(false);
                 state.clock.stop();
-                state.observers.borrow_mut().clear();
                 refresh_visibility_watches(&state, &view);
                 return;
             };
@@ -1594,7 +1510,6 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
             }
             let _ = window;
             update_presentation_frame(&state, &view);
-            update_window_observers(&state, &view);
             refresh_visibility_watches(&state, &view);
             update_display_link_state(&state, &view);
         }
