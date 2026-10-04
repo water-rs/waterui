@@ -3,6 +3,7 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::cell::{Cell, RefCell};
+    use std::ffi::{OsStr, OsString};
     use std::rc::Rc;
     use std::time::{Duration, Instant};
 
@@ -35,7 +36,7 @@ mod linux {
         }
     }
 
-    pub fn run() {
+    fn parse_args() -> (OsString, OsString, Duration) {
         let mut arguments = std::env::args_os().skip(1);
         let runtime_root = arguments
             .next()
@@ -53,12 +54,16 @@ mod linux {
             arguments.next().is_none(),
             "runtime_smoke received unexpected arguments"
         );
+        (
+            runtime_root,
+            output_path,
+            Duration::from_secs(timeout_seconds),
+        )
+    }
 
-        let gpu_runtime = pollster::block_on(GpuRuntime::new())
-            .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
-        let paths = WpeRuntimePaths::new(runtime_root);
-        let runtime = WpeRuntime::initialize(&paths);
-        let page = WpePage::new(runtime);
+    // Pumps the page until it has loaded the document and produced one fully
+    // rendered DMA-BUF frame, or the deadline passes.
+    fn await_rendered_frame(page: &WpePage, deadline: Instant) -> DmaBufFrame {
         let loaded = Rc::new(Cell::new(false));
         let load_error = Rc::new(RefCell::new(None::<String>));
         // The guard has to outlive the pump loop below: dropping it
@@ -86,7 +91,6 @@ mod linux {
         let document = base64::engine::general_purpose::STANDARD.encode(document);
         page.load_uri(&format!("data:text/html;base64,{document}"));
 
-        let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
         while !loaded.get() || !frame_ready.get() {
             page.pump();
             if let Some(error) = load_error.borrow().as_deref() {
@@ -109,16 +113,22 @@ mod linux {
             );
             std::thread::yield_now();
         }
+        frame
+    }
 
+    // Presents the frame through the engine-content path and writes the GPU
+    // readback out as a PNG.
+    fn render_to_png(gpu_runtime: &GpuRuntime, frame: DmaBufFrame, output_path: &OsStr) {
         let source = SmokeFrameSource {
             frame: RefCell::new(Some(frame)),
         };
         let size = OffscreenSize::try_from_pixels(WIDTH, HEIGHT)
             .expect("WPE smoke viewport must be non-zero");
         let mut view = DmaBufGpuView::new(source).into_view();
-        let content = view.take_engine_content(|| {});
+        let engine_content = view.take_engine_content(|| {});
         let context = gpu_runtime.context();
-        let mut renderer = GpuContentRenderer::new(&gpu_runtime, context.clone(), content, size);
+        let mut renderer =
+            GpuContentRenderer::new(gpu_runtime, context.clone(), engine_content, size);
         // The UI hook feeds the content's mailbox; run it before presenting so
         // the smoke frame is queued for the render.
         view.frame();
@@ -175,16 +185,32 @@ mod linux {
         device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("WPE smoke readback wait failed");
-        let rgba8 = buffer.slice(..).get_mapped_range().to_vec();
+        let rgba8 = buffer
+            .slice(..)
+            .get_mapped_range()
+            .expect("WPE smoke readback buffer must be mapped after a successful wait")
+            .to_vec();
         buffer.unmap();
-        let rendered = OffscreenImage {
+        let image = OffscreenImage {
             width: WIDTH,
             height: HEIGHT,
             rgba8,
         };
-        rendered
+        image
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));
+    }
+
+    pub fn run() {
+        let (runtime_root, output_path, timeout) = parse_args();
+        let gpu_runtime = pollster::block_on(GpuRuntime::new())
+            .unwrap_or_else(|error| panic!("WPE smoke GPU runtime creation failed: {error}"));
+        let paths = WpeRuntimePaths::new(runtime_root);
+        let runtime = WpeRuntime::initialize(&paths);
+        let page = WpePage::new(runtime);
+        let deadline = Instant::now() + timeout;
+        let frame = await_rendered_frame(&page, deadline);
+        render_to_png(&gpu_runtime, frame, &output_path);
     }
 }
 
