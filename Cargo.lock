@@ -13625,7 +13625,7 @@ dependencies = [
 [[package]]
 name = "waterui-particle"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/particle?rev=bbdafd3a03ec3aa99094a48dd64bff9fe35eebbe#bbdafd3a03ec3aa99094a48dd64bff9fe35eebbe"
+source = "git+https://github.com/water-rs/particle?rev=db1bbd4bc10ccb7c47d6d7a46f0ddd4033e7d8b3#db1bbd4bc10ccb7c47d6d7a46f0ddd4033e7d8b3"
 dependencies = [
  "bytemuck",
  "encase",

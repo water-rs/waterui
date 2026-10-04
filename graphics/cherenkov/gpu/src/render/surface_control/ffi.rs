@@ -41,7 +41,8 @@ pub struct ASurfaceTransaction {
 
 impl std::fmt::Debug for ASurfaceTransaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ASurfaceTransaction").finish_non_exhaustive()
+        f.debug_struct("ASurfaceTransaction")
+            .finish_non_exhaustive()
     }
 }
 
@@ -54,7 +55,8 @@ pub struct ASurfaceTransactionStats {
 
 impl std::fmt::Debug for ASurfaceTransactionStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ASurfaceTransactionStats").finish_non_exhaustive()
+        f.debug_struct("ASurfaceTransactionStats")
+            .finish_non_exhaustive()
     }
 }
 
