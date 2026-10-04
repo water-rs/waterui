@@ -317,7 +317,7 @@ pub fn run(app: App, style: impl crate::Style) {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&theme))
+            HydrolysisRenderer::new(surface.adapter(), Rc::clone(&theme))
         };
         seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());

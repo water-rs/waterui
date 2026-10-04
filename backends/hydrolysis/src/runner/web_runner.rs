@@ -429,7 +429,7 @@ pub fn run(app: App, style: impl crate::Style) {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), theme)
+            HydrolysisRenderer::new(surface.adapter(), theme)
         };
         let fonts = FontCollection::new(font_cx);
         fonts.clone().install(&mut env);

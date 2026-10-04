@@ -341,10 +341,6 @@ pub struct HydrolysisRenderer {
     /// `pub(crate)` so the runner's readback timing can add its stage in.
     #[cfg(feature = "frame-profile")]
     pub(crate) frame_stage_times: FrameStageTimes,
-    /// Timestamp-query state for the frame's GPU spans; `None` when the device
-    /// lacks `TIMESTAMP_QUERY` — GPU stages then report absent, never a guess.
-    #[cfg(feature = "frame-profile")]
-    gpu_profiler: Option<GpuFrameProfiler>,
     /// Digest of the last layout pass's placed bounds; the frame-profile
     /// example compares it across runs to prove a change left layout output
     /// byte-identical.
@@ -467,18 +463,14 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    /// A renderer for `device`, which `adapter` produced, drawing with `theme`.
+    /// A renderer drawing with `theme`.
     ///
     /// The adapter is not a formality: the engine for the frame's GPU context
     /// is created against what `adapter` can actually run, and an adapter
     /// without the engine's required features fails inside the engine rather
     /// than degrading.
     #[must_use]
-    pub fn new(
-        _adapter: &wgpu::Adapter,
-        _device: &wgpu::Device,
-        theme: Rc<dyn crate::engine::WidgetTheme>,
-    ) -> Self {
+    pub fn new(_adapter: &wgpu::Adapter, theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
         let frame_instant = Instant::now();
         Self {
             core: SemanticCore::new(frame_instant),
@@ -501,8 +493,6 @@ impl HydrolysisRenderer {
             navigation_captures: Vec::new(),
             #[cfg(feature = "frame-profile")]
             frame_stage_times: FrameStageTimes::default(),
-            #[cfg(feature = "frame-profile")]
-            gpu_profiler: GpuFrameProfiler::new(_device),
             #[cfg(feature = "frame-profile")]
             last_layout_signature: None,
         }

@@ -695,7 +695,7 @@ impl WinitRunner {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
+            HydrolysisRenderer::new(surface.adapter(), Rc::clone(&self.theme))
         };
         super::seed_core(&mut renderer, &self.fonts);
         let mut runtime =

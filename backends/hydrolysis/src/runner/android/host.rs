@@ -690,7 +690,7 @@ impl AndroidSession {
         platform.apply_properties(&window);
         let mut renderer = {
             let surface = &platform.surface;
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), theme)
+            HydrolysisRenderer::new(surface.adapter(), theme)
         };
         crate::runner::fonts::seed_core(&mut renderer, &fonts);
         renderer.set_window_id(shortcuts.mint_window_id());

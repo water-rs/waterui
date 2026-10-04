@@ -99,7 +99,7 @@ impl TestHost {
         );
         let mut renderer = {
             let surface = platform.surface();
-            HydrolysisRenderer::new(surface.adapter(), surface.device(), Rc::clone(&self.theme))
+            HydrolysisRenderer::new(surface.adapter(), Rc::clone(&self.theme))
         };
         let bounds = kurbo::Rect::new(
             0.0,
