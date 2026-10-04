@@ -40,9 +40,10 @@ on:
         value: ${{ jobs.scope.outputs.msrv }}
       test-assets:
         description: >
-          `true` when a package whose test targets compile generated
-          assets — hydrolysis's fonts/fixture or waterui-cli's generated
-          font — is in scope.
+          `true` when a package whose test code needs a generated or
+          installed asset — waterui-cli's `include_bytes!`d Roboto
+          fixture, or the test fonts the styled suites resolve by
+          family name — is in scope.
         value: ${{ jobs.scope.outputs.test-assets }}
       scene-assets:
         description: >

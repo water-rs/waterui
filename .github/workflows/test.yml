@@ -121,9 +121,12 @@ jobs:
             lint-target-${{ runner.os }}-${{ runner.arch }}-${{ steps.rustc-fingerprint.outputs.hash }}-
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      # Hydrolysis's `#[cfg(any(test, feature = "testing"))]` font table is an
-      # `include_bytes!` of files this repository deliberately does not store;
-      # `--all-targets` compiles the test modules, so they must exist first.
+      # waterui-cli's `#[cfg(test)]` font-subsetting module `include_bytes!`s
+      # the generated Roboto fixture — the repository stores it nowhere, and
+      # `--all-targets` compiles the test modules, so it must exist first.
+      # The composite also installs the test fonts the styled suites resolve
+      # at run time; this gate never runs tests, so that half only matters
+      # to the `full` callers that share the step.
       - name: Generate Hydrolysis test assets
         if: inputs.full || inputs['test-assets']
         uses: ./.github/actions/generate-test-assets
@@ -454,9 +457,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # nextest compiles hydrolysis's test targets, and they `include_bytes!`
-      # the generated fonts and live-photo fixture — which the repository
-      # stores none of. Runs on both OSes: the macOS leg needs the same files.
+      # nextest runs the hydrolysis and styled test targets: they resolve
+      # the test font families through system font discovery and read the
+      # generated live-photo fixture — the repository stores none of it.
+      # Runs on both OSes: the macOS leg needs the same fonts installed.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       # Cherenkov's test targets both embed (`include_bytes!`) and read
@@ -629,8 +633,9 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The all-features pass compiles hydrolysis's test targets, which
-      # `include_bytes!` the generated fonts — the repository stores none.
+      # The all-features pass runs the styled test targets too; they
+      # resolve the installed test-font families by name — the repository
+      # stores none of them.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       - name: Generate Cherenkov scene assets
@@ -708,9 +713,9 @@ jobs:
         run: |
           cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
           cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
-      # The checked feature set below includes `testing`, whose font table is
-      # generated, not committed — `--all-targets` also compiles the
-      # `#[cfg(test)]` `include_bytes!` sites.
+      # The clippy below compiles waterui-cli's `#[cfg(test)]` modules,
+      # which `include_bytes!` the generated Roboto fixture — and the
+      # real-engine run resolves the installed test fonts by family name.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       # Hydrolysis's own CI ran this clippy shape on macos-latest alongside
@@ -780,8 +785,9 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # Examples that dev-depend on waterui-testing compile hydrolysis with
-      # its `testing` feature, whose font table is generated, not committed.
+      # Examples that dev-depend on waterui-testing run styled tests, which
+      # resolve the installed test-font families through system font
+      # discovery — the repository stores none of them.
       - name: Generate Hydrolysis test assets
         uses: ./.github/actions/generate-test-assets
       - name: Clippy (examples)
@@ -834,10 +840,6 @@ jobs:
       # precompiled SPIR-V with spirv-opt on every non-Apple native target.
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
-      # The checked feature set includes `testing`, whose font table is
-      # generated — the repository stores none of it.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
 

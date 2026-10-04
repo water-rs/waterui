@@ -26,13 +26,15 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 - `msrv` — `true` when the diff can move the toolchain floor: a
   `rust-version` key, any Cargo.toml dependency section (including
   `target.<cfg>.dependencies`), or Cargo.lock.
-- `test-assets` — `true` when a package whose `--all-targets` build
-  compiles a generated asset (`hydrolysis/testing`'s `TEST_FONTS`
-  `include_bytes!`s, or the cli's generated `Roboto-Regular.ttf` fixture)
-  is in scope, or the whole workspace is. The set is the tool's
-  `test_asset_consumers` — the dev-dependency closure plus `waterui-cli`
-  itself — so a crate that merely dev-depends on `waterui-testing`,
-  `waterui-controls` say, still gets the fonts before its check.
+- `test-assets` — `true` when a package whose test code needs a
+  generated or installed asset is in scope, or the whole workspace is:
+  the cli's `#[cfg(test)]` code `include_bytes!`s the generated
+  `Roboto-Regular.ttf` fixture, and the `waterui-testing` dev-dependency
+  closure's styled tests resolve the test fonts `install.py` installs
+  by family name. The set is the tool's `test_asset_consumers` — the
+  dev-dependency closure plus `waterui-cli` itself — so a crate that
+  merely dev-depends on `waterui-testing`, `waterui-controls` say,
+  still gets the fonts installed before its check.
 - `scene-assets` — `true` when a package whose `--all-targets` compile
   `include_bytes!`s a generated Cherenkov scene font is in scope, or the
   whole workspace is. That is a fixed owner set, not a dev-dependency
