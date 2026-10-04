@@ -1061,11 +1061,17 @@ impl RootBorrow {
 
 impl Drop for RootBorrow {
     /// Puts `view` back where the claim found it while `layer` is still
-    /// owned: re-attach through the platform's ordered containment APIs
-    /// — never a manual `CALayer` reparent — then restore the recorded
-    /// geometry and hidden flag. The fields release only after this
-    /// body runs, so the layer borrow outlives the re-attach itself.
+    /// owned, inside one disabled-actions transaction: re-attach through
+    /// the platform's ordered containment APIs — never a manual
+    /// `CALayer` reparent — then restore the recorded geometry and
+    /// hidden flag. The fields release only after this body runs, so
+    /// the layer borrow outlives the re-attach itself.
     fn drop(&mut self) {
+        // The whole restore — reattachment included — runs inside one
+        // disabled-actions transaction so the claim's native tree
+        // restoration can never become a visible implicit animation.
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
         if let Some(attachment) = &self.attachment {
             let detached = crate::view::superview(&self.view).is_none_or(|current| {
                 !std::ptr::eq(&raw const *current, &raw const *attachment.parent)
@@ -1110,8 +1116,6 @@ impl Drop for RootBorrow {
                 }
             }
         }
-        CATransaction::begin();
-        CATransaction::setDisableActions(true);
         crate::view::set_bounds(&self.view, self.bounds);
         #[cfg(target_os = "ios")]
         crate::view::set_center(&self.view, self.center);
