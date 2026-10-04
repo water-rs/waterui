@@ -143,6 +143,10 @@ class _Deadline:
         """Whether the shared budget has already been consumed."""
         return time.monotonic() >= self._ends
 
+    def remaining(self):
+        """Seconds left before the shared deadline, never negative."""
+        return max(self._ends - time.monotonic(), 0.0)
+
     async def wait(self, awaitable):
         return await asyncio.wait_for(
             awaitable, timeout=max(self._ends - time.monotonic(), 0.0))
@@ -151,30 +155,46 @@ class _Deadline:
 async def _reap(proc, subtree=False):
     """SIGTERM `proc` first, escalating to SIGKILL inside one grace.
 
-    Every child this script owns exits through here. TERM is the
-    forwarding signal: a wrapper child (a `simctl spawn` log stream is
-    reparented under simlaunchd) delivers it to the real child and then
-    exits itself — SIGKILL can never be forwarded. A child that resists
-    TERM is killed with the remaining budget. When `subtree` marks a
-    wrapper whose real child lives under a foreign parent, a forced kill
-    reaps only the wrapper — the forwarded child may still run — so that
-    is reported as a named failure, never claimed as a clean reap.
+    Every child this script owns exits through here, and every wait
+    draws from the same single TERMINATE_GRACE_S deadline — including
+    the drain of an already-exited child, whose transport can stay
+    pending on pipes owned by descendants. TERM is the forwarding
+    signal: a wrapper child (a `simctl spawn` log stream is reparented
+    under simlaunchd) delivers it to the real child and then exits
+    itself — SIGKILL can never be forwarded. A child that resists TERM
+    is killed with what remains of the grace. When `subtree` marks a
+    wrapper whose real child lives under a foreign parent, a forced
+    kill reaps only the wrapper — the forwarded child may still run —
+    so that is reported as a named failure, never claimed as a clean
+    reap.
     """
+    grace = _Deadline(TERMINATE_GRACE_S)
     if proc.returncode is not None:
-        await proc.wait()
+        try:
+            await grace.wait(proc.wait())
+        except asyncio.TimeoutError as exc:
+            raise Failure(
+                "reap",
+                f"child {proc.pid} exited {proc.returncode} but its "
+                f"transport did not finish within the grace") from exc
         return
     proc.terminate()
     try:
-        await asyncio.wait_for(proc.wait(), TERM_GRACE_S)
+        await asyncio.wait_for(
+            proc.wait(), timeout=min(TERM_GRACE_S, grace.remaining()))
         return
     except asyncio.TimeoutError:
         pass
     proc.kill()
     try:
-        await asyncio.wait_for(proc.wait(), TERMINATE_GRACE_S - TERM_GRACE_S)
+        await grace.wait(proc.wait())
     except asyncio.TimeoutError as exc:
-        raise Failure(
-            "reap", f"child {proc.pid} did not exit after kill") from exc
+        if proc.returncode is not None:
+            detail = (f"child {proc.pid} exited {proc.returncode} but "
+                      f"its transport did not finish within the grace")
+        else:
+            detail = f"child {proc.pid} did not exit after kill"
+        raise Failure("reap", detail) from exc
     if subtree:
         raise Failure(
             "reap",
