@@ -72,9 +72,26 @@ pub struct TextEditingState {
     pub(crate) text_caret_fade_started_at: Option<Instant>,
     pub(crate) text_caret_next_frame_at: Option<Instant>,
     pub(crate) text_caret_motion: Option<TextCaretMotion>,
+    /// How many primary presses have landed on an editable target. A
+    /// platform with a soft keyboard shows it again when this changes, so a
+    /// tap on the field already holding focus brings back a keyboard the
+    /// user dismissed.
+    activations: u64,
 }
 
 impl TextEditingState {
+    /// Records a primary press on an editable target.
+    pub(crate) const fn note_activation(&mut self) {
+        self.activations = self
+            .activations
+            .checked_add(1)
+            .expect("text input activation count overflow");
+    }
+
+    /// The press count [`Self::note_activation`] maintains.
+    pub(crate) const fn activations(&self) -> u64 {
+        self.activations
+    }
     /// This frame's position for a stable target identity, if that target is
     /// still emitted.
     pub(crate) fn index_of(&self, key: &InteractionKey) -> Option<usize> {

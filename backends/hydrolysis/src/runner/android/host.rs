@@ -167,31 +167,11 @@ impl HostBridge {
         self.call_str("onNativeCursorAnchorInfo", json);
     }
 
-    /// Pushes the focused text-input rect (physical px) and purpose to the
-    /// host's IME controller; a negative purpose clears it (keyboard hides).
-    fn sync_text_input_state(&self, state: Option<TextInputState>, density: f64) {
-        let args: [JValue; 5] = state.map_or(
-            [
-                JValue::Float(0.0),
-                JValue::Float(0.0),
-                JValue::Float(0.0),
-                JValue::Float(0.0),
-                JValue::Int(-1),
-            ],
-            |state| {
-                [
-                    JValue::Float(crate::num_cast::f64_as_f32(state.x * density)),
-                    JValue::Float(crate::num_cast::f64_as_f32(state.y * density)),
-                    JValue::Float(crate::num_cast::f64_as_f32(state.width * density)),
-                    JValue::Float(crate::num_cast::f64_as_f32(state.height * density)),
-                    JValue::Int(match state.purpose {
-                        crate::platform::TextInputPurpose::Normal => 0,
-                        crate::platform::TextInputPurpose::Password => 1,
-                    }),
-                ]
-            },
-        );
-        self.call("onNativeTextInputState", "(FFFFI)V", &args);
+    /// `session.onNativeSoftInput(visible)` — shows or hides the soft
+    /// keyboard. Candidate geometry and the field's input contract travel on
+    /// the editing-state and cursor-anchor pushes instead.
+    fn set_soft_input_visible(&self, visible: bool) {
+        self.call("onNativeSoftInput", "(Z)V", &[JValue::Bool(visible.into())]);
     }
 
     /// `session.onNativeAccessibilityTreeChanged(json)` — the JSON event
@@ -253,6 +233,10 @@ pub struct AndroidHostWindow {
     /// visibility report; the other half is a live surface below.
     started: bool,
     cursor_style: CursorStyle,
+    /// The [`TextInputState::activation`] the soft keyboard was last shown
+    /// for; `None` while no field holds focus. The runner syncs text-input
+    /// state on every frame, and only a change here reaches the IME.
+    soft_input: Option<u64>,
 }
 
 impl AndroidHostWindow {
@@ -371,8 +355,14 @@ impl PlatformWindow for AndroidHostWindow {
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
-        self.bridge
-            .sync_text_input_state(state, self.metrics.density);
+        let soft_input = state.map(|state| state.activation);
+        if soft_input == self.soft_input {
+            return;
+        }
+        self.soft_input = soft_input;
+        // Focus gained, or a press on the focused field: show. Focus lost:
+        // hide.
+        self.bridge.set_soft_input_visible(soft_input.is_some());
     }
 
     fn set_cursor_style(&mut self, style: CursorStyle) {
@@ -593,6 +583,33 @@ pub struct AndroidSession {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
+/// Creates the main-`ALooper` executor, registers its wake fd with the
+/// looper, and installs it as the local executor.
+fn install_main_looper_executor(
+    inspector_probe: Option<Arc<dyn waterui::task::RuntimeProbe>>,
+) -> Result<(AndroidMainThreadExecutor, ExecutorWake), JniError> {
+    // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
+    // the looper and the fd out of child processes.
+    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(JniError(format!(
+            "hydrolysis android: eventfd failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: fd >= 0 checked above.
+    let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
+    let wake = ExecutorWake::register(executor.clone())?;
+    let _ = executor_core::try_init_local_executor(
+        waterui::task::monitored_local_executor_with_probes(
+            executor.clone(),
+            waterui::task::RefreshRate::HEADLESS,
+            inspector_probe,
+        ),
+    );
+    Ok((executor, wake))
+}
+
 impl AndroidSession {
     /// Mounts the registered app on the host view: builds the environment,
     /// executor wake bridge, GPU context and the runtime window.
@@ -611,26 +628,7 @@ impl AndroidSession {
             .map(waterui::inspector::InspectorRuntime::runtime_probe);
 
         let bridge = HostBridge { vm, host_view };
-
-        // SAFETY: NONBLOCK + CLOEXEC keep a saturated counter from stalling
-        // the looper and the fd out of child processes.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
-        if fd < 0 {
-            return Err(JniError(format!(
-                "hydrolysis android: eventfd failed: {}",
-                std::io::Error::last_os_error()
-            )));
-        }
-        // SAFETY: fd >= 0 checked above.
-        let executor = AndroidMainThreadExecutor::new(unsafe { OwnedFd::from_raw_fd(fd) });
-        let wake = ExecutorWake::register(executor.clone())?;
-        let _ = executor_core::try_init_local_executor(
-            waterui::task::monitored_local_executor_with_probes(
-                executor.clone(),
-                waterui::task::RefreshRate::HEADLESS,
-                inspector_probe,
-            ),
-        );
+        let (executor, wake) = install_main_looper_executor(inspector_probe)?;
 
         waterui_locale::start_system_locale_listener();
 
@@ -687,6 +685,7 @@ impl AndroidSession {
             redraw_pending: Cell::new(false),
             started: false,
             cursor_style: CursorStyle::default(),
+            soft_input: None,
         };
         platform.apply_properties(&window);
         let mut renderer = {
