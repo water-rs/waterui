@@ -63,11 +63,27 @@ jobs:
           fetch-depth: 0
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: cargo-home-${{ runner.os }}
-          cache-targets: false
-          save-if: false
-          cache-on-failure: true
+          cache: "false"
+      # Reads the shared `cargo-sources` archive owned by this OS's single
+      # writer job (lint in test.yml); read-only lanes never save. The
+      # `cargo-home-*` rust-cache family this replaced had no writer at
+      # all — every restore was a guaranteed miss on content identical to
+      # this archive (#1441).
+      - name: Restore Cargo sources
+        uses: ./.github/actions/cargo-sources
+      # The determinator tool is in-tree, so no prebuilt release exists and
+      # its ~1.5 min compile ran on every gate invocation. Cache the built
+      # binary the way install-tool caches downloaded ones: an exact key on
+      # everything the binary is built from — lockfile, manifest, main.rs
+      # and rules.toml (baked in via `include_str!`) — and no restore-keys,
+      # because a stale binary under a changed tool is worse than a rebuild.
+      - uses: actions/cache@v4
+        id: affected-tool
+        with:
+          path: .github/tools/affected/target/release/affected
+          key: affected-tool-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/tools/affected/Cargo.lock', '.github/tools/affected/Cargo.toml', '.github/tools/affected/src/**', '.github/tools/affected/rules.toml') }}
       - name: Build the determinator tool
+        if: steps.affected-tool.outputs.cache-hit != 'true'
         run: cargo build --locked --release --manifest-path .github/tools/affected/Cargo.toml
       - uses: astral-sh/setup-uv@v6
       - name: Compute the affected set
