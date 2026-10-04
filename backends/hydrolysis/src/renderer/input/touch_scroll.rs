@@ -261,11 +261,9 @@ impl SplineFling {
         // AOSP `getSplineDeceleration` — `DECELERATION_RATE = ln(0.78)/ln(0.9)`.
         let deceleration_rate = 0.78_f64.log(0.9);
         let deceleration_minus_one = deceleration_rate - 1.0;
-        let spline_deceleration =
-            (INFLEXION * velocity.abs() / (friction * physical_coeff)).ln();
-        let spline_duration = Duration::from_secs_f64(
-            (spline_deceleration / deceleration_minus_one).exp(),
-        );
+        let spline_deceleration = (INFLEXION * velocity.abs() / (friction * physical_coeff)).ln();
+        let spline_duration =
+            Duration::from_secs_f64((spline_deceleration / deceleration_minus_one).exp());
         let mut duration = spline_duration;
         // `getSplineFlingDistance` returns the run's magnitude; the sign
         // applies separately (`mSplineDistance = totalDistance * signum`).
@@ -335,8 +333,8 @@ const fn build_spline_tables() -> ([f64; SPLINE_SAMPLES + 1], [f64; SPLINE_SAMPL
     let mut y_min = 0.0;
     let mut i = 0;
     while i < SPLINE_SAMPLES {
-        let alpha = crate::num_cast::usize_as_f64(i)
-            / crate::num_cast::usize_as_f64(SPLINE_SAMPLES);
+        let alpha =
+            crate::num_cast::usize_as_f64(i) / crate::num_cast::usize_as_f64(SPLINE_SAMPLES);
         let mut x_max = 1.0;
         let mut x;
         loop {

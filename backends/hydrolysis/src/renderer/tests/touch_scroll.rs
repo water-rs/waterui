@@ -110,14 +110,15 @@ fn touch_up(x: f32, y: f32) -> InputEvent {
 /// The vertical offset of the scroll view under `point` — `None` while no
 /// scroll target covers it.
 fn offset_y_at(runtime: &HeadlessRuntime, x: f32, y: f32) -> Option<f64> {
-    runtime.renderer().scroll_metrics_at(x, y).map(|m| m.offset_y)
+    runtime
+        .renderer()
+        .scroll_metrics_at(x, y)
+        .map(|m| m.offset_y)
 }
 
 /// A tall scroll whose content puts a full-width `button` under the touch
 /// point the tests drive — sized so the press target's bounds cover it.
-fn scroll_with_button(
-    tapped: Binding<bool>,
-) -> AnyView {
+fn scroll_with_button(tapped: Binding<bool>) -> AnyView {
     AnyView::new(scroll(vstack((
         ().size(360.0, 260.0),
         Frame::new(button("tap me").action(move || tapped.set(true)))
@@ -272,8 +273,8 @@ fn a_fast_release_flings_and_decelerates_to_rest_inside_the_bounds() {
     runtime.push_input_event(touch_up(200.0, 280.0));
     let _ = runtime.pump_at(false, start + Duration::from_millis(80));
 
-    let dragged = offset_y_at(&runtime, 200.0, 400.0)
-        .expect("the scroll view must publish its metrics");
+    let dragged =
+        offset_y_at(&runtime, 200.0, 400.0).expect("the scroll view must publish its metrics");
     let max = runtime
         .renderer()
         .scroll_metrics_at(200.0, 400.0)
@@ -287,8 +288,7 @@ fn a_fast_release_flings_and_decelerates_to_rest_inside_the_bounds() {
     for frame in 6..=200u64 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(80 + frame * 16));
         offsets.push(
-            offset_y_at(&runtime, 200.0, 400.0)
-                .expect("the scroll view must keep its metrics"),
+            offset_y_at(&runtime, 200.0, 400.0).expect("the scroll view must keep its metrics"),
         );
     }
 
@@ -342,14 +342,14 @@ fn a_touch_down_during_a_fling_stops_it_where_it_is() {
     for frame in 1..=4u64 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(80 + frame * 16));
     }
-    let flying = offset_y_at(&runtime, 200.0, 400.0)
-        .expect("the scroll view must publish its metrics");
+    let flying =
+        offset_y_at(&runtime, 200.0, 400.0).expect("the scroll view must publish its metrics");
 
     // A new touch down grabs the content: the fling stops where it is.
     runtime.push_input_event(touch_down(200.0, 500.0));
     let _ = runtime.pump_at(false, start + Duration::from_millis(144));
-    let stopped = offset_y_at(&runtime, 200.0, 400.0)
-        .expect("the scroll view must publish its metrics");
+    let stopped =
+        offset_y_at(&runtime, 200.0, 400.0).expect("the scroll view must publish its metrics");
     assert!(
         stopped >= flying,
         "the grab lands on the running fling's offset ({flying} → {stopped})"
@@ -360,8 +360,8 @@ fn a_touch_down_during_a_fling_stops_it_where_it_is() {
     for frame in 11..=30u64 {
         let _ = runtime.pump_at(false, start + Duration::from_millis(64 + frame * 16));
     }
-    let settled = offset_y_at(&runtime, 200.0, 400.0)
-        .expect("the scroll view must publish its metrics");
+    let settled =
+        offset_y_at(&runtime, 200.0, 400.0).expect("the scroll view must publish its metrics");
     assert!(
         (settled - stopped).abs() < f64::EPSILON,
         "the fling must stay stopped after the grab (stopped {stopped}, settled {settled})"

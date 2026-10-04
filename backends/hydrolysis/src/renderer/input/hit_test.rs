@@ -2777,6 +2777,16 @@ impl HydrolysisRenderer {
         if !self.open_context_menu_at(hold.point, env) {
             return gesture_changed;
         }
+        self.consume_active_press(at, env);
+        true
+    }
+
+    /// Consumes the press the active pointer sequence carries: the
+    /// content's press is cancelled — never completed — pending recognizers
+    /// are failed, and the press's visual state releases. The shared
+    /// teardown a context-menu hold commits with and a touch-scroll claim
+    /// steals the sequence through.
+    fn consume_active_press(&mut self, at: Instant, env: &Environment) {
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_pointer_drag_target = None;
@@ -2792,7 +2802,6 @@ impl HydrolysisRenderer {
             self.request_redraw();
         }
         let _ = self.gesture_engine.handle_pointer_cancel(at, env);
-        true
     }
 
     /// What a secondary press at `point` mounts: the menu of the
@@ -3031,16 +3040,15 @@ impl HydrolysisRenderer {
     /// slop crossing while its press still lands on the content under it.
     fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
         self.hit_test.touch_fling = None;
-        self.hit_test.touch_scroll = if button == PointerButton::Primary
-            && self.hit_test.touch_scroll_config.is_some()
-        {
-            TouchScrollGesture::Pending(TouchScrollPending {
-                origin: point,
-                tracker: VelocityTracker::new(at, point),
-            })
-        } else {
-            TouchScrollGesture::Idle
-        };
+        self.hit_test.touch_scroll =
+            if button == PointerButton::Primary && self.hit_test.touch_scroll_config.is_some() {
+                TouchScrollGesture::Pending(TouchScrollPending {
+                    origin: point,
+                    tracker: VelocityTracker::new(at, point),
+                })
+            } else {
+                TouchScrollGesture::Idle
+            };
     }
 
     /// Drives the touch-drag scroll gesture for a `PointerKind::Touch`
@@ -3102,22 +3110,8 @@ impl HydrolysisRenderer {
                 // The claim steals the sequence: the content's press is
                 // cancelled — never completed — through the same teardown a
                 // context-menu hold commits with.
-                self.hit_test.pending_pointer_press = None;
-                self.hit_test.active_pointer_target = None;
-                self.hit_test.active_pointer_drag_target = None;
-                self.hit_test.active_pointer_drag_signature = None;
-                self.clear_scrollbar_drag();
-                self.text_editing.active_text_selection_drag = None;
-                self.hit_test.active_press_bounds = None;
-                self.hit_test.active_press_origin = None;
                 self.hit_test.pending_context_menu_hold = None;
-                let press_clear = self.hit_test.interaction.clear_all_presses(at);
-                if press_clear.chrome_changed {
-                    self.request_refresh();
-                } else if press_clear.visual_changed {
-                    self.request_redraw();
-                }
-                let _ = self.gesture_engine.handle_pointer_cancel(at, env);
+                self.consume_active_press(at, env);
                 // The crossing move applies its excess over the slop at
                 // once — the content slides under the finger with no jump,
                 // anchored where the dominant axis left the slop.
