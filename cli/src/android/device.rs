@@ -319,7 +319,7 @@ async fn run_on_android(
         });
     }
 
-    spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
+    let logcat = spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
         host,
         adb: &adb,
         device_id,
@@ -328,6 +328,9 @@ async fn run_on_android(
         log_level: options.log_level(),
         sender,
     });
+    if let Some(logcat) = logcat {
+        running.retain(logcat);
+    }
 
     Ok(running)
 }
@@ -591,7 +594,9 @@ struct AndroidRuntimeTaskContext<'a> {
     sender: Sender<DeviceEvent>,
 }
 
-fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
+fn spawn_android_runtime_tasks(
+    context: AndroidRuntimeTaskContext<'_>,
+) -> Option<smol::process::Child> {
     let AndroidRuntimeTaskContext {
         host,
         adb,
@@ -622,7 +627,7 @@ fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
     })
     .detach();
 
-    let runtime_event_rx =
+    let (runtime_event_rx, logcat) =
         start_android_log_stream(host, adb, device_id, pid, log_level, sender_for_logs);
     spawn(async move {
         if let Ok(event) = runtime_event_rx.recv().await {
@@ -648,6 +653,8 @@ fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
         }
     })
     .detach();
+
+    logcat
 }
 
 fn format_android_panic(info: &PanicInfo) -> String {
@@ -1054,7 +1061,15 @@ fn contains_tombstone_backtrace_marker(line: &str) -> bool {
 /// Start log streaming from an Android process using logcat.
 ///
 /// Always streams at minimum info level to capture lifecycle completion and panics.
-/// Returns a receiver that fires when the Activity finishes or the runtime crashes.
+/// Returns the receiver that fires when the Activity finishes or the runtime
+/// crashes, alongside the `logcat` child itself.
+///
+/// The child is spawned with `kill_on_drop` and the reader task only holds its
+/// stdout, so whoever owns the returned handle owns the process's lifetime —
+/// the caller retains it in the [`Running`] so `logcat --pid` dies when the
+/// run does, on every exit path. `logcat` does not exit on its own when the
+/// app process it filters on dies; a child the detached reader task owned
+/// would be re-parented to launchd and outlive `water run`.
 fn start_android_log_stream(
     host: &Host,
     adb: &Adb,
@@ -1062,7 +1077,7 @@ fn start_android_log_stream(
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
-) -> Receiver<AndroidRuntimeEvent> {
+) -> (Receiver<AndroidRuntimeEvent>, Option<smol::process::Child>) {
     use futures_util::StreamExt;
     use futures_util::io::{AsyncBufReadExt, BufReader};
 
@@ -1084,18 +1099,19 @@ fn start_android_log_stream(
         .arg(pid_arg)
         .arg(format!("*:{priority}"))
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to spawn logcat: {e}");
-            return runtime_event_rx;
+            return (runtime_event_rx, None);
         }
     };
 
     let Some(stdout) = child.stdout.take() else {
-        return runtime_event_rx;
+        return (runtime_event_rx, None);
     };
 
     let reader = BufReader::new(stdout);
@@ -1128,13 +1144,10 @@ fn start_android_log_stream(
                 }
             }
         }
-
-        // Clean up child process
-        let _ = child.kill();
     })
     .detach();
 
-    runtime_event_rx
+    (runtime_event_rx, Some(child))
 }
 
 fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent> {
