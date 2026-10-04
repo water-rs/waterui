@@ -24,9 +24,15 @@ pub struct Runtime {
 
 /// An attached application instance. Dropping it detaches the entire subtree.
 pub struct Mount {
+    /// The mounted subtree. Declared first because Rust drops fields in
+    /// declaration order: `Mounted` must detach and destruct while `root`,
+    /// the external host, the controller and the scene registrations are
+    /// still retained — `removeFromSuperview` cannot run inside a parent
+    /// already in native teardown. `NativeLeaf` expresses the same inverse
+    /// ownership ordering: child state before the platform view.
+    _content: Rc<Mounted>,
     root: Retained<HostView>,
     _host: Retained<PlatformView>,
-    _content: Rc<Mounted>,
     _keepalive: KeepAlive,
     #[cfg(target_os = "ios")]
     controller: Retained<cocoa_ui::uikit::ViewController>,
