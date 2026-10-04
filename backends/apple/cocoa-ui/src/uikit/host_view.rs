@@ -720,9 +720,10 @@ impl HostView {
     }
 }
 
-/// A host view that serves as a view controller's root view: it always fills
-/// its window, reports its window's safe-area insets, and extends hit testing
-/// to subviews placed outside its bounds.
+/// A host view for a controller at a window's root site: it always fills its
+/// window, reports its window's safe-area insets, and extends hit testing to
+/// subviews placed outside its bounds. Embedded sites use [`HostView::new`],
+/// which keeps the bounds its native parent assigns.
 pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
     HostView::with_ivars(
         mtm,

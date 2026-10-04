@@ -1152,14 +1152,17 @@ mod window {
     };
 }
 
-/// `ViewController` boundary semantics (#1689): an embedded controller's
-/// host view keeps the bounds its native parent assigned through a real
-/// `UIWindow` layout pass — nothing re-proposes the window's bounds to it —
-/// while a `window_root` controller still fills its window.
+/// `ViewController` boundary semantics (#1689): under real `UIKit`
+/// containment — a `UIViewController` parent, `addChild`/`didMove`, a
+/// native container smaller than the window — an embedded controller's
+/// host view keeps the bounds its parent assigned through layout, resize
+/// and reparenting, while a `window_root` controller still fills its
+/// window. The old `viewWillLayoutSubviews` window-bounds override fails
+/// the embedded trial on this same harness.
 #[cfg(target_os = "ios")]
 mod controller_bounds {
-    use cocoa_ui::objc2_ui_kit::UIWindow;
-    use cocoa_ui::uikit::{ViewController, window_root};
+    use cocoa_ui::objc2_ui_kit::{UIView, UIViewController, UIWindow};
+    use cocoa_ui::uikit::{ViewController, view_controller as vc, window_root};
     use cocoa_ui::{PlatformView, view};
     use objc2::{MainThreadOnly, msg_send};
 
@@ -1169,9 +1172,9 @@ mod controller_bounds {
     pub fn trials() -> Vec<libtest_mimic::Trial> {
         vec![
             libtest_mimic::Trial::test(
-                "controller_bounds::embedded_host_keeps_parent_bounds",
+                "controller_bounds::embedded_child_keeps_parent_bounds",
                 || {
-                    embedded_host_keeps_parent_bounds();
+                    embedded_child_keeps_parent_bounds();
                     Ok(())
                 },
             ),
@@ -1182,8 +1185,6 @@ mod controller_bounds {
         ]
     }
 
-    /// A real (never shown) `UIWindow` — `UIKit` runs the full layout path
-    /// without a scene.
     fn window(frame: cocoa_ui::Rect) -> Retained<UIWindow> {
         // SAFETY: `initWithFrame:` is `UIWindow`'s plain initializer and
         // `mtm` proves the main-thread confinement the harness provides.
@@ -1195,43 +1196,100 @@ mod controller_bounds {
         }
     }
 
-    /// An embedded controller — the `WaterUIHostController` shape — inside a
-    /// native parent smaller than the window: layout must keep the host view
-    /// at the bounds the parent assigned, not the window's.
-    fn embedded_host_keeps_parent_bounds() {
+    fn view_controller() -> Retained<UIViewController> {
+        // SAFETY: plain `UIViewController` init on the main thread.
+        unsafe { msg_send![UIViewController::alloc(mtm()), init] }
+    }
+
+    fn plain_view(frame: cocoa_ui::Rect) -> Retained<UIView> {
+        // SAFETY: plain `UIView` init on the main thread.
+        unsafe {
+            msg_send![
+                UIView::alloc(mtm()),
+                initWithFrame: cocoa_ui::objc2_core_foundation::CGRect::from(frame)
+            ]
+        }
+    }
+
+    /// Tears a window down after the trial: the child controllers leave
+    /// their parents through the normal containment callbacks, the root is
+    /// cleared and the window hidden.
+    fn teardown(window: &UIWindow, children: &[&UIViewController]) {
+        for child in children {
+            vc::will_move_to_parent(child);
+            child.view().unwrap().removeFromSuperview();
+            vc::remove_from_parent(child);
+        }
+        window.setRootViewController(None);
+        window.setHidden(true);
+        window.layoutIfNeeded();
+    }
+
+    /// A `ViewController` embedded as a child of a real
+    /// `UIViewController` inside a 340x460 native container — the
+    /// `WaterUIHostController` shape. Its host view must keep the bounds
+    /// the container assigns through layout, resize and reparenting: the
+    /// unmodified window-bounds override would reset it to the window's.
+    fn embedded_child_keeps_parent_bounds() {
         let mtm = mtm();
         let window = window(cocoa_ui::Rect::new(0.0, 0.0, 390.0, 844.0));
-        let parent = HostView::new(mtm, cocoa_ui::Rect::new(50.0, 140.0, 340.0, 460.0));
+        let parent = view_controller();
+        window.setRootViewController(Some(&parent));
+
+        let container = plain_view(cocoa_ui::Rect::new(50.0, 140.0, 340.0, 460.0));
+        parent.view().unwrap().addSubview(&container);
+
         let embedded = cocoa_ui::Rect::new(0.0, 0.0, 340.0, 460.0);
         let controller = ViewController::new(mtm, HostView::new(mtm, embedded));
         let host: &PlatformView = controller.host_view();
-        // UIKit containment sizing: the parent's bounds, not the window's.
-        parent.addSubview(host);
-        window.addSubview(&parent);
+
+        vc::add_child(&parent, &controller);
+        host.setFrame(cocoa_ui::objc2_core_foundation::CGRect::from(embedded));
+        host.setAutoresizingMask(
+            cocoa_ui::objc2_ui_kit::UIViewAutoresizing::FlexibleWidth
+                | cocoa_ui::objc2_ui_kit::UIViewAutoresizing::FlexibleHeight,
+        );
+        container.addSubview(host);
+        vc::did_move_to_parent(&controller);
+
         window.makeKeyAndVisible();
         window.layoutIfNeeded();
-        host.layoutIfNeeded();
-        let frame = view::frame(host);
         assert_eq!(
-            frame.size, embedded.size,
+            view::frame(host).size,
+            embedded.size,
             "embedded host must keep the parent-assigned bounds"
         );
-        // A reparent through the same window changes the frame's origin,
-        // never the proposal.
-        let other = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 200.0));
-        window.addSubview(&other);
-        host.removeFromSuperview();
-        other.addSubview(host);
-        host.setFrame(cocoa_ui::objc2_core_foundation::CGRect::from(
-            cocoa_ui::Rect::new(0.0, 0.0, 300.0, 220.0),
+
+        // A container resize flows through the normal layout path.
+        container.setFrame(cocoa_ui::objc2_core_foundation::CGRect::from(
+            cocoa_ui::Rect::new(50.0, 140.0, 300.0, 220.0),
         ));
         window.layoutIfNeeded();
-        host.layoutIfNeeded();
         assert_eq!(
             view::frame(host).size,
             cocoa_ui::geometry::Size::new(300.0, 220.0),
-            "reparented embedded host keeps the parent's last assignment"
+            "resized embedded host tracks its container, not the window"
         );
+
+        // Reparent under a second native container through the full
+        // containment sequence.
+        let other = plain_view(cocoa_ui::Rect::new(0.0, 0.0, 340.0, 460.0));
+        parent.view().unwrap().addSubview(&other);
+        vc::will_move_to_parent(&controller);
+        host.removeFromSuperview();
+        other.addSubview(host);
+        host.setFrame(cocoa_ui::objc2_core_foundation::CGRect::from(
+            cocoa_ui::Rect::new(0.0, 0.0, 340.0, 460.0),
+        ));
+        vc::did_move_to_parent(&controller);
+        window.layoutIfNeeded();
+        assert_eq!(
+            view::frame(host).size,
+            cocoa_ui::geometry::Size::new(340.0, 460.0),
+            "reparented embedded host keeps the parent's assignment"
+        );
+
+        teardown(&window, &[&controller]);
     }
 
     /// The same controller type at a true window root — a `window_root`
@@ -1249,5 +1307,6 @@ mod controller_bounds {
             cocoa_ui::geometry::Size::new(390.0, 844.0),
             "window_root host must fill its window"
         );
+        teardown(&window, &[]);
     }
 }
