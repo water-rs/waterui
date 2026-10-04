@@ -538,6 +538,10 @@ enum FrameRender {
 /// submits; reports whether the frame submitted or the context is dead — the
 /// `waterui_gpu_content_render_to_metal_texture` half of the ffi entry
 /// point.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the ffi entry point's parameters arrive as one call, not a config"
+)]
 fn render_to_metal_texture(
     state: &Rc<SurfaceState>,
     view: &Retained<SurfaceView>,
@@ -654,6 +658,24 @@ fn can_present_now(view: &Retained<SurfaceView>) -> bool {
         let _ = window;
         cocoa_ui::uikit::application_is_active()
     }
+}
+
+/// Whether this surface takes part in its window's first-paint readiness —
+/// `participatesInFirstPaintReady`. A view whose window cannot present has
+/// no first frame to wait for and owes none: hidden, zero-alpha or
+/// degenerate geometry on the view itself, an invisible ancestor (a hidden
+/// or alpha-0 parent — distinct from a *window* at alpha 0, which a reveal
+/// still presents through), or no presentable window.
+fn participates_in_first_paint(view: &Retained<SurfaceView>) -> bool {
+    let platform = view.as_platform_view();
+    let bounds = cocoa_ui::view::bounds(platform);
+    cocoa_ui::view::window(platform).is_some()
+        && !cocoa_ui::view::is_hidden(platform)
+        && cocoa_ui::view::alpha(platform) > 0.01
+        && bounds.size.width > 0.5
+        && bounds.size.height > 0.5
+        && has_visible_ancestry(view)
+        && can_present_now(view)
 }
 
 /// Whether this view and every ancestor is visible — `hasVisibleAncestry`.
@@ -804,7 +826,11 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     // still gets its frame; a presented surface re-attaching owes only the
     // ordinary frame.
     state.frame_owed.set(true);
-    state.first_paint_owed.set(!state.presented_once.get());
+    // Only a first-paint participant owes the reveal: a surface mounted
+    // behind hidden or zero-alpha ancestors parks until it is shown.
+    state
+        .first_paint_owed
+        .set(!state.presented_once.get() && participates_in_first_paint(view));
     update_presentation_demand(state, view);
 }
 
@@ -816,7 +842,7 @@ fn display_rate(view: &Retained<SurfaceView>) -> Option<f32> {
     {
         window.screen().map(|screen| {
             #[expect(
-                clippy::cast_possible_truncation,
+                clippy::cast_precision_loss,
                 reason = "frame rates fit comfortably in f32"
             )]
             let rate = screen.maximumFramesPerSecond().max(1) as f32;
@@ -1232,18 +1258,9 @@ impl Capturable {
     }
 
     /// Whether this surface gates its window's first-paint readiness —
-    /// `participatesInFirstPaintReady`: a view whose window cannot present
-    /// (hidden, zero-alpha, degenerate bounds, no presentable window) has
-    /// no first frame to wait for and owes none.
+    /// see [`participates_in_first_paint`].
     fn participates(&self) -> bool {
-        let view = self.view.as_platform_view();
-        let bounds = cocoa_ui::view::bounds(view);
-        cocoa_ui::view::window(view).is_some()
-            && !cocoa_ui::view::is_hidden(view)
-            && cocoa_ui::view::alpha(view) > 0.01
-            && bounds.size.width > 0.5
-            && bounds.size.height > 0.5
-            && can_present_now(&self.view)
+        participates_in_first_paint(&self.view)
     }
 
     /// Registers `waker` and requests the owed first frame — the retired

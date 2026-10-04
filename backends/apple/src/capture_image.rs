@@ -13,9 +13,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
 
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2::AnyThread;
 use cocoa_ui::objc2::rc::Retained;
 use cocoa_ui::objc2::runtime::ProtocolObject;
+#[cfg(target_os = "macos")]
 use cocoa_ui::objc2_core_foundation::CGSize;
 use cocoa_ui::objc2_metal::{
     MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
@@ -28,14 +30,14 @@ use crate::capture_registry::CaptureRegistry;
 /// The platform's native image object — `NSImage` on macOS, `UIImage` on
 /// iOS — the type icon and drag endpoints publish.
 #[cfg(target_os = "macos")]
-pub(crate) type PlatformImage = cocoa_ui::objc2_app_kit::NSImage;
+type PlatformImage = cocoa_ui::objc2_app_kit::NSImage;
 /// See the macOS alias.
 #[cfg(target_os = "ios")]
-pub(crate) type PlatformImage = cocoa_ui::objc2_ui_kit::UIImage;
+type PlatformImage = cocoa_ui::objc2_ui_kit::UIImage;
 
 /// One owned RGBA8 premultiplied raster — the single readback the API
 /// contract allows.
-pub(crate) struct CapturedRgba {
+pub struct CapturedRgba {
     /// Row-major RGBA8 premultiplied texels, `width * height * 4` bytes.
     pub pixels: Vec<u8>,
     /// Raster width in pixels.
@@ -68,6 +70,7 @@ impl Signal {
     }
 
     /// Consumes one signal edge; pends until `fire` runs.
+    #[allow(clippy::future_not_send)]
     async fn wait(self_shared: &Rc<RefCell<Self>>) {
         core::future::poll_fn(|cx: &mut Context<'_>| {
             let mut this = self_shared.borrow_mut();
@@ -87,14 +90,25 @@ impl Signal {
 /// needs window-bound control rendering; restores the original parent on
 /// drop. `None` while the view already has a window.
 struct WindowHost {
-    /// The temporary window — kept alive for the capture's duration.
+    /// The temporary window — kept alive for the capture's duration; the
+    /// struct's drop restores the view before the window dies.
     #[cfg(target_os = "macos")]
-    window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
+    _window: Retained<cocoa_ui::objc2_app_kit::NSWindow>,
     /// See the macOS field.
     #[cfg(target_os = "ios")]
-    window: Retained<cocoa_ui::bitmap::CaptureWindow>,
+    _window: Retained<cocoa_ui::bitmap::CaptureWindow>,
     /// The view's parent before the re-host, restored on drop.
     superview: Option<Retained<cocoa_ui::PlatformView>>,
+    /// The sibling the view preceded in `superview` — `AppKit` has no
+    /// indexed insert, so restoration is relative to it (`None` = last).
+    #[cfg(target_os = "macos")]
+    next_sibling: Option<Retained<cocoa_ui::PlatformView>>,
+    /// The view's index in `superview`'s subviews — iOS restores by index.
+    #[cfg(target_os = "ios")]
+    index: usize,
+    /// The view's frame before the re-host — the offscreen layout may have
+    /// resized it; restored on drop.
+    frame: cocoa_ui::Rect,
     /// The view being hosted.
     view: Retained<cocoa_ui::PlatformView>,
 }
@@ -109,7 +123,25 @@ impl WindowHost {
         let mtm = cocoa_ui::MainThreadMarker::new().expect("capture runs on the main thread");
         let bounds = cocoa_ui::view::bounds(view);
         let size = cocoa_ui::Size::new(bounds.size.width.max(1.0), bounds.size.height.max(1.0));
+        let frame = cocoa_ui::view::frame(view);
         let superview = cocoa_ui::view::superview(view);
+        #[cfg(target_os = "macos")]
+        let next_sibling = superview.as_ref().and_then(|parent| {
+            let subviews = cocoa_ui::view::subviews(parent);
+            subviews
+                .iter()
+                .position(|sibling| std::ptr::eq(&raw const **sibling, &raw const **view))
+                .and_then(|index| subviews.get(index + 1).cloned())
+        });
+        #[cfg(target_os = "ios")]
+        let index = superview
+            .as_ref()
+            .and_then(|parent| {
+                cocoa_ui::view::subviews(parent)
+                    .iter()
+                    .position(|sibling| std::ptr::eq(&raw const **sibling, &raw const **view))
+            })
+            .unwrap_or(0);
         #[cfg(target_os = "macos")]
         let window = {
             let window = cocoa_ui::bitmap::make_offscreen_window(mtm, size);
@@ -126,18 +158,67 @@ impl WindowHost {
             window
         };
         Some(Self {
-            window,
+            _window: window,
             superview,
+            #[cfg(target_os = "macos")]
+            next_sibling,
+            #[cfg(target_os = "ios")]
+            index,
+            frame,
             view: view.clone(),
         })
     }
 }
 
 impl Drop for WindowHost {
+    /// Restores the view to its original parent's exact child position and
+    /// frame — appending would silently reorder the host's z-order, and a
+    /// resized frame would linger.
     fn drop(&mut self) {
         cocoa_ui::view::remove_from_superview(&self.view);
         if let Some(superview) = &self.superview {
-            cocoa_ui::view::add_subview(superview, &self.view);
+            #[cfg(target_os = "ios")]
+            {
+                #[expect(
+                    clippy::cast_possible_wrap,
+                    reason = "a view hierarchy never reaches `NSInteger::MAX` subviews"
+                )]
+                superview.insertSubview_atIndex(&self.view, self.index as isize);
+            }
+            #[cfg(target_os = "macos")]
+            match &self.next_sibling {
+                Some(sibling) => superview.addSubview_positioned_relativeTo(
+                    &self.view,
+                    cocoa_ui::objc2_app_kit::NSWindowOrderingMode::Below,
+                    Some(&**sibling),
+                ),
+                None => superview.addSubview(&self.view),
+            }
+            cocoa_ui::view::set_frame(&self.view, self.frame);
+        }
+    }
+}
+
+/// Ends a live capture's external-rendering scopes exactly once — the
+/// capture's own `shutdown` must run even when the awaiting task is
+/// dropped mid-flight (an icon or drag mount cancelled); `ViewCapture`'s
+/// Drop asserts the scopes are gone, so the guard owns that contract.
+struct CaptureGuard {
+    /// The live capture while `shutdown` is owed.
+    capture: Option<Rc<cocoa_ui::capture::ViewCapture>>,
+}
+
+impl CaptureGuard {
+    /// The capture under guard.
+    const fn capture(&self) -> &Rc<cocoa_ui::capture::ViewCapture> {
+        self.capture.as_ref().expect("capture guard is armed")
+    }
+}
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            capture.shutdown();
         }
     }
 }
@@ -176,7 +257,7 @@ fn rgba_target(
 /// only completes once a frame really landed, so no bogus-ready blank
 /// ships.
 #[allow(clippy::future_not_send)]
-pub(crate) async fn capture_rgba(
+pub async fn capture_rgba(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
     scale: f64,
@@ -208,33 +289,41 @@ pub(crate) async fn capture_rgba(
         (bounds.size.height * scale).ceil() as u32,
     );
 
-    let context = crate::gpu_runtime::runtime(env).context();
-    let device = crate::gpu_runtime::raw_metal_device(&context);
-    let target = rgba_target(&device, width, height);
-
     let registry = CaptureRegistry::get(env);
     let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(
         mtm,
         view.clone(),
         registry.resolver(),
     ));
+    // `shutdown` is owed even if the awaiting task is cancelled.
+    let guard = CaptureGuard {
+        capture: Some(capture),
+    };
 
     // The redraw contract: an external surface inside the subtree asks the
     // capture for a new frame through this hook — deferred captures retry
     // when it fires.
     let redraw = Rc::new(RefCell::new(Signal::default()));
-    capture.set_on_redraw({
+    guard.capture().set_on_redraw({
         let redraw = redraw.clone();
         move || Signal::fire(&redraw)
     });
 
-    loop {
+    // Context, device and destination resolve per attempt: a context
+    // replacement mid-wait makes the old-generation target obsolete, and
+    // the readback must come from the successfully fenced current one.
+    let runtime = crate::gpu_runtime::runtime(env);
+    let target = loop {
+        let context = runtime.context();
+        let device = crate::gpu_runtime::raw_metal_device(&context);
+        let target = rgba_target(&device, width, height);
+
         let completion = Rc::new(RefCell::new(Signal::default()));
         let landed = Rc::new(RefCell::new(false));
         // The completion is `Send` — it parks on Metal's own queue before
         // hopping to the main queue — so the slots ride `MainThreadBound`.
         let slot = dispatch2::MainThreadBound::new((completion.clone(), landed.clone()), mtm);
-        capture.capture(&target, move |ok| {
+        guard.capture().capture(&target, move |ok| {
             let mtm = cocoa_ui::MainThreadMarker::new()
                 .expect("the capture completion runs on the main thread");
             let (completion, landed) = slot.get(mtm);
@@ -243,12 +332,25 @@ pub(crate) async fn capture_rgba(
         });
         Signal::wait(&completion).await;
         if *landed.borrow() {
-            break;
+            break target;
         }
-        // Deferred: wait for the surfaces' redraw wake, then recapture.
+        // Deferred. If the context was replaced mid-attempt the loop's top
+        // already re-resolves it; otherwise park on the next real signal —
+        // a surfaces' redraw wake or the rebuilt context's publication,
+        // whichever lands first (both forward into `redraw`).
+        if runtime.context().generation() != context.generation() {
+            continue;
+        }
+        let generation = context.generation();
+        let forward = redraw.clone();
+        let forward_runtime = runtime.clone();
+        let _watch = executor_core::spawn_local(async move {
+            forward_runtime.context_after(generation).await;
+            Signal::fire(&forward);
+        });
         Signal::wait(&redraw).await;
-    }
-    capture.shutdown();
+    };
+    drop(guard);
     drop(host);
 
     let mut pixels = vec![0u8; width as usize * height as usize * 4];
@@ -280,10 +382,10 @@ pub(crate) async fn capture_rgba(
 /// `view` rasterized as a template image, capped at `max_side` points —
 /// the icon path's shape: the alpha channel is the image, chrome tints it.
 ///
-/// Reuses [`capture_rgba`]; the CGImage conversion and `max_side` shrink
+/// Reuses [`capture_rgba`]; the `CGImage` conversion and `max_side` shrink
 /// conventions match `cocoa_ui::bitmap::view_template_image`.
 #[allow(clippy::future_not_send)]
-pub(crate) async fn template_image(
+pub async fn template_image(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
     max_side: f64,
@@ -291,17 +393,21 @@ pub(crate) async fn template_image(
     let bounds = cocoa_ui::view::bounds(view);
     let scale = cocoa_ui::view::backing_scale_factor(view);
     let captured = capture_rgba(view, env, scale.max(1.0)).await;
+    if captured.width == 0 || captured.height == 0 {
+        // A genuinely empty view bounds is the only empty-image contract —
+        // never a masked conversion failure.
+        return PlatformImage::new();
+    }
+    let image = cocoa_ui::bitmap::image_from_rgba(
+        &captured.pixels,
+        captured.width as usize,
+        captured.height as usize,
+    )
+    .expect("CGImage creation from captured pixels failed");
     let shrink = (max_side / f64::max(bounds.size.width, bounds.size.height)).min(1.0);
 
     #[cfg(target_os = "macos")]
     {
-        let Some(image) = cocoa_ui::bitmap::image_from_rgba(
-            &captured.pixels,
-            captured.width as usize,
-            captured.height as usize,
-        ) else {
-            return PlatformImage::new();
-        };
         cocoa_ui::bitmap::template_image(
             &image,
             cocoa_ui::Size::new(bounds.size.width * shrink, bounds.size.height * shrink),
@@ -309,39 +415,35 @@ pub(crate) async fn template_image(
     }
     #[cfg(target_os = "ios")]
     {
-        let Some(image) = cocoa_ui::bitmap::image_from_rgba(
-            &captured.pixels,
-            captured.width as usize,
-            captured.height as usize,
-        ) else {
-            return PlatformImage::new();
-        };
-        cocoa_ui::bitmap::template_image(&image, scale / shrink).unwrap_or_else(PlatformImage::new)
+        cocoa_ui::bitmap::template_image(&image, scale / shrink)
+            .expect("UIImage template conversion failed")
     }
 }
 
 /// `view` rasterized as a non-template `NSImage` at its exact logical
 /// bounds — the drag path's payload.
 ///
-/// Reuses [`capture_rgba`] at the window's backing scale; the CGImage
+/// Reuses [`capture_rgba`] at the window's backing scale; the `CGImage`
 /// wraps the top-down raster unflipped, preserving the capture
 /// orientation.
 #[cfg(target_os = "macos")]
 #[allow(clippy::future_not_send)]
-pub(crate) async fn drag_image(
+pub async fn drag_image(
     view: &cocoa_ui::PlatformView,
     env: &Environment,
 ) -> Retained<cocoa_ui::objc2_app_kit::NSImage> {
     let bounds = cocoa_ui::view::bounds(view);
     let scale = cocoa_ui::view::backing_scale_factor(view);
     let captured = capture_rgba(view, env, scale.max(1.0)).await;
-    let Some(image) = cocoa_ui::bitmap::image_from_rgba(
+    if captured.width == 0 || captured.height == 0 {
+        return cocoa_ui::objc2_app_kit::NSImage::new();
+    }
+    let image = cocoa_ui::bitmap::image_from_rgba(
         &captured.pixels,
         captured.width as usize,
         captured.height as usize,
-    ) else {
-        return cocoa_ui::objc2_app_kit::NSImage::new();
-    };
+    )
+    .expect("CGImage creation from captured pixels failed");
     cocoa_ui::objc2_app_kit::NSImage::initWithCGImage_size(
         cocoa_ui::objc2_app_kit::NSImage::alloc(),
         &image,

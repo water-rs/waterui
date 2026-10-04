@@ -153,6 +153,10 @@ fn drag_items(
 }
 
 /// Installs the `draggable` handler on the dispatcher.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the drag session's press, preview, and capture stages stay in one handler"
+)]
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Draggable>>(|metadata, ctx| {
         let mtm = ctx.mtm();

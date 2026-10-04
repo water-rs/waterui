@@ -1103,7 +1103,7 @@ mod platform {
                 let jobs = crate::toolbar::IconJobs::new(self.env());
                 let weak = self.self_weak.get().cloned();
                 jobs.set_refresh(move || {
-                    if let Some(stack) = weak.as_ref().and_then(|weak| weak.upgrade()) {
+                    if let Some(stack) = weak.as_ref().and_then(std::rc::Weak::upgrade) {
                         stack.publish();
                     }
                 });

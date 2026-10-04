@@ -54,8 +54,8 @@ pub fn trials() -> Vec<Trial> {
             valid_attributes_for_marked_text_returns_attribute_names
         ),
         case!(
-            "appkit::display_link",
-            a_window_without_a_screen_drives_no_frame_clock
+            "appkit::metal_presenter",
+            a_window_without_a_screen_drives_no_presenter_updates
         ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
@@ -210,16 +210,17 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
     assert!(attributes.count() >= 3);
 }
 
-/// Native attachment lifecycle: a window that is truly off every screen
-/// reports `screen() == nil`, so `start` leaves the clock disarmed and the
-/// bounded run-loop drain stays silent — the screenless safety the removed
-/// run-loop arm (a queued raw-pointer hop) violated by ticking anyway.
-/// Moving the same window onto a real display lets `reselect` re-arm the
-/// still-active request; `stop`/`drop` leave nothing queued.
-fn a_window_without_a_screen_drives_no_frame_clock() {
-    use cocoa_ui::display_link::FrameClock;
+/// The screenless safety the retired `FrameClock` documented, relocated to
+/// the presentation primitive: a window off every screen reports
+/// `screen() == nil`, so its layer's `CAMetalDisplayLink` has no display to
+/// pace and `set_paused(false)` delivers no updates — nothing is queued as
+/// a fallback. Moving the window onto a real display arms the same link —
+/// the request was live all along; `invalidate` leaves nothing behind.
+fn a_window_without_a_screen_drives_no_presenter_updates() {
+    use cocoa_ui::metal_presenter::MetalPresenter;
     use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
     use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+    use cocoa_ui::objc2_quartz_core::CAMetalLayer;
 
     let mtm = marker();
     // A point strictly beyond every real screen's frame, derived from the
@@ -241,7 +242,7 @@ fn a_window_without_a_screen_drives_no_frame_clock() {
     let overlaps = |a: NSRect, b: NSRect| {
         a.origin.x < b.origin.x + b.size.width
             && b.origin.x < a.origin.x + a.size.width
-            && a.origin.y < b.origin.y + b.size.height
+            && a.origin.y < b.origin.y + a.size.height
             && b.origin.y < a.origin.y + a.size.height
     };
     assert!(
@@ -254,29 +255,33 @@ fn a_window_without_a_screen_drives_no_frame_clock() {
     );
     let view = NSView::new(mtm);
     view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    let layer = CAMetalLayer::new();
+    layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(200.0, 200.0));
+    view.setLayer(Some(&layer));
+    view.setWantsLayer(true);
     window.native().setContentView(Some(&view));
 
-    let ticks = Rc::new(Cell::new(0u32));
-    let clock = FrameClock::new(mtm, {
-        let ticks = Rc::clone(&ticks);
-        move || ticks.set(ticks.get() + 1)
+    let updates = Rc::new(Cell::new(0u32));
+    let presenter = MetalPresenter::new(layer, {
+        let updates = Rc::clone(&updates);
+        Rc::new(move |_| updates.set(updates.get() + 1))
     });
 
-    // No screen: `start` leaves the clock disarmed, and a bounded run-loop
-    // drain must deliver nothing — no fallback and nothing queued.
-    clock.start(&view);
-    assert!(
-        !clock.is_running(),
-        "a screenless window must not arm the clock"
-    );
+    // No screen: unpausing arms the link's request but no display paces it
+    // — a bounded run-loop drain must deliver nothing.
+    presenter.set_paused(false);
+    assert!(!presenter.is_paused());
     for _ in 0..10 {
         crate::harness::pump_main_turn();
     }
-    assert_eq!(ticks.get(), 0, "a screenless clock must not tick");
+    assert_eq!(
+        updates.get(),
+        0,
+        "a screenless window must deliver no updates"
+    );
 
-    // Re-attach to the actual display: move the window onto a real screen's
-    // frame and `reselect` the same clock — the request stayed active, so
-    // the link arms without a second `start`.
+    // Re-attach to the actual display: move the window onto a real screen —
+    // the same armed request paces without a second `set_paused`.
     let main = NSScreen::screens(mtm)
         .iter()
         .next()
@@ -286,40 +291,23 @@ fn a_window_without_a_screen_drives_no_frame_clock() {
         .native()
         .setFrameOrigin(NSPoint::new(main.origin.x + 40.0, main.origin.y + 40.0));
     assert!(window.native().screen().is_some());
-    clock.reselect(&view);
-    assert!(
-        clock.is_running(),
-        "attaching to a screen must arm the same clock's display link"
-    );
-    // A visible window's link ticks under the run loop the suite pumps.
     window.native().orderFrontRegardless();
-    let fired = crate::harness::pump_main_until(2.0, || ticks.get() > 0);
+    let fired = crate::harness::pump_main_until(2.0, || updates.get() > 0);
     assert!(
         fired,
-        "a display link on a real visible screen must tick within 2s"
+        "a presenter on a real visible screen must deliver within 2s"
     );
 
-    // `stop`, then `drop`: the queue stays quiet — the removed run-loop arm
-    // is where a pending hop could outlive the clock before.
-    clock.stop();
-    let at_stop = ticks.get();
-    for _ in 0..10 {
-        crate::harness::pump_main_turn();
-    }
-    assert!(!clock.is_running());
-    assert_eq!(
-        ticks.get(),
-        at_stop,
-        "a stopped clock must deliver no further ticks"
-    );
-    drop(clock);
+    // `invalidate`: the queue stays quiet — nothing pending survives.
+    presenter.invalidate();
+    let at_stop = updates.get();
     for _ in 0..10 {
         crate::harness::pump_main_turn();
     }
     assert_eq!(
-        ticks.get(),
+        updates.get(),
         at_stop,
-        "a dropped clock must leave nothing queued"
+        "an invalidated presenter must deliver no further updates"
     );
     window.close();
 }

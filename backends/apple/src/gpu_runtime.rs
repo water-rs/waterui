@@ -43,8 +43,11 @@ pub unsafe fn prepare(env: *mut Environment, then: impl FnOnce() + 'static) {
         env.insert(runtime);
         // The env-owned capture registry and presentation-time anchor must
         // exist before any dispatcher, view renderer or mount consults them.
-        crate::capture_registry::CaptureRegistry::install(env);
-        crate::presentation_time::PresentationTime::install(env);
+        #[cfg(feature = "gpu_surface")]
+        {
+            crate::capture_registry::CaptureRegistry::install(env);
+            crate::presentation_time::PresentationTime::install(env);
+        }
         then();
     })
     .detach();

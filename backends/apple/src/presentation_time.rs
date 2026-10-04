@@ -45,14 +45,15 @@ impl PresentationTime {
         let delta = media_time - self.anchor_media;
         let duration = Duration::from_secs_f64(delta.abs());
         // A timestamp behind the anchor is legal (a queued update's target
-        // can predate install); a `Duration` far enough out to underflow the
-        // monotonic epoch is not representable — clamp to the anchor.
+        // can predate install). One the monotonic `Instant` axis cannot
+        // represent is a broken invariant — fail fast rather than mint an
+        // invented frame time.
         let instant = if delta >= 0.0 {
             self.anchor_instant.checked_add(duration)
         } else {
             self.anchor_instant.checked_sub(duration)
         }
-        .unwrap_or(self.anchor_instant);
+        .expect("presentation timestamp outside the representable Instant range");
         FrameTime::at(instant)
     }
 
@@ -91,4 +92,3 @@ impl Default for PresentationTime {
         Self::new()
     }
 }
-

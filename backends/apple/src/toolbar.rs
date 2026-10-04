@@ -36,11 +36,7 @@ const TOOLBAR_ICON_SIZE: f64 = 18.0;
 /// jobs handle — the caller keeps it in the window content's keep-alive,
 /// so closing or remounting the toolbar drops and cancels every raster
 /// this install started.
-pub(crate) fn install_toolbar_items(
-    window: &NSWindow,
-    view: &NSView,
-    env: &Environment,
-) -> Rc<IconJobs> {
+pub fn install_toolbar_items(window: &NSWindow, view: &NSView, env: &Environment) -> Rc<IconJobs> {
     let mut node = cocoa_ui::view::retain_base(view);
     loop {
         let subs = cocoa_ui::view::subviews(&node);
@@ -181,7 +177,7 @@ fn raster_label_icon(
 /// and keeps the `Rc` in its keep-alive or state so unmounting cancels
 /// every outstanding raster.
 #[cfg(feature = "gpu_surface")]
-pub(crate) struct IconJobs {
+pub struct IconJobs {
     /// The environment the rasters resolve their surfaces through.
     env: Environment,
     /// The republish fired when an icon lands.
@@ -202,7 +198,7 @@ struct IconSlot {
 /// The marker the same publishers hold in a native-only build: with no
 /// `gpu_surface` feature there is nothing to raster asynchronously.
 #[cfg(not(feature = "gpu_surface"))]
-pub(crate) struct IconJobs;
+pub struct IconJobs;
 
 #[cfg(feature = "gpu_surface")]
 impl IconJobs {

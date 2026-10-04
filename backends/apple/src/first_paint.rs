@@ -21,6 +21,7 @@ pub fn mark(view: &PlatformView, env: &Environment) {
         return;
     }
     let view = cocoa_ui::view::retain_base(view);
+    #[cfg(feature = "gpu_surface")]
     let env = env.clone();
     executor_core::spawn_local(async move {
         cocoa_ui::view::layout_immediately(&view);
