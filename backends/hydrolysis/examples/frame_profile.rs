@@ -1,6 +1,6 @@
 //! Headless frame-pipeline profiler for Hydrolysis.
 //!
-//! Renders representative WaterUI scenes through the real retained-tree →
+//! Renders representative `WaterUI` scenes through the real retained-tree →
 //! layout → `Recording` → compositor pipeline offscreen — no window, no
 //! display — and writes one JSON document per scene with per-frame stage
 //! records plus p50/p90/p99 per stage. GPU stages come from wgpu timestamp
@@ -69,6 +69,10 @@ struct StageSummary {
     max_ns: u64,
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "nanosecond sums and sample counts are averaged in f64 for the report; magnitudes are far below 2^53"
+)]
 fn summarize(mut samples: Vec<u64>) -> StageSummary {
     assert!(!samples.is_empty(), "a measured stage always has samples");
     samples.sort_unstable();
@@ -158,6 +162,10 @@ fn runtime_on(gpu: &OffscreenGpuContext, view: impl Fn() -> AnyView + 'static) -
 
 /// A 200-row list of icon + text rows scrolled by a scripted offset each
 /// frame — the scrolling-list workload every feed UI is.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "row counts and frame indices are converted to f32 driver math; magnitudes are far below 2^24"
+)]
 fn scrolling_list(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
     const ROWS: usize = 200;
     const ROW_HEIGHT: f32 = 52.0;
@@ -180,7 +188,7 @@ fn scrolling_list(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
             )
         })
     };
-    let max_scroll = ROWS as f32 * ROW_HEIGHT - WINDOW_HEIGHT as f32;
+    let max_scroll = (ROWS as f32).mul_add(ROW_HEIGHT, -(WINDOW_HEIGHT as f32));
     let driver = move |frame: u32| {
         // Sawtooth sweep through the full row range.
         controller.scroll_to(Point::new(0.0, (frame as f32 * 47.0) % max_scroll));
@@ -239,13 +247,17 @@ fn md3_gallery(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
             selected.set(frame.is_multiple_of(60));
             segment.set(!frame.is_multiple_of(60));
         }
-        badge_count.set((frame % 99) as i32);
+        badge_count.set(i32::try_from(frame % 99).expect("frame % 99 fits i32"));
     };
     (runtime, Box::new(driver))
 }
 
 /// Animated opacity and transform: bindings eased through spring/ease
 /// animations so every frame re-encodes moving geometry.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the frame index is converted to f32 for animation driver math; magnitudes are far below 2^24"
+)]
 fn animated(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
     let opacity = Binding::container(1.0f32);
     let scale = Binding::container(1.0f32);
@@ -281,8 +293,8 @@ fn animated(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
         // The animation targets oscillate continuously, so every pumped frame
         // carries reactive change and every animation is mid-flight.
         let t = frame as f32;
-        opacity.set(0.65 + 0.35 * (t * 0.11).sin());
-        scale.set(0.92 + 0.08 * (t * 0.07).cos());
+        opacity.set(0.35f32.mul_add((t * 0.11).sin(), 0.65));
+        scale.set(0.08f32.mul_add((t * 0.07).cos(), 0.92));
         rotation.set(4.0 * (t * 0.09).sin());
         offset_x.set(12.0 * (t * 0.05).sin());
     };
@@ -291,6 +303,10 @@ fn animated(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
 
 /// A text-heavy page mixing Latin, CJK, Arabic, Devanagari and emoji, scrolled
 /// by a scripted offset each frame.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the frame index is converted to f32 for scroll driver math; magnitudes are far below 2^24"
+)]
 fn text_heavy(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
     let controller = ScrollController::new(Point::zero());
     let paragraphs = [
@@ -307,7 +323,8 @@ fn text_heavy(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
             AnyView::new(
                 scroll(VStack::for_each(blocks, move |block| {
                     let index = block.into_inner();
-                    let body = paragraphs[(index as usize) % paragraphs.len()];
+                    let body = paragraphs[usize::try_from(index).expect("block index fits usize")
+                        % paragraphs.len()];
                     vstack((text(format!("§{index}")), text(body)))
                 }))
                 .scroll_controller(&controller),
@@ -322,11 +339,15 @@ fn text_heavy(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
 
 /// A live-updating bar chart through waterui-chart — canvas → scene view →
 /// engine layer — with the dataset shifted every frame.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "bar indices and the frame index are converted to f32 chart data; magnitudes are far below 2^24"
+)]
 fn chart(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
     const BARS: usize = 24;
     let data = Binding::container(
         (0..BARS)
-            .map(|x| DataPoint::new(x as f32, 40.0 + 30.0 * (x as f32).sin()))
+            .map(|x| DataPoint::new(x as f32, 30.0f32.mul_add((x as f32).sin(), 40.0)))
             .collect::<Vec<_>>(),
     );
     let runtime = {
@@ -345,7 +366,7 @@ fn chart(gpu: &OffscreenGpuContext) -> (HeadlessRuntime, FrameDriver) {
         let phase = frame as f32 * 0.2;
         data.set(
             (0..BARS)
-                .map(|x| DataPoint::new(x as f32, 40.0 + 30.0 * (x as f32 + phase).sin()))
+                .map(|x| DataPoint::new(x as f32, 30.0f32.mul_add((x as f32 + phase).sin(), 40.0)))
                 .collect::<Vec<_>>(),
         );
     };
@@ -377,6 +398,10 @@ fn scenes() -> Vec<SceneSpec> {
     ]
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the function drives one continuous measure-then-summarize scenario; splitting it would obscure the sequence"
+)]
 fn run_scene(spec: &SceneSpec, gpu: &OffscreenGpuContext, warmup: u32, frames: u32) -> SceneReport {
     let (mut runtime, mut drive) = (spec.build)(gpu);
     let gpu_identity = runtime.gpu_identity();

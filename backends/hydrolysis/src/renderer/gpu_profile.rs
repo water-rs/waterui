@@ -12,7 +12,10 @@
 //! `wgpu::Features::TIMESTAMP_QUERY` reports the GPU stages as `None` — GPU
 //! time is never estimated.
 
-use super::*;
+use core::time::Duration;
+
+use super::HydrolysisRenderer;
+use crate::time::Instant;
 
 /// Timestamp slots one frame writes, in submission order: before the
 /// layer-content submits, before the composite submit, and after it.
@@ -64,17 +67,23 @@ pub struct GpuIdentity {
 /// a `TIMESTAMP_QUERY` device exists. The resolve lands in a `COPY_SRC` buffer
 /// and is copied into a `MAP_READ` one — wgpu forbids `MAP_READ` combining
 /// with `QUERY_RESOLVE`.
-pub(crate) struct GpuFrameProfiler {
+pub struct GpuFrameProfiler {
     query_set: wgpu::QuerySet,
     resolve_buffer: wgpu::Buffer,
     staging_buffer: wgpu::Buffer,
+}
+
+impl std::fmt::Debug for GpuFrameProfiler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuFrameProfiler").finish_non_exhaustive()
+    }
 }
 
 impl GpuFrameProfiler {
     /// A profiler for `device`, or `None` when the device lacks
     /// `TIMESTAMP_QUERY_INSIDE_ENCODERS` — the markers are written outside
     /// render passes, so plain `TIMESTAMP_QUERY` alone does not suffice.
-    pub(crate) fn new(device: &wgpu::Device) -> Option<Self> {
+    pub fn new(device: &wgpu::Device) -> Option<Self> {
         if !device
             .features()
             .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
@@ -204,7 +213,7 @@ impl HydrolysisRenderer {
         // Query results are device-clock ticks; the period turns them into ns
         // (1.0 on most adapters, but not guaranteed).
         let period = f64::from(queue.get_timestamp_period());
-        let ns = |ticks: u64| Duration::from_nanos((ticks as f64 * period).round() as u64);
+        let ns = |ticks: u64| Duration::from_nanos(ticks).mul_f64(period);
         self.frame_stage_times.content_gpu =
             Some(ns(before_composite.saturating_sub(before_content)));
         self.frame_stage_times.compositor_gpu = Some(ns(end.saturating_sub(before_composite)));
@@ -219,7 +228,7 @@ impl HydrolysisRenderer {
     /// Digest of the last layout pass's placed bounds — a deterministic hash
     /// of every node's frame, for before/after correctness checks.
     #[must_use]
-    pub fn layout_signature(&self) -> Option<u64> {
+    pub const fn layout_signature(&self) -> Option<u64> {
         self.last_layout_signature
     }
 }

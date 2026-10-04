@@ -46,7 +46,7 @@ pub use effects::*;
 pub use frame::*;
 pub use frame_work::FrameWorkCounters;
 #[cfg(feature = "frame-profile")]
-pub(crate) use gpu_profile::GpuFrameProfiler;
+pub use gpu_profile::GpuFrameProfiler;
 #[cfg(feature = "frame-profile")]
 pub use gpu_profile::{FrameStageTimes, GpuIdentity};
 pub use identity::*;

@@ -1259,9 +1259,9 @@ crate::engine::cfg_async_fn! {
     RenderWindowResult {
         rebuilt,
         snapshot,
+        profile,
         #[cfg(feature = "frame-profile")]
         stages,
-        profile,
     }
     }
 }

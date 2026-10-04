@@ -917,7 +917,7 @@ impl HeadlessRuntime {
     /// example's byte-identical layout check.
     #[cfg(feature = "frame-profile")]
     #[must_use]
-    pub fn layout_signature(&self) -> Option<u64> {
+    pub const fn layout_signature(&self) -> Option<u64> {
         self.runtime.renderer.layout_signature()
     }
 

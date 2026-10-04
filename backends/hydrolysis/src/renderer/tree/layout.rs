@@ -616,11 +616,11 @@ pub(super) struct SignatureHasher(u64);
 
 #[cfg(feature = "frame-profile")]
 impl SignatureHasher {
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self(0xcbf2_9ce4_8422_2325)
     }
 
-    pub(super) fn mix(&mut self, bits: u64) {
+    pub(super) const fn mix(&mut self, bits: u64) {
         self.0 = (self.0 ^ bits).wrapping_mul(0x0000_0100_0000_01b3);
     }
 }
@@ -683,40 +683,40 @@ impl RenderNode {
         core::mem::discriminant(self).hash(hasher);
         hash_frame(hasher, frame);
         match self {
-            RenderNode::Color(_)
-            | RenderNode::Text(_)
-            | RenderNode::SceneView(_)
-            | RenderNode::GpuContent(_)
-            | RenderNode::ExternalFrame(_)
-            | RenderNode::Widget(_) => {}
-            RenderNode::Opacity(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Scale(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Rotation(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Offset(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Retain(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Env(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Wrapper(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
-            RenderNode::Filtered(node) => node.child.signature_into(frame, hasher),
-            RenderNode::Container(node) => {
+            Self::Color(_)
+            | Self::Text(_)
+            | Self::SceneView(_)
+            | Self::GpuContent(_)
+            | Self::ExternalFrame(_)
+            | Self::Widget(_) => {}
+            Self::Opacity(node) => node.child.signature_into(frame, hasher),
+            Self::Scale(node) => node.child.signature_into(frame, hasher),
+            Self::Rotation(node) => node.child.signature_into(frame, hasher),
+            Self::Offset(node) => node.child.signature_into(frame, hasher),
+            Self::Retain(node) => node.child.signature_into(frame, hasher),
+            Self::Env(node) => node.child.signature_into(frame, hasher),
+            Self::Wrapper(node) => node.child.signature_into(frame, hasher),
+            Self::Dynamic(node) => node.child.borrow().signature_into(frame, hasher),
+            Self::Filtered(node) => node.child.signature_into(frame, hasher),
+            Self::Container(node) => {
                 node.placed.len().hash(hasher);
                 for (child, rect) in node.children.iter().zip(&node.placed) {
                     child.signature_into(*rect, hasher);
                 }
             }
-            RenderNode::Collection(node) => {
+            Self::Collection(node) => {
                 node.placed.len().hash(hasher);
                 for (entry, rect) in node.entries.iter().zip(&node.placed) {
                     entry.node.signature_into(*rect, hasher);
                 }
             }
-            RenderNode::Scroll(node) => {
+            Self::Scroll(node) => {
                 hash_size(hasher, node.content_size);
                 hash_size(hasher, node.viewport);
                 node.child
                     .signature_into(Rect::from_size(node.content_size), hasher);
             }
-            RenderNode::LazyStack(node) => node.item_cache.borrow().signature_into(hasher),
+            Self::LazyStack(node) => node.item_cache.borrow().signature_into(hasher),
         }
     }
 }
