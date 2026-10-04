@@ -202,7 +202,6 @@ ndk-context = "0.1"
 raw-window-handle = "0.6"
 libc = "0.2"
 android_logger = "0.15"
-log = "0.4"
 tracing-log = "0.2"
 # The accessibility tree publish and the platform-view placement set cross JNI
 # as JSON.
@@ -350,7 +349,7 @@ workspace = true
 
 # cargo-machete: these entries exist to switch features on, not to be named
 # in code — `waterui-url/std` exposes `Url::from_file_path` for the OS
-# file-drop tests, `icu_provider/logging` routes ICU4X data warnings through
-# `log`, and `tracing-log` bridges them into the test subscriber.
+# file-drop tests, and `icu_provider/logging` routes ICU4X data warnings
+# through `log`.
 [package.metadata.cargo-machete]
-ignored = ["cfg_aliases", "waterui-url", "icu_provider", "tracing-log"]
+ignored = ["cfg_aliases", "waterui-url", "icu_provider"]
