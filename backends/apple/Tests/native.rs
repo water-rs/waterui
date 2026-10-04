@@ -92,6 +92,13 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "picture::a_laid_out_picture_rasterizes_at_its_bounds",
+            || {
+                picture::a_laid_out_picture_rasterizes_at_its_bounds();
+                Ok(())
+            },
+        ),
     ];
     #[cfg(all(target_os = "macos", feature = "native-test"))]
     let tests = {
@@ -240,7 +247,7 @@ mod leaf {
     /// smallest environment in which the frameworks still run their full
     /// layout path.
     #[cfg(target_os = "macos")]
-    fn attach(mtm: MainThreadMarker, content: &PlatformView) -> cocoa_ui::appkit::Window {
+    pub fn attach(mtm: MainThreadMarker, content: &PlatformView) -> cocoa_ui::appkit::Window {
         let window = cocoa_ui::appkit::Window::new(
             mtm,
             cocoa_ui::Rect::new(0.0, 0.0, 640.0, 480.0),
@@ -253,7 +260,7 @@ mod leaf {
     /// `UIKit` does not need a scene for `layoutSubviews` to run; the
     /// window exists so `window`-dependent paths see a real one.
     #[cfg(target_os = "ios")]
-    fn attach(
+    pub fn attach(
         mtm: MainThreadMarker,
         content: &PlatformView,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
@@ -454,6 +461,116 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+}
+
+/// `Native<Picture>` rasterization: the bitmap is sized to the laid-out
+/// bounds times the backing scale, and a relayout re-rasterizes — a picture
+/// stretched past its declared size shows pixels rasterized for that size,
+/// not an upscale of the declared-size bitmap.
+mod picture {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[cfg(target_os = "macos")]
+    use cocoa_ui::appkit::ImageView;
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::uikit::ImageView;
+    use kurbo::Shape;
+    use waterui::graphics::cherenkov::Draw;
+    use waterui::graphics::color::WorkingColor;
+    use waterui::graphics::picture::Picture;
+    use waterui::reactive::constant;
+    use waterui_core::layout::Size;
+
+    use super::{HostView, PlatformView, mtm};
+
+    /// The pixel dimensions of the bitmap the leaf's image view shows.
+    #[cfg(target_os = "macos")]
+    fn image_pixels(view: &PlatformView) -> (usize, usize) {
+        let view = view
+            .downcast_ref::<ImageView>()
+            .expect("the picture leaf mounts the kit image view");
+        let image = view.image().expect("the picture leaf paints an image");
+        let rep = image
+            .representations()
+            .firstObject()
+            .expect("the raster image carries one rep");
+        (
+            usize::try_from(rep.pixelsWide()).expect("a bitmap has nonnegative pixels"),
+            usize::try_from(rep.pixelsHigh()).expect("a bitmap has nonnegative pixels"),
+        )
+    }
+
+    /// The pixel dimensions of the bitmap the leaf's image view shows.
+    #[cfg(target_os = "ios")]
+    fn image_pixels(view: &PlatformView) -> (usize, usize) {
+        let view = view
+            .downcast_ref::<ImageView>()
+            .expect("the picture leaf mounts the kit image view");
+        let image = view.image().expect("the picture leaf paints an image");
+        // SAFETY: `CGImage` is a plain property read on the main thread.
+        let cg = unsafe { image.CGImage() }.expect("the raster image is a CGImage");
+        (
+            cocoa_ui::objc2_core_graphics::CGImage::width(Some(&cg)),
+            cocoa_ui::objc2_core_graphics::CGImage::height(Some(&cg)),
+        )
+    }
+
+    /// A `Picture` laid out at twice its declared size rasterizes at twice
+    /// the pixel size: the leaf re-rasterizes when its bounds change rather
+    /// than upscaling the bitmap painted for the declared size (#1565).
+    pub fn a_laid_out_picture_rasterizes_at_its_bounds() {
+        let mtm = mtm();
+        let declared = Size::new(100.0, 50.0);
+        let picture = Picture::new(
+            declared,
+            constant(Picture::record(|scene| {
+                scene.fill(
+                    kurbo::Rect::new(0.0, 0.0, 100.0, 50.0).to_path(0.1),
+                    WorkingColor::BLACK,
+                );
+            })),
+        );
+        let leaf = crate::resolve::render(picture);
+
+        let host = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 400.0, 300.0));
+        let mounted = leaf.mount(&host);
+        let child = cocoa_ui::view::retain_base(mounted.view());
+        let child_size = Rc::new(Cell::new(declared));
+        host.set_layout_handler({
+            let child_size = Rc::clone(&child_size);
+            move |_host| {
+                let size = child_size.get();
+                cocoa_ui::view::set_frame(
+                    &child,
+                    cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+                );
+            }
+        });
+
+        let _window = crate::leaf::attach(mtm, &host);
+        // Two flushes: the parent's pass frames the child, the second runs
+        // the child's own layout hook on its new bounds.
+        host.set_needs_layout();
+        host.layout_if_needed();
+        host.layout_if_needed();
+        let pixels_at_declared = image_pixels(mounted.view());
+        assert!(
+            pixels_at_declared.0 > 0 && pixels_at_declared.1 > 0,
+            "the declared-size bitmap exists"
+        );
+
+        child_size.set(Size::new(declared.width * 2.0, declared.height * 2.0));
+        host.set_needs_layout();
+        host.layout_if_needed();
+        host.layout_if_needed();
+
+        assert_eq!(
+            image_pixels(mounted.view()),
+            (pixels_at_declared.0 * 2, pixels_at_declared.1 * 2),
+            "laid out at twice its declared size, the rasterized bitmap must double"
+        );
     }
 }
 
