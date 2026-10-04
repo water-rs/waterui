@@ -6,15 +6,16 @@
 //! the Cherenkov engine presents through, one eventfd-woken executor on the
 //! main `ALooper`, and one JNI surface (`jni.rs`) every entry point crosses.
 //!
-//! The app's own `cdylib` registers its app factory and installs logging
-//! from `JNI_OnLoad`:
+//! The app's own `cdylib` registers its app factory from `JNI_OnLoad`:
 //!
 //! ```ignore
-//! hydrolysis::android::init_logging();
 //! hydrolysis::android::register_app(|| {
 //!     (build_app(), Rc::new(Material3::defaults()) as Rc<dyn Style>)
 //! });
 //! ```
+//!
+//! Logging installs at `nativeInit`, which also receives the launch intent's
+//! `waterui.log.level` extra — the level the CLI's `--logs` asked for.
 //!
 //! Session create/destroy, metrics, surface attach/resize/destroy, frame
 //! transactions and input then arrive through `NativeBridge`'s JNI calls —
@@ -31,6 +32,8 @@ mod platform_views;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use tracing::level_filters::LevelFilter;
+use tracing_log::AsLog;
 use waterui::app::App;
 
 /// The app factory the Kotlin host instantiates per session create.
@@ -61,13 +64,16 @@ pub fn register_app(factory: impl Fn() -> (App, Rc<dyn crate::Style>) + Send + S
 /// Installs Android logging once: `log` records (wgpu, ndk) and `tracing`
 /// records both land in logcat under the app's tag.
 ///
+/// `level` is the launch intent's `waterui.log.level` extra the Kotlin host
+/// passes through `nativeInit` — the CLI's `--logs` choice. `None` keeps the
+/// INFO ceiling a launch without `--logs` has always had.
+///
 /// A panic hook forwards panic payloads there too — Android doesn't capture
 /// stderr, so without this a native panic surfaces as a bare JNI exception
 /// with no cause.
-pub fn init_logging() {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Debug),
-    );
+pub(crate) fn init_logging(level: Option<LevelFilter>) {
+    let level = level.unwrap_or(LevelFilter::INFO);
+    android_logger::init_once(android_logger::Config::default().with_max_level(level.as_log()));
     std::panic::set_hook(Box::new(|info| {
         let payload = info
             .payload()
@@ -83,15 +89,8 @@ pub fn init_logging() {
         // never depend on logger state to reach logcat.
         android_log(format!("panic at {location}: {payload}").as_bytes());
     }));
-    // Debug builds emit DEBUG so a device run can attribute every wake of the
-    // host pump; release keeps INFO — the trace lines are idle-path noise
-    // there.
     let _ = tracing_subscriber::fmt()
-        .with_max_level(if cfg!(debug_assertions) {
-            tracing::level_filters::LevelFilter::DEBUG
-        } else {
-            tracing::level_filters::LevelFilter::INFO
-        })
+        .with_max_level(level)
         .with_writer(AndroidLogWriter)
         .with_ansi(false)
         .try_init();
