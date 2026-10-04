@@ -1,0 +1,40 @@
+[package]
+name = "cherenkov"
+version = "0.0.0"
+description = "GPU 2D rendering engine for modern hardware"
+edition.workspace = true
+rust-version = "1.95"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+testing = []
+
+[dependencies]
+arc-swap = "1"
+cherenkov-record = { path = "record", features = ["serde"] }
+web-time = "1"
+filtrate-core = { path = "../filtrate/core" }
+kurbo = { version = "0.13.1", features = ["serde"] }
+libm = "0.2"
+nami-core = { version = "0.3.3", features = ["kurbo"] }
+# Text layout stays outside the engine; `TextLayout` lowers a shaped
+# layout. No system font backend: hosts bring their own font collection.
+parley = { version = "0.11.1", default-features = false, features = ["std"] }
+rustc-hash = "2"
+serde = { version = "1", features = ["derive", "rc"] }
+thiserror = "2"
+tracing = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[dev-dependencies]
+nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+
+[lints]
+workspace = true

@@ -442,8 +442,12 @@ impl HydrolysisRenderer {
         &mut self.scene
     }
 
-    pub(crate) fn draw_context(&mut self, ctx: RenderContext) -> SceneDrawContext<'_> {
-        SceneDrawContext::with_root_transform(&mut self.scene, ctx.transform)
+    pub(crate) fn draw_context(
+        &mut self,
+        ctx: RenderContext,
+        body: impl FnOnce(&mut cherenkov::Recorder),
+    ) {
+        self.scene.record_picture(ctx.transform, body);
     }
 
     pub(crate) fn push_layer_rect(

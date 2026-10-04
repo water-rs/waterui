@@ -1,4 +1,4 @@
-use super::{HydrolysisRenderer, Recording, SceneDrawContext, TailMark};
+use super::{HydrolysisRenderer, Recording, TailMark};
 
 use crate::renderer::HydroState;
 use crate::renderer::frame::LayerTransforms;
@@ -102,8 +102,9 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer
     }
 
-    pub(crate) fn draw_context(&mut self) -> SceneDrawContext<'_> {
-        self.renderer.draw_context(self.render_context())
+    pub(crate) fn draw_context(&mut self, body: impl FnOnce(&mut cherenkov::Recorder)) {
+        let ctx = self.render_context();
+        self.renderer.draw_context(ctx, body);
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut HydroState {
