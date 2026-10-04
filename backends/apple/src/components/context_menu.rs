@@ -30,6 +30,8 @@ use waterui_core::Metadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
 
 use crate::components::menu_items;
+#[cfg(target_os = "ios")]
+use crate::contract::measure_callback;
 use crate::contract::{Mounted, NativeLeaf};
 use crate::dispatch::Dispatcher;
 use crate::proposal;
@@ -125,29 +127,6 @@ fn ideal_size(leaf: &NativeLeaf) -> cocoa_ui::Size {
         let m = leaf.layout().measure(ProposalSize::default()).size;
         cocoa_ui::Size::new(f64::from(m.width), f64::from(m.height))
     }
-}
-
-/// A leaf's own measure as the panel's typed `MeasureProposal` callback
-/// — the same conversion `NativeLeaf` installs on `HostView` leaves,
-/// applied to whatever view the leaf mounted.
-#[cfg(target_os = "ios")]
-fn leaf_measure(
-    layout: Rc<dyn SubView>,
-) -> Rc<dyn Fn(cocoa_ui::geometry::MeasureProposal) -> cocoa_ui::Size> {
-    Rc::new(move |proposal| {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the layout contract is f32; measured points always fit"
-        )]
-        let measured = layout.measure(ProposalSize::new(
-            proposal.width.map(|width| width as f32),
-            proposal.height.map(|height| height as f32),
-        ));
-        cocoa_ui::Size::new(
-            f64::from(measured.size.width),
-            f64::from(measured.size.height),
-        )
-    })
 }
 
 /// `dismissPresentedMenu`: close whatever is open. The platform teardown
@@ -314,42 +293,41 @@ fn present_panel(state: &Rc<RefCell<ContextMenuState>>, host: &cocoa_ui::Platfor
             }
         })
     };
-    let mut state = state.borrow_mut();
-    let preview_mount = state.preview.take().map(|IosPreview { leaf, controller }| {
+    // The leaves come out in one short borrow, then mount and present
+    // with nothing held: a native call that reenters the state — a
+    // measure callback is one — must not find a borrow held.
+    let (preview, accessory) = {
+        let mut state = state.borrow_mut();
+        (state.preview.take(), state.accessory.take())
+    };
+    let preview_mount = preview.map(|IosPreview { leaf, controller }| {
         let mounted = leaf.mount(&mount_target);
         popover.set_slot(
             uikit::PanelSlot::Preview,
             mounted.view(),
-            leaf_measure(mounted.layout_handle()),
+            measure_callback(mounted.layout_handle()),
         );
         (mounted, controller)
     });
-    let accessory_mount = state.accessory.take().map(|leaf| {
+    let accessory_mount = accessory.map(|leaf| {
         let mounted = leaf.mount(&mount_target);
         popover.set_slot(
             uikit::PanelSlot::Accessory,
             mounted.view(),
-            leaf_measure(mounted.layout_handle()),
+            measure_callback(mounted.layout_handle()),
         );
         mounted
     });
-    let presented = popover.present(host, on_dismiss);
-    if presented {
-        *state.presented.borrow_mut() = Some(PanelSession {
-            popover,
-            preview_mount,
-            accessory_mount,
-        });
-    } else {
+    // The session registers before the native present so a teardown
+    // that reenters from a native callback still finds the mounts.
+    *state.borrow().presented.borrow_mut() = Some(PanelSession {
+        popover: popover.clone(),
+        preview_mount,
+        accessory_mount,
+    });
+    if !popover.present(host, on_dismiss) {
         // No presentation could be made: the leaves come home unused.
-        restore_session(
-            &mut state,
-            PanelSession {
-                popover,
-                preview_mount,
-                accessory_mount,
-            },
-        );
+        teardown_panel(state);
     }
 }
 

@@ -294,7 +294,9 @@ define_class!(
         // controller answers with its stored commands.
         #[unsafe(method_id(keyCommands))]
         fn key_commands_override(&self) -> Option<Retained<NSArray<UIKeyCommand>>> {
-            self.ivars().key_commands.borrow().clone()
+            guarded("MenuPanelController keyCommands", || {
+                self.ivars().key_commands.borrow().clone()
+            })
         }
 
         // SAFETY: `cocoaUiMenuUp:` is the action the up-arrow command
@@ -329,6 +331,7 @@ define_class!(
         fn menu_dismiss_key(&self, _command: &UIKeyCommand) {
             guarded("MenuPanelController cocoaUiMenuDismiss:", || self.dismiss_menu());
         }
+
     }
 );
 
@@ -903,7 +906,9 @@ impl MenuPanelController {
         let weak = Weak::new(self);
         let completion = RcBlock::new(move || {
             if let Some(this) = weak.load() {
-                this.run_on_dismiss();
+                guarded("MenuPanelController dismiss completion", || {
+                    this.run_on_dismiss()
+                });
             }
         });
         self.dismissViewControllerAnimated_completion(true, Some(&*completion));
