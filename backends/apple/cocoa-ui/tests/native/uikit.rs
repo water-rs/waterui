@@ -193,27 +193,42 @@ fn ancestor_emissions_reach_a_descendants_subscribed_wake() {
         move || fires.set(fires.get() + 1)
     });
     let watch = cocoa_ui::visibility::VisibilityWatch::new(&child, wake);
+    let before = fires.get();
     cocoa_ui::view::set_hidden(&host, true);
-    assert_eq!(fires.get(), 1);
+    assert_eq!(fires.get() - before, 1);
+    let before = fires.get();
     cocoa_ui::view::set_hidden(&host, false);
-    assert_eq!(fires.get(), 2);
+    assert_eq!(fires.get() - before, 1);
 
-    // Reparenting onto a detached sibling removes `host` from the chain:
-    // the refresh binds only `other`, and an emission on `host` can no
-    // longer reach the handler.
+    // A reparent emits its own `didMoveToSuperview`/`didMoveToWindow`
+    // wakes on the child, so counts are asserted as deltas. Reparenting
+    // onto a detached sibling removes `host` from the chain: the refresh
+    // binds only `other`, and an emission on `host` can no longer reach
+    // the handler.
     cocoa_ui::view::remove_from_superview(&child);
     let other = HostView::new(mtm, Rect::new(0.0, 0.0, 100.0, 50.0));
     other.add_subview(&child);
     watch.refresh(&child);
+    let before = fires.get();
     other.visibility_emitter().emit();
-    assert_eq!(fires.get(), 3);
+    assert_eq!(fires.get() - before, 1);
+    let before = fires.get();
     host.visibility_emitter().emit();
-    assert_eq!(fires.get(), 3, "a detached ancestor still delivered a wake");
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "a detached ancestor still delivered a wake"
+    );
 
     drop(watch);
+    let before = fires.get();
     cocoa_ui::view::set_hidden(&host, true);
     other.visibility_emitter().emit();
-    assert_eq!(fires.get(), 3, "a dropped watch kept receiving wakes");
+    assert_eq!(
+        fires.get() - before,
+        0,
+        "a dropped watch kept receiving wakes"
+    );
 }
 
 /// The `#[unsafe(method(..))]` names must install the `ObjC` selectors
