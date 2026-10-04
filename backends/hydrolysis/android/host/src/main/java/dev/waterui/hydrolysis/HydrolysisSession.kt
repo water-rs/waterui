@@ -69,8 +69,8 @@ class HydrolysisSession internal constructor(context: Context) {
     }
 
     @Suppress("unused") // called from native
-    fun onNativeTextInputState(x: Float, y: Float, width: Float, height: Float, purpose: Int) {
-        hostView?.updateTextInputTarget(x, y, width, height, purpose)
+    fun onNativeSoftInput(visible: Boolean) {
+        hostView?.setSoftInputVisible(visible)
     }
 
     @Suppress("unused") // called from native

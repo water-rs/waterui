@@ -2,8 +2,6 @@ package dev.waterui.hydrolysis
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Rect
-import android.os.Build
 import android.util.SparseArray
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -16,7 +14,6 @@ import android.view.autofill.AutofillValue
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
-import androidx.annotation.RequiresApi
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -63,10 +60,6 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     private var lastRefreshHz = Float.NaN
     private var lastInsets = intArrayOf(0, 0, 0, 0)
     private var lastRootInsets: WindowInsetsCompat? = null
-
-    /** The focused editor's rect in physical px plus purpose, mirrored to the IME. */
-    private var imeRect = Rect()
-    private var imePurpose = -1
 
     /**
      * The live [HydrolysisInputConnection], if the IMM has bound one — the
@@ -385,47 +378,35 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
     }
 
     /**
-     * The session's focused-editor state, physical px in host coordinates.
-     * `purpose < 0` clears the target (the IME hides); otherwise the IME is
-     * asked to show and the candidates window tracks the cursor rect.
+     * Shows or hides the soft keyboard. The session calls this when a field
+     * gains or loses focus and when a press lands on the focused field, never
+     * per frame: the input contract and candidate geometry travel on the
+     * editing-state and cursor-anchor pushes.
      */
-    internal fun updateTextInputTarget(x: Float, y: Float, w: Float, h: Float, purpose: Int) {
+    internal fun setSoftInputVisible(visible: Boolean) {
         val imm =
             context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        if (purpose < 0) {
-            if (imePurpose >= 0) {
-                imePurpose = -1
-                imm.hideSoftInputFromWindow(windowToken, 0)
-            }
-            return
+        if (visible) {
+            if (!hasFocus()) requestFocus()
+            imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
+        } else {
+            imm.hideSoftInputFromWindow(windowToken, 0)
         }
-        imePurpose = purpose
-        imeRect.set(x.toInt(), y.toInt(), (x + w).toInt(), (y + h).toInt())
-        if (!hasFocus()) requestFocus()
-        if (Build.VERSION.SDK_INT >= 34) {
-            imm.updateCursorAnchorInfo(this, cursorAnchorInfo(imeRect))
-        }
-        imm.updateCursor(this, imeRect.left, imeRect.top, imeRect.right, imeRect.bottom)
-        imm.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
     }
 
     /**
-     * The cursor in view-local coordinates. Positional parameters require the
-     * view-to-screen matrix, which [transformMatrixToGlobal] supplies with
-     * every ancestor's transform.
+     * The view-to-screen transform `CursorAnchorInfo` positions are mapped
+     * through: every ancestor's transform down to the window
+     * ([transformMatrixToGlobal]), then the window's offset on screen.
      */
-    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    private fun cursorAnchorInfo(rect: Rect): android.view.inputmethod.CursorAnchorInfo =
-        android.view.inputmethod.CursorAnchorInfo.Builder()
-            .setMatrix(android.graphics.Matrix().also { transformMatrixToGlobal(it) })
-            .setInsertionMarkerLocation(
-                rect.left.toFloat(),
-                rect.top.toFloat(),
-                rect.bottom.toFloat(),
-                rect.bottom.toFloat(),
-                android.view.inputmethod.CursorAnchorInfo.FLAG_HAS_VISIBLE_REGION,
-            )
-            .build()
+    internal fun viewToScreenMatrix(): android.graphics.Matrix {
+        val matrix = android.graphics.Matrix()
+        transformMatrixToGlobal(matrix)
+        val windowOrigin = IntArray(2)
+        rootView.getLocationOnScreen(windowOrigin)
+        matrix.postTranslate(windowOrigin[0].toFloat(), windowOrigin[1].toFloat())
+        return matrix
+    }
 
     // ------------------------------------------------------------------
     // Accessibility + autofill — adapters backed by the session's snapshot.

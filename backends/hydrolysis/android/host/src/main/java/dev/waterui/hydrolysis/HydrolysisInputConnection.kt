@@ -243,7 +243,7 @@ internal class HydrolysisInputConnection(
     internal fun applyCursorAnchorInfo(info: AnchorInfoPayload) {
         imm.updateCursorAnchorInfo(
             target,
-            info.build(target.resources.displayMetrics.density, target.matrix),
+            info.build(target.resources.displayMetrics.density, target.viewToScreenMatrix()),
         )
     }
 

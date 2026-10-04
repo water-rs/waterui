@@ -1189,6 +1189,9 @@ impl HydrolysisRenderer {
             // `Focus(true)`/`Focus(false)` sink transition.
             self.set_keyboard_focus(Some(target.interaction_key.clone()), false);
             self.set_focused_text_input(None);
+            if button == PointerButton::Primary {
+                self.text_editing.note_activation();
+            }
             target.sink.pointer_move(local_position);
             // A secondary press still focuses the surface, but a context menu
             // enclosing it claims the button: the menu's actions act on the
@@ -1264,6 +1267,7 @@ impl HydrolysisRenderer {
             if let Some(index) = focused {
                 match button {
                     PointerButton::Primary => {
+                        self.text_editing.note_activation();
                         let click_count = self.next_text_selection_click_count(index, point, at);
                         if let Some((anchor, focus, gesture_changed)) =
                             self.apply_text_selection_click_gesture(index, point, click_count)

@@ -338,6 +338,10 @@ pub struct TextInputState {
     pub height: f64,
     /// The field's purpose, which selects the platform's input treatment.
     pub purpose: TextInputPurpose,
+    /// The renderer's count of primary presses on editable targets. A
+    /// platform with a soft keyboard shows it when this changes, which is
+    /// how a tap on the already-focused field re-opens a dismissed keyboard.
+    pub activation: u64,
 }
 
 /// Input events emitted by a windowing backend.
@@ -4445,6 +4449,7 @@ mod winit_impl {
                 width: 2.0,
                 height: 14.0,
                 purpose,
+                activation: 0,
             }
         }
 
