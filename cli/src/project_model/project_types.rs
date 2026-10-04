@@ -7,9 +7,27 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 /// Canonical `Cargo` crate name used by a `WaterUI` project and its generated backends.
+///
+/// Validation is `cargo`'s own package-name grammar: `validate_name` in
+/// `cargo-util-schemas` (non-empty; the first character a Unicode
+/// `XID_Start` letter or `_`, never a digit; the rest `XID_Continue`
+/// characters or `-`) plus the Rust-keyword ban `cargo new` applies. A name
+/// outside that grammar is one Cargo rejects, so a `CrateName` holding it
+/// could only break the manifest it lands in — the constructor refuses it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct CrateName(String);
+
+/// The Rust keywords `cargo new` refuses as a package name — `cargo`'s
+/// `restricted_names::is_keyword`
+/// (doc.rust-lang.org/reference/keywords.html), verbatim.
+const RUST_KEYWORDS: &[&str] = &[
+    "Self", "abstract", "as", "async", "await", "become", "box", "break", "const", "continue",
+    "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "if", "impl",
+    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
+    "return", "self", "static", "struct", "super", "trait", "true", "try", "type", "typeof",
+    "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+];
 
 impl CrateName {
     /// Returns the validated crate name as a string slice.
@@ -83,9 +101,39 @@ pub const fn declares_cef_helper(engine: Option<crate::project::ResolvedWebViewB
 impl TryFrom<String> for CrateName {
     type Error = String;
 
+    /// The rejection reasons name Cargo's own rule text — `validate_name`
+    /// and `cargo new` emit these verbatim.
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.trim().is_empty() {
+        if value.is_empty() {
             return Err("crate name cannot be empty".to_string());
+        }
+        if RUST_KEYWORDS.contains(&value.as_str()) {
+            return Err(format!(
+                "invalid package name '{value}': it is a Rust keyword"
+            ));
+        }
+        let mut chars = value.chars();
+        if let Some(first) = chars.next() {
+            if first.is_ascii_digit() {
+                return Err(format!(
+                    "invalid character '{first}' in package name '{value}': the name cannot start \
+                 with a digit"
+                ));
+            }
+            if !unicode_ident::is_xid_start(first) && first != '_' {
+                return Err(format!(
+                    "invalid character '{first}' in package name '{value}': the first character must be a Unicode XID start character \
+                 (most letters or '_')"
+                ));
+            }
+        }
+        for character in chars {
+            if !unicode_ident::is_xid_continue(character) && character != '-' {
+                return Err(format!(
+                    "invalid character '{character}' in package name '{value}': characters must be Unicode XID characters \
+                 (numbers, '-', '_', or most letters)"
+                ));
+            }
         }
         Ok(Self(value))
     }
@@ -716,6 +764,28 @@ mod tests {
             assert!(
                 default_bundle_identifier(name).is_err(),
                 "{name} cannot name a bundle identifier"
+            );
+        }
+    }
+
+    /// Cargo's package-name grammar is the `CrateName` contract — `water
+    /// create "1573 App"` derives `1573_app`, which Cargo rejects because a
+    /// package name cannot start with a digit. The names a manifest
+    /// legitimately carries — hyphens, a leading underscore, a non-ASCII
+    /// letter Cargo warns on but accepts — parse.
+    #[test]
+    fn crate_name_enforces_cargo_package_name_grammar() {
+        let digit_led = CrateName::try_from("1573_app").unwrap_err();
+        assert!(
+            digit_led.contains("cannot start with a digit"),
+            "{digit_led}"
+        );
+        let keyword = CrateName::try_from("fn").unwrap_err();
+        assert!(keyword.contains("Rust keyword"), "{keyword}");
+        for valid in ["demo", "_demo", "demo-app", "café_x"] {
+            assert!(
+                CrateName::try_from(valid).is_ok(),
+                "{valid} is a valid package name"
             );
         }
     }
