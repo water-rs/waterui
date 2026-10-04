@@ -13216,6 +13216,7 @@ dependencies = [
  "color",
  "event-listener",
  "filtrate",
+ "fontique",
  "half",
  "image",
  "keyboard-types",

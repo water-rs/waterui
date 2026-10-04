@@ -48,7 +48,7 @@ CLI stages next to the executable, and the system fallback chain behind them.
 Apache License 2.0) is a variable face — `wght` 100–900 and `wdth` 75–100 —
 reachable in tests by family name `Test Variable ABC`; the rename keeps its
 family out of the `roboto` bucket so generic-family classification never
-claims it. `BungeeColor-Regular.ttf` (family `Bungee Color Regular`, SIL Open
+claims it. `BungeeColor-Regular.ttf` (family `Bungee Color`, SIL Open
 Font License 1.1) is a COLRv0 colour face covering the layered-colour-glyph
 case. `PacificoSubset.ttf`, `NotoColorEmojiSubset.ttf` and
 `DejaVuSansEmojiCoverage.ttf` cover the overhanging-ink, colour-emoji and

@@ -76,6 +76,10 @@ cherenkov = { workspace = true, features = ["testing"] }
 pollster.workspace = true
 # The glyph-run recording test maps a character to a glyph id in a real font.
 ttf-parser = "0.25"
+# No font bytes are committed: the recording tests resolve the `Roboto` face
+# the test-fonts install script puts in the user font location (see
+# `backends/hydrolysis/test-fonts`) through system font discovery.
+fontique = "0.11"
 # The external-frame tests count the device's live textures and read back
 # `Rgba16Float` host targets.
 wgpu = { workspace = true, features = ["counters"] }

@@ -320,7 +320,7 @@ fn variable_colr_bitmap_fonts_count() {
                 .family("Test Variable ABC")
                 .weight(FontWeight::Black),
         ),
-        text("COLR").font(Font::new(Body).family("Bungee Color Regular")),
+        text("COLR").font(Font::new(Body).family("Bungee Color")),
         text("\u{1f600}\u{1f680}").font(Font::new(Body)),
     )))));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
