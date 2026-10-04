@@ -300,6 +300,7 @@ fn arm_filtered_context_watch(state: &Rc<FilteredState>, generation: u64) {
             initialize_gpu(&state);
             state.needs_render.set(true);
             schedule_frame_if_needed(&state);
+            reconsider_ready_demand(&state);
         }
     }));
 }
@@ -490,6 +491,43 @@ fn request_render_if_geometry_changed(state: &Rc<FilteredState>) {
     request_render(state);
 }
 
+/// Dispatches the one off-clock frame an outstanding first-ready waiter
+/// is owed. The demand path deliberately skips the presentation gate:
+/// a waiter is an explicit consumer contract (the same contract
+/// `GpuSurface`'s first-ready force render honors), while autonomous
+/// work stays parked under occlusion. Every gate the frame legitimately
+/// blocked on is re-checked, so this can only ever produce the owed
+/// frame — never autonomous offscreen submissions.
+fn dispatch_ready_demand(state: &Rc<FilteredState>) {
+    if state.ready_waiters.borrow().is_empty()
+        || state.output_revealed.get()
+        || !state.attached.get()
+        || !effects_ready(state)
+        || state.render_in_flight.get()
+        || state.frame_presentation_in_flight.get()
+    {
+        return;
+    }
+    state.needs_render.set(true);
+    render_frame(state);
+}
+
+/// Re-considers the outstanding demand on a fresh main-queue turn —
+/// prerequisite events (setup landing, context publication, an in-flight
+/// frame finishing) whose own call stack must unwind before the owed
+/// frame may run again. Each event enqueues exactly one reconsideration;
+/// the dispatch itself decides whether the waiters are still owed.
+fn reconsider_ready_demand(state: &Rc<FilteredState>) {
+    let mtm =
+        cocoa_ui::MainThreadMarker::new().expect("filter events run on the main thread");
+    let weak = Rc::downgrade(state);
+    cocoa_ui::main_queue::enqueue_local(mtm, move |_mtm| {
+        if let Some(state) = weak.upgrade() {
+            dispatch_ready_demand(&state);
+        }
+    });
+}
+
 /// `renderFrame` — capture the hidden content into the input-size texture.
 fn render_frame(state: &Rc<FilteredState>) {
     let context = state.runtime.context();
@@ -569,6 +607,7 @@ fn finish_captured_frame(state: &Rc<FilteredState>, frame: CaptureFrame, capture
         if frame.context.device_lost_reason().is_some() {
             arm_filtered_context_watch(state, frame.context.generation());
         }
+        reconsider_ready_demand(state);
         return;
     }
     finish_prepared_frame(state, frame);
@@ -792,6 +831,7 @@ fn finish_prepared_frame(state: &Rc<FilteredState>, frame: CaptureFrame) {
                 state.frame_presentation_in_flight.set(false);
                 state.render_in_flight.set(false);
                 finish_presented_frame(&state, pending.get(), needs_redraw, &submitted_context);
+                reconsider_ready_demand(&state);
             });
         },
     );
@@ -939,6 +979,7 @@ fn spawn_setup(state: &Rc<FilteredState>) {
         setup_generation.set(Some(context.generation()));
         if let Some(state) = weak.get().upgrade() {
             schedule_frame_if_needed(&state);
+            reconsider_ready_demand(&state);
         }
         fire_redraw();
     }));
@@ -1150,18 +1191,11 @@ fn request_ready_frame(state: &Rc<FilteredState>, waker: std::task::Waker) {
     }
     state.ready_waiters.borrow_mut().push(waker);
     schedule_frame_if_needed(state);
-    // An explicit ready demand outranks autonomous parking: a clipped or
-    // ancestor-hidden filter's clock correctly stays stopped, but the
-    // registered waiter still needs one frame — run it off the clock,
-    // the same contract `GpuSurface`'s first-ready force render uses.
-    // `render_frame` itself re-checks need/in-flight, so this can only
-    // produce the frame the waiter is owed, never duplicate work.
-    if !state.output_revealed.get()
-        && presentation_occluded(&state.view)
-        && state.needs_render.get()
-    {
-        render_frame(state);
-    }
+    // The registered waiter is owed one frame even while the autonomous
+    // clock stays parked: dispatch it off the clock now, and let each
+    // genuine prerequisite event re-drive the same demand until the
+    // output is revealed.
+    dispatch_ready_demand(state);
 }
 
 /// Walks `view`'s subtree calling `f` on every registered filter — the
