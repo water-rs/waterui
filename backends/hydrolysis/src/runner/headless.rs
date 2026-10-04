@@ -1237,6 +1237,10 @@ mod generation_tests {
     /// view tree — including every `Weak` table association — carry over
     /// unchanged. Returns the replaced context so the test can drop it last,
     /// matching the runner's own `ReclaimGpuOnDrop` discipline.
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the private test replaces the intentionally unread RAII guard when replacing its GPU context"
+    )]
     fn replace_gpu_context(
         runtime: &mut HeadlessRuntime,
         gpu: OffscreenGpuContext,
@@ -1326,7 +1330,7 @@ mod generation_tests {
                         .enumerate()
                         .map(|(i, id)| Glyph {
                             id,
-                            x: 8.0 + crate::num_cast::usize_as_f32(i) * 7.0,
+                            x: crate::num_cast::usize_as_f32(i).mul_add(7.0, 8.0),
                             y: 38.0,
                             transform: None,
                         })
@@ -1409,8 +1413,7 @@ mod generation_tests {
         // Destroy the actual device through wgpu, then drive the device's own
         // reclaim — the mechanism every frame's `reclaim_device` uses — so
         // wgpu detects the loss lazily and delivers the platform-installed
-        // callback. The observation stays bounded: a callback that never
-        // arrives fails the test, it is never skipped.
+        // callback. Bounded wait: a missing callback fails, never skips.
         let surface = runtime.runtime.platform.surface();
         let device_loss = surface.device_loss().clone();
         surface.device().destroy();
@@ -1422,9 +1425,7 @@ mod generation_tests {
         }
         assert!(
             device_loss.is_lost(),
-            "device.destroy() delivered no device-lost callback within 10s of \
-             device polls; the platform's loss observation is required for \
-             this test to run"
+            "device.destroy() delivered no device-lost callback within 10s of device polls"
         );
 
         let gpu_b = OffscreenGpuContext::new_for_tests_blocking();
@@ -1434,37 +1435,26 @@ mod generation_tests {
         assert_eq!(
             rebuilds.get(),
             1,
-            "replacement rebuilds engine-bound content exactly once"
+            "replacement rebuilds content exactly once"
         );
-        assert_eq!(
-            installs.get(),
-            2,
-            "the semantic invalidator is re-installed after the rebuild"
-        );
+        assert_eq!(installs.get(), 2, "invalidator re-installed after rebuild");
         let snapshot = second.snapshot.take().expect("capture after replacement");
-        assert_eq!(snapshot.width, 96);
-        assert_eq!(snapshot.height, 64);
+        assert_eq!((snapshot.width, snapshot.height), (96, 64));
         let pixel = |x: usize, y: usize| {
             let offset = (y * 96 + x) * 4;
             &snapshot.rgba8[offset..offset + 4]
         };
         // The fill covers (8,8)..(40,24): real red pixels on the new device.
-        assert!(
-            pixel(24, 16)[0] > 200,
-            "fill renders on the replacement device"
-        );
+        assert!(pixel(24, 16)[0] > 200, "fill renders on the new device");
         // The image's first texel is (255,0,64,255); nearest sampling pins it
-        // to a deterministic block — the registered image drew, and it drew
-        // on the NEW table's registration.
+        // to a deterministic block on the NEW table's registration.
         assert_eq!(
             pixel(9, 49),
             &[255, 0, 64, 255],
             "registered image texel renders on the replacement device"
         );
-        // The glyph band is painted opaque blue; count pixels that are
-        // actually blue — strong B, weak R and G — so a red fill, the
-        // registered image's texels, or an opaque black background cannot
-        // satisfy the check.
+        // The glyphs are opaque blue: require strong B, weak R and G, so the
+        // red fill, image texels and an opaque background cannot pass.
         let glyph_ink = (26..42)
             .flat_map(|y| (8..80).map(move |x| (x, y)))
             .filter(|&(x, y)| {
@@ -1472,22 +1462,15 @@ mod generation_tests {
                 px[3] > 0 && px[2] > 100 && px[0] < 100 && px[1] < 100
             })
             .count();
-        assert!(
-            glyph_ink > 0,
-            "registered font's blue glyphs render visibly"
-        );
+        assert!(glyph_ink > 0, "registered font's blue glyphs render");
 
         // Ordinary later frames and captures never rebuild again.
         runtime.pump_at(false, t0 + Duration::from_millis(32));
         runtime.pump_at(true, t0 + Duration::from_millis(48));
-        assert_eq!(
-            rebuilds.get(),
-            1,
-            "ordinary frames and captures do not rebuild again"
-        );
+        assert_eq!(rebuilds.get(), 1, "later frames do not rebuild again");
         assert!(
             builds.get() >= 3,
-            "semantic view state continues across replacement"
+            "semantic view state survives replacement"
         );
 
         // The re-installed invalidator is the retained semantic callback:
@@ -1500,7 +1483,7 @@ mod generation_tests {
         invalidator();
         assert!(
             runtime.runtime.renderer.take_patch_request(),
-            "the re-installed invalidator requests a frame on the replacement engine"
+            "re-installed invalidator requests a frame on the new engine"
         );
     }
 }
