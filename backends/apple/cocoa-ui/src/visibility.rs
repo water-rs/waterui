@@ -317,9 +317,11 @@ pub struct VisibilityWatch {
     handler: Rc<dyn Fn()>,
     /// The currently bound ancestor chain; replaced whole on refresh.
     wakes: RefCell<Option<VisibilityWakes>>,
-    /// The nearest scroll ancestor's viewport watch and the view it
-    /// binds, compared by object identity.
-    scroll: RefCell<Option<ScrollBinding>>,
+    /// Every scroll ancestor's viewport watch, ordered nearest-first;
+    /// each binding keeps the scroll view it observes by weak identity.
+    /// A nested scroll chain can clip through any ancestor, so the whole
+    /// chain is observed, not just the nearest.
+    scrolls: RefCell<Vec<ScrollBinding>>,
     /// The owning window/scene's lifecycle observers, compared by the
     /// observed object's identity.
     window: RefCell<Option<WindowBinding>>,
@@ -374,7 +376,7 @@ impl VisibilityWatch {
         let watch = Self {
             handler,
             wakes: RefCell::new(None),
-            scroll: RefCell::new(None),
+            scrolls: RefCell::new(Vec::new()),
             window: RefCell::new(None),
         };
         watch.refresh(view);
@@ -399,24 +401,34 @@ impl VisibilityWatch {
         self.wakes.borrow_mut().take();
         *self.wakes.borrow_mut() = Some(subscribe_visibility_wakes(view, &self.handler));
 
-        let scroll = crate::scroll::enclosing_scroll_view(view);
-        let mut slot = self.scroll.borrow_mut();
-        let scroll_unchanged = match (slot.as_ref(), scroll.as_ref()) {
-            (Some(binding), Some(scroll)) => {
+        let scrolls = crate::scroll::enclosing_scroll_views(view);
+        let mut slot = self.scrolls.borrow_mut();
+        // Each position of the ordered chain is decided independently:
+        // an unchanged ancestor keeps its live observation, a changed
+        // slot's old token drops (detaching a stale ancestor) and the
+        // new ancestor subscribes fresh, and ancestors the view left
+        // behind are truncated off the tail.
+        for (index, scroll) in scrolls.iter().enumerate() {
+            let unchanged = slot.get(index).is_some_and(|binding| {
                 binding.view.load().as_ref().map(Retained::as_ptr) == Some(Retained::as_ptr(scroll))
+            });
+            if unchanged {
+                continue;
             }
-            (None, None) => true,
-            _ => false,
-        };
-        if !scroll_unchanged {
-            *slot = scroll.map(|scroll| ScrollBinding {
-                _observation: crate::scroll::observe_scroll_viewport(&scroll, {
+            let binding = ScrollBinding {
+                _observation: crate::scroll::observe_scroll_viewport(scroll, {
                     let handler = self.handler.clone();
                     move || handler()
                 }),
-                view: objc2::rc::Weak::new(&*scroll),
-            });
+                view: objc2::rc::Weak::new(&**scroll),
+            };
+            if index < slot.len() {
+                slot[index] = binding;
+            } else {
+                slot.push(binding);
+            }
         }
+        slot.truncate(scrolls.len());
         drop(slot);
 
         let owner = imp::window_watch_owner(view);

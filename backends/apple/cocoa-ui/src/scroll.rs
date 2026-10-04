@@ -35,15 +35,7 @@ pub type ScrollView = PlatformScrollView;
 #[must_use]
 #[cfg(target_os = "ios")]
 pub fn enclosing_scroll_view(view: &PlatformView) -> Option<Retained<ScrollView>> {
-    let mut current = view.superview();
-    while let Some(candidate) = current {
-        let next = candidate.superview();
-        if let Ok(scroll) = Retained::downcast::<ScrollView>(candidate) {
-            return Some(scroll);
-        }
-        current = next;
-    }
-    None
+    enclosing_scroll_views(view).into_iter().next()
 }
 
 /// The nearest [`ScrollView`] ancestor of `view`, walking superviews.
@@ -51,6 +43,54 @@ pub fn enclosing_scroll_view(view: &PlatformView) -> Option<Retained<ScrollView>
 #[cfg(target_os = "macos")]
 pub fn enclosing_scroll_view(view: &PlatformView) -> Option<Retained<ScrollView>> {
     view.enclosingScrollView()
+}
+
+/// Every [`ScrollView`] ancestor of `view` walking superviews.
+///
+/// Ordered nearest-first. A nested scroll chain can clip a leaf through
+/// any of its ancestors — a foreign outer scroll view emits none of the
+/// emissions the nearest one does — so a visibility watch must observe
+/// the whole chain, not just the nearest.
+#[must_use]
+#[cfg(target_os = "ios")]
+pub fn enclosing_scroll_views(view: &PlatformView) -> Vec<Retained<ScrollView>> {
+    let mut ancestors = Vec::new();
+    let mut current = view.superview();
+    while let Some(candidate) = current {
+        let next = candidate.superview();
+        if let Ok(scroll) = Retained::downcast::<ScrollView>(candidate) {
+            ancestors.push(scroll);
+        }
+        current = next;
+    }
+    ancestors
+}
+
+/// Every [`ScrollView`] ancestor of `view` walking superviews.
+///
+/// Ordered nearest-first. `NSView.enclosingScrollView` only answers the
+/// nearest, which cannot wake a leaf clipped away by a foreign outer
+/// scroll, so the chain is walked like the `iOS` sibling.
+///
+/// # Safety
+///
+/// Same main-thread hierarchy walk as the callers: the views are alive
+/// because the caller walks from a mounted descendant.
+#[must_use]
+#[cfg(target_os = "macos")]
+pub fn enclosing_scroll_views(view: &PlatformView) -> Vec<Retained<ScrollView>> {
+    let mut ancestors = Vec::new();
+    // SAFETY: reading superview links of live views on the main thread.
+    let mut current = unsafe { view.superview() };
+    while let Some(candidate) = current {
+        // SAFETY: same main-thread read of a live ancestor's link.
+        let next = unsafe { candidate.superview() };
+        if let Ok(scroll) = Retained::downcast::<ScrollView>(candidate) {
+            ancestors.push(scroll);
+        }
+        current = next;
+    }
+    ancestors
 }
 
 /// The part of `view`'s coordinate space visible through `scroll`: the scroll
