@@ -486,4 +486,75 @@ mod tests {
             "a freshly scaffolded backend is not stale"
         );
     }
+    /// The generated iOS `Info.plist` declares
+    /// `CADisableMinimumFrameDurationOnPhone`: iOS caps `CADisplayLink` and
+    /// `CAMetalLayer` presentation at 60 Hz on `ProMotion` iPhones without it
+    /// (#1632), whatever frame-rate range the app requests.
+    #[test]
+    fn ios_info_plist_opts_out_of_the_promotion_frame_cap() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("water-example");
+        smol::block_on(Project::create(
+            &root,
+            CreateOptions {
+                name: "Water Example".to_string(),
+                bundle_identifier: BundleIdentifier::try_from("dev.waterui.waterexample")
+                    .expect("bundle identifier"),
+                waterui_path: None,
+                channel: None,
+                framework_manifest: None,
+                framework: Some(crate::framework::test_fixtures::stable_framework()),
+                framework_lock: None,
+                author: "Lexo Liu".to_string(),
+                web: None,
+            },
+        ))
+        .expect("project creation must succeed");
+
+        vendor_offline_resolution(&root, &dir.path().join("vendor"));
+
+        let project = smol::block_on(Project::open(
+            &root,
+            ManagedBackends::for_backend(TargetBackend::Apple),
+        ))
+        .expect("the Apple backend scaffolds");
+        let ctx =
+            smol::block_on(AppleBackend::template_context(&project)).expect("template context");
+        let bundle_id = project
+            .bundle_identifier()
+            .apple_bundle_identifier()
+            .expect("a CFBundleIdentifier-legal id");
+
+        for platform in [
+            crate::platform::TargetPlatform::IOS,
+            crate::platform::TargetPlatform::IOSSimulator,
+        ] {
+            let dict = crate::apple::app_bundle::apple_info_plist(
+                &ctx,
+                &project,
+                platform,
+                "17.0",
+                "Water Example",
+                &bundle_id,
+            );
+            assert_eq!(
+                dict.get("CADisableMinimumFrameDurationOnPhone"),
+                Some(&plist::Value::Boolean(true)),
+                "generated {platform:?} apps opt out of the ProMotion 60 Hz cap"
+            );
+        }
+
+        let macos = crate::apple::app_bundle::apple_info_plist(
+            &ctx,
+            &project,
+            crate::platform::TargetPlatform::MacOS,
+            "14.0",
+            "Water Example",
+            &bundle_id,
+        );
+        assert!(
+            !macos.contains_key("CADisableMinimumFrameDurationOnPhone"),
+            "macOS has no phone frame cap"
+        );
+    }
 }
