@@ -31,12 +31,28 @@ mod preview_test_runtime;
 #[cfg(feature = "waterui-mcp-mode")]
 mod mcp_runtime;
 
+{% if ctx.cef_runtime_enabled() %}
+/// Installs the macOS sandbox and the `CefAppProtocol` `NSApplication`
+/// subclass the CEF runtime requires. Runs before `app(env)` installs the
+/// engine and before any framework requests the shared application.
+fn initialize_cef_runtime() {
+    #[cfg(target_os = "macos")]
+    {
+        waterui_browser_cef::initialize_sandbox_early();
+        waterui_browser_cef::initialize_macos_application();
+    }
+}
+
+{% endif %}
 #[cfg(all(
     feature = "waterui-preview-mode",
     not(feature = "waterui-preview-test-mode"),
     not(feature = "waterui-mcp-mode")
 ))]
 fn main() {
+    {% if ctx.cef_runtime_enabled() %}
+    initialize_cef_runtime();
+    {% endif %}
     preview_runtime::run();
 }
 
@@ -46,6 +62,9 @@ fn main() {
     not(feature = "waterui-mcp-mode")
 ))]
 fn main() {
+    {% if ctx.cef_runtime_enabled() %}
+    initialize_cef_runtime();
+    {% endif %}
     preview_test_runtime::run();
 }
 
@@ -55,6 +74,9 @@ fn main() {
     not(feature = "waterui-preview-test-mode")
 ))]
 fn main() {
+    {% if ctx.cef_runtime_enabled() %}
+    initialize_cef_runtime();
+    {% endif %}
     mcp_runtime::run();
 }
 
@@ -65,11 +87,7 @@ fn main() {
 )))]
 fn main() {
     {% if ctx.cef_runtime_enabled() %}
-    #[cfg(target_os = "macos")]
-    {
-        waterui_browser_cef::initialize_sandbox_early();
-        waterui_browser_cef::initialize_macos_application();
-    }
+    initialize_cef_runtime();
     {% endif %}
     let env = waterui::configure_environment!(waterui::env::Environment::new());
     let app = {{ ctx.crate_name_ident() }}::app(env);

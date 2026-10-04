@@ -3429,8 +3429,26 @@ mod tests {
                 .then(|| String::from_utf8(content).expect("src/main.rs must be UTF-8"))
         })
         .expect("hydrolysis src/main.rs output should exist");
+        assert!(main_rs.contains("fn initialize_cef_runtime()"));
         assert!(main_rs.contains("waterui_browser_cef::initialize_sandbox_early"));
         assert!(main_rs.contains("waterui_browser_cef::initialize_macos_application"));
+        // Every generated entry — the preview, preview-test, MCP and plain
+        // run mains — calls the initializer first, since each mounts the
+        // same `app(env)` that installs the engine.
+        for (entry, rest) in main_rs.split("fn main()").enumerate() {
+            if entry == 0 {
+                continue;
+            }
+            assert!(
+                rest
+                    .trim_start_matches(char::is_whitespace)
+                    .strip_prefix('{')
+                    .is_some_and(|body| body
+                        .trim_start_matches(char::is_whitespace)
+                        .starts_with("initialize_cef_runtime();")),
+                "a generated main does not call initialize_cef_runtime first: {rest}"
+            );
+        }
 
         let without_cef = crate::templates::hydrolysis::rendered_outputs(
             &project_ctx(),
@@ -3443,6 +3461,7 @@ mod tests {
                 .then(|| String::from_utf8(content).expect("src/main.rs must be UTF-8"))
         })
         .expect("hydrolysis src/main.rs output should exist");
+        assert!(!without_cef.contains("initialize_cef_runtime"));
         assert!(!without_cef.contains("waterui_browser_cef::initialize_sandbox_early"));
         assert!(!without_cef.contains("waterui_browser_cef::initialize_macos_application"));
     }
