@@ -19,11 +19,11 @@
 //! Chord dispatch stays exactly-once on both platforms, but for different
 //! reasons:
 //!
-//! - **macOS**: AppKit matches the `NSMenuItem` key equivalent in
+//! - **macOS**: `AppKit` matches the `NSMenuItem` key equivalent in
 //!   `-[NSApplication sendEvent]` before `keyDown` is delivered to the
 //!   window (winit's view does not override `performKeyEquivalent`), so a
 //!   claimed accelerator never reaches the registry's key path. The
-//!   registry remains armed as the fallback for keys AppKit does not claim
+//!   registry remains armed as the fallback for keys `AppKit` does not claim
 //!   — the two dispatch paths see disjoint keys.
 //! - **Windows**: muda accelerators only fire through
 //!   `TranslateAcceleratorW`, which winit's message pump never calls — the
@@ -70,7 +70,7 @@ struct Bar {
 
 /// The installed native menu bar: the resolved-items watch (rebuilds the
 /// bar on edits) plus the shared `MenuId → action` table.
-pub(crate) struct NativeMenuBar {
+pub struct NativeMenuBar {
     bar: Rc<RefCell<Option<Bar>>>,
     env: Environment,
     _watch: BoxWatcherGuard,
@@ -459,16 +459,14 @@ impl Bar {
     /// Detaches the tree from its platform surface (pre-rebuild; on macOS
     /// `init_for_nsapp` replaces the bar outright, so only Windows needs
     /// this).
+    #[cfg(target_os = "windows")]
     fn remove_native(&self) {
-        #[cfg(target_os = "windows")]
-        {
-            for &hwnd in &self.hwnds {
-                // SAFETY: same liveness contract as `install_native`.
-                unsafe {
-                    self.menu
-                        .remove_for_hwnd(hwnd)
-                        .expect("detaching the menu bar from an attached HWND failed");
-                }
+        for &hwnd in &self.hwnds {
+            // SAFETY: same liveness contract as `install_native`.
+            unsafe {
+                self.menu
+                    .remove_for_hwnd(hwnd)
+                    .expect("detaching the menu bar from an attached HWND failed");
             }
         }
     }
@@ -506,6 +504,7 @@ fn carried_hwnds(old: Option<Bar>) -> Vec<isize> {
 fn rebuild_bar(slot: &Rc<RefCell<Option<Bar>>>, top_items: &Computed<Vec<ResolvedMenuItem>>) {
     let mut guard = slot.borrow_mut();
     let old = guard.take();
+    #[cfg(target_os = "windows")]
     if let Some(old) = &old {
         old.remove_native();
     }
@@ -521,9 +520,9 @@ impl NativeMenuBar {
     /// on Windows nothing renders until the runner hands over the first
     /// HWND (`attach_hwnd`).
     ///
-    /// The runner calls this on the event loop's main thread — AppKit
+    /// The runner calls this on the event loop's main thread — `AppKit`
     /// requires it.
-    pub(crate) fn install(items: Computed<Vec<ResolvedMenuItem>>, env: &Environment) -> Self {
+    pub(crate) fn install(items: &Computed<Vec<ResolvedMenuItem>>, env: &Environment) -> Self {
         #[cfg(target_os = "macos")]
         {
             let _ = objc2::MainThreadMarker::new()
@@ -531,7 +530,7 @@ impl NativeMenuBar {
         }
 
         let bar: Rc<RefCell<Option<Bar>>> = Rc::new(RefCell::new(None));
-        rebuild_bar(&bar, &items);
+        rebuild_bar(&bar, items);
         let watch = {
             let bar = Rc::clone(&bar);
             let items_for_watch = items.clone();
