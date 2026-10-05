@@ -77,6 +77,9 @@ mod imp {
         let env = unsafe { &mut *launch.env };
         crate::windows::install_manager(env);
         let parts = app(env.clone()).into_parts();
+        // The termination machine goes unstarted until the macOS side wires
+        // `applicationShouldTerminate:` (water-rs/waterui#1830).
+        let _ = parts.termination;
         // Content renders under the environment `app` returned: its own
         // installs (`install_chromium`, `.state(..)` chains) landed as
         // overlays on the clone it was handed, which the host env cannot
@@ -220,6 +223,9 @@ mod imp {
             !parts.windows.is_empty(),
             "an iOS application must declare at least one window"
         );
+        // iOS kills the process without notice, so the termination hooks are
+        // never called and the machine is never started.
+        let _ = parts.termination;
         // Same hand-off as macOS: content renders under the env `app`
         // returned — its installs are invisible to the host env.
         // `mut` only serves the `webview` install below; without the port

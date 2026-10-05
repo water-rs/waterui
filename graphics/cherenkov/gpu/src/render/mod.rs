@@ -2988,7 +2988,18 @@ impl Renderer for GpuRenderer {
         // held its producer's last reference posts the retirement onto
         // the producer's own queue, never the channel this thread
         // consumes.
-        self.surfaces.remove(&id);
+        if let Some(state) = self.surfaces.remove(&id) {
+            // A backdrop group's chain is registered beside the surface,
+            // keyed by it: a group handle that outlives its surface finds
+            // no surface to remove it from, so the chains go here.
+            for key in state
+                .backdrop_groups
+                .values()
+                .filter_map(|group| group.filter)
+            {
+                self.release_backdrop_chain(key, "destroy");
+            }
+        }
         self.planes.remove(&id);
         self.exports.remove(&id);
         self.update_filter_activity();
@@ -4378,21 +4389,6 @@ impl GpuRenderer {
             return;
         };
         if let Some(state) = surf.backdrop_groups.remove(&id.raw()) {
-            if let Some(key) = state.filter {
-                let bytes = self.filters.remove(key);
-                if bytes > 0 {
-                    diag::retire(
-                        &self.device,
-                        diag::RetireArgs {
-                            label: "filter targets",
-                            class: diag::Class::Target,
-                            bytes,
-                            used_in_latest_submit: true,
-                            reason: "backdrop group removed",
-                        },
-                    );
-                }
-            }
             if !state.captures.is_empty() {
                 surf.bind_gen += 1;
                 retire_binds1(
@@ -4404,6 +4400,25 @@ impl GpuRenderer {
                     |key| matches!(key.0, Some(Source::Backdrop { group, .. }) if group == id.raw()),
                 );
             }
+            if let Some(key) = state.filter {
+                self.release_backdrop_chain(key, "backdrop group removed");
+            }
+        }
+    }
+    /// Unregisters a backdrop group's capture chain and retires its targets.
+    fn release_backdrop_chain(&mut self, key: filter::FilterKey, reason: &'static str) {
+        let bytes = self.filters.remove(key);
+        if bytes > 0 {
+            diag::retire(
+                &self.device,
+                diag::RetireArgs {
+                    label: "filter targets",
+                    class: diag::Class::Target,
+                    bytes,
+                    used_in_latest_submit: true,
+                    reason,
+                },
+            );
         }
     }
     /// Validates a user shader paint on the caller thread.

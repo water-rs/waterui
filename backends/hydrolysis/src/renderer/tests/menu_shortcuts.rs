@@ -3,19 +3,22 @@
 //! on the window's scope while its `Menu` is mounted, `.context_menu` commands
 //! while the menu is open.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use accesskit::Role;
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
+use waterui::app::{App, TerminationHost};
 use waterui::prelude::{ContextMenu, Shortcut};
 use waterui::widget::condition::when;
 use waterui_controls::button::button;
-use waterui_controls::menu::{CommandExt as _, Menu};
+use waterui_controls::menu::{CommandExt as _, Menu, MenuItem};
 use waterui_controls::text_field::field;
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_core::{AnyView, Environment};
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
 
@@ -434,6 +437,89 @@ fn menu_bar_chord_fires_without_a_mounted_menu() {
         fired.snapshot(),
         1,
         "the app menu bar's chord dispatches with no Menu mounted"
+    );
+}
+
+/// The platform's command modifier as key dispatch sees it: ⌘ on macOS,
+/// Ctrl elsewhere — the chord a declared `MenuItem::Quit` arms.
+fn command() -> Modifiers {
+    if cfg!(target_os = "macos") {
+        Modifiers {
+            super_key: true,
+            ..Modifiers::default()
+        }
+    } else {
+        ctrl()
+    }
+}
+
+/// A headless runtime whose app menu bar declares only `MenuItem::Quit`.
+fn runtime_with_declared_quit(env: Environment) -> HeadlessRuntime {
+    let menu_bar = nami::Computed::constant(vec![Menu::new("App", MenuItem::Quit)]);
+    let _menu_bar_items = crate::runner::menu_bar::register_menu_bar(&menu_bar, &env);
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        env,
+        AnyViewBuilder::<AnyView>::new(|| AnyView::new(button("plain").action(|| {}))),
+        WINDOW.0,
+        WINDOW.1,
+        MinimalTestTheme::default(),
+    );
+    let _ = pump_until_settled(&mut runtime);
+    runtime
+}
+
+/// Counts the termination machine's `terminate` reports.
+#[derive(Clone, Default)]
+struct TerminateCount(Rc<Cell<u32>>);
+
+impl TerminationHost for TerminateCount {
+    fn terminate(&self) {
+        self.0.set(self.0.get() + 1);
+    }
+    fn refuse(&self) {}
+}
+
+/// Where a started termination machine installed `Quit`, a declared
+/// `MenuItem::Quit` arms the platform quit chord, and the chord files a
+/// quit request — with no hook set, one that terminates at once.
+#[test]
+fn a_declared_quit_chord_requests_termination() {
+    let mut env = test_environment();
+    let terminated = TerminateCount::default();
+    let _machine = App::new_with_windows(Vec::new(), Environment::new())
+        .into_parts()
+        .termination
+        .start(&mut env, terminated.clone());
+    let mut runtime = runtime_with_declared_quit(env);
+
+    key_chord(&mut runtime, "q", command());
+    assert_eq!(terminated.0.get(), 1, "the quit chord reaches the machine");
+}
+
+/// A host with no application quit — the headless runtime starts no
+/// termination machine, like Android and the web — installs no `Quit`, so
+/// a declared `MenuItem::Quit` arms nothing and its chord passes through
+/// instead of panicking on the missing service.
+#[test]
+fn a_declared_quit_arms_no_chord_where_nothing_can_quit() {
+    let env = test_environment();
+    let registry = env
+        .get::<crate::renderer::MenuShortcutRegistry>()
+        .cloned()
+        .expect("the test environment seeds a menu shortcut registry");
+    let mut runtime = runtime_with_declared_quit(env.clone());
+
+    key_chord(&mut runtime, "q", command());
+    // The app bar's chords answer to every window, so no window id is
+    // needed to ask the registry whether it claims the quit chord.
+    assert!(
+        !registry.dispatch(
+            crate::renderer::WindowId::Orphan,
+            &KeyCode::Character("q".to_owned()),
+            command(),
+            &env,
+        ),
+        "no menu claims the quit chord where nothing can quit"
     );
 }
 

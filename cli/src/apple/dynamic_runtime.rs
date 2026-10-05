@@ -9,6 +9,31 @@ use crate::utils::run_command_os;
 
 pub const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
 
+/// The `-l` link name `staged_name` implies — the recorded runtime file
+/// name `libwaterui_dylib-<metadata>.dylib` maps to `waterui_dylib-<metadata>`.
+///
+/// Linking the canonical `libwaterui_dylib.dylib` would record the
+/// canonical install name next to rustc's hashed dependency edge whenever
+/// the module resolves a runtime symbol through it, and `retarget_module`'s
+/// rename would leave a duplicate `LC_LOAD_DYLIB` that aborts in dyld
+/// (water-rs/waterui#1949). Binding the hashed file records the same
+/// `@rpath/libwaterui_dylib-<metadata>.dylib` entry the edge carries — one
+/// reference the retarget step redirects to [`INSTALL_NAME`].
+///
+/// `staged_name` comes from [`crate::workflows`]' `RustDynamicLibraries` —
+/// the name the artifact's own dynamic section recorded this build — so
+/// stale artifacts left beside it cannot influence the flag. A name that
+/// is not a hashed runtime file keeps the canonical `waterui_dylib`.
+pub fn runtime_link_name(staged_name: &str) -> String {
+    let stem = staged_name.strip_prefix("lib").unwrap_or(staged_name);
+    let stem = stem.strip_suffix(".dylib").unwrap_or(stem);
+    if stem.starts_with("waterui_dylib-") {
+        stem.to_string()
+    } else {
+        "waterui_dylib".to_string()
+    }
+}
+
 pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
     require_runtime(path)?;
     if install_name(path).await? != INSTALL_NAME {
@@ -82,10 +107,14 @@ pub async fn retarget_module(module_path: &Path, runtime_path: &Path) -> Result<
     let output = run_command_os("otool", [OsStr::new("-L"), module_path.as_os_str()])
         .await
         .wrap_err("Failed to inspect preview module linkage")?;
-    if !linked_libraries(&output).any(|library| library == INSTALL_NAME) {
+    let references = linked_libraries(&output)
+        .filter(|library| *library == INSTALL_NAME)
+        .count();
+    if references != 1 {
         bail!(
-            "Preview module {} is not linked to the shared host runtime {}",
+            "Preview module {} records {} references to the shared host runtime {} — expected exactly one",
             module_path.display(),
+            references,
             INSTALL_NAME
         );
     }
@@ -121,7 +150,7 @@ fn linked_libraries(output: &str) -> impl Iterator<Item = &str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{INSTALL_NAME, linked_libraries};
+    use super::{INSTALL_NAME, linked_libraries, runtime_link_name};
 
     #[test]
     fn parses_macho_linked_libraries() {
@@ -132,5 +161,27 @@ mod tests {
         );
 
         assert_eq!(linked_libraries(output).next(), Some(INSTALL_NAME));
+    }
+
+    #[test]
+    fn link_name_follows_the_hashed_artifact_name() {
+        assert_eq!(
+            runtime_link_name("libwaterui_dylib-74e47922123ae009.dylib"),
+            "waterui_dylib-74e47922123ae009"
+        );
+    }
+
+    #[test]
+    fn link_name_stays_canonical_for_the_unhashed_artifact() {
+        assert_eq!(runtime_link_name("libwaterui_dylib.dylib"), "waterui_dylib");
+    }
+
+    #[test]
+    fn link_name_stays_canonical_for_unrelated_artifacts() {
+        assert_eq!(
+            runtime_link_name("libstd-3f21d70fba8f3088.dylib"),
+            "waterui_dylib"
+        );
+        assert_eq!(runtime_link_name("libc++.1.dylib"), "waterui_dylib");
     }
 }

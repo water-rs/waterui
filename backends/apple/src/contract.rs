@@ -81,10 +81,11 @@ impl KeepAlive {
 /// A rendered component: its platform view, its layout face, and what keeps
 /// its reactivity alive.
 ///
-/// Drop order is fixed by field order: watchers and children stop first, the
-/// layout face next, the platform view last. Dropping a leaf does not detach
-/// its view from a superview; mount it through [`NativeLeaf::mount`] for
-/// that.
+/// Dropping a leaf first clears every handler its `HostView` holds, which
+/// releases the state those handlers capture; then watchers and children
+/// stop, the layout face drops next and the platform view last (field
+/// order). Dropping a leaf does not detach its view from a superview; mount
+/// it through [`NativeLeaf::mount`] for that.
 pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
@@ -144,18 +145,14 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            // The view must not keep the leaf alive: a strong layout here
-            // closes a HostView → handler → SubView → leaf-state → HostView
-            // cycle (water-rs/waterui#1567). The leaf retains the layout
-            // for its mounted lifetime — the context-menu panel clones it
-            // through `layout_handle` — so the handler upgrades only for
-            // the measure call, and `detach` clears it before the leaf
-            // can be released.
-            let layout = Rc::downgrade(layout);
-            host.set_measure_handler(move |_host, proposal| {
-                let layout = layout.upgrade().expect("measure handler outlived its leaf");
-                measure_layout(&layout, proposal)
-            });
+            // The handler may hold the layout face strongly: `detach`
+            // clears it when the leaf moves, and the leaf's `Drop` clears
+            // every handler slot, which breaks the HostView → handler →
+            // SubView → leaf-state → HostView cycle (water-rs/waterui#1567).
+            // The context-menu panel clones the layout through
+            // `layout_handle` for its own measure.
+            let layout = Rc::clone(layout);
+            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
         }
     }
 
@@ -205,10 +202,11 @@ impl NativeLeaf {
         )
     )]
     fn detach(&mut self) {
-        // The intrinsic-measure handler borrows this leaf's layout weakly;
-        // clear it at the ownership boundary so a platform view that briefly
-        // outlives the leaf falls back to its own intrinsic size instead of
-        // querying dead layout.
+        // The inverse of `mount`, and nothing more: a detached leaf may be
+        // mounted again (the iOS context-menu panel moves its preview and
+        // accessory in and out on every presentation), so the handlers its
+        // component installed at render time stay. Only the intrinsic
+        // measure `mount` installed goes, and `mount` installs it again.
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_measure_handler();
         }
@@ -222,6 +220,21 @@ impl NativeLeaf {
         #[cfg(target_os = "ios")]
         for controller in controllers.iter().rev() {
             cocoa_ui::uikit::view_controller::remove_from_parent(controller);
+        }
+    }
+}
+
+impl Drop for NativeLeaf {
+    /// The leaf's release boundary: every handler slot its `HostView`
+    /// holds is cleared, so the state those handlers capture is released
+    /// with the leaf whichever owner lets go of it — a `Mounted`, a
+    /// window's keepalive, a navigation page — and a callback the platform
+    /// delivers to a view that outlives the leaf finds `None`. The view
+    /// stays where it is: removing it from its superview is the owner's
+    /// job, as [`Mounted`] does.
+    fn drop(&mut self) {
+        if let Some(host) = self.view.downcast_ref::<HostView>() {
+            host.clear_handlers();
         }
     }
 }

@@ -68,7 +68,7 @@ impl IntoFFI for ResolvedTextFieldConfig {
             value: self.value.into_ffi(),
             prompt: self.prompt.into_ffi(),
             keyboard: self.keyboard.into_ffi(),
-            selection_menu: crate::menu_items_views(self.selection_menu),
+            selection_menu: crate::menu_items_views(&self.selection_menu),
             line_limit: self.line_limit.map_or(0, core::num::NonZeroUsize::get),
             on_submit: self.on_submit.into_ffi(),
         }

@@ -160,15 +160,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `layoutSubviews` / `layout`: the child always fills the host.
         host.set_layout_handler({
-            // Weak state — the handler must not own the leaf (#1575). A
-            // lifecycle callback: the view may legitimately outlive its
-            // leaf via native retain or a queued layout pass, so a dead
-            // owner no-ops.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |view| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 if let Some(child) = &state.child {
                     view::set_frame(child.view(), view::bounds(view));
@@ -176,10 +169,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
         host.set_measure_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host, proposal| {
                 let measured = DynamicSubView {
-                    state: state.upgrade().expect("dynamic measure outlived its leaf"),
+                    state: Rc::clone(&state),
                 }
                 .measure(to_proposal(proposal));
                 cocoa_ui::Size::new(
@@ -192,11 +185,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // `WuiPrimaryContentProviding`: the primary-content chain descends
         // into whichever child is mounted now.
         crate::primary_content::forward_current(&host, {
-            // Optional query callback: weak state, natural empty answer
-            // once the leaf's owner is gone (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                let state = state.upgrade()?;
                 state
                     .borrow()
                     .child
