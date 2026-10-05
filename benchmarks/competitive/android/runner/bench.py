@@ -485,29 +485,36 @@ def ensure_rn_android(d: Path, e: dict) -> None:
     tag = (f"@react-native-community/cli@{t['cli_version']} init RnBench "
            f"--version {t['version']} --skip-install | android/ subtree")
     stamp = d / "android" / ".bench-generator"
-    if (d / "android").is_dir() and stamp.exists()                 and stamp.read_text().strip() == tag:
-        return
-    shutil.rmtree(d / "android", ignore_errors=True)
-    with tempfile.TemporaryDirectory() as td:
-        checked(["npx", f"@react-native-community/cli@{t['cli_version']}",
-                 "init", "RnBench", "--version", t["version"],
-                 "--directory", str(Path(td) / "RnBench"),
-                 "--skip-install"],
-                cwd=td, env=e)
-        shutil.copytree(Path(td) / "RnBench" / "android", d / "android")
-    shutil.copy(d / "android-override" / "MainActivity.kt",
-                d / "android" / "app" / "src" / "main" / "java" /
-                "com" / "rnbench" / "MainActivity.kt")
+    if not ((d / "android").is_dir() and stamp.exists()
+            and stamp.read_text().strip() == tag):
+        shutil.rmtree(d / "android", ignore_errors=True)
+        with tempfile.TemporaryDirectory() as td:
+            checked(["npx", f"@react-native-community/cli@{t['cli_version']}",
+                     "init", "RnBench", "--version", t["version"],
+                     "--directory", str(Path(td) / "RnBench"),
+                     "--skip-install"],
+                    cwd=td, env=e)
+            shutil.copytree(Path(td) / "RnBench" / "android", d / "android")
+        shutil.copy(d / "android-override" / "MainActivity.kt",
+                    d / "android" / "app" / "src" / "main" / "java" /
+                    "com" / "rnbench" / "MainActivity.kt")
+        stamp.write_text(tag + "\n")
+        checked(["npm", "ci"], cwd=d, env=e)
     # harness-authored template change: the manifest's per-ABI APK matrix
-    # needs splits on, which the stock template leaves off
+    # needs splits on, which the stock template leaves off. Applied
+    # idempotently so trees generated before this change pick it up.
     app_gradle = d / "android" / "app" / "build.gradle"
     text = app_gradle.read_text()
-    if "enableSeparateBuildPerCPUArchitecture" in text:
+    if ("universalApk" in text
+            or "enableSeparateBuildPerCPUArchitecture = true" in text):
+        pass
+    elif "enableSeparateBuildPerCPUArchitecture" in text:
         text = text.replace(
             "enableSeparateBuildPerCPUArchitecture = false",
             "enableSeparateBuildPerCPUArchitecture = true")
+        app_gradle.write_text(text)
     else:
-        text += (
+        app_gradle.write_text(text + (
             "\nandroid {\n"
             "    splits {\n"
             "        abi {\n"
@@ -517,10 +524,7 @@ def ensure_rn_android(d: Path, e: dict) -> None:
             "            universalApk false\n"
             "        }\n"
             "    }\n"
-            "}\n")
-    app_gradle.write_text(text)
-    stamp.write_text(tag + "\n")
-    checked(["npm", "ci"], cwd=d, env=e)
+            "}\n"))
 
 
 def build_flutter(man, dist_dir: Path, e: dict):
