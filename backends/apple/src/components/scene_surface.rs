@@ -391,7 +391,7 @@ impl SceneParticipant for ScenePart {
 }
 
 impl SceneRenderer {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn new(
         runtime: &GpuRuntime,
         context: &Arc<SharedGpuContext>,
@@ -408,14 +408,14 @@ impl SceneRenderer {
     }
 
     /// The context generation this renderer's generation is bound to.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn context(&self) -> &Arc<SharedGpuContext> {
         self.generation.context()
     }
 
     /// Applies the staged frame contract now — the test driver for what
     /// `produce` does inside a batch.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos"))]
     fn record_if_needed(&self, target: &wgpu::Texture, display: Display) -> Result<(), SceneError> {
         self.part.stage((target.width(), target.height()), display);
         self.part.apply_staged()

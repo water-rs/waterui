@@ -296,7 +296,7 @@ impl EngineGeneration {
     /// Settles the failed state exactly as a failed shared render does —
     /// retained, routed to every live participant, returned to every later
     /// `produce`. Test-only entry into the same path.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
     pub fn fail_for_testing(&self, error: SceneError) -> Rc<SceneError> {
         self.settle_failed(error)
     }
@@ -378,7 +378,7 @@ impl SceneEngine {
     /// entry `generation` writes when `engine_on` returns `Err`, so a test
     /// can verify every later mount receives that exact typed failure
     /// without rerunning creation.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "macos", feature = "gpu_surface"))]
     pub fn install_failure_for_testing(&self, key: u64, error: SceneError) {
         *self.current.borrow_mut() = Some((key, Err(Rc::new(error))));
     }

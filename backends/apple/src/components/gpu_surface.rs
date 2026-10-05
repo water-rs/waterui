@@ -1654,7 +1654,15 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
                 // touching the weak state handle.
                 cocoa_ui::main_queue::enqueue(move |_mtm| {
                     let Some(state) = weak.get().upgrade() else {
-                        completion(Ok(()));
+                        // The CaptureRegistry lease retains the capture's
+                        // texture and submission, not this host's
+                        // `SurfaceState` — a released native owner leaves
+                        // the in-flight submission no current epoch to
+                        // validate against and no readiness to settle.
+                        // The pixels may exist, but nothing left can vouch
+                        // for them: the submission settles as deferred —
+                        // never a synthesized success.
+                        completion(Err(cocoa_ui::capture::CaptureDeferred));
                         return;
                     };
                     // The same exact-generation contract as the onscreen
