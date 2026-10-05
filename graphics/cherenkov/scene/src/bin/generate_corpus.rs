@@ -1450,7 +1450,7 @@ fn projective_scenes(corpus: &mut Corpus, ctx: &mut TextContext) {
     // card's local image; a group outside samples the surface, the
     // projected card included.
     corpus.scene_setup("projective-backdrop-inside", 256, 192, backdrop, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 3.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 3.0 }], 1.0);
         let l = &mut b.root();
         l.layer(|card| {
             card.transform(Affine::translate((24.0, 24.0)));
@@ -1473,7 +1473,7 @@ fn projective_scenes(corpus: &mut Corpus, ctx: &mut TextContext) {
         });
     });
     corpus.scene_setup("projective-backdrop-outside-hdr", 256, 192, backdrop, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0);
         let l = &mut b.root();
         l.layer(|card| {
             card.transform(Affine::translate((24.0, 24.0)));
@@ -3868,7 +3868,7 @@ fn run() -> Result<(), SceneError> {
     // highlight sits above SDR white — the transparency edge case for
     // every encoded output.
     let mut glass = Scene::builder(256, 256).clear(white).present_headroom(4.0);
-    glass.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }]);
+    glass.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
     corpus.scene_from(
         "present-glass-highlights",
         glass,
@@ -5520,7 +5520,7 @@ fn run() -> Result<(), SceneError> {
     // ---- Backdrop groups ---------------------------------------------------
 
     corpus.scene_setup("backdrop-plain", 256, 256, white, |b| {
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(1, Vec::new(), 1.0);
         let l = &mut b.root();
         backdrop_background(l);
         l.layer(|m| {
@@ -5543,7 +5543,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-blur", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
         let l = &mut b.root();
         backdrop_background(l);
         l.layer(|m| {
@@ -5567,8 +5567,8 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-nested", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }]);
-        b.backdrop_group(2, vec![BackdropFilter::GaussianBlur { sigma: 3.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }], 1.0);
+        b.backdrop_group(2, vec![BackdropFilter::GaussianBlur { sigma: 3.0 }], 1.0);
         let l = &mut b.root();
         backdrop_background(l);
         l.layer(|a| {
@@ -5627,8 +5627,9 @@ fn run() -> Result<(), SceneError> {
                     0.0,
                 ],
             }],
+            1.0,
         );
-        b.backdrop_group(2, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }]);
+        b.backdrop_group(2, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0);
         let l = &mut b.root();
         backdrop_background(l);
         l.layer(|m| {
@@ -5661,7 +5662,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-hdr", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 5.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 5.0 }], 1.0);
         let l = &mut b.root();
         // A gradient base plus HDR peaks: 16x white in P3, a P3 green
         // outside sRGB, and a Rec. 2020 accent.
@@ -5710,7 +5711,7 @@ fn run() -> Result<(), SceneError> {
     // ---- Per-member backdrop effects --------------------------------------
 
     corpus.scene_setup("backdrop-refraction", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
         let l = &mut b.root();
         stripes(
             l,
@@ -5731,7 +5732,7 @@ fn run() -> Result<(), SceneError> {
     // ellipse and the continuous rect run the second-order SDFs (#173),
     // not the rounded-rect closed form.
     corpus.scene_setup("backdrop-refraction-shapes", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
         let l = &mut b.root();
         stripes(
             l,
@@ -5778,7 +5779,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-refraction-p3", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
         let l = &mut b.root();
         stripes(
             l,
@@ -5792,7 +5793,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-tint", 256, 256, white, |b| {
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(1, Vec::new(), 1.0);
         let l = &mut b.root();
         backdrop_background(l);
         // A plain member beside a warm-tinted one; the bias sits in the
@@ -5817,7 +5818,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-tint-p3", 256, 256, white, |b| {
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(1, Vec::new(), 1.0);
         let l = &mut b.root();
         l.fill(
             Shape::rect(0.0, 0.0, 128.0, 256.0),
@@ -5849,7 +5850,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-rim-hdr", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }], 1.0);
         let l = &mut b.root();
         // Mid-grey base with a 16x SDR-white disc and an HDR accent so the
         // rim highlight lands on a >1 substrate.
@@ -5882,7 +5883,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-rim-p3", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }], 1.0);
         let l = &mut b.root();
         // P3-only colours, none of them HDR: the rim highlight must carry
         // wide gamut without exceeding SDR white.
@@ -5912,7 +5913,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-refraction-hdr", 256, 256, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 6.0 }], 1.0);
         let l = &mut b.root();
         stripes(
             l,
@@ -5930,7 +5931,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-tint-hdr", 256, 256, white, |b| {
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(1, Vec::new(), 1.0);
         let l = &mut b.root();
         // HDR backdrop: the tint matrix scales values already above one.
         l.fill(
@@ -5968,7 +5969,7 @@ fn run() -> Result<(), SceneError> {
     // ---- Sparse capture (#117) ----------------------------------------------
 
     corpus.scene_setup("backdrop-bars", 1024, 2216, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }], 1.0);
         let l = &mut b.root();
         let palette = [
             srgb(0.90, 0.25, 0.20),
@@ -5982,7 +5983,7 @@ fn run() -> Result<(), SceneError> {
     });
 
     corpus.scene_setup("backdrop-bars-p3", 1024, 2216, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 8.0 }], 1.0);
         let l = &mut b.root();
         let palette = [
             p3(1.0, 0.0, 0.0),
@@ -6001,7 +6002,7 @@ fn run() -> Result<(), SceneError> {
     // costs more than the merge overhead, so the group resolves to
     // three regions: each pair and the corner.
     corpus.scene_setup("backdrop-sparse-mixed", 512, 512, white, |b| {
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0);
         let l = &mut b.root();
         l.fill(
             Shape::rect(0.0, 0.0, 256.0, 512.0),

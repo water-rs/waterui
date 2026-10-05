@@ -333,7 +333,7 @@ fn backdrop_effect_specs_roundtrip() {
         assert_eq!(*spec, back);
 
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }]);
+        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0);
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -349,7 +349,7 @@ fn backdrop_effect_specs_roundtrip() {
 
     // A member without an effect keeps `backdrop_effect` out of the JSON.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_group(1, Vec::new());
+    b.backdrop_group(1, Vec::new(), 1.0);
     b.root().layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
         m.backdrop(1);
@@ -401,7 +401,7 @@ fn backdrop_effect_specs_roundtrip() {
         },
     ] {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(1, Vec::new(), 1.0);
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);

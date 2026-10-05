@@ -95,6 +95,8 @@ pub enum Feature {
     BackdropColorMatrix,
     /// A member layer carries a per-member backdrop sampling effect.
     BackdropEffect,
+    /// A backdrop group captures below device resolution (`scale < 1`).
+    BackdropScale,
     /// A layer with a projective pose.
     Projective,
 }
@@ -184,6 +186,9 @@ impl Scene {
             f.insert(Feature::WideGamut);
         }
         for group in &self.backdrop_groups {
+            if group.scale < 1.0 {
+                f.insert(Feature::BackdropScale);
+            }
             for filter in &group.filters {
                 match filter {
                     BackdropFilter::GaussianBlur { .. } => {
@@ -334,7 +339,8 @@ impl Scene {
         walk(&self.root)
     }
 
-    /// Every layer's `backdrop` must name a declared group and carry a clip.
+    /// Every group's capture scale must be finite and in `(0, 1]`; every
+    /// layer's `backdrop` must name a declared group and carry a clip.
     fn validate_backdrops(&self) -> Result<(), SceneError> {
         fn walk(layer: &Layer, groups: &[BackdropGroup]) -> Result<(), SceneError> {
             if let Some(id) = layer.backdrop {
@@ -357,6 +363,13 @@ impl Scene {
                 }
             }
             Ok(())
+        }
+        if let Some(group) = self
+            .backdrop_groups
+            .iter()
+            .find(|g| !(g.scale.is_finite() && g.scale > 0.0 && g.scale <= 1.0))
+        {
+            return Err(SceneError::InvalidBackdropScale(group.id));
         }
         walk(&self.root, &self.backdrop_groups)
     }

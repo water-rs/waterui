@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 /// composites the filtered result as the bottom-most content inside its own
 /// clip. A member layer must have a clip ([`crate::Scene::load`] validates
 /// this) or the scene fails to load.
+///
+/// The capture is taken at `scale` times device resolution: capture texel
+/// `(i, j)` holds the area-weighted mean of the canvas over the device rect
+/// `[i/s, (i+1)/s) × [j/s, (j+1)/s)` clipped to the canvas, `filters` run on
+/// that grid with their parameters in capture texels, and members sample
+/// it bilinearly at device point `p · s`. `1.0` is the 1:1 capture.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackdropGroup {
     /// The id member layers reference.
@@ -17,6 +23,9 @@ pub struct BackdropGroup {
     /// The filters applied to the capture, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<BackdropFilter>,
+    /// The capture scale `s`, `0 < s ≤ 1` ([`crate::Scene::load`]
+    /// validates it).
+    pub scale: f64,
 }
 
 /// One filter in a backdrop group's capture chain.
@@ -26,7 +35,7 @@ pub enum BackdropFilter {
     /// A separable Gaussian blur (filtrate's `GaussianBlur`): kernel radius
     /// `⌈3σ⌉`, clamp-to-edge sampling at the capture boundary.
     GaussianBlur {
-        /// The blur's standard deviation in pixels.
+        /// The blur's standard deviation in capture texels.
         sigma: f64,
     },
     /// A 3×4 colour matrix (filtrate's `ColorMatrix<T>([T;12])`): three rows

@@ -234,12 +234,19 @@ fn flattened(chain: &[Level]) -> Canvas {
     acc
 }
 
+/// One group's filtered capture: the capture grid's pixels, the space
+/// they were captured in and the grid's scale against device pixels.
+struct Capture {
+    space: BlendSpace,
+    canvas: Canvas,
+    scale: f64,
+}
+
 /// Backdrop-group render state: the scene's declared groups plus each
-/// group's filtered capture — the canvas's pixels and the space they were
-/// captured in — taken at its first member's paint point.
+/// group's filtered capture, taken at its first member's paint point.
 struct Backdrops<'a> {
     groups: &'a [BackdropGroup],
-    captures: HashMap<u32, (BlendSpace, Canvas)>,
+    captures: HashMap<u32, Capture>,
     /// The composition space being painted: 0 for the surface, a fresh
     /// number for each projective layer's local image.
     space: usize,
@@ -407,11 +414,21 @@ impl Renderer {
                             .iter()
                             .rposition(|level| level.semantic)
                             .map_or(BlendSpace::Linear, |i| chain[i].space);
-                        let mut capture = flattened(chain);
+                        let scale = group.scale;
+                        let flat = flattened(chain);
+                        let mut capture = if scale < 1.0 {
+                            downsample(&flat, scale)
+                        } else {
+                            flat
+                        };
                         for filter in &group.filters {
                             apply_backdrop_filter(&mut capture, filter);
                         }
-                        backdrops.captures.entry(gid).or_insert((space, capture));
+                        backdrops.captures.entry(gid).or_insert(Capture {
+                            space,
+                            canvas: capture,
+                            scale,
+                        });
                     }
                     self.render_child_layer(child, tf, clips, chain, resources, backdrops)?;
                 }
@@ -824,7 +841,12 @@ impl Renderer {
             RenderError::Backdrop(format!("backdrop group {gid} member layer has no clip"))
         })?;
         let coverage = self.shape_coverage(clip, FillRule::NonZero, tf, clips);
-        if let Some((cap_space, capture)) = backdrops.captures.get(&gid) {
+        if let Some(Capture {
+            space: cap_space,
+            canvas: capture,
+            scale,
+        }) = backdrops.captures.get(&gid)
+        {
             // SDF effects need the member clip's analytic box (the GPU
             // errors the same name for a mask or path clip).
             let sdf_clip = match &child.backdrop_effect {
@@ -838,6 +860,7 @@ impl Renderer {
                 ),
             };
             let (w, h) = (capture.width, capture.height);
+            let cw = canvas.width;
             #[expect(
                 clippy::cast_precision_loss,
                 reason = "pixel indices are far below 2^53"
@@ -849,10 +872,8 @@ impl Renderer {
                 }
                 let src = sample_backdrop(
                     child,
-                    &capture.pixels,
-                    w,
-                    h,
-                    [(i % w) as f64 + 0.5, (i / w) as f64 + 0.5],
+                    (&capture.pixels, w, h, *scale),
+                    [(i % cw) as f64 + 0.5, (i / cw) as f64 + 0.5],
                     sdf_clip.as_ref(),
                 );
                 *dst = src_over(*dst, move_space(src.map(|v| v * c), *cap_space, space));
@@ -1120,8 +1141,10 @@ impl Renderer {
 
 /// The member's backdrop composite at device pixel centre `p`: the
 /// per-member effect's sample of the filtered capture, before coverage and
-/// opacity. `sdf_clip` is the member clip's box shape and box →
-/// box-local inverse, `Some` whenever the effect reads the clip's SDF.
+/// opacity. The capture is `width × height` texels at `scale` against
+/// device pixels: a device point `q` samples it bilinearly at `q · scale`.
+/// `sdf_clip` is the member clip's box shape and box → box-local inverse,
+/// `Some` whenever the effect reads the clip's SDF.
 #[allow(clippy::many_single_char_names)] // p/q/c/t/d/n name points and pixel values
 #[expect(
     clippy::cast_possible_truncation,
@@ -1130,24 +1153,25 @@ impl Renderer {
 )]
 fn sample_backdrop(
     layer: &Layer,
-    capture: &[[f64; 4]],
-    width: usize,
-    height: usize,
+    (capture, width, height, scale): (&[[f64; 4]], usize, usize, f64),
     p: [f64; 2],
     sdf_clip: Option<&(crate::sdf::BoxShape, Affine)>,
 ) -> [f64; 4] {
     use cherenkov_scene::BackdropEffectSpec as E;
+    let at =
+        |q: [f64; 2]| crate::sdf::bilinear(capture, width, height, [q[0] * scale, q[1] * scale]);
     match &layer.backdrop_effect {
-        None => {
-            // `bilinear` at a texel centre is the texel: keep the exact
-            // pre-effect read.
+        // `bilinear` at a texel centre is the texel: a 1:1 capture keeps
+        // the exact pre-effect read.
+        None if scale >= 1.0 => {
             capture[usize::min(p[1] as usize, height - 1) * width
                 + usize::min(p[0] as usize, width - 1)]
         }
+        None => at(p),
         Some(E::ColorMatrix { matrix }) => {
             // 3x4 on the premultiplied sample, filtrate layout: the fourth
             // column is a bias that scales with alpha; alpha passes through.
-            let c = crate::sdf::bilinear(capture, width, height, p);
+            let c = at(p);
             [
                 matrix[0].mul_add(
                     c[0],
@@ -1172,7 +1196,7 @@ fn sample_backdrop(
                 (-n[0] * strength).mul_add(t * t, p[0]),
                 (-n[1] * strength).mul_add(t * t, p[1]),
             ];
-            crate::sdf::bilinear(capture, width, height, q)
+            at(q)
         }
         Some(E::RimLight {
             width: rim_w,
@@ -1182,7 +1206,7 @@ fn sample_backdrop(
             let (shape, clip_tf) = sdf_clip.expect("SDF effects carry a box clip");
             let (d, _) = crate::sdf::distance_and_normal(shape, clip_tf, p);
             let t = (1.0 + d / rim_w).clamp(0.0, 1.0);
-            let mut c = crate::sdf::bilinear(capture, width, height, p);
+            let mut c = at(p);
             let k = color[3] * gain * t * t;
             c[0] = color[0].mul_add(k, c[0]);
             c[1] = color[1].mul_add(k, c[1]);
@@ -1190,6 +1214,89 @@ fn sample_backdrop(
             c
         }
     }
+}
+
+/// The capture grid of `canvas` at `scale` (`0 < s < 1`): texel `(i, j)`
+/// holds the area-weighted mean of `canvas` over the device rect
+/// `[i/s, (i+1)/s) × [j/s, (j+1)/s)` clipped to the canvas, so the grid is
+/// `⌈w·s⌉ × ⌈h·s⌉` texels anchored at the device origin.
+fn downsample(canvas: &Canvas, scale: f64) -> Canvas {
+    let (cw, ch) = (
+        grid_len(canvas.width, scale),
+        grid_len(canvas.height, scale),
+    );
+    let wx = box_weights(canvas.width, cw, scale);
+    let wy = box_weights(canvas.height, ch, scale);
+    // Rows first, then columns: the box is separable and its weights are
+    // normalized per axis.
+    let mut rows = vec![[0.0; 4]; cw * canvas.height];
+    for y in 0..canvas.height {
+        for (i, taps) in wx.iter().enumerate() {
+            let mut acc = [0.0; 4];
+            for &(k, w) in taps {
+                let s = canvas.pixels[y * canvas.width + k];
+                for (a, &c) in acc.iter_mut().zip(&s) {
+                    *a = w.mul_add(c, *a);
+                }
+            }
+            rows[y * cw + i] = acc;
+        }
+    }
+    let mut pixels = vec![[0.0; 4]; cw * ch];
+    for (j, taps) in wy.iter().enumerate() {
+        for i in 0..cw {
+            let mut acc = [0.0; 4];
+            for &(k, w) in taps {
+                let s = rows[k * cw + i];
+                for (a, &c) in acc.iter_mut().zip(&s) {
+                    *a = w.mul_add(c, *a);
+                }
+            }
+            pixels[j * cw + i] = acc;
+        }
+    }
+    Canvas {
+        pixels,
+        width: cw,
+        height: ch,
+    }
+}
+
+/// `⌈len · scale⌉`: the capture grid's texel count over `len` device pixels.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "canvas sizes are small positive integers"
+)]
+fn grid_len(len: usize, scale: f64) -> usize {
+    (len as f64 * scale).ceil() as usize
+}
+
+/// Per capture texel along one axis, the device pixels it covers and
+/// their weights: texel `i` spans `[i/s, (i+1)/s)` clipped to `[0, len)`,
+/// and pixel `k` weighs its overlap with that span over the span's length.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "spans are clipped to the canvas before indexing"
+)]
+fn box_weights(len: usize, texels: usize, scale: f64) -> Vec<Vec<(usize, f64)>> {
+    let end = len as f64;
+    (0..texels)
+        .map(|i| {
+            let lo = i as f64 / scale;
+            let hi = ((i + 1) as f64 / scale).min(end);
+            let span = hi - lo;
+            (lo.floor() as usize..hi.ceil() as usize)
+                .map(|k| {
+                    let k0 = k as f64;
+                    (k, ((k0 + 1.0).min(hi) - k0.max(lo)) / span)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Apply one backdrop-group filter to a captured canvas, in place.
