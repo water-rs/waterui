@@ -137,7 +137,7 @@ pub unsafe fn import_texture(
 /// When `CGColorSpaceCreateWithName` rejects the system constant names —
 /// it cannot on supported targets.
 #[must_use]
-pub(crate) fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
+pub fn color_space(format: MTLPixelFormat) -> CFRetained<CGColorSpace> {
     let name = if format == MTLPixelFormat::RGBA16Float {
         // SAFETY: the colorspace statics are system constants.
         unsafe { kCGColorSpaceExtendedLinearDisplayP3 }
